@@ -87,7 +87,9 @@ jobs:
           fi
 
       - name: Run Lint
-        run: ./gradlew lintDebug
+        run: |
+          chmod +x ./gradlew
+          ./gradlew lintDebug
 
       - name: Upload Lint Report
         if: always()
@@ -118,7 +120,9 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
 
       - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest
+        run: |
+          chmod +x ./gradlew
+          ./gradlew testDebugUnitTest
 
       - name: Upload Test Results
         if: always()
@@ -150,7 +154,9 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -240,7 +246,9 @@ jobs:
       - name: Build Release APK
         # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
         # are set as GITHUB_ENV by the Azure Key Vault step above.
-        run: ./gradlew assembleRelease
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
 
       - name: Clean up keystore
         if: always()
@@ -357,7 +365,9 @@ jobs:
       - name: Build Release AAB
         # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
         # are set as GITHUB_ENV by the Azure Key Vault step above.
-        run: ./gradlew bundleRelease
+        run: |
+          chmod +x ./gradlew
+          ./gradlew bundleRelease
 
       - name: Clean up keystore
         if: always()
