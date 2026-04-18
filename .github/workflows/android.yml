@@ -278,6 +278,54 @@ jobs:
         run: |
           cosign sign-blob --yes --bundle "app/build/outputs/apk/release/SHA256SUMS.txt.sigstore" "app/build/outputs/apk/release/SHA256SUMS.txt"
 
+      # ── GPG detached signing (.asc) for sideload APK ─────────────────
+      # Parity with desktop Linux pipeline so users can verify a sideloaded
+      # APK using only `gpg --verify file.asc file` against the public key
+      # published at https://birdo.app/.well-known/birdo-release.asc.
+      # Required GitHub repository SECRETS:
+      #   ANDROID_GPG_PRIVATE_KEY  — ASCII-armoured private key block
+      #   ANDROID_GPG_PASSPHRASE   — passphrase for the private key
+      #   ANDROID_GPG_KEY_ID       — long key ID (e.g. ABCDEF0123456789)
+      - name: Detect GPG availability
+        id: gpg-detect
+        env:
+          GPG_KEY: ${{ secrets.ANDROID_GPG_PRIVATE_KEY }}
+          GPG_KID: ${{ secrets.ANDROID_GPG_KEY_ID }}
+        run: |
+          if [ -n "$GPG_KEY" ] && [ -n "$GPG_KID" ]; then
+            echo "HAS_GPG=true"  >> "$GITHUB_ENV"
+          else
+            echo "HAS_GPG=false" >> "$GITHUB_ENV"
+            echo "::warning::ANDROID_GPG_PRIVATE_KEY / ANDROID_GPG_KEY_ID not configured — skipping GPG signing"
+          fi
+
+      - name: Import GPG signing key
+        if: ${{ env.HAS_GPG == 'true' }}
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
+        with:
+          gpg_private_key: ${{ secrets.ANDROID_GPG_PRIVATE_KEY }}
+          passphrase:      ${{ secrets.ANDROID_GPG_PASSPHRASE }}
+
+      - name: GPG-sign release APK (detached .asc)
+        if: ${{ env.HAS_GPG == 'true' }}
+        run: |
+          for apk in app/build/outputs/apk/release/*.apk; do
+            gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
+                --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
+                --armor --detach-sign --output "${apk}.asc" "$apk"
+            echo "GPG-signed $(basename $apk) → $(basename $apk).asc"
+          done
+
+      - name: GPG-sign SHA256SUMS (detached .asc)
+        if: ${{ env.HAS_GPG == 'true' }}
+        run: |
+          SUMS="app/build/outputs/apk/release/SHA256SUMS.txt"
+          gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
+              --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
+              --armor --detach-sign --output "${SUMS}.asc" "$SUMS"
+
       - name: Upload Release APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -285,8 +333,10 @@ jobs:
           path: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/apk/release/*.sigstore
+            app/build/outputs/apk/release/*.asc
             app/build/outputs/apk/release/SHA256SUMS.txt
             app/build/outputs/apk/release/SHA256SUMS.txt.sigstore
+            app/build/outputs/apk/release/SHA256SUMS.txt.asc
 
       - name: Upload Mapping File
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
