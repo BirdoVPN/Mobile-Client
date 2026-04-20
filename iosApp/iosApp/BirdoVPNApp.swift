@@ -9,11 +9,13 @@ struct BirdoVPNApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(authVM)
-                .environmentObject(vpnVM)
-                .environmentObject(settingsVM)
-                .preferredColorScheme(.dark)
+            BiometricGate(enabled: settingsVM.biometricLockEnabled) {
+                ContentView()
+                    .environmentObject(authVM)
+                    .environmentObject(vpnVM)
+                    .environmentObject(settingsVM)
+                    .preferredColorScheme(.dark)
+            }
         }
     }
 }

@@ -1,5 +1,10 @@
 import Foundation
+import CommonCrypto
 import BirdoShared
+
+/// Client version pinned to the Android value so backend rate-limiters and
+/// telemetry treat both platforms uniformly. Update with each release.
+private let kBirdoClientVersion = "1.2.0"
 
 /// HTTP client for the Birdo VPN API. Uses shared KMP model types.
 final class APIClient: @unchecked Sendable {
@@ -11,9 +16,9 @@ final class APIClient: @unchecked Sendable {
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
 
-    /// Token refresh lock to prevent concurrent refresh races
-    private let refreshLock = NSLock()
-    private var isRefreshing = false
+    /// Single in-flight refresh task. Concurrent 401s await the same task
+    /// instead of racing each other or retrying with the stale token.
+    private let refreshActor = RefreshCoordinator()
 
     init(
         baseURL: URL = URL(string: "https://api.birdo.app")!,
@@ -24,10 +29,21 @@ final class APIClient: @unchecked Sendable {
         self.decoder = JSONDecoder()
         self.encoder = JSONEncoder()
 
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
-        self.session = URLSession(configuration: config)
+        config.httpAdditionalHeaders = [
+            "User-Agent": "Birdo-iOS/\(kBirdoClientVersion) (iOS)",
+            "X-Desktop-Client": "birdo-ios",
+        ]
+        // SEC: Disable HTTP cookies + URL cache so auth headers and JSON
+        // bodies aren't persisted to disk between launches.
+        config.httpCookieStorage = nil
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+
+        let delegate = PinningDelegate()
+        self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
     // MARK: - Auth
@@ -168,6 +184,11 @@ final class APIClient: @unchecked Sendable {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw APIError.invalidURL
         }
+        // SEC: refuse to ever issue a non-HTTPS request, even if a future
+        // override slips an http:// base URL into config.
+        guard url.scheme?.lowercased() == "https" else {
+            throw APIError.invalidURL
+        }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -183,26 +204,16 @@ final class APIClient: @unchecked Sendable {
             throw APIError.invalidResponse
         }
 
-        // Handle 401 — attempt token refresh once
+        // Handle 401 — refresh once, then retry. Concurrent 401s coalesce
+        // through `refreshActor` so we never refresh twice in parallel.
         if http.statusCode == 401 && authenticated {
-            var shouldRefresh = false
-            refreshLock.lock()
-            if !isRefreshing {
-                isRefreshing = true
-                shouldRefresh = true
-            }
-            refreshLock.unlock()
-
-            if shouldRefresh {
-                defer {
-                    refreshLock.lock()
-                    isRefreshing = false
-                    refreshLock.unlock()
+            do {
+                try await refreshActor.refresh { [weak self] in
+                    try await self?.refreshTokens()
                 }
-                try await refreshTokens()
+            } catch {
+                throw APIError.unauthorized
             }
-
-            // Retry with new token
             var retry = URLRequest(url: url)
             retry.httpMethod = method
             retry.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -215,6 +226,7 @@ final class APIClient: @unchecked Sendable {
                 throw APIError.invalidResponse
             }
             guard (200...299).contains(retryHttp.statusCode) else {
+                if retryHttp.statusCode == 401 { throw APIError.unauthorized }
                 throw APIError.httpError(retryHttp.statusCode)
             }
             return retryData
@@ -224,6 +236,129 @@ final class APIClient: @unchecked Sendable {
             throw APIError.httpError(http.statusCode)
         }
         return data
+    }
+}
+
+// MARK: - Refresh Coordinator
+
+/// Serialises concurrent token refreshes. The first 401 starts the refresh;
+/// every subsequent caller awaits the same in-flight task and then retries
+/// with the freshly-stored token.
+private actor RefreshCoordinator {
+    private var inFlight: Task<Void, Error>?
+
+    func refresh(_ work: @escaping @Sendable () async throws -> Void) async throws {
+        if let task = inFlight {
+            try await task.value
+            return
+        }
+        let task = Task<Void, Error> { try await work() }
+        inFlight = task
+        defer { inFlight = nil }
+        try await task.value
+    }
+}
+
+// MARK: - Certificate Pinning
+
+/// SPKI-pinning URLSession delegate. Pins are kept in sync with the Android
+/// `NetworkModule.kt` set and the `network_security_config.xml` file.
+/// Pin-set expiration: 2027-06-01.
+private final class PinningDelegate: NSObject, URLSessionDelegate {
+    /// Base64-encoded SHA-256 hashes of the SubjectPublicKeyInfo (SPKI) of
+    /// every certificate we accept. We require a match against any cert in
+    /// the chain (intermediate or root), giving us CA-migration headroom.
+    private static let pins: Set<String> = [
+        // WE1 — Google Trust Services intermediate (verified 2026-02-22)
+        "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
+        // GlobalSign ECC Root CA - R4 (verified 2026-02-22)
+        "CLOmM1/OXvSPjw5UOYbAf9GKOxImEp9hhku9W90fHMk=",
+        // ISRG Root X1 — Let's Encrypt root (cross-CA diversity backup)
+        "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=",
+    ]
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        // Standard CA validation must succeed first.
+        var trustError: CFError?
+        guard SecTrustEvaluateWithError(trust, &trustError) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        // Then SPKI pinning: at least one cert in the chain must match.
+        let count = SecTrustGetCertificateCount(trust)
+        for i in 0..<count {
+            guard let cert = SecTrustGetCertificateAtIndex(trust, i),
+                  let pubKey = SecCertificateCopyKey(cert),
+                  let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
+                continue
+            }
+            let spkiHeader = Self.spkiHeader(for: pubKey)
+            var hashable = spkiHeader
+            hashable.append(pubKeyData)
+            let hash = Self.sha256(hashable).base64EncodedString()
+            if Self.pins.contains(hash) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+        }
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+
+    /// ASN.1 SubjectPublicKeyInfo header bytes that prefix the raw key data
+    /// produced by `SecKeyCopyExternalRepresentation`. We only need the RSA
+    /// 2048 + EC P-256 / P-384 prefixes to cover every CA in our pin set.
+    private static func spkiHeader(for key: SecKey) -> Data {
+        let attrs = SecKeyCopyAttributes(key) as? [CFString: Any] ?? [:]
+        let type = (attrs[kSecAttrKeyType] as? String) ?? ""
+        let size = (attrs[kSecAttrKeySizeInBits] as? Int) ?? 0
+        switch (type, size) {
+        case (kSecAttrKeyTypeRSA as String, 2048):
+            return Data([
+                0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
+            ])
+        case (kSecAttrKeyTypeRSA as String, 4096):
+            return Data([
+                0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09,
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
+            ])
+        case (kSecAttrKeyTypeECSECPrimeRandom as String, 256):
+            return Data([
+                0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
+                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+                0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+                0x42, 0x00,
+            ])
+        case (kSecAttrKeyTypeECSECPrimeRandom as String, 384):
+            return Data([
+                0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86,
+                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
+                0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
+            ])
+        default:
+            return Data() // Unknown key type — hash will not match any pin.
+        }
+    }
+
+    private static func sha256(_ data: Data) -> Data {
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes {
+            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return Data(hash)
     }
 }
 
