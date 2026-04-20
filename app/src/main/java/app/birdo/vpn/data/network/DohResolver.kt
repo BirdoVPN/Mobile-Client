@@ -6,7 +6,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
-import java.net.UnknownHostException
 
 /**
  * DNS-over-HTTPS resolver with Cloudflare primary, Google fallback, and Quad9 final fallback.
@@ -68,16 +67,32 @@ object DohResolver {
         .build()
 
     /**
-     * Resolves using Cloudflare DoH first, then Google, then Quad9 as final fallback.
+     * Resolves using Cloudflare DoH first, then Google, then Quad9, then system
+     * DNS as a final fallback.
+     *
+     * Catches ALL exceptions (not just UnknownHostException) so transient DoH
+     * failures — TLS handshake errors, timeouts, ISP-level blocking of DoH
+     * providers on mobile networks — fall through to the next provider instead
+     * of bubbling up a bare-hostname UnknownHostException to the UI.
+     *
+     * System DNS is the last resort: if the user's network blocks DoH entirely
+     * (some carrier/captive-portal networks do), the app should still work
+     * rather than show an unhelpful "Login failed: api.birdo.app" message.
      */
     fun resolve(hostname: String): List<InetAddress> {
         return try {
             cloudflare.lookup(hostname)
-        } catch (_: UnknownHostException) {
+        } catch (_: Exception) {
             try {
                 google.lookup(hostname)
-            } catch (_: UnknownHostException) {
-                quad9.lookup(hostname)
+            } catch (_: Exception) {
+                try {
+                    quad9.lookup(hostname)
+                } catch (_: Exception) {
+                    // Final fallback: system resolver. Cert pinning on the actual
+                    // API connection still protects against DNS-spoofing MITM.
+                    okhttp3.Dns.SYSTEM.lookup(hostname)
+                }
             }
         }
     }

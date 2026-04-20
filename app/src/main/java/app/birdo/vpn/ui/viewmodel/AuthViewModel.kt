@@ -252,13 +252,21 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun parseLoginError(raw: String): String {
+        val lower = raw.lowercase()
         return when {
             "Invalid credentials" in raw || "401" in raw -> "Invalid email or password"
-            "Network" in raw || "timeout" in raw.lowercase() -> "Unable to reach server. Check your connection."
             "429" in raw -> "Too many attempts. Please wait a moment."
-            "Certificate" in raw || "SSL" in raw || "pinning" in raw.lowercase() ->
+            "Certificate" in raw || "SSL" in raw || "pinning" in lower ->
                 "Secure connection failed. Please update the app."
-            "Unable to resolve host" in raw -> "No internet connection."
+            // DNS resolution failures: system DNS gives "Unable to resolve host",
+            // DoH (DnsOverHttps) throws UnknownHostException whose message is
+            // just the bare hostname (e.g. "api.birdo.app").
+            "unable to resolve host" in lower ||
+                "unknownhost" in lower ||
+                Regex("^[a-z0-9.-]+\\.[a-z]{2,}$").matches(raw.trim()) ->
+                "No internet connection."
+            "Network" in raw || "timeout" in lower || "failed to connect" in lower ->
+                "Unable to reach server. Check your connection."
             else -> "Login failed: $raw"
         }
     }
