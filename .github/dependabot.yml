@@ -22,9 +22,9 @@ updates:
       - dependency-name: "androidx.compose.compiler:*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "com.android.application"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "com.android.library"
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "com.squareup.okhttp3:*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "com.squareup.retrofit2:*"
@@ -34,6 +34,21 @@ updates:
       # Gradle wrapper 9.x requires AGP 8.7+ + Kotlin 2.x — coordinated upgrade needed
       - dependency-name: "gradle"
         versions: [">=9.0.0"]
+      # Need coordinated bump of Kotlin to 2.3 (currently 2.1) - hold all
+      - dependency-name: "org.jetbrains.kotlin:*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "org.jetbrains.kotlinx:*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "com.google.devtools.ksp"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # Hilt minor+ needs newer Kotlin/AGP
+      - dependency-name: "com.google.dagger:*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # AndroidX group bumps frequently require AGP minor+
+      - dependency-name: "androidx.core:*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "androidx.activity:*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       kotlin:
         patterns: ["org.jetbrains.kotlin*", "org.jetbrains.kotlinx*"]
