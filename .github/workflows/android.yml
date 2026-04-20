@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload Lint Report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: lint-report
           path: app/build/reports/lint-results-debug.html
@@ -132,7 +132,7 @@ jobs:
 
       - name: Upload Test Results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results
           path: app/build/reports/tests/testDebugUnitTest/
@@ -165,7 +165,7 @@ jobs:
           ./gradlew assembleDebug
 
       - name: Upload Debug APK
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: debug-apk
           path: app/build/outputs/apk/debug/*.apk
@@ -334,7 +334,7 @@ jobs:
               --armor --detach-sign --output "${SUMS}.asc" "$SUMS"
 
       - name: Upload Release APK
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-apk
           path: |
@@ -346,7 +346,7 @@ jobs:
             app/build/outputs/apk/release/SHA256SUMS.txt.asc
 
       - name: Upload Mapping File
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mapping
           path: app/build/outputs/mapping/release/mapping.txt
@@ -443,7 +443,7 @@ jobs:
           done
 
       - name: Upload Release AAB
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-aab
           path: |
