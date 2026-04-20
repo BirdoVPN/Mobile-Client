@@ -53,11 +53,25 @@ final class VpnViewModel: ObservableObject {
 
     // MARK: - Server Management
 
-    func loadServers() {
+    /// Last-fetched server list cache. Mirrors the Android 60-second TTL
+    /// in `BirdoRepository` so rapid screen revisits don't hammer the API
+    /// or churn the radio. Pass `forceRefresh: true` from a pull-to-refresh
+    /// gesture to bypass the TTL.
+    private var serverCacheTimestamp: Date?
+    private static let serverCacheTTL: TimeInterval = 60
+
+    func loadServers(forceRefresh: Bool = false) {
+        if !forceRefresh,
+           !servers.isEmpty,
+           let ts = serverCacheTimestamp,
+           Date().timeIntervalSince(ts) < Self.serverCacheTTL {
+            return
+        }
         Task {
             do {
                 let list = try await api.fetchServers()
                 servers = list
+                serverCacheTimestamp = Date()
             } catch {
                 self.error = error.localizedDescription
             }

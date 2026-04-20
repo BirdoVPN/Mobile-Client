@@ -16,11 +16,36 @@ object WireGuardConfigBuilder {
 
     private const val TAG = "WgConfigBuilder"
 
+    /** Maximum allowed peer addresses / allowedIPs per config (DoS guard). */
+    private const val MAX_ADDRESSES = 16
+    private const val MAX_ALLOWED_IPS = 32
+
     /**
      * Build a WireGuard [Config] from the API connect response and user prefs.
      * Zeroes key material from intermediate objects after the config snapshot is taken.
+     *
+     * SEC: every field from [response] is treated as untrusted input. Each value
+     * is structurally validated **before** it touches the wg-go config builder
+     * so a malicious or malformed server response cannot inject extra peers,
+     * unbounded allowed-IP lists, or invalid endpoints into the kernel tunnel.
      */
     fun build(response: ConnectResponse, prefs: AppPreferences): Config {
+        // ---------- Strict pre-validation ----------
+        require(!response.privateKey.isNullOrBlank()) { "Missing privateKey" }
+        require(!response.serverPublicKey.isNullOrBlank()) { "Missing serverPublicKey" }
+        require(!response.assignedIp.isNullOrBlank()) { "Missing assignedIp" }
+        require(!response.endpoint.isNullOrBlank()) { "Missing endpoint" }
+        require(isValidWireGuardKey(response.privateKey!!)) { "Invalid privateKey format" }
+        require(isValidWireGuardKey(response.serverPublicKey!!)) { "Invalid serverPublicKey format" }
+        response.presharedKey?.let { require(isValidWireGuardKey(it)) { "Invalid presharedKey format" } }
+        require(isValidEndpoint(response.endpoint!!)) { "Invalid endpoint: ${response.endpoint}" }
+        require(isValidCidr("${response.assignedIp}/32")) { "Invalid assignedIp" }
+        response.allowedIps?.let {
+            require(it.size <= MAX_ALLOWED_IPS) { "AllowedIPs list too large (${it.size})" }
+            it.forEach { cidr -> require(isValidCidr(cidr)) { "Invalid allowedIp: $cidr" } }
+        }
+        // ------------------------------------------
+
         val privateKey = Key.fromBase64(response.privateKey!!)
         val peerPublicKey = Key.fromBase64(response.serverPublicKey!!)
 
@@ -98,6 +123,53 @@ object WireGuardConfigBuilder {
         return try {
             val addr = InetAddress.getByName(address)
             !addr.isLoopbackAddress && !addr.isAnyLocalAddress
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // ---------- SEC: Server-Response Validators ----------
+
+    /** WireGuard keys are exactly 32 bytes encoded as 44-char base64 with one trailing `=`. */
+    private fun isValidWireGuardKey(b64: String): Boolean {
+        return try {
+            val decoded = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
+            decoded.size == 32
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Endpoint must be `host:port` (or `[ipv6]:port`) with port in 1–65535. */
+    private fun isValidEndpoint(endpoint: String): Boolean {
+        if (endpoint.length > 255) return false
+        val (host, portStr) = if (endpoint.startsWith("[")) {
+            val close = endpoint.indexOf(']')
+            if (close < 0 || endpoint.getOrNull(close + 1) != ':') return false
+            endpoint.substring(1, close) to endpoint.substring(close + 2)
+        } else {
+            val colon = endpoint.lastIndexOf(':')
+            if (colon <= 0) return false
+            endpoint.substring(0, colon) to endpoint.substring(colon + 1)
+        }
+        if (host.isBlank()) return false
+        val port = portStr.toIntOrNull() ?: return false
+        if (port !in 1..65535) return false
+        // Allow DNS hostnames or IP literals; reject obvious garbage.
+        if (host.any { it.isWhitespace() || it == '\n' || it == '\r' }) return false
+        return true
+    }
+
+    /** CIDR like `10.0.0.1/32`, `0.0.0.0/0`, `::/0`, `fd00::1/64`. */
+    private fun isValidCidr(cidr: String): Boolean {
+        val slash = cidr.indexOf('/')
+        if (slash <= 0) return false
+        val host = cidr.substring(0, slash)
+        val prefix = cidr.substring(slash + 1).toIntOrNull() ?: return false
+        return try {
+            val addr = InetAddress.getByName(host)
+            val maxPrefix = if (addr is java.net.Inet4Address) 32 else 128
+            prefix in 0..maxPrefix
         } catch (_: Exception) {
             false
         }

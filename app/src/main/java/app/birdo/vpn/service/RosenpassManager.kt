@@ -112,7 +112,9 @@ object RosenpassManager {
                 currentPsk = nativePsk
                 isActive = true
                 val pskB64 = Base64.encodeToString(nativePsk, Base64.NO_WRAP)
-                Log.i(TAG, "PQ-PSK derived via native Rosenpass: ${pskB64.take(8)}...")
+                // SEC: never log PSK material — not even truncated/base64. Even partial
+                // bytes leak entropy for an attacker who can read logcat.
+                Log.i(TAG, "PQ-PSK derived via native Rosenpass")
                 return@withContext pskB64
             }
 
@@ -129,7 +131,8 @@ object RosenpassManager {
                 currentPsk = derivedPsk
                 isActive = true
                 val pskB64 = Base64.encodeToString(derivedPsk, Base64.NO_WRAP)
-                Log.i(TAG, "PQ-PSK derived via hybrid method: ${pskB64.take(8)}...")
+                // SEC: never log PSK material — see note above.
+                Log.i(TAG, "PQ-PSK derived via hybrid method")
                 return@withContext pskB64
             }
 

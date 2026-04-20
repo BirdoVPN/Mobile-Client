@@ -429,4 +429,97 @@ struct VPNConnectionConfig: Decodable {
     let dns: [String]
     let allowedIPs: [String]
     let mtu: Int?
+
+    /// Hardening: every field is treated as untrusted server input.
+    /// Reject malformed configs *before* they touch the system VPN.
+    /// Throws `VPNConfigValidationError` describing the first failure.
+    func validate() throws {
+        guard !serverAddress.isEmpty,
+              serverAddress.count <= 255,
+              !serverAddress.contains(where: { $0.isNewline || $0.isWhitespace })
+        else { throw VPNConfigValidationError.invalidServerAddress }
+
+        guard (1...65535).contains(serverPort) else {
+            throw VPNConfigValidationError.invalidPort
+        }
+        guard Self.isValidWireGuardKey(privateKey) else {
+            throw VPNConfigValidationError.invalidPrivateKey
+        }
+        guard Self.isValidWireGuardKey(publicKey) else {
+            throw VPNConfigValidationError.invalidPublicKey
+        }
+        if let psk = presharedKey, !psk.isEmpty {
+            guard Self.isValidWireGuardKey(psk) else {
+                throw VPNConfigValidationError.invalidPresharedKey
+            }
+        }
+        guard !addresses.isEmpty, addresses.count <= 16 else {
+            throw VPNConfigValidationError.invalidAddresses
+        }
+        for cidr in addresses where !Self.isValidCIDR(cidr) {
+            throw VPNConfigValidationError.invalidAddresses
+        }
+        guard allowedIPs.count <= 32 else {
+            throw VPNConfigValidationError.invalidAllowedIPs
+        }
+        for cidr in allowedIPs where !Self.isValidCIDR(cidr) {
+            throw VPNConfigValidationError.invalidAllowedIPs
+        }
+        if let mtu, !(1280...1500).contains(mtu) {
+            throw VPNConfigValidationError.invalidMTU
+        }
+        // DNS list may legitimately be empty; if present, validate each entry.
+        for d in dns where !Self.isValidIP(d) {
+            throw VPNConfigValidationError.invalidDNS
+        }
+    }
+
+    private static func isValidWireGuardKey(_ b64: String) -> Bool {
+        guard let data = Data(base64Encoded: b64) else { return false }
+        return data.count == 32
+    }
+
+    private static func isValidCIDR(_ cidr: String) -> Bool {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = Int(parts[1])
+        else { return false }
+        let host = String(parts[0])
+        guard isValidIP(host) else { return false }
+        let maxPrefix = host.contains(":") ? 128 : 32
+        return (0...maxPrefix).contains(prefix)
+    }
+
+    private static func isValidIP(_ s: String) -> Bool {
+        var v4 = in_addr(); var v6 = in6_addr()
+        if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 { return true }
+        if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 { return true }
+        return false
+    }
+}
+
+enum VPNConfigValidationError: LocalizedError {
+    case invalidServerAddress
+    case invalidPort
+    case invalidPrivateKey
+    case invalidPublicKey
+    case invalidPresharedKey
+    case invalidAddresses
+    case invalidAllowedIPs
+    case invalidMTU
+    case invalidDNS
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidServerAddress: return "Server returned an invalid endpoint host."
+        case .invalidPort:          return "Server returned an invalid port."
+        case .invalidPrivateKey:    return "Server returned an invalid private key."
+        case .invalidPublicKey:     return "Server returned an invalid peer public key."
+        case .invalidPresharedKey:  return "Server returned an invalid pre-shared key."
+        case .invalidAddresses:     return "Server returned invalid tunnel addresses."
+        case .invalidAllowedIPs:    return "Server returned invalid AllowedIPs."
+        case .invalidMTU:           return "Server returned an out-of-range MTU."
+        case .invalidDNS:           return "Server returned an invalid DNS address."
+        }
+    }
 }

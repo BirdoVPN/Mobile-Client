@@ -64,18 +64,24 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         // it into a WireGuardKit `TunnelConfiguration`. The reconstructed
         // string is NEVER persisted — it lives only in this stack frame
         // until WireGuardAdapter copies it into the Go runtime.
-        let fullConfigString = injectSecrets(
-            into: configString,
-            privateKey: privateKey,
-            presharedKey: presharedKey
-        )
-
+        //
+        // SEC NOTE: Swift `String` is immutable + value-typed, so we cannot
+        // truly zero its backing buffer. Mitigation: keep the variable in
+        // the tightest possible scope (an immediately-invoked closure) so
+        // ARC drops the only strong reference the moment the parser is done.
         let tunnelConfiguration: TunnelConfiguration
         do {
-            tunnelConfiguration = try TunnelConfiguration(
-                fromWgQuickConfig: fullConfigString,
-                called: "birdo"
-            )
+            tunnelConfiguration = try {
+                let fullConfigString = injectSecrets(
+                    into: configString,
+                    privateKey: privateKey,
+                    presharedKey: presharedKey
+                )
+                return try TunnelConfiguration(
+                    fromWgQuickConfig: fullConfigString,
+                    called: "birdo"
+                )
+            }()
         } catch {
             os_log("Failed to parse tunnel config: %{public}@",
                    log: log, type: .error, error.localizedDescription)
@@ -110,6 +116,28 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             completionHandler()
         }
+    }
+
+    /// Called by NetworkExtension when the device wakes from sleep.
+    /// WireGuardKit's adapter has its own internal `NWPathMonitor` so it
+    /// will already have noticed the path change — we just nudge it to
+    /// re-resolve the endpoint DNS in case the upstream IP rotated while
+    /// we were asleep (e.g. roaming Wi-Fi → 5G across CGNAT boundaries).
+    override func wake() {
+        os_log("wake() — prompting adapter to re-validate path",
+               log: log, type: .info)
+        adapter.getRuntimeConfiguration { [weak self] _ in
+            // The act of pulling runtime config triggers wg-go's path
+            // re-evaluation; nothing else needed.
+            _ = self
+        }
+    }
+
+    override func sleep(completionHandler: @escaping () -> Void) {
+        // Keep the tunnel alive while the device is idle; wg-go is
+        // configured with PersistentKeepalive=25 to keep the NAT pinhole
+        // open. We just acknowledge the call.
+        completionHandler()
     }
 
     /// IPC from the host app. Supported commands:

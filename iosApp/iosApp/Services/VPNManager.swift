@@ -35,6 +35,11 @@ final class VPNManager: @unchecked Sendable {
     // MARK: - Public
 
     func connect(config: VPNConnectionConfig) async throws {
+        // SEC: validate the server response BEFORE any keychain write or
+        // VPN preferences mutation. A malformed response must never reach
+        // the system VPN configuration store.
+        try config.validate()
+
         let mgr = try await ensureManager()
 
         // Park secrets in the shared keychain — the extension reads them by
