@@ -31,10 +31,10 @@ kotlin {
             dependencies {
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
-                implementation("io.ktor:ktor-client-core:3.0.3")
-                implementation("io.ktor:ktor-client-content-negotiation:3.0.3")
-                implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.3")
-                implementation("io.ktor:ktor-client-logging:3.0.3")
+                implementation("io.ktor:ktor-client-core:3.3.3")
+                implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
+                implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.3")
+                implementation("io.ktor:ktor-client-logging:3.3.3")
             }
         }
         val commonTest by getting {
@@ -46,7 +46,7 @@ kotlin {
 
         val androidMain by getting {
             dependencies {
-                implementation("io.ktor:ktor-client-okhttp:3.0.3")
+                implementation("io.ktor:ktor-client-okhttp:3.3.3")
             }
         }
 
@@ -59,7 +59,7 @@ kotlin {
             iosArm64Main.dependsOn(this)
             iosSimulatorArm64Main.dependsOn(this)
             dependencies {
-                implementation("io.ktor:ktor-client-darwin:3.0.3")
+                implementation("io.ktor:ktor-client-darwin:3.3.3")
             }
         }
     }
