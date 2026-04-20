@@ -48,16 +48,24 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           queries: security-and-quality
 
-      # Manual builds — CodeQL needs to observe the compiler.
+      # Manual builds - CodeQL needs to observe the compiler.
       - name: Build Android (Kotlin)
         if: matrix.language == 'java-kotlin'
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:compileDebugKotlin :shared:compileKotlinMetadata --no-daemon
+          ./gradlew :app:compileDebugKotlin :shared:compileDebugKotlinAndroid \
+            -Pkotlin.native.ignoreDisabledTargets=true \
+            --no-daemon
 
       - name: Select Xcode 16
         if: matrix.language == 'swift'
-        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
+          if [ -z "$XCODE_PATH" ]; then
+            XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          fi
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Build iOS (Swift)
         if: matrix.language == 'swift'

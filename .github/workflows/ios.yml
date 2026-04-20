@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
     tags:
-      - 'ios-v*'   # e.g. ios-v1.2.0 — triggers signed build + TestFlight upload
+      - 'ios-v*'   # e.g. ios-v1.2.0 - triggers signed build + TestFlight upload
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -14,7 +14,7 @@ on:
         required: false
         type: string
 
-# Minimum permissions — each job declares its own
+# Minimum permissions - each job declares its own
 permissions:
   contents: read
 
@@ -27,7 +27,7 @@ env:
   JAVA_DISTRIBUTION: 'temurin'
 
 jobs:
-  # ── Build KMP Shared Framework ──────────────────────────────────────
+  # -- Build KMP Shared Framework --------------------------------------
   shared-framework:
     name: Build Shared Framework (iOS)
     runs-on: macos-14  # Apple Silicon for arm64 builds
@@ -61,7 +61,7 @@ jobs:
           path: shared/build/bin/iosArm64/releaseFramework/
           retention-days: 5
 
-  # ── Build iOS App (no signing) ──────────────────────────────────────
+  # -- Build iOS App (no signing) --------------------------------------
   build-ios:
     name: Build iOS App
     runs-on: macos-14
@@ -76,7 +76,11 @@ jobs:
           path: shared/build/bin/iosArm64/releaseFramework/
 
       - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
+          [ -z "$XCODE_PATH" ] && XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -106,7 +110,7 @@ jobs:
           path: iosApp/build/Release-iphoneos/
           retention-days: 30
 
-  # ── iOS Simulator Tests ─────────────────────────────────────────────
+  # -- iOS Simulator Tests ---------------------------------------------
   test-ios:
     name: iOS Simulator Tests
     runs-on: macos-14
@@ -134,7 +138,11 @@ jobs:
           ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
 
       - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
+          [ -z "$XCODE_PATH" ] && XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -156,24 +164,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
 
-  # ── Signed Release & TestFlight Upload ───────────────────────────
+  # -- Signed Release & TestFlight Upload ---------------------------
   # Triggers ONLY on ios-v* tags. Imports the Apple Distribution certificate
   # and provisioning profile from GitHub secrets, codesigns the .xcarchive,
   # exports an .ipa, signs with Sigstore, then uploads to TestFlight via the
   # App Store Connect API.
   #
   # Required GitHub repository SECRETS:
-  #   APPLE_DIST_CERT_BASE64        — base64 of the .p12 distribution certificate
-  #   APPLE_DIST_CERT_PASSWORD      — password for the .p12
-  #   APPLE_PROVISIONING_PROFILE    — base64 of the .mobileprovision file
-  #   APPLE_KEYCHAIN_PASSWORD       — ephemeral password for the temp keychain
-  #   APPSTORE_API_KEY_ID           — App Store Connect API key ID (e.g. ABC123XYZ)
-  #   APPSTORE_API_ISSUER_ID        — issuer UUID from App Store Connect
-  #   APPSTORE_API_KEY_BASE64       — base64 of the .p8 private key
+  #   APPLE_DIST_CERT_BASE64        - base64 of the .p12 distribution certificate
+  #   APPLE_DIST_CERT_PASSWORD      - password for the .p12
+  #   APPLE_PROVISIONING_PROFILE    - base64 of the .mobileprovision file
+  #   APPLE_KEYCHAIN_PASSWORD       - ephemeral password for the temp keychain
+  #   APPSTORE_API_KEY_ID           - App Store Connect API key ID (e.g. ABC123XYZ)
+  #   APPSTORE_API_ISSUER_ID        - issuer UUID from App Store Connect
+  #   APPSTORE_API_KEY_BASE64       - base64 of the .p8 private key
   #
   # Required GitHub repository VARIABLES:
-  #   APPLE_TEAM_ID                 — 10-character Apple Developer team ID
-  #   APPLE_BUNDLE_ID               — e.g. app.birdo.vpn
+  #   APPLE_TEAM_ID                 - 10-character Apple Developer team ID
+  #   APPLE_BUNDLE_ID               - e.g. app.birdo.vpn
   release-ios:
     name: Codesign & Upload to TestFlight
     runs-on: macos-14
@@ -201,7 +209,11 @@ jobs:
           ./gradlew :shared:linkReleaseFrameworkIosArm64
 
       - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
+          [ -z "$XCODE_PATH" ] && XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -210,7 +222,7 @@ jobs:
         working-directory: iosApp
         run: xcodegen generate
 
-      # ── Import Apple Distribution Certificate into a temporary keychain ──
+      # -- Import Apple Distribution Certificate into a temporary keychain --
       # SEC: keychain is created in $RUNNER_TEMP and destroyed in the
       # cleanup step. Passwords are masked from logs by GitHub Actions.
       - name: Import Apple Distribution certificate
@@ -282,7 +294,7 @@ jobs:
             -allowProvisioningUpdates \
             | xcpretty
 
-      # ── Sigstore keyless signing of the .ipa for public verifiability ──
+      # -- Sigstore keyless signing of the .ipa for public verifiability --
       - name: Install Cosign
         uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
 
@@ -295,7 +307,7 @@ jobs:
             cosign sign-blob --yes --bundle "${IPA}.sha256.sigstore" "${IPA}.sha256"
           fi
 
-      # ── Upload to App Store Connect / TestFlight via API key ──────────
+      # -- Upload to App Store Connect / TestFlight via API key ----------
       - name: Install API key for altool
         env:
           API_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}

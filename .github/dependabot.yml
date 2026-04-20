@@ -12,6 +12,13 @@ updates:
     labels:
       - "dependencies"
       - "android"
+    # Don't bump dependencies that require a newer Kotlin than we currently use.
+    # Ktor 3.4+ requires Kotlin 2.3+; we're on 2.1. Let the kotlin group bump first.
+    ignore:
+      - dependency-name: "io.ktor:*"
+        versions: [">=3.4.0"]
+      - dependency-name: "androidx.compose.compiler:*"
+        update-types: ["version-update:semver-major"]
     groups:
       kotlin:
         patterns: ["org.jetbrains.kotlin*", "org.jetbrains.kotlinx*"]
