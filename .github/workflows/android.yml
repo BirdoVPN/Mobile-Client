@@ -567,8 +567,8 @@ jobs:
             > This is a **draft** release — not visible to the public until you click "Publish".
           files: |
             release-apk/*.apk
-            release-apk/*.sigstore
-            release-apk/*.asc
+            release-apk/*.apk.sigstore
+            release-apk/*.apk.asc
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
             release-apk/SHA256SUMS.txt.asc
