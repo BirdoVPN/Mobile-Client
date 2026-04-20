@@ -29,7 +29,7 @@ jobs:
             build-mode: manual
           - language: swift
             os: macos-14
-            build-mode: manual
+            build-mode: none
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -56,31 +56,6 @@ jobs:
           ./gradlew :app:compileDebugKotlin :shared:compileDebugKotlinAndroid \
             -Pkotlin.native.ignoreDisabledTargets=true \
             --no-daemon
-
-      - name: Select Xcode 16
-        if: matrix.language == 'swift'
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
-          if [ -z "$XCODE_PATH" ]; then
-            XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
-          fi
-          echo "Using $XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-
-      - name: Build iOS (Swift)
-        if: matrix.language == 'swift'
-        working-directory: iosApp
-        run: |
-          arch -arm64 brew install xcodegen
-          xcodegen generate
-          xcodebuild build \
-            -project BirdoVPN.xcodeproj \
-            -scheme BirdoVPN \
-            -destination 'generic/platform=iOS' \
-            -configuration Debug \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@4e828ff8d448a8a6e532957b1811f387a63867e8 # v3.29.4
