@@ -106,6 +106,16 @@ fun BirdoNavGraph(
         }
     }
 
+    // FIX: Load servers when the user is already logged in at cold start.
+    // The block above only fires on Login/Consent → Home transitions, so a
+    // returning user (NavHost startDestination = Home) would never load
+    // servers and the list would stay empty until pull-to-refresh.
+    LaunchedEffect(authState.isLoggedIn, authState.isLoading, hasConsented) {
+        if (!authState.isLoading && hasConsented && authState.isLoggedIn && vpnState.servers.isEmpty() && !vpnState.isLoadingServers) {
+            vpnViewModel.loadServers()
+        }
+    }
+
     // Handle deep links after auth is resolved
     LaunchedEffect(deepLinkRoute, authState.isLoggedIn, authState.isLoading) {
         if (deepLinkRoute != null && !authState.isLoading && authState.isLoggedIn && hasConsented) {
