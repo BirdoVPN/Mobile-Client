@@ -222,7 +222,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // ── Crash Reporting ──────────────────────────────────────────
-    implementation("io.sentry:sentry-android:7.19.1")
+    implementation("io.sentry:sentry-android:8.39.1")
 
     // ── In-App Updates ───────────────────────────────────────────
     implementation("com.google.android.play:app-update:2.1.0")
