@@ -7,6 +7,7 @@ import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult as SharedLoginResult
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.data.auth.TokenManager
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -22,6 +23,7 @@ import org.junit.Test
 class AuthViewModelTest {
 
     private lateinit var repository: BirdoRepository
+    private lateinit var tokenManager: TokenManager
     private lateinit var viewModel: AuthViewModel
     private val testDispatcher = UnconfinedTestDispatcher()
 
@@ -42,6 +44,8 @@ class AuthViewModelTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         repository = mockk(relaxed = true)
+        tokenManager = mockk(relaxed = true)
+        io.mockk.every { tokenManager.isLoggedIn() } returns true
         // Default: no existing session
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
     }
@@ -51,7 +55,7 @@ class AuthViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): AuthViewModel = AuthViewModel(repository)
+    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager)
 
     /**
      * Helper: create a ViewModel that is already past the init checkSession,
@@ -116,7 +120,21 @@ class AuthViewModelTest {
     }
 
     @Test
-    fun `init with network error sets logged out without crash`() = runTest {
+    fun `init with network error keeps token-based session and does not crash`() = runTest {
+        // Non-401 errors (e.g. network) should not log the user out if a token is stored;
+        // we only force re-login on a true 401 from the server.
+        io.mockk.every { tokenManager.isLoggedIn() } returns true
+        coEvery { repository.getProfile() } returns ApiResult.Error("Network error")
+
+        viewModel = createViewModel()
+
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `init with network error and no token stays logged out`() = runTest {
+        io.mockk.every { tokenManager.isLoggedIn() } returns false
         coEvery { repository.getProfile() } returns ApiResult.Error("Network error")
 
         viewModel = createViewModel()

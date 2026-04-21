@@ -2,6 +2,7 @@ package app.birdo.vpn.ui.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.data.repository.ApiResult
@@ -32,6 +33,7 @@ data class AuthUiState(
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val repository: BirdoRepository,
+    private val tokenManager: TokenManager,
 ) : ViewModel() {
 
     companion object {
@@ -56,6 +58,14 @@ class AuthViewModel @Inject constructor(
     private fun checkSession() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
+
+            // FIX: Treat the user as logged-in if a valid (non-expired) token is
+            // present locally. Previously we required a successful getProfile()
+            // call — which kicks the user back to the login screen on ANY network
+            // failure, including the very common cascade where the VPN is
+            // half-connected and DNS doesn't resolve api.birdo.app on cold start.
+            val hasValidToken = tokenManager.isLoggedIn()
+
             when (val result = repository.getProfile()) {
                 is ApiResult.Success -> {
                     _uiState.value = AuthUiState(
@@ -64,7 +74,14 @@ class AuthViewModel @Inject constructor(
                     )
                 }
                 is ApiResult.Error -> {
-                    _uiState.value = AuthUiState(isLoggedIn = false)
+                    // 401 (or 401 after refresh failed) means the token is genuinely
+                    // dead — force re-login. Anything else (network, 5xx, timeout)
+                    // is treated as transient: keep the user logged in if their
+                    // stored token still has time on the clock.
+                    val tokenInvalid = result.code == 401
+                    _uiState.value = AuthUiState(
+                        isLoggedIn = hasValidToken && !tokenInvalid,
+                    )
                 }
             }
         }

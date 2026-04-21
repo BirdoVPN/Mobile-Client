@@ -64,9 +64,11 @@ class AppPreferences @Inject constructor(
 
     // ── Quantum Protection (Rosenpass PQ-PSK) ────────────────────
     /** When enabled, adds post-quantum pre-shared key exchange via Rosenpass
-     *  (Classic McEliece + Kyber) on top of WireGuard's Curve25519 */
+     *  (Classic McEliece + Kyber) on top of WireGuard's Curve25519.
+     *  Default ON — rosenpass is now deployed on every production VPN node and
+     *  the backend serves a per-node Rosenpass public key from the database. */
     var quantumProtectionEnabled: Boolean
-        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, true) // Default ON — future-proof
+        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, true)
         set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).apply(); signSettings() }
 
     var customDnsEnabled: Boolean
