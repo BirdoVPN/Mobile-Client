@@ -36,37 +36,51 @@ private val BirdoDarkColorScheme = darkColorScheme(
     onErrorContainer = BirdoRed,
 )
 
+// ── Light scheme: refined warm-neutral palette (Fortune-500 polish) ───────
+//   Background: near-white with a subtle cool tint
+//   Cards:      pure white on top of bg for subtle elevation
+//   Accent:     the same purple as dark theme so brand identity carries over
 private val BirdoLightColorScheme = lightColorScheme(
-    primary = Color(0xFF1A1A2E),
+    primary = BirdoLightPrimary,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFE8E8F0),
-    onPrimaryContainer = Color(0xFF1A1A2E),
+    primaryContainer = BirdoLightAccentBg,
+    onPrimaryContainer = BirdoLightPrimary,
     secondary = BirdoPurpleDark,
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFF3E5F5),
-    onSecondaryContainer = Color(0xFF4A148C),
+    secondaryContainer = BirdoLightAccentBg,
+    onSecondaryContainer = BirdoLightPrimary,
     tertiary = BirdoBlue,
     onTertiary = Color.White,
-    background = Color(0xFFF8F9FA),
-    onBackground = Color(0xFF1A1A2E),
-    surface = Color.White,
-    onSurface = Color(0xFF1A1A2E),
-    surfaceVariant = Color(0xFFF0F0F5),
-    onSurfaceVariant = Color(0xFF5A5A6E),
-    outline = Color(0xFFD0D0DE),
-    outlineVariant = Color(0xFFE8E8F0),
-    error = Color(0xFFD32F2F),
+    background = BirdoLightBackground,
+    onBackground = BirdoLightOnBackground,
+    surface = BirdoLightSurface,
+    onSurface = BirdoLightOnBackground,
+    surfaceVariant = BirdoLightSurfaceVariant,
+    onSurfaceVariant = BirdoLightOnSurfaceVariant,
+    outline = BirdoLightOutline,
+    outlineVariant = BirdoLightOutlineSoft,
+    error = Color(0xFFB91C1C),
     onError = Color.White,
-    errorContainer = Color(0xFFFFEBEE),
-    onErrorContainer = Color(0xFFB71C1C),
+    errorContainer = Color(0xFFFEE2E2),
+    onErrorContainer = Color(0xFF7F1D1D),
 )
+
+/** Resolves a "system" / "dark" / "light" preference into a Boolean. */
+@Composable
+fun resolveDarkTheme(themeMode: String): Boolean = when (themeMode.lowercase()) {
+    "dark" -> true
+    "light" -> false
+    else -> isSystemInDarkTheme()
+}
 
 @Composable
 fun BirdoTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    themeMode: String = "system",
     content: @Composable () -> Unit,
 ) {
+    val darkTheme = resolveDarkTheme(themeMode)
     val colorScheme = if (darkTheme) BirdoDarkColorScheme else BirdoLightColorScheme
+    val birdoColors = if (darkTheme) BirdoDarkPalette else BirdoLightPalette
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -79,10 +93,14 @@ fun BirdoTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = BirdoTypography,
-        shapes = BirdoShapes,
-        content = content,
-    )
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalBirdoColors provides birdoColors,
+    ) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = BirdoTypography,
+            shapes = BirdoShapes,
+            content = content,
+        )
+    }
 }

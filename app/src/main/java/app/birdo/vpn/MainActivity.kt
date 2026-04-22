@@ -17,7 +17,10 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.fragment.app.FragmentActivity
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
@@ -26,7 +29,6 @@ import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.navigation.BirdoNavGraph
 import app.birdo.vpn.ui.navigation.Screen
-import app.birdo.vpn.ui.theme.BirdoBlack
 import app.birdo.vpn.ui.theme.BirdoTheme
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.RootDetector
@@ -77,13 +79,6 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
 
         // Apply theme mode from preferences
-        when (appPreferences.themeMode) {
-            "dark" -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
-            "light" -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
-            else -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
-        }
-
-        enableEdgeToEdge()
         requestNotificationPermission()
         checkForAppUpdate()
         checkRootStatus()
@@ -96,10 +91,21 @@ class MainActivity : FragmentActivity() {
         }
 
         setContent {
-            BirdoTheme {
+            val themeMode by appPreferences.themeModeFlow.collectAsState(initial = appPreferences.themeMode)
+            // Keep the AppCompatDelegate night mode in sync so dialogs / WebViews
+            // honour the same choice as the Compose theme.
+            androidx.compose.runtime.LaunchedEffect(themeMode) {
+                when (themeMode) {
+                    "dark" -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
+                    "light" -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
+                    else -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
+                }
+            }
+            BirdoTheme(themeMode = themeMode) {
+                val bgColor = MaterialTheme.colorScheme.background
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = BirdoBlack,
+                    color = bgColor,
                 ) {
                     val vpnViewModel: VpnViewModel = hiltViewModel()
 

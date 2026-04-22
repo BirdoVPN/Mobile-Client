@@ -225,7 +225,7 @@ fun ServerListScreen(
 // ── Server Card ─────────────────────────────────────────────────────────────
 
 @Composable
-private fun ServerCard(
+internal fun ServerCard(
     server: VpnServer,
     isSelected: Boolean,
     isFavorite: Boolean,

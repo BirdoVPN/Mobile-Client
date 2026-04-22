@@ -4,6 +4,7 @@ sealed class Screen(val route: String) {
     data object Consent : Screen("consent")
     data object Login : Screen("login")
     data object Home : Screen("home")
+    data object Profile : Screen("profile")
     data object ServerList : Screen("servers")
     data object Settings : Screen("settings")
     data object SplitTunnel : Screen("split_tunnel")

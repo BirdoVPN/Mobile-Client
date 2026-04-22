@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
+import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
@@ -47,27 +48,37 @@ fun HomeScreen(
     state: VpnUiState,
     userEmail: String?,
     killSwitchEnabled: Boolean,
+    favoriteServers: Set<String> = emptySet(),
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onSelectServer: (VpnServer) -> Unit = {},
+    onToggleFavorite: (String) -> Unit = {},
+    onRefreshServers: () -> Unit = {},
     onOpenServers: () -> Unit,
     onLogout: () -> Unit,
 ) {
+    val palette = BirdoColors.current
     val isConnected = state.vpnState is VpnState.Connected
     val isConnecting = state.vpnState is VpnState.Connecting
     val isDisconnecting = state.vpnState is VpnState.Disconnecting
     val isError = state.vpnState is VpnState.Error
     val isKillSwitchActive = state.killSwitchActive
+    var showServerSheet by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().background(palette.background)) {
         HomeTopBar(userEmail = userEmail, onLogout = onLogout)
 
         Box(modifier = Modifier.fillMaxSize()) {
-            HeroAmbientGlow(
+            // Hero globe occupies the top half as the visual centrepiece.
+            WorldGlobe(
+                servers = state.servers,
+                selectedServerId = state.selectedServer?.id,
                 isConnected = isConnected,
-                isError = isError,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(440.dp),
+                    .height(420.dp)
+                    .align(Alignment.TopCenter),
             )
 
             Column(
@@ -76,7 +87,7 @@ fun HomeScreen(
                     .padding(horizontal = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(24.dp))
 
                 StatusPill(
                     isConnected = isConnected,
@@ -85,10 +96,12 @@ fun HomeScreen(
                     isError = isError,
                 )
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
                 LocationLabel(state = state)
 
-                Spacer(Modifier.height(28.dp))
+                // Reserve room for the globe before the connect button so the
+                // button sits below the equator and the dots remain visible.
+                Spacer(Modifier.height(220.dp))
 
                 HeroConnectButton(
                     isConnected = isConnected,
@@ -103,7 +116,7 @@ fun HomeScreen(
                     },
                 )
 
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(24.dp))
 
                 AnimatedVisibility(
                     visible = isConnected,
@@ -134,12 +147,30 @@ fun HomeScreen(
                 ServerSelector(
                     state = state,
                     enabled = !isConnecting && !isDisconnecting,
-                    onClick = onOpenServers,
+                    onClick = {
+                        if (state.servers.isNotEmpty()) {
+                            showServerSheet = true
+                        } else {
+                            onOpenServers()
+                        }
+                    },
                 )
 
                 Spacer(Modifier.height(12.dp))
             }
         }
+    }
+
+    if (showServerSheet) {
+        ServerSelectorSheet(
+            servers = state.servers,
+            selectedServer = state.selectedServer,
+            favoriteServers = favoriteServers,
+            sheetState = sheetState,
+            onSelectServer = onSelectServer,
+            onToggleFavorite = onToggleFavorite,
+            onDismiss = { showServerSheet = false },
+        )
     }
 }
 
@@ -147,7 +178,8 @@ fun HomeScreen(
 
 @Composable
 private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
-    Surface(color = GlassStrong, tonalElevation = 0.dp) {
+    val palette = BirdoColors.current
+    Surface(color = palette.surface, tonalElevation = 0.dp) {
         Column {
             Row(
                 modifier = Modifier
@@ -162,7 +194,7 @@ private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
                 if (userEmail != null) {
                     Text(
                         text = userEmail,
-                        color = BirdoWhite40,
+                        color = palette.onSurfaceFaint,
                         fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -175,16 +207,17 @@ private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
                     icon = Icons.AutoMirrored.Filled.Logout,
                     contentDescription = stringResource(R.string.logout),
                     onClick = onLogout,
-                    tint = BirdoWhite60,
+                    tint = palette.onSurfaceMuted,
                 )
             }
-            HorizontalDivider(color = BirdoBrand.HairlineSoft, thickness = 1.dp)
+            HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
         }
     }
 }
 
 @Composable
 private fun BrandLockup() {
+    val palette = BirdoColors.current
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
@@ -203,7 +236,7 @@ private fun BrandLockup() {
         Spacer(Modifier.width(10.dp))
         Text(
             text = stringResource(R.string.app_name),
-            color = Color.White,
+            color = palette.onBackground,
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
         )

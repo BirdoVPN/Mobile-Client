@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -128,6 +131,23 @@ class AppPreferences @Inject constructor(
     var themeMode: String
         get() = prefs.getString(KEY_THEME_MODE, "system") ?: "system"
         set(value) = prefs.edit().putString(KEY_THEME_MODE, value).apply()
+
+    /**
+     * Reactive themeMode flow — emits the current value immediately and
+     * re-emits whenever the preference changes. Used by MainActivity to
+     * recompose the BirdoTheme so the toggle in Settings has instant effect.
+     */
+    val themeModeFlow: Flow<String> =
+        callbackFlow {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_THEME_MODE) trySend(themeMode)
+            }
+            trySend(themeMode)
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            awaitClose {
+                prefs.unregisterOnSharedPreferenceChangeListener(listener)
+            }
+        }
 
     fun toggleFavorite(serverId: String) {
         val current = favoriteServers.toMutableSet()

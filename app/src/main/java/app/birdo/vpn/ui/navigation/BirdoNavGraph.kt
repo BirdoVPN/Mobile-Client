@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,8 +50,8 @@ private data class BottomNavItem(
 )
 
 private val bottomNavItems = listOf(
+    BottomNavItem(Screen.Profile, R.string.profile_title, Icons.Outlined.Person),
     BottomNavItem(Screen.Home, R.string.connect, Icons.Default.PowerSettingsNew),
-    BottomNavItem(Screen.ServerList, R.string.servers_title, Icons.Default.Dns),
     BottomNavItem(Screen.Settings, R.string.settings_title, Icons.Default.Settings),
 )
 
@@ -130,23 +131,25 @@ fun BirdoNavGraph(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
     val showBottomBar = authState.isLoggedIn && currentRoute in listOf(
+        Screen.Profile.route,
         Screen.Home.route,
         Screen.ServerList.route,
         Screen.Settings.route,
     )
 
+    val palette = BirdoColors.current
     Scaffold(
-        containerColor = BirdoBlack,
+        containerColor = palette.background,
         bottomBar = {
             if (showBottomBar) {
                 // ── Bottom nav ──────────────────────────────────────
                 Column {
-                    HorizontalDivider(color = BirdoBrand.HairlineSoft, thickness = 1.dp)
+                    HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
                     NavigationBar(
-                        containerColor = BirdoBrand.Surface1,
+                        containerColor = palette.surface,
                         tonalElevation = 0.dp,
                         modifier = Modifier
-                            .background(BirdoBrand.Surface1)
+                            .background(palette.surface)
                             .height(72.dp),
                     ) {
                         bottomNavItems.forEach { item ->
@@ -180,11 +183,11 @@ fun BirdoNavGraph(
                                     )
                                 },
                                 colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = BirdoBrand.PurpleSoft,
-                                    selectedTextColor = BirdoBrand.PurpleSoft,
-                                    unselectedIconColor = BirdoWhite60,
-                                    unselectedTextColor = BirdoWhite60,
-                                    indicatorColor = BirdoBrand.Purple.copy(alpha = 0.18f),
+                                    selectedIconColor = palette.accent,
+                                    selectedTextColor = palette.accent,
+                                    unselectedIconColor = palette.onSurfaceMuted,
+                                    unselectedTextColor = palette.onSurfaceMuted,
+                                    indicatorColor = palette.accent.copy(alpha = if (palette.isLight) 0.10f else 0.18f),
                                 ),
                             )
                         }
@@ -194,8 +197,10 @@ fun BirdoNavGraph(
         },
     ) { scaffoldPadding ->
         Box(modifier = Modifier.fillMaxSize()) {
-            // ── Pixel canvas background (matches Windows client) ──
-            PixelCanvas()
+            // ── Pixel canvas background (dark theme only) ──
+            if (!palette.isLight) {
+                PixelCanvas()
+            }
 
             Column(modifier = Modifier.fillMaxSize()) {
                 // ── Offline banner ──────────────────────────────────
@@ -300,8 +305,12 @@ fun BirdoNavGraph(
                         state = vpnState,
                         userEmail = authState.user?.email,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
+                        favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         onConnect = { vpnViewModel.connect() },
                         onDisconnect = { vpnViewModel.disconnect() },
+                        onSelectServer = { vpnViewModel.selectServer(it) },
+                        onToggleFavorite = { vpnViewModel.toggleFavorite(it) },
+                        onRefreshServers = { vpnViewModel.loadServers(forceRefresh = true) },
                         onOpenServers = {
                             navController.navigate(Screen.ServerList.route) {
                                 popUpTo(navController.graph.findStartDestination().id) {
@@ -310,6 +319,38 @@ fun BirdoNavGraph(
                                 launchSingleTop = true
                                 restoreState = true
                             }
+                        },
+                        onLogout = {
+                            vpnViewModel.disconnect()
+                            authViewModel.logout()
+                        },
+                    )
+                }
+            }
+
+            // ── Profile (Profile tab) ───────────────────────────────
+            composable(
+                Screen.Profile.route,
+                enterTransition = { fadeIn() },
+                exitTransition = { fadeOut() },
+            ) {
+                AdaptiveContainer {
+                    val context = LocalContext.current
+                    ProfileScreen(
+                        user = authState.user,
+                        subscription = vpnState.subscription,
+                        isConnected = vpnState.vpnState is app.birdo.vpn.service.VpnState.Connected,
+                        publicIp = vpnState.publicIp,
+                        onSubscription = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
+                        onRedeemVoucher = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
+                        onManageOnWeb = {
+                            settingsViewModel.openUrl("https://birdo.app/dashboard")
                         },
                         onLogout = {
                             vpnViewModel.disconnect()

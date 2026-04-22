@@ -59,3 +59,95 @@ val BirdoOnPrimary = Color.Black
 
 // Muted
 val BirdoMuted = Color(0xFFA6A6A6)       // --muted-foreground
+
+// ─── Light Theme Tokens ──────────────────────────────────────────────────────
+// A polished neutral light palette. Uses warm-grey tones with the same purple
+// brand accent so the brand identity carries across themes.
+val BirdoLightBackground       = Color(0xFFF7F7FB) // App background
+val BirdoLightSurface          = Color(0xFFFFFFFF) // Cards
+val BirdoLightSurfaceVariant   = Color(0xFFF1F2F7) // Raised cards / inputs
+val BirdoLightSurfaceElevated  = Color(0xFFFAFAFD) // Modals / popovers
+val BirdoLightOnBackground     = Color(0xFF0F1020) // Body text
+val BirdoLightOnSurfaceVariant = Color(0xFF55576B) // Secondary text
+val BirdoLightOutline          = Color(0xFFDADCE6) // Strong border
+val BirdoLightOutlineSoft      = Color(0xFFEBEDF3) // Subtle divider
+val BirdoLightPrimary          = Color(0xFF6D28D9) // violet-700 (matches dark accent)
+val BirdoLightAccentBg         = Color(0x14A855F7) // 8% purple
+
+// ─── Semantic Color Palette (theme-aware) ────────────────────────────────────
+/**
+ * Semantic colour bundle that swaps based on the active theme. Read it via
+ * `BirdoColors.current` from any composable. Use these in NEW screens — legacy
+ * screens still use the literal BirdoBlack/BirdoWhite tokens above for the
+ * dark-only design but will get correct text contrast through MaterialTheme.
+ */
+@androidx.compose.runtime.Immutable
+data class BirdoSemanticPalette(
+    val isLight: Boolean,
+    val background: Color,
+    val surface: Color,
+    val surfaceRaised: Color,
+    val surfaceElevated: Color,
+    val onBackground: Color,
+    val onSurface: Color,
+    val onSurfaceMuted: Color,
+    val onSurfaceFaint: Color,
+    val hairline: Color,
+    val hairlineSoft: Color,
+    val accent: Color,
+    val accentBg: Color,
+    val mapWater: Color,
+    val mapLand: Color,
+    val mapDot: Color,
+    val mapDotMuted: Color,
+)
+
+val BirdoDarkPalette = BirdoSemanticPalette(
+    isLight = false,
+    background = Color(0xFF050507),
+    surface = Color(0xFF0B0B10),
+    surfaceRaised = Color(0xFF12121A),
+    surfaceElevated = Color(0xFF1A1A24),
+    onBackground = BirdoWhite,
+    onSurface = Color.White,
+    onSurfaceMuted = BirdoWhite60,
+    onSurfaceFaint = BirdoWhite40,
+    hairline = Color(0x1FFFFFFF),
+    hairlineSoft = Color(0x14FFFFFF),
+    accent = BirdoPurple,
+    accentBg = BirdoPurpleBg,
+    mapWater = Color(0xFF080812),
+    mapLand = Color(0x1AC4B5FD),       // dim violet land
+    mapDot = Color(0xFFA855F7),
+    mapDotMuted = Color(0x66A855F7),
+)
+
+val BirdoLightPalette = BirdoSemanticPalette(
+    isLight = true,
+    background = BirdoLightBackground,
+    surface = BirdoLightSurface,
+    surfaceRaised = BirdoLightSurfaceVariant,
+    surfaceElevated = BirdoLightSurfaceElevated,
+    onBackground = BirdoLightOnBackground,
+    onSurface = BirdoLightOnBackground,
+    onSurfaceMuted = BirdoLightOnSurfaceVariant,
+    onSurfaceFaint = Color(0xFF8A8C9D),
+    hairline = Color(0x14000000),
+    hairlineSoft = Color(0x0A000000),
+    accent = BirdoLightPrimary,
+    accentBg = BirdoLightAccentBg,
+    mapWater = Color(0xFFE7E9F2),
+    mapLand = Color(0x336D28D9),
+    mapDot = BirdoLightPrimary,
+    mapDotMuted = Color(0x666D28D9),
+)
+
+val LocalBirdoColors = androidx.compose.runtime.staticCompositionLocalOf { BirdoDarkPalette }
+
+/** Convenience accessor — `BirdoColors.current` from any composable. */
+object BirdoColors {
+    val current: BirdoSemanticPalette
+        @androidx.compose.runtime.Composable
+        @androidx.compose.runtime.ReadOnlyComposable
+        get() = LocalBirdoColors.current
+}

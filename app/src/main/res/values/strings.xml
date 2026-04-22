@@ -65,6 +65,7 @@
 
     <!-- Settings Screen -->
     <string name="settings_title">Settings</string>
+    <string name="profile_title">Profile</string>
     <string name="settings_section_connection">Connection</string>
     <string name="settings_kill_switch">Kill Switch</string>
     <string name="settings_kill_switch_desc">Block all traffic if VPN disconnects</string>
