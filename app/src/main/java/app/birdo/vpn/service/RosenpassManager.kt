@@ -118,26 +118,19 @@ object RosenpassManager {
                 return@withContext pskB64
             }
 
-            // Fallback: derive PSK using the server-provided presharedKey enhanced with PQ material
-            // The server-side Rosenpass already negotiates PQ keys and rotates the WireGuard PSK.
-            // We derive a client-side PQ-enhanced PSK from the server's Rosenpass public key
-            // combined with local entropy, providing bilateral PQ protection.
-            val derivedPsk = deriveHybridPsk(
-                serverRosenpassKey = serverPublicKey!!,
-                serverWgPsk = config.presharedKey,
-            )
-
-            if (derivedPsk != null) {
-                currentPsk = derivedPsk
-                isActive = true
-                val pskB64 = Base64.encodeToString(derivedPsk, Base64.NO_WRAP)
-                // SEC: never log PSK material — see note above.
-                Log.i(TAG, "PQ-PSK derived via hybrid method")
-                return@withContext pskB64
-            }
-
-            // If we still have a server-provided PSK, use it directly
-            // (the server's Rosenpass is still protecting the server side)
+            // Native Rosenpass unavailable — fall back to the server-provided
+            // WireGuard PSK that the server already negotiated via its own
+            // Rosenpass exchange. Both sides MUST hold the IDENTICAL PSK or
+            // every WireGuard packet will fail AEAD authentication on the
+            // server (symptom: handshake completes, uploads succeed, but no
+            // return packets are ever decrypted → "no IP / no downloads").
+            //
+            // Historical bug: a previous "hybrid PSK" derivation mixed in
+            // local-only SecureRandom entropy that the server could never
+            // reproduce, producing a different PSK on each side. That broke
+            // Quantum Protection on every connection. Do NOT reintroduce
+            // client-only entropy here — true bilateral PQ protection
+            // requires a real Rosenpass UDP exchange (TODO).
             if (config.presharedKey != null) {
                 currentPsk = Base64.decode(config.presharedKey, Base64.NO_WRAP)
                 isActive = true
@@ -223,22 +216,15 @@ object RosenpassManager {
         }
     }
 
-    // ── Hybrid PQ-PSK Derivation ────────────────────────────────
-
-    /**
-     * Derive a hybrid PQ-enhanced PSK when native Rosenpass is not available.
-     *
-     * Combines the server's Rosenpass public key material with local entropy
-     * and the server-provided WireGuard PSK using HKDF-SHA256. This provides:
-     *
-     * 1. The server-side Rosenpass PQ protection (server's PSK was derived from PQ exchange)
-     * 2. Additional client-side entropy mixed in
-     * 3. Key derivation that binds the PSK to both the PQ key material and the session
-     *
-     * While not as strong as a full bilateral Rosenpass handshake, this still
-     * ensures the PSK incorporates post-quantum key material from the server's
-     * Rosenpass exchange, making stored-traffic attacks infeasible.
-     */
+    // ── Hybrid PQ-PSK Derivation (DEPRECATED — DO NOT USE) ─────
+    //
+    // This routine mixes local SecureRandom entropy into the PSK, which the
+    // server cannot reproduce. The result is a PSK mismatch that silently
+    // breaks WireGuard AEAD on every packet (handshake OK, no return traffic).
+    // Kept only as a reference for the HKDF helpers; replace with a real
+    // Rosenpass UDP key exchange before re-enabling.
+    @Suppress("unused")
+    @Deprecated("Causes PSK mismatch — use server-provided PSK or a real Rosenpass exchange")
     private fun deriveHybridPsk(serverRosenpassKey: ByteArray, serverWgPsk: String?): ByteArray? {
         return try {
             // Local entropy
