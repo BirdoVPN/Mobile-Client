@@ -18,12 +18,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,18 +31,15 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
+import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.VpnUiState
 import app.birdo.vpn.utils.FormatUtils
 import app.birdo.vpn.utils.countryCodeToFlag
-import kotlinx.coroutines.delay
 
 /**
- * Home screen / Connect tab — matches the Windows client design:
- * - Header with "Birdo VPN" title + logout
- * - Centered: Status badge → Server location → Big power button → Stats
- * - Kill switch indicator
- * - Server selector card at bottom
+ * Home / Connect tab — redesigned hero experience with a brand-gradient
+ * connect button, ambient state-driven glow, and a polished status pill.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,391 +55,270 @@ fun HomeScreen(
     val isConnected = state.vpnState is VpnState.Connected
     val isConnecting = state.vpnState is VpnState.Connecting
     val isDisconnecting = state.vpnState is VpnState.Disconnecting
+    val isError = state.vpnState is VpnState.Error
     val isKillSwitchActive = state.killSwitchActive
-    // Read tick to force recomposition every second (for duration timer)
     @Suppress("UNUSED_VARIABLE") val tick = state.tick
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize(),
-    ) {
-        // ── Header bar (matches glass-strong with border-b) ──
-        Surface(
-            color = GlassStrong,
-            tonalElevation = 0.dp,
-        ) {
-            Column {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .statusBarsPadding()
-                        .height(48.dp)
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        stringResource(R.string.app_name),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    if (userEmail != null) {
-                        Text(
-                            text = userEmail,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = BirdoWhite40,
-                            modifier = Modifier
-                                .padding(end = 4.dp)
-                                .widthIn(max = 140.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    IconButton(
-                        onClick = onLogout,
-                        modifier = Modifier.size(36.dp),
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Logout,
-                            stringResource(R.string.logout),
-                            tint = BirdoWhite40,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
-                // Subtle bottom border line
-                HorizontalDivider(
-                    color = BirdoWhite05,
-                    thickness = 1.dp,
-                )
-            }
-        }
+    Column(modifier = Modifier.fillMaxSize()) {
+        HomeTopBar(userEmail = userEmail, onLogout = onLogout)
 
-        // ── Main content ──
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.height(32.dp))
-
-            // ── Status Badge ──
-            StatusBadge(
+        Box(modifier = Modifier.fillMaxSize()) {
+            HeroAmbientGlow(
                 isConnected = isConnected,
-                isConnecting = isConnecting,
-                isDisconnecting = isDisconnecting,
-                isError = state.vpnState is VpnState.Error,
-            )
-
-            // ── Server location (when connected) ──
-            if (isConnected && state.connectedServer != null) {
-                Text(
-                    text = state.connectedServer,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = BirdoWhite60,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-
-            Spacer(Modifier.height(28.dp))
-
-            // ── Big Power Button ──
-            ConnectionButton(
-                isConnected = isConnected,
-                isConnecting = isConnecting,
-                isDisconnecting = isDisconnecting,
-                onClick = {
-                    when {
-                        isConnected -> onDisconnect()
-                        isConnecting || isDisconnecting -> {}
-                        else -> onConnect()
-                    }
-                },
-            )
-
-            Spacer(Modifier.height(24.dp))
-
-            // ── Stats grid (when connected) ──
-            AnimatedVisibility(
-                visible = isConnected,
-                enter = fadeIn(tween(300, delayMillis = 100)) + slideInVertically(initialOffsetY = { 10 }),
-                exit = fadeOut(),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    StatsCard(stringResource(R.string.stats_duration), FormatUtils.formatDuration(state.connectedSince), Modifier.weight(1f))
-                    StatsCard(stringResource(R.string.stats_download), FormatUtils.formatBytes(state.rxBytes), Modifier.weight(1f))
-                    StatsCard(stringResource(R.string.stats_upload), FormatUtils.formatBytes(state.txBytes), Modifier.weight(1f))
-                }
-            }
-
-            // ── Security indicators (Kill Switch + Stealth + Quantum) ──
-            AnimatedVisibility(visible = isConnected) {
-                Row(
-                    modifier = Modifier.padding(top = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (killSwitchEnabled) {
-                        SecurityBadge(
-                            icon = Icons.Default.Shield,
-                            label = stringResource(R.string.kill_switch_active),
-                            tintColor = BirdoGreenLight,
-                        )
-                    }
-                    if (state.stealthActive) {
-                        SecurityBadge(
-                            icon = Icons.Default.VisibilityOff,
-                            label = "Stealth",
-                            tintColor = BirdoBlue,
-                        )
-                    }
-                    if (state.quantumActive) {
-                        SecurityBadge(
-                            icon = Icons.Default.Lock,
-                            label = "Quantum",
-                            tintColor = BirdoPurpleLight,
-                        )
-                    }
-                }
-            }
-
-            // ── Kill Switch blocking alert ──
-            AnimatedVisibility(visible = isKillSwitchActive) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = BirdoRedBg,
-                    border = BorderStroke(1.dp, BirdoRed.copy(alpha = 0.2f)),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Default.Shield, stringResource(R.string.cd_kill_switch), tint = BirdoRed, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            stringResource(R.string.kill_switch_blocking),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = BirdoRed,
-                        )
-                    }
-                }
-            }
-
-            // ── Error messages ──
-            if (state.vpnState is VpnState.Error) {
-                ErrorBanner(state.vpnState.message)
-            }
-            if (state.error != null) {
-                ErrorBanner(state.error)
-            }
-
-            Spacer(Modifier.weight(1f))
-
-            // ── Server Selector Card ──
-            Surface(
+                isError = isError,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(enabled = !isConnected && !isConnecting, role = Role.Button) { onOpenServers() }
-                    .testTag(TestTags.SERVER_SELECTOR),
-                shape = RoundedCornerShape(12.dp),
-                color = GlassLight,
-                border = BorderStroke(1.dp, BirdoBorder),
+                    .height(440.dp),
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val server = state.selectedServer
+                Spacer(Modifier.height(20.dp))
 
-                    // Country flag or globe
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(BirdoWhite10),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (server != null) countryCodeToFlag(server.countryCode) else "🌐",
-                            fontSize = 20.sp,
-                        )
-                    }
+                StatusPill(
+                    isConnected = isConnected,
+                    isConnecting = isConnecting,
+                    isDisconnecting = isDisconnecting,
+                    isError = isError,
+                )
 
-                    Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.height(12.dp))
+                LocationLabel(state = state)
 
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = server?.name ?: stringResource(R.string.select_server),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = Color.White,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        if (server != null) {
-                            Text(
-                                text = "${server.city.ifBlank { server.country }} · ${stringResource(R.string.server_load, server.load)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = BirdoWhite60,
-                            )
+                Spacer(Modifier.height(28.dp))
+
+                HeroConnectButton(
+                    isConnected = isConnected,
+                    isConnecting = isConnecting,
+                    isDisconnecting = isDisconnecting,
+                    onClick = {
+                        when {
+                            isConnected -> onDisconnect()
+                            isConnecting || isDisconnecting -> Unit
+                            else -> onConnect()
                         }
-                    }
+                    },
+                )
 
-                    Icon(
-                        Icons.Default.ChevronRight,
-                        stringResource(R.string.cd_select_server),
-                        tint = BirdoWhite40,
-                        modifier = Modifier.size(20.dp),
+                Spacer(Modifier.height(28.dp))
+
+                AnimatedVisibility(
+                    visible = isConnected,
+                    enter = fadeIn(tween(BirdoMotion.Standard, delayMillis = 80)) +
+                        slideInVertically(initialOffsetY = { 16 }),
+                    exit = fadeOut(),
+                ) {
+                    StatsRow(state = state)
+                }
+
+                AnimatedVisibility(visible = isConnected) {
+                    FeatureBadgesRow(
+                        killSwitchEnabled = killSwitchEnabled,
+                        stealth = state.stealthActive,
+                        quantum = state.quantumActive,
                     )
                 }
-            }
 
-            Spacer(Modifier.height(16.dp))
+                AnimatedVisibility(visible = isKillSwitchActive) {
+                    KillSwitchAlert()
+                }
+
+                if (isError) ErrorBanner((state.vpnState as VpnState.Error).message)
+                if (state.error != null) ErrorBanner(state.error)
+
+                Spacer(Modifier.weight(1f))
+
+                ServerSelector(
+                    state = state,
+                    enabled = !isConnecting && !isDisconnecting,
+                    onClick = onOpenServers,
+                )
+
+                Spacer(Modifier.height(12.dp))
+            }
         }
     }
 }
 
-// ── Status Badge ────────────────────────────────────────────────────────────
+// ── Top Bar ─────────────────────────────────────────────────────────────────
 
 @Composable
-private fun StatusBadge(
+private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
+    Surface(color = GlassStrong, tonalElevation = 0.dp) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .heightIn(min = 52.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BrandLockup()
+                Spacer(Modifier.weight(1f))
+                if (userEmail != null) {
+                    Text(
+                        text = userEmail,
+                        color = BirdoWhite40,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .widthIn(max = 160.dp),
+                    )
+                }
+                BirdoIconAction(
+                    icon = Icons.AutoMirrored.Filled.Logout,
+                    contentDescription = stringResource(R.string.logout),
+                    onClick = onLogout,
+                    tint = BirdoWhite60,
+                )
+            }
+            HorizontalDivider(color = BirdoBrand.HairlineSoft, thickness = 1.dp)
+        }
+    }
+}
+
+@Composable
+private fun BrandLockup() {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(BirdoBrand.PrimaryGradient),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Default.Shield,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = stringResource(R.string.app_name),
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+// ── Ambient Glow ────────────────────────────────────────────────────────────
+
+@Composable
+private fun HeroAmbientGlow(isConnected: Boolean, isError: Boolean, modifier: Modifier = Modifier) {
+    val brush: Brush = when {
+        isError -> BirdoBrand.ErrorGradient
+        isConnected -> BirdoBrand.ConnectedGradient
+        else -> BirdoBrand.IdleGradient
+    }
+    Box(modifier.background(brush))
+}
+
+// ── Status Pill ────────────────────────────────────────────────────────────
+
+@Composable
+private fun StatusPill(
     isConnected: Boolean,
     isConnecting: Boolean,
     isDisconnecting: Boolean,
     isError: Boolean,
 ) {
-    val bgColor = when {
-        isConnected -> BirdoGreenBg
-        isConnecting || isDisconnecting -> BirdoYellowBg
-        isError -> BirdoRedBg
-        else -> BirdoWhite05
+    val text: String
+    val tone: BadgeTone
+    val icon: androidx.compose.ui.graphics.vector.ImageVector?
+    val pulse: Boolean
+    when {
+        isConnected -> { text = stringResource(R.string.status_protected); tone = BadgeTone.Success; icon = null; pulse = true }
+        isConnecting -> { text = stringResource(R.string.connecting); tone = BadgeTone.Warning; icon = Icons.Default.Sync; pulse = false }
+        isDisconnecting -> { text = stringResource(R.string.disconnecting); tone = BadgeTone.Warning; icon = Icons.Default.Sync; pulse = false }
+        isError -> { text = stringResource(R.string.status_error); tone = BadgeTone.Danger; icon = Icons.Default.ErrorOutline; pulse = false }
+        else -> { text = stringResource(R.string.status_not_connected); tone = BadgeTone.Neutral; icon = Icons.Default.WifiOff; pulse = false }
     }
-    val textColor = when {
-        isConnected -> BirdoGreenLight
-        isConnecting || isDisconnecting -> BirdoYellowLight
-        isError -> BirdoRed
-        else -> BirdoWhite40
-    }
-    val borderColor = when {
-        isConnected -> BirdoGreen.copy(alpha = 0.2f)
-        isConnecting || isDisconnecting -> BirdoYellow.copy(alpha = 0.2f)
-        isError -> BirdoRed.copy(alpha = 0.2f)
-        else -> BirdoWhite10
-    }
-    val icon = when {
-        isConnected -> Icons.Default.Wifi
-        else -> Icons.Default.WifiOff
-    }
-    val label = when {
-        isConnected -> stringResource(R.string.status_protected)
-        isConnecting -> stringResource(R.string.connecting)
-        isDisconnecting -> stringResource(R.string.disconnecting)
-        isError -> stringResource(R.string.status_error)
-        else -> stringResource(R.string.status_not_connected)
-    }
-
-    Surface(
-        modifier = Modifier.testTag(TestTags.VPN_STATUS),
-        shape = RoundedCornerShape(20.dp),
-        color = bgColor,
-        border = BorderStroke(1.dp, borderColor),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (isConnecting || isDisconnecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    color = textColor,
-                    strokeWidth = 2.dp,
-                )
-            } else {
-                Icon(icon, label, tint = textColor, modifier = Modifier.size(16.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = label,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
-                color = textColor,
-            )
-        }
+    Box(modifier = Modifier.testTag(TestTags.VPN_STATUS)) {
+        BirdoBadge(text = text, tone = tone, icon = icon, pulseDot = pulse)
     }
 }
 
-// ── Connection Button ───────────────────────────────────────────────────────
+// ── Location Label ─────────────────────────────────────────────────────────
 
 @Composable
-private fun ConnectionButton(
+private fun LocationLabel(state: VpnUiState) {
+    val isConnected = state.vpnState is VpnState.Connected
+    val server = state.connectedServer
+    val ip = state.publicIp
+    val text = when {
+        isConnected && server != null && ip != null -> "$server  ·  $ip"
+        isConnected && server != null -> server
+        isConnected && ip != null -> ip
+        else -> "Your real IP is exposed"
+    }
+    val color = if (isConnected) BirdoWhite80 else BirdoWhite60
+    Text(
+        text = text,
+        color = color,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Medium,
+        textAlign = TextAlign.Center,
+    )
+}
+
+// ── Hero Connect Button ────────────────────────────────────────────────────
+
+@Composable
+private fun HeroConnectButton(
     isConnected: Boolean,
     isConnecting: Boolean,
     isDisconnecting: Boolean,
     onClick: () -> Unit,
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val transition = rememberInfiniteTransition(label = "btn")
 
-    // Pulse rings for connected state
-    val ring1Scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ), label = "r1s",
+    val ring1Scale by transition.animateFloat(
+        initialValue = 1f, targetValue = 1.6f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
+        label = "r1s",
     )
-    val ring1Alpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ), label = "r1a",
+    val ring1Alpha by transition.animateFloat(
+        initialValue = 0.35f, targetValue = 0f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
+        label = "r1a",
     )
-    val ring2Scale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing, delayMillis = 300),
-            repeatMode = RepeatMode.Restart,
-        ), label = "r2s",
+    val ring2Scale by transition.animateFloat(
+        initialValue = 1f, targetValue = 1.4f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing, delayMillis = 500), RepeatMode.Restart),
+        label = "r2s",
     )
-    val ring2Alpha by infiniteTransition.animateFloat(
-        initialValue = 0.2f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing, delayMillis = 300),
-            repeatMode = RepeatMode.Restart,
-        ), label = "r2a",
+    val ring2Alpha by transition.animateFloat(
+        initialValue = 0.25f, targetValue = 0f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing, delayMillis = 500), RepeatMode.Restart),
+        label = "r2a",
     )
 
-    val buttonSize = 128.dp
-    val bgColor = when {
-        isConnected -> BirdoGreen
-        isConnecting || isDisconnecting -> BirdoYellow
-        else -> BirdoWhite10
-    }
+    val buttonSize = 168.dp
 
     Box(
-        modifier = Modifier.size(buttonSize * 1.6f),
+        modifier = Modifier.size(buttonSize * 1.7f),
         contentAlignment = Alignment.Center,
     ) {
-        // Pulse rings when connected
         if (isConnected) {
             Box(
-                modifier = Modifier
+                Modifier
                     .size(buttonSize)
                     .scale(ring1Scale)
                     .clip(CircleShape)
                     .background(BirdoGreen.copy(alpha = ring1Alpha)),
             )
             Box(
-                modifier = Modifier
+                Modifier
                     .size(buttonSize)
                     .scale(ring2Scale)
                     .clip(CircleShape)
@@ -451,103 +326,187 @@ private fun ConnectionButton(
             )
         }
 
-        // Main button
+        if (!isConnected && !isConnecting && !isDisconnecting) {
+            Box(
+                Modifier
+                    .size(buttonSize * 1.4f)
+                    .clip(CircleShape)
+                    .background(BirdoBrand.IdleGradient),
+            )
+        }
+
+        // Outer gradient halo ring
+        Box(
+            modifier = Modifier
+                .size(buttonSize + 14.dp)
+                .clip(CircleShape)
+                .background(
+                    when {
+                        isConnected -> Brush.linearGradient(listOf(BirdoGreen, BirdoBrand.Teal))
+                        isConnecting || isDisconnecting -> Brush.linearGradient(listOf(BirdoYellow, BirdoBrand.Pink))
+                        else -> BirdoBrand.PrimaryGradient
+                    }
+                ),
+        )
+
+        // Inner button
         Box(
             modifier = Modifier
                 .size(buttonSize)
                 .shadow(
-                    elevation = if (isConnected) 24.dp else 0.dp,
+                    elevation = if (isConnected) 28.dp else 16.dp,
                     shape = CircleShape,
-                    ambientColor = if (isConnected) BirdoGreenShadow else Color.Transparent,
-                    spotColor = if (isConnected) BirdoGreenShadow else Color.Transparent,
+                    ambientColor = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f),
+                    spotColor = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f),
                 )
                 .clip(CircleShape)
-                .background(bgColor)
-                .then(
-                    if (!isConnected && !isConnecting && !isDisconnecting)
-                        Modifier.border(1.dp, BirdoWhite20, CircleShape)
-                    else Modifier
+                .background(
+                    when {
+                        isConnected -> Brush.radialGradient(listOf(BirdoGreen, Color(0xFF166534)))
+                        isConnecting || isDisconnecting -> Brush.radialGradient(listOf(BirdoYellow, Color(0xFF854D0E)))
+                        else -> Brush.radialGradient(listOf(BirdoBrand.Surface3, BirdoBrand.Surface1))
+                    }
                 )
+                .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
                 .clickable(role = Role.Button, onClick = onClick)
                 .testTag(TestTags.CONNECT_BUTTON),
             contentAlignment = Alignment.Center,
         ) {
             if (isConnecting || isDisconnecting) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier.size(64.dp),
                     color = Color.White,
-                    trackColor = Color.White.copy(alpha = 0.3f),
+                    trackColor = Color.White.copy(alpha = 0.2f),
                     strokeWidth = 4.dp,
                 )
             } else {
                 Icon(
                     imageVector = Icons.Default.PowerSettingsNew,
-                    contentDescription = if (isConnected) stringResource(R.string.disconnect) else stringResource(R.string.connect),
-                    tint = if (isConnected) Color.White else BirdoWhite60,
-                    modifier = Modifier.size(48.dp),
+                    contentDescription = if (isConnected) stringResource(R.string.disconnect)
+                    else stringResource(R.string.connect),
+                    tint = if (isConnected) Color.White else BirdoWhite80,
+                    modifier = Modifier.size(58.dp),
                 )
             }
         }
     }
 }
 
-// ── Stats Card ──────────────────────────────────────────────────────────────
+// ── Stats Row ──────────────────────────────────────────────────────────────
 
 @Composable
-private fun StatsCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        color = BirdoCard,
-        border = BorderStroke(1.dp, BirdoBorder),
+private fun StatsRow(state: VpnUiState) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = BirdoWhite60,
-            )
-            Spacer(Modifier.height(4.dp))
+        StatTile(
+            icon = Icons.Default.Schedule,
+            label = stringResource(R.string.stats_duration),
+            value = FormatUtils.formatDuration(state.connectedSince),
+            tint = BirdoBrand.PurpleSoft,
+            modifier = Modifier.weight(1f),
+        )
+        StatTile(
+            icon = Icons.Default.ArrowDownward,
+            label = stringResource(R.string.stats_download),
+            value = FormatUtils.formatBytes(state.rxBytes),
+            tint = BirdoGreenLight,
+            modifier = Modifier.weight(1f),
+        )
+        StatTile(
+            icon = Icons.Default.ArrowUpward,
+            label = stringResource(R.string.stats_upload),
+            value = FormatUtils.formatBytes(state.txBytes),
+            tint = BirdoBlue,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun StatTile(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    value: String,
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    BirdoCard(
+        modifier = modifier,
+        cornerRadius = 14.dp,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = value,
+                color = Color.White,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = Color.White,
+            )
+            Text(
+                text = label,
+                color = BirdoWhite60,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
     }
 }
 
-// ── Security Badge ──────────────────────────────────────────────────────────
+// ── Feature Badges ─────────────────────────────────────────────────────────
 
 @Composable
-private fun SecurityBadge(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    tintColor: Color,
-) {
+private fun FeatureBadgesRow(killSwitchEnabled: Boolean, stealth: Boolean, quantum: Boolean) {
+    val any = killSwitchEnabled || stealth || quantum
+    if (!any) return
     Row(
-        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = tintColor,
-            modifier = Modifier.size(14.dp),
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = BirdoWhite60,
-        )
+        if (killSwitchEnabled) {
+            BirdoBadge(text = stringResource(R.string.kill_switch_active), tone = BadgeTone.Success, icon = Icons.Default.Shield)
+        }
+        if (stealth) {
+            BirdoBadge(text = "Stealth", tone = BadgeTone.Info, icon = Icons.Default.VisibilityOff)
+        }
+        if (quantum) {
+            BirdoBadge(text = "Quantum", tone = BadgeTone.Brand, icon = Icons.Default.Lock)
+        }
     }
 }
 
-// ── Error Banner ────────────────────────────────────────────────────────────
+// ── Kill Switch Alert ──────────────────────────────────────────────────────
+
+@Composable
+private fun KillSwitchAlert() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = BirdoRedBg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoRed.copy(alpha = 0.3f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.Shield, null, tint = BirdoRed, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                stringResource(R.string.kill_switch_blocking),
+                color = BirdoRed,
+                fontSize = 13.sp,
+            )
+        }
+    }
+}
+
+// ── Error Banner ───────────────────────────────────────────────────────────
 
 @Composable
 private fun ErrorBanner(message: String) {
@@ -555,22 +514,79 @@ private fun ErrorBanner(message: String) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 12.dp),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
         color = BirdoRedBg,
-        border = BorderStroke(1.dp, BirdoRed.copy(alpha = 0.2f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoRed.copy(alpha = 0.3f)),
     ) {
-        Text(
-            text = message,
-            style = MaterialTheme.typography.bodySmall,
-            color = BirdoRed,
-            modifier = Modifier.padding(12.dp),
-            textAlign = TextAlign.Center,
-        )
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.ErrorOutline, null, tint = BirdoRed, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = message,
+                color = BirdoRed,
+                fontSize = 13.sp,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
-// ── Helpers (delegated to shared FormatUtils) ──────────────────────────────
+// ── Server Selector ────────────────────────────────────────────────────────
 
-private fun formatDuration(since: Long): String = FormatUtils.formatDuration(since)
-
-private fun formatBytes(bytes: Long): String = FormatUtils.formatBytes(bytes)
+@Composable
+private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> Unit) {
+    val server = state.selectedServer
+    BirdoCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .testTag(TestTags.SERVER_SELECTOR),
+        cornerRadius = 16.dp,
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(BirdoWhite05)
+                    .border(1.dp, BirdoBrand.HairlineSoft, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (server != null) countryCodeToFlag(server.countryCode) else "🌐",
+                    fontSize = 22.sp,
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = server?.name ?: stringResource(R.string.select_server),
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (server != null) {
+                    Text(
+                        text = "${server.city.ifBlank { server.country }}  ·  ${stringResource(R.string.server_load, server.load)}",
+                        color = BirdoWhite60,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = stringResource(R.string.cd_select_server),
+                tint = BirdoWhite40,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
+}

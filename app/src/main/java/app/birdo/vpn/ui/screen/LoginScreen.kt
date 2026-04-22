@@ -104,6 +104,29 @@ fun LoginScreen(
                 .padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // ── Brand mark (gradient shield) ──
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn(animationSpec = tween(500, delayMillis = 60)) +
+                    slideInVertically(initialOffsetY = { 16 }),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(BirdoBrand.PrimaryGradient),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(32.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+
             // ── Status Badge (matches Windows: pinging dot + "Secure Connection") ──
             AnimatedVisibility(
                 visible = visible,
@@ -402,11 +425,11 @@ fun LoginScreen(
                             onNext = { focusManager.moveFocus(FocusDirection.Down) }
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = BirdoWhite20,
-                            unfocusedBorderColor = BirdoWhite10,
+                            focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                            unfocusedBorderColor = BirdoBrand.HairlineSoft,
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
-                            cursorColor = Color.White,
+                            cursorColor = BirdoBrand.PurpleSoft,
                             focusedContainerColor = GlassInput,
                             unfocusedContainerColor = GlassInput,
                         ),
@@ -467,11 +490,11 @@ fun LoginScreen(
                             }
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = BirdoWhite20,
-                            unfocusedBorderColor = BirdoWhite10,
+                            focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                            unfocusedBorderColor = BirdoBrand.HairlineSoft,
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
-                            cursorColor = Color.White,
+                            cursorColor = BirdoBrand.PurpleSoft,
                             focusedContainerColor = GlassInput,
                             unfocusedContainerColor = GlassInput,
                         ),

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
+import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.AppInfo
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
@@ -69,20 +70,9 @@ fun SettingsScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("⚙", fontSize = 18.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            stringResource(R.string.settings_title),
-                            fontWeight = FontWeight.Bold,
-                            color = BirdoWhite80,
-                            fontFamily = FontFamily.SansSerif,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+            BirdoTopBar(
+                title = stringResource(R.string.settings_title),
+                subtitle = "App preferences & account",
             )
         },
         containerColor = Color.Transparent,
@@ -316,24 +306,33 @@ fun SettingsScreen(
             item {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = BirdoSurface,
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFFEF4444).copy(alpha = 0.06f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.25f)),
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(role = Role.Button) { showDeleteDialog = true }
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.DeleteForever, stringResource(R.string.settings_delete_account), tint = Color(0xFFEF4444), modifier = Modifier.size(22.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFFEF4444).copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Default.DeleteForever, null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
+                        }
                         Spacer(Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(stringResource(R.string.settings_delete_account), style = MaterialTheme.typography.titleSmall, color = Color(0xFFEF4444), fontWeight = FontWeight.Medium)
-                            Text(stringResource(R.string.settings_delete_account_desc), style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(stringResource(R.string.settings_delete_account), color = Color(0xFFF87171), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(stringResource(R.string.settings_delete_account_desc), color = BirdoWhite60, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
                         }
                         Spacer(Modifier.width(8.dp))
-                        Icon(Icons.Default.ChevronRight, stringResource(R.string.cd_open), tint = BirdoWhite20, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.ChevronRight, null, tint = Color(0xFFF87171), modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -346,8 +345,9 @@ fun SettingsScreen(
             item {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = BirdoSurface,
+                    shape = RoundedCornerShape(16.dp),
+                    color = BirdoBrand.Surface1,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
                 ) {
                     Row(
                         modifier = Modifier
@@ -357,18 +357,19 @@ fun SettingsScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(BirdoWhite10),
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(BirdoBrand.PrimaryGradient),
                             contentAlignment = Alignment.Center,
                         ) {
-                            Icon(Icons.Default.Info, stringResource(R.string.cd_about), tint = BirdoWhite60, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Shield, stringResource(R.string.cd_about), tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                         Spacer(Modifier.width(14.dp))
-                        Column {
-                            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.SemiBold)
-                            Text(stringResource(R.string.settings_version, BuildConfig.APP_VERSION), style = MaterialTheme.typography.bodySmall, color = BirdoWhite40)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(stringResource(R.string.app_name), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(stringResource(R.string.settings_version, BuildConfig.APP_VERSION), color = BirdoWhite60, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
                         }
+                        Icon(Icons.Default.Verified, null, tint = BirdoBrand.PurpleSoft, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -472,12 +473,12 @@ private fun DeleteAccountDialog(
 @Composable
 private fun SectionHeader(title: String) {
     Text(
-        text = title,
-        style = MaterialTheme.typography.labelMedium,
-        color = BirdoWhite40,
+        text = title.uppercase(),
+        color = BirdoWhite60,
+        fontSize = 11.sp,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
-        letterSpacing = 0.5.sp,
+        letterSpacing = 1.4.sp,
+        modifier = Modifier.padding(start = 8.dp, top = 18.dp, bottom = 6.dp),
     )
 }
 
@@ -493,21 +494,30 @@ private fun SettingsToggle(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = BirdoSurface,
+        shape = RoundedCornerShape(16.dp),
+        color = BirdoBrand.Surface1,
+        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = iconColor, modifier = Modifier.size(22.dp))
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(iconColor.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, title, tint = iconColor, modifier = Modifier.size(18.dp))
+            }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Text(description, color = BirdoWhite60, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
             }
             Spacer(Modifier.width(8.dp))
             Switch(
@@ -515,12 +525,12 @@ private fun SettingsToggle(
                 onCheckedChange = onCheckedChange,
                 modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
                 colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.Black,
-                    checkedTrackColor = Color.White,
-                    checkedBorderColor = Color.White,
-                    uncheckedThumbColor = BirdoWhite80,
-                    uncheckedTrackColor = BirdoWhite20,
-                    uncheckedBorderColor = BirdoWhite20,
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = BirdoBrand.Purple,
+                    checkedBorderColor = Color.Transparent,
+                    uncheckedThumbColor = BirdoWhite60,
+                    uncheckedTrackColor = BirdoWhite10,
+                    uncheckedBorderColor = BirdoBrand.HairlineSoft,
                 ),
             )
         }
@@ -538,24 +548,33 @@ private fun SettingsLink(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = BirdoSurface,
+        shape = RoundedCornerShape(16.dp),
+        color = BirdoBrand.Surface1,
+        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(role = Role.Button, onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = iconColor, modifier = Modifier.size(22.dp))
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(iconColor.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, title, tint = iconColor, modifier = Modifier.size(18.dp))
+            }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                Text(description, color = BirdoWhite60, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
             }
             Spacer(Modifier.width(8.dp))
-            Icon(trailing, stringResource(R.string.cd_open), tint = BirdoWhite20, modifier = Modifier.size(18.dp))
+            Icon(trailing, stringResource(R.string.cd_open), tint = BirdoWhite40, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -567,41 +586,54 @@ private fun ThemeModeSelector(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = BirdoSurface,
+        shape = RoundedCornerShape(16.dp),
+        color = BirdoBrand.Surface1,
+        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Palette, "Theme", tint = BirdoWhite60, modifier = Modifier.size(22.dp))
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(BirdoBrand.PurpleSoft.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.Palette, null, tint = BirdoBrand.PurpleSoft, modifier = Modifier.size(18.dp))
+                }
                 Spacer(Modifier.width(14.dp))
                 Column {
-                    Text("Theme", style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
-                    Text("Choose dark, light, or follow system", style = MaterialTheme.typography.bodySmall, color = BirdoWhite40)
+                    Text("Theme", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    Text("Dark, light, or follow system", color = BirdoWhite60, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
                 }
             }
             Spacer(Modifier.height(12.dp))
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(BirdoWhite05)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 listOf("dark" to "Dark", "light" to "Light", "system" to "System").forEach { (value, label) ->
                     val isSelected = currentMode == value
                     Surface(
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isSelected) BirdoWhite80 else BirdoSurface,
-                        border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
+                        shape = RoundedCornerShape(9.dp),
+                        color = if (isSelected) BirdoBrand.Surface3 else Color.Transparent,
+                        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft) else null,
                     ) {
                         Text(
                             text = label,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onModeSelected(value) }
-                                .padding(vertical = 10.dp),
+                                .padding(vertical = 9.dp),
                             textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isSelected) Color.Black else BirdoWhite60,
+                            fontSize = 13.sp,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = if (isSelected) Color.White else BirdoWhite60,
                         )
                     }
                 }

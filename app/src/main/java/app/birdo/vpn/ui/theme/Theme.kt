@@ -82,6 +82,7 @@ fun BirdoTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = BirdoTypography,
+        shapes = BirdoShapes,
         content = content,
     )
 }

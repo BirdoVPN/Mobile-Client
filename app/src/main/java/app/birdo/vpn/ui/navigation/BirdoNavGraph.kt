@@ -139,52 +139,55 @@ fun BirdoNavGraph(
         containerColor = BirdoBlack,
         bottomBar = {
             if (showBottomBar) {
-                // ── Bottom nav matching Windows 3-tab layout ─────────────
-                NavigationBar(
-                    containerColor = BirdoBackground,
-                    tonalElevation = 0.dp,
-                    modifier = Modifier.background(BirdoBackground),
-                ) {
-                    bottomNavItems.forEach { item ->
-                        val isSelected = navBackStackEntry?.destination?.hierarchy?.any {
-                            it.route == item.screen.route
-                        } == true
+                // ── Bottom nav ──────────────────────────────────────
+                Column {
+                    HorizontalDivider(color = BirdoBrand.HairlineSoft, thickness = 1.dp)
+                    NavigationBar(
+                        containerColor = BirdoBrand.Surface1,
+                        tonalElevation = 0.dp,
+                        modifier = Modifier
+                            .background(BirdoBrand.Surface1)
+                            .height(72.dp),
+                    ) {
+                        bottomNavItems.forEach { item ->
+                            val isSelected = navBackStackEntry?.destination?.hierarchy?.any {
+                                it.route == item.screen.route
+                            } == true
 
-                        NavigationBarItem(
-                            selected = isSelected,
-                            onClick = {
-                                navController.navigate(item.screen.route) {
-                                    // Pop up to the start destination of the graph to
-                                    // avoid building up a large stack of destinations
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
+                            NavigationBarItem(
+                                selected = isSelected,
+                                onClick = {
+                                    navController.navigate(item.screen.route) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = {
-                                Icon(
-                                    item.icon,
-                                    contentDescription = stringResource(item.labelRes),
-                                    modifier = Modifier.size(22.dp),
-                                )
-                            },
-                            label = {
-                                Text(
-                                    stringResource(item.labelRes),
-                                    fontSize = 11.sp,
-                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = BirdoWhite,
-                                selectedTextColor = BirdoWhite,
-                                unselectedIconColor = BirdoWhite40,
-                                unselectedTextColor = BirdoWhite40,
-                                indicatorColor = BirdoWhite10,
-                            ),
-                        )
+                                },
+                                icon = {
+                                    Icon(
+                                        item.icon,
+                                        contentDescription = stringResource(item.labelRes),
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        stringResource(item.labelRes),
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = BirdoBrand.PurpleSoft,
+                                    selectedTextColor = BirdoBrand.PurpleSoft,
+                                    unselectedIconColor = BirdoWhite60,
+                                    unselectedTextColor = BirdoWhite60,
+                                    indicatorColor = BirdoBrand.Purple.copy(alpha = 0.18f),
+                                ),
+                            )
+                        }
                     }
                 }
             }

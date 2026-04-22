@@ -1,0 +1,339 @@
+﻿name: iOS CI & Build
+
+on:
+  push:
+    branches: [main, develop]
+    tags:
+      - 'ios-v*'   # e.g. ios-v1.2.0 ÔÇö triggers signed build + TestFlight upload
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: false
+        type: string
+
+# Minimum permissions ÔÇö each job declares its own
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  # ÔöÇÔöÇ Build KMP Shared Framework ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+  shared-framework:
+    name: Build Shared Framework (iOS)
+    runs-on: macos-14  # Apple Silicon for arm64 builds
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-ios-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-ios-${{ runner.os }}-
+
+      - name: Build shared framework for iOS
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkReleaseFrameworkIosArm64
+
+      - name: Upload shared framework
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shared-framework-ios
+          path: shared/build/bin/iosArm64/releaseFramework/
+          retention-days: 5
+
+  # ÔöÇÔöÇ Build iOS App (no signing) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+  build-ios:
+    name: Build iOS App
+    runs-on: macos-14
+    needs: shared-framework
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download shared framework
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: shared-framework-ios
+          path: shared/build/bin/iosArm64/releaseFramework/
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build iOS app (no signing)
+        working-directory: iosApp
+        run: |
+          xcodebuild build \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            | xcpretty
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: birdo-vpn-ios-unsigned
+          path: iosApp/build/Release-iphoneos/
+          retention-days: 30
+
+  # ÔöÇÔöÇ iOS Simulator Tests ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+  test-ios:
+    name: iOS Simulator Tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-ios-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-ios-${{ runner.os }}-
+
+      - name: Build shared framework for iOS Simulator
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Run iOS tests
+        working-directory: iosApp
+        run: |
+          xcodebuild test \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.0' \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty
+
+  # ÔöÇÔöÇ Signed Release & TestFlight Upload ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+  # Triggers ONLY on ios-v* tags. Imports the Apple Distribution certificate
+  # and provisioning profile from GitHub secrets, codesigns the .xcarchive,
+  # exports an .ipa, signs with Sigstore, then uploads to TestFlight via the
+  # App Store Connect API.
+  #
+  # Required GitHub repository SECRETS:
+  #   APPLE_DIST_CERT_BASE64        ÔÇö base64 of the .p12 distribution certificate
+  #   APPLE_DIST_CERT_PASSWORD      ÔÇö password for the .p12
+  #   APPLE_PROVISIONING_PROFILE    ÔÇö base64 of the .mobileprovision file
+  #   APPLE_KEYCHAIN_PASSWORD       ÔÇö ephemeral password for the temp keychain
+  #   APPSTORE_API_KEY_ID           ÔÇö App Store Connect API key ID (e.g. ABC123XYZ)
+  #   APPSTORE_API_ISSUER_ID        ÔÇö issuer UUID from App Store Connect
+  #   APPSTORE_API_KEY_BASE64       ÔÇö base64 of the .p8 private key
+  #
+  # Required GitHub repository VARIABLES:
+  #   APPLE_TEAM_ID                 ÔÇö 10-character Apple Developer team ID
+  #   APPLE_BUNDLE_ID               ÔÇö e.g. app.birdo.vpn
+  release-ios:
+    name: Codesign & Upload to TestFlight
+    runs-on: macos-14
+    needs: [shared-framework, build-ios, test-ios]
+    if: startsWith(github.ref, 'refs/tags/ios-v')
+    permissions:
+      contents: read
+      id-token: write   # for Sigstore Fulcio
+    env:
+      APPLE_TEAM_ID:    ${{ vars.APPLE_TEAM_ID }}
+      APPLE_BUNDLE_ID:  ${{ vars.APPLE_BUNDLE_ID }}
+      KEYCHAIN_PATH:    ${{ runner.temp }}/birdo-build.keychain-db
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Build shared framework (Release, iosArm64)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkReleaseFrameworkIosArm64
+
+      - name: Select Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      # ÔöÇÔöÇ Import Apple Distribution Certificate into a temporary keychain ÔöÇÔöÇ
+      # SEC: keychain is created in $RUNNER_TEMP and destroyed in the
+      # cleanup step. Passwords are masked from logs by GitHub Actions.
+      - name: Import Apple Distribution certificate
+        env:
+          CERT_B64:      ${{ secrets.APPLE_DIST_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DIST_CERT_PASSWORD }}
+          KC_PASSWORD:   ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/dist.p12"
+          echo "$CERT_B64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT_PATH"
+
+      - name: Install provisioning profile
+        env:
+          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+        run: |
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/birdo.mobileprovision"
+          echo "$PROFILE_B64" | base64 --decode > "$PROFILE_PATH"
+
+      - name: Write ExportOptions.plist
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>            <string>app-store-connect</string>
+            <key>teamID</key>            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>      <string>manual</string>
+            <key>stripSwiftSymbols</key> <true/>
+            <key>uploadBitcode</key>     <false/>
+            <key>uploadSymbols</key>     <true/>
+            <key>destination</key>       <string>upload</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Archive (xcodebuild)
+        working-directory: iosApp
+        run: |
+          xcodebuild archive \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            PRODUCT_BUNDLE_IDENTIFIER="$APPLE_BUNDLE_ID" \
+            | xcpretty
+
+      - name: Export IPA
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
+            -exportPath  "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            | xcpretty
+
+      # ÔöÇÔöÇ Sigstore keyless signing of the .ipa for public verifiability ÔöÇÔöÇ
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+
+      - name: Sign IPA with Sigstore
+        run: |
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
+          if [ -n "$IPA" ]; then
+            cosign sign-blob --yes --bundle "${IPA}.sigstore" "$IPA"
+            sha256sum "$IPA" > "${IPA}.sha256"
+            cosign sign-blob --yes --bundle "${IPA}.sha256.sigstore" "${IPA}.sha256"
+          fi
+
+      # ÔöÇÔöÇ Upload to App Store Connect / TestFlight via API key ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+      - name: Install API key for altool
+        env:
+          API_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          API_KEY_ID:  ${{ secrets.APPSTORE_API_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$API_KEY_B64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
+
+      - name: Upload to TestFlight
+        env:
+          API_KEY_ID:    ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$IPA" \
+            --apiKey "$API_KEY_ID" \
+            --apiIssuer "$API_ISSUER_ID" \
+            --output-format xml
+
+      - name: Upload signed IPA artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: birdo-vpn-ios-signed
+          path: |
+            ${{ runner.temp }}/export/*.ipa
+            ${{ runner.temp }}/export/*.sigstore
+            ${{ runner.temp }}/export/*.sha256
+            ${{ runner.temp }}/export/*.sha256.sigstore
+          retention-days: 30
+
+      - name: Cleanup keychain & API keys
+        if: always()
+        env:
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/birdo.mobileprovision"
+          rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
+

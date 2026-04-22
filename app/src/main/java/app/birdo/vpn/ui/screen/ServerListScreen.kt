@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.VpnServer
 import androidx.compose.ui.semantics.Role
+import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.utils.countryCodeToFlag
 
@@ -92,100 +93,39 @@ fun ServerListScreen(
             .fillMaxSize(),
     ) {
         // ── Header ──
-        Surface(
-            color = GlassStrong,
-            tonalElevation = 0.dp,
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .height(48.dp)
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    stringResource(R.string.servers_title),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                )
-                Spacer(Modifier.weight(1f))
-                IconButton(
+        BirdoTopBar(
+            title = stringResource(R.string.servers_title),
+            subtitle = stringResource(R.string.servers_count, filteredServers.size),
+            onBack = onBack,
+            actions = {
+                BirdoIconAction(
+                    icon = Icons.Default.Refresh,
+                    contentDescription = stringResource(R.string.cd_refresh),
                     onClick = onRefresh,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.Default.Refresh,
-                        stringResource(R.string.cd_refresh),
-                        tint = BirdoWhite40,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-        }
+                )
+            },
+        )
 
         // ── Search bar ──
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            shape = RoundedCornerShape(10.dp),
-            color = GlassInput,
-            border = BorderStroke(1.dp, BirdoWhite10),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Default.Search,
-                    stringResource(R.string.cd_search),
-                    tint = BirdoWhite40,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-
-                TextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = {
-                        Text(stringResource(R.string.servers_search_placeholder), color = BirdoWhite20, fontSize = 14.sp)
-                    },
-                    singleLine = true,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = BirdoWhite80,
-                        cursorColor = Color.White,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp),
-                )
-
-                if (searchQuery.isNotBlank()) {
-                    IconButton(
-                        onClick = { searchQuery = "" },
-                        modifier = Modifier.size(24.dp),
-                    ) {
-                        Icon(
-                            Icons.Default.Close,
-                            stringResource(R.string.cd_clear),
-                            tint = BirdoWhite40,
-                            modifier = Modifier.size(16.dp),
-                        )
+        BirdoTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = stringResource(R.string.servers_search_placeholder),
+            leadingIcon = Icons.Default.Search,
+            trailingIcon = if (searchQuery.isNotBlank()) {
+                {
+                    IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Close, stringResource(R.string.cd_clear), tint = BirdoWhite40, modifier = Modifier.size(16.dp))
                     }
                 }
-            }
-        }
+            } else null,
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        )
 
-        // ── Filter pills (white-based, matching Windows) ──
+        // ── Filter pills ──
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -195,49 +135,38 @@ fun ServerListScreen(
             items(ServerFilter.entries) { filter ->
                 val isActive = filter == activeFilter
                 val favCount = if (filter == ServerFilter.Favorites) favoriteServers.size else null
-
+                val text = buildString {
+                    if (filter.icon.isNotEmpty()) {
+                        append(filter.icon); append(" ")
+                    }
+                    append(filter.label)
+                    if (favCount != null && favCount > 0) append(" ($favCount)")
+                }
                 Surface(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
                         .clickable(role = Role.Tab) { activeFilter = filter },
                     shape = RoundedCornerShape(20.dp),
-                    color = if (isActive) BirdoWhite10 else Color.Transparent,
-                    border = if (isActive) BorderStroke(1.dp, BirdoWhite20) else null,
+                    color = if (isActive) BirdoBrand.Surface3 else BirdoBrand.Surface1,
+                    border = BorderStroke(1.dp, if (isActive) BirdoBrand.PurpleSoft.copy(alpha = 0.5f) else BirdoBrand.HairlineSoft),
                 ) {
                     Text(
-                        text = buildString {
-                            if (filter.icon.isNotEmpty()) {
-                                append(filter.icon)
-                                append(" ")
-                            }
-                            append(filter.label)
-                            if (favCount != null && favCount > 0) {
-                                append(" ($favCount)")
-                            }
-                        },
+                        text = text,
                         fontSize = 12.sp,
-                        fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal,
+                        fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
                         color = if (isActive) Color.White else BirdoWhite60,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     )
                 }
             }
         }
 
-        // ── Server count ──
-        Text(
-            text = stringResource(R.string.servers_count, filteredServers.size),
-            style = MaterialTheme.typography.bodySmall,
-            color = BirdoWhite20,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        )
-
         // ── Loading indicator ──
         if (isLoading) {
             LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth(),
-                color = Color.White,
-                trackColor = BirdoWhite10,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                color = BirdoBrand.PurpleSoft,
+                trackColor = BirdoWhite05,
             )
         }
 
@@ -263,53 +192,30 @@ fun ServerListScreen(
             // ── Empty state ──
             if (filteredServers.isEmpty() && !isLoading) {
                 item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 48.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Icon(
-                            Icons.Default.Dns,
-                            stringResource(R.string.cd_no_servers),
-                            tint = BirdoWhite20,
-                            modifier = Modifier.size(48.dp),
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            text = when {
-                                activeFilter == ServerFilter.Favorites ->
-                                    stringResource(R.string.servers_no_favorites)
-                                searchQuery.isNotBlank() ->
-                                    stringResource(R.string.servers_no_match, searchQuery)
-                                else -> stringResource(R.string.no_servers)
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = BirdoWhite40,
-                        )
-                        if (activeFilter == ServerFilter.Favorites) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                stringResource(R.string.servers_favorites_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = BirdoWhite20,
-                            )
-                        }
-                        if (servers.isEmpty() && !isLoading) {
-                            Spacer(Modifier.height(16.dp))
-                            OutlinedButton(
-                                onClick = onRefresh,
-                                border = BorderStroke(1.dp, BirdoWhite20),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    contentColor = Color.White,
-                                ),
-                            ) {
-                                Icon(Icons.Default.Refresh, "Refresh servers", modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(stringResource(R.string.retry), fontSize = 13.sp)
+                    BirdoEmptyState(
+                        icon = Icons.Default.Dns,
+                        title = when {
+                            activeFilter == ServerFilter.Favorites -> stringResource(R.string.servers_no_favorites)
+                            searchQuery.isNotBlank() -> stringResource(R.string.servers_no_match, searchQuery)
+                            else -> stringResource(R.string.no_servers)
+                        },
+                        description = when {
+                            activeFilter == ServerFilter.Favorites -> stringResource(R.string.servers_favorites_hint)
+                            servers.isEmpty() -> "Pull down to refresh or tap retry."
+                            else -> null
+                        },
+                        action = if (servers.isEmpty() && !isLoading) {
+                            {
+                                BirdoButton(
+                                    text = stringResource(R.string.retry),
+                                    onClick = onRefresh,
+                                    variant = BirdoButtonVariant.Secondary,
+                                    icon = Icons.Default.Refresh,
+                                )
                             }
-                        }
-                    }
+                        } else null,
+                        modifier = Modifier.padding(top = 32.dp),
+                    )
                 }
             }
         }
@@ -326,37 +232,37 @@ private fun ServerCard(
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit,
 ) {
-    Surface(
+    val borderBrush = if (isSelected)
+        androidx.compose.ui.graphics.Brush.linearGradient(listOf(BirdoBrand.PurpleSoft, BirdoBrand.Pink))
+    else BirdoBrand.GlassStrokeGradient
+
+    BirdoCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(enabled = server.isOnline, role = Role.Button) { onSelect() }
-            .then(
-                if (isSelected) Modifier.border(1.dp, BirdoWhite20, RoundedCornerShape(12.dp))
-                else Modifier
-            ),
-        shape = RoundedCornerShape(12.dp),
-        color = BirdoCard,
-        tonalElevation = 0.dp,
+            .clickable(enabled = server.isOnline, role = Role.Button) { onSelect() },
+        cornerRadius = 14.dp,
+        surface = if (isSelected) BirdoBrand.Surface2 else BirdoBrand.Surface1,
+        border = borderBrush,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .then(if (!server.isOnline) Modifier.alpha(0.5f) else Modifier),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Country flag badge
             Box(
                 modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(BirdoWhite10),
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(BirdoWhite05)
+                    .border(1.dp, BirdoBrand.HairlineSoft, RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = countryCodeToFlag(server.countryCode),
-                    fontSize = 18.sp,
+                    fontSize = 20.sp,
                 )
             }
 
@@ -371,25 +277,19 @@ private fun ServerCard(
                     Text(
                         text = server.name,
                         fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (server.isOnline) Color.White else BirdoWhite20,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (server.isOnline) Color.White else BirdoWhite40,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    if (server.isPremium) {
-                        Text("⚡", fontSize = 11.sp)
-                    }
-                    if (server.isStreaming) {
-                        Text("🎬", fontSize = 11.sp)
-                    }
-                    if (server.isP2p) {
-                        Text("⬇", fontSize = 11.sp)
-                    }
+                    if (server.isPremium) Text("⚡", fontSize = 11.sp)
+                    if (server.isStreaming) Text("🎬", fontSize = 11.sp)
+                    if (server.isP2p) Text("⬇", fontSize = 11.sp)
                 }
                 Text(
                     text = if (server.city.isNotBlank()) "${server.city}, ${server.country}" else server.country,
-                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 12.sp,
                     color = BirdoWhite60,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -406,15 +306,15 @@ private fun ServerCard(
                 Text(
                     text = "${server.load}%",
                     fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.SemiBold,
                     fontFamily = FontFamily.Monospace,
                     color = loadColor(server.load),
                 )
                 Spacer(Modifier.height(3.dp))
                 Box(
                     modifier = Modifier
-                        .width(32.dp)
-                        .height(3.dp)
+                        .width(36.dp)
+                        .height(4.dp)
                         .clip(RoundedCornerShape(2.dp))
                         .background(BirdoWhite10),
                 ) {
@@ -423,7 +323,11 @@ private fun ServerCard(
                             .fillMaxHeight()
                             .fillMaxWidth(server.load / 100f)
                             .clip(RoundedCornerShape(2.dp))
-                            .background(loadColor(server.load)),
+                            .background(
+                                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                    listOf(loadColor(server.load).copy(alpha = 0.6f), loadColor(server.load))
+                                )
+                            ),
                     )
                 }
             }
@@ -433,12 +337,12 @@ private fun ServerCard(
             // Favorite star
             IconButton(
                 onClick = onToggleFavorite,
-                modifier = Modifier.size(32.dp),
+                modifier = Modifier.size(36.dp),
             ) {
                 Icon(
                     imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
                     contentDescription = if (isFavorite) stringResource(R.string.cd_remove_favorite) else stringResource(R.string.cd_add_favorite),
-                    tint = if (isFavorite) BirdoYellowLight else BirdoWhite20,
+                    tint = if (isFavorite) BirdoYellowLight else BirdoWhite40,
                     modifier = Modifier.size(18.dp),
                 )
             }
