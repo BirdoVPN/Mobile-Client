@@ -57,7 +57,6 @@ fun HomeScreen(
     val isDisconnecting = state.vpnState is VpnState.Disconnecting
     val isError = state.vpnState is VpnState.Error
     val isKillSwitchActive = state.killSwitchActive
-    @Suppress("UNUSED_VARIABLE") val tick = state.tick
 
     Column(modifier = Modifier.fillMaxSize()) {
         HomeTopBar(userEmail = userEmail, onLogout = onLogout)
