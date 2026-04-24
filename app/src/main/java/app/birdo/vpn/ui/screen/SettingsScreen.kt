@@ -1,8 +1,10 @@
 package app.birdo.vpn.ui.screen
 
-import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import app.birdo.vpn.ui.components.BirdoCard
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.Role
@@ -81,8 +83,8 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // ── Connection Section ───────────────────────────────
             item {
@@ -304,32 +306,36 @@ fun SettingsScreen(
             }
 
             item {
-                Surface(
+                val palette = BirdoColors.current
+                BirdoCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = Color(0xFFEF4444).copy(alpha = 0.06f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.25f)),
+                    cornerRadius = 16.dp,
+                    surface = Color(0xFFEF4444).copy(alpha = if (palette.isLight) 0.10f else 0.06f),
+                    border = null,
+                    contentPadding = PaddingValues(0.dp),
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.30f), RoundedCornerShape(16.dp))
                             .clickable(role = Role.Button) { showDeleteDialog = true }
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFFEF4444).copy(alpha = 0.12f)),
+                                .background(Color(0xFFEF4444).copy(alpha = 0.16f))
+                                .border(1.dp, Color(0xFFEF4444).copy(alpha = 0.30f), RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(Icons.Default.DeleteForever, null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
                         }
-                        Spacer(Modifier.width(14.dp))
+                        Spacer(Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(stringResource(R.string.settings_delete_account), color = Color(0xFFF87171), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text(stringResource(R.string.settings_delete_account_desc), color = BirdoWhite60, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                            Text(stringResource(R.string.settings_delete_account), color = Color(0xFFF87171), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(stringResource(R.string.settings_delete_account_desc), color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
                         }
                         Spacer(Modifier.width(8.dp))
                         Icon(Icons.Default.ChevronRight, null, tint = Color(0xFFF87171), modifier = Modifier.size(18.dp))
@@ -343,33 +349,22 @@ fun SettingsScreen(
             }
 
             item {
-                Surface(
+                val palette = BirdoColors.current
+                BirdoCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    color = BirdoBrand.Surface1,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
+                    cornerRadius = 16.dp,
+                    surface = palette.surface,
+                    border = app.birdo.vpn.ui.theme.BirdoBrand.GlassStrokeGradient,
+                    contentPadding = PaddingValues(16.dp),
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(BirdoBrand.PrimaryGradient),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Default.Shield, stringResource(R.string.cd_about), tint = Color.White, modifier = Modifier.size(20.dp))
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        app.birdo.vpn.ui.components.AppIconMark(size = 44.dp, cornerRadius = 12.dp)
                         Spacer(Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(stringResource(R.string.app_name), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                            Text(stringResource(R.string.settings_version, BuildConfig.APP_VERSION), color = BirdoWhite60, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
+                            Text(stringResource(R.string.app_name), color = palette.onBackground, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                            Text(stringResource(R.string.settings_version, BuildConfig.APP_VERSION), color = palette.onSurfaceMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
                         }
-                        Icon(Icons.Default.Verified, null, tint = BirdoBrand.PurpleSoft, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Verified, null, tint = palette.accent, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -472,14 +467,34 @@ private fun DeleteAccountDialog(
 
 @Composable
 private fun SectionHeader(title: String) {
+    val palette = BirdoColors.current
     Text(
         text = title.uppercase(),
-        color = BirdoWhite60,
+        color = palette.onSurfaceMuted,
         fontSize = 11.sp,
         fontWeight = FontWeight.SemiBold,
-        letterSpacing = 1.4.sp,
-        modifier = Modifier.padding(start = 8.dp, top = 18.dp, bottom = 6.dp),
+        letterSpacing = 1.5.sp,
+        modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 6.dp),
     )
+}
+
+@Composable
+private fun SettingIconChip(
+    icon: ImageVector,
+    iconColor: Color,
+    contentDescription: String? = null,
+) {
+    val palette = BirdoColors.current
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(palette.surfaceRaised)
+            .border(1.dp, palette.hairlineSoft, RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription, tint = iconColor, modifier = Modifier.size(18.dp))
+    }
 }
 
 @Composable
@@ -492,32 +507,26 @@ private fun SettingsToggle(
     onCheckedChange: (Boolean) -> Unit,
     testTag: String? = null,
 ) {
-    Surface(
+    val palette = BirdoColors.current
+    BirdoCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = BirdoBrand.Surface1,
-        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
+        cornerRadius = 16.dp,
+        surface = palette.surface,
+        border = app.birdo.vpn.ui.theme.BirdoBrand.GlassStrokeGradient,
+        contentPadding = PaddingValues(0.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(iconColor.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, title, tint = iconColor, modifier = Modifier.size(18.dp))
-            }
-            Spacer(Modifier.width(14.dp))
+            SettingIconChip(icon = icon, iconColor = iconColor, contentDescription = title)
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                Text(description, color = BirdoWhite60, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
             }
             Spacer(Modifier.width(8.dp))
             Switch(
@@ -526,11 +535,11 @@ private fun SettingsToggle(
                 modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.White,
-                    checkedTrackColor = BirdoBrand.Purple,
+                    checkedTrackColor = palette.accent,
                     checkedBorderColor = Color.Transparent,
-                    uncheckedThumbColor = BirdoWhite60,
-                    uncheckedTrackColor = BirdoWhite10,
-                    uncheckedBorderColor = BirdoBrand.HairlineSoft,
+                    uncheckedThumbColor = palette.onSurfaceMuted,
+                    uncheckedTrackColor = palette.surfaceRaised,
+                    uncheckedBorderColor = palette.hairlineSoft,
                 ),
             )
         }
@@ -546,35 +555,29 @@ private fun SettingsLink(
     onClick: () -> Unit,
     trailing: ImageVector = Icons.Default.ChevronRight,
 ) {
-    Surface(
+    val palette = BirdoColors.current
+    BirdoCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = BirdoBrand.Surface1,
-        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
+        cornerRadius = 16.dp,
+        surface = palette.surface,
+        border = app.birdo.vpn.ui.theme.BirdoBrand.GlassStrokeGradient,
+        contentPadding = PaddingValues(0.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(role = Role.Button, onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(iconColor.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, title, tint = iconColor, modifier = Modifier.size(18.dp))
-            }
-            Spacer(Modifier.width(14.dp))
+            SettingIconChip(icon = icon, iconColor = iconColor, contentDescription = title)
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                Text(description, color = BirdoWhite60, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
             }
             Spacer(Modifier.width(8.dp))
-            Icon(trailing, stringResource(R.string.cd_open), tint = BirdoWhite40, modifier = Modifier.size(18.dp))
+            Icon(trailing, stringResource(R.string.cd_open), tint = palette.onSurfaceFaint, modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -584,27 +587,21 @@ private fun ThemeModeSelector(
     currentMode: String,
     onModeSelected: (String) -> Unit,
 ) {
-    Surface(
+    val palette = BirdoColors.current
+    BirdoCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = BirdoBrand.Surface1,
-        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft),
+        cornerRadius = 16.dp,
+        surface = palette.surface,
+        border = app.birdo.vpn.ui.theme.BirdoBrand.GlassStrokeGradient,
+        contentPadding = PaddingValues(14.dp),
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(BirdoBrand.PurpleSoft.copy(alpha = 0.12f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Default.Palette, null, tint = BirdoBrand.PurpleSoft, modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(14.dp))
+                SettingIconChip(icon = Icons.Default.Palette, iconColor = palette.accent)
+                Spacer(Modifier.width(12.dp))
                 Column {
-                    Text("Theme", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    Text("Dark, light, or follow system", color = BirdoWhite60, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
+                    Text("Theme", color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Dark, light, or follow system", color = palette.onSurfaceMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -612,7 +609,7 @@ private fun ThemeModeSelector(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(BirdoWhite05)
+                    .background(palette.surfaceRaised)
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -621,8 +618,8 @@ private fun ThemeModeSelector(
                     Surface(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(9.dp),
-                        color = if (isSelected) BirdoBrand.Surface3 else Color.Transparent,
-                        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, BirdoBrand.HairlineSoft) else null,
+                        color = if (isSelected) palette.accent.copy(alpha = if (palette.isLight) 0.18f else 0.22f) else Color.Transparent,
+                        border = if (isSelected) BorderStroke(1.dp, palette.accent.copy(alpha = 0.55f)) else null,
                     ) {
                         Text(
                             text = label,
@@ -633,7 +630,7 @@ private fun ThemeModeSelector(
                             textAlign = TextAlign.Center,
                             fontSize = 13.sp,
                             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                            color = if (isSelected) Color.White else BirdoWhite60,
+                            color = if (isSelected) palette.accent else palette.onSurfaceMuted,
                         )
                     }
                 }

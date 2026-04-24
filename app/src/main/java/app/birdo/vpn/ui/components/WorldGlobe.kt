@@ -11,11 +11,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PointMode
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.ui.theme.BirdoColors
@@ -30,11 +33,11 @@ import kotlin.math.sqrt
 /**
  * Stylised orthographic-projection world globe with REAL continent silhouettes.
  *
- * Pure Compose Canvas, no GPU shaders / external libs. We rasterise the
- * visible hemisphere on a pixel grid, inverse-project each grid point to
- * (lat, lon), apply the current rotation, and stamp a small dot wherever
- * [WorldLandmask] reports land. The result is recognisable continent blobs
- * that rotate naturally with the sphere.
+ * Pre-computes the visible disc's per-pixel (px, py, latDeg, lonRel) grid ONCE
+ * per radius via [remember]. Per frame, just translates each lonRel by the
+ * current rotation, looks it up in [WorldLandmask], and batches all land
+ * pixels into a single [DrawScope.drawPoints] call. Dramatically faster than
+ * the old per-pixel `drawCircle` loop — holds 60 fps on mid-range phones.
  */
 @Composable
 fun WorldGlobe(
@@ -50,7 +53,8 @@ fun WorldGlobe(
         initialValue = 0f,
         targetValue = (2 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 90_000, easing = LinearEasing),
+            // Slower (120s) — the user said it felt "too much"; gentle drift.
+            animation = tween(durationMillis = 120_000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "rotation",
@@ -74,10 +78,20 @@ fun WorldGlobe(
         }
     }
 
+    // Pre-compute disc grid per radius (rebuilt only when radius changes).
+    var cachedRadius by remember { androidx.compose.runtime.mutableStateOf(0f) }
+    var discGrid by remember { androidx.compose.runtime.mutableStateOf(FloatArray(0)) }
+
     Canvas(modifier = modifier.fillMaxSize()) {
         val cx = size.width / 2f
         val cy = size.height / 2f
         val radius = (minOf(size.width, size.height) / 2f) * 0.92f
+
+        if (kotlin.math.abs(cachedRadius - radius) > 0.5f || discGrid.isEmpty()) {
+            discGrid = buildDiscGrid(radius, step = 5f)
+            cachedRadius = radius
+        }
+        val grid = discGrid
 
         // 1. Soft halo behind globe
         drawCircle(
@@ -104,42 +118,49 @@ fun WorldGlobe(
             center = Offset(cx, cy),
         )
 
-        // 3. Continent rasterisation — sample the visible disc and stamp dots
-        //    wherever the landmask reports land. Step size trades crispness
-        //    for performance; 4px at typical globe sizes gives a clean look.
-        val step = 4f
-        val r2 = radius * radius
-        val landFill = if (palette.isLight) Color(0xFF4C1D95).copy(alpha = 0.65f)
-                       else Color(0xFFC4B5FD).copy(alpha = 0.55f)
-        val rotDeg = effectiveRotation * 180.0 / PI
-        var py = -radius
-        while (py <= radius) {
-            var px = -radius
-            while (px <= radius) {
-                val d2 = px * px + py * py
-                if (d2 <= r2) {
-                    val nx = (px / radius).toDouble()
-                    val ny = (py / radius).toDouble()
-                    val nz = sqrt((1.0 - nx * nx - ny * ny).coerceAtLeast(0.0))
-                    val lat = -asin(ny) * 180.0 / PI
-                    val lonRel = atan2(nx, nz) * 180.0 / PI
-                    val lon = lonRel - rotDeg
-                    val lonN = ((lon % 360.0) + 540.0) % 360.0 - 180.0
-                    if (WorldLandmask.isLand(lat, lonN)) {
-                        // Limb-darkening: dim dots near the rim for a 3D feel
-                        val edge = (1.0 - sqrt(d2 / r2.toDouble())).toFloat().coerceIn(0f, 1f)
-                        val a = (0.55f + edge * 0.45f) * landFill.alpha
-                        drawCircle(
-                            color = landFill.copy(alpha = a),
-                            radius = 1.4f,
-                            center = Offset(cx + px, cy + py),
-                        )
-                    }
-                }
-                px += step
+        // 3. Continent rasterisation — single batched drawPoints call.
+        //    grid layout: [px, py, latDeg, lonRel, ...]
+        val landFill = if (palette.isLight) Color(0xFF4C1D95).copy(alpha = 0.85f)
+                       else Color(0xFFC4B5FD).copy(alpha = 0.75f)
+        val rotDeg = (effectiveRotation * 180f / PI.toFloat())
+        val landPoints = ArrayList<Offset>(grid.size / 4)
+        var i = 0
+        while (i < grid.size) {
+            val px = grid[i]
+            val py = grid[i + 1]
+            val lat = grid[i + 2]
+            val lonRel = grid[i + 3]
+            var lon = lonRel - rotDeg
+            lon = ((lon % 360f) + 540f) % 360f - 180f
+            if (WorldLandmask.isLand(lat.toDouble(), lon.toDouble())) {
+                landPoints.add(Offset(cx + px, cy + py))
             }
-            py += step
+            i += 4
         }
+        if (landPoints.isNotEmpty()) {
+            drawPoints(
+                points = landPoints,
+                pointMode = PointMode.Points,
+                color = landFill,
+                strokeWidth = 3f,
+                cap = StrokeCap.Round,
+            )
+        }
+
+        // 3b. Single radial vignette overlay for limb darkening.
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.Transparent,
+                    Color.Transparent,
+                    Color.Black.copy(alpha = if (palette.isLight) 0.18f else 0.30f),
+                ),
+                center = Offset(cx, cy),
+                radius = radius,
+            ),
+            radius = radius,
+            center = Offset(cx, cy),
+        )
 
         // 4. Subtle rim highlight
         drawCircle(
@@ -238,3 +259,31 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcChord(
 
 fun globeRadius(size: Size): Float =
     (minOf(size.width, size.height) / 2f) * 0.92f
+
+/**
+ * Pre-computes the disc grid: for every sample point inside the visible
+ * hemisphere, packs (px, py, latDeg, lonRel) into a single FloatArray.
+ */
+private fun buildDiscGrid(radius: Float, step: Float): FloatArray {
+    if (radius <= 0f) return FloatArray(0)
+    val r2 = radius * radius
+    val out = ArrayList<Float>()
+    var py = -radius
+    while (py <= radius) {
+        var px = -radius
+        while (px <= radius) {
+            val d2 = px * px + py * py
+            if (d2 <= r2) {
+                val nx = (px / radius)
+                val ny = (py / radius)
+                val nz = sqrt((1f - nx * nx - ny * ny).coerceAtLeast(0f))
+                val lat = (-asin(ny.toDouble()) * 180.0 / PI).toFloat()
+                val lonRel = (atan2(nx.toDouble(), nz.toDouble()) * 180.0 / PI).toFloat()
+                out.add(px); out.add(py); out.add(lat); out.add(lonRel)
+            }
+            px += step
+        }
+        py += step
+    }
+    return out.toFloatArray()
+}

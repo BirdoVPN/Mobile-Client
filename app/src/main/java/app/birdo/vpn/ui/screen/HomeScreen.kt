@@ -76,10 +76,14 @@ fun HomeScreen(
         ) {
             // Hero globe — sized as a fraction of the available height so the
             // layout adapts to any screen (small phones, tablets, foldables).
+            // PERF: pause the rotation animation while the server bottom sheet
+            // is open — a 60fps animating Canvas underneath the modal sheet
+            // makes drag/scroll feel laggy.
             WorldGlobe(
                 servers = state.servers,
                 selectedServerId = state.selectedServer?.id,
                 isConnected = isConnected,
+                autoRotate = !showServerSheet,
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.55f)
@@ -190,8 +194,8 @@ private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .heightIn(min = 52.dp)
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                    .heightIn(min = 60.dp)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 BrandLockup()
