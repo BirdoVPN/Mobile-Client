@@ -1,6 +1,7 @@
 package app.birdo.vpn.ui.components
 
 import android.util.Base64
+import androidx.compose.ui.graphics.Path
 
 /**
  * Real-world land/sea mask at 0.5° resolution (720 cols × 360 rows = 259200 cells).
@@ -619,5 +620,187 @@ internal object WorldLandmask {
         val r = (((90.0 - latDeg) / 180.0) * ROWS).toInt().coerceIn(0, ROWS - 1)
         val c = (((lonDeg + 180.0) / 360.0) * COLS).toInt().coerceIn(0, COLS - 1)
         return cells[r * COLS + c]
+    }
+
+    // ── Smoothed coastline path ────────────────────────────────────────────
+    //
+    // Building a marching-squares Path from the 720x360 mask costs ~0.5 MB of
+    // line segments and ~80 ms one time. We do it once and cache the result
+    // in normalised coordinates (lat/lon -> [0,1] on a unit rectangle) so the
+    // map renderer can scale and translate it cheaply per frame instead of
+    // emitting hundreds of thousands of tiny rectangles.
+
+    /** A polyline in normalised (u, v) space where u = (lon+180)/360 and v = (90-lat)/180. */
+    class CoastlinePolygon(val points: FloatArray)
+
+    private val coastlines: List<CoastlinePolygon> by lazy { buildCoastlines() }
+
+    /** Public accessor for the cached coast outlines. */
+    fun coastlinePolygons(): List<CoastlinePolygon> = coastlines
+
+    /** Pre-built filled landmass [Path] in normalised [0,1] space. */
+    private val landPathNormalised: Path by lazy {
+        Path().apply {
+            for (poly in coastlines) {
+                val pts = poly.points
+                if (pts.size < 4) continue
+                moveTo(pts[0], pts[1])
+                var i = 2
+                while (i + 1 < pts.size) {
+                    lineTo(pts[i], pts[i + 1])
+                    i += 2
+                }
+                close()
+            }
+        }
+    }
+
+    fun landPathNormalised(): Path = landPathNormalised
+
+    private fun buildCoastlines(): List<CoastlinePolygon> {
+        // Marching squares: walk every 2x2 cell and emit one or two short line
+        // segments depending on the bit pattern of the 4 corners (each corner
+        // is a mask cell). We then chain neighbouring segments into polylines
+        // by hashing endpoints to a tolerance grid.
+        val rows = ROWS
+        val cols = COLS
+        // Each segment is 4 floats: (x1,y1,x2,y2) in normalised coords.
+        val segs = ArrayList<Float>(rows * cols / 4)
+
+        val invCols = 1f / cols
+        val invRows = 1f / rows
+
+        fun u(c: Int): Float = c * invCols
+        fun v(r: Int): Float = r * invRows
+
+        for (r in 0 until rows - 1) {
+            for (c in 0 until cols) {
+                val cR = (c + 1) % cols
+                val tl = if (cells[r * cols + c]) 1 else 0
+                val tr = if (cells[r * cols + cR]) 1 else 0
+                val bl = if (cells[(r + 1) * cols + c]) 1 else 0
+                val br = if (cells[(r + 1) * cols + cR]) 1 else 0
+                val mask = (tl shl 3) or (tr shl 2) or (br shl 1) or bl
+                if (mask == 0 || mask == 15) continue
+                val u0 = u(c); val u1 = u(c + 1)
+                val v0 = v(r); val v1 = v(r + 1)
+                val um = (u0 + u1) * 0.5f
+                val vm = (v0 + v1) * 0.5f
+                // Emit segments along the cell edges where the boundary crosses.
+                // For each pattern, we add up to two segments connecting the
+                // mid-edge points.
+                fun add(ax: Float, ay: Float, bx: Float, by: Float) {
+                    segs.add(ax); segs.add(ay); segs.add(bx); segs.add(by)
+                }
+                when (mask) {
+                    1 -> add(u0, vm, um, v1)
+                    2 -> add(um, v1, u1, vm)
+                    3 -> add(u0, vm, u1, vm)
+                    4 -> add(u1, vm, um, v0)
+                    5 -> { // saddle: treat as connected
+                        add(u0, vm, um, v0)
+                        add(u1, vm, um, v1)
+                    }
+                    6 -> add(um, v0, um, v1)
+                    7 -> add(u0, vm, um, v0)
+                    8 -> add(um, v0, u0, vm)
+                    9 -> add(um, v0, um, v1)
+                    10 -> { // saddle
+                        add(um, v0, u1, vm)
+                        add(u0, vm, um, v1)
+                    }
+                    11 -> add(um, v0, u1, vm)
+                    12 -> add(u0, vm, u1, vm)
+                    13 -> add(u1, vm, um, v1)
+                    14 -> add(u0, vm, um, v1)
+                }
+            }
+        }
+
+        // Chain segments into polylines using a quantised endpoint hash.
+        // Tolerance is half a cell which is plenty: marching squares produces
+        // segments that share exact endpoints, so collisions are clean.
+        val tol = invCols * 0.25f
+        fun key(x: Float, y: Float): Long {
+            val kx = (x / tol).toInt()
+            val ky = (y / tol).toInt()
+            return (kx.toLong() shl 32) or (ky.toLong() and 0xFFFFFFFFL)
+        }
+
+        // Each segment endpoint maps to up to two segment indices.
+        val endpointMap = HashMap<Long, IntArray>(segs.size / 4)
+        val segCount = segs.size / 4
+        val used = BooleanArray(segCount)
+        fun segStart(i: Int) = key(segs[i * 4], segs[i * 4 + 1])
+        fun segEnd(i: Int) = key(segs[i * 4 + 2], segs[i * 4 + 3])
+        fun addEndpoint(k: Long, i: Int) {
+            val cur = endpointMap[k]
+            if (cur == null) {
+                endpointMap[k] = intArrayOf(i, -1)
+            } else if (cur[1] == -1) {
+                cur[1] = i
+            }
+            // If both slots are full, drop the extra (rare T-junction at saddles).
+        }
+        for (i in 0 until segCount) {
+            addEndpoint(segStart(i), i)
+            addEndpoint(segEnd(i), i)
+        }
+
+        val polys = ArrayList<CoastlinePolygon>()
+        for (start in 0 until segCount) {
+            if (used[start]) continue
+            used[start] = true
+            val pts = ArrayList<Float>()
+            // Seed with this segment going forward.
+            pts.add(segs[start * 4]); pts.add(segs[start * 4 + 1])
+            pts.add(segs[start * 4 + 2]); pts.add(segs[start * 4 + 3])
+            // Extend forward.
+            var tailKey = segEnd(start)
+            while (true) {
+                val cands = endpointMap[tailKey] ?: break
+                var nxt = -1
+                for (cand in cands) {
+                    if (cand >= 0 && cand != start && !used[cand]) { nxt = cand; break }
+                }
+                if (nxt < 0) break
+                used[nxt] = true
+                val sx = segs[nxt * 4]; val sy = segs[nxt * 4 + 1]
+                val ex = segs[nxt * 4 + 2]; val ey = segs[nxt * 4 + 3]
+                if (key(sx, sy) == tailKey) {
+                    pts.add(ex); pts.add(ey); tailKey = key(ex, ey)
+                } else {
+                    pts.add(sx); pts.add(sy); tailKey = key(sx, sy)
+                }
+            }
+            // Extend backward from the seed start.
+            var headKey = segStart(start)
+            while (true) {
+                val cands = endpointMap[headKey] ?: break
+                var nxt = -1
+                for (cand in cands) {
+                    if (cand >= 0 && cand != start && !used[cand]) { nxt = cand; break }
+                }
+                if (nxt < 0) break
+                used[nxt] = true
+                val sx = segs[nxt * 4]; val sy = segs[nxt * 4 + 1]
+                val ex = segs[nxt * 4 + 2]; val ey = segs[nxt * 4 + 3]
+                val (nx, ny, newKey) = if (key(ex, ey) == headKey) {
+                    Triple(sx, sy, key(sx, sy))
+                } else {
+                    Triple(ex, ey, key(ex, ey))
+                }
+                // Prepend (insert at start). We accumulate then reverse later
+                // for efficiency, so just push and we'll fix up afterwards.
+                pts.add(0, nx); pts.add(1, ny)
+                headKey = newKey
+            }
+            if (pts.size >= 6) {
+                val arr = FloatArray(pts.size)
+                for (i in pts.indices) arr[i] = pts[i]
+                polys.add(CoastlinePolygon(arr))
+            }
+        }
+        return polys
     }
 }
