@@ -1,22 +1,28 @@
 package app.birdo.vpn.ui.components
 
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -33,11 +39,15 @@ import kotlin.math.sqrt
 /**
  * Stylised orthographic-projection world globe with REAL continent silhouettes.
  *
+ * v1.3.2 — higher detail (3px sample step), latitude/longitude graticule for
+ * a more cartographic feel, and Mullvad-style "zoom into the connection" on
+ * connect: the camera longitude animates so the selected server is centered,
+ * the globe scales up, and the connection arc draws in progressively.
+ *
  * Pre-computes the visible disc's per-pixel (px, py, latDeg, lonRel) grid ONCE
  * per radius via [remember]. Per frame, just translates each lonRel by the
  * current rotation, looks it up in [WorldLandmask], and batches all land
- * pixels into a single [DrawScope.drawPoints] call. Dramatically faster than
- * the old per-pixel `drawCircle` loop — holds 60 fps on mid-range phones.
+ * pixels into a single [DrawScope.drawPoints] call.
  */
 @Composable
 fun WorldGlobe(
@@ -46,6 +56,8 @@ fun WorldGlobe(
     isConnected: Boolean,
     modifier: Modifier = Modifier,
     autoRotate: Boolean = true,
+    userLat: Double = 51.51,
+    userLon: Double = -0.13,
 ) {
     val palette = BirdoColors.current
     val transition = rememberInfiniteTransition(label = "globe")
@@ -53,7 +65,7 @@ fun WorldGlobe(
         initialValue = 0f,
         targetValue = (2 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            // Slower (120s) — the user said it felt "too much"; gentle drift.
+            // Slower (120s) — gentle drift while idle.
             animation = tween(durationMillis = 120_000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
@@ -69,8 +81,6 @@ fun WorldGlobe(
         label = "pulse",
     )
 
-    val effectiveRotation = if (autoRotate) rotation else 0f
-
     // Pre-compute server coordinates once per server list change.
     val serverPoints = remember(servers) {
         servers.mapNotNull { s ->
@@ -78,17 +88,58 @@ fun WorldGlobe(
         }
     }
 
+    // ── Connect-zoom animation ────────────────────────────────────────────
+    // When connected with a known server, animate the camera so the midpoint
+    // between the user and the server sits on the centre meridian, AND scale
+    // the whole globe up slightly (Mullvad-style focus).
+    val selectedCoord = remember(selectedServerId, serverPoints) {
+        serverPoints.firstOrNull { it.first == selectedServerId }?.let { it.second to it.third }
+    }
+    val zoomActive = isConnected && selectedCoord != null
+    val targetLonDeg: Float = if (zoomActive) {
+        val midLon = midpointLon(userLon.toFloat(), selectedCoord!!.second.toFloat())
+        -midLon
+    } else 0f
+    // Convert idle rotation (radians) to degrees and unwrap towards target so
+    // the transition is the short way around.
+    val idleRotDeg = (rotation * 180f / PI.toFloat())
+    val animatedFocusRotDeg by animateFloatAsState(
+        targetValue = targetLonDeg,
+        animationSpec = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+        label = "focusRot",
+    )
+    val focusScale by animateFloatAsState(
+        targetValue = if (zoomActive) 1.18f else 1f,
+        animationSpec = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+        label = "focusScale",
+    )
+    val arcProgress by animateFloatAsState(
+        targetValue = if (zoomActive) 1f else 0f,
+        animationSpec = tween(durationMillis = 1100, delayMillis = if (zoomActive) 600 else 0),
+        label = "arcProgress",
+    )
+
+    val effectiveRotDeg = when {
+        zoomActive -> animatedFocusRotDeg
+        autoRotate -> idleRotDeg
+        else -> 0f
+    }
+    val effectiveRotation = effectiveRotDeg * (PI.toFloat() / 180f)
+
     // Pre-compute disc grid per radius (rebuilt only when radius changes).
     var cachedRadius by remember { androidx.compose.runtime.mutableStateOf(0f) }
     var discGrid by remember { androidx.compose.runtime.mutableStateOf(FloatArray(0)) }
 
-    Canvas(modifier = modifier.fillMaxSize()) {
+    Canvas(modifier = modifier.fillMaxSize().scale(focusScale)) {
         val cx = size.width / 2f
         val cy = size.height / 2f
         val radius = (minOf(size.width, size.height) / 2f) * 0.92f
 
         if (kotlin.math.abs(cachedRadius - radius) > 0.5f || discGrid.isEmpty()) {
-            discGrid = buildDiscGrid(radius, step = 5f)
+            // step 3f — ~2.7× more samples than v1.3.1 for crisper continents.
+            // Still O(n²) over the disc, but drawPoints batches the result so
+            // the per-frame cost is the lookup + alloc only.
+            discGrid = buildDiscGrid(radius, step = 3f)
             cachedRadius = radius
         }
         val grid = discGrid
@@ -118,10 +169,15 @@ fun WorldGlobe(
             center = Offset(cx, cy),
         )
 
+        // 2b. Graticule — latitude (parallels) every 30°, longitude (meridians)
+        //     every 30°. Drawn before continents so land sits on top.
+        val graticuleColor = palette.hairline.copy(alpha = if (palette.isLight) 0.18f else 0.14f)
+        drawGraticule(cx, cy, radius, effectiveRotation, graticuleColor)
+
         // 3. Continent rasterisation — single batched drawPoints call.
         //    grid layout: [px, py, latDeg, lonRel, ...]
-        val landFill = if (palette.isLight) Color(0xFF4C1D95).copy(alpha = 0.85f)
-                       else Color(0xFFC4B5FD).copy(alpha = 0.75f)
+        val landFill = if (palette.isLight) Color(0xFF4C1D95).copy(alpha = 0.88f)
+                       else Color(0xFFC4B5FD).copy(alpha = 0.80f)
         val rotDeg = (effectiveRotation * 180f / PI.toFloat())
         val landPoints = ArrayList<Offset>(grid.size / 4)
         var i = 0
@@ -142,7 +198,7 @@ fun WorldGlobe(
                 points = landPoints,
                 pointMode = PointMode.Points,
                 color = landFill,
-                strokeWidth = 3f,
+                strokeWidth = 2.2f,
                 cap = StrokeCap.Round,
             )
         }
@@ -193,15 +249,19 @@ fun WorldGlobe(
             )
         }
 
-        // 6. Connection arc — from device (~UK) to selected server
-        if (isConnected && selectedServerId != null) {
-            val sel = serverPoints.firstOrNull { it.first == selectedServerId } ?: return@Canvas
-            val to = projectOrtho(sel.second, sel.third, effectiveRotation, radius)
-            val from = projectOrtho(51.51, -0.13, effectiveRotation, radius)
+        // 6. Connection arc + endpoints — from user location to selected server,
+        //    drawn progressively (Mullvad-style) once connected.
+        if (zoomActive && selectedCoord != null) {
+            val to = projectOrtho(selectedCoord.first, selectedCoord.second, effectiveRotation, radius)
+            val from = projectOrtho(userLat, userLon, effectiveRotation, radius)
             if (to.visible && from.visible) {
                 val a = Offset(cx + from.x, cy + from.y)
                 val b = Offset(cx + to.x, cy + to.y)
-                drawArcChord(a, b, palette.accent)
+                drawArcChord(a, b, palette.accent, progress = arcProgress)
+                // User pin (smaller, white core)
+                drawCircle(color = palette.accent.copy(alpha = 0.30f), radius = 9f, center = a)
+                drawCircle(color = Color.White, radius = 3.2f, center = a)
+                drawCircle(color = palette.accent, radius = 1.6f, center = a)
             }
         }
 
@@ -241,20 +301,93 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcChord(
     a: Offset,
     b: Offset,
     color: Color,
+    progress: Float = 1f,
 ) {
     val mid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
     val centre = Offset(size.width / 2f, size.height / 2f)
     val dir = Offset(mid.x - centre.x, mid.y - centre.y)
     val len = sqrt((dir.x * dir.x + dir.y * dir.y).toDouble()).toFloat().coerceAtLeast(1f)
-    val lift = 28f
+    val chord = sqrt(((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).toDouble()).toFloat()
+    val lift = (chord * 0.22f).coerceIn(18f, 80f)
     val ctrl = Offset(mid.x + dir.x / len * lift, mid.y + dir.y / len * lift)
-    val path = androidx.compose.ui.graphics.Path().apply {
+    val full = Path().apply {
         moveTo(a.x, a.y)
         quadraticTo(ctrl.x, ctrl.y, b.x, b.y)
     }
-    drawPath(path = path, color = color.copy(alpha = 0.22f), style = Stroke(width = 6f))
-    drawPath(path = path, color = color.copy(alpha = 0.95f), style = Stroke(width = 1.6f))
-    drawCircle(color = color, radius = 3.5f, center = b)
+    val p = progress.coerceIn(0f, 1f)
+    val drawn = if (p >= 1f) full else Path().also { dst ->
+        val measure = PathMeasure().apply { setPath(full, false) }
+        measure.getSegment(0f, measure.length * p, dst, true)
+    }
+    // Outer glow (always full when any progress) and the crisp inner stroke.
+    drawPath(path = full, color = color.copy(alpha = 0.18f * p), style = Stroke(width = 7f))
+    drawPath(path = drawn, color = color.copy(alpha = 0.95f), style = Stroke(width = 2.0f, cap = StrokeCap.Round))
+    if (p >= 0.98f) {
+        // Server endpoint pulse — only after the line completes.
+        drawCircle(color = color.copy(alpha = 0.30f), radius = 10f, center = b)
+        drawCircle(color = Color.White, radius = 3.6f, center = b)
+        drawCircle(color = color, radius = 1.8f, center = b)
+    }
+}
+
+/** Returns the midpoint longitude (in degrees) on the shorter arc. */
+private fun midpointLon(a: Float, b: Float): Float {
+    var d = b - a
+    while (d > 180f) d -= 360f
+    while (d < -180f) d += 360f
+    var mid = a + d / 2f
+    while (mid > 180f) mid -= 360f
+    while (mid < -180f) mid += 360f
+    return mid
+}
+
+/** Latitude / longitude graticule lines (every 30°). */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGraticule(
+    cx: Float,
+    cy: Float,
+    radius: Float,
+    rotation: Float,
+    color: Color,
+) {
+    val stroke = Stroke(width = 0.8f)
+    // Meridians — lines of constant longitude, every 30°.
+    var lon = -180
+    while (lon < 180) {
+        val path = Path()
+        var first = true
+        var lat = -90
+        while (lat <= 90) {
+            val proj = projectOrtho(lat.toDouble(), lon.toDouble(), rotation, radius)
+            if (proj.visible) {
+                val x = cx + proj.x; val y = cy + proj.y
+                if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
+            } else {
+                first = true
+            }
+            lat += 3
+        }
+        drawPath(path, color, style = stroke)
+        lon += 30
+    }
+    // Parallels — lines of constant latitude, every 30° (skip poles).
+    var plat = -60
+    while (plat <= 60) {
+        val path = Path()
+        var first = true
+        var plon = -180
+        while (plon <= 180) {
+            val proj = projectOrtho(plat.toDouble(), plon.toDouble(), rotation, radius)
+            if (proj.visible) {
+                val x = cx + proj.x; val y = cy + proj.y
+                if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
+            } else {
+                first = true
+            }
+            plon += 3
+        }
+        drawPath(path, color, style = stroke)
+        plat += 30
+    }
 }
 
 fun globeRadius(size: Size): Float =

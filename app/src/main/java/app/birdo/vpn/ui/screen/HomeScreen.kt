@@ -74,11 +74,9 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .weight(1f),
         ) {
-            // Hero globe — sized as a fraction of the available height so the
-            // layout adapts to any screen (small phones, tablets, foldables).
-            // PERF: pause the rotation animation while the server bottom sheet
-            // is open — a 60fps animating Canvas underneath the modal sheet
-            // makes drag/scroll feel laggy.
+            // Hero globe — centered in the available area so it reads as the
+            // visual focal point. Pause rotation while the server bottom
+            // sheet is open to keep sheet drag at 60fps.
             WorldGlobe(
                 servers = state.servers,
                 selectedServerId = state.selectedServer?.id,
@@ -87,7 +85,7 @@ fun HomeScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.55f)
-                    .align(Alignment.TopCenter),
+                    .align(Alignment.Center),
             )
 
             Column(
@@ -134,14 +132,6 @@ fun HomeScreen(
                     exit = fadeOut(),
                 ) {
                     StatsRow(state = state)
-                }
-
-                AnimatedVisibility(visible = isConnected) {
-                    FeatureBadgesRow(
-                        killSwitchEnabled = killSwitchEnabled,
-                        stealth = state.stealthActive,
-                        quantum = state.quantumActive,
-                    )
                 }
 
                 AnimatedVisibility(visible = isKillSwitchActive) {
@@ -282,11 +272,9 @@ private fun StatusPill(
 private fun LocationLabel(state: VpnUiState) {
     val isConnected = state.vpnState is VpnState.Connected
     val server = state.connectedServer
-    val ip = state.publicIp
     val text = when {
-        isConnected && server != null && ip != null -> "$server  ·  $ip"
         isConnected && server != null -> server
-        isConnected && ip != null -> ip
+        isConnected -> stringResource(R.string.status_protected)
         else -> "Your real IP is exposed"
     }
     val color = if (isConnected) BirdoWhite80 else BirdoWhite60
@@ -481,28 +469,6 @@ private fun StatTile(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(top = 2.dp),
             )
-        }
-    }
-}
-
-// ── Feature Badges ─────────────────────────────────────────────────────────
-
-@Composable
-private fun FeatureBadgesRow(killSwitchEnabled: Boolean, stealth: Boolean, quantum: Boolean) {
-    val any = killSwitchEnabled || stealth || quantum
-    if (!any) return
-    Row(
-        modifier = Modifier.padding(top = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        if (killSwitchEnabled) {
-            BirdoBadge(text = stringResource(R.string.kill_switch_active), tone = BadgeTone.Success, icon = Icons.Default.Shield)
-        }
-        if (stealth) {
-            BirdoBadge(text = "Stealth", tone = BadgeTone.Info, icon = Icons.Default.VisibilityOff)
-        }
-        if (quantum) {
-            BirdoBadge(text = "Quantum", tone = BadgeTone.Brand, icon = Icons.Default.Lock)
         }
     }
 }

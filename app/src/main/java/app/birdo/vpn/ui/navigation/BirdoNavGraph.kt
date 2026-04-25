@@ -352,6 +352,14 @@ fun BirdoNavGraph(
                             vpnViewModel.disconnect()
                             authViewModel.logout()
                         },
+                        onOpenUrl = { settingsViewModel.openUrl(it) },
+                        onDeleteAccount = { password ->
+                            vpnViewModel.disconnect()
+                            authViewModel.deleteAccount(password)
+                        },
+                        isDeletingAccount = authState.isDeletingAccount,
+                        deleteAccountError = authState.deleteAccountError,
+                        onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                     )
                 }
             }
