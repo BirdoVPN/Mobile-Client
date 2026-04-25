@@ -145,9 +145,9 @@ fun HomeScreen(
                 },
             )
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(10.dp))
 
-            HeroConnectButton(
+            CompactConnectButton(
                 isConnected = isConnected,
                 isConnecting = isConnecting,
                 isDisconnecting = isDisconnecting,
@@ -267,6 +267,78 @@ private fun StatusPill(
     }
     Box(modifier = Modifier.testTag(TestTags.VPN_STATUS)) {
         BirdoBadge(text = text, tone = tone, icon = icon, pulseDot = pulse)
+    }
+}
+
+// ── Compact Connect Button ─────────────────────────────────────────────────
+
+/**
+ * Pill-style connect/disconnect action sized to match [ServerSelector] so the
+ * two stack as a tidy pair under a much larger globe. Replaces the previous
+ * 168dp [HeroConnectButton] which dominated the screen.
+ */
+@Composable
+private fun CompactConnectButton(
+    isConnected: Boolean,
+    isConnecting: Boolean,
+    isDisconnecting: Boolean,
+    onClick: () -> Unit,
+) {
+    val busy = isConnecting || isDisconnecting
+    val brush: Brush = when {
+        isConnected -> Brush.linearGradient(listOf(BirdoGreen, Color(0xFF166534)))
+        busy -> Brush.linearGradient(listOf(BirdoBrand.PurpleSoft, BirdoBrand.PurpleDeep))
+        else -> BirdoBrand.PrimaryGradient
+    }
+    val label = when {
+        isConnected -> stringResource(R.string.disconnect)
+        isConnecting -> stringResource(R.string.connecting)
+        isDisconnecting -> stringResource(R.string.disconnecting)
+        else -> stringResource(R.string.connect)
+    }
+    val shadowColor = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(60.dp)
+            .shadow(
+                elevation = 14.dp,
+                shape = RoundedCornerShape(16.dp),
+                ambientColor = shadowColor,
+                spotColor = shadowColor,
+            )
+            .clip(RoundedCornerShape(16.dp))
+            .background(brush)
+            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
+            .clickable(enabled = !busy, role = Role.Button, onClick = onClick)
+            .testTag(TestTags.CONNECT_BUTTON),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color.White,
+                    trackColor = Color.White.copy(alpha = 0.25f),
+                    strokeWidth = 2.4.dp,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.PowerSettingsNew,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = label,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
