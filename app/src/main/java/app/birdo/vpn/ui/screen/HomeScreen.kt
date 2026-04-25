@@ -66,97 +66,101 @@ fun HomeScreen(
     var showServerSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         HomeTopBar(userEmail = userEmail, onLogout = onLogout)
 
+        Spacer(Modifier.height(10.dp))
+
+        StatusPill(
+            isConnected = isConnected,
+            isConnecting = isConnecting,
+            isDisconnecting = isDisconnecting,
+            isError = isError,
+        )
+
+        // Hero globe — large and pushed toward the top of the screen so it
+        // reads as the focal point. We composition-gate it behind the bottom
+        // sheet so dragging the server list isn't competing with continent
+        // path rebuilds for the GPU.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
+                .weight(1f, fill = true),
+            contentAlignment = Alignment.Center,
         ) {
-            // Hero globe — centered in the available area so it reads as the
-            // visual focal point. Pause rotation while the server bottom
-            // sheet is open to keep sheet drag at 60fps.
-            WorldGlobe(
-                servers = state.servers,
-                selectedServerId = state.selectedServer?.id,
-                isConnected = isConnected,
-                autoRotate = !showServerSheet,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.55f)
-                    .align(Alignment.Center),
+            if (!showServerSheet) {
+                WorldGlobe(
+                    servers = state.servers,
+                    selectedServerId = state.selectedServer?.id,
+                    isConnected = isConnected,
+                    autoRotate = true,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            AnimatedVisibility(
+                visible = isConnected,
+                enter = fadeIn(tween(BirdoMotion.Standard, delayMillis = 80)) +
+                    slideInVertically(initialOffsetY = { 16 }),
+                exit = fadeOut(),
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    StatsRow(state = state)
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+
+            AnimatedVisibility(visible = isKillSwitchActive) {
+                Column { KillSwitchAlert(); Spacer(Modifier.height(10.dp)) }
+            }
+
+            if (isError) {
+                ErrorBanner((state.vpnState as VpnState.Error).message)
+                Spacer(Modifier.height(10.dp))
+            }
+            if (state.error != null) {
+                ErrorBanner(state.error)
+                Spacer(Modifier.height(10.dp))
+            }
+
+            ServerSelector(
+                state = state,
+                enabled = !isConnecting && !isDisconnecting,
+                onClick = {
+                    if (state.servers.isNotEmpty()) {
+                        showServerSheet = true
+                    } else {
+                        onOpenServers()
+                    }
+                },
             )
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
 
-                StatusPill(
-                    isConnected = isConnected,
-                    isConnecting = isConnecting,
-                    isDisconnecting = isDisconnecting,
-                    isError = isError,
-                )
+            HeroConnectButton(
+                isConnected = isConnected,
+                isConnecting = isConnecting,
+                isDisconnecting = isDisconnecting,
+                onClick = {
+                    when {
+                        isConnected -> onDisconnect()
+                        isConnecting || isDisconnecting -> Unit
+                        else -> onConnect()
+                    }
+                },
+            )
 
-                Spacer(Modifier.height(8.dp))
-                LocationLabel(state = state)
-
-                // Flexible spacer so the connect button always sits below the
-                // globe regardless of screen height.
-                Spacer(Modifier.weight(1f))
-
-                HeroConnectButton(
-                    isConnected = isConnected,
-                    isConnecting = isConnecting,
-                    isDisconnecting = isDisconnecting,
-                    onClick = {
-                        when {
-                            isConnected -> onDisconnect()
-                            isConnecting || isDisconnecting -> Unit
-                            else -> onConnect()
-                        }
-                    },
-                )
-
-                Spacer(Modifier.height(16.dp))
-
-                AnimatedVisibility(
-                    visible = isConnected,
-                    enter = fadeIn(tween(BirdoMotion.Standard, delayMillis = 80)) +
-                        slideInVertically(initialOffsetY = { 16 }),
-                    exit = fadeOut(),
-                ) {
-                    StatsRow(state = state)
-                }
-
-                AnimatedVisibility(visible = isKillSwitchActive) {
-                    KillSwitchAlert()
-                }
-
-                if (isError) ErrorBanner((state.vpnState as VpnState.Error).message)
-                if (state.error != null) ErrorBanner(state.error)
-
-                Spacer(Modifier.weight(0.4f))
-
-                ServerSelector(
-                    state = state,
-                    enabled = !isConnecting && !isDisconnecting,
-                    onClick = {
-                        if (state.servers.isNotEmpty()) {
-                            showServerSheet = true
-                        } else {
-                            onOpenServers()
-                        }
-                    },
-                )
-
-                Spacer(Modifier.height(8.dp))
-            }
+            Spacer(Modifier.height(12.dp))
         }
     }
 
@@ -264,27 +268,6 @@ private fun StatusPill(
     Box(modifier = Modifier.testTag(TestTags.VPN_STATUS)) {
         BirdoBadge(text = text, tone = tone, icon = icon, pulseDot = pulse)
     }
-}
-
-// ── Location Label ─────────────────────────────────────────────────────────
-
-@Composable
-private fun LocationLabel(state: VpnUiState) {
-    val isConnected = state.vpnState is VpnState.Connected
-    val server = state.connectedServer
-    val text = when {
-        isConnected && server != null -> server
-        isConnected -> stringResource(R.string.status_protected)
-        else -> "Your real IP is exposed"
-    }
-    val color = if (isConnected) BirdoWhite80 else BirdoWhite60
-    Text(
-        text = text,
-        color = color,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Medium,
-        textAlign = TextAlign.Center,
-    )
 }
 
 // ── Hero Connect Button ────────────────────────────────────────────────────

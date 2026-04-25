@@ -140,7 +140,7 @@ fun WorldGlobe(
     Canvas(modifier = modifier.fillMaxSize().scale(focusScale)) {
         val cx = size.width / 2f
         val cy = size.height / 2f
-        val radius = (minOf(size.width, size.height) / 2f) * 0.92f
+        val radius = (minOf(size.width, size.height) / 2f) * 0.96f
 
         // 1. Outer atmosphere glow — soft halo extending past the sphere.
         drawCircle(
@@ -272,27 +272,16 @@ private fun projectOrtho(
     return Projection(x.toFloat(), y.toFloat(), z >= 0)
 }
 
-private data class ProjectedXY(val x: Float, val y: Float, val z: Float)
-
-private fun projectFast(
-    latDeg: Double,
-    lonDeg: Double,
-    rotationRadians: Float,
-    radius: Float,
-): ProjectedXY {
-    val lat = latDeg * PI / 180.0
-    val lon = lonDeg * PI / 180.0 + rotationRadians
-    val x = (cos(lat) * sin(lon)) * radius
-    val y = (-sin(lat)) * radius
-    val z = cos(lat) * cos(lon)
-    return ProjectedXY(x.toFloat(), y.toFloat(), z.toFloat())
-}
-
 /**
- * Builds a single [Path] containing one tiny quadrilateral per LAND mask
- * cell on the visible hemisphere. The four corners of each cell are
- * projected onto the sphere so adjacent quads merge into solid continent
- * silhouettes when the path is filled.
+ * Builds a single [Path] containing one tiny quadrilateral per LAND sub-cell
+ * on the visible hemisphere, at 2× mask resolution with neighbour smoothing
+ * for cleaner continent edges. The four corners of each sub-cell are
+ * projected onto the sphere so adjacent quads merge into solid silhouettes
+ * when filled.
+ *
+ * Trig values for each row (lat) and each column (lon+rotation) are
+ * pre-computed once per build so the inner loop is just multiplies, even
+ * though we now process 4× the cell count.
  */
 private fun buildLandPath(
     cx: Float,
@@ -303,45 +292,93 @@ private fun buildLandPath(
     val path = Path()
     val rows = WorldLandmask.rowCount()
     val cols = WorldLandmask.colCount()
-    val latStep = 180.0 / rows
-    val lonStep = 360.0 / cols
-    for (r in 0 until rows) {
-        val lat0 = 90.0 - r * latStep
-        val lat1 = lat0 - latStep
-        for (c in 0 until cols) {
-            if (!WorldLandmask.isLandCell(r, c)) continue
-            val lon0 = -180.0 + c * lonStep
-            val lon1 = lon0 + lonStep
+    // 2× sub-sampling: each mask cell becomes a 2×2 grid of sub-cells, with
+    // each sub-cell's land bit derived from its four neighbouring mask cells
+    // so the silhouette has smoother diagonals.
+    val sub = 2
+    val subRows = rows * sub
+    val subCols = cols * sub
+    val latStep = 180.0 / subRows
+    val lonStep = 360.0 / subCols
 
-            // Centre visibility cull.
-            val latC = (lat0 + lat1) * 0.5
-            val lonC = (lon0 + lon1) * 0.5
-            val latCRad = latC * PI / 180.0
-            val lonCRad = lonC * PI / 180.0 + rotation
-            val zC = cos(latCRad) * cos(lonCRad)
-            if (zC < -0.06) continue
+    // Pre-compute per-row lat factors and per-col lon+rotation factors.
+    val rowEdges = subRows + 1
+    val sinLat = DoubleArray(rowEdges)
+    val cosLat = DoubleArray(rowEdges)
+    for (r in 0..subRows) {
+        val lat = (90.0 - r * latStep) * PI / 180.0
+        sinLat[r] = sin(lat)
+        cosLat[r] = cos(lat)
+    }
+    val colEdges = subCols + 1
+    val sinLon = DoubleArray(colEdges)
+    val cosLon = DoubleArray(colEdges)
+    for (c in 0..subCols) {
+        val lon = (-180.0 + c * lonStep) * PI / 180.0 + rotation
+        sinLon[c] = sin(lon)
+        cosLon[c] = cos(lon)
+    }
 
-            val p0 = projectFast(lat0, lon0, rotation, radius)
-            val p1 = projectFast(lat0, lon1, rotation, radius)
-            val p2 = projectFast(lat1, lon1, rotation, radius)
-            val p3 = projectFast(lat1, lon0, rotation, radius)
-            if (p0.z < 0f && p1.z < 0f && p2.z < 0f && p3.z < 0f) continue
+    // Sub-cell land test with neighbour smoothing.
+    fun isSubLand(sr: Int, sc: Int): Boolean {
+        // Map sub-cell to mask coords and look at the 2×2 mask neighbourhood
+        // (top-left + neighbours one cell over). A sub-cell is "land" if at
+        // least 2 of its four parent cells are land — this rounds off
+        // outside corners and fills inside corners, giving cleaner edges.
+        val mr = sr / sub
+        val mc = sc / sub
+        val rOff = if (sr % sub == 0) -1 else 0
+        val cOff = if (sc % sub == 0) -1 else 0
+        var count = 0
+        for (dr in 0..1) for (dc in 0..1) {
+            val rr = mr + rOff + dr
+            val cc = ((mc + cOff + dc) + cols) % cols
+            if (rr in 0 until rows && WorldLandmask.isLandCell(rr, cc)) count++
+        }
+        return count >= 2
+    }
 
-            val xC = ((cos(latCRad) * sin(lonCRad)) * radius).toFloat()
-            val yC = ((-sin(latCRad)) * radius).toFloat()
-            val x0 = if (p0.z >= 0f) p0.x else xC
-            val y0 = if (p0.z >= 0f) p0.y else yC
-            val x1 = if (p1.z >= 0f) p1.x else xC
-            val y1 = if (p1.z >= 0f) p1.y else yC
-            val x2 = if (p2.z >= 0f) p2.x else xC
-            val y2 = if (p2.z >= 0f) p2.y else yC
-            val x3 = if (p3.z >= 0f) p3.x else xC
-            val y3 = if (p3.z >= 0f) p3.y else yC
+    for (r in 0 until subRows) {
+        // Row visibility bounds skip: at very high latitudes near the poles
+        // most cells project to a tiny arc — the cull below handles this.
+        val sLat0 = sinLat[r]; val cLat0 = cosLat[r]
+        val sLat1 = sinLat[r + 1]; val cLat1 = cosLat[r + 1]
+        for (c in 0 until subCols) {
+            if (!isSubLand(r, c)) continue
+            val sLon0 = sinLon[c]; val cLon0 = cosLon[c]
+            val sLon1 = sinLon[c + 1]; val cLon1 = cosLon[c + 1]
 
-            path.moveTo(cx + x0, cy + y0)
-            path.lineTo(cx + x1, cy + y1)
-            path.lineTo(cx + x2, cy + y2)
-            path.lineTo(cx + x3, cy + y3)
+            // Cell centre visibility cull (cheap z test).
+            val zA = cLat0 * cLon0; val zB = cLat0 * cLon1
+            val zC = cLat1 * cLon0; val zD = cLat1 * cLon1
+            if (zA < -0.05 && zB < -0.05 && zC < -0.05 && zD < -0.05) continue
+
+            // Project the four corners.
+            val x0 = (cLat0 * sLon0 * radius).toFloat()
+            val y0 = (-sLat0 * radius).toFloat()
+            val x1 = (cLat0 * sLon1 * radius).toFloat()
+            val y1 = (-sLat0 * radius).toFloat()
+            val x2 = (cLat1 * sLon1 * radius).toFloat()
+            val y2 = (-sLat1 * radius).toFloat()
+            val x3 = (cLat1 * sLon0 * radius).toFloat()
+            val y3 = (-sLat1 * radius).toFloat()
+
+            // Compute centre fallback for hidden corners so polygon stays convex.
+            val xCent = ((x0 + x2) * 0.5f)
+            val yCent = ((y0 + y2) * 0.5f)
+            val px0 = if (zA >= 0.0) x0 else xCent
+            val py0 = if (zA >= 0.0) y0 else yCent
+            val px1 = if (zB >= 0.0) x1 else xCent
+            val py1 = if (zB >= 0.0) y1 else yCent
+            val px2 = if (zD >= 0.0) x2 else xCent
+            val py2 = if (zD >= 0.0) y2 else yCent
+            val px3 = if (zC >= 0.0) x3 else xCent
+            val py3 = if (zC >= 0.0) y3 else yCent
+
+            path.moveTo(cx + px0, cy + py0)
+            path.lineTo(cx + px1, cy + py1)
+            path.lineTo(cx + px2, cy + py2)
+            path.lineTo(cx + px3, cy + py3)
             path.close()
         }
     }
