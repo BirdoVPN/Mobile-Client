@@ -1,114 +1,608 @@
 package app.birdo.vpn.ui.components
 
+import android.util.Base64
+
 /**
- * Coarse 144×72 equirectangular land/sea mask of the world.
+ * Real-world land/sea mask at 0.5° resolution (720 cols × 360 rows = 259200 cells).
  *
- * Each row is 144 columns wide (longitude −180→+180, ~2.5° per cell).
- * 72 rows cover latitude +90→−90 (~2.5° per cell).
- * '#' = land, ' ' = sea/ice.
+ * Generated from Natural Earth 50m physical land vectors (public domain) by
+ * `scripts/generate-landmask.js`. Each cell is rasterised by ray-casting the
+ * land polygons in equirectangular pixel space, giving accurate continent
+ * outlines plus large islands (UK, Japan, Madagascar, Iceland, Cuba, NZ, etc.)
+ * and most named smaller islands at this density.
  *
- * Hand-tuned to recognisable continent silhouettes. This is intentionally
- * stylised — it's a UI flourish, not cartographic data. The grid is
- * sampled by [WorldGlobe] when rasterising the sphere so continents render
- * as filled blobs of "land" pixels rather than empty meridian dots.
+ * Storage: 720×360 bits → 32400 bytes → 43200-char Base64
+ * literal, decoded once into a BooleanArray on first access.
  */
 internal object WorldLandmask {
-    // 72 rows × 144 cols. 90°N at top, 90°S at bottom. 180°W at left.
-    private val rows = arrayOf(
-        // 90 N
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        // 80 N — N. Greenland, Canadian arctic
-        "                                                       #####################                                                                    ",
-        "                                                  ###############################                                                               ",
-        "                                              ##################################                                                                ",
-        "                                          ######################################                                                                ",
-        // 70 N — Alaska / Canada / Greenland / Siberia
-        "                              #################################################                ###############################################",
-        "                            #####################################################              ###############################################",
-        "                          #######################################################              ###############################################",
-        "                        ##########################################################             ###############################################",
-        // 60 N — Canada, UK, Scandinavia, Russia
-        "                       ############################################                ##  ##############################################          ",
-        "                       ###########################################              ######  ##############################################          ",
-        "                        #########################################             ########  ##############################################          ",
-        "                         ######################################             ##########  ###############################################         ",
-        // 50 N — US/Canada border, Europe, Russia
-        "                          ################################                ##############  ###############################################      ",
-        "                           ##############################                #################  ##############################################      ",
-        "                            ###########################                  #################  #############################################       ",
-        "                             #########################                  ###################  ############################################       ",
-        // 40 N — USA, Mediterranean, China
-        "                              #####################                       #################  ##########################################         ",
-        "                               ###################                          ###############  #########################################          ",
-        "                                #################                           ##############   ########################################           ",
-        "                                 ###############                              ###########    #######################################            ",
-        // 30 N — N Africa, Arabia, India, China
-        "                                  ############                                ##########       ##############################                   ",
-        "                                  ###########                  ###################  ###         ##############################                  ",
-        "                                  #########                  ##########################          ############################                   ",
-        "                                  #######                   ############################          ##########################                    ",
-        // 20 N — Sahara, Saudi, India
-        "                                                            ##############################         ########################                     ",
-        "                                                            ##############################          #######################                     ",
-        "                                  ##                       ##############################            #####################                      ",
-        "                                  ###                     ##############################              #################                         ",
-        // 10 N — W Africa, India tip, SE Asia
-        "                              #######                       ###############################             ############                            ",
-        "                            #########                       #############################                ##########                             ",
-        "                           #########                          ###########################                  ##  ##                               ",
-        "                          ##########                            ########################                                                        ",
-        //  0 — Equator, S America head, C Africa, Indonesia
-        "                          ###########                            #####################                          ## ###                          ",
-        "                         ###############                          ##################                              ####                          ",
-        "                         ################                          ################                                                             ",
-        "                         #################                          ##############                                                              ",
-        // 10 S — Brazil, S Africa
-        "                          #################                          ###########                                                                ",
-        "                          #################                          ##########                                                                 ",
-        "                           ###############                            ########                                                                  ",
-        "                            #############                              ######                                                                   ",
-        // 20 S — Brazil, S Africa, Australia
-        "                             ###########                                ####                              ###################                   ",
-        "                              #########                                 ###                              ######################                 ",
-        "                              ########                                 ##                                #######################                ",
-        "                               ######                                  #                                 ######################                 ",
-        // 30 S — Argentina, S Africa, Australia
-        "                                #####                                                                    ####################                   ",
-        "                                ####                                                                       #################                    ",
-        "                                ###                                                                          ##############                     ",
-        "                                ##                                                                            #############                     ",
-        // 40 S — Patagonia
-        "                                #                                                                                                               ",
-        "                                #                                                                                                               ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        // 50 S
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        // 60 S
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        "                                                                                                                                                ",
-        // 70 S — Antarctica
-        "    ############################################################################################################################################",
-        "    ############################################################################################################################################",
-        "    ############################################################################################################################################",
-        "    ############################################################################################################################################",
-        // 80 S
-        "    ############################################################################################################################################",
-        "    ############################################################################################################################################",
-        "    ############################################################################################################################################",
-        "    ############################################################################################################################################",
-    )
+    private const val COLS = 720
+    private const val ROWS = 360
 
-    private const val COLS = 144
-    private const val ROWS = 72
+    private val packedB64: String =
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAMT5//8PAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQD7///kBAAAA4OP/////DwAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAADw8f////8fAE74sP////8fAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP7//////3/A9/////////9/PoAf" +
+        "AAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAA8MDP//f//x/A////////////z/9/AAAAAAAAAAAAAAAAAAAAAIAPAAAAAAAA" +
+        "AADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/IP7//j/f+D/////" +
+        "//////////8HAAAAAAAAAAAAAAAAAABgfeCHzwEAAAAAAAD8DwAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAA/7/5/P//D/z//////////////30AAAAAAAAAAEAjBwAAAADA" +
+        "A08bAAAAAAAAAAD/AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA///z" +
+        "z//fAcD//////////////wwAAAAAAADgL8/8HwAAAAAAAAAAAAAAAAAAAADz/wAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4AMAgP+///8BAOD//////////////wMAAAAAAABA" +
+        "fz/AAAAAAAAAAAAAAAAAAAAAAADgPzgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAP444P/9//8H8P//////////////PwAAAAAAAAAg//8HAAAAAAAAAAAAAAAAAAAAAAAAAP4D" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAODxAVf+//+B////////////////" +
+        "HwIAAAAAAAAAhD8cAAAAAAAAAAAAAAAAAAAAAAAAgD8QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAMgPADgAHwDv/w8A+P///////////////xEAAAAAAAAAAB/4AwAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/gEAYAAAAAj8bwAAwP//" +
+        "/////////////wUAAAAAAAAA4AcAAAAAAAAAAAAAAAAAAAAAAAQAAPgHAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAACA/xhgAADAP/j//w8A4P//////////////FwAAAAAAAAAAAAMAAAAA" +
+        "AAAAAAAAAPADAAAAAAAAAPw/AAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAD4Ay/wALYf" +
+        "wD8AwAAAwH/5////////////fwQAAAAAAAAAAAAAAAAAAAAAAAAAzP8AAAAAAACAg////wUAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAzP/BH/gPAD8APwAAAAAA/P///////////wEAAAAA" +
+        "AAAAAAAAAAAAAAAAAADg/wEAAAAAAAD+/////w0AAAAAgPj9AQAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAA4P//zwEPn////wEAAAAA8P//////////fw0AAAAAAAAAAAAAAAAAAAAAAAD8AwAAAAAAAP7/" +
+        "/////wcAAAAAAPzf8wUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPAHAAAAHP///QAAAAAAwP//////" +
+        "////vwEAAAAAAAAAAAAAAAAAAAAAAAD/AAAAAAAA0P///////wAAAAAAAGAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAID/GAAAAAAAAAAAAAAAAAAAgP///////////wAAAAAAAAAAAAAAAAAAAAAAAMAf" +
+        "AAAAAAAA4P//////DwMAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD//wAAMMA//Ac+QAAA" +
+        "AAAAAP/////////ffwAAAAAAAAAAAAAAAAAAAAAAAPAHAAAAAAAAuv//////2QQAAAAAAAA8AAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAID/fw4AdYAP/sHPv38AAAAAAP7////////nAQAAAAAAAAAAAAAA" +
+        "AAAAAAAAAPgAAABwAAD+7/////8P//8fgP8BAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMD/9+cx" +
+        "H5g/zuDnfwAAAAAAAPv////////3DwAAAAAAAAAAAAAAAAAAAAAAAH4AAAD8QUD+//////////v/" +
+        "//8DAAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD/8f9/P8B/DPDHP+8DAAAAAP7/////////DAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAH4AAAD+QfDw//////////////8GAMD//AMAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAIB//P//fgA+DvDv//8TAAAAAN7/////////DwAAAAAAAAAAAAAAAAAAAAAAgH8AAAD+ef+n" +
+        "//////////////8HAoD/8wMAAAAAAAAAHwAAAADAAAAAAAAAAAAOwP//fwCAP4Cf////AwAAAND/" +
+        "//////+fHwAAAAAAAAAAAAAAAAAAAAAAAPoAAMD/+fDf//////////////8H//f//38AAAAAAADA" +
+        "AAAAAAD9fwAAAAAAAAAA8P///wCAf8D/////OwAAADj+//////8eHwAAAAAAAAAAAABA1gYAAAAA" +
+        "AOAHAID/8f+/////////////////////////fwAAAAAAAAAAAOD///8AAAAAAAIAAL7//x+A/wH4" +
+        "//v/nwAAANj///////9zAAAAAAAAAAAAAACw+z8AAAAAAABgAMD/8f/f////////////////////" +
+        "/////wAAAAAAAAAAAPz/////HwAA90ccwP///zcYfgDggMH//wIAAPz6////////AQAAAAAAAAAA" +
+        "AGD//7cDAAAAAACAH8D/+f///////////////////////////wAA5/8BAAAAAP7//////wd/////" +
+        "A/D/+w/46CPgHyT+/wcAAAD8//////8/AAAAAAAAAAAAAPz///9fAAAADgAA/gP/8f//////////" +
+        "////////////////////wf9/AwAA8P///////////////+c/HBD44ffAH4D4fwAAAAD8//////8P" +
+        "AAAAAAAAAAAA4Pn/////BwAAAgxw/j/84/v///////////////////////////v/////HwAA8P//" +
+        "/////////////wOAOQB4+H/0B4Dj/wsAAID+/////w8AAAAAAAAAAAAAKP//////PwAP4Nf/////" +
+        "4/f//////////////////////////////////wEAgP///////////////wcf/8fN/v/4D+CD/38A" +
+        "ACD9////PwAAAAAAAAAAAAAAwP///////wEH/P//////4///////////////////////////////" +
+        "/////wMAAP///////////////////v/////9H0AA//8DAPD/////HwAAAAAAAAAAAAAAgP//////" +
+        "/wMH////////8P////////////////////////////////////MBAPj//////////////////v//" +
+        "//9/DwDA//8fAMD/////DwAAAAAAAAAAAAAA+P/////z/wP+//////9z/P//////////////////" +
+        "/////////////////f8P8MD///////////////////////9PAAD4//kHAOD////vAQAADIADAAAA" +
+        "AAAA9P////8P/HD/////////////////////////////////////////////+f8H/v//////////" +
+        "/////////////893AADg/+AHAMD9//8fAAAAnv8HAAAAAAAA/v8f/v8/AP7/////////////////" +
+        "////////////////////////////AX8A+P/////////////////////////xAOD//8MBAID///8A" +
+        "AAAA+P8fAAAAAAAA/P8H+P8fAP//////////////////////////////////////////////ADgA" +
+        "+M/////////////////////////5B/D7/xcAAADx/38AAAAA+f8PAAAAAACA//8D/v8/Pv//////" +
+        "/////////////////////////////////////789AAAAAMD////////////////////////4H0DA" +
+        "/x8AAAD+/18AAAAA8P8BAAAAAADg//8D////8P//////////////////////////////////////" +
+        "//////8fAAAAAMD/////////////////////fw/8eACA/38AAAD+/38AAAAAgB8AAAAAAAD6///B" +
+        "//////////////////////////////////////////////////8fAAB4APj/////////////////" +
+        "/////wcgABgAfjwAAAD8/z8AAAAAAAAAAAAAAAD//z/w////////////////////////////////" +
+        "//////////////////8/AAAAwP//////////////////////fwAADgAA5CMAAAD4/w8AAAAAAAAA" +
+        "AAAAAID//w/8//////////////////////////////////////////////////97AAAA4P//////" +
+        "////////////////PwAAAvE7gA8AAADg/wcAAAAAAAAAAAQAAPj//wf4////////////////////" +
+        "/////////////////////////z////8AAAAA8P//////////////////////HwAAAPH/AAAAAADg" +
+        "/wcAAAAAAAAAAAAAAPz//wf4////////////////////////////////////////////Bz7//w8A" +
+        "AAAA4P////P/////////////////DwAAAOD/AQAAAACA/wcAAAAAAAAAAAAAAPz//wP4////////" +
+        "////////////////////////////////////AQf//wEAAAAAQP7//374////////////////BwAA" +
+        "AOD/HwAAAAAA8QcAAAAAAAAAAAAAAPz//wf4////////////////////////////////////////" +
+        "////AMH/fwAAAAAAnP//f/6D////////////////BwAAAOD/n0AAAAAAYAMAAAAAAAAAAAAgAPz/" +
+        "/5/wB/z///////////////////////////////////////8/APAnEAAAAAAAAPD/Pw8AwP7/////" +
+        "////////AwAAAOD/H+AAAAAAAAAAAAAAAAAAAAAAAPT//z8AAP7/////////////////////////" +
+        "//////////////8fAHwAAAAAAAAAAPD/DwMAAPz/////////////AwAAAPD/H+ABAAAAAAAAAAAA" +
+        "AAAAAAAAAPTf/x+A//////////////////////////////////////8fEAA/AD8AAAAAAAAAABDa" +
+        "HwAAAHD/////////////FwAAAPj/b/gDAAAAAAAAAAAAAAAAAAAAAPjH/wOA////////////////" +
+        "//////////////////////8PAAAAgJ8AAAAAAAAAAADgzwAAAAD7////////////PwAAAOD///8D" +
+        "AAAAAAAAAAAAAAAAAOQBAOCB/wEQ/v////////////////////////////////////8BAAAA4A8A" +
+        "AAAAAAAAAADgcQAAAADp////////////fwAAAMD///8PAAAAAAAAAAAAAAAAAOAAAACA/yEA/v//" +
+        "//////////////////////////////////8AAAAA/D8AAAAAAAAAAAB4OAAAAADr////////////" +
+        "fwAAAID///8PAAAAAAAAAAAAAAAAAPgPAAAY/xE4/v//////////////////////////////////" +
+        "/z8AAAAA/D8AAAAAAAAAAAAcAAAAAACM/////////////38AAID///8fAAAAAAAAAAAAAAAAAPAH" +
+        "AAAe/gP8/////////////////////////////////////x8AAAAA/z8AAAAAAAAAAIAHAAAAAACk" +
+        "//////////////8AAIb///8fAAAAAAAAAAAAAAAAAOAHAAA//AD8////////////////////////" +
+        "/////////////w8AAAAA/38AAAAAAAAAAPAAAAAAAABg/v////////////8HAMD///9/AAAAAAAA" +
+        "AAAAAAAAAMgPAAAPDQD8/////////////////////////////////////wMAAACA/w8AAAAAAAAA" +
+        "AEwAAAAAAADg////////////////AfD///9/AQAAAAAAAAAAAAAAAMIfAAD2IQD8////////////" +
+        "/////////////////////////wAAAACA/w8AAAAAAAAAgAMAAAAAAABA8P//////////////D/7/" +
+        "////DwAAAAAAAAAAAAAAgB8eAADOABj/////////////////////////////////////PwgAAACA" +
+        "/w+AAAAAAAAAAAAAAAAAAAAA8P//////////////B/7/////BwAAAAAAAAAAAAAA8B9+AAA8A///" +
+        "/////////////////////////////////////6MgAAAA/wAAAAAAAAAABAAAAAAAAABA+P//////" +
+        "////////D/z/////fAAAAAAAAAAAAAAA8A/8AAD+7///////////////////////////////////" +
+        "/////+chAAAA/wAAAAAAAACAAAAAAAAAAACAoP//////////////D/z//////wAAAAAAAAAAAAAA" +
+        "4I//Afj///////////////////////////////////////////83AAAA/wAAAAAAAAAAAAAAAAAA" +
+        "AAAAof//////////////T/z//////wAAAAAAAAAAAAAA4A//B/7/////////////////////////" +
+        "//////////////////93AAAAHwAAAAAAAAgAAAAAAAAAAAAAAv7/////////////D/j//////wEA" +
+        "AAAAAAAAAAAA+If/B/7///////////////////////////////////////////8/AAAAHgAAAAAA" +
+        "YAAAAAAAAAAAAAAAAP//////////////f/z/////fwAAAAAAAAAAAAAAcMD/A///////////////" +
+        "//////////////////////////////9zAAAADgAAAAAAAAAAAAAAAAAAAAAAAP7/////////////" +
+        "//7/////xwAAAAAAAAAAAAAAAAD8x/////////////////////////////////////////////9x" +
+        "AAAABgAAAAAAAAAAAAAAAAAAAAAAgPn/////////////////////wwAAAAAAAAAAAAAAAIA/+P//" +
+        "//////////////////////////////////////////9xAAAAAQAAAAAAAAAAAAAAAAAAAAAAAP//" +
+        "/////////////////w/yYAAAAAAAAAAAAAAAACAB+P//////////////////////////////////" +
+        "///////////xAADAAAAAAAAAAAAAAAAAAAAAAAAAADz//////////////////wMDsAAAAAAAAAAA" +
+        "AAAAAAAA/v/////////////////////////////////////////////xAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAPD8/////////////////wAM8B0AAAAAAAAAAAAAAADg////////////////////////" +
+        "//////////////////////8xAQAAAAAAAAAAAAAAAAAAAAAAAAAAAMD5////////////////P38A" +
+        "+A8AAAAAAAAAAAAAAADi//////////////////////////////////////////////8wAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAID4////////////////338A/B8AAAAAAAAAAAAAAID/////////////" +
+        "//////////////////////////////////8QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAID7////////" +
+        "////////7z8A/mcAAAAAAAAAAAAAAAD+////////////////////////////////////////////" +
+        "/38QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD7/////////////////z8AADIAAAAAAAAAAAAAAADw" +
+        "////////////3////////////////////////////////z8wAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAD//////////////////79AACAAAAAAAAAAAAAAAADw////////////4///D/z/////////////" +
+        "/////////////x9wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+//////////////+//3/mAAAAAAAA" +
+        "AAAAAAAAAADA/////////59/4P//A/z//////////////////////////w8QAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAD///////////////////+jAAAAAAAAAAAAAAAAAADA////+////w888P//APz/" +
+        "/////////////////////////wcAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAD////////////////3" +
+        "/w8/AAAAAAAAAAAAAAAAAADA////+P///wf8/f9/gP///////////////////////////wMYAAEA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAD//////////////////+cDAAAAAAAAAAAAAAAAAADA////wf//" +
+        "/wMY+P8/wP///////////////////////////wEwQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////" +
+        "////////////P3AAAAAAAAAAAAAAAAAAAADg///5wf///wEAwP8/4P//////////////////////" +
+        "/////wB4BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////////////////DzAAAAAAAAAAAAAAAAAA" +
+        "AADg/3/gA////wEAgP9/wP//////////////////////////fwD4AwAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAID/////////////////BwAAAAAAAAAAAAAAAAAAwP//fxjgD/z//wAAAP5/gP//////////" +
+        "////////////////HgD4BwAAAAAAAAAAAAAAAAAAAAAAAAAAAID/////////////////AwAAAAAA" +
+        "AAAAAAAAAAAAwP//PwDQD/D//wAAAPh/AP7///////////////////////9/BAD/AAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAID/////////////////AwAAAAAAAAAAAAAAAAAAgP//PwCGH8D//wAAAPj/" +
+        "AP7///////////////////////8fAABhAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////////////" +
+        "////BwAAAAAAAAAAAAAAAAAAwP//PwAG/oD//wB+APj/AfL///////////////////////8PAAAB" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD///////////////8/AAAAAAAAAAAAAAAAAAAAgP//DwAA" +
+        "+IH//4P/A/z/A+D///////////////////////8HAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/" +
+        "//////////////8/AAAAAAAAAAAAAAAAAAAAgP//AwAH4If/cvD/////B+T/////////////////" +
+        "////8/8HAAAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAID///////////////8PAAAAAAAAAAAAAAAA" +
+        "AAAAwP//AQAGwJPf4f//////B/7/////////////////////8f8BAAAPAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAD///////////////8PAAAAAAAAAAAAAAAAAAAAwP//YAAGAIE/8P//////B/j/////" +
+        "//////////////9/eH4AAAAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD//////////////38FAAAA" +
+        "AAAAAAAAAAAAAAAA4P9/AAAGAAN+8P//////B/j///////////////////8/CHgAAAAPAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAD+/////////////38DAAAAAAAAAAAAAAACAAAA4P//AAAAAAE8wP//" +
+        "////A/D///////////////////8HAPgAAIAHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8////////" +
+        "/////z8DAAAAAAAAAAAAAAAAAAAAwP9/AAAAgAHI4f//////A/D///////////////////8PAPwB" +
+        "AIADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADw/////////////38BAAAAAAAAAAAAAAAgAAAAwP8/" +
+        "AAAAPgA64P//////A/D///////////////////8/AuADAMADAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAD4/////////////38AAAAAAAAAAAAAAAAAAAAAwP8PAAAIOAA4gP//////H/D/////////////" +
+        "//////8/H8AHAOADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADw//////////////8AAAAAAAAAAAAA" +
+        "AAAAAAAAAPgEwPs/IAAAgJ9f////P/z/////////////////////B/AHAP4BAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAADw//////////////8AAAAAAAAAAAAAAAAAAAAAABAA/v8fAAAAAAgO////////" +
+        "////////////////////AeAHBP8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADg//////////////8B" +
+        "AAAAAAAAAAAAAAAAAAAAABCA//8/AAAAAAAA////////////////////////////AOAHAP8DAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAADA/////////////38AAAAAAAAAAAAAAAAAAAAAAHDh//8/AACA" +
+        "FwAM//////////////////////////9/AOAH/j8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA////" +
+        "/////////38AAAAAAAAAAAAAAAAAAAAAAPj///9/AAAAAAAG//////////////////////////8/" +
+        "ACAA3xkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v///////////w8AAAAAAAAAAAAAAAAAAAAA" +
+        "APj///8PAAAAAACA////////////////////////////AQDE+QEAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAA8P///////////wMAAAAAAAAAAAAAAAAAAAAAAP7///8/AAAAAACA////////////////" +
+        "////////////AQAongAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4P///////////wEAAAAAAAAA" +
+        "AAAAAAAAAAAAgP////8/AAAAAADA////////////////////////////ARD4AgAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAA4P///////////wAAAAAAAAAAAAAAAAAAAEAAwP//////DwAcAADA////" +
+        "////////////////////////AwDyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP//////////" +
+        "fwAAAAAAAAAAAAAAAAAAAAAA4P//////fwA/AADA////////////////////////////BwBgAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgP//////////PwAAAAAAAAAAAAAAAAAAAAAA4P//////" +
+        "fwD/AwDg////////////////////////////DwB4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "gMP/////////HwAAAAAAAAAAAAAAAAAAAAAA8P///////wH/f/Dx////////////////////////" +
+        "////BwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMf/////////HwAAAAAAAAAAAAAAAAAA" +
+        "AAAA8P///////w//////////////////////////////////BwAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAMf//////5fwHwAAAAAAAAAAAAAAAAAAAAAA4P//////////////////////////" +
+        "////////////////BQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI7/////yx8gPgAAAAAA" +
+        "AAAAAAAAAAAAAAAA8P//////////////////4f//////////////////////DwAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAADz/////AywAPAAAAAAAAAAAAAAAAAAAAAAA+P/////////////d" +
+        "////4P//////////////////////DwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADj/////" +
+        "AQAAeAAAAAAAAAAAAAAAAAAAABAA/P/////////////f////wf//////////////////////BwAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADL+//8/AAAAeAAAAAAAAAAAAAAAAAAAAEAA/v//" +
+        "///////////7////gf//////////////////////AwAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAHT4//8fAAAAfAAAAAAAAAAAAAAAAAAAAADA//////////////+H////A///////////////" +
+        "////////AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPj4//8fAAAA+AAAAAAAAAAAAAAA" +
+        "AAAAAADg//////////////8P////B/z/////////////////////AQAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAMDx//8fAAAA8AAAAAAAAAAAAAAAAAAAAADg//////////////8P////D7j8" +
+        "//////////////////9/AAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIDh//8fAAAA8AAA" +
+        "AAAAAAAAAAAAAAAAAAD4//////////////8P/v//DwD8//////////////////9/AIAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAADh//8/AAAA4AAAAAAAAAAAAAAAAAAAAAD4////////////" +
+        "//8f/P//TwD5//////////////////9/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACD" +
+        "//8fAAAAQAAAAAAAAAAAAAAAAAAAAAD8//////////////8//P//X4ABXOD///////////////9/" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH//8fAAAAAAgAAAAAAAAAAAAAAAAAAAD8" +
+        "//////////////8//P//f+ABAMD///////////////8fDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAO/v8fAAAAABAAAAAAAAAAAAAAAAAAAAD+//////////////9/+P///+ADAID/////" +
+        "//////////8PBgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY/P8fAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAD///////////////9/4P////8PAAD///////////////8HBwAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAQ+P8PAAAAAAAAAAAAAAAAAAAAAAAAAAD///////////////9/4P//" +
+        "//8/AAD+//////////////8BBwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8P8PAAAA" +
+        "/wEIAAAAAAAAAAAAAAAAAID/////////////////wP////9/AADg/////9///////z8AAwAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4P8PAACA8QcAAAAAAAAAAAAAAAAAAID/////////" +
+        "////////wf//////AAD8/P///z///////wcAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAA4P8fAAAABB8AAAAAAAAAAAAAAAAAAMD/////////////////w/////9/AAD4/v///wf/////" +
+        "/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP8fAPADAHgAAAAAAAAAAAAAAAAA" +
+        "AMD/////////////////w/////8/AADw/v//PwD///9/EAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA" +
+        "AAAAAAAAAAAAAAAA4P8/APgDAPAAAAAAAAAAAAAAAAAAAID/////////////////g/////8fAAAg" +
+        "/P//PwD+//8/EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4P8/APgBAOAPAAAA" +
+        "AAAAAAAAAAAAAAD/////////////////A/////8vAAAA/P//HwD8//8fAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAwAAAAAAAAAAAAAA4P9/APgBAADgBgAAAAAAAAAAAAAAAID/////////////////" +
+        "B/z///8HAAAA/v//AwD4//8POAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAwP//" +
+        "APwBAADAPwAAAAAAAAAAAAAAAID/////////////////B/z///8PAAAA/P//AwD4//8PHgAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AP4BAACAfwAAAAAAAAAAAAAAAAD/////" +
+        "////////////B/z///8DAAAA/P//AQDw//8HHgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAPz/9/8AAHjwSxwAAAAAAAAAAAAAAAD/////////////////H/j///8BAAAA/P//AADg" +
+        "//8PAAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD///8AAAAAAEAAAAAAAAAA" +
+        "AAAAAAD/////////////////H/D//38AAAAA/P9/AADg//8fAAAADgAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAMD//38AAAAAAAAAAAAAAAAAAAAAAAD/////////////////P+D//z8A" +
+        "AAAA/P8fAADg//8/AAAAHgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+/38AAAAA" +
+        "AAAAAAAAAAAAAAAAAID/////////////////P+D//wcAAAAA+P8fAADg+v9/AAAAHgAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4+38AAAAAAAAwAAAAAAAAAAAAAID/////////////" +
+        "////P8D//wEAAAAA+P8DAADw+P//AAAADgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AADA4H//AAAAAAAAAAAAAAAAAAAAAID/////////////////f+D//wAAAAAA+P8BAAAA+P//AQAA" +
+        "BwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP//AAAAAAAAAAAAAAAAAAAAAcD/" +
+        "////////////////f+D/fwAAAAAA8P8AAAAA8P//AwAABwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAgP//AQAAAAAAAAAAAAAAAAAAAOD//////////////////8P/BwAAAAAA8P8A" +
+        "AAAA8P//AwAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AwAAAAAAAAAA" +
+        "AAAAAAAAAMD//////////////////8f/AwAAAAAA4P8AAAAA8P//AwAAJgAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAPD/AQAAAAAAAAAAAAAAAAAAAID//////////////////69/" +
+        "AAAAAAAA4P8AAAAA8P//AwAA1QEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAID+" +
+        "AQAAAAAgAAAAAAAAAAAAAMD//////////////////98HAAAAAAAA4P8BAAAA4Pz/BwAAhgAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+AQAAAAAAAAAAAAAAAAAAAMD/////////" +
+        "/////////78BAAAAAAAAwP8AAAAC4Pz/BwAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAD8AQAAAwAAAAAAAAAAAAAAAID//////////////////38AAAAAAAAAwP8AAAAA4OD/" +
+        "AwAAxAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4AQCAAQAAAAAAAAAAAAAA" +
+        "AAD+/////////////////z8AIAAAAAAAgP8AAAAC4MD/AwAAEAQAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAADwAADweAAAAAAAAAAAAAAAAAD//////////////////38APgAAAAAA" +
+        "AP8AAAAAYMD/AwAAsAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADgAQD+fwAg" +
+        "AAAAAAAAAAAAAAD4///////////////////4PwAAAAAAAP8AAAAAcMD/AAAAUAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwAQD+/o8nAAAAAAAAAAAAAAD4////////////////" +
+        "////PwAAAAAAAH8AAAAAIAAeAABAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AACgAwD+/P8fAAAAAAAAAAAAAADg////////////////////PwAAAAAAAD4BAAAAIAAcAAAgIAEA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABw///P8/AAAAAAAAAAAAAADg////" +
+        "////////////////HwAAAAAAAH4DAAAA4AAMAAAQQAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAA/pn///8/AAAAAAAAAAAAAADA////////////////////HwAAAAAAAA4DAAAA" +
+        "8AAAAAAIABwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAcPj/////AQAAAAAA" +
+        "AAAAAADA////////////////////DwAAAAAAAAwHAAAA4AEAAAAAwB8AAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAA4Pj/////AwAAAAAAAAAAAACA////////////////////DwAA" +
+        "AAAAAAAHAAAAwAAAAAAAUB8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQPD/" +
+        "////BwAAAAAAAAAAAAAA////////////////////BwAAAAAAAAAPAAAAgAEAAAAEEBcAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD/////DwAAAAAAAAAAAAAA/v//////////" +
+        "////////AwAAAAAAAAAPAAAAAAcAAAAGAAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAOD/////HwAAAAAAAAAAAAAA+P//D/7/////////////AwAAAAAAAAAHAAAAAA8AAAAH" +
+        "AAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD//////w8AAAAAAAAAAAAA" +
+        "8P//APz/////////////AwAAAAAAAAAAAAAAAB4AAAAfAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAOD//////38AAAAAAAAAAAAA4P89APj/////////////AQAAAAAAAAAA" +
+        "AADAAz4AAIB/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD///////8A" +
+        "AAAAAAAAAAAAgAcAAPj/////////////AAAAAAAAAAAAAACAD34AAOAfAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD///////8BAAAAAAAAAAAAAAAAAAD8////////////" +
+        "AAAAAAAAAAAAAAAAH34AAPAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AMD///////8DAAAAAAAAAAAAAAAAAAD6//////////9/AAAAAAAAAAAAAAAAPnwAAfgHAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD///////8DAAAAAAAAAAAAAAAAAADw" +
+        "//////////8/AAAAAAAAAAAAAAAAfHgAAPwHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAPD///////8DAAAAAAAAAAAAAAAAAADw//////////8fAAAAAAAAAAAAAACA+HgA" +
+        "gP8PAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPj///////8HAAAAAAAA" +
+        "AAAAAAAAAADw//////////8HAAAAAAAAAAAAAAAA8PEAwP8PAAABAAAAAAAAAAAAAAAAAAAAAAAg" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAPz///////8PAAAAAAAAAAAAAAAAAAD4//////////8DAAAAAAAA" +
+        "AAAAAAAA4McAyP8PAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz/////" +
+        "//8PAAAAAAAAAAAAAAAAAAD4//////////8AAAAAAAAAAAAAAAAAxB8A/P8fBIIBAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP////////8HAAAAAAAAAAAAAAAAAAD4////////" +
+        "/38AAAAAAAAAAAAAAAAAyB8A/P8P/4EBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAP////////8XAAAAAAAAAAAAAAAAAAD4/////////z8AAAAAAAAAAAAAAAAAgF8A/P8HAIAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYAgP////////95AAAAAAAAAAAAAAAA" +
+        "AAD4/////////x8AAAAAAAAAAAAAAAAAAH8A/P+HAIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAIAgP////////9/AwAAAAAAAAAAAAAAAAD8/////////w8AAAAAAAAAAAAAAAAA" +
+        "AH8A+P+HQMCBjwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP////////+/DwAA" +
+        "AAAAAAAAAAAAAAD8/////////w8AAAAAAAAAAAAAAAAAIP4B8P+DHQDADwAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAwP/////////ffwAAAAAAAAAAAAAAAAD4/////////wcAAAAA" +
+        "AAAAAAAAAAAAAP4J8P+BDwIQDxsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP//" +
+        "////////fwAAAAAAAAAAAAAAAAD4/////////wMAAAAAAAAAAAAAAAAAgPwD8P/BDwAAAn4AAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP///////////wcAAAAAAAAAAAAAAADw////" +
+        "/////wAAAAAAAAAAAAAAAAAAAPif8P/BDQAAHf8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAP////////////8BAAAAAAAAAAAAAADg/////////wAAAAAAAAAAAAAAAAAAAPgPAPvA" +
+        "HTAevv8fAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP////////////8HAAAAAAAA" +
+        "AAAAAADA/////////wAAAAAAAAAAAAAAAAAAAPAPAGCBHSAg9P//AAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAwP////////////8PAAAAAAAAAAAAAACA////////fwAAAAAAAAAAAAAA" +
+        "AAAAAOAPAACAOQAAwP//A4ACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4P//////////" +
+        "//8fAAAAAAAAAAAAAAAA////////PwAAAAAAAAAAAAAAAAAAAIAPAACACQAAAP7/B4ABAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP//////////////AQAAAAAAAAAAAAAA////////vwAA" +
+        "AAAAAAAAAAAAAAAAAAAPAACAIQAAAPj/D8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "wP//////////////AwAAAAAAAAAAAAAA////////PwAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAEvD/" +
+        "H34gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP//////////////AwAAAAAAAAAAAAAA" +
+        "/v//////fwAAAAAAAAAAAAAAAAAAAADwAAAAAAAAEOD/fxhAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAP//////////////AwAAAAAAAAAAAAAA/v//////fwAAAAAAAAAAAAAAAAAAAAD4" +
+        "YQAAAAAAEMD/PwCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP7/////////////AwAA" +
+        "AAAAAAAAAAAA/P//////fwAAAAAAAAAAAAAAAAAAAADg/wEAAAAAAMD/PwAABAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAP7/////////////AwAAAAAAAAAAAAAA/P//////fwAAAAAAAAAA" +
+        "AAAAAAAAAAAA+R8AABBAAPD/fAAAIgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz/////" +
+        "////////AwAAAAAAAAAAAAAA+P//////fwAAAAAAAAAAAAAAAAAAAAAAwH8AwAMAADh/8AAADAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPz/////////////AwAAAAAAAAAAAAAA+P//////" +
+        "fwAAAAAAAAAAAAAAAAAAAAAAAEAdDzwAAAB+4AEAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAPj/////////////AQAAAAAAAAAAAAAA/P//////fwAAAAAAAAAAAAAAAAAAAAAAAAAAAAcA" +
+        "AAAgwBMAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPj/////////////AAAAAAAAAAAA" +
+        "AAAA/P//////fwAAAAAAAAAAAAAAAAAAAAAAAACAgQMAAAAAgA8AAAMAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAPD/////////////AAAAAAAAAAAAAAAA+P///////wAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAgAAAAAAAADwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPD///////////8/" +
+        "AAAAAAAAAAAAAAAA+P///////wEAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAABAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD///////////8/AAAAAAAAAAAAAAAA8P///////wEAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAABAAQAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMD/" +
+        "//////////8fAAAAAAAAAAAAAAAA8P///////0EAAAAAAAAAAAAAAAAAAAAAAAAAAAAwBgAwAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMD///////////8PAAAAAAAAAAAAAAAA+P//" +
+        "/////wEABAAAAAAAAAAAAAAAAAAAAAAAAABA/wI4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAID///////////8PAAAAAAAAAAAAAAAA/P///////wEABAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AADg/wFwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAID///////////8DAAAAAAAA" +
+        "AAAAAAAA/v///////wEADAAAAAAAAAAAAAAAAAAAAAAAAADw/wB4AAAAAAAAAAAAAIAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAD///////////8DAAAAAAAAAAAAAAAA/v///////wEADwAAAAAAAAAA" +
+        "AAAAAAAAAAAAAADw/wF4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////////" +
+        "//8DAAAAAAAAAAAAAAAA/v///////wEADwAAAAAAAAAAAAAAAAAAAAAAAHD4/wJ4AAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD///////////8DAAAAAAAAAAAAAAAA/////////wOA" +
+        "DwAAAAAAAAAAAAAAAAAAAAAAAPz4fwD4AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAD8//////////8DAAAAAAAAAAAAAAAA/////////wHAHwAAAAAAAAAAAAAAAAAAAAAAAPz+/wD4" +
+        "BwAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4//////////8DAAAAAAAAAAAAAAAA" +
+        "/////////wHgFwAAAAAAAAAAAAAAAAAAAAAAAP7//wH4BwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAADg//////////8DAAAAAAAAAAAAAAAA/////////wD+DwAAAAAAAAAAAAAAAAAA" +
+        "AAAAgP7//wf4BwAAAAAAAQCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA//////////8DAAAA" +
+        "AAAAAAAAAAAA////////fwD+BwAAAAAAAAAAAAAAAAAAAAAAoP///x/8BwAAAAAAAQAgAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAA/v////////8DAAAAAAAAAAAAAACA////////DwD/BwAAAAAA" +
+        "AAAAAAAAAAAAAAAA8P///z/8DwAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAA/P//" +
+        "//////8DAAAAAAAAAAAAAACA////////AwD/BwAAAAAAAAAAAAAAAAAAAAAA8P//////DwAAAAAA" +
+        "AAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P////////8BAAAAAAAAAAAAAAAA////////" +
+        "AwD/BwAAAAAAAAAAAAAAAAAAAAAA8P//////HwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAA+P////////8BAAAAAAAAAAAAAAAA/v//////AQD/AwAAAAAAAAAAAAAAAAAAAAAA+P//" +
+        "////HwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P////////8BAAAAAAAAAAAA" +
+        "AAAA/v////9/AAD+AwAAAAAAAAAAAAAAAAAAAAAA+P//////PwAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAA8P////////8AAAAAAAAAAAAAAAAA/P////8fAAD+AwAAAAAAAAAAAAAA" +
+        "AAAAAAAA/v//////fwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8P///////38A" +
+        "AAAAAAAAAAAAAAAA/P////8fAAD+AQAIAAAAAAAAAAAAAAAAAADA/////////wEAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8P///////38AAAAAAAAAAAAAAAAA+P////8/AAD/AQAA" +
+        "AAAAAAAAAAAAAAAAAAD+/////////wMAAABCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "8P///////z8AAAAAAAAAAAAAAAAA+P////8/AID/AYAAAAAAAAAAAAAAAAAAAAD//////////wMA" +
+        "AAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA8P///////z8AAAAAAAAAAAAAAAAA8P//" +
+        "//9/AID/AAAAAAAAAAAAAAAAAAAAAMD//////////wcAAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAA8P///////x8AAAAAAAAAAAAAAAAA4P////9/AID/AAAAAAAAAAAAAAAAAAAAAOD/" +
+        "/////////wcAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P///////w8AAAAAAAAA" +
+        "AAAAAAAA4P////9/AID/AAAAAAAAAAAAAAAAAAAAAPj//////////z8AAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAA+P//////fwAAAAAAAAAAAAAAAAAA4P////9/AIB/AAAAAAAAAAAA" +
+        "AAAAAAAAAPD//////////z8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P//////" +
+        "HwAAAAAAAAAAAAAAAAAA4P////9/AIB/AAAAAAAAAAAAAAAAAAAAAPj//////////38AAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P//////AwAAAAAAAAAAAAAAAAAA4P////9/AIB/" +
+        "AAAAAAAAAAAAAAAAAAAAAPj///////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAA+P//////AQAAAAAAAAAAAAAAAAAA4P////8/AAA/AAAAAAAAAAAAAAAAAAAAAPj/////////" +
+        "//8FAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P//////AAAAAAAAAAAAAAAAAAAA" +
+        "wP////8HAAAOAAAAAAAAAAAAAAAAAAAAAPD///////////8FAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAA+P////9/AAAAAAAAAAAAAAAAAAAAwP////8DAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "APD///////////8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+P////9/AAAAAAAA" +
+        "AAAAAAAAAAAAwP////8DAAAAAAAAAAAAAAAAAAAAAAAAAPT///////////8DAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAA/P////9/AAAAAAAAAAAAAAAAAAAAwP////8DAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAPj///////////8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/P//" +
+        "//9/AAAAAAAAAAAAAAAAAAAAgP////8DAAAAAAAAAAAAAAAAAAAAAAAAAPD///////////8DAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/P////9/AAAAAAAAAAAAAAAAAAAAgP////8B" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAPD///////////8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAA/P////9/AAAAAAAAAAAAAAAAAAAAAP////8BAAAAAAAAAAAAAAAAAAAAAAAAAOD/////" +
+        "//////8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v////8/AAAAAAAAAAAAAAAA" +
+        "AAAAAP7///8AAAAAAAAAAAAAAAAAAAAAAAAAAOD///////////8HAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAA/v////8fAAAAAAAAAAAAAAAAAAAAAPz//38AAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAMD///////////8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v////8PAAAA" +
+        "AAAAAAAAAAAAAAAAAPz//z8AAAAAAAAAAAAAAAAAAAAAAAAAAMD///////////8HAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v////8NAAAAAAAAAAAAAAAAAAAAAPj//z8AAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAMD///////////8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "/v////8BAAAAAAAAAAAAAAAAAAAAAPj//x8AAAAAAAAAAAAAAAAAAAAAAAAAAMD///////////8D" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v////8BAAAAAAAAAAAAAAAAAAAAAPD/" +
+        "/w8AAAAAAAAAAAAAAAAAAAAAAAAAAID///////////8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAA/v////8AAAAAAAAAAAAAAAAAAAAAAPD//wcAAAAAAAAAAAAAAAAAAAAAAAAAAID/" +
+        "//8D//////8DAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v////8AAAAAAAAAAAAA" +
+        "AAAAAAAAAOD//wMAAAAAAAAAAAAAAAAAAAAAAAAAAID//38A+P////8BAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAA/v///38AAAAAAAAAAAAAAAAAAAAAAPD//wAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAID//wMA8P////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/v///38A" +
+        "AAAAAAAAAAAAAAAAAAAAAPD/fwAAAAAAAAAAAAAAAAAAAAAAAAAAAID//wAA4Pf//38AAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/////x8AAAAAAAAAAAAAAAAAAAAAAOD/DwAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAMD/fwAAwPv//38AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAA////9x8AAAAAAAAAAAAAAAAAAAAAAMAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMB/AAAAgPn/" +
+        "/z8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////jwcAAAAAAAAAAAAAAAAAAAAA" +
+        "AIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfAAAAgOj//z8AAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAACA////HwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAOD//x8AAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA////HwAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMb//w8AAAAAABgAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAADA////PwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAID//w8AAAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADA////" +
+        "fwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD//w8AAAAA" +
+        "AKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADg////PwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD//w8AAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAADg////HwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAD+/wcAAAAAAMAZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADg////DwAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD4fQAAAAAAAOAfAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAADg////AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAOAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADA//8HAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPADAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAADg//8PAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADg" +
+        "//8HAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAMABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADw//8HAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAMABAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAADw/z8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAA/gEAAAAAAPsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACg/z8AAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AEAAAAAgB8AAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAADQ//8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAA+AAAAAAAgA8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADQ/z8BAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AAAAAAAwAcA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADY/z8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAA8AEAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AADA/x8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAA/AMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADA/x8AAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAfwAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAADo/x8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADw/wMAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAPwAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAADg/wEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAHwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADs/wEA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACA" +
+        "DwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8/wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAD4/w8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADo/w8AAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAD8/wcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8/wMAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8/wEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD+" +
+        "/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD6fwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAD8PwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD0PwAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAADwPwAADwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD0XwAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACgewAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AADAegAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABg8wEAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAA4gMAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA6L8AAAAAAACAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAQAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoAMAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAABADgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADIEwAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAOQXAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwP8AAAAAAAAAAAAAAPwH4A8AAADg" +
+        "zwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPkAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAA4v8BAAAAAAAAAOD/////8X8AwD/4//8DAAAAAEAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAwD4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/P8/AAAAAAAA////" +
+        "/////48//v//////AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAD8/////w8AAAD4////////////////////HgAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD/////" +
+        "//8PAMD/////////////////////PwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AHxBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAP7///////8HAPD//////////////////////785" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/wLAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAA+gP////////8HAPz/////////////////////////HwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAACn/8HAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAD8i/////////8DAP//////////////" +
+        "/////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMP8HAAAAAAAAAAAAAAAA" +
+        "AAAABAEEBCEAMMD//////////38A/v///////////////////////////wMAAAAAAAAAAAAAAAAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAcfP4PAAAAAAAAAAAAAAAAABAGAP5//z+cAf////////////8D////" +
+        "//////////////////////////c/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAf/4/AAAA" +
+        "AAAAAAAAAAAAOA4A/v////////////////////+B////////////////////////////////AQAA" +
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB+//w/AAAAAAAAAAAAAAAA/v//////////////////" +
+        "/////3/A////////////////////////////////PwAAAAAAAAAAAAAAAAAAAAAAAAAAAIC/AQAA" +
+        "AAAAevx/AAAAAAAAAAAAAAAA/v///////////////////////3/y////////////////////////" +
+        "////////DwAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAEIAAAAAAP5/AAAAAAAAAAAAAADI////////" +
+        "/////////////////z//////////////////////////////////DwAAAAAAAAAAAAAAAAAAAAAA" +
+        "AAAAAPw/9vkRgAMX8P/PAAAAAAAAAAAAAAD//////////////////////////7//////////////" +
+        "//////////////////8/AAAAAAAAAAAAAAAAAAAAAAg+AAAAALz/////5z////8/AAAAAAAAAAAA" +
+        "QAD///////////////////////////////////////////////////////////8PAAAAAAAAAAAA" +
+        "AAAAAAAAAAA8ABwDAOD///////////8PAAAAAAAAAAAAQAD8////////////////////////////" +
+        "//////////////////////////////8DAAAAAAAAAAAAAAAAAAAHAP/g/w8GAAD///////////8L" +
+        "AAAAAAAAAAAAAPD//////////////////////////////////////////////////////////58A" +
+        "AAAAAAAAAAAAAAAAAP////////9/8B/4//////////8AAAAAAAAAAAAAAPj/////////////////" +
+        "/////////////////////////////////////////wcAAAAAAAAAAAAAAACA////////////////" +
+        "/////////z8AAAAAAAAAAAAA////////////////////////////////////////////////////" +
+        "/////////x8AAAAAAAAAAAAAAMD3////////////////////////fwAAAAAAAAAAAAD/////////" +
+        "/////////////////////////////////////////////////////x8AAAAAAAAAAAAAAGzg////" +
+        "/////////////////z8AAQAAAAAAAAAAAPj/////////////////////////////////////////" +
+        "/////////////////////z8AAAAAAAAAAADwD8Lg/////////////////////38AAAAAAAAAAAAA" +
+        "wP///////////////////////////////////////////////////////////////38gAAAAAAAA" +
+        "AAD4/+////////////////////////8/AAAAAAAAAAAA+P//////////////////////////////" +
+        "//////////////////////////////////8gAAAAAAAAAAAA+P///////////////////////QcA" +
+        "AAAAAADg/wAA////////////////////////////////////////////////////////////////" +
+        "//81AAAAAAAAAAYA////////////////////////wQcA4AEAAAD4HwAA////////////////////" +
+        "/////////////////////////////////////////////3cAAAAAAAAAgH8AAP//////////////" +
+        "////////HwAAHgMAAAD4/wOAD/D/////////////////////////////////////////////////" +
+        "/////////////wEAAAAAAAAAAOADAID///////////////////////8AAAwAAAD8/wMAAAXg////" +
+        "/////////////////////////////////////////////////////////wAAAAAAAAAAAAAAAPj/" +
+        "//////////////////////8AAAjgAeD/fwAAAPD/////////////////////////////////////" +
+        "////////////////////////PwAAAAAAAAAAAAAAAMD///////////////////////8BBwD8APgf" +
+        "AAAA/v///////////////////////////////////////////////////////////////wEAAAAA" +
+        "AAAAAADA/////////////////////////////wMAAAAAAOD/////////////////////////////" +
+        "/////////////////////////////////////wEAAAAAAAAAAAAA8P//////////////////////" +
+        "/////x8AAAAAAPj/////////////////////////////////////////////////////////////" +
+        "/////x8AAAAAAAAAAAAA4P///////////////////////////w9gAPD/D/7/////////////////" +
+        "/////////////////////////////////////////////////z8AAAAAAAAAAAAA+P//////////" +
+        "//////////////////8HwP//////////////////////////////////////////////////////" +
+        "//////////////////8fAAAAAAD8HwDA//////////////////////////////8f/P//////////" +
+        "//////////////////////////////////////////////////////////////9/AAAAAAAA////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "/////////////////////////////////wcAAAAAAP//////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "//9/////AAD8////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////////////////////////////////////////////////" +
+        "////////////////////////////////"
+
+    private val cells: BooleanArray by lazy {
+        val bytes = Base64.decode(packedB64, Base64.DEFAULT)
+        val out = BooleanArray(COLS * ROWS)
+        var i = 0
+        for (b in bytes) {
+            val v = b.toInt() and 0xFF
+            var bit = 0
+            while (bit < 8 && i < out.size) {
+                out[i] = (v ushr bit) and 1 == 1
+                bit++; i++
+            }
+        }
+        out
+    }
 
     fun rowCount(): Int = ROWS
     fun colCount(): Int = COLS
@@ -116,19 +610,14 @@ internal object WorldLandmask {
     /** Returns true if mask cell (r, c) is land. */
     fun isLandCell(r: Int, c: Int): Boolean {
         if (r !in 0 until ROWS) return false
-        val row = rows.getOrNull(r) ?: return false
-        if (c < 0 || c >= row.length) return false
-        return row[c] == '#'
+        val cc = ((c % COLS) + COLS) % COLS
+        return cells[r * COLS + cc]
     }
 
     /** Returns true if the given (lat, lon) in degrees is on land. */
     fun isLand(latDeg: Double, lonDeg: Double): Boolean {
-        // lat: +90 → row 0, -90 → row 71
         val r = (((90.0 - latDeg) / 180.0) * ROWS).toInt().coerceIn(0, ROWS - 1)
-        // lon: -180 → col 0, +180 → col 143
         val c = (((lonDeg + 180.0) / 360.0) * COLS).toInt().coerceIn(0, COLS - 1)
-        val row = rows.getOrNull(r) ?: return false
-        if (c >= row.length) return false
-        return row[c] == '#'
+        return cells[r * COLS + c]
     }
 }

@@ -100,6 +100,12 @@ fun WorldGlobe(
         val midLon = midpointLon(userLon.toFloat(), selectedCoord!!.second.toFloat())
         -midLon
     } else 0f
+    val targetTiltDeg: Float = if (zoomActive) {
+        // Tilt the sphere so the latitude midpoint of the connection sits on
+        // the equator of the projection, centring the pair vertically.
+        val midLat = (userLat + selectedCoord!!.first).toFloat() / 2f
+        midLat
+    } else 0f
 
     // Distance-based zoom: short hops zoom in tight, long hops pull back so
     // both endpoints stay on the visible hemisphere. We use the great-circle
@@ -108,10 +114,12 @@ fun WorldGlobe(
         angularDistanceDeg(userLat, userLon, selectedCoord!!.first, selectedCoord.second).toFloat()
     } else 0f
     val targetZoom: Float = if (zoomActive) {
-        // 0°  → 1.55× (very tight), 180° → 1.05× (almost no zoom).
-        // Linear interpolation in between, clamped.
-        val t = (angularDistDeg / 180f).coerceIn(0f, 1f)
-        1.55f - 0.50f * t
+        // Aim to fill the visible disk with the pair: chord across the sphere
+        // ≈ 2·sin(angDist/2). We want that chord to span ~70 % of the radius,
+        // so zoom ≈ 0.70 / sin(angDist/2). Clamped to a useful range.
+        val half = (angularDistDeg / 2f) * (PI.toFloat() / 180f)
+        val s = sin(half.toDouble()).toFloat().coerceAtLeast(0.05f)
+        (0.70f / s).coerceIn(1.10f, 2.20f)
     } else 1f
 
     val idleRotDeg = (rotation * 180f / PI.toFloat())
@@ -119,6 +127,11 @@ fun WorldGlobe(
         targetValue = targetLonDeg,
         animationSpec = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
         label = "focusRot",
+    )
+    val animatedTiltDeg by animateFloatAsState(
+        targetValue = targetTiltDeg,
+        animationSpec = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+        label = "focusTilt",
     )
     val focusScale by animateFloatAsState(
         targetValue = targetZoom,
@@ -140,6 +153,7 @@ fun WorldGlobe(
         else -> 0f
     }
     val effectiveRotation = effectiveRotDeg * (PI.toFloat() / 180f)
+    val effectiveTilt = animatedTiltDeg * (PI.toFloat() / 180f)
 
     val isLight = palette.isLight
     val landFill = if (isLight) Color(0xFF3B0764) else Color(0xFFB8A2EE)
@@ -184,10 +198,10 @@ fun WorldGlobe(
         )
 
         // 3. Graticule — meridians + parallels every 30°.
-        drawGraticule(cx, cy, radius, effectiveRotation, graticuleColor)
+        drawGraticule(cx, cy, radius, effectiveRotation, effectiveTilt, graticuleColor)
 
         // 4. Filled continents — single accumulator path.
-        val land = buildLandPath(cx, cy, radius, effectiveRotation)
+        val land = buildLandPath(cx, cy, radius, effectiveRotation, effectiveTilt)
         drawPath(land, color = landFill.copy(alpha = landFillAlpha))
         drawPath(land, color = landRim, style = Stroke(width = 0.8f))
 
@@ -216,7 +230,7 @@ fun WorldGlobe(
 
         // 7. Server dots.
         serverPoints.forEach { (id, lat, lon) ->
-            val proj = projectOrtho(lat, lon, effectiveRotation, radius)
+            val proj = projectOrtho(lat, lon, effectiveRotation, effectiveTilt, radius)
             if (!proj.visible) return@forEach
             val pos = Offset(cx + proj.x, cy + proj.y)
             val isSelected = id == selectedServerId
@@ -241,8 +255,8 @@ fun WorldGlobe(
 
         // 8. Connection arc + endpoints.
         if (zoomActive && selectedCoord != null) {
-            val to = projectOrtho(selectedCoord.first, selectedCoord.second, effectiveRotation, radius)
-            val from = projectOrtho(userLat, userLon, effectiveRotation, radius)
+            val to = projectOrtho(selectedCoord.first, selectedCoord.second, effectiveRotation, effectiveTilt, radius)
+            val from = projectOrtho(userLat, userLon, effectiveRotation, effectiveTilt, radius)
             if (to.visible && from.visible) {
                 val a = Offset(cx + from.x, cy + from.y)
                 val b = Offset(cx + to.x, cy + to.y)
@@ -276,14 +290,23 @@ private fun projectOrtho(
     latDeg: Double,
     lonDeg: Double,
     rotationRadians: Float,
+    tiltRadians: Float,
     radius: Float,
 ): Projection {
     val lat = latDeg * PI / 180.0
     val lon = lonDeg * PI / 180.0 + rotationRadians
-    val x = (cos(lat) * sin(lon)) * radius
-    val y = (-sin(lat)) * radius
-    val z = cos(lat) * cos(lon)
-    return Projection(x.toFloat(), y.toFloat(), z >= 0)
+    // Sphere coordinates after longitude rotation.
+    val x0 = cos(lat) * sin(lon)
+    val y0 = -sin(lat)
+    val z0 = cos(lat) * cos(lon)
+    // Apply latitude tilt as a rotation around the X axis: rotates (y, z).
+    val ct = cos(tiltRadians.toDouble())
+    val st = sin(tiltRadians.toDouble())
+    val y1 = y0 * ct - z0 * st
+    val z1 = y0 * st + z0 * ct
+    val x = x0 * radius
+    val y = y1 * radius
+    return Projection(x.toFloat(), y.toFloat(), z1 >= 0)
 }
 
 /**
@@ -302,97 +325,68 @@ private fun buildLandPath(
     cy: Float,
     radius: Float,
     rotation: Float,
+    tilt: Float,
 ): Path {
     val path = Path()
     val rows = WorldLandmask.rowCount()
     val cols = WorldLandmask.colCount()
-    // 2× sub-sampling: each mask cell becomes a 2×2 grid of sub-cells, with
-    // each sub-cell's land bit derived from its four neighbouring mask cells
-    // so the silhouette has smoother diagonals.
-    val sub = 2
-    val subRows = rows * sub
-    val subCols = cols * sub
-    val latStep = 180.0 / subRows
-    val lonStep = 360.0 / subCols
+    val latStep = 180.0 / rows
+    val lonStep = 360.0 / cols
 
     // Pre-compute per-row lat factors and per-col lon+rotation factors.
-    val rowEdges = subRows + 1
+    val rowEdges = rows + 1
     val sinLat = DoubleArray(rowEdges)
     val cosLat = DoubleArray(rowEdges)
-    for (r in 0..subRows) {
+    for (r in 0..rows) {
         val lat = (90.0 - r * latStep) * PI / 180.0
         sinLat[r] = sin(lat)
         cosLat[r] = cos(lat)
     }
-    val colEdges = subCols + 1
+    val colEdges = cols + 1
     val sinLon = DoubleArray(colEdges)
     val cosLon = DoubleArray(colEdges)
-    for (c in 0..subCols) {
+    for (c in 0..cols) {
         val lon = (-180.0 + c * lonStep) * PI / 180.0 + rotation
         sinLon[c] = sin(lon)
         cosLon[c] = cos(lon)
     }
+    val ct = cos(tilt.toDouble())
+    val st = sin(tilt.toDouble())
 
-    // Sub-cell land test with neighbour smoothing.
-    fun isSubLand(sr: Int, sc: Int): Boolean {
-        // Map sub-cell to mask coords and look at the 2×2 mask neighbourhood
-        // (top-left + neighbours one cell over). A sub-cell is "land" if at
-        // least 2 of its four parent cells are land — this rounds off
-        // outside corners and fills inside corners, giving cleaner edges.
-        val mr = sr / sub
-        val mc = sc / sub
-        val rOff = if (sr % sub == 0) -1 else 0
-        val cOff = if (sc % sub == 0) -1 else 0
-        var count = 0
-        for (dr in 0..1) for (dc in 0..1) {
-            val rr = mr + rOff + dr
-            val cc = ((mc + cOff + dc) + cols) % cols
-            if (rr in 0 until rows && WorldLandmask.isLandCell(rr, cc)) count++
-        }
-        return count >= 2
+    // Project a sphere unit-vector through the latitude tilt and into screen
+    // pixel space relative to (cx, cy). Returns z so visibility can be tested.
+    fun proj(sLat: Double, cLat: Double, sLon: Double, cLon: Double): DoubleArray {
+        val x0 = cLat * sLon
+        val y0 = -sLat
+        val z0 = cLat * cLon
+        val y1 = y0 * ct - z0 * st
+        val z1 = y0 * st + z0 * ct
+        return doubleArrayOf(x0 * radius, y1 * radius, z1)
     }
 
-    for (r in 0 until subRows) {
-        // Row visibility bounds skip: at very high latitudes near the poles
-        // most cells project to a tiny arc — the cull below handles this.
+    for (r in 0 until rows) {
         val sLat0 = sinLat[r]; val cLat0 = cosLat[r]
         val sLat1 = sinLat[r + 1]; val cLat1 = cosLat[r + 1]
-        for (c in 0 until subCols) {
-            if (!isSubLand(r, c)) continue
+        for (c in 0 until cols) {
+            if (!WorldLandmask.isLandCell(r, c)) continue
             val sLon0 = sinLon[c]; val cLon0 = cosLon[c]
             val sLon1 = sinLon[c + 1]; val cLon1 = cosLon[c + 1]
 
-            // Cell centre visibility cull (cheap z test).
-            val zA = cLat0 * cLon0; val zB = cLat0 * cLon1
-            val zC = cLat1 * cLon0; val zD = cLat1 * cLon1
-            if (zA < -0.05 && zB < -0.05 && zC < -0.05 && zD < -0.05) continue
+            val a = proj(sLat0, cLat0, sLon0, cLon0)
+            val b = proj(sLat0, cLat0, sLon1, cLon1)
+            val cc = proj(sLat1, cLat1, sLon1, cLon1)
+            val d = proj(sLat1, cLat1, sLon0, cLon0)
 
-            // Project the four corners.
-            val x0 = (cLat0 * sLon0 * radius).toFloat()
-            val y0 = (-sLat0 * radius).toFloat()
-            val x1 = (cLat0 * sLon1 * radius).toFloat()
-            val y1 = (-sLat0 * radius).toFloat()
-            val x2 = (cLat1 * sLon1 * radius).toFloat()
-            val y2 = (-sLat1 * radius).toFloat()
-            val x3 = (cLat1 * sLon0 * radius).toFloat()
-            val y3 = (-sLat1 * radius).toFloat()
+            // Skip cells fully on the far side.
+            if (a[2] < -0.02 && b[2] < -0.02 && cc[2] < -0.02 && d[2] < -0.02) continue
+            // Skip cells with any corner clearly on the far side — avoids the
+            // "wrap" artifacts where a quad's corners straddle the limb.
+            if (a[2] < 0.0 || b[2] < 0.0 || cc[2] < 0.0 || d[2] < 0.0) continue
 
-            // Compute centre fallback for hidden corners so polygon stays convex.
-            val xCent = ((x0 + x2) * 0.5f)
-            val yCent = ((y0 + y2) * 0.5f)
-            val px0 = if (zA >= 0.0) x0 else xCent
-            val py0 = if (zA >= 0.0) y0 else yCent
-            val px1 = if (zB >= 0.0) x1 else xCent
-            val py1 = if (zB >= 0.0) y1 else yCent
-            val px2 = if (zD >= 0.0) x2 else xCent
-            val py2 = if (zD >= 0.0) y2 else yCent
-            val px3 = if (zC >= 0.0) x3 else xCent
-            val py3 = if (zC >= 0.0) y3 else yCent
-
-            path.moveTo(cx + px0, cy + py0)
-            path.lineTo(cx + px1, cy + py1)
-            path.lineTo(cx + px2, cy + py2)
-            path.lineTo(cx + px3, cy + py3)
+            path.moveTo(cx + a[0].toFloat(), cy + a[1].toFloat())
+            path.lineTo(cx + b[0].toFloat(), cy + b[1].toFloat())
+            path.lineTo(cx + cc[0].toFloat(), cy + cc[1].toFloat())
+            path.lineTo(cx + d[0].toFloat(), cy + d[1].toFloat())
             path.close()
         }
     }
@@ -483,6 +477,7 @@ private fun DrawScope.drawGraticule(
     cy: Float,
     radius: Float,
     rotation: Float,
+    tilt: Float,
     color: Color,
 ) {
     val stroke = Stroke(width = 0.7f)
@@ -492,7 +487,7 @@ private fun DrawScope.drawGraticule(
         var first = true
         var lat = -90
         while (lat <= 90) {
-            val proj = projectOrtho(lat.toDouble(), lon.toDouble(), rotation, radius)
+            val proj = projectOrtho(lat.toDouble(), lon.toDouble(), rotation, tilt, radius)
             if (proj.visible) {
                 val x = cx + proj.x; val y = cy + proj.y
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
@@ -508,7 +503,7 @@ private fun DrawScope.drawGraticule(
         var first = true
         var plon = -180
         while (plon <= 180) {
-            val proj = projectOrtho(plat.toDouble(), plon.toDouble(), rotation, radius)
+            val proj = projectOrtho(plat.toDouble(), plon.toDouble(), rotation, tilt, radius)
             if (proj.visible) {
                 val x = cx + proj.x; val y = cy + proj.y
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
