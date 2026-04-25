@@ -110,6 +110,17 @@ internal object WorldLandmask {
     private const val COLS = 144
     private const val ROWS = 72
 
+    fun rowCount(): Int = ROWS
+    fun colCount(): Int = COLS
+
+    /** Returns true if mask cell (r, c) is land. */
+    fun isLandCell(r: Int, c: Int): Boolean {
+        if (r !in 0 until ROWS) return false
+        val row = rows.getOrNull(r) ?: return false
+        if (c < 0 || c >= row.length) return false
+        return row[c] == '#'
+    }
+
     /** Returns true if the given (lat, lon) in degrees is on land. */
     fun isLand(latDeg: Double, lonDeg: Double): Boolean {
         // lat: +90 → row 0, -90 → row 71
