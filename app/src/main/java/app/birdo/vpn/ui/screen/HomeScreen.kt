@@ -66,101 +66,116 @@ fun HomeScreen(
     var showServerSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        HomeTopBar(userEmail = userEmail, onLogout = onLogout)
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Mullvad-style full-bleed background map. Everything else floats
+        // over it. We don't draw the map while the server sheet is open
+        // because the sheet's scrim covers it anyway.
+        if (!showServerSheet) {
+            WorldGlobe(
+                servers = state.servers,
+                selectedServerId = state.selectedServer?.id,
+                isConnected = isConnected,
+                autoRotate = true,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            // Solid backdrop when the sheet is up so we don't see flicker.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(palette.background),
+            )
+        }
 
-        // Hero map — fills the freed vertical space. The status pill is
-        // overlaid at the top of this region; the map has its own top
-        // padding so the pill never visually collides with the land tiles.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f, fill = true),
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (!showServerSheet) {
-                WorldGlobe(
-                    servers = state.servers,
-                    selectedServerId = state.selectedServer?.id,
-                    isConnected = isConnected,
-                    autoRotate = true,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = 48.dp, bottom = 8.dp, start = 8.dp, end = 8.dp),
-                )
-            }
+            HomeTopBar(userEmail = userEmail, onLogout = onLogout)
+
+            // Status pill floats just below the top bar.
+            Spacer(Modifier.height(12.dp))
             StatusPill(
                 isConnected = isConnected,
                 isConnecting = isConnecting,
                 isDisconnecting = isDisconnecting,
                 isError = isError,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 12.dp),
             )
-        }
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            AnimatedVisibility(
-                visible = isConnected,
-                enter = fadeIn(tween(BirdoMotion.Standard, delayMillis = 80)) +
-                    slideInVertically(initialOffsetY = { 16 }),
-                exit = fadeOut(),
+            // Push the controls to the bottom of the screen so the map
+            // breathes between the pill and the action panel.
+            Spacer(Modifier.weight(1f))
+
+            // Bottom action panel: stats (when connected), kill switch /
+            // error banners, server selector, connect button. Sits in a
+            // translucent surface so the map peeks through.
+            Surface(
+                color = palette.surface.copy(alpha = 0.92f),
+                tonalElevation = 0.dp,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    StatsRow(state = state)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    AnimatedVisibility(
+                        visible = isConnected,
+                        enter = fadeIn(tween(BirdoMotion.Standard, delayMillis = 80)) +
+                            slideInVertically(initialOffsetY = { 16 }),
+                        exit = fadeOut(),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            StatsRow(state = state)
+                            Spacer(Modifier.height(10.dp))
+                        }
+                    }
+
+                    AnimatedVisibility(visible = isKillSwitchActive) {
+                        Column { KillSwitchAlert(); Spacer(Modifier.height(10.dp)) }
+                    }
+
+                    if (isError) {
+                        ErrorBanner((state.vpnState as VpnState.Error).message)
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    if (state.error != null) {
+                        ErrorBanner(state.error)
+                        Spacer(Modifier.height(10.dp))
+                    }
+
+                    ServerSelector(
+                        state = state,
+                        enabled = !isConnecting && !isDisconnecting,
+                        onClick = {
+                            if (state.servers.isNotEmpty()) {
+                                showServerSheet = true
+                            } else {
+                                onOpenServers()
+                            }
+                        },
+                    )
+
                     Spacer(Modifier.height(10.dp))
+
+                    CompactConnectButton(
+                        isConnected = isConnected,
+                        isConnecting = isConnecting,
+                        isDisconnecting = isDisconnecting,
+                        onClick = {
+                            when {
+                                isConnected -> onDisconnect()
+                                isConnecting || isDisconnecting -> Unit
+                                else -> onConnect()
+                            }
+                        },
+                    )
+
+                    Spacer(Modifier.height(8.dp))
                 }
             }
-
-            AnimatedVisibility(visible = isKillSwitchActive) {
-                Column { KillSwitchAlert(); Spacer(Modifier.height(10.dp)) }
-            }
-
-            if (isError) {
-                ErrorBanner((state.vpnState as VpnState.Error).message)
-                Spacer(Modifier.height(10.dp))
-            }
-            if (state.error != null) {
-                ErrorBanner(state.error)
-                Spacer(Modifier.height(10.dp))
-            }
-
-            ServerSelector(
-                state = state,
-                enabled = !isConnecting && !isDisconnecting,
-                onClick = {
-                    if (state.servers.isNotEmpty()) {
-                        showServerSheet = true
-                    } else {
-                        onOpenServers()
-                    }
-                },
-            )
-
-            Spacer(Modifier.height(10.dp))
-
-            CompactConnectButton(
-                isConnected = isConnected,
-                isConnecting = isConnecting,
-                isDisconnecting = isDisconnecting,
-                onClick = {
-                    when {
-                        isConnected -> onDisconnect()
-                        isConnecting || isDisconnecting -> Unit
-                        else -> onConnect()
-                    }
-                },
-            )
-
-            Spacer(Modifier.height(12.dp))
         }
     }
 
@@ -182,7 +197,7 @@ fun HomeScreen(
 @Composable
 private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
     val palette = BirdoColors.current
-    Surface(color = palette.surface, tonalElevation = 0.dp) {
+    Surface(color = palette.surface.copy(alpha = 0.78f), tonalElevation = 0.dp) {
         Column {
             Row(
                 modifier = Modifier
