@@ -72,10 +72,9 @@ fun HomeScreen(
     ) {
         HomeTopBar(userEmail = userEmail, onLogout = onLogout)
 
-        // Hero globe — fills the freed vertical space. The status pill is
-        // overlaid at the top of this region so a tall globe never visually
-        // collides with it: extra top padding inside the globe canvas keeps
-        // the sphere comfortably below the pill.
+        // Hero map — fills the freed vertical space. The status pill is
+        // overlaid at the top of this region; the map has its own top
+        // padding so the pill never visually collides with the land tiles.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -89,7 +88,7 @@ fun HomeScreen(
                     autoRotate = true,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = 56.dp, bottom = 8.dp),
+                        .padding(top = 48.dp, bottom = 8.dp, start = 8.dp, end = 8.dp),
                 )
             }
             StatusPill(
