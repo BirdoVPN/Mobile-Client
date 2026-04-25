@@ -72,24 +72,14 @@ fun HomeScreen(
     ) {
         HomeTopBar(userEmail = userEmail, onLogout = onLogout)
 
-        Spacer(Modifier.height(10.dp))
-
-        StatusPill(
-            isConnected = isConnected,
-            isConnecting = isConnecting,
-            isDisconnecting = isDisconnecting,
-            isError = isError,
-        )
-
-        // Hero globe — large and pushed toward the top of the screen so it
-        // reads as the focal point. We composition-gate it behind the bottom
-        // sheet so dragging the server list isn't competing with continent
-        // path rebuilds for the GPU.
+        // Hero globe — fills the freed vertical space. The status pill is
+        // overlaid at the top of this region so a tall globe never visually
+        // collides with it: extra top padding inside the globe canvas keeps
+        // the sphere comfortably below the pill.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f, fill = true),
-            contentAlignment = Alignment.Center,
         ) {
             if (!showServerSheet) {
                 WorldGlobe(
@@ -97,9 +87,20 @@ fun HomeScreen(
                     selectedServerId = state.selectedServer?.id,
                     isConnected = isConnected,
                     autoRotate = true,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(top = 56.dp, bottom = 8.dp),
                 )
             }
+            StatusPill(
+                isConnected = isConnected,
+                isConnecting = isConnecting,
+                isDisconnecting = isDisconnecting,
+                isError = isError,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 12.dp),
+            )
         }
 
         Column(
@@ -188,8 +189,8 @@ private fun HomeTopBar(userEmail: String?, onLogout: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .heightIn(min = 60.dp)
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 BrandLockup()
@@ -253,6 +254,7 @@ private fun StatusPill(
     isConnecting: Boolean,
     isDisconnecting: Boolean,
     isError: Boolean,
+    modifier: Modifier = Modifier,
 ) {
     val text: String
     val tone: BadgeTone
@@ -265,7 +267,7 @@ private fun StatusPill(
         isError -> { text = stringResource(R.string.status_error); tone = BadgeTone.Danger; icon = Icons.Default.ErrorOutline; pulse = false }
         else -> { text = stringResource(R.string.status_not_connected); tone = BadgeTone.Neutral; icon = Icons.Default.WifiOff; pulse = false }
     }
-    Box(modifier = Modifier.testTag(TestTags.VPN_STATUS)) {
+    Box(modifier = modifier.testTag(TestTags.VPN_STATUS)) {
         BirdoBadge(text = text, tone = tone, icon = icon, pulseDot = pulse)
     }
 }
@@ -505,24 +507,23 @@ private fun StatTile(
 ) {
     BirdoCard(
         modifier = modifier,
-        cornerRadius = 14.dp,
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp),
+        cornerRadius = 12.dp,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.height(6.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
             Text(
                 text = value,
                 color = Color.White,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = label,
-                color = BirdoWhite60,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(top = 2.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

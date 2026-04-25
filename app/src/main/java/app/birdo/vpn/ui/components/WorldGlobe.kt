@@ -100,6 +100,20 @@ fun WorldGlobe(
         val midLon = midpointLon(userLon.toFloat(), selectedCoord!!.second.toFloat())
         -midLon
     } else 0f
+
+    // Distance-based zoom: short hops zoom in tight, long hops pull back so
+    // both endpoints stay on the visible hemisphere. We use the great-circle
+    // angular distance between user and selected server.
+    val angularDistDeg: Float = if (zoomActive) {
+        angularDistanceDeg(userLat, userLon, selectedCoord!!.first, selectedCoord.second).toFloat()
+    } else 0f
+    val targetZoom: Float = if (zoomActive) {
+        // 0°  → 1.55× (very tight), 180° → 1.05× (almost no zoom).
+        // Linear interpolation in between, clamped.
+        val t = (angularDistDeg / 180f).coerceIn(0f, 1f)
+        1.55f - 0.50f * t
+    } else 1f
+
     val idleRotDeg = (rotation * 180f / PI.toFloat())
     val animatedFocusRotDeg by animateFloatAsState(
         targetValue = targetLonDeg,
@@ -107,7 +121,7 @@ fun WorldGlobe(
         label = "focusRot",
     )
     val focusScale by animateFloatAsState(
-        targetValue = if (zoomActive) 1.18f else 1f,
+        targetValue = targetZoom,
         animationSpec = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
         label = "focusScale",
     )
@@ -450,6 +464,17 @@ private fun midpointLon(a: Float, b: Float): Float {
     while (mid > 180f) mid -= 360f
     while (mid < -180f) mid += 360f
     return mid
+}
+
+/** Great-circle angular distance between two lat/lon points, in degrees. */
+private fun angularDistanceDeg(
+    lat1: Double, lon1: Double, lat2: Double, lon2: Double,
+): Double {
+    val p1 = lat1 * PI / 180.0
+    val p2 = lat2 * PI / 180.0
+    val dLon = (lon2 - lon1) * PI / 180.0
+    val cosD = sin(p1) * sin(p2) + cos(p1) * cos(p2) * cos(dLon)
+    return kotlin.math.acos(cosD.coerceIn(-1.0, 1.0)) * 180.0 / PI
 }
 
 /** Latitude / longitude graticule lines (every 30°). */
