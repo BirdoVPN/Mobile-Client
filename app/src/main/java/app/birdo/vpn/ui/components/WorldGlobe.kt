@@ -11,43 +11,36 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
-import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.ui.theme.BirdoColors
 import app.birdo.vpn.utils.CountryCoords
 import kotlin.math.PI
-import kotlin.math.asin
-import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Stylised orthographic-projection world globe with REAL continent silhouettes.
+ * High-fidelity orthographic globe with FILLED continent silhouettes,
+ * atmosphere halo, ocean gradient, lat/lon graticule, and a Mullvad-style
+ * connection arc that animates from the user pin to the selected server.
  *
- * v1.3.2 — higher detail (3px sample step), latitude/longitude graticule for
- * a more cartographic feel, and Mullvad-style "zoom into the connection" on
- * connect: the camera longitude animates so the selected server is centered,
- * the globe scales up, and the connection arc draws in progressively.
- *
- * Pre-computes the visible disc's per-pixel (px, py, latDeg, lonRel) grid ONCE
- * per radius via [remember]. Per frame, just translates each lonRel by the
- * current rotation, looks it up in [WorldLandmask], and batches all land
- * pixels into a single [DrawScope.drawPoints] call.
+ * v1.3.4 — replaces the v1.3.2/3 point-rasterised land with **filled
+ * continent polygons** built from the 144×72 land mask. For every land
+ * cell we project the four corners onto the sphere and add a tiny quad
+ * to a single accumulator [Path] which is drawn in one filled call per
+ * frame, giving smooth solid landmasses at minimal cost.
  */
 @Composable
 fun WorldGlobe(
@@ -65,8 +58,8 @@ fun WorldGlobe(
         initialValue = 0f,
         targetValue = (2 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            // Slower (120s) — gentle drift while idle.
-            animation = tween(durationMillis = 120_000, easing = LinearEasing),
+            // Slow 100s drift while idle.
+            animation = tween(durationMillis = 100_000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "rotation",
@@ -80,28 +73,33 @@ fun WorldGlobe(
         ),
         label = "pulse",
     )
+    val arcShimmer by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "arcShimmer",
+    )
 
-    // Pre-compute server coordinates once per server list change.
     val serverPoints = remember(servers) {
         servers.mapNotNull { s ->
-            CountryCoords.forCountry(s.countryCode)?.let { ll -> Triple(s.id, ll.first, ll.second) }
+            CountryCoords.forCountry(s.countryCode)?.let { ll ->
+                Triple(s.id, ll.first, ll.second)
+            }
         }
     }
 
-    // ── Connect-zoom animation ────────────────────────────────────────────
-    // When connected with a known server, animate the camera so the midpoint
-    // between the user and the server sits on the centre meridian, AND scale
-    // the whole globe up slightly (Mullvad-style focus).
     val selectedCoord = remember(selectedServerId, serverPoints) {
-        serverPoints.firstOrNull { it.first == selectedServerId }?.let { it.second to it.third }
+        serverPoints.firstOrNull { it.first == selectedServerId }
+            ?.let { it.second to it.third }
     }
     val zoomActive = isConnected && selectedCoord != null
     val targetLonDeg: Float = if (zoomActive) {
         val midLon = midpointLon(userLon.toFloat(), selectedCoord!!.second.toFloat())
         -midLon
     } else 0f
-    // Convert idle rotation (radians) to degrees and unwrap towards target so
-    // the transition is the short way around.
     val idleRotDeg = (rotation * 180f / PI.toFloat())
     val animatedFocusRotDeg by animateFloatAsState(
         targetValue = targetLonDeg,
@@ -115,7 +113,10 @@ fun WorldGlobe(
     )
     val arcProgress by animateFloatAsState(
         targetValue = if (zoomActive) 1f else 0f,
-        animationSpec = tween(durationMillis = 1100, delayMillis = if (zoomActive) 600 else 0),
+        animationSpec = tween(
+            durationMillis = 1100,
+            delayMillis = if (zoomActive) 500 else 0,
+        ),
         label = "arcProgress",
     )
 
@@ -126,90 +127,63 @@ fun WorldGlobe(
     }
     val effectiveRotation = effectiveRotDeg * (PI.toFloat() / 180f)
 
-    // Pre-compute disc grid per radius (rebuilt only when radius changes).
-    var cachedRadius by remember { androidx.compose.runtime.mutableStateOf(0f) }
-    var discGrid by remember { androidx.compose.runtime.mutableStateOf(FloatArray(0)) }
+    val isLight = palette.isLight
+    val landFill = if (isLight) Color(0xFF3B0764) else Color(0xFFB8A2EE)
+    val landFillAlpha = if (isLight) 0.92f else 0.90f
+    val landRim = if (isLight) Color(0xFF1E1B4B).copy(alpha = 0.55f)
+                  else Color.White.copy(alpha = 0.10f)
+    val oceanDeep = if (isLight) Color(0xFFCBD5E1) else Color(0xFF0B1226)
+    val oceanShallow = if (isLight) Color(0xFFE2E8F0) else Color(0xFF1E1B4B)
+    val atmosphere = palette.accent
+    val graticuleColor = palette.hairline.copy(alpha = if (isLight) 0.16f else 0.10f)
 
     Canvas(modifier = modifier.fillMaxSize().scale(focusScale)) {
         val cx = size.width / 2f
         val cy = size.height / 2f
         val radius = (minOf(size.width, size.height) / 2f) * 0.92f
 
-        if (kotlin.math.abs(cachedRadius - radius) > 0.5f || discGrid.isEmpty()) {
-            // step 3f — ~2.7× more samples than v1.3.1 for crisper continents.
-            // Still O(n²) over the disc, but drawPoints batches the result so
-            // the per-frame cost is the lookup + alloc only.
-            discGrid = buildDiscGrid(radius, step = 3f)
-            cachedRadius = radius
-        }
-        val grid = discGrid
-
-        // 1. Soft halo behind globe
+        // 1. Outer atmosphere glow — soft halo extending past the sphere.
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(palette.accent.copy(alpha = 0.20f), Color.Transparent),
+                colors = listOf(
+                    Color.Transparent,
+                    atmosphere.copy(alpha = 0.06f),
+                    atmosphere.copy(alpha = 0.20f),
+                    Color.Transparent,
+                ),
                 center = Offset(cx, cy),
-                radius = radius * 1.5f,
+                radius = radius * 1.35f,
             ),
-            radius = radius * 1.5f,
+            radius = radius * 1.35f,
             center = Offset(cx, cy),
         )
 
-        // 2. Sphere body (water) with depth gradient
-        val waterDark = palette.mapWater
-        val waterLight = if (palette.isLight) palette.mapWater.copy(alpha = 0.55f)
-                         else palette.mapWater.copy(alpha = 0.85f)
+        // 2. Sphere base — deep ocean with off-centre highlight.
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(waterLight, waterDark),
-                center = Offset(cx - radius * 0.30f, cy - radius * 0.30f),
-                radius = radius * 1.30f,
+                colors = listOf(oceanShallow, oceanDeep),
+                center = Offset(cx - radius * 0.32f, cy - radius * 0.34f),
+                radius = radius * 1.28f,
             ),
             radius = radius,
             center = Offset(cx, cy),
         )
 
-        // 2b. Graticule — latitude (parallels) every 30°, longitude (meridians)
-        //     every 30°. Drawn before continents so land sits on top.
-        val graticuleColor = palette.hairline.copy(alpha = if (palette.isLight) 0.18f else 0.14f)
+        // 3. Graticule — meridians + parallels every 30°.
         drawGraticule(cx, cy, radius, effectiveRotation, graticuleColor)
 
-        // 3. Continent rasterisation — single batched drawPoints call.
-        //    grid layout: [px, py, latDeg, lonRel, ...]
-        val landFill = if (palette.isLight) Color(0xFF4C1D95).copy(alpha = 0.88f)
-                       else Color(0xFFC4B5FD).copy(alpha = 0.80f)
-        val rotDeg = (effectiveRotation * 180f / PI.toFloat())
-        val landPoints = ArrayList<Offset>(grid.size / 4)
-        var i = 0
-        while (i < grid.size) {
-            val px = grid[i]
-            val py = grid[i + 1]
-            val lat = grid[i + 2]
-            val lonRel = grid[i + 3]
-            var lon = lonRel - rotDeg
-            lon = ((lon % 360f) + 540f) % 360f - 180f
-            if (WorldLandmask.isLand(lat.toDouble(), lon.toDouble())) {
-                landPoints.add(Offset(cx + px, cy + py))
-            }
-            i += 4
-        }
-        if (landPoints.isNotEmpty()) {
-            drawPoints(
-                points = landPoints,
-                pointMode = PointMode.Points,
-                color = landFill,
-                strokeWidth = 2.2f,
-                cap = StrokeCap.Round,
-            )
-        }
+        // 4. Filled continents — single accumulator path.
+        val land = buildLandPath(cx, cy, radius, effectiveRotation)
+        drawPath(land, color = landFill.copy(alpha = landFillAlpha))
+        drawPath(land, color = landRim, style = Stroke(width = 0.8f))
 
-        // 3b. Single radial vignette overlay for limb darkening.
+        // 5. Limb darkening.
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
                     Color.Transparent,
                     Color.Transparent,
-                    Color.Black.copy(alpha = if (palette.isLight) 0.18f else 0.30f),
+                    Color.Black.copy(alpha = if (isLight) 0.16f else 0.36f),
                 ),
                 center = Offset(cx, cy),
                 radius = radius,
@@ -218,65 +192,66 @@ fun WorldGlobe(
             center = Offset(cx, cy),
         )
 
-        // 4. Subtle rim highlight
+        // 6. Inner rim highlight where atmosphere meets globe.
         drawCircle(
-            color = palette.hairline,
+            color = atmosphere.copy(alpha = if (isLight) 0.35f else 0.45f),
             radius = radius,
             center = Offset(cx, cy),
-            style = Stroke(width = 1.2f),
+            style = Stroke(width = 1.4f),
         )
 
-        // 5. Server dots
+        // 7. Server dots.
         serverPoints.forEach { (id, lat, lon) ->
             val proj = projectOrtho(lat, lon, effectiveRotation, radius)
             if (!proj.visible) return@forEach
             val pos = Offset(cx + proj.x, cy + proj.y)
             val isSelected = id == selectedServerId
-            val baseColor = if (isSelected) palette.accent else palette.mapDot
-
+            val baseColor = if (isSelected) atmosphere else palette.mapDot
             if (isSelected) {
-                val ringRadius = 6f + pulse * 18f
+                val ringRadius = 6f + pulse * 22f
                 drawCircle(
-                    color = baseColor.copy(alpha = (1f - pulse) * 0.45f),
+                    color = baseColor.copy(alpha = (1f - pulse) * 0.50f),
                     radius = ringRadius,
                     center = pos,
                 )
             }
             drawCircle(
                 color = baseColor.copy(alpha = if (isSelected) 1f else 0.85f),
-                radius = if (isSelected) 4.5f else 2.6f,
+                radius = if (isSelected) 5.5f else 3.0f,
                 center = pos,
             )
+            if (isSelected) {
+                drawCircle(color = Color.White, radius = 2.4f, center = pos)
+            }
         }
 
-        // 6. Connection arc + endpoints — from user location to selected server,
-        //    drawn progressively (Mullvad-style) once connected.
+        // 8. Connection arc + endpoints.
         if (zoomActive && selectedCoord != null) {
             val to = projectOrtho(selectedCoord.first, selectedCoord.second, effectiveRotation, radius)
             val from = projectOrtho(userLat, userLon, effectiveRotation, radius)
             if (to.visible && from.visible) {
                 val a = Offset(cx + from.x, cy + from.y)
                 val b = Offset(cx + to.x, cy + to.y)
-                drawArcChord(a, b, palette.accent, progress = arcProgress)
-                // User pin (smaller, white core)
-                drawCircle(color = palette.accent.copy(alpha = 0.30f), radius = 9f, center = a)
-                drawCircle(color = Color.White, radius = 3.2f, center = a)
-                drawCircle(color = palette.accent, radius = 1.6f, center = a)
+                drawConnectionArc(a, b, atmosphere, progress = arcProgress, shimmer = arcShimmer)
+                // User pin.
+                drawCircle(color = atmosphere.copy(alpha = 0.30f), radius = 11f, center = a)
+                drawCircle(color = Color.White, radius = 4.0f, center = a)
+                drawCircle(color = atmosphere, radius = 2.0f, center = a)
             }
         }
 
-        // 7. Faint specular highlight upper-left
+        // 9. Specular highlight upper-left.
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    Color.White.copy(alpha = if (palette.isLight) 0.10f else 0.06f),
+                    Color.White.copy(alpha = if (isLight) 0.10f else 0.08f),
                     Color.Transparent,
                 ),
-                center = Offset(cx - radius * 0.45f, cy - radius * 0.55f),
+                center = Offset(cx - radius * 0.42f, cy - radius * 0.55f),
                 radius = radius * 0.7f,
             ),
             radius = radius * 0.7f,
-            center = Offset(cx - radius * 0.45f, cy - radius * 0.55f),
+            center = Offset(cx - radius * 0.42f, cy - radius * 0.55f),
         )
     }
 }
@@ -297,18 +272,101 @@ private fun projectOrtho(
     return Projection(x.toFloat(), y.toFloat(), z >= 0)
 }
 
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcChord(
+private data class ProjectedXY(val x: Float, val y: Float, val z: Float)
+
+private fun projectFast(
+    latDeg: Double,
+    lonDeg: Double,
+    rotationRadians: Float,
+    radius: Float,
+): ProjectedXY {
+    val lat = latDeg * PI / 180.0
+    val lon = lonDeg * PI / 180.0 + rotationRadians
+    val x = (cos(lat) * sin(lon)) * radius
+    val y = (-sin(lat)) * radius
+    val z = cos(lat) * cos(lon)
+    return ProjectedXY(x.toFloat(), y.toFloat(), z.toFloat())
+}
+
+/**
+ * Builds a single [Path] containing one tiny quadrilateral per LAND mask
+ * cell on the visible hemisphere. The four corners of each cell are
+ * projected onto the sphere so adjacent quads merge into solid continent
+ * silhouettes when the path is filled.
+ */
+private fun buildLandPath(
+    cx: Float,
+    cy: Float,
+    radius: Float,
+    rotation: Float,
+): Path {
+    val path = Path()
+    val rows = WorldLandmask.rowCount()
+    val cols = WorldLandmask.colCount()
+    val latStep = 180.0 / rows
+    val lonStep = 360.0 / cols
+    for (r in 0 until rows) {
+        val lat0 = 90.0 - r * latStep
+        val lat1 = lat0 - latStep
+        for (c in 0 until cols) {
+            if (!WorldLandmask.isLandCell(r, c)) continue
+            val lon0 = -180.0 + c * lonStep
+            val lon1 = lon0 + lonStep
+
+            // Centre visibility cull.
+            val latC = (lat0 + lat1) * 0.5
+            val lonC = (lon0 + lon1) * 0.5
+            val latCRad = latC * PI / 180.0
+            val lonCRad = lonC * PI / 180.0 + rotation
+            val zC = cos(latCRad) * cos(lonCRad)
+            if (zC < -0.06) continue
+
+            val p0 = projectFast(lat0, lon0, rotation, radius)
+            val p1 = projectFast(lat0, lon1, rotation, radius)
+            val p2 = projectFast(lat1, lon1, rotation, radius)
+            val p3 = projectFast(lat1, lon0, rotation, radius)
+            if (p0.z < 0f && p1.z < 0f && p2.z < 0f && p3.z < 0f) continue
+
+            val xC = ((cos(latCRad) * sin(lonCRad)) * radius).toFloat()
+            val yC = ((-sin(latCRad)) * radius).toFloat()
+            val x0 = if (p0.z >= 0f) p0.x else xC
+            val y0 = if (p0.z >= 0f) p0.y else yC
+            val x1 = if (p1.z >= 0f) p1.x else xC
+            val y1 = if (p1.z >= 0f) p1.y else yC
+            val x2 = if (p2.z >= 0f) p2.x else xC
+            val y2 = if (p2.z >= 0f) p2.y else yC
+            val x3 = if (p3.z >= 0f) p3.x else xC
+            val y3 = if (p3.z >= 0f) p3.y else yC
+
+            path.moveTo(cx + x0, cy + y0)
+            path.lineTo(cx + x1, cy + y1)
+            path.lineTo(cx + x2, cy + y2)
+            path.lineTo(cx + x3, cy + y3)
+            path.close()
+        }
+    }
+    return path
+}
+
+/**
+ * User → server connection arc with a wide soft glow, a crisp gradient
+ * stroke that draws in along [progress], and a moving white shimmer dot
+ * once fully drawn.
+ */
+private fun DrawScope.drawConnectionArc(
     a: Offset,
     b: Offset,
     color: Color,
     progress: Float = 1f,
+    shimmer: Float = 0f,
 ) {
     val mid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
     val centre = Offset(size.width / 2f, size.height / 2f)
     val dir = Offset(mid.x - centre.x, mid.y - centre.y)
-    val len = sqrt((dir.x * dir.x + dir.y * dir.y).toDouble()).toFloat().coerceAtLeast(1f)
+    val len = sqrt((dir.x * dir.x + dir.y * dir.y).toDouble())
+        .toFloat().coerceAtLeast(1f)
     val chord = sqrt(((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y)).toDouble()).toFloat()
-    val lift = (chord * 0.22f).coerceIn(18f, 80f)
+    val lift = (chord * 0.24f).coerceIn(20f, 90f)
     val ctrl = Offset(mid.x + dir.x / len * lift, mid.y + dir.y / len * lift)
     val full = Path().apply {
         moveTo(a.x, a.y)
@@ -319,18 +377,34 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArcChord(
         val measure = PathMeasure().apply { setPath(full, false) }
         measure.getSegment(0f, measure.length * p, dst, true)
     }
-    // Outer glow (always full when any progress) and the crisp inner stroke.
-    drawPath(path = full, color = color.copy(alpha = 0.18f * p), style = Stroke(width = 7f))
-    drawPath(path = drawn, color = color.copy(alpha = 0.95f), style = Stroke(width = 2.0f, cap = StrokeCap.Round))
+    drawPath(full, color = color.copy(alpha = 0.10f * p), style = Stroke(width = 12f, cap = StrokeCap.Round))
+    drawPath(full, color = color.copy(alpha = 0.20f * p), style = Stroke(width = 6f, cap = StrokeCap.Round))
+    val brush = Brush.linearGradient(
+        colors = listOf(
+            color.copy(alpha = 0.7f),
+            Color.White.copy(alpha = 0.95f),
+            color.copy(alpha = 0.9f),
+        ),
+        start = a,
+        end = b,
+    )
+    drawPath(drawn, brush = brush, style = Stroke(width = 2.4f, cap = StrokeCap.Round))
+
     if (p >= 0.98f) {
-        // Server endpoint pulse — only after the line completes.
-        drawCircle(color = color.copy(alpha = 0.30f), radius = 10f, center = b)
-        drawCircle(color = Color.White, radius = 3.6f, center = b)
-        drawCircle(color = color, radius = 1.8f, center = b)
+        // Quadratic Bezier point at t = shimmer.
+        val t = shimmer.coerceIn(0f, 1f)
+        val u = 1f - t
+        val sx = u * u * a.x + 2f * u * t * ctrl.x + t * t * b.x
+        val sy = u * u * a.y + 2f * u * t * ctrl.y + t * t * b.y
+        drawCircle(color = color.copy(alpha = 0.45f), radius = 6f, center = Offset(sx, sy))
+        drawCircle(color = Color.White.copy(alpha = 0.85f), radius = 2.6f, center = Offset(sx, sy))
+        drawCircle(color = color.copy(alpha = 0.30f), radius = 12f, center = b)
+        drawCircle(color = Color.White, radius = 4.2f, center = b)
+        drawCircle(color = color, radius = 2.2f, center = b)
     }
 }
 
-/** Returns the midpoint longitude (in degrees) on the shorter arc. */
+/** Returns the midpoint longitude (degrees) on the shorter arc. */
 private fun midpointLon(a: Float, b: Float): Float {
     var d = b - a
     while (d > 180f) d -= 360f
@@ -342,15 +416,14 @@ private fun midpointLon(a: Float, b: Float): Float {
 }
 
 /** Latitude / longitude graticule lines (every 30°). */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGraticule(
+private fun DrawScope.drawGraticule(
     cx: Float,
     cy: Float,
     radius: Float,
     rotation: Float,
     color: Color,
 ) {
-    val stroke = Stroke(width = 0.8f)
-    // Meridians — lines of constant longitude, every 30°.
+    val stroke = Stroke(width = 0.7f)
     var lon = -180
     while (lon < 180) {
         val path = Path()
@@ -361,15 +434,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGraticule(
             if (proj.visible) {
                 val x = cx + proj.x; val y = cy + proj.y
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
-            } else {
-                first = true
-            }
+            } else first = true
             lat += 3
         }
         drawPath(path, color, style = stroke)
         lon += 30
     }
-    // Parallels — lines of constant latitude, every 30° (skip poles).
     var plat = -60
     while (plat <= 60) {
         val path = Path()
@@ -380,43 +450,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawGraticule(
             if (proj.visible) {
                 val x = cx + proj.x; val y = cy + proj.y
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
-            } else {
-                first = true
-            }
+            } else first = true
             plon += 3
         }
         drawPath(path, color, style = stroke)
         plat += 30
     }
-}
-
-fun globeRadius(size: Size): Float =
-    (minOf(size.width, size.height) / 2f) * 0.92f
-
-/**
- * Pre-computes the disc grid: for every sample point inside the visible
- * hemisphere, packs (px, py, latDeg, lonRel) into a single FloatArray.
- */
-private fun buildDiscGrid(radius: Float, step: Float): FloatArray {
-    if (radius <= 0f) return FloatArray(0)
-    val r2 = radius * radius
-    val out = ArrayList<Float>()
-    var py = -radius
-    while (py <= radius) {
-        var px = -radius
-        while (px <= radius) {
-            val d2 = px * px + py * py
-            if (d2 <= r2) {
-                val nx = (px / radius)
-                val ny = (py / radius)
-                val nz = sqrt((1f - nx * nx - ny * ny).coerceAtLeast(0f))
-                val lat = (-asin(ny.toDouble()) * 180.0 / PI).toFloat()
-                val lonRel = (atan2(nx.toDouble(), nz.toDouble()) * 180.0 / PI).toFloat()
-                out.add(px); out.add(py); out.add(lat); out.add(lonRel)
-            }
-            px += step
-        }
-        py += step
-    }
-    return out.toFloatArray()
 }
