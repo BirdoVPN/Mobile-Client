@@ -193,9 +193,14 @@ jobs:
     env:
       APPLE_TEAM_ID:    ${{ vars.APPLE_TEAM_ID }}
       APPLE_BUNDLE_ID:  ${{ vars.APPLE_BUNDLE_ID }}
-      KEYCHAIN_PATH:    ${{ runner.temp }}/birdo-build.keychain-db
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # KEYCHAIN_PATH must be set in a step (the `runner` context is not
+      # available at job-level `env:`). Persist via $GITHUB_ENV so all later
+      # steps see the same path.
+      - name: Set keychain path
+        run: echo "KEYCHAIN_PATH=$RUNNER_TEMP/birdo-build.keychain-db" >> "$GITHUB_ENV"
 
       - name: Set up JDK
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
