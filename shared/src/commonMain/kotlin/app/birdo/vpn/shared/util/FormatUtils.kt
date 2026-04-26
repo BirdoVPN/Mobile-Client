@@ -1,6 +1,8 @@
 package app.birdo.vpn.shared.util
 
 import app.birdo.vpn.shared.currentTimeMillis
+import kotlin.math.pow
+import kotlin.math.round
 
 /**
  * Cross-platform formatting utilities for bytes and durations.
@@ -43,8 +45,8 @@ object FormatUtils {
 
     /** Platform-independent decimal formatting (no String.format dependency). */
     private fun formatDecimal(value: Double, decimals: Int): String {
-        val factor = Math.pow(10.0, decimals.toDouble())
-        val rounded = Math.round(value * factor) / factor
+        val factor = 10.0.pow(decimals)
+        val rounded = round(value * factor) / factor
         val str = rounded.toString()
         val dot = str.indexOf('.')
         if (dot == -1) return str + "." + "0".repeat(decimals)

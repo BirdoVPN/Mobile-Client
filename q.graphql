@@ -1,0 +1,1 @@
+query { repository(owner:"BirdoVPN", name:"Mobile-Client") { pullRequest(number: 62) { reviewThreads(first: 50) { nodes { id isResolved comments(first:1) { nodes { author { login } body } } } } } } }

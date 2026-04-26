@@ -1,0 +1,128 @@
+﻿iOS Simulator Tests	Build shared framework for iOS Simulator	´╗┐2026-04-26T13:21:04.7631510Z ##[group]Run chmod +x ./gradlew
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7631830Z [36;1mchmod +x ./gradlew[0m
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7632110Z [36;1m./gradlew :shared:linkDebugFrameworkIosSimulatorArm64[0m
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7688320Z shell: /bin/bash -e {0}
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7688560Z env:
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7688730Z   JAVA_VERSION: 17
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7688910Z   JAVA_DISTRIBUTION: temurin
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7689270Z   JAVA_HOME: /Users/runner/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.18-8/arm64/Contents/Home
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7689810Z   JAVA_HOME_17_ARM64: /Users/runner/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.18-8/arm64/Contents/Home
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.7690230Z ##[endgroup]
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:04.9866240Z Downloading https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:08.1853020Z .............10%.............20%.............30%.............40%.............50%.............60%.............70%.............80%.............90%.............100%
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3534730Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3536710Z Welcome to Gradle 8.11.1!
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3572830Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3583470Z Here are the highlights of this release:
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3584250Z  - Parallel load and store for Configuration Cache
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3593160Z  - Java compilation errors at the end of the build output
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3595800Z  - Consolidated report for warnings and deprecations
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3596140Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3597770Z For more details see https://docs.gradle.org/8.11.1/release-notes.html
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3598160Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:09.3601200Z Starting a Gradle Daemon (subsequent builds will be faster)
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9318690Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9337180Z > Configure project :shared
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9338830Z w: file:///Users/runner/work/Mobile-Client/Mobile-Client/shared/build.gradle.kts:11:13: 'kotlinOptions(KotlinJvmOptions.() -> Unit): Unit' is deprecated. Please migrate to the compilerOptions DSL. More details are here: https://kotl.in/u1r8ln
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9344940Z w: The Default Kotlin Hierarchy Template was not applied to 'project ':shared'':
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9379390Z Explicit .dependsOn() edges were configured for the following source sets:
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9380390Z [iosArm64Main, iosMain, iosSimulatorArm64Main, iosX64Main]
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9404070Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9405520Z Consider removing dependsOn-calls or disabling the default template by adding
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9406310Z     'kotlin.mpp.applyDefaultHierarchyTemplate=false'
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9406830Z to your gradle.properties
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9414390Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9415080Z Learn more about hierarchy templates: https://kotl.in/hierarchy-template
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9415610Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9622960Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:21:53.9675640Z > Task :shared:checkKotlinGradlePluginConfigurationErrors SKIPPED
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:24.0029200Z > Task :shared:compileKotlinIosSimulatorArm64
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:32.9040480Z Downloading native dependencies (LLVM, sysroot etc). This is a one-time action performed only on the first run of the compiler.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:35.6191520Z Done.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:35.6194850Z Extracting dependency: /Users/runner/.konan/dependencies/cache/llvm-16.0.0-aarch64-macos-essentials-63.tar.gz into /Users/runner/.konan/dependencies
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:38.4117630Z Done.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:38.4119730Z Extracting dependency: /Users/runner/.konan/dependencies/cache/libffi-3.3-1-macos-arm64.tar.gz into /Users/runner/.konan/dependencies
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:51.9396370Z w: KLIB resolver: Skipping '/Users/runner/.gradle/caches/modules-2/files-2.1/io.ktor/ktor-client-content-negotiation-iossimulatorarm64/3.3.3/4ca97fe0cdd749b7880ea2051d6ad9da52c3078e/ktor-client-content-negotiation-iosSimulatorArm64Main-3.3.3.klib'. Incompatible ABI version. The current default is '1.201.0', found '2.2.0'. The library was produced by '2.2.21' compiler.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:51.9406270Z e: KLIB resolver: Could not find "/Users/runner/.gradle/caches/modules-2/files-2.1/io.ktor/ktor-client-content-negotiation-iossimulatorarm64/3.3.3/4ca97fe0cdd749b7880ea2051d6ad9da52c3078e/ktor-client-content-negotiation-iosSimulatorArm64Main-3.3.3.klib" in [/Users/runner/work/Mobile-Client/Mobile-Client, /Users/runner/.konan/kotlin-native-prebuilt-macos-aarch64-2.1.0/klib/common, /Users/runner/.konan/kotlin-native-prebuilt-macos-aarch64-2.1.0/klib/platform/ios_simulator_arm64]
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:51.9413810Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:51.9416060Z > Task :shared:compileKotlinIosSimulatorArm64 FAILED
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0005690Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0005950Z 1 actionable task: 1 executed
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0012640Z FAILURE: Build failed with an exception.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0012820Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0012870Z * What went wrong:
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0013230Z Execution failed for task ':shared:compileKotlinIosSimulatorArm64'.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0013660Z > Compilation finished with errors
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0013780Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0013830Z * Try:
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0013990Z > Run with --stacktrace option to get the stack trace.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0014300Z > Run with --info or --debug option to get more log output.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0014530Z > Run with --scan to get full insights.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0014740Z > Get more help at https://help.gradle.org.
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0014890Z 
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:52.0015010Z BUILD FAILED in 1m 46s
+iOS Simulator Tests	Build shared framework for iOS Simulator	2026-04-26T13:22:53.1577510Z ##[error]Process completed with exit code 1.
+Build Shared Framework (iOS)	Build shared framework for iOS	´╗┐2026-04-26T13:21:06.3970510Z ##[group]Run chmod +x ./gradlew
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.3970760Z [36;1mchmod +x ./gradlew[0m
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.3971000Z [36;1m./gradlew :shared:linkReleaseFrameworkIosArm64[0m
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4024930Z shell: /bin/bash -e {0}
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4025090Z env:
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4025220Z   JAVA_VERSION: 17
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4025360Z   JAVA_DISTRIBUTION: temurin
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4025670Z   JAVA_HOME: /Users/runner/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.18-8/arm64/Contents/Home
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4026190Z   JAVA_HOME_17_ARM64: /Users/runner/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.18-8/arm64/Contents/Home
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.4026570Z ##[endgroup]
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:06.6267290Z Downloading https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:09.7221460Z .............10%.............20%.............30%.............40%.............50%.............60%.............70%.............80%.............90%.............100%
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9223320Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9248160Z Welcome to Gradle 8.11.1!
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9248510Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9248780Z Here are the highlights of this release:
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9249130Z  - Parallel load and store for Configuration Cache
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9264510Z  - Java compilation errors at the end of the build output
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9264900Z  - Consolidated report for warnings and deprecations
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9265140Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9265930Z For more details see https://docs.gradle.org/8.11.1/release-notes.html
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9266240Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:10.9266410Z Starting a Gradle Daemon (subsequent builds will be faster)
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.1963860Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2111480Z > Configure project :shared
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2129760Z w: file:///Users/runner/work/Mobile-Client/Mobile-Client/shared/build.gradle.kts:11:13: 'kotlinOptions(KotlinJvmOptions.() -> Unit): Unit' is deprecated. Please migrate to the compilerOptions DSL. More details are here: https://kotl.in/u1r8ln
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2134620Z w: The Default Kotlin Hierarchy Template was not applied to 'project ':shared'':
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2138330Z Explicit .dependsOn() edges were configured for the following source sets:
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2139990Z [iosArm64Main, iosMain, iosSimulatorArm64Main, iosX64Main]
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2141610Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2159730Z Consider removing dependsOn-calls or disabling the default template by adding
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2160210Z     'kotlin.mpp.applyDefaultHierarchyTemplate=false'
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2160550Z to your gradle.properties
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2160720Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2161220Z Learn more about hierarchy templates: https://kotl.in/hierarchy-template
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.2161460Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.3327870Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:21:52.3328720Z > Task :shared:checkKotlinGradlePluginConfigurationErrors SKIPPED
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:22.3444520Z > Task :shared:compileKotlinIosArm64
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:33.4826100Z Downloading native dependencies (LLVM, sysroot etc). This is a one-time action performed only on the first run of the compiler.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:36.6784100Z Done.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:36.6817560Z Extracting dependency: /Users/runner/.konan/dependencies/cache/llvm-16.0.0-aarch64-macos-essentials-63.tar.gz into /Users/runner/.konan/dependencies
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:39.0421640Z Done.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:39.0422380Z Extracting dependency: /Users/runner/.konan/dependencies/cache/libffi-3.3-1-macos-arm64.tar.gz into /Users/runner/.konan/dependencies
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3904640Z w: KLIB resolver: Skipping '/Users/runner/.gradle/caches/modules-2/files-2.1/io.ktor/ktor-client-content-negotiation-iosarm64/3.3.3/aa308219c3add83c2ace478390b604b8b45dcb8/ktor-client-content-negotiation-iosArm64Main-3.3.3.klib'. Incompatible ABI version. The current default is '1.201.0', found '2.2.0'. The library was produced by '2.2.21' compiler.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3913710Z e: KLIB resolver: Could not find "/Users/runner/.gradle/caches/modules-2/files-2.1/io.ktor/ktor-client-content-negotiation-iosarm64/3.3.3/aa308219c3add83c2ace478390b604b8b45dcb8/ktor-client-content-negotiation-iosArm64Main-3.3.3.klib" in [/Users/runner/work/Mobile-Client/Mobile-Client, /Users/runner/.konan/kotlin-native-prebuilt-macos-aarch64-2.1.0/klib/common, /Users/runner/.konan/kotlin-native-prebuilt-macos-aarch64-2.1.0/klib/platform/ios_arm64]
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3916010Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3916230Z FAILURE: Build failed with an exception.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3916410Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3916590Z * What went wrong:
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3916910Z Execution failed for task ':shared:compileKotlinIosArm64'.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3917390Z > Compilation finished with errors
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3917550Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3917690Z * Try:
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3917930Z > Run with --stacktrace option to get the stack trace.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3918300Z > Run with --info or --debug option to get more log output.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3918640Z > Run with --scan to get full insights.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3918970Z > Get more help at https://help.gradle.org.
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3919180Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3919380Z BUILD FAILED in 1m 41s
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3919480Z 
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3919650Z > Task :shared:compileKotlinIosArm64 FAILED
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:48.3919940Z 1 actionable task: 1 executed
+Build Shared Framework (iOS)	Build shared framework for iOS	2026-04-26T13:22:49.5037010Z ##[error]Process completed with exit code 1.
