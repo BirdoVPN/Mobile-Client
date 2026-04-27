@@ -1,16 +1,30 @@
-name: iOS CI & Build
+name: iOS CI & Build (PAUSED)
+
+# ============================================================================
+# DEVELOPMENT PAUSED -- 2026-04-27
+# ----------------------------------------------------------------------------
+# Active development on the iOS client is paused while we focus on shipping
+# the Windows and Android clients. The iOS app is publicly listed as
+# "currently awaiting release".
+#
+# This workflow is intentionally restricted to manual `workflow_dispatch`
+# only -- no push, tag, or pull_request triggers -- so that:
+#   * we don't burn macOS runner minutes on builds we won't ship
+#   * a stale tag doesn't accidentally publish to TestFlight
+#   * the YAML and signing wiring is preserved for the day we resume
+#
+# To resume: restore the original `on:` block (push/tags/pull_request) and
+# remove this banner. Original triggers (kept for reference):
+#   push.branches:        [main, develop]
+#   push.tags:            ['ios-v*']
+#   pull_request.branches:[main]
+# ============================================================================
 
 on:
-  push:
-    branches: [main, develop]
-    tags:
-      - 'ios-v*'   # e.g. ios-v1.2.0 - triggers signed build + TestFlight upload
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 1.0.0)'
+        description: 'Release version (e.g., 1.0.0) -- iOS dev is paused; manual runs only'
         required: false
         type: string
 
