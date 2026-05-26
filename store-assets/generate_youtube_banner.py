@@ -4,7 +4,6 @@ Output: 2560x1440 PNG. The "safe area" (1546x423, centered) holds all
 text/logo so it renders correctly on mobile, tablet, desktop, and TV.
 """
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-import math
 import os
 
 OUT = r"W:\vpn\birdo-client-mobile\store-assets"
