@@ -39,8 +39,17 @@ data class VpnUiState(
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
-    /** Whether the current connection uses Rosenpass PQ-PSK */
+    /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
     val quantumActive: Boolean = false,
+    /**
+     * PFA-M9: granular PQ mode for honest UI labelling.
+     *  - "BILATERAL"       — genuine end-to-end ML-KEM-1024 PSK derivation
+     *  - "SERVER_PROVIDED" — classical PSK delivered over TLS (NOT post-quantum)
+     *  - "DISABLED"        — no PSK
+     * Marketing copy MUST distinguish BILATERAL from SERVER_PROVIDED before
+     * claiming post-quantum protection to a user.
+     */
+    val pqMode: String = "DISABLED",
     /** Current subscription status */
     val subscription: SubscriptionStatus? = null,
     /** Port forwards for the current connection */
@@ -137,6 +146,7 @@ class VpnViewModel @Inject constructor(
                     killSwitchActive = app.birdo.vpn.service.BirdoVpnService.killSwitchActive,
                     stealthActive = app.birdo.vpn.service.BirdoVpnService.stealthActive,
                     quantumActive = app.birdo.vpn.service.BirdoVpnService.quantumActive,
+                    pqMode = app.birdo.vpn.service.RosenpassManager.modeFlow.value.name,
                     tick = System.currentTimeMillis(),
                 )
             }
@@ -310,12 +320,10 @@ class VpnViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(error = null)
-            when (val result = repository.connectMultiHop(entryNodeId, exitNodeId)) {
+            when (val result = vpnManager.connectMultiHop(entryNodeId, exitNodeId)) {
                 is ApiResult.Success -> {
                     val body = result.data
-                    if (body.success) {
-                        vpnManager.connectWithConfig(body)
-                    } else {
+                    if (!body.success) {
                         _uiState.value = _uiState.value.copy(
                             error = body.message ?: "Multi-hop connection failed",
                         )

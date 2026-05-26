@@ -190,6 +190,14 @@ data class ConnectRequest(
     val clientPublicKey: String? = null,
     val stealthMode: Boolean = false,
     val quantumProtection: Boolean = false,
+    /**
+     * Base64 ML-KEM-1024 public key for BirdoPQ v1 PSK derivation.
+     * When present, the server encapsulates a fresh shared secret against
+     * this key and returns the resulting ciphertext in
+     * `ConnectResponse.rosenpassPublicKey`. ~2.1 KB Base64 overhead per
+     * connect — see `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt`.
+     */
+    val pqClientPublicKey: String? = null,
 )
 
 @Serializable
@@ -226,7 +234,25 @@ data class ConnectResponse(
     val xrayShortId: String? = null,
     val xraySni: String? = null,
     val xrayFlow: String? = null,
-    // Quantum Protection (Rosenpass PQ-PSK)
+    // Quantum Protection — BirdoPQ v1 (ML-KEM-1024 PSK derivation).
+    //
+    // The two `rosenpass*` fields below are RE-USED for BirdoPQ v1 to avoid a
+    // breaking schema change. Their semantics changed in client v0.2.0:
+    //
+    //   `rosenpassPublicKey` — Base64 ML-KEM-1024 ciphertext (1568 B).
+    //                          The server encapsulates against the client's
+    //                          ML-KEM public key (uploaded in ConnectRequest)
+    //                          and returns the resulting ciphertext here.
+    //                          The client decapsulates with its persisted
+    //                          secret key to recover the shared secret.
+    //
+    //   `rosenpassEndpoint`  — Base64 per-connect nonce mixed into HKDF so
+    //                          each session derives a distinct PSK from the
+    //                          same KEM output. Server may use a timestamp,
+    //                          random bytes, or any opaque value.
+    //
+    // See `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt` and
+    // `native/rosenpass-jni/src/lib.rs` for the canonical protocol spec.
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
@@ -248,6 +274,9 @@ data class MultiHopConnectRequest(
     val exitNodeId: String,
     val deviceName: String? = null,
     val clientPublicKey: String? = null,
+    val stealthMode: Boolean = false,
+    val quantumProtection: Boolean = false,
+    val pqClientPublicKey: String? = null,
 )
 
 @Serializable
@@ -282,6 +311,16 @@ data class MultiHopConnectResponse(
     val mtu: Int? = null,
     val persistentKeepalive: Int? = null,
     val multiHop: MultiHopInfo? = null,
+    val stealthEnabled: Boolean = false,
+    val xrayEndpoint: String? = null,
+    val xrayUuid: String? = null,
+    val xrayPublicKey: String? = null,
+    val xrayShortId: String? = null,
+    val xraySni: String? = null,
+    val xrayFlow: String? = null,
+    val quantumEnabled: Boolean = false,
+    val rosenpassPublicKey: String? = null,
+    val rosenpassEndpoint: String? = null,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────
@@ -309,28 +348,7 @@ data class CreatePortForwardResponse(
 )
 
 // ─── Google Play Billing ─────────────────────────────────────────────────────
-
-/**
- * Server-side acknowledgement of a Google Play purchase. The mobile client
- * sends the purchaseToken + productId after a successful in-app purchase;
- * the backend validates the receipt against Google Play Developer API and
- * provisions the matching subscription tier on the user's account.
- */
-@Serializable
-data class GooglePlayAcknowledgeRequest(
-    val productId: String,
-    val purchaseToken: String,
-    val packageName: String,
-    val orderId: String? = null,
-)
-
-@Serializable
-data class GooglePlayAcknowledgeResponse(
-    val ok: Boolean = false,
-    val plan: String = "RECON",
-    val newPeriodEnd: String? = null,
-    val error: String? = null,
-)
+// Removed: Android distributed as APK from GitHub Releases; no Play Billing.
 
 // ─── Key Rotation ────────────────────────────────────────────────────────────
 

@@ -1,9 +1,11 @@
 package app.birdo.vpn.service
 
+import android.content.Context
 import android.util.Log
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,6 +32,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class AutoReconnectService @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val repository: BirdoRepository,
     private val prefs: AppPreferences,
 ) {
@@ -89,12 +92,22 @@ class AutoReconnectService @Inject constructor(
                 _state.value = ReconnectState.Reconnecting
                 Log.i(TAG, "Attempting reconnection to $serverId (attempt $attempt)")
 
-                // Fetch fresh keys from API — never reuse old key material
+                // Fetch fresh keys from API — never reuse old key material.
+                // When quantum protection is enabled, also upload our ML-KEM-1024
+                // public key so the server can encapsulate against it (BirdoPQ v1).
+                val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
+                    RosenpassManager.getClientPublicKeyB64(context)
+                } else null
+                if (prefs.quantumProtectionEnabled && pqClientPublicKey == null) {
+                    Log.e(TAG, "Quantum engine unavailable during reconnect; refusing downgrade")
+                    continue
+                }
                 val result = repository.connectVpn(
                     serverNodeId = serverId,
                     deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL,
                     stealthMode = prefs.stealthModeEnabled,
                     quantumProtection = prefs.quantumProtectionEnabled,
+                    pqClientPublicKey = pqClientPublicKey,
                 )
 
                 when (result) {

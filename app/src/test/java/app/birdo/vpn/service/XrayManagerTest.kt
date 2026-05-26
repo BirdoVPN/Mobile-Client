@@ -73,9 +73,11 @@ class XrayManagerTest {
 
     @Test
     fun `findAvailablePort returns port in expected range`() {
-        val method = XrayManager::class.java.getDeclaredMethod("findAvailablePort")
+        val method = XrayManager::class.java.getDeclaredMethod(
+            "findAvailablePort", Int::class.javaPrimitiveType
+        )
         method.isAccessible = true
-        val port = method.invoke(XrayManager) as Int
+        val port = method.invoke(XrayManager, 51821) as Int
         assertTrue("Port should be > 0", port > 0)
         assertTrue("Port should be <= 65535", port <= 65535)
     }

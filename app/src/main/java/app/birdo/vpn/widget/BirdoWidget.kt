@@ -3,6 +3,7 @@ package app.birdo.vpn.widget
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.*
@@ -45,12 +46,12 @@ private fun BirdoWidgetContent(
     isConnected: Boolean,
     serverName: String?,
 ) {
-    val primaryText = ColorProvider(R.color.widget_text)
-    val dimText = ColorProvider(R.color.widget_text_dim)
+    val primaryText = ColorProvider(Color(0xFFF2F2F2))
+    val dimText = ColorProvider(Color(0x99FFFFFF))
     val accentColor = if (isConnected) {
-        ColorProvider(R.color.widget_connected_accent)
+        ColorProvider(Color(0xFF22C55E))
     } else {
-        ColorProvider(R.color.widget_disconnected_accent)
+        ColorProvider(Color(0xFF6B7280))
     }
 
     // Pixel canvas background with state-based visuals

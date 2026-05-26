@@ -7,7 +7,7 @@ import java.security.MessageDigest
 
 /**
  * Verifies integrity of JNI native libraries before loading.
- * 
+ *
  * Mirrors the Windows client's wintun.dll SHA-256 verification.
  * Prevents loading of tampered wg-go or xray native libraries.
  */
@@ -29,9 +29,20 @@ object NativeLibraryVerifier {
             val clazz = app.birdo.vpn.BuildConfig::class.java
             val wgHash = clazz.getField("NATIVE_HASH_WG_GO").get(null) as? String ?: ""
             val xrayHash = clazz.getField("NATIVE_HASH_XRAY").get(null) as? String ?: ""
+            // AUDIT-E1: BirdoPQ v1 KEM lib must be hashed too — without this,
+            // an attacker who can swap just librosenpass_jni.so (e.g. via a
+            // tampered downstream APK rebuild) could silently downgrade the
+            // PQ PSK by returning attacker-known bytes from deriveSharedPsk().
+            val rosenpassJniHash = runCatching {
+                clazz.getField("NATIVE_HASH_ROSENPASS_JNI").get(null) as? String ?: ""
+            }.getOrDefault("")
             buildMap {
                 if (wgHash.isNotBlank()) put("wg-go", wgHash)
-                if (xrayHash.isNotBlank()) put("Xray", xrayHash)
+                if (xrayHash.isNotBlank()) {
+                    put("xray", xrayHash)
+                    put("Xray", xrayHash)
+                }
+                if (rosenpassJniHash.isNotBlank()) put("rosenpass_jni", rosenpassJniHash)
             }
         } catch (_: Exception) {
             // Fields don't exist (dev build) — skip verification
@@ -41,7 +52,22 @@ object NativeLibraryVerifier {
 
     /**
      * Verify a native library's SHA-256 hash before loading.
-     * Returns true if the library is trusted (hash matches or verification is disabled in debug).
+     *
+     * Returns true if the library is trusted. Behaviour matrix:
+     *
+     * | Build   | Hash registered | File present | Hash matches | Result |
+     * |---------|-----------------|--------------|--------------|--------|
+     * | debug   | any             | any          | any          | true   |
+     * | release | yes             | yes          | yes          | true   |
+     * | release | yes             | yes          | no           | false  |
+     * | release | yes             | no           | —            | false  |
+     * | release | no              | any          | —            | false  |  ← AUDIT-E1: fail-CLOSED
+     *
+     * Previously the "no hash registered" case returned `true` (graceful
+     * degrade), which silently disabled integrity verification if a
+     * BuildConfig field went missing. Release builds now refuse to load
+     * any unregistered library so a build-system regression cannot quietly
+     * weaken the supply-chain check.
      */
     fun verifyLibrary(context: Context, libraryName: String): Boolean {
         if (app.birdo.vpn.BuildConfig.DEBUG) {
@@ -58,9 +84,16 @@ object NativeLibraryVerifier {
         }
 
         val expectedHash = KNOWN_HASHES[libraryName]
-        if (expectedHash == null) {
-            // No hash registered — warn but allow (graceful degradation)
-            Log.w(TAG, "No known hash for $libraryName — integrity check skipped")
+        if (expectedHash.isNullOrBlank()) {
+            if (!RootDetector.hasSigningFingerprintConfigured(context)) {
+                Log.e(TAG, "INTEGRITY FAILURE: no hash and no release signing fingerprint for $libraryName")
+                return false
+            }
+            if (!RootDetector.isPackageSignatureTrusted(context)) {
+                Log.e(TAG, "INTEGRITY FAILURE: package signature is not trusted for $libraryName")
+                return false
+            }
+            Log.w(TAG, "No registered hash for $libraryName; package signature check passed")
             return true
         }
 

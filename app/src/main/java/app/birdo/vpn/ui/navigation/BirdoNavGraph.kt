@@ -36,7 +36,6 @@ import app.birdo.vpn.ui.screen.*
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.AuthViewModel
-import app.birdo.vpn.ui.viewmodel.BillingViewModel
 import app.birdo.vpn.ui.viewmodel.SettingsViewModel
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 
@@ -530,27 +529,13 @@ fun BirdoNavGraph(
                 exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
             ) {
                 AdaptiveContainer {
-                    val context = LocalContext.current
-                    val billingViewModel: BillingViewModel = hiltViewModel()
-                    val billingState by billingViewModel.uiState.collectAsState()
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
-                        billingReady = billingState.isReady,
-                        billingMessage = billingState.message,
-                        billingIsError = billingState.isError,
-                        billingIsPurchasing = billingState.isPurchasing,
-                        onClearBillingMessage = { billingViewModel.clearMessage() },
                         onNavigateBack = { navController.popBackStack() },
                         onSelectPlan = { planId, period ->
-                            val productId = mapPlanToProduct(planId, period)
-                            val activity = context as? android.app.Activity
-                            if (productId != null && billingState.isReady && activity != null) {
-                                billingViewModel.purchase(activity, productId)
-                            } else {
-                                settingsViewModel.openUrl(
-                                    "https://dashboard.birdo.app/dashboard/billing?plan=$planId&period=$period"
-                                )
-                            }
+                            settingsViewModel.openUrl(
+                                "https://dashboard.birdo.app/dashboard/billing?plan=$planId&period=$period"
+                            )
                         },
                         onManageOnWeb = {
                             settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
@@ -562,18 +547,5 @@ fun BirdoNavGraph(
         }
         } // end Column
         } // end Box
-    }
-}
-
-/**
- * Map a backend plan tier + billing period onto its Google Play product ID.
- * Returns null for the free RECON tier (no Play product).
- */
-private fun mapPlanToProduct(planId: String, period: String): String? {
-    val isYearly = period.equals("yearly", ignoreCase = true)
-    return when (planId.uppercase()) {
-        "OPERATIVE" -> if (isYearly) "operative_yearly" else "operative_monthly"
-        "SOVEREIGN" -> if (isYearly) "sovereign_yearly" else "sovereign_monthly"
-        else -> null
     }
 }

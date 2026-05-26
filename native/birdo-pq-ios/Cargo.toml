@@ -1,0 +1,33 @@
+[package]
+name = "birdo-pq-ios"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "BirdoPQ v1 ML-KEM-1024 PSK derivation — C ABI for the iOS Swift client. Wire-format twin of rosenpass-jni and birdo_pq.rs (desktop)."
+license = "Apache-2.0"
+
+[lib]
+name = "birdo_pq_ios"
+# staticlib so we can vendor a single archive into XCFramework slices for
+# every iOS target (device arm64, simulator arm64, simulator x86_64).
+crate-type = ["staticlib"]
+
+[dependencies]
+# Same KEM the Android client + desktop client use.
+pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
+pqcrypto-traits = "0.3"
+
+# PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
+sha2 = "0.10"
+hkdf = "0.12"
+
+# Defence-in-depth: wipe shared secrets from RAM after derivation.
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+overflow-checks = true

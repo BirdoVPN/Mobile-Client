@@ -6,15 +6,15 @@
 
 ---
 
-## Android — Google Play Store upload
+## Android — APK release (no Play Store)
 
-The workflow `play-store` job uploads a signed `.aab` (built by `release-aab`)
-to the Play Console **internal** track on every `android-v*` tag.
+Birdo VPN for Android is distributed as a **signed APK from GitHub Releases**
+linked from the website. There is no Google Play Store / AAB upload pipeline.
 
 ### One-time setup
 
 1. **Generate a release keystore** (only once for the lifetime of the app —
-   losing it locks you out of Play Store updates):
+   losing it forces every user to uninstall before updating):
 
    ```bash
    keytool -genkeypair -v \
@@ -30,27 +30,14 @@ to the Play Console **internal** track on every `android-v*` tag.
    `android.yml` header). The release job retrieves them via OIDC; **no plain
    GitHub secrets are needed for signing**.
 
-3. **Create a Google Play service account**:
-   - Google Cloud Console → IAM & Admin → Service Accounts → "Create"
-   - Grant role: **Service Account User**
-   - Create a JSON key, download.
-   - Play Console → Setup → API access → Link the service account → grant
-     "Release manager" permission on the BirdoVPN app.
-
-### GitHub secrets
-
-| Secret name                  | Source                                                 |
-| ---------------------------- | ------------------------------------------------------ |
-| `PLAY_SERVICE_ACCOUNT_JSON`  | The full JSON file from step 3 above (paste the body). |
-
 ### GitHub variables (Settings → Secrets and variables → Variables)
 
 | Variable                | Source                                                 |
 | ----------------------- | ------------------------------------------------------ |
 | `AZURE_KEY_VAULT_NAME`  | Azure Key Vault name, e.g. `birdovpn-keyvault`.        |
 
-> The package name (`app.birdo.vpn`) is hard-coded in `android.yml`. Change in
-> both `app/build.gradle.kts` and the workflow if you ever rebrand.
+> The package name (`app.birdo.vpn`) is hard-coded in `android.yml` and
+> `app/build.gradle.kts`.
 
 ---
 

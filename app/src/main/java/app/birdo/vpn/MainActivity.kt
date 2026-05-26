@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,10 +34,6 @@ import app.birdo.vpn.ui.theme.BirdoTheme
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.RootDetector
 import app.birdo.vpn.utils.SettingsHmac
-import com.google.android.play.core.appupdate.AppUpdateManagerFactory
-import com.google.android.play.core.appupdate.AppUpdateOptions
-import com.google.android.play.core.install.model.AppUpdateType
-import com.google.android.play.core.install.model.UpdateAvailability
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -70,17 +67,19 @@ class MainActivity : FragmentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { /* we don't need to handle denial — notifications just won't show */ }
 
-    /** In-app update launcher (replaces deprecated startUpdateFlowForResult) */
-    private val updateLauncher = registerForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { /* update result — no action needed for flexible updates */ }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // L-1: FLAG_SECURE blocks screenshots, screen recording, and prevents
+        // the activity contents from appearing in the recent-apps thumbnail.
+        // Set before any UI is drawn so the lock screen / preview also redact.
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE,
+        )
+
         // Apply theme mode from preferences
         requestNotificationPermission()
-        checkForAppUpdate()
         checkRootStatus()
         verifySettingsIntegrity()
         deepLinkRoute.value = parseDeepLink(intent)
@@ -214,34 +213,6 @@ class MainActivity : FragmentActivity() {
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
-        }
-    }
-
-    /**
-     * Check Google Play for app updates and prompt the user with a flexible update flow.
-     * For security-critical VPN updates, this ensures users stay on the latest version.
-     * Uses the non-deprecated AppUpdateOptions API (required for Play Core 2.1+).
-     */
-    private fun checkForAppUpdate() {
-        try {
-            val appUpdateManager = AppUpdateManagerFactory.create(this)
-            appUpdateManager.appUpdateInfo.addOnSuccessListener { updateInfo ->
-                if (updateInfo.updateAvailability() == UpdateAvailability.UPDATE_AVAILABLE
-                    && updateInfo.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)
-                ) {
-                    try {
-                        appUpdateManager.startUpdateFlowForResult(
-                            updateInfo,
-                            updateLauncher,
-                            AppUpdateOptions.newBuilder(AppUpdateType.FLEXIBLE).build(),
-                        )
-                    } catch (e: Exception) {
-                        Log.w("BirdoUpdate", "Failed to start update flow", e)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("BirdoUpdate", "App update check failed", e)
         }
     }
 

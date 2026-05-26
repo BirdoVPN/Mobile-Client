@@ -229,29 +229,6 @@ class BirdoRepository @Inject constructor(
     suspend fun getProfile(): ApiResult<UserProfile> =
         withAutoRefresh("Failed to get profile") { api.getProfile() }
 
-    suspend fun acknowledgeGooglePlayPurchase(
-        productId: String,
-        purchaseToken: String,
-        packageName: String,
-        orderId: String?,
-    ): ApiResult<GooglePlayAcknowledgeResponse> {
-        val result = withAutoRefresh("Failed to acknowledge purchase") {
-            api.acknowledgeGooglePlayPurchase(
-                GooglePlayAcknowledgeRequest(
-                    productId = productId,
-                    purchaseToken = purchaseToken,
-                    packageName = packageName,
-                    orderId = orderId,
-                )
-            )
-        }
-        // A successful acknowledge changes the user's plan — bust the cache.
-        if (result is ApiResult.Success && result.data.ok) {
-            invalidateSubscriptionCache()
-        }
-        return result
-    }
-
     suspend fun getSubscription(forceRefresh: Boolean = false): ApiResult<SubscriptionStatus> {
         if (!forceRefresh) {
             cachedSubscriptionOrNull()?.let { return ApiResult.Success(it) }
@@ -328,6 +305,7 @@ class BirdoRepository @Inject constructor(
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
         quantumProtection: Boolean = false,
+        pqClientPublicKey: String? = null,
     ): ApiResult<ConnectResponse> {
         // FIX-1-1: Generate X25519 keypair locally — private key never leaves the device.
         // Uses wireguard-android's crypto module which wraps Curve25519.
@@ -348,6 +326,7 @@ class BirdoRepository @Inject constructor(
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
                     quantumProtection = quantumProtection,
+                    pqClientPublicKey = pqClientPublicKey,
                 ))
             }
             if (result is ApiResult.Success) {
@@ -426,6 +405,9 @@ class BirdoRepository @Inject constructor(
         entryNodeId: String,
         exitNodeId: String,
         deviceName: String = "Birdo-Android",
+        stealthMode: Boolean = false,
+        quantumProtection: Boolean = false,
+        pqClientPublicKey: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
@@ -438,6 +420,9 @@ class BirdoRepository @Inject constructor(
                     exitNodeId = exitNodeId,
                     deviceName = deviceName,
                     clientPublicKey = clientPublicKey,
+                    stealthMode = stealthMode,
+                    quantumProtection = quantumProtection,
+                    pqClientPublicKey = pqClientPublicKey,
                 ))
             }
             if (result is ApiResult.Success) {

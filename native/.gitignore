@@ -1,0 +1,15 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Native libs are produced by `native/build.{ps1,sh}` and copied into
+# app/src/main/jniLibs/ — they're build outputs, not source.
+# (The jniLibs entries below are scoped to *only* the rosenpass library
+# so other prebuilt .so files like libwg.so / libsentry.so stay tracked.)
+/app/src/main/jniLibs/arm64-v8a/librosenpass_jni.so
+/app/src/main/jniLibs/armeabi-v7a/librosenpass_jni.so
+/app/src/main/jniLibs/x86_64/librosenpass_jni.so
+
+# cargo-ndk leaves these behind
+**/*.rs.bk
+Cargo.lock.bak

@@ -70,7 +70,10 @@ final class APIClient: @unchecked Sendable {
     }
 
     func loginAnonymous() async throws -> TokenPairData {
-        let data = try await post(path: "/auth/anonymous", body: nil, authenticated: false)
+        // AUDIT-M-DRIFT: backend route is `@Post('login/anonymous')` on the
+        // controller mounted at `/auth`, i.e. `/auth/login/anonymous`. The
+        // previous path `/auth/anonymous` 404'd.
+        let data = try await post(path: "/auth/login/anonymous", body: nil, authenticated: false)
         let tokens = try decoder.decode(TokensResponse.self, from: data)
         return TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
     }
@@ -89,7 +92,20 @@ final class APIClient: @unchecked Sendable {
     // MARK: - VPN Config
 
     func getConnectConfig(serverId: String) async throws -> VPNConnectionConfig {
-        let body = try encoder.encode(ConnectBody(serverId: serverId))
+        // AUDIT-C1: attach the persistent ML-KEM-1024 client public key so the
+        // server can encapsulate against it and ship the ciphertext back in
+        // `rosenpassPublicKey` for true bilateral PQ PSK derivation.
+        // The Swift `BirdoPQManager` lazy-generates + persists the keypair on
+        // first call; if the call returns nil we proceed without PQ rather
+        // than block the connect.
+        let pqPk = BirdoPQManager.shared.clientPublicKeyBase64()
+        let body = try encoder.encode(
+            ConnectBody(
+                serverId: serverId,
+                quantumProtection: pqPk == nil ? nil : true,
+                pqClientPublicKey: pqPk
+            )
+        )
         let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
         return try decoder.decode(VPNConnectionConfig.self, from: data)
     }
@@ -393,6 +409,11 @@ private struct TwoFactorBody: Encodable {
 
 private struct ConnectBody: Encodable {
     let serverId: String
+    /// AUDIT-C1: opt the user into bilateral PQ when we have a client pk to
+    /// send. Server interprets this together with `pqClientPublicKey`.
+    let quantumProtection: Bool?
+    /// AUDIT-C1: BirdoPQ v1 ML-KEM-1024 client public key (Base64).
+    let pqClientPublicKey: String?
 }
 
 private struct MultiHopBody: Encodable {
@@ -429,6 +450,14 @@ struct VPNConnectionConfig: Decodable {
     let dns: [String]
     let allowedIPs: [String]
     let mtu: Int?
+
+    /// AUDIT-C1 (BirdoPQ v1, optional): set when the server received a
+    /// `pqClientPublicKey` and produced a per-connect ML-KEM ciphertext for
+    /// the client to decapsulate. The Swift `BirdoPQManager` derives a
+    /// 32-byte WireGuard PSK from these fields client-side.
+    let quantumEnabled: Bool?
+    let rosenpassPublicKey: String?
+    let rosenpassEndpoint: String?
 
     /// Hardening: every field is treated as untrusted server input.
     /// Reject malformed configs *before* they touch the system VPN.

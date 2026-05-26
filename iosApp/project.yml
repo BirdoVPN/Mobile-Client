@@ -49,6 +49,14 @@ targets:
       - target: PacketTunnel
       - package: WireGuardKit
         product: WireGuardKit
+      # AUDIT-C1: BirdoPQNative.xcframework wraps the Rust ML-KEM-1024
+      # library at native/birdo-pq-ios. Build it on a macOS host with
+      # `scripts/build-birdo-pq-xcframework.sh` (one-shot; output lives at
+      # iosApp/Vendor/BirdoPQNative.xcframework and is checked into the
+      # binary cache for the iOS pipeline). The Swift `BirdoPQManager`
+      # talks to it via the C ABI declared in `birdo_pq_ios.h`.
+      - framework: Vendor/BirdoPQNative.xcframework
+        embed: false
 
   PacketTunnel:
     type: app-extension

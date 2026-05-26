@@ -118,7 +118,7 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Lock,
                     iconColor = BirdoPurple,
                     title = "Quantum Protection",
-                    description = "Add post-quantum pre-shared key exchange via Rosenpass. Protects against future quantum computer attacks.",
+                    description = "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
                     checked = state.quantumProtectionEnabled,
                     onCheckedChange = onQuantumProtectionChange,
                 )

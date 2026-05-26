@@ -58,8 +58,7 @@ typealias CreatePortForwardRequest = app.birdo.vpn.shared.model.CreatePortForwar
 typealias CreatePortForwardResponse = app.birdo.vpn.shared.model.CreatePortForwardResponse
 
 // ─── Google Play Billing ─────────────────────────────────────────────────────
-typealias GooglePlayAcknowledgeRequest = app.birdo.vpn.shared.model.GooglePlayAcknowledgeRequest
-typealias GooglePlayAcknowledgeResponse = app.birdo.vpn.shared.model.GooglePlayAcknowledgeResponse
+// Removed: Android distributed as APK from GitHub Releases; no Play Billing.
 
 // ─── Key Rotation ────────────────────────────────────────────────────────────
 typealias KeyRotationRequest = app.birdo.vpn.shared.model.KeyRotationRequest

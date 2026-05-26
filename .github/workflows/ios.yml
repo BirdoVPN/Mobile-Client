@@ -179,10 +179,8 @@ jobs:
             | xcpretty
 
   # -- Signed Release & TestFlight Upload ---------------------------
-  # Triggers ONLY on ios-v* tags. Imports the Apple Distribution certificate
-  # and provisioning profile from GitHub secrets, codesigns the .xcarchive,
-  # exports an .ipa, signs with Sigstore, then uploads to TestFlight via the
-  # App Store Connect API.
+  # DISABLED while iOS is paused. Kept in source so release wiring is preserved,
+  # but it must not upload to TestFlight until the pause is deliberately lifted.
   #
   # Required GitHub repository SECRETS:
   #   APPLE_DIST_CERT_BASE64        - base64 of the .p12 distribution certificate
@@ -200,7 +198,7 @@ jobs:
     name: Codesign & Upload to TestFlight
     runs-on: macos-14
     needs: [shared-framework, build-ios, test-ios]
-    if: startsWith(github.ref, 'refs/tags/ios-v')
+    if: ${{ false }}
     permissions:
       contents: read
       id-token: write   # for Sigstore Fulcio
