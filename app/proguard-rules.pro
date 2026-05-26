@@ -3,6 +3,9 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
+# Runtime integrity checks and release verification depend on these constants.
+-keep class app.birdo.vpn.BuildConfig { *; }
+
 # ── Strip all Log.* calls from release builds ─────────────────────
 # This removes ALL logging in production — no sensitive data in logcat.
 -assumenosideeffects class android.util.Log {

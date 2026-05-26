@@ -374,6 +374,9 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :app:buildRustLibs assembleRelease bundleRelease
 
+      - name: Verify release APK payload
+        run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
+
       - name: Clean up keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/birdo-release.jks"
