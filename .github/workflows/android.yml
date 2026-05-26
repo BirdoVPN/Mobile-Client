@@ -204,7 +204,7 @@ jobs:
     #   android-store-password    - keystore password
     #   android-key-alias         - signing key alias inside the keystore
     #   android-key-password      - signing key password
-    #   android-signing-cert-fingerprint - SHA-256 fingerprint allow-list for Play/sideload certs
+    #   android-signing-cert-fingerprint - optional SHA-256 fingerprint allow-list override
     # OIDC federated credential subject (add in Azure App Registration):
     #   repo:<org>/<repo>:ref:refs/heads/main
     #   repo:<org>/<repo>:ref:refs/tags/*
@@ -298,7 +298,14 @@ jobs:
           if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_SECRET"; fi
           if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_VAR"; fi
           if [ -z "$SIGNING_FP" ]; then
-            echo "::error::Missing BIRDO_SIGNING_CERT_FINGERPRINT / android-signing-cert-fingerprint"
+            SIGNING_FP=$(keytool -list -v \
+              -keystore "$RUNNER_TEMP/birdo-release.jks" \
+              -storepass "$STORE_PASS" \
+              -alias "$KEY_ALIAS" \
+              | awk -F': ' '/SHA256:/{print $2; exit}')
+          fi
+          if [ -z "$SIGNING_FP" ]; then
+            echo "::error::Could not resolve Android signing certificate fingerprint"
             exit 1
           fi
           echo "::add-mask::$SIGNING_FP"
