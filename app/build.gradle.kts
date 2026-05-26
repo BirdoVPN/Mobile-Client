@@ -28,6 +28,10 @@ val vMinor = versionProps.getProperty("VERSION_MINOR", "0").toInt()
 val vPatch = versionProps.getProperty("VERSION_PATCH", "0").toInt()
 val computedVersionCode = vMajor * 10000 + vMinor * 100 + vPatch
 val computedVersionName = "$vMajor.$vMinor.$vPatch"
+val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint") as String?)
+    ?: localProperties.getProperty("BIRDO_SIGNING_CERT_FINGERPRINT")
+    ?: System.getenv("BIRDO_SIGNING_CERT_FINGERPRINT")
+    ?: ""
 
 android {
     namespace = "app.birdo.vpn"
@@ -53,19 +57,12 @@ android {
         // Native library integrity: populated by computeNativeHashes task for release builds
         buildConfigField("String", "NATIVE_HASH_WG_GO", "\"\"")
         buildConfigField("String", "NATIVE_HASH_XRAY", "\"\"")
+        buildConfigField("String", "NATIVE_HASH_ROSENPASS_JNI", "\"\"")
 
-        // PFA-Pass10: APK signing-cert SHA-256 fingerprint (colon-separated upper-hex,
-        // e.g. "AB:CD:EF:..."). RootDetector.checkTampering compares the runtime
-        // signing cert against this constant; populate from gradle property
-        // `birdoSigningCertFingerprint` or env BIRDO_SIGNING_CERT_FINGERPRINT.
-        // For Play App Signing, copy the "App signing key certificate" SHA-256
-        // from Play Console → Setup → App signing. Leave blank to disable the
-        // check (release builds will log a one-time warning).
-        val signingCertFp = (project.findProperty("birdoSigningCertFingerprint") as String?)
-            ?: localProperties.getProperty("BIRDO_SIGNING_CERT_FINGERPRINT")
-            ?: System.getenv("BIRDO_SIGNING_CERT_FINGERPRINT")
-            ?: ""
-        buildConfigField("String", "SIGNING_CERT_FINGERPRINT", "\"$signingCertFp\"")
+        // PFA-Pass10: APK signing-cert SHA-256 fingerprint allow-list
+        // (colon-separated upper-hex values separated by comma/semicolon/space).
+        // Release builds now require this so runtime tamper checks are active.
+        buildConfigField("String", "SIGNING_CERT_FINGERPRINT", "\"$signingCertFingerprint\"")
     }
 
     signingConfigs {
@@ -139,11 +136,9 @@ android {
         }
     }
 
-    // CI: lint failures should not block the release pipeline; reports are still
-    // uploaded as artifacts. Tracked separately for cleanup.
     lint {
-        abortOnError = false
-        checkReleaseBuilds = false
+        abortOnError = true
+        checkReleaseBuilds = true
         warningsAsErrors = false
     }
 }
@@ -157,10 +152,22 @@ dependencyLocking {
     lockMode = LockMode.STRICT
 }
 
-// CI: existing unit-test failures are tracked separately; do not block the
-// release pipeline. JUnit XML/HTML reports are still produced and uploaded.
 tasks.withType<Test>().configureEach {
-    ignoreFailures = true
+    ignoreFailures = false
+}
+
+val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfig") {
+    group = "verification"
+    description = "Fails release builds when mandatory anti-tamper settings are missing."
+
+    doLast {
+        if (signingCertFingerprint.isBlank()) {
+            throw GradleException(
+                "BIRDO_SIGNING_CERT_FINGERPRINT is required for release builds. " +
+                    "Use a comma-separated allow-list for Play and sideload certificates."
+            )
+        }
+    }
 }
 
 // ── Rosenpass JNI native build ──────────────────────────────────────────────
@@ -241,7 +248,7 @@ afterEvaluate {
                             .joinToString("") { b -> "%02x".format(b) }
                     }
                     val wgHash = hashSo("wg-go")
-                    val xrayHash = hashSo("Xray")
+                    val xrayHash = hashSo("xray").ifBlank { hashSo("Xray") }
                     // AUDIT-E1: include librosenpass_jni.so in the integrity
                     // set. Without this, an attacker who swaps just the
                     // PQ JNI .so could silently downgrade BirdoPQ v1 by
@@ -255,6 +262,8 @@ afterEvaluate {
             }
         }
     }
+
+    tasks.findByName("preReleaseBuild")?.dependsOn(validateReleaseSecurityConfig, buildRustLibs)
 }
 
 dependencies {

@@ -46,6 +46,9 @@ permissions:
 env:
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
+  XRAY_VERSION: v26.2.6
+  XRAY_ANDROID_ARM64_SHA256: 952ccbb2275eace52e644a349358de293278eefc32b139d795b067edcb6a2f07
+  XRAY_ANDROID_AMD64_SHA256: f11f5bb71ebb2fe4127670404fbd0c21d93f62e453870fda65ad6effe7a6131e
 
 jobs:
   lint:
@@ -159,6 +162,23 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      - name: Download pinned Xray Reality engines
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/x86_64 "$RUNNER_TEMP/xray-arm64" "$RUNNER_TEMP/xray-amd64"
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-arm64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
+          echo "${XRAY_ANDROID_ARM64_SHA256}  $RUNNER_TEMP/xray-arm64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-arm64.zip" -d "$RUNNER_TEMP/xray-arm64"
+          cp "$(find "$RUNNER_TEMP/xray-arm64" -type f -name xray | head -n1)" app/src/main/jniLibs/arm64-v8a/libxray.so
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-amd64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-amd64.zip"
+          echo "${XRAY_ANDROID_AMD64_SHA256}  $RUNNER_TEMP/xray-amd64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-amd64.zip" -d "$RUNNER_TEMP/xray-amd64"
+          cp "$(find "$RUNNER_TEMP/xray-amd64" -type f -name xray | head -n1)" app/src/main/jniLibs/x86_64/libxray.so
+
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so app/src/main/jniLibs/x86_64/libxray.so
+
       - name: Build Debug APK
         run: |
           chmod +x ./gradlew
@@ -184,6 +204,7 @@ jobs:
     #   android-store-password    - keystore password
     #   android-key-alias         - signing key alias inside the keystore
     #   android-key-password      - signing key password
+    #   android-signing-cert-fingerprint - SHA-256 fingerprint allow-list for Play/sideload certs
     # OIDC federated credential subject (add in Azure App Registration):
     #   repo:<org>/<repo>:ref:refs/heads/main
     #   repo:<org>/<repo>:ref:refs/tags/*
@@ -208,6 +229,23 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      - name: Download pinned Xray Reality engines
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/x86_64 "$RUNNER_TEMP/xray-arm64" "$RUNNER_TEMP/xray-amd64"
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-arm64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
+          echo "${XRAY_ANDROID_ARM64_SHA256}  $RUNNER_TEMP/xray-arm64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-arm64.zip" -d "$RUNNER_TEMP/xray-arm64"
+          cp "$(find "$RUNNER_TEMP/xray-arm64" -type f -name xray | head -n1)" app/src/main/jniLibs/arm64-v8a/libxray.so
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-amd64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-amd64.zip"
+          echo "${XRAY_ANDROID_AMD64_SHA256}  $RUNNER_TEMP/xray-amd64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-amd64.zip" -d "$RUNNER_TEMP/xray-amd64"
+          cp "$(find "$RUNNER_TEMP/xray-amd64" -type f -name xray | head -n1)" app/src/main/jniLibs/x86_64/libxray.so
+
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so app/src/main/jniLibs/x86_64/libxray.so
+
       # Log in to Azure using OIDC - no stored client secrets required.
       - name: Azure Login (OIDC)
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
@@ -221,6 +259,9 @@ jobs:
       # The keystore file is written to $RUNNER_TEMP (not the workspace) to prevent
       # accidental artifact upload or caching.
       - name: Retrieve Android keystore from Azure Key Vault
+        env:
+          SIGNING_CERT_FINGERPRINT_VAR: ${{ vars.BIRDO_SIGNING_CERT_FINGERPRINT }}
+          SIGNING_CERT_FINGERPRINT_SECRET: ${{ secrets.BIRDO_SIGNING_CERT_FINGERPRINT }}
         run: |
           KS_B64=$(az keyvault secret show \
             --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
@@ -250,40 +291,55 @@ jobs:
           echo "::add-mask::$KEY_PASS"
           echo "RELEASE_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
 
-      - name: Build Release APK
+          SIGNING_FP=$(az keyvault secret show \
+            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --name "android-signing-cert-fingerprint" \
+            --query value --output tsv 2>/dev/null || true)
+          if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_SECRET"; fi
+          if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_VAR"; fi
+          if [ -z "$SIGNING_FP" ]; then
+            echo "::error::Missing BIRDO_SIGNING_CERT_FINGERPRINT / android-signing-cert-fingerprint"
+            exit 1
+          fi
+          echo "::add-mask::$SIGNING_FP"
+          echo "BIRDO_SIGNING_CERT_FINGERPRINT=$SIGNING_FP" >> "$GITHUB_ENV"
+
+      - name: Build Release APK and AAB
         # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
         # are set as GITHUB_ENV by the Azure Key Vault step above.
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleRelease
+          ./gradlew :app:buildRustLibs assembleRelease bundleRelease
 
       - name: Clean up keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/birdo-release.jks"
 
       # -- Sigstore keyless signing --------------------------------------
-      # Signs the APK with cosign using GitHub OIDC identity.
+      # Signs the APK/AAB with cosign using GitHub OIDC identity.
       # Produces a .sigstore bundle for each artifact so anyone can verify
-      # this APK was built by this repo's GitHub Actions.
+      # the Android artifacts were built by this repo's GitHub Actions.
       - name: Install Cosign
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
-      - name: Sign release APK with Sigstore
+      - name: Sign release APK and AAB with Sigstore
         run: |
-          for apk in app/build/outputs/apk/release/*.apk; do
-            cosign sign-blob --yes --bundle "${apk}.sigstore" "$apk"
-            echo "Signed $(basename $apk) -> $(basename $apk).sigstore"
+          for artifact in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
+            cosign sign-blob --yes --bundle "${artifact}.sigstore" "$artifact"
+            echo "Signed $(basename $artifact) -> $(basename $artifact).sigstore"
           done
 
       - name: Generate SHA256 checksums
         run: |
-          cd app/build/outputs/apk/release
-          sha256sum *.apk > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          mkdir -p app/build/release-artifacts
+          sha256sum app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab \
+            | sed 's#app/build/outputs/apk/release/##;s#app/build/outputs/bundle/release/##' \
+            > app/build/release-artifacts/SHA256SUMS.txt
+          cat app/build/release-artifacts/SHA256SUMS.txt
 
       - name: Sign checksums with Sigstore
         run: |
-          cosign sign-blob --yes --bundle "app/build/outputs/apk/release/SHA256SUMS.txt.sigstore" "app/build/outputs/apk/release/SHA256SUMS.txt"
+          cosign sign-blob --yes --bundle "app/build/release-artifacts/SHA256SUMS.txt.sigstore" "app/build/release-artifacts/SHA256SUMS.txt"
 
       # -- GPG detached signing (.asc) for sideload APK -----------------
       # Parity with desktop Linux pipeline so users can verify a sideloaded
@@ -313,10 +369,10 @@ jobs:
           gpg_private_key: ${{ secrets.ANDROID_GPG_PRIVATE_KEY }}
           passphrase:      ${{ secrets.ANDROID_GPG_PASSPHRASE }}
 
-      - name: GPG-sign release APK (detached .asc)
+      - name: GPG-sign release APK and AAB (detached .asc)
         if: ${{ env.HAS_GPG == 'true' }}
         run: |
-          for apk in app/build/outputs/apk/release/*.apk; do
+          for apk in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
             gpg --batch --yes --pinentry-mode loopback \
                 --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
                 --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
@@ -327,23 +383,32 @@ jobs:
       - name: GPG-sign SHA256SUMS (detached .asc)
         if: ${{ env.HAS_GPG == 'true' }}
         run: |
-          SUMS="app/build/outputs/apk/release/SHA256SUMS.txt"
+          SUMS="app/build/release-artifacts/SHA256SUMS.txt"
           gpg --batch --yes --pinentry-mode loopback \
               --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
               --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
               --armor --detach-sign --output "${SUMS}.asc" "$SUMS"
+
+      - name: Collect release artifacts
+        run: |
+          shopt -s nullglob
+          for artifact in \
+            app/build/outputs/apk/release/*.apk \
+            app/build/outputs/apk/release/*.sigstore \
+            app/build/outputs/apk/release/*.asc \
+            app/build/outputs/bundle/release/*.aab \
+            app/build/outputs/bundle/release/*.sigstore \
+            app/build/outputs/bundle/release/*.asc; do
+            cp "$artifact" app/build/release-artifacts/
+          done
+          ls -la app/build/release-artifacts
 
       - name: Upload Release APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-apk
           path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/apk/release/*.sigstore
-            app/build/outputs/apk/release/*.asc
-            app/build/outputs/apk/release/SHA256SUMS.txt
-            app/build/outputs/apk/release/SHA256SUMS.txt.sigstore
-            app/build/outputs/apk/release/SHA256SUMS.txt.asc
+            app/build/release-artifacts/*
 
       - name: Upload Mapping File
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -422,6 +487,7 @@ jobs:
 
             ### Install
             Download the `.apk` asset below on your Android device and tap it to install.
+            The `.aab` asset is the Play Console upload artifact.
             You may need to enable **Install unknown apps** for your browser / file manager.
 
             ### Verify (optional)
@@ -434,6 +500,9 @@ jobs:
             release-apk/*.apk
             release-apk/*.apk.sigstore
             release-apk/*.apk.asc
+            release-apk/*.aab
+            release-apk/*.aab.sigstore
+            release-apk/*.aab.asc
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
             release-apk/SHA256SUMS.txt.asc

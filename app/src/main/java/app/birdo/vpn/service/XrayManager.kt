@@ -5,6 +5,7 @@ import android.net.VpnService
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.utils.NativeLibraryVerifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -74,6 +75,9 @@ object XrayManager {
      * Whether the stealth tunnel is currently active.
      */
     fun isActive(): Boolean = isRunning
+
+    /** True when a libXray binding or packaged executable is available. */
+    fun isAvailable(context: Context): Boolean = hasLibXrayBinding() || findXrayBinary(context) != null
 
     /**
      * Set the VPN service reference for socket protection.
@@ -302,6 +306,15 @@ object XrayManager {
         }
     }
 
+    private fun hasLibXrayBinding(): Boolean = try {
+        Class.forName("libXray.Libxray")
+        true
+    } catch (_: ClassNotFoundException) {
+        false
+    } catch (_: Throwable) {
+        false
+    }
+
     /**
      * Fall back to running xray-core as an external binary.
      * The binary should be placed in the app's native lib directory or assets.
@@ -311,6 +324,11 @@ object XrayManager {
             // Look for xray binary in native libs or extracted assets
             val xrayBinary = findXrayBinary(context) ?: run {
                 Log.e(TAG, "Xray binary not found")
+                return false
+            }
+            val verifierName = if (xrayBinary.name == "libXray.so") "Xray" else "xray"
+            if (!NativeLibraryVerifier.verifyLibrary(context, verifierName)) {
+                Log.e(TAG, "Xray binary integrity check failed")
                 return false
             }
 

@@ -62,7 +62,7 @@ class AppPreferences @Inject constructor(
     /** When enabled, WireGuard traffic is wrapped in Xray VLESS+Reality TLS tunnel
      *  to bypass DPI and appear as regular HTTPS traffic to microsoft.com */
     var stealthModeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_STEALTH_MODE, true) // Default ON — maximum protection
+        get() = prefs.getBoolean(KEY_STEALTH_MODE, false)
         set(value) { prefs.edit().putBoolean(KEY_STEALTH_MODE, value).apply(); signSettings() }
 
     // ── Quantum Protection (BirdoPQ v1 — ML-KEM-1024 PQ-PSK) ─────
@@ -74,7 +74,7 @@ class AppPreferences @Inject constructor(
      *  Default ON — BirdoPQ is deployed on every production VPN node and
      *  the backend serves a per-node ML-KEM public key from the database. */
     var quantumProtectionEnabled: Boolean
-        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, true)
+        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, false)
         set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).apply(); signSettings() }
 
     var customDnsEnabled: Boolean

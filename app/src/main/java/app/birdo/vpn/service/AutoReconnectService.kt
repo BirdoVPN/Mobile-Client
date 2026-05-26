@@ -98,6 +98,10 @@ class AutoReconnectService @Inject constructor(
                 val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
                     RosenpassManager.getClientPublicKeyB64(context)
                 } else null
+                if (prefs.quantumProtectionEnabled && pqClientPublicKey == null) {
+                    Log.e(TAG, "Quantum engine unavailable during reconnect; refusing downgrade")
+                    continue
+                }
                 val result = repository.connectVpn(
                     serverNodeId = serverId,
                     deviceName = android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL,

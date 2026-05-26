@@ -192,6 +192,30 @@ class BirdoRepositoryTest {
         verify { tokenManager.setLastServer("server_1") }
     }
 
+    @Test
+    fun `connectVpn forwards stealth quantum and PQ public key`() = runTest {
+        val request = slot<ConnectRequest>()
+        coEvery { api.connect(capture(request)) } returns Response.success(
+            ConnectResponse(success = true, keyId = "key123")
+        )
+
+        val result = repository.connectVpn(
+            serverNodeId = "server_1",
+            deviceName = "Pixel 9",
+            stealthMode = true,
+            quantumProtection = true,
+            pqClientPublicKey = "pq-public-key",
+        )
+
+        assertTrue(result is ApiResult.Success)
+        assertEquals("server_1", request.captured.serverNodeId)
+        assertEquals("Pixel 9", request.captured.deviceName)
+        assertNotNull(request.captured.clientPublicKey)
+        assertEquals(true, request.captured.stealthMode)
+        assertEquals(true, request.captured.quantumProtection)
+        assertEquals("pq-public-key", request.captured.pqClientPublicKey)
+    }
+
     // ── Disconnect VPN ──────────────────────────────────────────
 
     @Test
@@ -257,6 +281,32 @@ class BirdoRepositoryTest {
 
         assertTrue(result is ApiResult.Success)
         assertEquals(1, (result as ApiResult.Success).data.size)
+    }
+
+    @Test
+    fun `connectMultiHop forwards stealth quantum and PQ public key`() = runTest {
+        val request = slot<MultiHopConnectRequest>()
+        coEvery { api.connectMultiHop(capture(request)) } returns Response.success(
+            MultiHopConnectResponse(success = true, keyId = "mh-key")
+        )
+
+        val result = repository.connectMultiHop(
+            entryNodeId = "de-1",
+            exitNodeId = "nl-1",
+            deviceName = "Pixel 9",
+            stealthMode = true,
+            quantumProtection = true,
+            pqClientPublicKey = "pq-public-key",
+        )
+
+        assertTrue(result is ApiResult.Success)
+        assertEquals("de-1", request.captured.entryNodeId)
+        assertEquals("nl-1", request.captured.exitNodeId)
+        assertEquals("Pixel 9", request.captured.deviceName)
+        assertNotNull(request.captured.clientPublicKey)
+        assertEquals(true, request.captured.stealthMode)
+        assertEquals(true, request.captured.quantumProtection)
+        assertEquals("pq-public-key", request.captured.pqClientPublicKey)
     }
 
     // ── Port Forwarding ─────────────────────────────────────────

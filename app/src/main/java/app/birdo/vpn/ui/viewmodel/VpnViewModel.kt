@@ -320,12 +320,10 @@ class VpnViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(error = null)
-            when (val result = repository.connectMultiHop(entryNodeId, exitNodeId)) {
+            when (val result = vpnManager.connectMultiHop(entryNodeId, exitNodeId)) {
                 is ApiResult.Success -> {
                     val body = result.data
-                    if (body.success) {
-                        vpnManager.connectWithConfig(body)
-                    } else {
+                    if (!body.success) {
                         _uiState.value = _uiState.value.copy(
                             error = body.message ?: "Multi-hop connection failed",
                         )

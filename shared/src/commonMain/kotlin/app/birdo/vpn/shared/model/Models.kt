@@ -274,6 +274,9 @@ data class MultiHopConnectRequest(
     val exitNodeId: String,
     val deviceName: String? = null,
     val clientPublicKey: String? = null,
+    val stealthMode: Boolean = false,
+    val quantumProtection: Boolean = false,
+    val pqClientPublicKey: String? = null,
 )
 
 @Serializable
@@ -308,6 +311,16 @@ data class MultiHopConnectResponse(
     val mtu: Int? = null,
     val persistentKeepalive: Int? = null,
     val multiHop: MultiHopInfo? = null,
+    val stealthEnabled: Boolean = false,
+    val xrayEndpoint: String? = null,
+    val xrayUuid: String? = null,
+    val xrayPublicKey: String? = null,
+    val xrayShortId: String? = null,
+    val xraySni: String? = null,
+    val xrayFlow: String? = null,
+    val quantumEnabled: Boolean = false,
+    val rosenpassPublicKey: String? = null,
+    val rosenpassEndpoint: String? = null,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────

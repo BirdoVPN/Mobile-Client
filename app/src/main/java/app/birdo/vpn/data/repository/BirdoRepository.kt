@@ -405,6 +405,9 @@ class BirdoRepository @Inject constructor(
         entryNodeId: String,
         exitNodeId: String,
         deviceName: String = "Birdo-Android",
+        stealthMode: Boolean = false,
+        quantumProtection: Boolean = false,
+        pqClientPublicKey: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
@@ -417,6 +420,9 @@ class BirdoRepository @Inject constructor(
                     exitNodeId = exitNodeId,
                     deviceName = deviceName,
                     clientPublicKey = clientPublicKey,
+                    stealthMode = stealthMode,
+                    quantumProtection = quantumProtection,
+                    pqClientPublicKey = pqClientPublicKey,
                 ))
             }
             if (result is ApiResult.Success) {

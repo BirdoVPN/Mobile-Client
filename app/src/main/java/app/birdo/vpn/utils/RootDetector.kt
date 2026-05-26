@@ -58,6 +58,18 @@ object RootDetector {
      */
     fun isDebuggerConnected(): Boolean = checkDebuggerAttached()
 
+    /** True when a release build has an expected signing certificate baked in. */
+    fun hasSigningFingerprintConfigured(context: Context): Boolean =
+        expectedSigningFingerprints(context).isNotEmpty()
+
+    /** Verify this APK was signed by the expected release certificate. */
+    fun isPackageSignatureTrusted(context: Context): Boolean {
+        val expected = expectedSigningFingerprints(context)
+        if (expected.isEmpty()) return false
+        val current = currentSigningFingerprint(context) ?: return false
+        return normalizeFingerprint(current) in expected
+    }
+
     // ── Individual Checks ────────────────────────────────────────
 
     /**
@@ -197,10 +209,41 @@ object RootDetector {
      * If the app was signed with a different key (repackaged), this returns true.
      */
     private fun checkTampering(context: Context): Boolean {
+        val expected = expectedSigningFingerprints(context)
+        if (expected.isEmpty()) return false
+        val current = currentSigningFingerprint(context) ?: return false
+        return normalizeFingerprint(current) !in expected
+    }
+
+    private fun expectedSigningFingerprints(context: Context): Set<String> {
+        val raw = try {
+            val field = Class.forName("${context.packageName}.BuildConfig")
+                .getField("SIGNING_CERT_FINGERPRINT")
+            field.get(null) as? String
+        } catch (_: Exception) {
+            null
+        }
+        return raw
+            ?.split(',', ';', '\n', '\r', '\t', ' ')
+            ?.map { normalizeFingerprint(it) }
+            ?.filter { it.isNotBlank() }
+            ?.toSet()
+            .orEmpty()
+    }
+
+    private fun normalizeFingerprint(value: String): String =
+        value
+            .trim()
+            .uppercase()
+            .filter { it in '0'..'9' || it in 'A'..'F' }
+            .chunked(2)
+            .joinToString(":")
+
+    private fun currentSigningFingerprint(context: Context): String? {
         return try {
             val signingInfo = context.packageManager
                 .getPackageInfo(context.packageName, GET_SIGNING_CERTIFICATES)
-                .signingInfo ?: return false
+                .signingInfo ?: return null
 
             val signatures = if (signingInfo.hasMultipleSigners()) {
                 signingInfo.apkContentsSigners
@@ -208,31 +251,14 @@ object RootDetector {
                 signingInfo.signingCertificateHistory
             }
 
-            if (signatures.isNullOrEmpty()) return false
+            if (signatures.isNullOrEmpty()) return null
 
             val md = MessageDigest.getInstance("SHA-256")
-            val currentFingerprint = signatures[0].toByteArray()
+            signatures[0].toByteArray()
                 .let { md.digest(it) }
                 .joinToString(":") { "%02X".format(it) }
-
-            // Compare against the expected fingerprint compiled into the APK.
-            // In debug builds, skip this check since the debug keystore differs.
-            val expectedFingerprint = try {
-                val field = Class.forName("${context.packageName}.BuildConfig")
-                    .getField("SIGNING_CERT_FINGERPRINT")
-                field.get(null) as? String
-            } catch (_: Exception) {
-                null
-            }
-
-            if (expectedFingerprint.isNullOrBlank()) {
-                // No fingerprint configured — can't verify, skip check
-                false
-            } else {
-                currentFingerprint != expectedFingerprint
-            }
         } catch (_: Exception) {
-            false
+            null
         }
     }
 

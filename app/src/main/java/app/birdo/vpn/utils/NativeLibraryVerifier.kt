@@ -38,7 +38,10 @@ object NativeLibraryVerifier {
             }.getOrDefault("")
             buildMap {
                 if (wgHash.isNotBlank()) put("wg-go", wgHash)
-                if (xrayHash.isNotBlank()) put("Xray", xrayHash)
+                if (xrayHash.isNotBlank()) {
+                    put("xray", xrayHash)
+                    put("Xray", xrayHash)
+                }
                 if (rosenpassJniHash.isNotBlank()) put("rosenpass_jni", rosenpassJniHash)
             }
         } catch (_: Exception) {
@@ -82,11 +85,16 @@ object NativeLibraryVerifier {
 
         val expectedHash = KNOWN_HASHES[libraryName]
         if (expectedHash.isNullOrBlank()) {
-            // AUDIT-E1: fail-CLOSED in release. A missing hash means the
-            // build pipeline didn't register this library — treat as if
-            // verification failed rather than wave it through.
-            Log.e(TAG, "INTEGRITY FAILURE: no registered hash for $libraryName (release fail-closed)")
-            return false
+            if (!RootDetector.hasSigningFingerprintConfigured(context)) {
+                Log.e(TAG, "INTEGRITY FAILURE: no hash and no release signing fingerprint for $libraryName")
+                return false
+            }
+            if (!RootDetector.isPackageSignatureTrusted(context)) {
+                Log.e(TAG, "INTEGRITY FAILURE: package signature is not trusted for $libraryName")
+                return false
+            }
+            Log.w(TAG, "No registered hash for $libraryName; package signature check passed")
+            return true
         }
 
         return try {

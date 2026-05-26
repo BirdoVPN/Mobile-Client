@@ -96,9 +96,9 @@ object RosenpassManager {
      * The caller MUST include this in the `/connect` request body (field name
      * `pq_client_public_key`) so the server can encapsulate against it.
      *
-     * Returns `null` if the native lib isn't loaded or keypair generation
-     * fails — the caller then omits the field and the server falls back to
-     * issuing a classic random PSK (Mode.SERVER_PROVIDED).
+    * Returns `null` if the native lib isn't loaded or keypair generation
+    * fails. Callers that requested quantum protection must fail closed rather
+    * than pretending the connection is protected.
      */
     suspend fun getClientPublicKeyB64(context: Context): String? = withContext(Dispatchers.IO) {
         val kp = loadOrGenerateKeypair(context) ?: return@withContext null
@@ -114,8 +114,11 @@ object RosenpassManager {
      *      `rosenpassPublicKey` field) AND a nonce (re-using
      *      `rosenpassEndpoint`), and our native lib is loaded, decapsulate
      *      with our persisted ML-KEM secret key.
-     *   2. Fall back to the server-supplied classic PSK if present.
-     *   3. Otherwise return `null` and the caller MUST use plain WireGuard.
+    *   2. If the server explicitly enabled quantum mode, fail closed by
+    *      returning `null`; the classical PSK will not match the server-side
+    *      peer that was reconfigured with the derived BirdoPQ PSK.
+    *   3. Fall back to the server-supplied classic PSK if present.
+    *   4. Otherwise return `null` and the caller MUST use plain WireGuard.
      */
     suspend fun performKeyExchange(context: Context, config: ConnectResponse): String? = withContext(Dispatchers.IO) {
         val bilateralPsk = tryDecapsulate(context, config)
@@ -126,6 +129,13 @@ object RosenpassManager {
             _modeFlow.value = Mode.BILATERAL
             Log.i(TAG, "BirdoPQ v1 BILATERAL — quantum-resistant PSK derived (${bilateralPsk.size} B)")
             return@withContext Base64.encodeToString(bilateralPsk, Base64.NO_WRAP)
+        }
+        if (config.quantumEnabled) {
+            currentPsk?.fill(0)
+            currentPsk = null
+            _modeFlow.value = Mode.DISABLED
+            Log.e(TAG, "BirdoPQ was enabled by server but client could not decapsulate; aborting")
+            return@withContext null
         }
         return@withContext fallbackToServerPsk(config)
     }
