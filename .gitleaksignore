@@ -1,3 +1,6 @@
 # Historical leak — secret rotated and removed in v1.3.15.
 # Format: <commit>:<file>:<rule>:<line>
 32a2d5fbb2ac0e6438ad195db53900ddd7534343:scripts/capture-screenshots.ps1:generic-api-key:12
+
+# False positive: PQ Keychain account-name constant, not a credential.
+73a6887e8595642fd6534306d03802afb41e3853:iosApp/iosApp/Services/BirdoPQManager.swift:generic-api-key:52
