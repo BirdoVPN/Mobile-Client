@@ -130,4 +130,6 @@ internal object WgNative {
     fun getConfig(handle: Int): String? =
         try { getConfigMethod?.invoke(null, handle) as? String }
         catch (_: Exception) { null }
+
+    fun canReadConfig(): Boolean = getConfigMethod != null
 }

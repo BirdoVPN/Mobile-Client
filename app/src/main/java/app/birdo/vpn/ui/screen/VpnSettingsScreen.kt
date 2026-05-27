@@ -96,8 +96,9 @@ fun VpnSettingsScreen(
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
                     description = stringResource(R.string.settings_kill_switch_desc),
-                    checked = state.killSwitchEnabled,
-                    onCheckedChange = onKillSwitchChange,
+                    checked = true,
+                    onCheckedChange = {},
+                    enabled = false,
                     testTag = TestTags.KILL_SWITCH_TOGGLE,
                 )
             }
@@ -439,13 +440,14 @@ private fun VpnToggle(
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
     testTag: String? = null,
 ) {
     VpnCardSurface {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+                .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onCheckedChange)
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -459,6 +461,7 @@ private fun VpnToggle(
             Switch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
+                enabled = enabled,
                 modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.Black,

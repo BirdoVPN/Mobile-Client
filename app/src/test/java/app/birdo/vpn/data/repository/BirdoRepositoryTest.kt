@@ -1,6 +1,8 @@
 package app.birdo.vpn.data.repository
 
 import app.birdo.vpn.data.api.BirdoApi
+import app.birdo.vpn.data.auth.ClientDeviceInfo
+import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.shared.model.LoginResult
@@ -17,13 +19,21 @@ class BirdoRepositoryTest {
 
     private lateinit var api: BirdoApi
     private lateinit var tokenManager: TokenManager
+    private lateinit var deviceInfoProvider: DeviceInfoProvider
     private lateinit var repository: BirdoRepository
 
     @Before
     fun setup() {
         api = mockk(relaxed = true)
         tokenManager = mockk(relaxed = true)
-        repository = BirdoRepository(api, tokenManager)
+        deviceInfoProvider = mockk(relaxed = true)
+        every { deviceInfoProvider.current() } returns ClientDeviceInfo(
+            deviceId = "android_test_device",
+            deviceName = "Test Android",
+            platformVersion = "15",
+            appVersion = "1.0.0",
+        )
+        repository = BirdoRepository(api, tokenManager, deviceInfoProvider)
     }
 
     // ── Login ────────────────────────────────────────────────────
