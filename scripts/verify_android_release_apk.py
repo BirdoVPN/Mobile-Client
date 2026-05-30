@@ -14,12 +14,14 @@ import sys
 import zipfile
 
 
+# Only arm64-v8a and x86_64 are shipped (see app/build.gradle.kts abiFilters).
+# armeabi-v7a is intentionally excluded: the Xray Reality engine is not built
+# for 32-bit, so a partial armv7 native set must never reach a shipped APK.
 REQUIRED_NATIVE_LIBS = (
     "lib/arm64-v8a/libwg-go.so",
     "lib/arm64-v8a/libxray.so",
     "lib/x86_64/libxray.so",
     "lib/arm64-v8a/librosenpass_jni.so",
-    "lib/armeabi-v7a/librosenpass_jni.so",
     "lib/x86_64/librosenpass_jni.so",
 )
 

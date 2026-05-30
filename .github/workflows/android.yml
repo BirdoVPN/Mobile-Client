@@ -210,6 +210,11 @@ jobs:
 
       - name: Install Rust Android toolchain
         run: |
+          # armv7-linux-androideabi is needed so cargo-ndk can cross-compile
+          # the rosenpass-jni crate for armeabi-v7a (native/build.sh). NOTE:
+          # armeabi-v7a is NOT a shipped ABI — app/build.gradle.kts abiFilters
+          # restricts the packaged APK/AAB to arm64-v8a + x86_64 because the
+          # Xray Reality engine is only downloaded for those two ABIs below.
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
           cargo install cargo-ndk --locked --version 4.1.2
 
@@ -282,6 +287,11 @@ jobs:
 
       - name: Install Rust Android toolchain
         run: |
+          # armv7-linux-androideabi is needed so cargo-ndk can cross-compile
+          # the rosenpass-jni crate for armeabi-v7a (native/build.sh). NOTE:
+          # armeabi-v7a is NOT a shipped ABI — app/build.gradle.kts abiFilters
+          # restricts the packaged APK/AAB to arm64-v8a + x86_64 because the
+          # Xray Reality engine is only downloaded for those two ABIs below.
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
           cargo install cargo-ndk --locked --version 4.1.2
 

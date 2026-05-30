@@ -47,8 +47,8 @@ struct SubscriptionView: View {
                     planCard(plan)
                 }
 
-                // Subscribe button
-                if let plan = selectedPlan {
+                // Subscribe button — RECON is free, so it has nothing to buy.
+                if let plan = selectedPlan, !plan.isFree {
                     Button {
                         authVM.subscribe(plan: plan, billing: billingPeriod)
                     } label: {
@@ -149,27 +149,27 @@ enum BillingPeriod {
 
 enum Plan: String, CaseIterable, Identifiable {
     case recon = "RECON"
-    case spectre = "SPECTRE"
-    case phantom = "PHANTOM"
-    case eagle = "EAGLE"
+    case operative = "OPERATIVE"
+    case sovereign = "SOVEREIGN"
 
     var id: String { rawValue }
+
+    /// RECON is the free tier — it has no StoreKit product to purchase.
+    var isFree: Bool { self == .recon }
 
     var icon: String {
         switch self {
         case .recon: return "binoculars.fill"
-        case .spectre: return "eye.slash.fill"
-        case .phantom: return "theatermasks.fill"
-        case .eagle: return "bolt.shield.fill"
+        case .operative: return "eye.slash.fill"
+        case .sovereign: return "bolt.shield.fill"
         }
     }
 
     var color: Color {
         switch self {
         case .recon: return BirdoTheme.blue
-        case .spectre: return BirdoTheme.purple
-        case .phantom: return Color(hex: "#FF6B6B")
-        case .eagle: return BirdoTheme.yellow
+        case .operative: return BirdoTheme.purple
+        case .sovereign: return BirdoTheme.yellow
         }
     }
 
@@ -177,25 +177,20 @@ enum Plan: String, CaseIterable, Identifiable {
         switch self {
         case .recon:
             return ["1 Device", "Standard Servers", "WireGuard Protocol"]
-        case .spectre:
+        case .operative:
             return ["3 Devices", "All Servers", "Stealth Mode", "Kill Switch"]
-        case .phantom:
-            return ["5 Devices", "All Servers", "Multi-Hop", "Port Forwarding", "Stealth Mode"]
-        case .eagle:
+        case .sovereign:
             return ["10 Devices", "All Servers", "All Features", "Quantum Protection", "Priority Support"]
         }
     }
 
     func price(for billing: BillingPeriod) -> String {
         switch (self, billing) {
-        case (.recon, .monthly): return "$4.99/mo"
-        case (.recon, .yearly): return "$3.49/mo"
-        case (.spectre, .monthly): return "$7.99/mo"
-        case (.spectre, .yearly): return "$5.59/mo"
-        case (.phantom, .monthly): return "$11.99/mo"
-        case (.phantom, .yearly): return "$8.39/mo"
-        case (.eagle, .monthly): return "$14.99/mo"
-        case (.eagle, .yearly): return "$10.49/mo"
+        case (.recon, _): return "Free"
+        case (.operative, .monthly): return "£5/mo"
+        case (.operative, .yearly): return "£48/yr"
+        case (.sovereign, .monthly): return "£12/mo"
+        case (.sovereign, .yearly): return "£99/yr"
         }
     }
 }
