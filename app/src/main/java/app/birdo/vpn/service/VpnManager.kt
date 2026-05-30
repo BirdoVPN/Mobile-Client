@@ -139,11 +139,22 @@ class VpnManager @Inject constructor(
         transitionStartTime = System.currentTimeMillis()
 
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+
+        // Upload our ML-KEM-1024 client public key when quantum protection is
+        // enabled so the server can encapsulate against it (BirdoPQ v1).
+        val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
+            RosenpassManager.getClientPublicKeyB64(context) ?: run {
+                _state.value = VpnState.Error("Quantum engine unavailable")
+                return ApiResult.Error("Quantum engine unavailable")
+            }
+        } else null
+
         val result = repository.connectVpn(
             serverNodeId = serverId,
             deviceName = deviceName,
             stealthMode = prefs.stealthModeEnabled,
             quantumProtection = prefs.quantumProtectionEnabled,
+            pqClientPublicKey = pqClientPublicKey,
         )
 
         when (result) {
@@ -186,6 +197,57 @@ class VpnManager @Inject constructor(
     }
 
     /**
+     * Connect through an entry and exit server with the same advanced feature
+     * contract as single-hop: Stealth and BirdoPQ are requested up front and
+     * the service fails closed if the server enables them but the local engine
+     * cannot complete setup.
+     */
+    suspend fun connectMultiHop(
+        entryNodeId: String,
+        exitNodeId: String,
+    ): ApiResult<MultiHopConnectResponse> {
+        _state.value = VpnState.Connecting
+        transitionStartTime = System.currentTimeMillis()
+
+        val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
+            RosenpassManager.getClientPublicKeyB64(context) ?: run {
+                _state.value = VpnState.Error("Quantum engine unavailable")
+                return ApiResult.Error("Quantum engine unavailable")
+            }
+        } else null
+
+        val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+        val result = repository.connectMultiHop(
+            entryNodeId = entryNodeId,
+            exitNodeId = exitNodeId,
+            deviceName = deviceName,
+            stealthMode = prefs.stealthModeEnabled,
+            quantumProtection = prefs.quantumProtectionEnabled,
+            pqClientPublicKey = pqClientPublicKey,
+        )
+
+        when (result) {
+            is ApiResult.Success -> {
+                val config = result.data
+                if (!config.success || config.privateKey == null ||
+                    config.serverPublicKey == null || config.endpoint == null ||
+                    config.assignedIp == null
+                ) {
+                    _state.value = VpnState.Error(config.message ?: "Invalid multi-hop config")
+                    return ApiResult.Error(config.message ?: "Invalid multi-hop config")
+                }
+
+                connectWithConfig(config)
+                return result
+            }
+            is ApiResult.Error -> {
+                _state.value = VpnState.Error(result.message)
+                return result
+            }
+        }
+    }
+
+    /**
      * Connect using a pre-fetched multi-hop configuration.
      * Called from VpnViewModel after repository.connectMultiHop() succeeds.
      */
@@ -216,6 +278,16 @@ class VpnManager @Inject constructor(
             allowedIps = config.allowedIps,
             mtu = config.mtu,
             persistentKeepalive = config.persistentKeepalive,
+            stealthEnabled = config.stealthEnabled,
+            xrayEndpoint = config.xrayEndpoint,
+            xrayUuid = config.xrayUuid,
+            xrayPublicKey = config.xrayPublicKey,
+            xrayShortId = config.xrayShortId,
+            xraySni = config.xraySni,
+            xrayFlow = config.xrayFlow,
+            quantumEnabled = config.quantumEnabled,
+            rosenpassPublicKey = config.rosenpassPublicKey,
+            rosenpassEndpoint = config.rosenpassEndpoint,
         )
 
         BirdoVpnService.setConfig(connectConfig)

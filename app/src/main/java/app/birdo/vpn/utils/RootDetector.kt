@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
 import android.os.Build
 import android.os.Debug
+import app.birdo.vpn.BuildConfig
 import java.io.File
 import java.security.MessageDigest
 
@@ -57,6 +58,18 @@ object RootDetector {
      * A debugger can extract WireGuard keys from memory and intercept API tokens.
      */
     fun isDebuggerConnected(): Boolean = checkDebuggerAttached()
+
+    /** True when a release build has an expected signing certificate baked in. */
+    fun hasSigningFingerprintConfigured(context: Context): Boolean =
+        expectedSigningFingerprints().isNotEmpty()
+
+    /** Verify this APK was signed by the expected release certificate. */
+    fun isPackageSignatureTrusted(context: Context): Boolean {
+        val expected = expectedSigningFingerprints()
+        if (expected.isEmpty()) return false
+        val current = currentSigningFingerprint(context) ?: return false
+        return normalizeFingerprint(current) in expected
+    }
 
     // ── Individual Checks ────────────────────────────────────────
 
@@ -128,8 +141,9 @@ object RootDetector {
      */
     private fun checkDangerousProps(): Boolean {
         return try {
-            // ro.debuggable=1 is set on eng/userdebug builds
-            val process = Runtime.getRuntime().exec(arrayOf("getprop", "ro.debuggable"))
+            // Use absolute path to /system/bin/getprop to avoid PATH-based hijacking
+            // on rooted devices that may have placed a shim earlier in PATH.
+            val process = Runtime.getRuntime().exec(arrayOf("/system/bin/getprop", "ro.debuggable"))
             val result = process.inputStream.bufferedReader().readText().trim()
             process.waitFor()
             result == "1"
@@ -196,10 +210,33 @@ object RootDetector {
      * If the app was signed with a different key (repackaged), this returns true.
      */
     private fun checkTampering(context: Context): Boolean {
+        val expected = expectedSigningFingerprints()
+        if (expected.isEmpty()) return false
+        val current = currentSigningFingerprint(context) ?: return false
+        return normalizeFingerprint(current) !in expected
+    }
+
+    private fun expectedSigningFingerprints(): Set<String> {
+        return BuildConfig.SIGNING_CERT_FINGERPRINT
+            .split(',', ';', '\n', '\r', '\t', ' ')
+            .map { normalizeFingerprint(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+    private fun normalizeFingerprint(value: String): String =
+        value
+            .trim()
+            .uppercase()
+            .filter { it in '0'..'9' || it in 'A'..'F' }
+            .chunked(2)
+            .joinToString(":")
+
+    private fun currentSigningFingerprint(context: Context): String? {
         return try {
             val signingInfo = context.packageManager
                 .getPackageInfo(context.packageName, GET_SIGNING_CERTIFICATES)
-                .signingInfo ?: return false
+                .signingInfo ?: return null
 
             val signatures = if (signingInfo.hasMultipleSigners()) {
                 signingInfo.apkContentsSigners
@@ -207,31 +244,14 @@ object RootDetector {
                 signingInfo.signingCertificateHistory
             }
 
-            if (signatures.isNullOrEmpty()) return false
+            if (signatures.isNullOrEmpty()) return null
 
             val md = MessageDigest.getInstance("SHA-256")
-            val currentFingerprint = signatures[0].toByteArray()
+            signatures[0].toByteArray()
                 .let { md.digest(it) }
                 .joinToString(":") { "%02X".format(it) }
-
-            // Compare against the expected fingerprint compiled into the APK.
-            // In debug builds, skip this check since the debug keystore differs.
-            val expectedFingerprint = try {
-                val field = Class.forName("${context.packageName}.BuildConfig")
-                    .getField("SIGNING_CERT_FINGERPRINT")
-                field.get(null) as? String
-            } catch (_: Exception) {
-                null
-            }
-
-            if (expectedFingerprint.isNullOrBlank()) {
-                // No fingerprint configured — can't verify, skip check
-                false
-            } else {
-                currentFingerprint != expectedFingerprint
-            }
         } catch (_: Exception) {
-            false
+            null
         }
     }
 

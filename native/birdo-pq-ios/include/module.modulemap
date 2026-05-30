@@ -1,0 +1,6 @@
+framework module BirdoPQNative {
+    umbrella header "birdo_pq_ios.h"
+
+    export *
+    module * { export * }
+}

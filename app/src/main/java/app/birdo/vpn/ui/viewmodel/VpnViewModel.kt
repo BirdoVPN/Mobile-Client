@@ -39,8 +39,17 @@ data class VpnUiState(
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
-    /** Whether the current connection uses Rosenpass PQ-PSK */
+    /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
     val quantumActive: Boolean = false,
+    /**
+     * PFA-M9: granular PQ mode for honest UI labelling.
+     *  - "BILATERAL"       — genuine end-to-end ML-KEM-1024 PSK derivation
+     *  - "SERVER_PROVIDED" — classical PSK delivered over TLS (NOT post-quantum)
+     *  - "DISABLED"        — no PSK
+     * Marketing copy MUST distinguish BILATERAL from SERVER_PROVIDED before
+     * claiming post-quantum protection to a user.
+     */
+    val pqMode: String = "DISABLED",
     /** Current subscription status */
     val subscription: SubscriptionStatus? = null,
     /** Port forwards for the current connection */
@@ -70,6 +79,16 @@ class VpnViewModel @Inject constructor(
         startStateSync()
         // FIX-2-9: Auto-connect on startup if preference is enabled
         autoConnectIfEnabled()
+        // Pre-publish any cached subscription so Profile tab is never empty on first paint.
+        repository.cachedSubscriptionOrNull()?.let {
+            _uiState.value = _uiState.value.copy(subscription = it)
+        }
+        // If we already have a token, start fetching subscription right away so it's
+        // ready by the time the user taps the Profile tab. This eliminates the
+        // "RECON → SOVEREIGN" flicker users were seeing on cold start.
+        if (tokenManager.isLoggedIn()) {
+            fetchSubscription()
+        }
         // NOTE: Heartbeat is handled by VpnManager.startHeartbeat() which includes
         // key rotation, quality reports, and session-invalid disconnect. No redundant
         // heartbeat needed here — VpnManager is the authoritative keepalive source.
@@ -127,6 +146,7 @@ class VpnViewModel @Inject constructor(
                     killSwitchActive = app.birdo.vpn.service.BirdoVpnService.killSwitchActive,
                     stealthActive = app.birdo.vpn.service.BirdoVpnService.stealthActive,
                     quantumActive = app.birdo.vpn.service.BirdoVpnService.quantumActive,
+                    pqMode = app.birdo.vpn.service.RosenpassManager.modeFlow.value.name,
                     tick = System.currentTimeMillis(),
                 )
             }
@@ -173,9 +193,24 @@ class VpnViewModel @Inject constructor(
         }
     }
 
-    fun fetchSubscription() {
+    /**
+     * Fetch the current subscription. Set [forceRefresh] to bypass the
+     * 30s cache (e.g. immediately after a voucher redemption).
+     *
+     * If a fresh cached value exists it is published immediately so the
+     * UI never falls back to the default "RECON" placeholder.
+     */
+    fun fetchSubscription(forceRefresh: Boolean = false) {
+        // Publish cached value immediately so the Profile tab never shows stale RECON.
+        if (!forceRefresh) {
+            repository.cachedSubscriptionOrNull()?.let {
+                if (_uiState.value.subscription != it) {
+                    _uiState.value = _uiState.value.copy(subscription = it)
+                }
+            }
+        }
         viewModelScope.launch {
-            when (val result = repository.getSubscription()) {
+            when (val result = repository.getSubscription(forceRefresh)) {
                 is ApiResult.Success -> {
                     _uiState.value = _uiState.value.copy(subscription = result.data)
                 }
@@ -196,7 +231,7 @@ class VpnViewModel @Inject constructor(
                 is ApiResult.Success -> {
                     if (result.data.ok) {
                         // Refresh subscription so SubscriptionScreen shows new period
-                        fetchSubscription()
+                        fetchSubscription(forceRefresh = true)
                     }
                     onResult(result.data)
                 }
@@ -285,12 +320,10 @@ class VpnViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(error = null)
-            when (val result = repository.connectMultiHop(entryNodeId, exitNodeId)) {
+            when (val result = vpnManager.connectMultiHop(entryNodeId, exitNodeId)) {
                 is ApiResult.Success -> {
                     val body = result.data
-                    if (body.success) {
-                        vpnManager.connectWithConfig(body)
-                    } else {
+                    if (!body.success) {
                         _uiState.value = _uiState.value.copy(
                             error = body.message ?: "Multi-hop connection failed",
                         )

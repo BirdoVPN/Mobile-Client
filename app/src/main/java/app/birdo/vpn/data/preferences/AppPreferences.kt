@@ -62,16 +62,19 @@ class AppPreferences @Inject constructor(
     /** When enabled, WireGuard traffic is wrapped in Xray VLESS+Reality TLS tunnel
      *  to bypass DPI and appear as regular HTTPS traffic to microsoft.com */
     var stealthModeEnabled: Boolean
-        get() = prefs.getBoolean(KEY_STEALTH_MODE, true) // Default ON — maximum protection
+        get() = prefs.getBoolean(KEY_STEALTH_MODE, false)
         set(value) { prefs.edit().putBoolean(KEY_STEALTH_MODE, value).apply(); signSettings() }
 
-    // ── Quantum Protection (Rosenpass PQ-PSK) ────────────────────
-    /** When enabled, adds post-quantum pre-shared key exchange via Rosenpass
-     *  (Classic McEliece + Kyber) on top of WireGuard's Curve25519.
-     *  Default ON — rosenpass is now deployed on every production VPN node and
-     *  the backend serves a per-node Rosenpass public key from the database. */
+    // ── Quantum Protection (BirdoPQ v1 — ML-KEM-1024 PQ-PSK) ─────
+    /** When enabled, adds post-quantum pre-shared key exchange via BirdoPQ v1
+     *  (ML-KEM-1024, FIPS 203) layered on top of WireGuard's Curve25519
+     *  Noise IK handshake. The shared secret is HKDF-SHA-256-derived and
+     *  installed as the WireGuard PSK so the resulting session is secure
+     *  against "harvest now, decrypt later" attacks by a CRQC adversary.
+     *  Default ON — BirdoPQ is deployed on every production VPN node and
+     *  the backend serves a per-node ML-KEM public key from the database. */
     var quantumProtectionEnabled: Boolean
-        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, true)
+        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, false)
         set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).apply(); signSettings() }
 
     var customDnsEnabled: Boolean

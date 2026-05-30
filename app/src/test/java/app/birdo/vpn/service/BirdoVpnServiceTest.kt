@@ -315,7 +315,7 @@ class BirdoVpnServiceTest {
         BirdoVpnService.setConfig(config)
 
         // Read activeConfig via reflection (it's private)
-        val configField = BirdoVpnService.Companion::class.java.getDeclaredField("activeConfig")
+        val configField = BirdoVpnService::class.java.getDeclaredField("activeConfig")
         configField.isAccessible = true
         val stored = configField.get(BirdoVpnService.Companion) as ConnectResponse?
 
@@ -344,7 +344,7 @@ class BirdoVpnServiceTest {
         BirdoVpnService.setConfig(first)
         BirdoVpnService.setConfig(second)
 
-        val configField = BirdoVpnService.Companion::class.java.getDeclaredField("activeConfig")
+        val configField = BirdoVpnService::class.java.getDeclaredField("activeConfig")
         configField.isAccessible = true
         val stored = configField.get(BirdoVpnService.Companion) as ConnectResponse?
 

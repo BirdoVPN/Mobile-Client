@@ -201,7 +201,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "12345")
 
-        assertEquals("Password must be 6\u2013256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -210,7 +210,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "a")
 
-        assertEquals("Password must be 6\u2013256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -219,7 +219,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "")
 
-        assertEquals("Password must be 6\u2013256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -228,7 +228,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "a".repeat(257))
 
-        assertEquals("Password must be 6\u2013256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -788,7 +788,7 @@ class AuthViewModelTest {
 
         // First attempt: fail
         coEvery { repository.login(any(), any()) } returns ApiResult.Error("Invalid credentials", 401)
-        viewModel.login("user@birdo.app", "wrong")
+        viewModel.login("user@birdo.app", "wrongpass")
         assertEquals("Invalid email or password", viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.isLoggedIn)
 

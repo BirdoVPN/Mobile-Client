@@ -45,8 +45,8 @@ data class SettingsUiState(
     val wireGuardPort: String = "auto",
     val wireGuardMtu: Int = 0,
     // Stealth & Quantum settings
-    val stealthModeEnabled: Boolean = true,
-    val quantumProtectionEnabled: Boolean = true,
+    val stealthModeEnabled: Boolean = false,
+    val quantumProtectionEnabled: Boolean = false,
     // Biometric lock
     val biometricLockEnabled: Boolean = false,
     // Theme mode: "dark", "light", "system"

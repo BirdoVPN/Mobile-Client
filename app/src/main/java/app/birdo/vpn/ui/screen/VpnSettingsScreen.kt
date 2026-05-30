@@ -1,6 +1,7 @@
 package app.birdo.vpn.ui.screen
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.toggleable
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
@@ -25,6 +27,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
+import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
 
@@ -32,6 +35,7 @@ import app.birdo.vpn.ui.viewmodel.SettingsUiState
 @Composable
 fun VpnSettingsScreen(
     state: SettingsUiState,
+    onKillSwitchChange: (Boolean) -> Unit,
     onLocalNetworkSharingChange: (Boolean) -> Unit,
     onCustomDnsEnabledChange: (Boolean) -> Unit,
     onCustomDnsPrimaryChange: (String) -> Unit,
@@ -40,6 +44,7 @@ fun VpnSettingsScreen(
     onWireGuardMtuChange: (Int) -> Unit,
     onStealthModeChange: (Boolean) -> Unit,
     onQuantumProtectionChange: (Boolean) -> Unit,
+    onOpenPortForward: () -> Unit,
     onBack: () -> Unit,
 ) {
     var customPortText by remember { mutableStateOf(
@@ -87,6 +92,18 @@ fun VpnSettingsScreen(
 
             item {
                 VpnToggle(
+                    icon = Icons.Default.Shield,
+                    iconColor = BirdoGreen,
+                    title = stringResource(R.string.settings_kill_switch),
+                    description = stringResource(R.string.settings_kill_switch_desc),
+                    checked = state.killSwitchEnabled,
+                    onCheckedChange = onKillSwitchChange,
+                    testTag = TestTags.KILL_SWITCH_TOGGLE,
+                )
+            }
+
+            item {
+                VpnToggle(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
                     title = "Stealth Mode",
@@ -101,7 +118,7 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Lock,
                     iconColor = BirdoPurple,
                     title = "Quantum Protection",
-                    description = "Add post-quantum pre-shared key exchange via Rosenpass. Protects against future quantum computer attacks.",
+                    description = "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
                     checked = state.quantumProtectionEnabled,
                     onCheckedChange = onQuantumProtectionChange,
                 )
@@ -360,6 +377,19 @@ fun VpnSettingsScreen(
                 }
             }
 
+            // ── Features Section ────────────────────────────────────
+            item { VpnSectionHeader("FEATURES") }
+
+            item {
+                VpnLink(
+                    icon = Icons.Default.SwapHoriz,
+                    iconColor = BirdoBlue,
+                    title = stringResource(R.string.settings_port_forward),
+                    description = stringResource(R.string.settings_port_forward_desc),
+                    onClick = onOpenPortForward,
+                )
+            }
+
             item { Spacer(Modifier.height(32.dp)) }
         }
     }
@@ -369,14 +399,25 @@ fun VpnSettingsScreen(
 
 @Composable
 private fun VpnSectionHeader(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.labelMedium,
-        color = BirdoWhite40,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
-        letterSpacing = 0.5.sp,
-    )
+    Row(
+        modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 3.dp, height = 12.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(BirdoBlue.copy(alpha = 0.7f)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelMedium,
+            color = BirdoWhite60,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.2.sp,
+        )
+    }
 }
 
 @Composable
@@ -398,6 +439,7 @@ private fun VpnToggle(
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    testTag: String? = null,
 ) {
     VpnCardSurface {
         Row(
@@ -417,6 +459,7 @@ private fun VpnToggle(
             Switch(
                 checked = checked,
                 onCheckedChange = onCheckedChange,
+                modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = Color.Black,
                     checkedTrackColor = Color.White,
@@ -426,6 +469,35 @@ private fun VpnToggle(
                     uncheckedBorderColor = BirdoWhite20,
                 ),
             )
+        }
+    }
+}
+
+@Composable
+private fun VpnLink(
+    icon: ImageVector,
+    iconColor: Color,
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+) {
+    VpnCardSurface {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, title, tint = iconColor, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Default.ChevronRight, null, tint = BirdoWhite40, modifier = Modifier.size(20.dp))
         }
     }
 }

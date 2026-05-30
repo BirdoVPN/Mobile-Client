@@ -2,6 +2,7 @@
 /build/
 /app/build/
 /shared/build/
+/dist/
 *.apk
 *.aab
 *.ap_
@@ -59,6 +60,7 @@ secrets/
 
 # Logs
 *.log
+temp.txt
 
 # Kotlin
 *.kotlin_module
@@ -83,6 +85,7 @@ Pods/
 # Screenshots / test artifacts
 emulator-*.png
 *.screenshot.png
+/screenshots/play/phone/_raw/
 _ios_log.txt
 
 _pr_body_ios_ci.md
@@ -115,3 +118,7 @@ sheet-v131.png
 
 ui-loggedin.xml
 
+
+u.xml
+ui.txt
+commit_msg.txt

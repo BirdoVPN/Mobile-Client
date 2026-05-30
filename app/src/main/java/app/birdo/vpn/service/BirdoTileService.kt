@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
@@ -60,16 +61,7 @@ class BirdoTileService : TileService() {
                     val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
                         ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     if (launchIntent != null) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                            val pi = PendingIntent.getActivity(
-                                this, 0, launchIntent,
-                                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                            )
-                            startActivityAndCollapse(pi)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            startActivityAndCollapse(launchIntent)
-                        }
+                        openAppAndCollapse(launchIntent)
                     }
                     return
                 }
@@ -83,16 +75,7 @@ class BirdoTileService : TileService() {
                         Log.e(TAG, "Failed to get launch intent for $packageName")
                         return
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        val pi = PendingIntent.getActivity(
-                            this, 0, launchIntent,
-                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-                        )
-                        startActivityAndCollapse(pi)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        startActivityAndCollapse(launchIntent)
-                    }
+                    openAppAndCollapse(launchIntent)
                     return
                 }
 
@@ -145,6 +128,26 @@ class BirdoTileService : TileService() {
         }
 
         tile.updateTile()
+    }
+
+    private fun openAppAndCollapse(launchIntent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                launchIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            startActivityAndCollapse(pendingIntent)
+        } else {
+            startActivityAndCollapseLegacy(launchIntent)
+        }
+    }
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    @Suppress("DEPRECATION")
+    private fun startActivityAndCollapseLegacy(launchIntent: Intent) {
+        startActivityAndCollapse(launchIntent)
     }
 
     override fun onDestroy() {

@@ -28,6 +28,10 @@ val vMinor = versionProps.getProperty("VERSION_MINOR", "0").toInt()
 val vPatch = versionProps.getProperty("VERSION_PATCH", "0").toInt()
 val computedVersionCode = vMajor * 10000 + vMinor * 100 + vPatch
 val computedVersionName = "$vMajor.$vMinor.$vPatch"
+val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint") as String?)
+    ?: localProperties.getProperty("BIRDO_SIGNING_CERT_FINGERPRINT")
+    ?: System.getenv("BIRDO_SIGNING_CERT_FINGERPRINT")
+    ?: ""
 
 android {
     namespace = "app.birdo.vpn"
@@ -53,6 +57,12 @@ android {
         // Native library integrity: populated by computeNativeHashes task for release builds
         buildConfigField("String", "NATIVE_HASH_WG_GO", "\"\"")
         buildConfigField("String", "NATIVE_HASH_XRAY", "\"\"")
+        buildConfigField("String", "NATIVE_HASH_ROSENPASS_JNI", "\"\"")
+
+        // PFA-Pass10: APK signing-cert SHA-256 fingerprint allow-list
+        // (colon-separated upper-hex values separated by comma/semicolon/space).
+        // Release builds now require this so runtime tamper checks are active.
+        buildConfigField("String", "SIGNING_CERT_FINGERPRINT", "\"$signingCertFingerprint\"")
     }
 
     signingConfigs {
@@ -90,6 +100,10 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("release")
+            // Bundle native debug symbols (wg-go, xray) into the AAB for Play Console crash/ANR symbolication.
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
         }
     }
 
@@ -122,19 +136,92 @@ android {
         }
     }
 
-    // CI: lint failures should not block the release pipeline; reports are still
-    // uploaded as artifacts. Tracked separately for cleanup.
     lint {
-        abortOnError = false
-        checkReleaseBuilds = false
+        abortOnError = true
+        checkReleaseBuilds = true
         warningsAsErrors = false
     }
 }
 
-// CI: existing unit-test failures are tracked separately; do not block the
-// release pipeline. JUnit XML/HTML reports are still produced and uploaded.
+// PFA-M3: pin every dependency resolution to a generated lockfile so a
+// compromised upstream proxy or transitive version drift cannot silently
+// substitute artifacts. Run `./gradlew :app:dependencies --write-locks`
+// to (re)generate gradle.lockfile after deliberate dependency bumps.
+dependencyLocking {
+    lockAllConfigurations()
+    lockMode = LockMode.STRICT
+}
+
 tasks.withType<Test>().configureEach {
-    ignoreFailures = true
+    ignoreFailures = false
+}
+
+val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfig") {
+    group = "verification"
+    description = "Fails release builds when mandatory anti-tamper settings are missing."
+
+    doLast {
+        if (signingCertFingerprint.isBlank()) {
+            throw GradleException(
+                "BIRDO_SIGNING_CERT_FINGERPRINT is required for release builds. " +
+                    "Use a comma-separated allow-list for Play and sideload certificates."
+            )
+        }
+    }
+}
+
+// ── Rosenpass JNI native build ──────────────────────────────────────────────
+//
+// Cross-compiles `native/rosenpass-jni/` (Rust) for arm64-v8a, armeabi-v7a,
+// and x86_64 via cargo-ndk, depositing librosenpass_jni.so into
+// app/src/main/jniLibs/<abi>/ where AGP picks it up automatically.
+//
+// This task is NOT auto-wired into mergeReleaseNativeLibs — local debug builds
+// without Rust installed should still succeed (RosenpassNative gracefully
+// falls back when the .so is absent). CI invokes this task explicitly:
+//
+//     ./gradlew :app:buildRustLibs bundleRelease
+//
+// See native/README.md for one-time setup (rustup, cargo-ndk, NDK targets).
+val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
+    group = "build"
+    description = "Cross-compiles the Rosenpass JNI Rust crate for all Android ABIs."
+
+    val nativeDir = rootProject.file("native")
+    workingDir = nativeDir
+
+    val isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows
+    if (isWindows) {
+        commandLine("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-File", "build.ps1", "-Profile", "release")
+    } else {
+        commandLine("bash", "build.sh", "release")
+    }
+
+    inputs.dir("$nativeDir/rosenpass-jni/src")
+    inputs.file("$nativeDir/rosenpass-jni/Cargo.toml")
+    outputs.files(
+        "${project.projectDir}/src/main/jniLibs/arm64-v8a/librosenpass_jni.so",
+        "${project.projectDir}/src/main/jniLibs/armeabi-v7a/librosenpass_jni.so",
+        "${project.projectDir}/src/main/jniLibs/x86_64/librosenpass_jni.so",
+    )
+
+    // Surface a clear diagnostic when Rust toolchain isn't installed locally,
+    // instead of dumping a raw "command not found" stack trace.
+    doFirst {
+        val cargoCheck = if (isWindows) {
+            ProcessBuilder("where", "cargo").redirectErrorStream(true).start()
+        } else {
+            ProcessBuilder("which", "cargo").redirectErrorStream(true).start()
+        }
+        if (cargoCheck.waitFor() != 0) {
+            throw GradleException(
+                "cargo not on PATH — install Rust + cargo-ndk + Android targets " +
+                "(see native/README.md). Or skip this task for local builds; " +
+                "RosenpassNative will fall back to the server-provided PSK path."
+            )
+        }
+    }
 }
 
 // Compute SHA-256 hashes of native .so libraries for runtime integrity verification.
@@ -161,14 +248,22 @@ afterEvaluate {
                             .joinToString("") { b -> "%02x".format(b) }
                     }
                     val wgHash = hashSo("wg-go")
-                    val xrayHash = hashSo("Xray")
+                    val xrayHash = hashSo("xray").ifBlank { hashSo("Xray") }
+                    // AUDIT-E1: include librosenpass_jni.so in the integrity
+                    // set. Without this, an attacker who swaps just the
+                    // PQ JNI .so could silently downgrade BirdoPQ v1 by
+                    // returning an attacker-known PSK from deriveSharedPsk().
+                    val rosenpassJniHash = hashSo("rosenpass_jni")
                     android.defaultConfig.buildConfigField("String", "NATIVE_HASH_WG_GO", "\"$wgHash\"")
                     android.defaultConfig.buildConfigField("String", "NATIVE_HASH_XRAY", "\"$xrayHash\"")
+                    android.defaultConfig.buildConfigField("String", "NATIVE_HASH_ROSENPASS_JNI", "\"$rosenpassJniHash\"")
                 }
                 generateBuildConfig.mustRunAfter(mergeTask)
             }
         }
     }
+
+    tasks.findByName("preReleaseBuild")?.dependsOn(validateReleaseSecurityConfig, buildRustLibs)
 }
 
 dependencies {
@@ -221,12 +316,8 @@ dependencies {
     // ── Security ─────────────────────────────────────────────────
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
-    // ── Crash Reporting ──────────────────────────────────────────
+    // Crash Reporting
     implementation("io.sentry:sentry-android:8.39.1")
-
-    // ── In-App Updates ───────────────────────────────────────────
-    implementation("com.google.android.play:app-update:2.1.0")
-    implementation("com.google.android.play:app-update-ktx:2.1.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")

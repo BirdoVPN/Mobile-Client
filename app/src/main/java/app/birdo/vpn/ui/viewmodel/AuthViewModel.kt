@@ -46,9 +46,17 @@ class AuthViewModel @Inject constructor(
     /** Sliding window of recent failed login attempt timestamps. */
     private val loginAttempts = mutableListOf<Instant>()
 
-    // Start with isLoading = true to prevent the login screen from flashing
-    // before checkSession() completes (race between init and LaunchedEffect nav).
-    private val _uiState = MutableStateFlow(AuthUiState(isLoading = true))
+    // FAST COLD START: Decide isLoggedIn synchronously from the locally
+    // stored token so the NavHost can route straight to Home. The profile
+    // fetch then runs in the background and only updates `user` (or, on a
+    // 401, kicks the user back to Login).
+    private val initiallyLoggedIn: Boolean = tokenManager.isLoggedIn()
+    private val _uiState = MutableStateFlow(
+        AuthUiState(
+            isLoading = false,
+            isLoggedIn = initiallyLoggedIn,
+        )
+    )
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
     init {
@@ -56,32 +64,26 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun checkSession() {
+        // Don't even hit the network if we have no token — UI is already on Login.
+        if (!initiallyLoggedIn) return
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true)
-
-            // FIX: Treat the user as logged-in if a valid (non-expired) token is
-            // present locally. Previously we required a successful getProfile()
-            // call — which kicks the user back to the login screen on ANY network
-            // failure, including the very common cascade where the VPN is
-            // half-connected and DNS doesn't resolve api.birdo.app on cold start.
-            val hasValidToken = tokenManager.isLoggedIn()
-
+            // Background refresh — UI is already showing Home.
             when (val result = repository.getProfile()) {
                 is ApiResult.Success -> {
-                    _uiState.value = AuthUiState(
+                    _uiState.value = _uiState.value.copy(
                         isLoggedIn = true,
                         user = result.data,
                     )
                 }
                 is ApiResult.Error -> {
-                    // 401 (or 401 after refresh failed) means the token is genuinely
-                    // dead — force re-login. Anything else (network, 5xx, timeout)
-                    // is treated as transient: keep the user logged in if their
-                    // stored token still has time on the clock.
-                    val tokenInvalid = result.code == 401
-                    _uiState.value = AuthUiState(
-                        isLoggedIn = hasValidToken && !tokenInvalid,
-                    )
+                    // 401 (or 401 after refresh failed) → token is dead, force re-login.
+                    // Any other failure (network, 5xx, timeout) is transient — stay logged in.
+                    if (result.code == 401) {
+                        _uiState.value = _uiState.value.copy(
+                            isLoggedIn = false,
+                            user = null,
+                        )
+                    }
                 }
             }
         }
@@ -186,15 +188,32 @@ class AuthViewModel @Inject constructor(
     }
 
     /**
-     * Login anonymously with a device-derived ID.
-     * Creates a RECON-tier account with no email/password.
+     * Log in to an EXISTING anonymous account using its 24-digit ID and an
+     * optional password. Anonymous accounts are created on the website only —
+     * this client never creates new accounts.
      */
-    fun loginAnonymous(deviceId: String) {
+    fun loginAnonymous(anonymousId: String, password: String? = null) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-            when (val result = repository.loginAnonymous(deviceId)) {
+            val cleanId = anonymousId.filter { it.isDigit() }
+            if (cleanId.length != 24) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = "Anonymous ID must be 24 digits",
+                )
+                return@launch
+            }
+            when (val result = repository.loginAnonymous(cleanId, password?.takeIf { it.isNotBlank() })) {
                 is ApiResult.Success -> {
-                    if (result.data.ok) {
+                    val data = result.data
+                    if (data.requiresTwoFactor && data.challengeToken != null) {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            requiresTwoFactor = true,
+                            challengeToken = data.challengeToken,
+                            error = null,
+                        )
+                    } else if (data.ok) {
                         fetchProfileAfterLogin()
                     } else {
                         _uiState.value = _uiState.value.copy(

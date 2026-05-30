@@ -101,6 +101,11 @@
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <!-- Google Play required justification: VPN tunnel that encrypts ALL user traffic.
+                 Cannot be deferred or scheduled - must run continuously while connected. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="VPN tunnel that encrypts and routes all user network traffic to a remote VPN server. Must run continuously while user is connected; cannot be deferred or restarted without breaking the encrypted tunnel and exposing user IP/DNS." />
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
                 android:value="true" />

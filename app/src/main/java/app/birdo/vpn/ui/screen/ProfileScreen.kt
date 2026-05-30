@@ -60,6 +60,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
+import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.ui.components.BirdoCard
@@ -86,7 +87,7 @@ fun ProfileScreen(
     isConnected: Boolean,
     publicIp: String?,
     onSubscription: () -> Unit,
-    onRedeemVoucher: () -> Unit,
+    onRedeemVoucher: ((code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit)? = null,
     onManageOnWeb: () -> Unit,
     onLogout: () -> Unit,
     onOpenUrl: (String) -> Unit = {},
@@ -96,6 +97,7 @@ fun ProfileScreen(
     onClearDeleteError: () -> Unit = {},
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showVoucherDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -120,7 +122,7 @@ fun ProfileScreen(
             icon = Icons.Outlined.CardGiftcard,
             title = "Redeem voucher",
             subtitle = "Activate a 30 / 90-day code",
-            onClick = onRedeemVoucher,
+            onClick = { showVoucherDialog = true },
         )
         ProfileActionRow(
             icon = Icons.AutoMirrored.Outlined.OpenInNew,
@@ -171,6 +173,13 @@ fun ProfileScreen(
                 showDeleteDialog = false
                 onClearDeleteError()
             },
+        )
+    }
+
+    if (showVoucherDialog && onRedeemVoucher != null) {
+        VoucherRedeemDialog(
+            onRedeem = onRedeemVoucher,
+            onDismiss = { showVoucherDialog = false },
         )
     }
 }
@@ -601,6 +610,127 @@ private fun DeleteAccountDialog(
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !isDeletingAccount) {
                 Text(stringResource(R.string.delete_dialog_cancel), color = BirdoWhite80)
+            }
+        },
+    )
+}
+
+/**
+ * Voucher redemption dialog. Shown when the user taps the "Redeem voucher"
+ * row on the Profile tab — keeps voucher entry on the Profile screen
+ * (rather than routing through the Subscription page).
+ */
+@Composable
+private fun VoucherRedeemDialog(
+    onRedeem: (code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var code by remember { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
+    var resultMessage by remember { mutableStateOf<String?>(null) }
+    var resultIsSuccess by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!submitting) onDismiss() },
+        containerColor = BirdoSurface,
+        titleContentColor = BirdoWhite80,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.CardGiftcard,
+                    contentDescription = null,
+                    tint = BirdoGreen,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Redeem voucher", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    "Enter a 30- or 90-day voucher code to extend or upgrade your subscription.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = BirdoWhite60,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { newValue ->
+                        code = newValue.uppercase().take(24)
+                        resultMessage = null
+                    },
+                    label = { Text("BIRD-XXXX-XXXX-XXXX") },
+                    singleLine = true,
+                    enabled = !submitting,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BirdoGreen,
+                        cursorColor = BirdoWhite80,
+                        focusedLabelColor = BirdoGreen,
+                    ),
+                )
+                resultMessage?.let { msg ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (resultIsSuccess) BirdoGreen else Color(0xFFEF4444),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    submitting = true
+                    resultMessage = null
+                    onRedeem(code.trim()) { response ->
+                        submitting = false
+                        if (response == null) {
+                            resultIsSuccess = false
+                            resultMessage = "Network error. Try again."
+                        } else if (response.ok) {
+                            resultIsSuccess = true
+                            resultMessage = buildString {
+                                append("Added ${response.durationDays} days. ")
+                                if (response.extended) append("Subscription extended.")
+                                else append("Plan upgraded to ${response.plan}.")
+                            }
+                            code = ""
+                        } else {
+                            resultIsSuccess = false
+                            resultMessage = when (response.error) {
+                                "invalid_format" -> "Invalid code format. Should be BIRD-XXXX-XXXX-XXXX."
+                                "not_found" -> "Voucher not recognised."
+                                "already_redeemed" -> "Voucher already used."
+                                "expired" -> "Voucher has expired."
+                                "plan_downgrade" -> "Your plan is already higher than this voucher offers."
+                                else -> "Couldn't redeem voucher. Please try again."
+                            }
+                        }
+                    }
+                },
+                enabled = !submitting && code.length >= 8,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = BirdoGreen,
+                    contentColor = Color.Black,
+                ),
+            ) {
+                if (submitting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.Black,
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text("Redeem", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !submitting) {
+                Text("Cancel", color = BirdoWhite80)
             }
         },
     )

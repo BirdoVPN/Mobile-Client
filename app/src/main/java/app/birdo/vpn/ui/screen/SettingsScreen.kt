@@ -14,7 +14,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
@@ -47,7 +46,6 @@ import app.birdo.vpn.ui.viewmodel.SettingsUiState
 @Composable
 fun SettingsScreen(
     state: SettingsUiState,
-    onKillSwitchChange: (Boolean) -> Unit,
     onAutoConnectChange: (Boolean) -> Unit,
     onNotificationsChange: (Boolean) -> Unit,
     onShowIpInNotificationChange: (Boolean) -> Unit,
@@ -65,8 +63,6 @@ fun SettingsScreen(
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
     onOpenSubscription: () -> Unit = {},
-    onOpenMultiHop: () -> Unit = {},
-    onOpenPortForward: () -> Unit = {},
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     Scaffold(
@@ -83,7 +79,7 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding),
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // ── Appearance ───────────────────────────────────────
             item { SectionHeader("Appearance") }
@@ -106,18 +102,6 @@ fun SettingsScreen(
                     description = "Require fingerprint or PIN to open app",
                     checked = state.biometricLockEnabled,
                     onCheckedChange = onBiometricLockChange,
-                )
-            }
-
-            item {
-                SettingsToggle(
-                    icon = Icons.Default.Shield,
-                    iconColor = BirdoGreen,
-                    title = stringResource(R.string.settings_kill_switch),
-                    description = stringResource(R.string.settings_kill_switch_desc),
-                    checked = state.killSwitchEnabled,
-                    onCheckedChange = onKillSwitchChange,
-                    testTag = TestTags.KILL_SWITCH_TOGGLE,
                 )
             }
 
@@ -184,7 +168,7 @@ fun SettingsScreen(
             }
 
             // ── VPN ──────────────────────────────────────────────
-            // Unified group: protocol, split tunneling, multi-hop, port forwarding
+            // Unified group: protocol, split tunneling. Kill switch & port-forward live in VPN Settings.
             item { SectionHeader("VPN") }
 
             item {
@@ -218,26 +202,6 @@ fun SettingsScreen(
                         onClick = onOpenSplitTunnelApps,
                     )
                 }
-            }
-
-            item {
-                SettingsLink(
-                    icon = Icons.AutoMirrored.Filled.AltRoute,
-                    iconColor = BirdoBlue,
-                    title = stringResource(R.string.settings_multi_hop),
-                    description = stringResource(R.string.settings_multi_hop_desc),
-                    onClick = onOpenMultiHop,
-                )
-            }
-
-            item {
-                SettingsLink(
-                    icon = Icons.Default.SwapHoriz,
-                    iconColor = BirdoBlue,
-                    title = stringResource(R.string.settings_port_forward),
-                    description = stringResource(R.string.settings_port_forward_desc),
-                    onClick = onOpenPortForward,
-                )
             }
 
             // ── About Section ────────────────────────────────────
@@ -365,14 +329,25 @@ private fun DeleteAccountDialog(
 @Composable
 private fun SectionHeader(title: String) {
     val palette = BirdoColors.current
-    Text(
-        text = title.uppercase(),
-        color = palette.onSurfaceMuted,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.SemiBold,
-        letterSpacing = 1.5.sp,
-        modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 6.dp),
-    )
+    Row(
+        modifier = Modifier.padding(start = 4.dp, top = 20.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 3.dp, height = 12.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(palette.accent.copy(alpha = 0.85f)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = title.uppercase(),
+            color = palette.onSurfaceMuted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.5.sp,
+        )
+    }
 }
 
 @Composable

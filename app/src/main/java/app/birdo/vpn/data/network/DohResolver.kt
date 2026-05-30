@@ -6,6 +6,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
+import java.net.UnknownHostException
 
 /**
  * DNS-over-HTTPS resolver with Cloudflare primary, Google fallback, and Quad9 final fallback.
@@ -78,8 +79,12 @@ object DohResolver {
      * System DNS is the last resort: if the user's network blocks DoH entirely
      * (some carrier/captive-portal networks do), the app should still work
      * rather than show an unhelpful "Login failed: api.birdo.app" message.
+     * Blank hostnames are caller bugs and must not fall through to system DNS.
      */
     fun resolve(hostname: String): List<InetAddress> {
+        if (hostname.isBlank()) {
+            throw UnknownHostException("hostname is blank")
+        }
         return try {
             cloudflare.lookup(hostname)
         } catch (_: Exception) {

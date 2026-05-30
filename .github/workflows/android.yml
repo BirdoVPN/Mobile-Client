@@ -46,6 +46,9 @@ permissions:
 env:
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
+  XRAY_VERSION: v26.2.6
+  XRAY_ANDROID_ARM64_SHA256: 952ccbb2275eace52e644a349358de293278eefc32b139d795b067edcb6a2f07
+  XRAY_ANDROID_AMD64_SHA256: f11f5bb71ebb2fe4127670404fbd0c21d93f62e453870fda65ad6effe7a6131e
 
 jobs:
   lint:
@@ -137,6 +140,52 @@ jobs:
           name: test-results
           path: app/build/reports/tests/testDebugUnitTest/
 
+  codeql-java-kotlin:
+    name: Analyze (java-kotlin)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-codeql-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-codeql-${{ runner.os }}-
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Build Android for CodeQL
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:compileDebugKotlin :shared:compileDebugKotlinAndroid \
+            -Pkotlin.native.ignoreDisabledTargets=true \
+            --no-daemon
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          category: '/language:java-kotlin'
+
   build:
     name: Build APK
     runs-on: ubuntu-latest
@@ -158,6 +207,28 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
+
+      - name: Install Rust Android toolchain
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-ndk --locked --version 4.1.2
+
+      - name: Download pinned Xray Reality engines
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/x86_64 "$RUNNER_TEMP/xray-arm64" "$RUNNER_TEMP/xray-amd64"
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-arm64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
+          echo "${XRAY_ANDROID_ARM64_SHA256}  $RUNNER_TEMP/xray-arm64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-arm64.zip" -d "$RUNNER_TEMP/xray-arm64"
+          cp "$(find "$RUNNER_TEMP/xray-arm64" -type f -name xray | head -n1)" app/src/main/jniLibs/arm64-v8a/libxray.so
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-amd64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-amd64.zip"
+          echo "${XRAY_ANDROID_AMD64_SHA256}  $RUNNER_TEMP/xray-amd64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-amd64.zip" -d "$RUNNER_TEMP/xray-amd64"
+          cp "$(find "$RUNNER_TEMP/xray-amd64" -type f -name xray | head -n1)" app/src/main/jniLibs/x86_64/libxray.so
+
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so app/src/main/jniLibs/x86_64/libxray.so
 
       - name: Build Debug APK
         run: |
@@ -184,6 +255,7 @@ jobs:
     #   android-store-password    - keystore password
     #   android-key-alias         - signing key alias inside the keystore
     #   android-key-password      - signing key password
+    #   android-signing-cert-fingerprint - optional SHA-256 fingerprint allow-list override
     # OIDC federated credential subject (add in Azure App Registration):
     #   repo:<org>/<repo>:ref:refs/heads/main
     #   repo:<org>/<repo>:ref:refs/tags/*
@@ -208,6 +280,28 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      - name: Install Rust Android toolchain
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          cargo install cargo-ndk --locked --version 4.1.2
+
+      - name: Download pinned Xray Reality engines
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/x86_64 "$RUNNER_TEMP/xray-arm64" "$RUNNER_TEMP/xray-amd64"
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-arm64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
+          echo "${XRAY_ANDROID_ARM64_SHA256}  $RUNNER_TEMP/xray-arm64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-arm64.zip" -d "$RUNNER_TEMP/xray-arm64"
+          cp "$(find "$RUNNER_TEMP/xray-arm64" -type f -name xray | head -n1)" app/src/main/jniLibs/arm64-v8a/libxray.so
+
+          curl -fsSL -o "$RUNNER_TEMP/xray-amd64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-amd64.zip"
+          echo "${XRAY_ANDROID_AMD64_SHA256}  $RUNNER_TEMP/xray-amd64.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray-amd64.zip" -d "$RUNNER_TEMP/xray-amd64"
+          cp "$(find "$RUNNER_TEMP/xray-amd64" -type f -name xray | head -n1)" app/src/main/jniLibs/x86_64/libxray.so
+
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so app/src/main/jniLibs/x86_64/libxray.so
+
       # Log in to Azure using OIDC - no stored client secrets required.
       - name: Azure Login (OIDC)
         uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
@@ -221,6 +315,9 @@ jobs:
       # The keystore file is written to $RUNNER_TEMP (not the workspace) to prevent
       # accidental artifact upload or caching.
       - name: Retrieve Android keystore from Azure Key Vault
+        env:
+          SIGNING_CERT_FINGERPRINT_VAR: ${{ vars.BIRDO_SIGNING_CERT_FINGERPRINT }}
+          SIGNING_CERT_FINGERPRINT_SECRET: ${{ secrets.BIRDO_SIGNING_CERT_FINGERPRINT }}
         run: |
           KS_B64=$(az keyvault secret show \
             --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
@@ -250,40 +347,65 @@ jobs:
           echo "::add-mask::$KEY_PASS"
           echo "RELEASE_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
 
-      - name: Build Release APK
+          SIGNING_FP=$(az keyvault secret show \
+            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --name "android-signing-cert-fingerprint" \
+            --query value --output tsv 2>/dev/null || true)
+          if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_SECRET"; fi
+          if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_VAR"; fi
+          if [ -z "$SIGNING_FP" ]; then
+            SIGNING_FP=$(keytool -list -v \
+              -keystore "$RUNNER_TEMP/birdo-release.jks" \
+              -storepass "$STORE_PASS" \
+              -alias "$KEY_ALIAS" \
+              | awk -F': ' '/SHA256:/{print $2; exit}')
+          fi
+          if [ -z "$SIGNING_FP" ]; then
+            echo "::error::Could not resolve Android signing certificate fingerprint"
+            exit 1
+          fi
+          echo "::add-mask::$SIGNING_FP"
+          echo "BIRDO_SIGNING_CERT_FINGERPRINT=$SIGNING_FP" >> "$GITHUB_ENV"
+
+      - name: Build Release APK and AAB
         # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
         # are set as GITHUB_ENV by the Azure Key Vault step above.
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleRelease
+          ./gradlew :app:buildRustLibs assembleRelease bundleRelease
+
+      - name: Verify release APK payload
+        run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
 
       - name: Clean up keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/birdo-release.jks"
 
       # -- Sigstore keyless signing --------------------------------------
-      # Signs the APK with cosign using GitHub OIDC identity.
+      # Signs the APK/AAB with cosign using GitHub OIDC identity.
       # Produces a .sigstore bundle for each artifact so anyone can verify
-      # this APK was built by this repo's GitHub Actions.
+      # the Android artifacts were built by this repo's GitHub Actions.
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Sign release APK with Sigstore
+      - name: Sign release APK and AAB with Sigstore
         run: |
-          for apk in app/build/outputs/apk/release/*.apk; do
-            cosign sign-blob --yes --bundle "${apk}.sigstore" "$apk"
-            echo "Signed $(basename $apk) -> $(basename $apk).sigstore"
+          for artifact in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
+            cosign sign-blob --yes --bundle "${artifact}.sigstore" "$artifact"
+            echo "Signed $(basename $artifact) -> $(basename $artifact).sigstore"
           done
 
       - name: Generate SHA256 checksums
         run: |
-          cd app/build/outputs/apk/release
-          sha256sum *.apk > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          mkdir -p app/build/release-artifacts
+          sha256sum app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab \
+            | sed 's#app/build/outputs/apk/release/##;s#app/build/outputs/bundle/release/##' \
+            > app/build/release-artifacts/SHA256SUMS.txt
+          cat app/build/release-artifacts/SHA256SUMS.txt
 
       - name: Sign checksums with Sigstore
         run: |
-          cosign sign-blob --yes --bundle "app/build/outputs/apk/release/SHA256SUMS.txt.sigstore" "app/build/outputs/apk/release/SHA256SUMS.txt"
+          cosign sign-blob --yes --bundle "app/build/release-artifacts/SHA256SUMS.txt.sigstore" "app/build/release-artifacts/SHA256SUMS.txt"
 
       # -- GPG detached signing (.asc) for sideload APK -----------------
       # Parity with desktop Linux pipeline so users can verify a sideloaded
@@ -313,10 +435,10 @@ jobs:
           gpg_private_key: ${{ secrets.ANDROID_GPG_PRIVATE_KEY }}
           passphrase:      ${{ secrets.ANDROID_GPG_PASSPHRASE }}
 
-      - name: GPG-sign release APK (detached .asc)
+      - name: GPG-sign release APK and AAB (detached .asc)
         if: ${{ env.HAS_GPG == 'true' }}
         run: |
-          for apk in app/build/outputs/apk/release/*.apk; do
+          for apk in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
             gpg --batch --yes --pinentry-mode loopback \
                 --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
                 --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
@@ -327,177 +449,38 @@ jobs:
       - name: GPG-sign SHA256SUMS (detached .asc)
         if: ${{ env.HAS_GPG == 'true' }}
         run: |
-          SUMS="app/build/outputs/apk/release/SHA256SUMS.txt"
+          SUMS="app/build/release-artifacts/SHA256SUMS.txt"
           gpg --batch --yes --pinentry-mode loopback \
               --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
               --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
               --armor --detach-sign --output "${SUMS}.asc" "$SUMS"
+
+      - name: Collect release artifacts
+        run: |
+          shopt -s nullglob
+          for artifact in \
+            app/build/outputs/apk/release/*.apk \
+            app/build/outputs/apk/release/*.sigstore \
+            app/build/outputs/apk/release/*.asc \
+            app/build/outputs/bundle/release/*.aab \
+            app/build/outputs/bundle/release/*.sigstore \
+            app/build/outputs/bundle/release/*.asc; do
+            cp "$artifact" app/build/release-artifacts/
+          done
+          ls -la app/build/release-artifacts
 
       - name: Upload Release APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-apk
           path: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/apk/release/*.sigstore
-            app/build/outputs/apk/release/*.asc
-            app/build/outputs/apk/release/SHA256SUMS.txt
-            app/build/outputs/apk/release/SHA256SUMS.txt.sigstore
-            app/build/outputs/apk/release/SHA256SUMS.txt.asc
+            app/build/release-artifacts/*
 
       - name: Upload Mapping File
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mapping
           path: app/build/outputs/mapping/release/mapping.txt
-
-  # L-12 FIX: Build AAB for Google Play Store submission
-  release-aab:
-    name: Build Release AAB
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    # Skip when Azure Key Vault is not configured (forks, dependabot PRs, contributors).
-    if: ${{ vars.AZURE_KEY_VAULT_NAME != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch') }}
-    permissions:
-      contents: read
-      id-token: write  # Required for both Sigstore (Fulcio OIDC) and Azure AD OIDC
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up JDK
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
-      - name: Cache Gradle
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
-
-      # Log in to Azure using OIDC - no stored client secrets required.
-      - name: Azure Login (OIDC)
-        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
-        with:
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          allow-no-subscriptions: true
-
-      # SEC: All secrets are masked with ::add-mask:: so they never appear in logs.
-      # The keystore file is written to $RUNNER_TEMP (not the workspace) to prevent
-      # accidental artifact upload or caching.
-      - name: Retrieve Android keystore from Azure Key Vault
-        run: |
-          KS_B64=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
-            --name "android-keystore-base64" \
-            --query value --output tsv)
-          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/birdo-release.jks"
-          echo "RELEASE_STORE_FILE=$RUNNER_TEMP/birdo-release.jks" >> "$GITHUB_ENV"
-
-          STORE_PASS=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
-            --name "android-store-password" \
-            --query value --output tsv)
-          echo "::add-mask::$STORE_PASS"
-          echo "RELEASE_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
-
-          KEY_ALIAS=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
-            --name "android-key-alias" \
-            --query value --output tsv)
-          echo "::add-mask::$KEY_ALIAS"
-          echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
-
-          KEY_PASS=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
-            --name "android-key-password" \
-            --query value --output tsv)
-          echo "::add-mask::$KEY_PASS"
-          echo "RELEASE_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
-
-      - name: Build Release AAB
-        # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
-        # are set as GITHUB_ENV by the Azure Key Vault step above.
-        run: |
-          chmod +x ./gradlew
-          ./gradlew bundleRelease
-
-      - name: Clean up keystore
-        if: always()
-        run: rm -f "$RUNNER_TEMP/birdo-release.jks"
-
-      # -- Sigstore keyless signing --------------------------------------
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
-
-      - name: Sign release AAB with Sigstore
-        run: |
-          for aab in app/build/outputs/bundle/release/*.aab; do
-            cosign sign-blob --yes --bundle "${aab}.sigstore" "$aab"
-            echo "Signed $(basename $aab) -> $(basename $aab).sigstore"
-          done
-
-      - name: Upload Release AAB
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-aab
-          path: |
-            app/build/outputs/bundle/release/*.aab
-            app/build/outputs/bundle/release/*.sigstore
-
-  # -- Google Play Store Upload (internal track) ----------------------
-  # Triggers ONLY on android-v* tags. Uploads the signed AAB to the Play
-  # Console "internal" testing track. Promote manually to closed/open/prod.
-  #
-  # Required GitHub repository SECRETS:
-  #   PLAY_SERVICE_ACCOUNT_JSON  - full JSON of a Google Play service account
-  #                                with "Release manager" permission on the app.
-  #
-  # The service account is created in Google Cloud Console, then granted
-  # access in Play Console -> Setup -> API access. The package name below must
-  # match the one declared in app/build.gradle.kts (applicationId).
-  play-store:
-    name: Upload to Play Console (internal)
-    runs-on: ubuntu-latest
-    needs: release-aab
-    if: startsWith(github.ref, 'refs/tags/android-v')
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Download release AAB
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-aab
-          path: release-aab/
-
-      - name: Locate AAB
-        id: locate
-        run: |
-          AAB=$(find release-aab -name '*.aab' | head -1)
-          if [ -z "$AAB" ]; then
-            echo "::error::No AAB found in release-aab/"
-            exit 1
-          fi
-          echo "aab=$AAB" >> "$GITHUB_OUTPUT"
-
-      - name: Upload AAB to Google Play (internal track)
-        uses: r0adkll/upload-google-play@7f5b759879c088a86faf85d18779f7f14e79a086 # v1.1.4
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: app.birdo.vpn
-          releaseFiles: ${{ steps.locate.outputs.aab }}
-          track: internal
-          status: completed
-          inAppUpdatePriority: 2
-          # mappingFile: app/build/outputs/mapping/release/mapping.txt
-          # whatsNewDirectory: distribution/whatsnew
 
   # -- GitHub Draft Release (sideload APK for phone install) ----------
   # Publishes the signed release APK + sigstore bundle + GPG .asc + checksums
@@ -528,10 +511,21 @@ jobs:
 
       - name: Determine release tag
         id: tag
+        # PFA-CI: pass user input via env (NOT direct ${{ }} expansion in
+        # `run:` body — that would be a script-injection sink). Then enforce
+        # a strict tag regex before letting it touch any downstream tool.
+        env:
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT_TAG="${{ github.event.inputs.release_tag }}"
             if [ -n "$INPUT_TAG" ]; then
+              # Allowlist: alnum, dot, dash, underscore, max 64 chars.
+              # Rejects shell metachars ($, `, ;, |, &, <, >, quotes, newline).
+              if ! printf '%s' "$INPUT_TAG" | grep -Eq '^[A-Za-z0-9._-]{1,64}$'; then
+                echo "::error::release_tag input failed validation: $INPUT_TAG"
+                echo "::error::Must match ^[A-Za-z0-9._-]{1,64}$"
+                exit 1
+              fi
               TAG="$INPUT_TAG"
             else
               TAG="android-dispatch-${{ github.run_number }}"
@@ -559,6 +553,7 @@ jobs:
 
             ### Install
             Download the `.apk` asset below on your Android device and tap it to install.
+            The `.aab` asset is the Play Console upload artifact.
             You may need to enable **Install unknown apps** for your browser / file manager.
 
             ### Verify (optional)
@@ -571,6 +566,9 @@ jobs:
             release-apk/*.apk
             release-apk/*.apk.sigstore
             release-apk/*.apk.asc
+            release-apk/*.aab
+            release-apk/*.aab.sigstore
+            release-apk/*.aab.asc
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
             release-apk/SHA256SUMS.txt.asc

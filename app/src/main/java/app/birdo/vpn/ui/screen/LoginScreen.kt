@@ -60,12 +60,13 @@ fun LoginScreen(
     onClearError: () -> Unit,
     onCancelTwoFactor: () -> Unit = {},
     onSignUp: () -> Unit = {},
-    onLoginAnonymous: () -> Unit = {},
+    onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var twoFactorCode by remember { mutableStateOf("") }
+    var showAnonymousDialog by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
     // Stagger animation
@@ -577,30 +578,225 @@ fun LoginScreen(
                 visible = visible,
                 enter = fadeIn(animationSpec = tween(500, delayMillis = 400)),
             ) {
-                OutlinedButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        onLoginAnonymous()
-                    },
-                    enabled = !isLoading,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = BirdoWhite60,
-                        disabledContentColor = BirdoWhite20,
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
-                ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            showAnonymousDialog = true
+                            onClearError()
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_ANONYMOUS_BUTTON),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = BirdoWhite60,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_anonymous_button),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "Continue Anonymously",
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 13.sp,
+                        text = stringResource(R.string.login_anonymous_no_account_link),
+                        fontSize = 11.sp,
+                        color = BirdoWhite40,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp),
                     )
                 }
             }
             } // end else (standard login form)
         }
     }
+
+    if (showAnonymousDialog) {
+        AnonymousLoginDialog(
+            isLoading = isLoading,
+            onDismiss = { showAnonymousDialog = false },
+            onSubmit = { id, pwd ->
+                showAnonymousDialog = false
+                onLoginAnonymous(id, pwd)
+            },
+        )
+    }
 }
+
+/**
+ * Modal dialog for entering an anonymous account ID + optional password.
+ * Mirrors the website's login flow for accounts with `/^\d{24}$/` IDs.
+ * Account creation is web-only — this dialog only logs into existing accounts.
+ */
+@Composable
+private fun AnonymousLoginDialog(
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (anonymousId: String, password: String?) -> Unit,
+) {
+    var rawId by remember { mutableStateOf("") }
+    var pwd by remember { mutableStateOf("") }
+    var showPwd by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+
+    val digits = rawId.filter { it.isDigit() }.take(24)
+    val canSubmit = digits.length == 24 && !isLoading
+
+    AlertDialog(
+        onDismissRequest = { if (!isLoading) onDismiss() },
+        containerColor = Color(0xFF0A0A0A),
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(
+                stringResource(R.string.login_anonymous_dialog_title),
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    stringResource(R.string.login_anonymous_dialog_subtitle),
+                    color = BirdoWhite60,
+                    fontSize = 13.sp,
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    stringResource(R.string.login_anonymous_id_label),
+                    color = BirdoWhite60,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
+                )
+                OutlinedTextField(
+                    value = formatAnonymousId(digits),
+                    onValueChange = { input ->
+                        rawId = input.filter { it.isDigit() }.take(24)
+                    },
+                    placeholder = {
+                        Text(stringResource(R.string.login_anonymous_id_placeholder), color = BirdoWhite20, fontSize = 13.sp)
+                    },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        letterSpacing = 1.sp,
+                        fontSize = 14.sp,
+                    ),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.NumberPassword,
+                        imeAction = ImeAction.Next,
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                        unfocusedBorderColor = BirdoBrand.HairlineSoft,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = BirdoWhite80,
+                        cursorColor = BirdoBrand.PurpleSoft,
+                        focusedContainerColor = GlassInput,
+                        unfocusedContainerColor = GlassInput,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(TestTags.LOGIN_ANONYMOUS_ID_FIELD),
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${digits.length} / 24",
+                    color = if (digits.length == 24) BirdoWhite60 else BirdoWhite40,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    stringResource(R.string.login_anonymous_password_label),
+                    color = BirdoWhite60,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
+                )
+                OutlinedTextField(
+                    value = pwd,
+                    onValueChange = { pwd = it },
+                    placeholder = { Text("••••••••", color = BirdoWhite20) },
+                    trailingIcon = {
+                        IconButton(onClick = { showPwd = !showPwd }) {
+                            Icon(
+                                if (showPwd) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                stringResource(R.string.cd_toggle_password),
+                                tint = BirdoWhite40,
+                            )
+                        }
+                    },
+                    singleLine = true,
+                    visualTransformation = if (showPwd) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            focusManager.clearFocus()
+                            if (canSubmit) onSubmit(digits, pwd.ifBlank { null })
+                        },
+                    ),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                        unfocusedBorderColor = BirdoBrand.HairlineSoft,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = BirdoWhite80,
+                        cursorColor = BirdoBrand.PurpleSoft,
+                        focusedContainerColor = GlassInput,
+                        unfocusedContainerColor = GlassInput,
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(TestTags.LOGIN_ANONYMOUS_PASSWORD_FIELD),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSubmit(digits, pwd.ifBlank { null }) },
+                enabled = canSubmit,
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                    disabledContainerColor = BirdoWhite20,
+                    disabledContentColor = BirdoWhite40,
+                ),
+                modifier = Modifier.testTag(TestTags.LOGIN_ANONYMOUS_SUBMIT),
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = Color.Black,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.login_anonymous_signing_in), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                } else {
+                    Text(stringResource(R.string.login_anonymous_submit), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isLoading) {
+                Text(stringResource(R.string.login_anonymous_cancel), color = BirdoWhite60, fontSize = 13.sp)
+            }
+        },
+    )
+}
+
+/** Format a digits-only string as XXXX XXXX XXXX XXXX XXXX XXXX (groups of 4). */
+private fun formatAnonymousId(digits: String): String =
+    digits.chunked(4).joinToString(" ")

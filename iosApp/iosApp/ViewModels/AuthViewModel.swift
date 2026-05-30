@@ -133,6 +133,9 @@ final class AuthViewModel: ObservableObject {
 
     func logout() {
         keychain.clear()
+        // AUDIT-C1: drop the persisted ML-KEM-1024 client identity so the
+        // next user gets a fresh PQ keypair instead of inheriting this one.
+        BirdoPQManager.shared.resetPersistedKeypair()
         userEmail = nil
         isLoggedIn = false
         requiresTwoFactor = false

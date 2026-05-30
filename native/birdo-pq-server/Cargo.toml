@@ -1,0 +1,38 @@
+[package]
+name = "birdo-pq-server"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Server-side BirdoPQ v1 helper — encapsulates against a client ML-KEM-1024 public key and prints (ciphertext, psk)."
+license = "Apache-2.0"
+
+[[bin]]
+name = "birdo-pq-server"
+path = "src/main.rs"
+
+[dependencies]
+# Same KEM the Android client uses.
+pqcrypto-mlkem = "0.1"
+pqcrypto-traits = "0.3"
+
+# PSK derivation — must match the client side bit-for-bit.
+sha2 = "0.10"
+hkdf = "0.12"
+
+# Wire encoding.
+base64 = "0.22"
+
+# CSPRNG via getrandom (the OS entropy source). pqcrypto already pulls this
+# in transitively, but we list it explicitly so version pinning is auditable.
+getrandom = { version = "0.2", features = ["std"] }
+
+# Defence-in-depth: wipe shared secrets from RAM after derivation.
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+overflow-checks = true

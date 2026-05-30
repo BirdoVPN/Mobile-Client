@@ -42,13 +42,32 @@ final class VPNManager: @unchecked Sendable {
 
         let mgr = try await ensureManager()
 
+        // AUDIT-C1: prefer a true bilateral PQ PSK over the server-provided
+        // classical one. `tryDecapsulate` returns nil when the server didn't
+        // ship a ciphertext, in which case we fall back to `presharedKey`.
+        let pqPsk = BirdoPQManager.shared.tryDecapsulate(
+            quantumEnabled: config.quantumEnabled ?? false,
+            rosenpassPublicKeyBase64: config.rosenpassPublicKey,
+            rosenpassEndpointBase64: config.rosenpassEndpoint
+        )
+        let effectivePsk: String?
+        if let pqPsk {
+            effectivePsk = pqPsk
+        } else if let serverPsk = config.presharedKey, !serverPsk.isEmpty {
+            BirdoPQManager.shared.recordServerProvided()
+            effectivePsk = serverPsk
+        } else {
+            BirdoPQManager.shared.recordDisabled()
+            effectivePsk = nil
+        }
+
         // Park secrets in the shared keychain — the extension reads them by
         // ID instead of receiving them through plaintext provider config.
         let keychain = KeychainService.shared
         guard keychain.setSharedSecret(key: "wg_private_key", value: config.privateKey) else {
             throw VPNManagerError.keychainUnavailable
         }
-        if let psk = config.presharedKey, !psk.isEmpty {
+        if let psk = effectivePsk, !psk.isEmpty {
             keychain.setSharedSecret(key: "wg_preshared_key", value: psk)
         } else {
             keychain.deleteShared(key: "wg_preshared_key")
@@ -63,7 +82,7 @@ final class VPNManager: @unchecked Sendable {
         proto.providerConfiguration = [
             "wg-config": wgConfig,
             "wg-private-key-ref": "wg_private_key",
-            "wg-preshared-key-ref": (config.presharedKey?.isEmpty == false) ? "wg_preshared_key" : "",
+            "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
         ]
         // SEC: kill switch — block all traffic when the tunnel is not up.
         if #available(iOS 14.0, *) {

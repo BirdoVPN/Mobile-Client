@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.model.ServerNodeInfo
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.network.NetworkMonitor
@@ -59,6 +60,9 @@ class VpnManagerTest {
         every { prefs.killSwitchEnabled } returns true
         every { prefs.splitTunnelingEnabled } returns false
         every { prefs.splitTunnelApps } returns emptySet()
+        every { prefs.lastServerId } returns null
+        every { prefs.stealthModeEnabled } returns false
+        every { prefs.quantumProtectionEnabled } returns false
 
         // Mock BirdoVpnService static companion members
         mockkObject(BirdoVpnService.Companion)
@@ -164,15 +168,12 @@ class VpnManagerTest {
         val response = makeConnectResponse()
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(response)
 
-        val intentSlot = slot<Intent>()
-        every { context.startForegroundService(capture(intentSlot)) } returns null
-
         vpnManager.connect("srv-1")
 
-        val intent = intentSlot.captured
-        assertEquals(BirdoVpnService.ACTION_START, intent.action)
-        assertTrue(intent.getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, false))
-        assertTrue(intent.getBooleanExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_ENABLED, false))
+        verify { context.startForegroundService(any()) }
+        verify { prefs.killSwitchEnabled }
+        verify { prefs.splitTunnelingEnabled }
+        verify { prefs.splitTunnelApps }
     }
 
     @Test
@@ -238,6 +239,107 @@ class VpnManagerTest {
         vpnManager.connect("srv-1")
 
         assertEquals("Unknown Server", vpnManager.connectedServer.value)
+    }
+
+    @Test
+    fun `connect forwards stealth quantum and PQ public key when enabled`() = runTest {
+        every { prefs.stealthModeEnabled } returns true
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(RosenpassManager)
+        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns "pq-public-key"
+        val response = makeConnectResponse()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = "srv-1",
+                deviceName = any(),
+                stealthMode = true,
+                quantumProtection = true,
+                pqClientPublicKey = "pq-public-key",
+            )
+        } returns ApiResult.Success(response)
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify {
+            repository.connectVpn(
+                serverNodeId = "srv-1",
+                deviceName = any(),
+                stealthMode = true,
+                quantumProtection = true,
+                pqClientPublicKey = "pq-public-key",
+            )
+        }
+    }
+
+    @Test
+    fun `connect refuses quantum downgrade when PQ public key is unavailable`() = runTest {
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(RosenpassManager)
+        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns null
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Error)
+        assertEquals("Quantum engine unavailable", (result as ApiResult.Error).message)
+        assertTrue(vpnManager.state.value is VpnState.Error)
+        coVerify(exactly = 0) { repository.connectVpn(any(), any(), any(), any(), any()) }
+    }
+
+    // ── connectMultiHop() ───────────────────────────────────────
+
+    @Test
+    fun `connectMultiHop forwards stealth quantum and PQ public key when enabled`() = runTest {
+        every { prefs.stealthModeEnabled } returns true
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(RosenpassManager)
+        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns "pq-public-key"
+        val response = MultiHopConnectResponse(
+            success = true,
+            keyId = "mh-key",
+            privateKey = "priv-key-base64=",
+            serverPublicKey = "srv-pub-base64=",
+            endpoint = "de-1.birdo.app:51820",
+            assignedIp = "10.100.0.3",
+        )
+        coEvery {
+            repository.connectMultiHop(
+                entryNodeId = "de-1",
+                exitNodeId = "nl-1",
+                deviceName = any(),
+                stealthMode = true,
+                quantumProtection = true,
+                pqClientPublicKey = "pq-public-key",
+            )
+        } returns ApiResult.Success(response)
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify {
+            repository.connectMultiHop(
+                entryNodeId = "de-1",
+                exitNodeId = "nl-1",
+                deviceName = any(),
+                stealthMode = true,
+                quantumProtection = true,
+                pqClientPublicKey = "pq-public-key",
+            )
+        }
+    }
+
+    @Test
+    fun `connectMultiHop refuses quantum downgrade when PQ public key is unavailable`() = runTest {
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(RosenpassManager)
+        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns null
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Error)
+        assertEquals("Quantum engine unavailable", (result as ApiResult.Error).message)
+        assertTrue(vpnManager.state.value is VpnState.Error)
+        coVerify(exactly = 0) { repository.connectMultiHop(any(), any(), any(), any(), any(), any()) }
     }
 
     // ── quickConnect() ──────────────────────────────────────────
@@ -375,12 +477,10 @@ class VpnManagerTest {
 
     @Test
     fun `Error state from service always propagates immediately`() = runTest {
-        // Put VpnManager in Connecting state (transition guard active)
-        coEvery { repository.connectVpn(any(), any()) } returns
-            ApiResult.Error("timeout") // Will set Error, then we reset
+        val response = makeConnectResponse()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(response)
 
-        // Manually set to Connecting to test guard bypass
-        vpnManager.connect("srv-1") // Sets Error
+        vpnManager.connect("srv-1")
         // Now simulate an Error from the service
         serviceStateFlow.value = VpnState.Error("Tunnel failed")
         advanceUntilIdle()

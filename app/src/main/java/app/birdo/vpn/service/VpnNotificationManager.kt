@@ -64,23 +64,25 @@ internal class VpnNotificationManager(private val context: Context) {
         rxBytes: Long = 0L,
         txBytes: Long = 0L,
     ): Notification {
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
+        val openIntent = Intent()
+            .setClassName(context.packageName, MainActivity::class.java.name)
+            .setPackage(context.packageName)
+            .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pendingOpen = PendingIntent.getActivity(
             context, 0, openIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val stopPendingIntent = PendingIntent.getService(
             context, 1,
-            Intent(context, BirdoVpnService::class.java).apply { action = BirdoVpnService.ACTION_STOP },
+            Intent(BirdoVpnService.ACTION_STOP)
+                .setClassName(context.packageName, BirdoVpnService::class.java.name)
+                .setPackage(context.packageName),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val connectIntent = Intent(context, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            data = android.net.Uri.parse("birdo://connect")
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
+        val connectIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("birdo://connect"))
+            .setClassName(context.packageName, MainActivity::class.java.name)
+            .setPackage(context.packageName)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val connectPendingIntent = PendingIntent.getActivity(
             context, 2, connectIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -171,18 +173,18 @@ internal class VpnNotificationManager(private val context: Context) {
      */
     fun postDisconnectedNotification() {
         try {
-            val openIntent = Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
+            val openIntent = Intent()
+                .setClassName(context.packageName, MainActivity::class.java.name)
+                .setPackage(context.packageName)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
             val pendingOpen = PendingIntent.getActivity(
                 context, 0, openIntent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val connectIntent = Intent(context, MainActivity::class.java).apply {
-                action = Intent.ACTION_VIEW
-                data = android.net.Uri.parse("birdo://connect")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
+            val connectIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("birdo://connect"))
+                .setClassName(context.packageName, MainActivity::class.java.name)
+                .setPackage(context.packageName)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             val connectPending = PendingIntent.getActivity(
                 context, 2, connectIntent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,

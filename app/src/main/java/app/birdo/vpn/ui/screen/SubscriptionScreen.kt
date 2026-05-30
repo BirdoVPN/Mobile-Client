@@ -109,8 +109,13 @@ private val plans = listOf(
 fun SubscriptionScreen(
     currentSubscription: SubscriptionStatus?,
     onNavigateBack: () -> Unit,
-    onSelectPlan: (planId: String) -> Unit,
+    onSelectPlan: (planId: String, period: String) -> Unit,
     onManageOnWeb: () -> Unit,
+    billingReady: Boolean = false,
+    billingMessage: String? = null,
+    billingIsError: Boolean = false,
+    billingIsPurchasing: Boolean = false,
+    onClearBillingMessage: () -> Unit = {},
     onRedeemVoucher: ((code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit)? = null,
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
@@ -120,7 +125,7 @@ fun SubscriptionScreen(
             TopAppBar(
                 title = {
                     Text(
-                        "Choose Your Plan",
+                        "Manage Subscription",
                         fontWeight = FontWeight.Bold,
                         color = BirdoWhite80,
                     )
@@ -128,6 +133,11 @@ fun SubscriptionScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = BirdoWhite60)
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onManageOnWeb) {
+                        Text("Web", color = BirdoWhite60, fontSize = 13.sp)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
@@ -142,38 +152,19 @@ fun SubscriptionScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp),
         ) {
-            // Current plan badge
+            // Current plan hero card — dense, single row of metrics.
             if (currentSubscription != null) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = BirdoSurface,
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Default.CreditCard, "Plan", tint = BirdoWhite60, modifier = Modifier.size(20.dp))
-                        Spacer(Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Current Plan: ${currentSubscription.plan}",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = BirdoWhite80,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "${currentSubscription.activeConnections}/${currentSubscription.maxConnections} devices used",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = BirdoWhite40,
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
+                CurrentPlanHero(currentSubscription)
+                Spacer(Modifier.height(20.dp))
             }
+
+            Text(
+                "Choose a plan",
+                style = MaterialTheme.typography.titleMedium,
+                color = BirdoWhite80,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 4.dp, bottom = 10.dp),
+            )
 
             // Billing period toggle
             Surface(
@@ -186,7 +177,7 @@ fun SubscriptionScreen(
                         .fillMaxWidth()
                         .padding(4.dp),
                 ) {
-                    listOf("monthly" to "Monthly", "yearly" to "Yearly (Save 20%)").forEach { (key, label) ->
+                    listOf("monthly" to "Monthly", "yearly" to "Yearly · Save 20%").forEach { (key, label) ->
                         Surface(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp),
@@ -206,7 +197,7 @@ fun SubscriptionScreen(
                 }
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
             // Plan cards
             plans.forEach { plan ->
@@ -215,28 +206,151 @@ fun SubscriptionScreen(
                     plan = plan,
                     isCurrent = isCurrent,
                     price = if (billingPeriod == "yearly") plan.priceYearly else plan.priceMonthly,
-                    onSelect = { onSelectPlan(plan.id) },
+                    isPurchasing = billingIsPurchasing,
+                    onSelect = { onSelectPlan(plan.id, billingPeriod) },
                 )
                 Spacer(Modifier.height(12.dp))
             }
 
-            // Voucher redemption (Mullvad-style time-extension codes)
-            if (onRedeemVoucher != null) {
+            // Billing status banner (Play unavailable / purchase result)
+            if (billingMessage != null) {
                 Spacer(Modifier.height(8.dp))
-                VoucherRedeemSection(onRedeem = onRedeemVoucher)
-                Spacer(Modifier.height(12.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (billingIsError) BirdoRed.copy(alpha = 0.12f) else BirdoGreen.copy(alpha = 0.12f),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            if (billingIsError) Icons.Default.ErrorOutline else Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = if (billingIsError) BirdoRed else BirdoGreen,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            billingMessage,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (billingIsError) BirdoRed else BirdoGreen,
+                        )
+                        TextButton(onClick = onClearBillingMessage) {
+                            Text("Dismiss", color = BirdoWhite60, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+            if (!billingReady) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Google Play Billing isn’t available on this device — you’ll be redirected to web checkout.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = BirdoWhite40,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                )
             }
 
-            // Manage on web link
-            TextButton(
-                onClick = onManageOnWeb,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Manage subscription on birdo.app", color = BirdoWhite40)
-            }
+            // Footer note about vouchers (now on Profile tab) and web management.
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Have a voucher code? Redeem it on the Profile tab. " +
+                    "All purchases can also be managed on birdo.app.",
+                style = MaterialTheme.typography.bodySmall,
+                color = BirdoWhite40,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp),
+            )
 
             Spacer(Modifier.height(32.dp))
         }
+    }
+}
+
+@Composable
+private fun CurrentPlanHero(sub: SubscriptionStatus) {
+    val isActive = sub.status.equals("ACTIVE", ignoreCase = true)
+    val planAccent = when (sub.plan.uppercase()) {
+        "SOVEREIGN" -> Color(0xFFF59E0B)
+        "OPERATIVE" -> Color(0xFF8B5CF6)
+        else -> BirdoWhite60
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = BirdoSurface,
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(planAccent.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.WorkspacePremium, null, tint = planAccent, modifier = Modifier.size(24.dp))
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        sub.plan.uppercase(),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        if (isActive) "Active subscription" else "Inactive",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (isActive) BirdoGreen else BirdoWhite40,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = if (isActive) BirdoGreen.copy(alpha = 0.18f) else BirdoWhite10,
+                ) {
+                    Text(
+                        if (isActive) "ACTIVE" else "INACTIVE",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        color = if (isActive) BirdoGreen else BirdoWhite60,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                MetricCell(
+                    "Devices",
+                    "${sub.activeConnections}/${sub.maxConnections}",
+                    Modifier.weight(1f),
+                )
+                MetricCell(
+                    "Bandwidth",
+                    if (sub.bandwidthLimitGb > 0) "${sub.bandwidthLimitGb} GB" else "Unlimited",
+                    Modifier.weight(1f),
+                )
+                MetricCell(
+                    "Premium",
+                    if (sub.hasPremiumServers) "Yes" else "No",
+                    Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(label, color = BirdoWhite40, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+        Spacer(Modifier.height(2.dp))
+        Text(value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -245,6 +359,7 @@ private fun PlanCard(
     plan: PlanInfo,
     isCurrent: Boolean,
     price: String,
+    isPurchasing: Boolean = false,
     onSelect: () -> Unit,
 ) {
     val shape = RoundedCornerShape(16.dp)
@@ -349,6 +464,7 @@ private fun PlanCard(
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = onSelect,
+                    enabled = !isPurchasing,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -356,11 +472,19 @@ private fun PlanCard(
                         contentColor = if (plan.isPopular) Color.Black else Color.White,
                     ),
                 ) {
-                    Text(
-                        "Upgrade to ${plan.name}",
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
+                    if (isPurchasing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = if (plan.isPopular) Color.Black else Color.White,
+                        )
+                    } else {
+                        Text(
+                            "Upgrade to ${plan.name}",
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(vertical = 4.dp),
+                        )
+                    }
                 }
             }
         }

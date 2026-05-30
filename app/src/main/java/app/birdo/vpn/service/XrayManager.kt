@@ -5,6 +5,7 @@ import android.net.VpnService
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.utils.NativeLibraryVerifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -52,7 +53,7 @@ object XrayManager {
     private var isRunning = false
 
     @Volatile
-    private var localPort = DEFAULT_LOCAL_PORT
+    private var localPort = 0
 
     /** TCP socket fd used by Xray to connect to the server — must be protected */
     @Volatile
@@ -68,12 +69,15 @@ object XrayManager {
      * Get the local port that Xray is listening on.
      * WireGuard should set its endpoint to 127.0.0.1:{localPort}.
      */
-    fun getLocalPort(): Int = localPort
+    fun getLocalPort(): Int = if (isRunning) localPort else 0
 
     /**
      * Whether the stealth tunnel is currently active.
      */
     fun isActive(): Boolean = isRunning
+
+    /** True when a libXray binding or packaged executable is available. */
+    fun isAvailable(context: Context): Boolean = hasLibXrayBinding() || findXrayBinary(context) != null
 
     /**
      * Set the VPN service reference for socket protection.
@@ -127,11 +131,12 @@ object XrayManager {
         }
 
         // Parse server endpoint
-        val (serverHost, serverPort) = parseEndpoint(xrayEndpoint)
-        if (serverHost == null) {
+        val endpoint = parseEndpoint(xrayEndpoint)
+        if (endpoint == null) {
             Log.e(TAG, "Invalid Xray endpoint: $xrayEndpoint")
             return@withContext false
         }
+        val (serverHost, serverPort) = endpoint
 
         // Find an available local port
         localPort = findAvailablePort(DEFAULT_LOCAL_PORT)
@@ -197,6 +202,7 @@ object XrayManager {
             Log.w(TAG, "Error stopping Xray", e)
         } finally {
             isRunning = false
+            localPort = 0
             xraySocketFd = -1
             vpnService = null
             Log.i(TAG, "Xray stopped")
@@ -300,6 +306,15 @@ object XrayManager {
         }
     }
 
+    private fun hasLibXrayBinding(): Boolean = try {
+        Class.forName("libXray.Libxray")
+        true
+    } catch (_: ClassNotFoundException) {
+        false
+    } catch (_: Throwable) {
+        false
+    }
+
     /**
      * Fall back to running xray-core as an external binary.
      * The binary should be placed in the app's native lib directory or assets.
@@ -309,6 +324,11 @@ object XrayManager {
             // Look for xray binary in native libs or extracted assets
             val xrayBinary = findXrayBinary(context) ?: run {
                 Log.e(TAG, "Xray binary not found")
+                return false
+            }
+            val verifierName = if (xrayBinary.name == "libXray.so") "Xray" else "xray"
+            if (!NativeLibraryVerifier.verifyLibrary(context, verifierName)) {
+                Log.e(TAG, "Xray binary integrity check failed")
                 return false
             }
 
@@ -429,27 +449,32 @@ object XrayManager {
     /**
      * Parse an endpoint string "host:port" into (host, port).
      */
-    private fun parseEndpoint(endpoint: String): Pair<String?, Int> {
+    private fun parseEndpoint(endpoint: String): Pair<String, Int>? {
+        val trimmed = endpoint.trim()
+        if (trimmed.isEmpty()) return null
+
         return try {
-            if (endpoint.startsWith("[")) {
+            if (trimmed.startsWith("[")) {
                 // IPv6: [::1]:8443
-                val host = endpoint.substringAfter("[").substringBefore("]")
-                val port = endpoint.substringAfterLast(":").toIntOrNull() ?: 8443
+                val closingBracket = trimmed.indexOf(']')
+                if (closingBracket <= 1 || closingBracket + 2 > trimmed.lastIndex || trimmed[closingBracket + 1] != ':') {
+                    return null
+                }
+                val host = trimmed.substring(1, closingBracket)
+                val port = trimmed.substring(closingBracket + 2).toIntOrNull() ?: return null
+                if (host.isBlank() || port !in 1..65535) return null
                 Pair(host, port)
             } else {
-                val lastColon = endpoint.lastIndexOf(':')
-                if (lastColon > 0) {
-                    Pair(
-                        endpoint.substring(0, lastColon),
-                        endpoint.substring(lastColon + 1).toIntOrNull() ?: 8443,
-                    )
-                } else {
-                    Pair(endpoint, 8443)
-                }
+                val lastColon = trimmed.lastIndexOf(':')
+                if (lastColon <= 0 || lastColon == trimmed.lastIndex || trimmed.indexOf(':') != lastColon) return null
+                val host = trimmed.substring(0, lastColon)
+                val port = trimmed.substring(lastColon + 1).toIntOrNull() ?: return null
+                if (host.isBlank() || port !in 1..65535) return null
+                Pair(host, port)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse endpoint: $endpoint", e)
-            Pair(null, 8443)
+            null
         }
     }
 

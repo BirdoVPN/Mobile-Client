@@ -20,6 +20,19 @@
     <string name="login_2fa_verifying">Verifying…</string>
     <string name="login_2fa_back">Back to login</string>
 
+    <!-- Anonymous Login -->
+    <string name="login_anonymous_button">Login with Anonymous ID</string>
+    <string name="login_anonymous_signing_in">Signing in…</string>
+    <string name="login_anonymous_caption">For anonymous accounts created on the website. Don\'t have one? <a href="https://birdo.app/login">Create one here</a>.</string>
+    <string name="login_anonymous_dialog_title">Anonymous Sign In</string>
+    <string name="login_anonymous_dialog_subtitle">Enter your 24-digit account ID. If you set a password on the website, enter that too.</string>
+    <string name="login_anonymous_id_label">Account ID</string>
+    <string name="login_anonymous_id_placeholder">XXXX XXXX XXXX XXXX XXXX XXXX</string>
+    <string name="login_anonymous_password_label">Password (optional)</string>
+    <string name="login_anonymous_submit">Sign In</string>
+    <string name="login_anonymous_cancel">Cancel</string>
+    <string name="login_anonymous_no_account_link">Don\'t have an Anonymous ID? Create one on the website.</string>
+
     <!-- Home Screen -->
     <string name="logout">Logout</string>
     <string name="stats_duration">Duration</string>

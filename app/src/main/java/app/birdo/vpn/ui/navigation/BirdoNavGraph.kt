@@ -96,6 +96,7 @@ fun BirdoNavGraph(
                 }
             } else if (hasConsented && authState.isLoggedIn && currentRoute in listOf(Screen.Login.route, Screen.Consent.route)) {
                 vpnViewModel.loadServers()
+                vpnViewModel.fetchSubscription()
                 navController.navigate(Screen.Home.route) {
                     popUpTo(0) { inclusive = true }
                 }
@@ -114,6 +115,14 @@ fun BirdoNavGraph(
     LaunchedEffect(authState.isLoggedIn, authState.isLoading, hasConsented) {
         if (!authState.isLoading && hasConsented && authState.isLoggedIn && vpnState.servers.isEmpty() && !vpnState.isLoadingServers) {
             vpnViewModel.loadServers()
+        }
+    }
+
+    // Pre-fetch subscription on cold start so the Profile tab never shows the
+    // "RECON" placeholder before the real plan loads. Cheap (cached for 30s).
+    LaunchedEffect(authState.isLoggedIn) {
+        if (authState.isLoggedIn && vpnState.subscription == null) {
+            vpnViewModel.fetchSubscription()
         }
     }
 
@@ -272,12 +281,8 @@ fun BirdoNavGraph(
                         onVerifyTwoFactor = { code -> authViewModel.verifyTwoFactor(code) },
                         onClearError = { authViewModel.clearError() },
                         onCancelTwoFactor = { authViewModel.cancelTwoFactor() },
-                        onLoginAnonymous = {
-                            val deviceId = android.provider.Settings.Secure.getString(
-                                context.contentResolver,
-                                android.provider.Settings.Secure.ANDROID_ID,
-                            ) ?: java.util.UUID.randomUUID().toString()
-                            authViewModel.loginAnonymous(deviceId)
+                        onLoginAnonymous = { anonymousId, password ->
+                            authViewModel.loginAnonymous(anonymousId, password)
                         },
                         onSignUp = {
                             val intent = android.content.Intent(
@@ -303,6 +308,7 @@ fun BirdoNavGraph(
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         onConnect = { vpnViewModel.connect() },
+                        onConnectMultiHop = { entry, exit -> vpnViewModel.connectMultiHop(entry, exit) },
                         onDisconnect = { vpnViewModel.disconnect() },
                         onSelectServer = { vpnViewModel.selectServer(it) },
                         onToggleFavorite = { vpnViewModel.toggleFavorite(it) },
@@ -332,6 +338,9 @@ fun BirdoNavGraph(
             ) {
                 AdaptiveContainer {
                     val context = LocalContext.current
+                    // Refresh subscription whenever the Profile tab gains focus so the
+                    // displayed plan is always current (no stale RECON → SOVEREIGN flicker).
+                    LaunchedEffect(Unit) { vpnViewModel.fetchSubscription() }
                     ProfileScreen(
                         user = authState.user,
                         subscription = vpnState.subscription,
@@ -341,12 +350,11 @@ fun BirdoNavGraph(
                             vpnViewModel.fetchSubscription()
                             navController.navigate(Screen.Subscription.route)
                         },
-                        onRedeemVoucher = {
-                            vpnViewModel.fetchSubscription()
-                            navController.navigate(Screen.Subscription.route)
+                        onRedeemVoucher = { code, onResult ->
+                            vpnViewModel.redeemVoucher(code, onResult)
                         },
                         onManageOnWeb = {
-                            settingsViewModel.openUrl("https://birdo.app/dashboard")
+                            settingsViewModel.openUrl("https://dashboard.birdo.app/")
                         },
                         onLogout = {
                             vpnViewModel.disconnect()
@@ -394,7 +402,6 @@ fun BirdoNavGraph(
                     val context = LocalContext.current
                     SettingsScreen(
                         state = settingsState,
-                        onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onAutoConnectChange = { settingsViewModel.setAutoConnect(it) },
                         onNotificationsChange = { settingsViewModel.setNotifications(it) },
                         onShowIpInNotificationChange = { settingsViewModel.setShowIpInNotification(it) },
@@ -428,12 +435,6 @@ fun BirdoNavGraph(
                             vpnViewModel.fetchSubscription()
                             navController.navigate(Screen.Subscription.route)
                         },
-                        onOpenMultiHop = {
-                            navController.navigate(Screen.MultiHop.route)
-                        },
-                        onOpenPortForward = {
-                            navController.navigate(Screen.PortForward.route)
-                        },
                     )
                 }
             }
@@ -447,6 +448,7 @@ fun BirdoNavGraph(
                 AdaptiveContainer {
                     VpnSettingsScreen(
                         state = settingsState,
+                        onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
                         onCustomDnsEnabledChange = { settingsViewModel.setCustomDnsEnabled(it) },
                         onCustomDnsPrimaryChange = { settingsViewModel.setCustomDnsPrimary(it) },
@@ -455,6 +457,7 @@ fun BirdoNavGraph(
                         onWireGuardMtuChange = { settingsViewModel.setWireGuardMtu(it) },
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
                         onQuantumProtectionChange = { settingsViewModel.setQuantumProtection(it) },
+                        onOpenPortForward = { navController.navigate(Screen.PortForward.route) },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -529,14 +532,13 @@ fun BirdoNavGraph(
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
-                        onSelectPlan = { planId ->
-                            settingsViewModel.openUrl("https://birdo.app/dashboard/billing?plan=$planId")
+                        onSelectPlan = { planId, period ->
+                            settingsViewModel.openUrl(
+                                "https://dashboard.birdo.app/dashboard/billing?plan=$planId&period=$period"
+                            )
                         },
                         onManageOnWeb = {
-                            settingsViewModel.openUrl("https://birdo.app/dashboard/billing")
-                        },
-                        onRedeemVoucher = { code, onResult ->
-                            vpnViewModel.redeemVoucher(code, onResult)
+                            settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
                         },
                     )
                 }
