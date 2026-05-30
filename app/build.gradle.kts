@@ -317,7 +317,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.39.1")
+    implementation("io.sentry:sentry-android:8.43.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
