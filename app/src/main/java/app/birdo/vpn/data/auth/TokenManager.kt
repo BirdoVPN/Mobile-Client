@@ -205,8 +205,11 @@ class TokenManager @Inject constructor(
     }
 
     fun isLoggedIn(): Boolean {
-        val token = getAccessToken() ?: return false
-        return !isTokenExpired(token)
+        val accessToken = getAccessToken()
+        if (accessToken != null && !isTokenExpired(accessToken)) return true
+
+        val refreshToken = getRefreshToken()
+        return refreshToken != null && !isTokenExpired(refreshToken)
     }
 
     /**

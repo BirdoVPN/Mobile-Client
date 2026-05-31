@@ -317,7 +317,7 @@ class BirdoVpnServiceTest {
         // Read activeConfig via reflection (it's private)
         val configField = BirdoVpnService::class.java.getDeclaredField("activeConfig")
         configField.isAccessible = true
-        val stored = configField.get(BirdoVpnService.Companion) as ConnectResponse?
+        val stored = configField.get(null) as ConnectResponse?
 
         assertNotNull(stored)
         assertEquals("base64key==", stored!!.privateKey)
@@ -346,7 +346,7 @@ class BirdoVpnServiceTest {
 
         val configField = BirdoVpnService::class.java.getDeclaredField("activeConfig")
         configField.isAccessible = true
-        val stored = configField.get(BirdoVpnService.Companion) as ConnectResponse?
+        val stored = configField.get(null) as ConnectResponse?
 
         assertEquals("key2", stored!!.privateKey)
         assertEquals("2.2.2.2:51820", stored.endpoint)

@@ -23,8 +23,8 @@ class AppPreferences @Inject constructor(
 
     // ── Kill Switch ──────────────────────────────────────────────
     var killSwitchEnabled: Boolean
-        get() = prefs.getBoolean(KEY_KILL_SWITCH, true) // Default ON like Windows
-        set(value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, value).apply(); signSettings() }
+        get() = true
+        set(@Suppress("UNUSED_PARAMETER") value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, true).apply(); signSettings() }
 
     // ── Privacy / GDPR Consent ───────────────────────────────────
     var hasAcceptedPrivacyPolicy: Boolean
