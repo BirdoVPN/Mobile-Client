@@ -246,7 +246,7 @@ fun SubscriptionScreen(
             if (!billingReady) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Google Play Billing isn’t available on this device — you’ll be redirected to web checkout.",
+                    "Subscriptions are purchased and managed on birdo.app.",
                     style = MaterialTheme.typography.bodySmall,
                     color = BirdoWhite40,
                     textAlign = TextAlign.Center,
