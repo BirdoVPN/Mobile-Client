@@ -46,6 +46,19 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // ABI allow-list: ship ONLY the ABIs that carry the complete VPN
+        // engine set (libxray.so + libwg-go.so). armeabi-v7a is deliberately
+        // excluded — the pinned Xray Reality engine is only downloaded for
+        // arm64-v8a and x86_64 in CI (see .github/workflows/android.yml), so a
+        // 32-bit-only device would install but hit UnsatisfiedLinkError / a
+        // missing xray binary on first VPN connect. Excluding the ABI here
+        // makes Play/sideload mark such devices as unsupported instead.
+        // (The rosenpass-jni Rust crate is still cross-compiled for armv7, but
+        // that partial native set must never reach a shipped APK on its own.)
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
         buildConfigField("String", "API_BASE_URL", "\"https://api.birdo.app\"")
         buildConfigField("String", "APP_VERSION", "\"$computedVersionName\"")
         // Sentry DSN — loaded from local.properties (dev) or CI environment variable
@@ -317,7 +330,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.39.1")
+    implementation("io.sentry:sentry-android:8.43.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")

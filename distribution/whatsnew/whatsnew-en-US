@@ -1,0 +1,8 @@
+Birdo VPN — fast, private WireGuard VPN.
+
+- Global server network
+- No activity logs (warrant canary)
+- Multi-hop routing & port forwarding
+- Manage your subscription on birdo.app
+
+Performance improvements and bug fixes.

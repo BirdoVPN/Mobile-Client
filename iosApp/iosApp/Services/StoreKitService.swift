@@ -4,8 +4,9 @@ import StoreKit
 /// StoreKit 2 facade for Birdo plan purchases.
 ///
 /// Product-id mapping is `app.birdo.vpn.<plan>.<period>`, e.g.
-/// `app.birdo.vpn.spectre.monthly`. These ids must match the
+/// `app.birdo.vpn.operative.monthly`. These ids must match the
 /// auto-renewable subscription product ids configured in App Store Connect.
+/// RECON is the free tier and therefore has no StoreKit product.
 @MainActor
 final class StoreKitService: ObservableObject {
     static let shared = StoreKitService()
@@ -135,12 +136,11 @@ final class StoreKitService: ObservableObject {
 
     // MARK: - Catalog Constants
 
-    /// Product-id catalog. Order matches `Plan` × `BillingPeriod`.
+    /// Product-id catalog — paid plans only. RECON is free and has no
+    /// StoreKit product. Order matches the paid `Plan` cases × `BillingPeriod`.
     static let allProductIDs: Set<String> = [
-        "app.birdo.vpn.recon.monthly",   "app.birdo.vpn.recon.yearly",
-        "app.birdo.vpn.spectre.monthly", "app.birdo.vpn.spectre.yearly",
-        "app.birdo.vpn.phantom.monthly", "app.birdo.vpn.phantom.yearly",
-        "app.birdo.vpn.eagle.monthly",   "app.birdo.vpn.eagle.yearly",
+        "app.birdo.vpn.operative.monthly", "app.birdo.vpn.operative.yearly",
+        "app.birdo.vpn.sovereign.monthly", "app.birdo.vpn.sovereign.yearly",
     ]
 
     /// Compose a product id from the plan slug + billing period suffix.

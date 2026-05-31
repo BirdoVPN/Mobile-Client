@@ -1,6 +1,7 @@
 package app.birdo.vpn.data.repository
 
 import app.birdo.vpn.data.api.BirdoApi
+import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.shared.model.LoginResult
@@ -24,6 +25,7 @@ sealed class ApiResult<out T> {
 class BirdoRepository @Inject constructor(
     private val api: BirdoApi,
     private val tokenManager: TokenManager,
+    private val deviceInfoProvider: DeviceInfoProvider,
 ) {
     /**
      * Mutex prevents concurrent token refresh races — multiple 401s triggering
@@ -73,7 +75,17 @@ class BirdoRepository @Inject constructor(
      */
     suspend fun login(email: String, password: String): ApiResult<LoginResult> {
         return try {
-            val response = api.login(LoginRequest(email, password))
+            val device = deviceInfoProvider.current()
+            val response = api.login(LoginRequest(
+                email = email,
+                password = password,
+                deviceId = device.deviceId,
+                deviceName = device.deviceName,
+                deviceType = device.deviceType,
+                platform = device.platform,
+                platformVersion = device.platformVersion,
+                appVersion = device.appVersion,
+            ))
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
                 val result = body.toLoginResult()
@@ -139,7 +151,17 @@ class BirdoRepository @Inject constructor(
 
     suspend fun loginAnonymous(anonymousId: String, password: String? = null): ApiResult<AnonymousLoginResponse> {
         return try {
-            val response = api.loginAnonymous(AnonymousLoginRequest(anonymousId, password))
+            val device = deviceInfoProvider.current()
+            val response = api.loginAnonymous(AnonymousLoginRequest(
+                anonymousId = anonymousId,
+                password = password,
+                deviceId = device.deviceId,
+                deviceName = device.deviceName,
+                deviceType = device.deviceType,
+                platform = device.platform,
+                platformVersion = device.platformVersion,
+                appVersion = device.appVersion,
+            ))
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
                 val tokens = body.tokens

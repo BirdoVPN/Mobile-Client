@@ -9,6 +9,12 @@ import kotlinx.serialization.Serializable
 data class LoginRequest(
     val email: String,
     val password: String,
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+    val deviceType: String? = null,
+    val platform: String? = null,
+    val platformVersion: String? = null,
+    val appVersion: String? = null,
 )
 
 @Serializable
@@ -106,6 +112,12 @@ data class SubscriptionStatus(
 data class AnonymousLoginRequest(
     @SerialName("anonymousId") val anonymousId: String,
     val password: String? = null,
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+    val deviceType: String? = null,
+    val platform: String? = null,
+    val platformVersion: String? = null,
+    val appVersion: String? = null,
 )
 
 @Serializable

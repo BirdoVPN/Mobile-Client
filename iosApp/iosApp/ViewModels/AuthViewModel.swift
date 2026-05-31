@@ -159,6 +159,8 @@ final class AuthViewModel: ObservableObject {
     /// On success the user's entitlement set is refreshed so the UI flips
     /// to the new plan immediately. Errors surface via `self.error`.
     func subscribe(plan: Plan, billing: BillingPeriod) {
+        // RECON is the free tier and has no StoreKit product to purchase.
+        guard !plan.isFree else { return }
         let productID = StoreKitService.productID(
             planSlug: plan.rawValue,
             isYearly: billing == .yearly

@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
 import android.os.Build
 import android.os.Debug
+import app.birdo.vpn.BuildConfig
 import java.io.File
 import java.security.MessageDigest
 
@@ -60,11 +61,11 @@ object RootDetector {
 
     /** True when a release build has an expected signing certificate baked in. */
     fun hasSigningFingerprintConfigured(context: Context): Boolean =
-        expectedSigningFingerprints(context).isNotEmpty()
+        expectedSigningFingerprints().isNotEmpty()
 
     /** Verify this APK was signed by the expected release certificate. */
     fun isPackageSignatureTrusted(context: Context): Boolean {
-        val expected = expectedSigningFingerprints(context)
+        val expected = expectedSigningFingerprints()
         if (expected.isEmpty()) return false
         val current = currentSigningFingerprint(context) ?: return false
         return normalizeFingerprint(current) in expected
@@ -209,26 +210,18 @@ object RootDetector {
      * If the app was signed with a different key (repackaged), this returns true.
      */
     private fun checkTampering(context: Context): Boolean {
-        val expected = expectedSigningFingerprints(context)
+        val expected = expectedSigningFingerprints()
         if (expected.isEmpty()) return false
         val current = currentSigningFingerprint(context) ?: return false
         return normalizeFingerprint(current) !in expected
     }
 
-    private fun expectedSigningFingerprints(context: Context): Set<String> {
-        val raw = try {
-            val field = Class.forName("${context.packageName}.BuildConfig")
-                .getField("SIGNING_CERT_FINGERPRINT")
-            field.get(null) as? String
-        } catch (_: Exception) {
-            null
-        }
-        return raw
-            ?.split(',', ';', '\n', '\r', '\t', ' ')
-            ?.map { normalizeFingerprint(it) }
-            ?.filter { it.isNotBlank() }
-            ?.toSet()
-            .orEmpty()
+    private fun expectedSigningFingerprints(): Set<String> {
+        return BuildConfig.SIGNING_CERT_FINGERPRINT
+            .split(',', ';', '\n', '\r', '\t', ' ')
+            .map { normalizeFingerprint(it) }
+            .filter { it.isNotBlank() }
+            .toSet()
     }
 
     private fun normalizeFingerprint(value: String): String =

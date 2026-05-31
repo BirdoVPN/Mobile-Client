@@ -60,9 +60,13 @@ class TunnelMonitor(
                     if (v6 >= 0) service.protect(v6)
 
                     // Handshake-stall detection (after grace period)
-                    if (System.currentTimeMillis() - startTime > STALL_GRACE_MS) {
+                    if (WgNative.canReadConfig() && System.currentTimeMillis() - startTime > STALL_GRACE_MS) {
                         val ageSec = lastHandshakeAgeSeconds()
-                        if (ageSec != null && ageSec > STALL_THRESHOLD_SEC) {
+                        if (ageSec == null) {
+                            Log.w(TAG, "Tunnel stalled — no WireGuard handshake after grace period")
+                            break
+                        }
+                        if (ageSec > STALL_THRESHOLD_SEC) {
                             Log.w(TAG, "Tunnel stalled — last handshake ${ageSec}s ago, declaring dead")
                             // Break out so onUnexpectedExit fires below
                             break
