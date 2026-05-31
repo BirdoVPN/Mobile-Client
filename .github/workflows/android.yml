@@ -609,6 +609,13 @@ jobs:
         with:
           name: release-apk
           path: release-apk/
-      - name: placeholder
-        run: echo "no r0adkll yet"
+      - name: Upload AAB to Google Play
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5 (node24)
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: app.birdo.vpn
+          releaseFiles: release-apk/*.aab
+          track: ${{ github.event.inputs.play_track || 'internal' }}
+          status: completed
+          whatsNewDirectory: distribution/whatsnew
 
