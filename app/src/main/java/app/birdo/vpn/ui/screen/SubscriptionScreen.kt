@@ -61,7 +61,7 @@ private val plans = listOf(
         priceMonthly = "£3.99/mo",
         priceYearly = "£38/yr",
         features = listOf(
-            "3 device connections",
+            "5 device connections",
             "All server locations",
             "Unlimited bandwidth",
             "WireGuard\u00ae encryption",
@@ -84,7 +84,7 @@ private val plans = listOf(
         priceMonthly = "£9.99/mo",
         priceYearly = "£99/yr",
         features = listOf(
-            "Unlimited devices",
+            "10 device connections",
             "All server locations",
             "Unlimited bandwidth",
             "WireGuard\u00ae encryption",
