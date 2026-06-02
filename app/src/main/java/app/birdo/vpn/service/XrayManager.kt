@@ -423,7 +423,16 @@ object XrayManager {
                                     put(JSONObject().apply {
                                         put("id", uuid)
                                         put("encryption", "none")
-                                        put("flow", flow)
+                                        // ZERO-DOWNLOAD FIX: this tunnel carries
+                                        // WireGuard UDP. XTLS Vision flow
+                                        // ("xtls-rprx-vision") is TCP-ONLY — with
+                                        // it set, upstream trickles but UDP return
+                                        // traffic is dropped (upload works, download
+                                        // ~0). VLESS users carrying UDP MUST use an
+                                        // empty flow. (Reality security stays on via
+                                        // streamSettings; only the XTLS flow is
+                                        // omitted.) Server inbound clients must match.
+                                        put("flow", "")
                                     })
                                 })
                             })
