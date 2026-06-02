@@ -135,6 +135,28 @@ class VpnManager @Inject constructor(
      * Passes kill switch + split tunneling preferences to the service.
      */
     suspend fun connect(serverId: String): ApiResult<ConnectResponse> {
+        // ── Server switch / reconnect: fully tear down the existing tunnel +
+        // server-side peer BEFORE establishing the new one. Without this, picking
+        // a new server (Germany → Amsterdam) leaves the old peer registered and
+        // the local tunnel racing the new one. Each connect must be a clean
+        // disconnect → fresh keypair (repository.connectVpn always generates one)
+        // → connect cycle, so every session is a new identity.
+        val priorState = _state.value
+        if (priorState is VpnState.Connected ||
+            priorState is VpnState.Connecting ||
+            priorState is VpnState.Reconnecting
+        ) {
+            disconnect()
+            // Wait (bounded) for the service to confirm the old tunnel is down so
+            // the old keyId is unregistered and wg-go is torn down before we
+            // register + bring up the new one.
+            var waited = 0
+            while (_state.value !is VpnState.Disconnected && waited < 5000) {
+                delay(150)
+                waited += 150
+            }
+        }
+
         _state.value = VpnState.Connecting
         transitionStartTime = System.currentTimeMillis()
 
