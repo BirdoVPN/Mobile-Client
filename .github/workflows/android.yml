@@ -618,4 +618,9 @@ jobs:
           track: ${{ github.event.inputs.play_track || 'internal' }}
           status: completed
           whatsNewDirectory: distribution/whatsnew
+          # The Play API refuses to auto-submit the edit for review for this app
+          # ("Changes cannot be sent for review automatically"); committing the
+          # edit without auto-review lets the AAB upload succeed (it lands on the
+          # track) — submit it for review from the Play Console UI.
+          changesNotSentForReview: true
 
