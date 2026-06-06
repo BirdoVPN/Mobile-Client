@@ -40,6 +40,13 @@ object WireGuardConfigBuilder {
         response.presharedKey?.let { require(isValidWireGuardKey(it)) { "Invalid presharedKey format" } }
         require(isValidEndpoint(response.endpoint!!)) { "Invalid endpoint: ${response.endpoint}" }
         require(isValidCidr("${response.assignedIp}/32")) { "Invalid assignedIp" }
+        // IPv6 dual-stack (optional): only present for IPv6-enabled nodes. Accept
+        // either a bare address ("fd00:b1d0::5") or CIDR ("fd00:b1d0::5/128").
+        val clientIpv6Cidr = response.clientIpv6?.takeIf { it.isNotBlank() }?.let { v6 ->
+            val cidr = if (v6.contains('/')) v6 else "$v6/128"
+            require(isValidCidr(cidr)) { "Invalid clientIpv6: ${response.clientIpv6}" }
+            cidr
+        }
         response.allowedIps?.let {
             require(it.size <= MAX_ALLOWED_IPS) { "AllowedIPs list too large (${it.size})" }
             it.forEach { cidr -> require(isValidCidr(cidr)) { "Invalid allowedIp: $cidr" } }
@@ -52,6 +59,17 @@ object WireGuardConfigBuilder {
         val interfaceBuilder = Interface.Builder()
             .parsePrivateKey(privateKey.toBase64())
             .addAddress(InetNetwork.parse("${response.assignedIp}/32"))
+
+        // Dual-stack: add the tunnel IPv6 address so wg-go owns IPv6 on tun0.
+        // Routing of ::/0 into the tunnel is already handled via allowedIps below.
+        clientIpv6Cidr?.let {
+            try {
+                interfaceBuilder.addAddress(InetNetwork.parse(it))
+                Log.i(TAG, "Dual-stack: assigned tunnel IPv6 address")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to add clientIpv6 to interface: ${e.message}")
+            }
+        }
 
         for (dns in resolveDnsServers(response, prefs)) {
             try { interfaceBuilder.addDnsServer(InetAddress.getByName(dns)) } catch (_: Exception) {}
