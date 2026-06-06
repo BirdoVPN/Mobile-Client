@@ -639,6 +639,22 @@ class BirdoVpnService : VpnService() {
         // Address
         builder.addAddress(config.assignedIp!!, 32)
 
+        // IPv6 dual-stack: assign the tunnel IPv6 address ONLY when the node is
+        // IPv6-enabled (backend sends clientIpv6). Otherwise IPv6 stays captured
+        // by the ::/0 route below with no address = blackholed (leak-safe), which
+        // is exactly today's behaviour. Mirrors the desktop client's gating.
+        config.clientIpv6?.takeIf { it.isNotBlank() }?.let { v6 ->
+            try {
+                val parts = v6.split("/")
+                val addr = parts[0]
+                val prefix = parts.getOrNull(1)?.toIntOrNull() ?: 128
+                builder.addAddress(addr, prefix)
+                Log.i(TAG, "Dual-stack: added tunnel IPv6 address")
+            } catch (e: Exception) {
+                Log.w(TAG, "Invalid clientIpv6 address: $v6 — ${e.message}")
+            }
+        }
+
         // DNS
         for (dns in resolveDnsServers(config)) {
             try { builder.addDnsServer(InetAddress.getByName(dns)) }

@@ -231,6 +231,11 @@ data class ConnectResponse(
     val publicKey: String? = null,
     val presharedKey: String? = null,
     val assignedIp: String? = null,
+    // IPv6 dual-stack: the client's tunnel IPv6 address (e.g. "fd00:b1d0::5/128"),
+    // sent ONLY when the chosen node is IPv6-enabled. When null/absent the client
+    // stays IPv4-only and IPv6 remains captured-and-blackholed by the tunnel
+    // (leak-safe) — exactly today's behaviour. Mirrors desktop `client_ipv6`.
+    val clientIpv6: String? = null,
     val serverPublicKey: String? = null,
     val endpoint: String? = null,
     val dns: List<String>? = null,
@@ -316,6 +321,9 @@ data class MultiHopConnectResponse(
     val publicKey: String? = null,
     val presharedKey: String? = null,
     val assignedIp: String? = null,
+    // IPv6 dual-stack — see ConnectResponse.clientIpv6. Null unless the exit node
+    // is IPv6-enabled; otherwise IPv6 stays blackholed by the tunnel (leak-safe).
+    val clientIpv6: String? = null,
     val serverPublicKey: String? = null,
     val endpoint: String? = null,
     val dns: List<String>? = null,
