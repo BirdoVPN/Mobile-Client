@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -347,7 +348,7 @@ private fun SubscriptionCard(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(planGradient(plan))
-                    .clickable(onClick = onManage)
+                    .clickable(onClick = onManage, role = Role.Button)
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -462,7 +463,7 @@ private fun ProfileActionRow(
     BirdoCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .clickable(onClick = onClick, role = Role.Button),
         cornerRadius = 16.dp,
         surface = palette.surface,
         border = BirdoBrand.GlassStrokeGradient,

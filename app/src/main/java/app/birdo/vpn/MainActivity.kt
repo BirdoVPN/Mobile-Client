@@ -52,6 +52,10 @@ class MainActivity : FragmentActivity() {
     private var vpnPermissionCallback: (() -> Unit)? = null
     private var vpnPermissionDeniedCallback: (() -> Unit)? = null
 
+    /** Root-warning dialog; tracked so it can be dismissed before the
+     *  activity is destroyed to avoid a WindowLeaked error. */
+    private var rootWarningDialog: android.app.AlertDialog? = null
+
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -108,8 +112,14 @@ class MainActivity : FragmentActivity() {
                 ) {
                     val vpnViewModel: VpnViewModel = hiltViewModel()
 
-                    vpnPermissionCallback = { vpnViewModel.onVpnPermissionGranted() }
-                    vpnPermissionDeniedCallback = { vpnViewModel.onVpnPermissionDenied() }
+                    // Assign the permission callbacks as a side effect rather than
+                    // during composition. hiltViewModel() returns a stable instance,
+                    // but mutating activity state inside the composable body runs on
+                    // every recomposition; SideEffect keeps it to successful frames.
+                    androidx.compose.runtime.SideEffect {
+                        vpnPermissionCallback = { vpnViewModel.onVpnPermissionGranted() }
+                        vpnPermissionDeniedCallback = { vpnViewModel.onVpnPermissionDenied() }
+                    }
 
                     BirdoNavGraph(
                         onRequestVpnPermission = { intent ->
@@ -137,6 +147,14 @@ class MainActivity : FragmentActivity() {
         if (appPreferences.biometricLockEnabled && isLocked.value) {
             promptBiometric()
         }
+    }
+
+    override fun onDestroy() {
+        // Dismiss the root-warning dialog if it is still showing so its window
+        // is not leaked when the activity is destroyed (e.g. config change).
+        rootWarningDialog?.takeIf { it.isShowing }?.dismiss()
+        rootWarningDialog = null
+        super.onDestroy()
     }
 
     private fun promptBiometric() {
@@ -167,11 +185,29 @@ class MainActivity : FragmentActivity() {
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                // User cancelled or too many attempts — keep locked
-                if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
-                    errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
-                ) {
-                    // Stay locked, they can try again on next resume
+                when (errorCode) {
+                    // User cancelled or pressed the negative button — stay locked,
+                    // they can try again on next resume.
+                    BiometricPrompt.ERROR_USER_CANCELED,
+                    BiometricPrompt.ERROR_NEGATIVE_BUTTON,
+                    BiometricPrompt.ERROR_CANCELED -> {
+                        // Stay locked.
+                    }
+                    // Hardware can't satisfy the request (no enrolled credential,
+                    // sensor unavailable/not present). Mirror the canAuthenticate()
+                    // fallback above and unlock so the user isn't locked out forever.
+                    BiometricPrompt.ERROR_HW_UNAVAILABLE,
+                    BiometricPrompt.ERROR_HW_NOT_PRESENT,
+                    BiometricPrompt.ERROR_NO_BIOMETRICS,
+                    BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL -> {
+                        Log.w("BirdoSecurity", "Biometric unavailable ($errorCode: $errString) — unlocking")
+                        isLocked.value = false
+                    }
+                    // Lockout, timeout, and other transient errors: keep locked but
+                    // surface the reason so the user knows to retry on next resume.
+                    else -> {
+                        Log.w("BirdoSecurity", "Biometric auth error ($errorCode: $errString)")
+                    }
                 }
             }
         }
@@ -257,7 +293,7 @@ class MainActivity : FragmentActivity() {
                 val prefs = getSharedPreferences("birdo_security", MODE_PRIVATE)
                 val dismissed = prefs.getBoolean("root_warning_dismissed", false)
                 if (!dismissed) {
-                    android.app.AlertDialog.Builder(this)
+                    rootWarningDialog = android.app.AlertDialog.Builder(this)
                         .setTitle("Security Warning")
                         .setMessage(
                             "This device appears to be rooted. Running a VPN on a rooted device " +
