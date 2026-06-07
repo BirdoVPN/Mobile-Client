@@ -97,8 +97,9 @@ fun VpnSettingsScreen(
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
                     description = stringResource(R.string.settings_kill_switch_desc),
-                    checked = state.killSwitchEnabled,
-                    onCheckedChange = onKillSwitchChange,
+                    checked = true,
+                    onCheckedChange = {},
+                    enabled = false,
                     testTag = TestTags.KILL_SWITCH_TOGGLE,
                 )
             }
