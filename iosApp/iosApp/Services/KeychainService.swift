@@ -36,14 +36,20 @@ final class KeychainService: @unchecked Sendable {
 
     // MARK: - Save / Clear (host app only)
 
-    func save(accessToken: String, refreshToken: String, email: String?) {
-        write(key: "access_token", value: accessToken)
-        write(key: "refresh_token", value: refreshToken)
+    /// Persist the auth credentials. Returns `false` if any required item
+    /// (access or refresh token) failed to write to the keychain, so callers
+    /// can surface a real error instead of hitting a silent auth failure on
+    /// the next launch.
+    @discardableResult
+    func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
+        let accessOK = write(key: "access_token", value: accessToken)
+        let refreshOK = write(key: "refresh_token", value: refreshToken)
         if let email {
             write(key: "user_email", value: email)
         } else {
             delete(key: "user_email")
         }
+        return accessOK && refreshOK
     }
 
     func clear() {
@@ -113,8 +119,12 @@ final class KeychainService: @unchecked Sendable {
 
     // MARK: - App-Only Keychain Operations
 
-    private func write(key: String, value: String) {
-        guard let data = value.data(using: .utf8) else { return }
+    /// Write a host-only keychain item. Returns `false` if the value could
+    /// not be encoded or `SecItemAdd` failed (disk full, permissions, etc.),
+    /// matching the status-checking semantics of `setSharedSecret`.
+    @discardableResult
+    private func write(key: String, value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
         delete(key: key)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -125,7 +135,7 @@ final class KeychainService: @unchecked Sendable {
             kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
             kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
         ]
-        SecItemAdd(query as CFDictionary, nil)
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
 
     private func read(key: String) -> String? {

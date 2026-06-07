@@ -136,5 +136,12 @@ struct VpnSettingsView: View {
         .background(BirdoTheme.black)
         .navigationTitle("VPN Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Reflect the persisted MTU in the text field so a previously
+            // saved value is visible (and editable) instead of showing blank.
+            if settingsVM.wireGuardMtu != 0 {
+                mtuText = String(settingsVM.wireGuardMtu)
+            }
+        }
     }
 }

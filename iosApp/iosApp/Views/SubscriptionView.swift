@@ -24,10 +24,11 @@ struct SubscriptionView: View {
                                 .foregroundColor(.white)
                         }
                         Spacer()
-                        if let expiry = authVM.subscriptionExpiry {
+                        if let expiry = sanitizedExpiry(authVM.subscriptionExpiry) {
                             Text("Renews \(expiry)")
                                 .font(.caption2)
                                 .foregroundColor(BirdoTheme.white40)
+                                .lineLimit(1)
                         }
                     }
                     .padding()
@@ -79,6 +80,27 @@ struct SubscriptionView: View {
         .background(BirdoTheme.black.ignoresSafeArea())
         .navigationTitle("Subscription")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - Expiry sanitization
+
+    /// Defensively clean an untrusted expiry string coming from the backend
+    /// before it is interpolated into a SwiftUI `Text`. Strips control /
+    /// newline characters, trims whitespace, and clamps the length so a
+    /// malformed or hostile payload cannot distort the UI. Returns `nil` when
+    /// there is nothing meaningful left to show.
+    private func sanitizedExpiry(_ raw: String?) -> String? {
+        guard let raw = raw else { return nil }
+        let stripped = raw.unicodeScalars
+            .filter { !CharacterSet.controlCharacters.contains($0) }
+        var cleaned = String(String.UnicodeScalarView(stripped))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        let maxLength = 40
+        if cleaned.count > maxLength {
+            cleaned = String(cleaned.prefix(maxLength))
+        }
+        return cleaned
     }
 
     // MARK: - Plan Card

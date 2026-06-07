@@ -18,7 +18,7 @@ struct HomeView: View {
 
                     statusBadge
 
-                    if vpnVM.isConnected, let server = vpnVM.connectedServerName {
+                    if vpnVM.isConnected, let server = vpnVM.selectedServer?.name {
                         Text(server)
                             .font(.subheadline)
                             .foregroundColor(BirdoTheme.white60)
@@ -37,7 +37,7 @@ struct HomeView: View {
                         killSwitchBanner
                     }
 
-                    if let error = vpnVM.errorMessage {
+                    if let error = vpnVM.error {
                         errorBanner(error)
                     }
 
@@ -67,7 +67,13 @@ struct HomeView: View {
                         .lineLimit(1)
                         .frame(maxWidth: 140, alignment: .trailing)
                 }
-                Button(action: { authVM.logout() }) {
+                Button(action: {
+                    // Tear down the tunnel before clearing keychain credentials
+                    // so the extension never tries to (re)connect with missing
+                    // secrets, and on-demand rules can't resurrect the tunnel.
+                    vpnVM.disconnect()
+                    authVM.logout()
+                }) {
                     Image(systemName: "rectangle.portrait.and.arrow.right")
                         .foregroundColor(BirdoTheme.white40)
                 }
@@ -85,7 +91,7 @@ struct HomeView: View {
     private var statusBadge: some View {
         let (bg, fg, icon, label) = statusConfig
         return HStack(spacing: 8) {
-            if vpnVM.isConnecting || vpnVM.isDisconnecting {
+            if vpnVM.isConnecting {
                 ProgressView()
                     .scaleEffect(0.7)
                     .tint(fg)
@@ -109,8 +115,6 @@ struct HomeView: View {
             return (BirdoTheme.greenBg, BirdoTheme.greenLight, "wifi", "Protected")
         } else if vpnVM.isConnecting {
             return (BirdoTheme.yellowBg, BirdoTheme.yellowLight, "wifi", "Connecting…")
-        } else if vpnVM.isDisconnecting {
-            return (BirdoTheme.yellowBg, BirdoTheme.yellowLight, "wifi.slash", "Disconnecting…")
         } else {
             return (BirdoTheme.white05, BirdoTheme.white40, "wifi.slash", "Not Connected")
         }
@@ -135,7 +139,7 @@ struct HomeView: View {
             Button(action: {
                 if vpnVM.isConnected {
                     vpnVM.disconnect()
-                } else if !vpnVM.isConnecting && !vpnVM.isDisconnecting {
+                } else if !vpnVM.isConnecting {
                     vpnVM.connect()
                 }
             }) {
@@ -151,7 +155,7 @@ struct HomeView: View {
                             .frame(width: size, height: size)
                     }
 
-                    if vpnVM.isConnecting || vpnVM.isDisconnecting {
+                    if vpnVM.isConnecting {
                         ProgressView()
                             .scaleEffect(1.5)
                             .tint(.white)
@@ -171,11 +175,27 @@ struct HomeView: View {
 
     private var statsRow: some View {
         HStack(spacing: 8) {
-            StatsCard(label: "Duration", value: vpnVM.formattedDuration)
-            StatsCard(label: "Download", value: vpnVM.formattedRx)
-            StatsCard(label: "Upload", value: vpnVM.formattedTx)
+            StatsCard(label: "Duration", value: formattedDuration)
+            StatsCard(label: "Download", value: formattedBytes(vpnVM.bytesReceived))
+            StatsCard(label: "Upload", value: formattedBytes(vpnVM.bytesSent))
         }
         .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
+    private var formattedDuration: String {
+        guard let since = vpnVM.connectedSince else { return "00:00" }
+        let elapsed = max(0, Int(Date().timeIntervalSince(since)))
+        let hours = elapsed / 3600
+        let minutes = (elapsed % 3600) / 60
+        let seconds = elapsed % 60
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .binary)
     }
 
     // MARK: - Security Badges

@@ -15,6 +15,7 @@ final class VpnViewModel: ObservableObject {
     @Published var servers: [ServerInfo] = []
     @Published var selectedServer: ServerInfo?
     @Published var favoriteIds: Set<String> = []
+    @Published var isLoadingServers = false
 
     // MARK: - Stats
     @Published var bytesReceived: Int64 = 0
@@ -67,7 +68,9 @@ final class VpnViewModel: ObservableObject {
            Date().timeIntervalSince(ts) < Self.serverCacheTTL {
             return
         }
+        isLoadingServers = true
         Task {
+            defer { isLoadingServers = false }
             do {
                 let list = try await api.fetchServers()
                 servers = list
@@ -242,5 +245,14 @@ final class VpnViewModel: ObservableObject {
     private func stopStatsTimer() {
         statsTimer?.invalidate()
         statsTimer = nil
+    }
+
+    // AUDIT-H: guarantee the repeating stats Timer is torn down if this
+    // ViewModel is deallocated while a connection is still active (e.g. before
+    // a disconnect/status-change notification arrives). Without this the Timer
+    // retains its closure target via the run loop and leaks. `invalidate()` is
+    // safe to call from deinit and removes the timer from the run loop.
+    deinit {
+        statsTimer?.invalidate()
     }
 }

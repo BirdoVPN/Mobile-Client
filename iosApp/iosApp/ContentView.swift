@@ -10,17 +10,25 @@ struct ContentView: View {
     }
 
     @State private var selectedTab: Tab = .home
-    @State private var hasConsented = UserDefaults.standard.bool(forKey: "hasAcceptedPrivacy")
 
     var body: some View {
         Group {
-            if !hasConsented {
+            // AUDIT-C: consent is a single source of truth (`authVM.hasConsented`,
+            // backed by the `gdpr_consented` UserDefaults key). ContentView no
+            // longer keeps a divergent @State / "hasAcceptedPrivacy" key, which
+            // previously caused split-brain consent and a non-atomic update race.
+            if !authVM.hasConsented {
                 ConsentView(onAccept: {
-                    UserDefaults.standard.set(true, forKey: "hasAcceptedPrivacy")
                     UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "privacyConsentTimestamp")
-                    hasConsented = true
+                    authVM.acceptConsent()
                 }, onDecline: {
-                    // Close the app on decline (iOS doesn't truly support exit)
+                    // Zero-consent-zero-access: withdrawing consent must purge any
+                    // credentials/keys so the PacketTunnel extension cannot tunnel.
+                    // logout() clears the keychain + resets the PQ keypair.
+                    UserDefaults.standard.removeObject(forKey: "privacyConsentTimestamp")
+                    authVM.declineConsent()
+                    vpnVM.disconnect()
+                    authVM.logout()
                 })
             } else if !authVM.isLoggedIn {
                 LoginView()
