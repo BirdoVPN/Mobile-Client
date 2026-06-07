@@ -164,6 +164,10 @@ final class VPNManager: @unchecked Sendable {
                     cont.resume(returning: (rx, tx))
                 }
             } catch {
+                // IPC to the tunnel extension failed even though the session
+                // reported .connected. Log so a transient tunnel/permission
+                // failure isn't silently indistinguishable from zero traffic.
+                NSLog("[VPNManager] currentStats sendProviderMessage failed: %@", error.localizedDescription)
                 cont.resume(returning: (0, 0))
             }
         }
