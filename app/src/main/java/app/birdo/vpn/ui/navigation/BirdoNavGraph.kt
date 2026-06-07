@@ -36,6 +36,7 @@ import app.birdo.vpn.ui.screen.*
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.AuthViewModel
+import app.birdo.vpn.ui.viewmodel.BillingViewModel
 import app.birdo.vpn.ui.viewmodel.SettingsViewModel
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 
@@ -67,12 +68,21 @@ fun BirdoNavGraph(
     val authViewModel: AuthViewModel = hiltViewModel()
     val vpnViewModel: VpnViewModel = hiltViewModel()
     val settingsViewModel: SettingsViewModel = hiltViewModel()
+    val billingViewModel: BillingViewModel = hiltViewModel()
     var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedPrivacyPolicy) }
     val isOnline by networkMonitor.isOnline.collectAsState(initial = true)
 
     val authState by authViewModel.uiState.collectAsState()
     val vpnState by vpnViewModel.uiState.collectAsState()
     val settingsState by settingsViewModel.uiState.collectAsState()
+    val billingState by billingViewModel.state.collectAsState()
+
+    // After a Play purchase is verified server-side, refresh subscription status.
+    LaunchedEffect(Unit) {
+        billingViewModel.subscriptionChanged.collect {
+            vpnViewModel.fetchSubscription(forceRefresh = true)
+        }
+    }
 
     // Handle VPN permission requests
     LaunchedEffect(vpnState.needsVpnPermission) {
@@ -535,17 +545,24 @@ fun BirdoNavGraph(
                 exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
             ) {
                 AdaptiveContainer {
+                    val billingActivity = LocalContext.current as? android.app.Activity
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
+                        // Purchase happens via Google Play Billing; the token is
+                        // verified + entitled server-side (no external payment steering).
                         onSelectPlan = { planId, period ->
-                            settingsViewModel.openUrl(
-                                "https://dashboard.birdo.app/dashboard/billing?plan=$planId&period=$period"
-                            )
+                            billingActivity?.let { billingViewModel.purchase(it, planId, period, null) }
                         },
+                        // Play-purchased subscriptions are managed in the Play subscriptions centre.
                         onManageOnWeb = {
-                            settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            settingsViewModel.openUrl("https://play.google.com/store/account/subscriptions")
                         },
+                        billingReady = billingState.ready,
+                        billingMessage = billingState.message,
+                        billingIsError = billingState.isError,
+                        billingIsPurchasing = billingState.isPurchasing,
+                        onClearBillingMessage = { billingViewModel.clearMessage() },
                     )
                 }
             }

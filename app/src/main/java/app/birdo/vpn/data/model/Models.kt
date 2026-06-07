@@ -32,6 +32,10 @@ typealias AnonymousLoginResponse = app.birdo.vpn.shared.model.AnonymousLoginResp
 typealias RedeemVoucherRequest = app.birdo.vpn.shared.model.RedeemVoucherRequest
 typealias RedeemVoucherResponse = app.birdo.vpn.shared.model.RedeemVoucherResponse
 
+// ─── Google Play Billing ─────────────────────────────────────────────────────
+typealias GooglePlayVerifyRequest = app.birdo.vpn.shared.model.GooglePlayVerifyRequest
+typealias GooglePlayVerifyResponse = app.birdo.vpn.shared.model.GooglePlayVerifyResponse
+
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────
 typealias DeleteAccountRequest = app.birdo.vpn.shared.model.DeleteAccountRequest
 typealias DeleteAccountResponse = app.birdo.vpn.shared.model.DeleteAccountResponse

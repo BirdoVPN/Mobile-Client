@@ -297,6 +297,29 @@ class BirdoRepository @Inject constructor(
         ApiResult.Error(e.message ?: "Network error")
     }
 
+    /**
+     * Verify a Google Play purchase token server-side. On success the backend
+     * has verified the purchase against the Play Developer API, granted the
+     * subscription, and acknowledged the purchase.
+     */
+    suspend fun verifyGooglePlayPurchase(
+        purchaseToken: String,
+        productId: String?,
+    ): ApiResult<GooglePlayVerifyResponse> = try {
+        val response = api.verifyGooglePlay(
+            GooglePlayVerifyRequest(purchaseToken = purchaseToken, productId = productId),
+        )
+        if (response.isSuccessful) {
+            val body = response.body()
+            if (body != null) ApiResult.Success(body)
+            else ApiResult.Error("Empty response", response.code())
+        } else {
+            ApiResult.Error("Could not verify purchase", response.code())
+        }
+    } catch (e: Exception) {
+        ApiResult.Error(e.message ?: "Network error")
+    }
+
     // ── VPN ──────────────────────────────────────────────────────
 
     /**

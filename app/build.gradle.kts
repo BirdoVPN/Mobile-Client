@@ -291,6 +291,9 @@ dependencies {
     // ── Shared KMP Module ────────────────────────────────────────
     implementation(project(":shared"))
 
+    // ── Google Play Billing ──────────────────────────────────────
+    implementation("com.android.billingclient:billing-ktx:7.1.1")
+
     // ── Core Android ─────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.0")

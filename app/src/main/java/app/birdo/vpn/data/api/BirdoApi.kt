@@ -133,4 +133,16 @@ interface BirdoApi {
     suspend fun deletePortForward(
         @Path("id") id: String,
     ): Response<Unit>
+
+    // ── Google Play Billing ──────────────────────────────────────
+
+    /**
+     * Verify a Google Play purchase token server-side and grant the subscription.
+     * The backend reads the authoritative product/expiry from the Play Developer
+     * API, grants the plan, and acknowledges the purchase.
+     */
+    @POST("payments/google-play/verify")
+    suspend fun verifyGooglePlay(
+        @Body request: GooglePlayVerifyRequest,
+    ): Response<GooglePlayVerifyResponse>
 }

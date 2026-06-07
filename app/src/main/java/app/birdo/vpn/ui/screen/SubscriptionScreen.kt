@@ -246,7 +246,7 @@ fun SubscriptionScreen(
             if (!billingReady) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Subscriptions are purchased and managed on birdo.app.",
+                    "Subscriptions are temporarily unavailable — please try again shortly.",
                     style = MaterialTheme.typography.bodySmall,
                     color = BirdoWhite40,
                     textAlign = TextAlign.Center,
@@ -258,7 +258,7 @@ fun SubscriptionScreen(
             Spacer(Modifier.height(8.dp))
             Text(
                 "Have a voucher code? Redeem it on the Profile tab. " +
-                    "All purchases can also be managed on birdo.app.",
+                    "Manage your subscription in Google Play.",
                 style = MaterialTheme.typography.bodySmall,
                 color = BirdoWhite40,
                 textAlign = TextAlign.Center,

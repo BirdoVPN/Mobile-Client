@@ -151,6 +151,22 @@ data class RedeemVoucherResponse(
     val error: String? = null,
 )
 
+// ─── Google Play Billing ─────────────────────────────────────────────────────
+
+@Serializable
+data class GooglePlayVerifyRequest(
+    val purchaseToken: String,
+    /** Informational only; the server reads the authoritative product from Play. */
+    val productId: String? = null,
+)
+
+@Serializable
+data class GooglePlayVerifyResponse(
+    val plan: String = "RECON",
+    val status: String = "EXPIRED",
+    val currentPeriodEnd: String? = null,
+)
+
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────
 
 @Serializable
