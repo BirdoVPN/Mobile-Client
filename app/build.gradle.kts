@@ -125,10 +125,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -163,6 +159,18 @@ android {
 dependencyLocking {
     lockAllConfigurations()
     lockMode = LockMode.STRICT
+    // kotlin-stdlib-common is brought in transitively at differing versions by
+    // the Kotlin 2.2 compiler plugin classpaths vs the app; locking it causes a
+    // STRICT-mode resolution conflict, so exclude it from the lock.
+    ignoredDependencies.add("org.jetbrains.kotlin:kotlin-stdlib-common")
+}
+
+// Kotlin 2.2: jvmTarget via the compilerOptions DSL (kotlinOptions{} inside
+// android{} is removed). Top-level kotlin{} extension applies to all compilations.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 tasks.withType<Test>().configureEach {
@@ -306,8 +314,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // ── Hilt DI ──────────────────────────────────────────────────
-    implementation("com.google.dagger:hilt-android:2.53.1")
-    ksp("com.google.dagger:hilt-compiler:2.53.1")
+    // Must match the Hilt Gradle plugin version (2.57.1) or the aggregating task
+    // fails with "rootComponentPackage has not been initialized".
+    implementation("com.google.dagger:hilt-android:2.57.1")
+    ksp("com.google.dagger:hilt-compiler:2.57.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     // ── Networking ───────────────────────────────────────────────
