@@ -42,6 +42,12 @@ class TunnelMonitor(
          * — initial handshakes can take several seconds on slow networks.
          */
         private const val STALL_GRACE_MS = 30_000L
+        /**
+         * Bounded wait (ms) for the monitor thread to exit during [stop] so a
+         * new tunnel's monitor cannot race with a stale one still using the old
+         * handle. Capped to avoid blocking the caller if a native call stalls.
+         */
+        private const val STOP_JOIN_TIMEOUT_MS = 2_000L
     }
 
     private var thread: Thread? = null
@@ -86,8 +92,18 @@ class TunnelMonitor(
 
     /** Interrupt the monitor thread and release the reference. */
     fun stop() {
-        thread?.interrupt()
+        val t = thread
         thread = null
+        t?.interrupt()
+        // Wait (bounded) for the monitor thread to actually exit so a new
+        // tunnel's monitor can't race with a stale one still holding the old
+        // handle. The thread spends almost all its time in Thread.sleep, which
+        // unblocks immediately on interrupt, so this returns near-instantly.
+        try {
+            t?.join(STOP_JOIN_TIMEOUT_MS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     /**

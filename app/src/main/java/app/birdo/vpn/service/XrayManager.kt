@@ -352,6 +352,13 @@ object XrayManager {
                         if (BuildConfig.DEBUG) Log.d(TAG, "Xray: $line")
                     }
                 } catch (_: Exception) { /* process ended */ }
+                // EOF on stdout means the process has exited (or is exiting). Reap it
+                // so a self-terminated/crashed Xray does not linger as a zombie across
+                // reconnects. stop() already reaps on the explicit-teardown path; this
+                // covers the case where the process dies on its own.
+                try {
+                    process.waitFor()
+                } catch (_: InterruptedException) { /* shutting down */ }
             }, "xray-stdout").apply { isDaemon = true; start() }
 
             // Give it a moment to start and verify
