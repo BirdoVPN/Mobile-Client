@@ -225,7 +225,11 @@ class TokenManager @Inject constructor(
             val exp = JSONObject(payload).optLong("exp", 0L)
             if (exp == 0L) return true
             System.currentTimeMillis() / 1000 >= exp
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Fail-safe: treat unparseable tokens as expired. Log for observability
+            // so a server returning malformed tokens (or repeated forced refreshes)
+            // is visible rather than silently swallowed.
+            Log.w(TAG, "Token expiry check failed; treating as expired: ${e.message}")
             true
         }
     }

@@ -91,7 +91,16 @@ class VpnManager @Inject constructor(
         // fires immediately on every state change instead of with ≤1s delay.
         scope.launch {
             BirdoVpnService.stateFlow.collect { serviceState ->
-                applyStateWithGuards(serviceState)
+                // Guard each emission so an unexpected exception in the guard
+                // logic cannot silently kill this collector — it is the sole
+                // pipeline propagating service state to the UI (replaced polling).
+                try {
+                    applyStateWithGuards(serviceState)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e("VpnManager", "State collector failed", e)
+                }
             }
         }
 
@@ -99,14 +108,20 @@ class VpnManager @Inject constructor(
         // connected, start exponential backoff reconnection.
         scope.launch {
             _state.collect { vpnState ->
-                if (vpnState is VpnState.Error && prefs.lastServerId != null) {
-                    stopHeartbeat()
-                    startAutoReconnect()
-                } else if (vpnState is VpnState.Connected) {
-                    cancelAutoReconnect()
-                    startHeartbeat()
-                } else if (vpnState is VpnState.Disconnected) {
-                    stopHeartbeat()
+                try {
+                    if (vpnState is VpnState.Error && prefs.lastServerId != null) {
+                        stopHeartbeat()
+                        startAutoReconnect()
+                    } else if (vpnState is VpnState.Connected) {
+                        cancelAutoReconnect()
+                        startHeartbeat()
+                    } else if (vpnState is VpnState.Disconnected) {
+                        stopHeartbeat()
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e("VpnManager", "Reconnect collector failed", e)
                 }
             }
         }
@@ -118,9 +133,15 @@ class VpnManager @Inject constructor(
                 .distinctUntilChanged()
                 .filter { it } // only react to online transitions
                 .collect {
-                    if (reconnectJob?.isActive == true && _state.value is VpnState.Error) {
-                        reconnectJob?.cancel()
-                        startAutoReconnect(resetAttempts = false)
+                    try {
+                        if (reconnectJob?.isActive == true && _state.value is VpnState.Error) {
+                            reconnectJob?.cancel()
+                            startAutoReconnect(resetAttempts = false)
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.e("VpnManager", "Network collector failed", e)
                     }
                 }
         }

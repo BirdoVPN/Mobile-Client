@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
@@ -75,9 +76,18 @@ fun HomeScreen(
 
     // Multi-Hop state — toggle lives in the top bar, server selection happens
     // inline (the single ServerSelector becomes Entry → Exit when armed).
-    var multiHopEnabled by remember { mutableStateOf(false) }
-    var multiHopEntry by remember { mutableStateOf<VpnServer?>(null) }
-    var multiHopExit by remember { mutableStateOf<VpnServer?>(null) }
+    // Selections are persisted across configuration changes (rotation) via
+    // rememberSaveable. VpnServer is not Parcelable, so we save the server ids
+    // and resolve them back to VpnServer from the loaded server list.
+    var multiHopEnabled by rememberSaveable { mutableStateOf(false) }
+    var multiHopEntryId by rememberSaveable { mutableStateOf<String?>(null) }
+    var multiHopExitId by rememberSaveable { mutableStateOf<String?>(null) }
+    val multiHopEntry = remember(multiHopEntryId, state.servers) {
+        state.servers.firstOrNull { it.id == multiHopEntryId }
+    }
+    val multiHopExit = remember(multiHopExitId, state.servers) {
+        state.servers.firstOrNull { it.id == multiHopExitId }
+    }
     var multiHopPickerTarget by remember { mutableStateOf<MultiHopTarget?>(null) }
     val multiHopSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -123,8 +133,8 @@ fun HomeScreen(
                         if (isConnected) onDisconnect()
                         multiHopEnabled = !multiHopEnabled
                         if (!multiHopEnabled) {
-                            multiHopEntry = null
-                            multiHopExit = null
+                            multiHopEntryId = null
+                            multiHopExitId = null
                         }
                     }
                 },
@@ -256,8 +266,8 @@ fun HomeScreen(
             favoriteServers = favoriteServers,
             sheetState = multiHopSheetState,
             onSelectServer = { srv ->
-                if (target == MultiHopTarget.Entry) multiHopEntry = srv
-                else multiHopExit = srv
+                if (target == MultiHopTarget.Entry) multiHopEntryId = srv.id
+                else multiHopExitId = srv.id
                 multiHopPickerTarget = null
             },
             onToggleFavorite = onToggleFavorite,

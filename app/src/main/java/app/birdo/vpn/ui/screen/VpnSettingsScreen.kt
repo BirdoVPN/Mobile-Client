@@ -30,6 +30,7 @@ import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
+import app.birdo.vpn.utils.InputValidator
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -161,6 +162,8 @@ fun VpnSettingsScreen(
                         label = stringResource(R.string.vpn_settings_dns_primary),
                         placeholder = stringResource(R.string.vpn_settings_dns_primary_hint),
                         keyboardType = KeyboardType.Decimal,
+                        isError = state.customDnsPrimary.isNotBlank() &&
+                            !InputValidator.isValidDnsAddress(state.customDnsPrimary),
                     )
                 }
                 item {
@@ -170,6 +173,8 @@ fun VpnSettingsScreen(
                         label = stringResource(R.string.vpn_settings_dns_secondary),
                         placeholder = stringResource(R.string.vpn_settings_dns_secondary_hint),
                         keyboardType = KeyboardType.Decimal,
+                        isError = state.customDnsSecondary.isNotBlank() &&
+                            !InputValidator.isValidDnsAddress(state.customDnsSecondary),
                     )
                 }
             }
@@ -512,6 +517,7 @@ private fun VpnTextField(
     label: String,
     placeholder: String,
     keyboardType: KeyboardType = KeyboardType.Text,
+    isError: Boolean = false,
 ) {
     VpnCardSurface {
         OutlinedTextField(
@@ -521,6 +527,7 @@ private fun VpnTextField(
             placeholder = { Text(placeholder, color = BirdoWhite20) },
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
             singleLine = true,
+            isError = isError,
             colors = vpnTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()

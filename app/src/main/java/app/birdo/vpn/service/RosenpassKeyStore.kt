@@ -45,16 +45,33 @@ internal class RosenpassKeyStore(context: Context) {
 
     /** Returns the persisted keypair if both files exist and load successfully, else null. */
     fun load(): RosenpassNative.StaticKeypair? {
+        val pkFile = publicKeyFile
+        val skFile = secretKeyFile
+        if (!pkFile.exists() || !skFile.exists()) {
+            Log.d(TAG, "no persisted Rosenpass keypair on disk")
+            return null
+        }
+
+        // Step 1: read the (plaintext) public key. A failure here is almost
+        // always a transient I/O condition (file briefly locked, disk busy) on
+        // a file that has no cryptographic state to corrupt, so do NOT delete —
+        // a valid keypair must survive a transient read error. Returning null
+        // makes the caller regenerate for this session; the on-disk pair is left
+        // intact for the next attempt. (A subsequent save() overwrites both
+        // files anyway, so self-healing is not lost.)
+        val pkBytes = try {
+            pkFile.readBytes()
+        } catch (e: IOException) {
+            Log.w(TAG, "transient read error on public key — keeping on-disk state", e)
+            return null
+        }
+
+        // Step 2: decrypt the Keystore-wrapped secret key. A failure here
+        // signals genuine corruption or a MasterKey mismatch (e.g. device
+        // factory reset), so DELETE the partial state and return null; the
+        // caller regenerates a fresh keypair and the server re-pins the new
+        // public key on the next handshake.
         return try {
-            val pkFile = publicKeyFile
-            val skFile = secretKeyFile
-            if (!pkFile.exists() || !skFile.exists()) {
-                Log.d(TAG, "no persisted Rosenpass keypair on disk")
-                return null
-            }
-
-            val pkBytes = pkFile.readBytes()
-
             val encFile = EncryptedFile.Builder(
                 ctx,
                 skFile,
@@ -66,11 +83,7 @@ internal class RosenpassKeyStore(context: Context) {
             Log.i(TAG, "loaded persisted Rosenpass keypair (pk=${pkBytes.size}B, sk=${skBytes.size}B)")
             RosenpassNative.StaticKeypair(publicKey = pkBytes, secretKey = skBytes)
         } catch (e: Exception) {
-            // On any persistence failure (corrupt file, MasterKey mismatch from
-            // device factory reset, etc.) we DELETE the partial state and return
-            // null so the caller regenerates a fresh keypair. The server side
-            // will then re-pin the new public key on next handshake.
-            Log.w(TAG, "failed to load persisted keypair — deleting partial state", e)
+            Log.w(TAG, "failed to decrypt persisted secret key — deleting partial state", e)
             runCatching { publicKeyFile.delete() }
             runCatching { secretKeyFile.delete() }
             null

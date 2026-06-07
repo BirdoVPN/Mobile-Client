@@ -63,7 +63,10 @@ class AppPreferences @Inject constructor(
      *  to bypass DPI and appear as regular HTTPS traffic to microsoft.com */
     var stealthModeEnabled: Boolean
         get() = prefs.getBoolean(KEY_STEALTH_MODE, false)
-        set(value) { prefs.edit().putBoolean(KEY_STEALTH_MODE, value).apply(); signSettings() }
+        // commit() (synchronous) for security-critical settings so the value is durably
+        // persisted before returning — apply() can lose the write if the process is killed
+        // before its async flush, silently reverting to the unsafe default.
+        set(value) { prefs.edit().putBoolean(KEY_STEALTH_MODE, value).commit(); signSettings() }
 
     // ── Quantum Protection (BirdoPQ v1 — ML-KEM-1024 PQ-PSK) ─────
     /** When enabled, adds post-quantum pre-shared key exchange via BirdoPQ v1
@@ -75,11 +78,11 @@ class AppPreferences @Inject constructor(
      *  the backend serves a per-node ML-KEM public key from the database. */
     var quantumProtectionEnabled: Boolean
         get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, false)
-        set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).apply(); signSettings() }
+        set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).commit(); signSettings() }
 
     var customDnsEnabled: Boolean
         get() = prefs.getBoolean(KEY_CUSTOM_DNS_ENABLED, false)
-        set(value) { prefs.edit().putBoolean(KEY_CUSTOM_DNS_ENABLED, value).apply(); signSettings() }
+        set(value) { prefs.edit().putBoolean(KEY_CUSTOM_DNS_ENABLED, value).commit(); signSettings() }
 
     var customDnsPrimary: String
         get() = prefs.getString(KEY_CUSTOM_DNS_PRIMARY, "") ?: ""
@@ -102,11 +105,11 @@ class AppPreferences @Inject constructor(
     // ── Split Tunneling ──────────────────────────────────────────
     var splitTunnelingEnabled: Boolean
         get() = prefs.getBoolean(KEY_SPLIT_TUNNELING, false)
-        set(value) { prefs.edit().putBoolean(KEY_SPLIT_TUNNELING, value).apply(); signSettings() }
+        set(value) { prefs.edit().putBoolean(KEY_SPLIT_TUNNELING, value).commit(); signSettings() }
     // ── Biometric Lock ──────────────────────────────────────
     var biometricLockEnabled: Boolean
         get() = prefs.getBoolean(KEY_BIOMETRIC_LOCK, false)
-        set(value) { prefs.edit().putBoolean(KEY_BIOMETRIC_LOCK, value).apply(); signSettings() }
+        set(value) { prefs.edit().putBoolean(KEY_BIOMETRIC_LOCK, value).commit(); signSettings() }
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
     var multiHopEnabled: Boolean
         get() = prefs.getBoolean(KEY_MULTI_HOP, false)

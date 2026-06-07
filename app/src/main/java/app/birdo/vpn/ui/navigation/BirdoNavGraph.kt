@@ -95,7 +95,13 @@ fun BirdoNavGraph(
                     popUpTo(0) { inclusive = true }
                 }
             } else if (hasConsented && authState.isLoggedIn && currentRoute in listOf(Screen.Login.route, Screen.Consent.route)) {
-                vpnViewModel.loadServers()
+                // Idempotency guard: the cold-start effect below shares the same
+                // keys and may also trigger a load. Skip the load if servers are
+                // already present or a load is in flight so the two effects don't
+                // both fire a redundant GET /vpn/servers on the login → Home flip.
+                if (vpnState.servers.isEmpty() && !vpnState.isLoadingServers) {
+                    vpnViewModel.loadServers()
+                }
                 vpnViewModel.fetchSubscription()
                 navController.navigate(Screen.Home.route) {
                     popUpTo(0) { inclusive = true }

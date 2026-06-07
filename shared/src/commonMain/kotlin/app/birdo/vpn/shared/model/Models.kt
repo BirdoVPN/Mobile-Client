@@ -221,14 +221,24 @@ data class ServerNodeInfo(
     val hostname: String = "",
 )
 
+/**
+ * NOTE ON KEY MATERIAL LIFETIME:
+ * The `privateKey`, `presharedKey`, and `rosenpassPublicKey` (BirdoPQ ciphertext)
+ * fields below carry sensitive cryptographic secrets as immutable `String`s. Because
+ * `String` is immutable on both the JVM and Native (Swift), these bytes cannot be
+ * securely zeroed and may persist in memory until garbage-collected. Callers MUST
+ * minimise the lifetime of any copies and avoid logging/persisting these fields.
+ */
 @Serializable
 data class ConnectResponse(
     val success: Boolean = false,
     val message: String? = null,
     val config: String? = null,
     val keyId: String? = null,
+    /** Sensitive: WireGuard private key. See class-level key-material note. */
     val privateKey: String? = null,
     val publicKey: String? = null,
+    /** Sensitive: WireGuard pre-shared key. See class-level key-material note. */
     val presharedKey: String? = null,
     val assignedIp: String? = null,
     // IPv6 dual-stack: the client's tunnel IPv6 address (e.g. "fd00:b1d0::5/128"),
@@ -311,14 +321,17 @@ data class MultiHopInfo(
     val route: String,
 )
 
+/** Sensitive key material — see the key-material note on [ConnectResponse]. */
 @Serializable
 data class MultiHopConnectResponse(
     val success: Boolean = false,
     val message: String? = null,
     val config: String? = null,
     val keyId: String? = null,
+    /** Sensitive: WireGuard private key. See [ConnectResponse]'s key-material note. */
     val privateKey: String? = null,
     val publicKey: String? = null,
+    /** Sensitive: WireGuard pre-shared key. See [ConnectResponse]'s key-material note. */
     val presharedKey: String? = null,
     val assignedIp: String? = null,
     // IPv6 dual-stack — see ConnectResponse.clientIpv6. Null unless the exit node

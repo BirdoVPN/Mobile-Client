@@ -553,6 +553,7 @@ class BirdoVpnService : VpnService() {
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: VPN permission denied") }
                 cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
@@ -756,6 +757,9 @@ class BirdoVpnService : VpnService() {
         val fallback = listOf("1.1.1.1", "1.0.0.1")
         if (!appPrefs.customDnsEnabled) {
             val serverDns = config.dns?.filter { isValidDnsAddress(it) } ?: emptyList()
+            if (serverDns.isEmpty()) {
+                Log.w(TAG, "Server provided no valid DNS servers — falling back to defaults (1.1.1.1)")
+            }
             return serverDns.ifEmpty { fallback }
         }
         val custom = buildList {
