@@ -153,7 +153,10 @@ final class APIClient: @unchecked Sendable {
     func measureDownload() async throws -> Double {
         let start = CFAbsoluteTimeGetCurrent()
         let data = try await get(path: "/speedtest/download")
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        // Floor elapsed at 1 microsecond: a sub-millisecond (or clock-skewed
+        // non-positive) measurement would otherwise yield .infinity/NaN Mbps,
+        // which renders as "inf Mbps" in the UI.
+        let elapsed = max(CFAbsoluteTimeGetCurrent() - start, 0.000001)
         let bits = Double(data.count) * 8
         return bits / elapsed / 1_000_000 // Mbps
     }
@@ -162,7 +165,9 @@ final class APIClient: @unchecked Sendable {
         let payload = Data(repeating: 0, count: 1_000_000) // 1 MB
         let start = CFAbsoluteTimeGetCurrent()
         _ = try await post(path: "/speedtest/upload", body: payload, authenticated: true)
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        // Floor elapsed at 1 microsecond (see measureDownload) to avoid
+        // .infinity/NaN Mbps on a sub-millisecond or non-positive interval.
+        let elapsed = max(CFAbsoluteTimeGetCurrent() - start, 0.000001)
         let bits = Double(payload.count) * 8
         return bits / elapsed / 1_000_000
     }

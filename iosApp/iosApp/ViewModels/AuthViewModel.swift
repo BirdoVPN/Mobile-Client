@@ -28,12 +28,16 @@ final class AuthViewModel: ObservableObject {
         self.keychain = keychain
 
         // Restore session
+        let storedConsent = UserDefaults.standard.bool(forKey: "gdpr_consented")
         if keychain.accessToken != nil {
             isLoggedIn = true
             userEmail = keychain.userEmail
+            // A logged-in session implies prior consent; preserve a stored
+            // consent flag too rather than letting one source clobber the other.
             hasConsented = true
+        } else {
+            hasConsented = storedConsent
         }
-        hasConsented = UserDefaults.standard.bool(forKey: "gdpr_consented")
     }
 
     // MARK: - Actions
@@ -64,6 +68,9 @@ final class AuthViewModel: ObservableObject {
                                   email: email)
                     userEmail = email
                     isLoggedIn = true
+                    // No 2FA step will consume these; clear them now.
+                    pendingLoginEmail = ""
+                    pendingLoginPassword = ""
                 case .twoFactorRequired:
                     requiresTwoFactor = true
                 case .failure(let message):
@@ -77,7 +84,11 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    func verifyTwoFactor() {
+    func verifyTwoFactor(code: String) {
+        // Use the code supplied by the caller (the user's typed input) rather
+        // than relying on a separately-bound published property that the view
+        // may never populate.
+        twoFactorCode = code
         guard !twoFactorCode.isEmpty else { return }
         isLoading = true
         error = nil
@@ -96,9 +107,17 @@ final class AuthViewModel: ObservableObject {
                 requiresTwoFactor = false
                 isLoggedIn = true
                 twoFactorCode = ""
+                // Drop the retained plaintext credentials as soon as they are
+                // no longer needed to shrink the in-memory exposure window.
+                pendingLoginEmail = ""
+                pendingLoginPassword = ""
                 isLoading = false
             } catch {
                 self.error = error.localizedDescription
+                // Clear the plaintext password on failure too, so it does not
+                // linger in memory across failed verification attempts.
+                pendingLoginEmail = ""
+                pendingLoginPassword = ""
                 isLoading = false
             }
         }
@@ -140,6 +159,10 @@ final class AuthViewModel: ObservableObject {
         isLoggedIn = false
         requiresTwoFactor = false
         error = nil
+        // Ensure no plaintext credentials linger after sign-out.
+        pendingLoginEmail = ""
+        pendingLoginPassword = ""
+        twoFactorCode = ""
     }
 
     func deleteAccount() {

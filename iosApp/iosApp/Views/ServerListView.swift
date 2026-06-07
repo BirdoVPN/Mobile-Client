@@ -26,7 +26,7 @@ struct ServerListView: View {
                 let matchesFilter: Bool = {
                     switch activeFilter {
                     case .all:       return true
-                    case .favorites: return vpnVM.favoriteServerIds.contains(server.id)
+                    case .favorites: return vpnVM.favoriteIds.contains(server.id)
                     case .streaming: return server.isStreaming
                     case .p2p:       return server.isP2p
                     }
@@ -35,8 +35,8 @@ struct ServerListView: View {
                 return matchesSearch && matchesFilter
             }
             .sorted {
-                let aFav = vpnVM.favoriteServerIds.contains($0.id)
-                let bFav = vpnVM.favoriteServerIds.contains($1.id)
+                let aFav = vpnVM.favoriteIds.contains($0.id)
+                let bFav = vpnVM.favoriteIds.contains($1.id)
                 if aFav != bFav { return aFav }
                 if $0.isOnline != $1.isOnline { return $0.isOnline }
                 if $0.load != $1.load { return $0.load < $1.load }
@@ -113,7 +113,7 @@ struct ServerListView: View {
                     ServerRow(
                         server: server,
                         isSelected: server.id == vpnVM.selectedServer?.id,
-                        isFavorite: vpnVM.favoriteServerIds.contains(server.id),
+                        isFavorite: vpnVM.favoriteIds.contains(server.id),
                         onSelect: { vpnVM.selectServer(server) },
                         onToggleFavorite: { vpnVM.toggleFavorite(server.id) }
                     )

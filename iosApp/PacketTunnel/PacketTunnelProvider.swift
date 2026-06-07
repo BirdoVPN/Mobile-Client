@@ -176,11 +176,18 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     private func parseTransferStats(uapiConfig: String) -> (rx: Int64, tx: Int64) {
         var rx: Int64 = 0
         var tx: Int64 = 0
+        // Saturating accumulation: clamp to Int64.max on overflow rather than
+        // silently wrapping to a negative value (wraparound would corrupt the
+        // monotonically-increasing stats reported to the host app).
+        func saturatingAdd(_ a: Int64, _ b: Int64) -> Int64 {
+            let (sum, overflow) = a.addingReportingOverflow(b)
+            return overflow ? Int64.max : sum
+        }
         for line in uapiConfig.split(separator: "\n") {
             if line.hasPrefix("rx_bytes=") {
-                rx &+= Int64(line.dropFirst("rx_bytes=".count)) ?? 0
+                rx = saturatingAdd(rx, Int64(line.dropFirst("rx_bytes=".count)) ?? 0)
             } else if line.hasPrefix("tx_bytes=") {
-                tx &+= Int64(line.dropFirst("tx_bytes=".count)) ?? 0
+                tx = saturatingAdd(tx, Int64(line.dropFirst("tx_bytes=".count)) ?? 0)
             }
         }
         return (rx, tx)

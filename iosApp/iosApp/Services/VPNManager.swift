@@ -68,7 +68,13 @@ final class VPNManager: @unchecked Sendable {
             throw VPNManagerError.keychainUnavailable
         }
         if let psk = effectivePsk, !psk.isEmpty {
-            keychain.setSharedSecret(key: "wg_preshared_key", value: psk)
+            guard keychain.setSharedSecret(key: "wg_preshared_key", value: psk) else {
+                // SEC: if the PSK write fails the extension would read a
+                // missing secret and the tunnel would fail silently. Wipe the
+                // already-written private key so we don't leave half-state.
+                keychain.deleteShared(key: "wg_private_key")
+                throw VPNManagerError.keychainUnavailable
+            }
         } else {
             keychain.deleteShared(key: "wg_preshared_key")
         }
@@ -122,7 +128,14 @@ final class VPNManager: @unchecked Sendable {
         manager?.connection.stopVPNTunnel()
         // Also disable on-demand so the tunnel stays down when the user asked.
         manager?.isOnDemandEnabled = false
-        manager?.saveToPreferences { _ in }
+        manager?.saveToPreferences { error in
+            if let error {
+                // Persisting the on-demand-disabled state failed; without it
+                // the tunnel may auto-reconnect against the user's explicit
+                // disconnect. Surface it instead of swallowing silently.
+                NSLog("[VPNManager] disconnect saveToPreferences failed: %@", error.localizedDescription)
+            }
+        }
         // SEC: wipe shared secrets from keychain — the kernel tunnel has
         // already consumed them; nothing else needs them after disconnect.
         let keychain = KeychainService.shared
@@ -193,8 +206,12 @@ final class VPNManager: @unchecked Sendable {
             forName: .NEVPNStatusDidChange,
             object: manager.connection,
             queue: .main
-        ) { [weak self] _ in
-            self?.onStatusChange?(manager.connection.status)
+        ) { [weak self] note in
+            // Read status from the notification's object (the connection we
+            // registered for) rather than capturing `manager` strongly, which
+            // would keep the NETunnelProviderManager alive via self.statusObserver.
+            guard let connection = note.object as? NEVPNConnection else { return }
+            self?.onStatusChange?(connection.status)
         }
     }
 

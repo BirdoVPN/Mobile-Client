@@ -108,6 +108,24 @@ struct SpeedTestView: View {
                 }
                 .disabled(phase != .idle && phase != .complete)
 
+                // Error banner — surfaced when runSpeedTest() fails so the
+                // UI doesn't appear hung mid-phase with a disabled button.
+                if let error = vpnVM.error {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.octagon.fill")
+                            .foregroundColor(BirdoTheme.red)
+                            .font(.caption)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(BirdoTheme.white80)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(BirdoTheme.redBg)
+                    .cornerRadius(12)
+                }
+
                 // Server info
                 if vpnVM.isConnected, let server = vpnVM.selectedServer {
                     HStack(spacing: 8) {
@@ -134,6 +152,18 @@ struct SpeedTestView: View {
         .background(BirdoTheme.black.ignoresSafeArea())
         .navigationTitle("Speed Test")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: vpnVM.error) { _, newError in
+            // runSpeedTest() reports failures via vpnVM.error without invoking
+            // the completion/progress callbacks. Without this, the view would
+            // stay frozen on a mid-test phase with the Start button disabled.
+            // Reset to idle so the user can read the error and retry.
+            if newError != nil, phase != .idle, phase != .complete {
+                withAnimation {
+                    phase = .idle
+                    progress = 0
+                }
+            }
+        }
     }
 
     // MARK: - Result Card
@@ -187,6 +217,7 @@ struct SpeedTestView: View {
         uploadMbps = nil
         progress = 0
         phase = .latency
+        vpnVM.error = nil
 
         // Delegate to ViewModel — phases update via callback
         vpnVM.runSpeedTest { result in
