@@ -23,8 +23,11 @@ class AppPreferences @Inject constructor(
 
     // ── Kill Switch ──────────────────────────────────────────────
     var killSwitchEnabled: Boolean
-        get() = true
-        set(@Suppress("UNUSED_PARAMETER") value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, true).apply(); signSettings() }
+        get() = prefs.getBoolean(KEY_KILL_SWITCH, true)
+        // commit() (synchronous) for this security-critical setting so the value is durably
+        // persisted before returning — apply() can lose the write if the process is killed
+        // before its async flush.
+        set(value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, value).commit(); signSettings() }
 
     // ── Privacy / GDPR Consent ───────────────────────────────────
     var hasAcceptedPrivacyPolicy: Boolean

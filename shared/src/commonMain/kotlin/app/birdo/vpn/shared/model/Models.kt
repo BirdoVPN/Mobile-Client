@@ -361,7 +361,9 @@ data class MultiHopConnectResponse(
 @Serializable
 data class PortForward(
     val id: String,
+    /** TCP/UDP port; valid range is 1..65535. Validated by the UI before submission. */
     val externalPort: Int,
+    /** TCP/UDP port; valid range is 1..65535. Validated by the UI before submission. */
     val internalPort: Int,
     val protocol: String = "tcp",
     val enabled: Boolean = true,
@@ -369,6 +371,7 @@ data class PortForward(
 
 @Serializable
 data class CreatePortForwardRequest(
+    /** TCP/UDP port; valid range is 1..65535. Validated by the UI before submission. */
     val internalPort: Int,
     val protocol: String = "tcp",
 )

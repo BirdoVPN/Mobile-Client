@@ -60,10 +60,17 @@ class TunnelMonitor(
             try {
                 while (isAlive() && !Thread.currentThread().isInterrupted) {
                     Thread.sleep(CHECK_INTERVAL_MS)
-                    val v4 = WgNative.getSocketV4(handle)
-                    if (v4 >= 0) service.protect(v4)
-                    val v6 = WgNative.getSocketV6(handle)
-                    if (v6 >= 0) service.protect(v6)
+                    try {
+                        val v4 = WgNative.getSocketV4(handle)
+                        if (v4 >= 0) service.protect(v4)
+                        val v6 = WgNative.getSocketV6(handle)
+                        if (v6 >= 0) service.protect(v6)
+                    } catch (e: Exception) {
+                        // protect() can throw if the socket/service is torn down
+                        // mid-cycle. Log for visibility and keep monitoring — a
+                        // genuine dead tunnel is caught by stall detection below.
+                        Log.w(TAG, "Socket protect failed this cycle", e)
+                    }
 
                     // Handshake-stall detection (after grace period)
                     if (WgNative.canReadConfig() && System.currentTimeMillis() - startTime > STALL_GRACE_MS) {
@@ -91,6 +98,7 @@ class TunnelMonitor(
     }
 
     /** Interrupt the monitor thread and release the reference. */
+    @Synchronized
     fun stop() {
         val t = thread
         thread = null

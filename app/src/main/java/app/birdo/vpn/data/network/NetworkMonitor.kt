@@ -22,7 +22,8 @@ class NetworkMonitor @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     private val connectivityManager =
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+            ?: error("ConnectivityManager unavailable")
 
     val isOnline: Flow<Boolean> = callbackFlow {
         val callback = object : ConnectivityManager.NetworkCallback() {

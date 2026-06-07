@@ -475,7 +475,7 @@ fun LoginScreen(
                         keyboardActions = KeyboardActions(
                             onDone = {
                                 focusManager.clearFocus()
-                                if (email.isNotBlank() && password.isNotBlank()) {
+                                if (email.trim().isNotEmpty() && password.isNotBlank()) {
                                     onLogin(email.trim(), password)
                                 }
                             }
@@ -508,7 +508,7 @@ fun LoginScreen(
                         focusManager.clearFocus()
                         onLogin(email.trim(), password)
                     },
-                    enabled = email.isNotBlank() && password.isNotBlank() && !isLoading,
+                    enabled = email.trim().isNotEmpty() && password.isNotBlank() && !isLoading,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
