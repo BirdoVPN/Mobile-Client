@@ -108,8 +108,11 @@ fun VpnSettingsScreen(
                 VpnToggle(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
-                    title = "Stealth Mode",
-                    description = "Route through Xray Reality to bypass deep packet inspection. Makes VPN traffic look like normal HTTPS.",
+                    title = "Stealth Mode · Premium",
+                    description = "Premium feature — available on the Operative and Sovereign plans. " +
+                        "Routes through Xray Reality to bypass deep packet inspection, making VPN " +
+                        "traffic look like normal HTTPS. Free (Recon) accounts can enable it here, " +
+                        "but it only activates with a paid subscription.",
                     checked = state.stealthModeEnabled,
                     onCheckedChange = onStealthModeChange,
                 )

@@ -44,9 +44,9 @@ data class SettingsUiState(
     val customDnsSecondary: String = "",
     val wireGuardPort: String = "auto",
     val wireGuardMtu: Int = 0,
-    // Stealth & Quantum settings
+    // Stealth & Quantum settings (post-quantum is ON by default for all users)
     val stealthModeEnabled: Boolean = false,
-    val quantumProtectionEnabled: Boolean = false,
+    val quantumProtectionEnabled: Boolean = true,
     // Biometric lock
     val biometricLockEnabled: Boolean = false,
     // Theme mode: "dark", "light", "system"
