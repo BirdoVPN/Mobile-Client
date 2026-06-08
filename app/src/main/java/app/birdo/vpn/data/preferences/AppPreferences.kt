@@ -77,7 +77,11 @@ class AppPreferences @Inject constructor(
      *  Default ON — BirdoPQ is deployed on every production VPN node and
      *  the backend serves a per-node ML-KEM public key from the database. */
     var quantumProtectionEnabled: Boolean
-        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, false)
+        // Post-quantum protection (BirdoPQ / ML-KEM-1024) is ON by default for all
+        // users — it's available on every plan and adds negligible overhead.
+        // commit() (synchronous) like the other security-critical settings so the
+        // value is durably persisted before returning.
+        get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, true)
         set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).commit(); signSettings() }
 
     var customDnsEnabled: Boolean
