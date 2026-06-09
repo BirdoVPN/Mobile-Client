@@ -258,11 +258,18 @@ class VpnViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(error = null)
-            when (val result = vpnManager.connect(server.id)) {
-                is ApiResult.Success -> { /* state syncs via startStateSync */ }
-                is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(error = result.message)
+            try {
+                when (val result = vpnManager.connect(server.id)) {
+                    is ApiResult.Success -> { /* state syncs via startStateSync */ }
+                    is ApiResult.Error -> {
+                        _uiState.value = _uiState.value.copy(error = result.message)
+                    }
                 }
+            } catch (t: Throwable) {
+                // Never let a switch failure escape the coroutine and crash the app.
+                _uiState.value = _uiState.value.copy(
+                    error = t.message ?: "Couldn't switch server — please try again.",
+                )
             }
         }
     }

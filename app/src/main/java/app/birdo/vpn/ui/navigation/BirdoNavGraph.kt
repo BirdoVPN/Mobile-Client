@@ -216,25 +216,32 @@ fun BirdoNavGraph(
             Column(modifier = Modifier.fillMaxSize()) {
                 // ── Offline banner ──────────────────────────────────
                 AnimatedVisibility(visible = !isOnline) {
+                    // Full-bleed red surface; content is inset below the status bar
+                    // so the text is never hidden behind the notch/notification area.
                     Surface(
-                        color = BirdoRed.copy(alpha = 0.9f),
+                        color = BirdoRed.copy(alpha = 0.95f),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.OFFLINE_BANNER),
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .statusBarsPadding()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
                                 Icons.Default.WifiOff,
                                 contentDescription = null,
                                 tint = BirdoWhite,
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(18.dp),
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = stringResource(R.string.offline_banner),
                                 color = BirdoWhite,
                                 fontSize = 13.sp,
+                                lineHeight = 17.sp,
+                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
