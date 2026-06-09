@@ -29,6 +29,7 @@ import android.content.Intent
 import android.provider.Settings
 import app.birdo.vpn.R
 import app.birdo.vpn.data.network.NetworkMonitor
+import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
 import app.birdo.vpn.ui.components.PixelCanvas
@@ -215,7 +216,14 @@ fun BirdoNavGraph(
 
             Column(modifier = Modifier.fillMaxSize()) {
                 // ── Offline banner ──────────────────────────────────
-                AnimatedVisibility(visible = !isOnline) {
+                // Suppress while the tunnel is up/coming up: if the VPN is
+                // connected (or mid-handover during a switch) there is a working
+                // path by definition, so a transient network re-evaluation must
+                // never surface a false "No Internet" banner.
+                val vpnActive = vpnState.vpnState == VpnState.Connected ||
+                    vpnState.vpnState is VpnState.Reconnecting ||
+                    vpnState.vpnState == VpnState.Connecting
+                AnimatedVisibility(visible = !isOnline && !vpnActive) {
                     // Full-bleed red surface; content is inset below the status bar
                     // so the text is never hidden behind the notch/notification area.
                     Surface(

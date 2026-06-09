@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -26,12 +25,23 @@ class NetworkMonitor @Inject constructor(
             ?: error("ConnectivityManager unavailable")
 
     val isOnline: Flow<Boolean> = callbackFlow {
+        // Use the DEFAULT-network callback, not a request that matches every
+        // network with internet. The latter fires onLost() for the underlying
+        // Wi-Fi/cellular network the moment the VPN tunnel takes over (or when
+        // any one of several networks drops), leaving the banner stuck on
+        // "No Internet" even though the device is fully online. The default
+        // callback instead always reflects the SINGLE network the device is
+        // actually using for traffic — which carries NET_CAPABILITY_INTERNET
+        // whether it's Wi-Fi, cellular, or the VPN tunnel — so it never
+        // mistakes a handover for an outage.
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 trySend(true)
             }
 
             override fun onLost(network: Network) {
+                // Only fires when there is no longer ANY default network, i.e.
+                // the device is genuinely offline.
                 trySend(false)
             }
 
@@ -46,13 +56,9 @@ class NetworkMonitor @Inject constructor(
             }
         }
 
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
+        connectivityManager.registerDefaultNetworkCallback(callback)
 
-        connectivityManager.registerNetworkCallback(request, callback)
-
-        // Emit initial state
+        // Emit initial state from the current default network.
         val currentNetwork = connectivityManager.activeNetwork
         val currentCapabilities = connectivityManager.getNetworkCapabilities(currentNetwork)
         val isCurrentlyOnline = currentCapabilities?.hasCapability(
