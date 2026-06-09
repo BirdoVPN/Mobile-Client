@@ -241,7 +241,30 @@ class VpnViewModel @Inject constructor(
     }
 
     fun selectServer(server: VpnServer) {
+        val prev = _uiState.value.selectedServer
         _uiState.value = _uiState.value.copy(selectedServer = server)
+
+        // Live server switch: if already on the tunnel and a DIFFERENT node is
+        // picked, switch to it instead of only changing the label. vpnManager
+        // .connect() cleanly tears down the old tunnel + server-side peer and
+        // brings up a FRESH session (new keypair) on the new node. When not
+        // connected, this is just a selection used by the next Connect tap.
+        val st = vpnManager.state.value
+        val onTunnel = st == VpnState.Connected || st is VpnState.Reconnecting
+        if (!onTunnel || prev?.id == server.id) return
+        if (!vpnManager.isVpnPermissionGranted()) {
+            _uiState.value = _uiState.value.copy(needsVpnPermission = true)
+            return
+        }
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(error = null)
+            when (val result = vpnManager.connect(server.id)) {
+                is ApiResult.Success -> { /* state syncs via startStateSync */ }
+                is ApiResult.Error -> {
+                    _uiState.value = _uiState.value.copy(error = result.message)
+                }
+            }
+        }
     }
 
     // ── Favorites ────────────────────────────────────────────────
