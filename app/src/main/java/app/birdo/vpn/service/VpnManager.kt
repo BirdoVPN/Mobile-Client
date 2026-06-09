@@ -222,7 +222,17 @@ class VpnManager @Inject constructor(
                         prefs.splitTunnelApps.toTypedArray(),
                     )
                 }
-                context.startForegroundService(intent)
+                // Guard against ForegroundServiceStartNotAllowedException and the
+                // "didn't call startForeground in time" crash, which can fire when
+                // a foreground service is (re)started rapidly during a server switch.
+                // Turn it into a recoverable error instead of crashing the app.
+                try {
+                    context.startForegroundService(intent)
+                } catch (e: Exception) {
+                    android.util.Log.e("VpnManager", "startForegroundService(START) failed", e)
+                    _state.value = VpnState.Error("Couldn't start the VPN service — please try again.")
+                    return ApiResult.Error("Couldn't start the VPN service: ${e.message}")
+                }
 
                 // Don't set Connected here — the service sets currentState = Connected
                 // once the tunnel is actually up. syncState() will pick it up.
@@ -387,8 +397,13 @@ class VpnManager @Inject constructor(
             action = BirdoVpnService.ACTION_STOP
         }
         // Use startForegroundService to ensure delivery on Android 12+
-        // when the app may be transitioning to background.
-        context.startForegroundService(intent)
+        // when the app may be transitioning to background. Guarded so a stop
+        // signal during a rapid switch can never crash the app.
+        try {
+            context.startForegroundService(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("VpnManager", "startForegroundService(STOP) failed", e)
+        }
 
         // Notify backend (best effort)
         repository.disconnectVpn()

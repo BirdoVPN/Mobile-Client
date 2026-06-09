@@ -181,16 +181,24 @@ class BirdoVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android 12+ requires startForeground() within ~5s of EVERY
+        // startForegroundService() call (regardless of action) or the app is
+        // killed with ForegroundServiceDidNotStartInTimeException. The STOP and
+        // unknown branches previously didn't, which intermittently crashed the
+        // app on a server switch (rapid STOP→START). Satisfy it up front for
+        // every start, then dispatch.
+        val foregroundNotif = when (intent?.action) {
+            ACTION_STOP -> notifManager.buildForegroundNotification("Disconnecting…")
+            ACTION_KILL_SWITCH_BLOCK ->
+                notifManager.buildForegroundNotification("Kill Switch — Blocking traffic")
+            else -> notifManager.buildForegroundNotification("Connecting…", VpnState.Connecting)
+        }
+        startForeground(VpnNotificationManager.NOTIFICATION_ID, foregroundNotif)
+
         when (intent?.action) {
             ACTION_START -> handleStart(intent)
             ACTION_STOP  -> stopTunnel()
-            ACTION_KILL_SWITCH_BLOCK -> {
-                startForeground(
-                    VpnNotificationManager.NOTIFICATION_ID,
-                    notifManager.buildForegroundNotification("Kill Switch — Blocking traffic"),
-                )
-                activateKillSwitch()
-            }
+            ACTION_KILL_SWITCH_BLOCK -> activateKillSwitch()
         }
         return START_STICKY
     }
@@ -203,10 +211,7 @@ class BirdoVpnService : VpnService() {
         splitTunnelAppList = intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)
             ?.toSet() ?: emptySet()
 
-        startForeground(
-            VpnNotificationManager.NOTIFICATION_ID,
-            notifManager.buildForegroundNotification("Connecting…", VpnState.Connecting),
-        )
+        // (startForeground already called in onStartCommand for every action.)
 
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         mainHandler.postDelayed(connectTimeoutRunnable, CONNECT_TIMEOUT_MS)
