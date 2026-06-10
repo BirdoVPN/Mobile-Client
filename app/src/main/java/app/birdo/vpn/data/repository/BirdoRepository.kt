@@ -407,12 +407,22 @@ class BirdoRepository @Inject constructor(
     fun getLastKeyId(): String? = tokenManager.getLastKeyId()
 
     /**
-     * P1-13: Rotate WireGuard key during a long-running session.
+     * P1-13: Whether in-session WireGuard key rotation is available.
      *
      * FIX-MOBILE-COMPAT: Backend currently exposes no `POST vpn/connections/{keyId}/rotate`
-     * endpoint (route is planned as P3-25). Until backend ships it, return a
-     * graceful "not available" error so the auto-rotation tick in VpnManager
-     * silently keeps the existing key instead of spamming 404s.
+     * endpoint (route is planned as P3-25). Callers should check this before
+     * invoking [rotateKey] and degrade gracefully (keep the existing key) rather
+     * than firing a request that can only ever return 501. No UI surfaces this
+     * action, so there is nothing promising a feature that does not exist yet.
+     */
+    val keyRotationSupported: Boolean = false
+
+    /**
+     * P1-13: Rotate WireGuard key during a long-running session.
+     *
+     * Returns a graceful "not available" error while [keyRotationSupported] is
+     * false so any caller that reaches this anyway keeps the existing key
+     * instead of crashing or spamming the network.
      */
     suspend fun rotateKey(): ApiResult<KeyRotationResponse> {
         return ApiResult.Error("Key rotation not yet supported by backend", 501)

@@ -21,7 +21,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.ui.theme.*
 
@@ -116,7 +115,6 @@ fun SubscriptionScreen(
     billingIsError: Boolean = false,
     billingIsPurchasing: Boolean = false,
     onClearBillingMessage: () -> Unit = {},
-    onRedeemVoucher: ((code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit)? = null,
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
 
@@ -493,128 +491,6 @@ private fun PlanCard(
                             modifier = Modifier.padding(vertical = 4.dp),
                         )
                     }
-                }
-            }
-        }
-    }
-}
-
-/**
- * Voucher redemption section — collapsed by default, expands to show a
- * code-entry field. Mirrors the Mullvad-style "Redeem voucher" UX:
- * codes are 30- or 90-day time extensions to the user's current
- * subscription. Backend endpoint POST /vouchers/redeem (NestJS).
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun VoucherRedeemSection(
-    onRedeem: (code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf("") }
-    var submitting by remember { mutableStateOf(false) }
-    var resultMessage by remember { mutableStateOf<String?>(null) }
-    var resultIsSuccess by remember { mutableStateOf(false) }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = BirdoSurface,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Default.CardGiftcard, contentDescription = null, tint = BirdoWhite60, modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Redeem voucher",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = BirdoWhite80,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        "Enter a 30- or 90-day code to extend your subscription.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = BirdoWhite40,
-                    )
-                }
-                TextButton(onClick = { expanded = !expanded }) {
-                    Text(if (expanded) "Hide" else "Open", color = BirdoWhite80)
-                }
-            }
-
-            if (expanded) {
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { newValue ->
-                        // Auto-uppercase and limit length; keep dashes user typed.
-                        code = newValue.uppercase().take(24)
-                        resultMessage = null
-                    },
-                    label = { Text("BIRD-XXXX-XXXX-XXXX") },
-                    singleLine = true,
-                    enabled = !submitting,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        submitting = true
-                        resultMessage = null
-                        onRedeem(code.trim()) { response ->
-                            submitting = false
-                            if (response == null) {
-                                resultIsSuccess = false
-                                resultMessage = "Network error. Try again."
-                            } else if (response.ok) {
-                                resultIsSuccess = true
-                                resultMessage = buildString {
-                                    append("Added ")
-                                    append(response.durationDays)
-                                    append(" days. ")
-                                    if (response.extended) append("Subscription extended.")
-                                    else append("Plan upgraded to ${response.plan}.")
-                                }
-                                code = ""
-                            } else {
-                                resultIsSuccess = false
-                                resultMessage = when (response.error) {
-                                    "invalid_format" -> "Invalid code format. Should be BIRD-XXXX-XXXX-XXXX."
-                                    "not_found" -> "Voucher not recognised."
-                                    "already_redeemed" -> "Voucher already used."
-                                    "expired" -> "Voucher has expired."
-                                    "plan_downgrade" -> "Your plan is already higher than this voucher offers."
-                                    else -> "Couldn't redeem voucher. Please try again."
-                                }
-                            }
-                        }
-                    },
-                    enabled = !submitting && code.length >= 8,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (submitting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary,
-                        )
-                    } else {
-                        Text("Redeem")
-                    }
-                }
-                resultMessage?.let { msg ->
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        msg,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (resultIsSuccess) BirdoGreen else MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Start,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
         }

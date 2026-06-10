@@ -36,7 +36,6 @@ import app.birdo.vpn.utils.InputValidator
 @Composable
 fun VpnSettingsScreen(
     state: SettingsUiState,
-    onKillSwitchChange: (Boolean) -> Unit,
     onLocalNetworkSharingChange: (Boolean) -> Unit,
     onCustomDnsEnabledChange: (Boolean) -> Unit,
     onCustomDnsPrimaryChange: (String) -> Unit,
@@ -47,6 +46,14 @@ fun VpnSettingsScreen(
     onQuantumProtectionChange: (Boolean) -> Unit,
     onOpenPortForward: () -> Unit,
     onBack: () -> Unit,
+    // ── Plan gating ──────────────────────────────────────────────
+    // Premium toggles mirror the Multi-Hop pattern on the Connect screen:
+    // when the feature is locked, the control shows a lock affordance and
+    // tapping it routes the user to the upgrade flow instead of toggling.
+    customDnsUnlocked: Boolean = true,
+    portForwardUnlocked: Boolean = true,
+    quantumUnlocked: Boolean = true,
+    onUpgradeRequired: (feature: String) -> Unit = {},
 ) {
     var customPortText by remember { mutableStateOf(
         if (state.wireGuardPort != "auto" && state.wireGuardPort != "51820" && state.wireGuardPort != "53")
@@ -92,6 +99,10 @@ fun VpnSettingsScreen(
             item { VpnSectionHeader("SECURITY") }
 
             item {
+                // Kill switch is intentionally an always-on, locked control:
+                // for security it can never be disabled (AppPreferences pins the
+                // backing pref to `true`). It is rendered non-interactive with no
+                // wired callback so there is nothing dangling behind the toggle.
                 VpnToggle(
                     icon = Icons.Default.Shield,
                     iconColor = BirdoGreen,
@@ -124,8 +135,10 @@ fun VpnSettingsScreen(
                     iconColor = BirdoPurple,
                     title = "Quantum Protection",
                     description = "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
-                    checked = state.quantumProtectionEnabled,
+                    checked = state.quantumProtectionEnabled && quantumUnlocked,
                     onCheckedChange = onQuantumProtectionChange,
+                    locked = !quantumUnlocked,
+                    onLockedTap = { onUpgradeRequired("Quantum Protection") },
                 )
             }
 
@@ -152,12 +165,14 @@ fun VpnSettingsScreen(
                     iconColor = BirdoPurple,
                     title = stringResource(R.string.vpn_settings_custom_dns),
                     description = stringResource(R.string.vpn_settings_custom_dns_desc),
-                    checked = state.customDnsEnabled,
+                    checked = state.customDnsEnabled && customDnsUnlocked,
                     onCheckedChange = onCustomDnsEnabledChange,
+                    locked = !customDnsUnlocked,
+                    onLockedTap = { onUpgradeRequired("Custom DNS") },
                 )
             }
 
-            if (state.customDnsEnabled) {
+            if (state.customDnsEnabled && customDnsUnlocked) {
                 item {
                     VpnTextField(
                         value = state.customDnsPrimary,
@@ -395,7 +410,9 @@ fun VpnSettingsScreen(
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_port_forward),
                     description = stringResource(R.string.settings_port_forward_desc),
-                    onClick = onOpenPortForward,
+                    onClick = if (portForwardUnlocked) onOpenPortForward
+                        else { { onUpgradeRequired("Port Forwarding") } },
+                    locked = !portForwardUnlocked,
                 )
             }
 
@@ -450,36 +467,57 @@ private fun VpnToggle(
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true,
     testTag: String? = null,
+    // When `locked`, the switch is non-interactive and the whole row taps
+    // through to `onLockedTap` (the upgrade flow), mirroring the Multi-Hop
+    // gating affordance on the Connect screen.
+    locked: Boolean = false,
+    onLockedTap: () -> Unit = {},
 ) {
     VpnCardSurface {
-        Row(
-            modifier = Modifier
+        val rowModifier = if (locked) {
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .clickable(role = Role.Button, onClick = onLockedTap)
+        } else {
+            Modifier
                 .fillMaxWidth()
                 .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onCheckedChange)
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+        }
+        Row(
+            modifier = rowModifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = iconColor, modifier = Modifier.size(22.dp))
+            Icon(icon, title, tint = if (locked) BirdoWhite40 else iconColor, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
                 Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(8.dp))
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                enabled = enabled,
-                modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.Black,
-                    checkedTrackColor = Color.White,
-                    checkedBorderColor = Color.White,
-                    uncheckedThumbColor = BirdoWhite80,
-                    uncheckedTrackColor = BirdoWhite20,
-                    uncheckedBorderColor = BirdoWhite20,
-                ),
-            )
+            if (locked) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = "Premium feature — upgrade to unlock",
+                    tint = BirdoWhite40,
+                    modifier = Modifier.size(20.dp),
+                )
+            } else {
+                Switch(
+                    checked = checked,
+                    onCheckedChange = onCheckedChange,
+                    enabled = enabled,
+                    modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.Black,
+                        checkedTrackColor = Color.White,
+                        checkedBorderColor = Color.White,
+                        uncheckedThumbColor = BirdoWhite80,
+                        uncheckedTrackColor = BirdoWhite20,
+                        uncheckedBorderColor = BirdoWhite20,
+                    ),
+                )
+            }
         }
     }
 }
@@ -491,6 +529,7 @@ private fun VpnLink(
     title: String,
     description: String,
     onClick: () -> Unit,
+    locked: Boolean = false,
 ) {
     VpnCardSurface {
         Row(
@@ -501,14 +540,19 @@ private fun VpnLink(
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = iconColor, modifier = Modifier.size(22.dp))
+            Icon(icon, title, tint = if (locked) BirdoWhite40 else iconColor, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
                 Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(8.dp))
-            Icon(Icons.Default.ChevronRight, null, tint = BirdoWhite40, modifier = Modifier.size(20.dp))
+            Icon(
+                if (locked) Icons.Default.Lock else Icons.Default.ChevronRight,
+                contentDescription = if (locked) "Premium feature — upgrade to unlock" else null,
+                tint = BirdoWhite40,
+                modifier = Modifier.size(20.dp),
+            )
         }
     }
 }
