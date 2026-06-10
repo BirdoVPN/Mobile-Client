@@ -462,25 +462,33 @@ private fun PlanCard(
 
             if (!isCurrent && plan.id != "RECON") {
                 Spacer(Modifier.height(16.dp))
-                Button(
+                // Account-management framing (no in-app "buy" CTA): subscriptions
+                // are purchased and changed on the web. This opens the billing
+                // page on birdo.app rather than initiating an in-app purchase.
+                OutlinedButton(
                     onClick = onSelect,
                     enabled = !isPurchasing,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (plan.isPopular) Color.White else BirdoWhite10,
-                        contentColor = if (plan.isPopular) Color.Black else Color.White,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = BirdoWhite80,
                     ),
                 ) {
                     if (isPurchasing) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            color = if (plan.isPopular) Color.Black else Color.White,
+                            color = BirdoWhite80,
                         )
                     } else {
+                        Icon(
+                            Icons.Default.OpenInNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
                         Text(
-                            "Upgrade to ${plan.name}",
+                            "Manage on web",
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(vertical = 4.dp),
                         )

@@ -553,10 +553,12 @@ fun BirdoNavGraph(
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
-                        onSelectPlan = { planId, period ->
-                            settingsViewModel.openUrl(
-                                "https://dashboard.birdo.app/dashboard/billing?plan=$planId&period=$period"
-                            )
+                        onSelectPlan = { _, _ ->
+                            // Account-management framing (no in-app external
+                            // checkout): open the billing management page on the
+                            // web rather than deep-linking into a "buy this tier"
+                            // checkout flow.
+                            settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
                         },
                         onManageOnWeb = {
                             settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
