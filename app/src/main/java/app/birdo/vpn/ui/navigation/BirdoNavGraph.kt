@@ -467,9 +467,15 @@ fun BirdoNavGraph(
                 exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
             ) {
                 AdaptiveContainer {
+                    // Plan gating mirrors the Multi-Hop pattern on the Connect
+                    // screen: Custom DNS and Port Forwarding are SOVEREIGN-only.
+                    // Post-quantum protection is a FREE-tier feature (per the
+                    // pricing/feature lists) so it stays ungated for everyone.
+                    // Locked toggles route to the upgrade flow instead of toggling.
+                    val plan = vpnState.subscription?.plan?.uppercase()
+                    val isSovereign = plan == "SOVEREIGN"
                     VpnSettingsScreen(
                         state = settingsState,
-                        onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
                         onCustomDnsEnabledChange = { settingsViewModel.setCustomDnsEnabled(it) },
                         onCustomDnsPrimaryChange = { settingsViewModel.setCustomDnsPrimary(it) },
@@ -480,6 +486,13 @@ fun BirdoNavGraph(
                         onQuantumProtectionChange = { settingsViewModel.setQuantumProtection(it) },
                         onOpenPortForward = { navController.navigate(Screen.PortForward.route) },
                         onBack = { navController.popBackStack() },
+                        customDnsUnlocked = isSovereign,
+                        portForwardUnlocked = isSovereign,
+                        quantumUnlocked = true,
+                        onUpgradeRequired = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
                     )
                 }
             }

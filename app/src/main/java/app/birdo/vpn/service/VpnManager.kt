@@ -564,14 +564,19 @@ class VpnManager @Inject constructor(
                     }
                 }
 
-                // P1-13: Periodic key rotation for forward secrecy (~45 min)
-                keyRotationTickCount++
-                if (keyRotationTickCount >= KEY_ROTATION_HEARTBEATS) {
-                    keyRotationTickCount = 0
-                    try {
-                        repository.rotateKey()
-                    } catch (e: Exception) {
-                        android.util.Log.w("VpnManager", "Key rotation failed: ${e.message}")
+                // P1-13: Periodic key rotation for forward secrecy (~45 min).
+                // Skip entirely while the backend rotate endpoint is unshipped
+                // (repository.keyRotationSupported == false): the existing key is
+                // kept and we never fire a request that can only return 501.
+                if (repository.keyRotationSupported) {
+                    keyRotationTickCount++
+                    if (keyRotationTickCount >= KEY_ROTATION_HEARTBEATS) {
+                        keyRotationTickCount = 0
+                        try {
+                            repository.rotateKey()
+                        } catch (e: Exception) {
+                            android.util.Log.w("VpnManager", "Key rotation failed: ${e.message}")
+                        }
                     }
                 }
             }
