@@ -122,3 +122,9 @@ ui-loggedin.xml
 u.xml
 ui.txt
 commit_msg.txt
+
+# Transient PR/CI scratch at repo root (not the screenshots/_raw store assets)
+/_gh-*.yml
+/_ios_*.txt
+/_pr_body.md
+/_prnum*
