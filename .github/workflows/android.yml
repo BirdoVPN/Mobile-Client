@@ -257,7 +257,7 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
 
   release:
-    name: Build Release APK
+    name: Build Release APK and AAB
     runs-on: ubuntu-latest
     needs: [lint, test]
     # Skip when Azure Key Vault is not configured (forks, dependabot PRs, contributors).

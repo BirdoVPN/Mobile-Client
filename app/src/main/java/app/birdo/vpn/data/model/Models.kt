@@ -61,7 +61,8 @@ typealias CreatePortForwardResponse = app.birdo.vpn.shared.model.CreatePortForwa
 // Removed: Android distributed as APK from GitHub Releases; no Play Billing.
 
 // ─── Key Rotation ────────────────────────────────────────────────────────────
-typealias KeyRotationRequest = app.birdo.vpn.shared.model.KeyRotationRequest
+// KeyRotationRequest removed with BirdoApi.rotateKey (unreachable dead endpoint);
+// KeyRotationResponse is still used by BirdoRepository.rotateKey's graceful 501.
 typealias KeyRotationResponse = app.birdo.vpn.shared.model.KeyRotationResponse
 
 // ─── Protocol Error Codes ────────────────────────────────────────────────────

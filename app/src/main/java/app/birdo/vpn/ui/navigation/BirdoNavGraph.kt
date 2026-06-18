@@ -497,23 +497,6 @@ fun BirdoNavGraph(
                 }
             }
 
-            // ── Multi-Hop (Double VPN) ──────────────────────────────
-            composable(
-                Screen.MultiHop.route,
-                enterTransition = { slideInHorizontally(initialOffsetX = { it }) },
-                exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
-            ) {
-                AdaptiveContainer {
-                    MultiHopScreen(
-                        servers = vpnState.servers,
-                        isConnecting = vpnState.vpnState is app.birdo.vpn.service.VpnState.Connecting,
-                        error = vpnState.error,
-                        onConnect = { entry, exit -> vpnViewModel.connectMultiHop(entry, exit) },
-                        onBack = { navController.popBackStack() },
-                    )
-                }
-            }
-
             // ── Port Forwarding ─────────────────────────────────────
             composable(
                 Screen.PortForward.route,

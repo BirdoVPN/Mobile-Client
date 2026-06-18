@@ -101,14 +101,6 @@ interface BirdoApi {
         @Body report: QualityReport,
     ): Response<Unit>
 
-    // ── Key Rotation (P3-25) ─────────────────────────────────────
-
-    @POST("vpn/connections/{keyId}/rotate")
-    suspend fun rotateKey(
-        @Path("keyId") keyId: String,
-        @Body request: KeyRotationRequest,
-    ): Response<KeyRotationResponse>
-
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
 
     @GET("vpn/multi-hop/routes")

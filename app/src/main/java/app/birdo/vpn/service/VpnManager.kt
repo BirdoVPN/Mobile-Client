@@ -104,12 +104,17 @@ class VpnManager @Inject constructor(
             }
         }
 
-        // Auto-reconnect: when VPN drops to Error state and we were previously
-        // connected, start exponential backoff reconnection.
+        // Auto-reconnect: when VPN drops to Error state — or the tunnel silently
+        // stalls and the service engages the kill switch (KillSwitchActive) — and
+        // we were previously connected, start exponential backoff reconnection.
+        // KillSwitchActive is a dead-tunnel state just like Error: without handling
+        // it here a stalled/kill-switched tunnel would never auto-recover.
         scope.launch {
             _state.collect { vpnState ->
                 try {
-                    if (vpnState is VpnState.Error && prefs.lastServerId != null) {
+                    if ((vpnState is VpnState.Error || vpnState is VpnState.KillSwitchActive) &&
+                        prefs.lastServerId != null
+                    ) {
                         stopHeartbeat()
                         startAutoReconnect()
                     } else if (vpnState is VpnState.Connected) {
@@ -134,7 +139,9 @@ class VpnManager @Inject constructor(
                 .filter { it } // only react to online transitions
                 .collect {
                     try {
-                        if (reconnectJob?.isActive == true && _state.value is VpnState.Error) {
+                        if (reconnectJob?.isActive == true &&
+                            (_state.value is VpnState.Error || _state.value is VpnState.KillSwitchActive)
+                        ) {
                             reconnectJob?.cancel()
                             startAutoReconnect(resetAttempts = false)
                         }
@@ -612,8 +619,14 @@ class VpnManager @Inject constructor(
                     .coerceAtMost(MAX_RECONNECT_DELAY_MS)
                 delay(delayMs)
 
-                // Abort if state changed (user manually connected/disconnected)
-                if (_state.value !is VpnState.Error && _state.value !is VpnState.Reconnecting) return@launch
+                // Abort if state changed (user manually connected/disconnected).
+                // KillSwitchActive is a valid trigger state (stalled tunnel) and
+                // must NOT abort the reconnect loop. A user-initiated disconnect
+                // moves to Disconnecting/Disconnected and cancels this job first.
+                if (_state.value !is VpnState.Error &&
+                    _state.value !is VpnState.Reconnecting &&
+                    _state.value !is VpnState.KillSwitchActive
+                ) return@launch
 
                 _state.value = VpnState.Reconnecting(reconnectAttempt)
                 transitionStartTime = System.currentTimeMillis()
