@@ -13,9 +13,9 @@ updates:
       - "dependencies"
       - "android"
     # Don't bump dependencies that require a newer Kotlin than we currently use.
-    # Ktor 3.4+ requires Kotlin 2.3+; we're on 2.1. Let the kotlin group bump first.
+    # Ktor 3.4+ requires Kotlin 2.3+; we're on 2.2.20. Let the kotlin group bump first.
     ignore:
-      # Ktor 3.4+ requires Kotlin 2.3; we're on 2.1
+      # Ktor 3.4+ requires Kotlin 2.3; we're on 2.2.20
       - dependency-name: "io.ktor:*"
         versions: [">=3.4.0"]
       # Major bumps that require code/Gradle migrations - hold for manual upgrade
@@ -34,7 +34,7 @@ updates:
       # Gradle wrapper 9.x requires AGP 8.7+ + Kotlin 2.x — coordinated upgrade needed
       - dependency-name: "gradle"
         versions: [">=9.0.0"]
-      # Need coordinated bump of Kotlin to 2.3 (currently 2.1) - hold all
+      # Need coordinated bump of Kotlin to 2.3 (currently 2.2.20) - hold all
       - dependency-name: "org.jetbrains.kotlin:*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "org.jetbrains.kotlinx:*"
