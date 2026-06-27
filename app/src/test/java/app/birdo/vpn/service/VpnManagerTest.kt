@@ -101,7 +101,7 @@ class VpnManagerTest {
         presharedKey = "psk-base64=",
         assignedIp = "10.100.0.2",
         serverPublicKey = "srv-pub-base64=",
-        endpoint = "lon-01.birdo.uk:51820",
+        endpoint = "lon-01.birdo.app:51820",
         dns = listOf("1.1.1.1", "1.0.0.1"),
         allowedIps = listOf("0.0.0.0/0", "::/0"),
         mtu = 1420,
@@ -111,7 +111,7 @@ class VpnManagerTest {
             name = "London-01",
             region = "Europe",
             country = "United Kingdom",
-            hostname = "lon-01.birdo.uk",
+            hostname = "lon-01.birdo.app",
         ),
     )
 
@@ -127,7 +127,7 @@ class VpnManagerTest {
         country = "United Kingdom",
         countryCode = "GB",
         city = "London",
-        hostname = "lon-01.birdo.uk",
+        hostname = "lon-01.birdo.app",
         ipAddress = "185.199.108.153",
         port = 51820,
         load = load,
