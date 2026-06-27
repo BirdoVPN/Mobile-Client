@@ -1,95 +1,86 @@
-"""Generate Google Play Store assets for Birdo VPN."""
+"""Generate Google Play Store assets for Birdo VPN (new phoenix brand).
+
+The phoenix mark is loaded from `brand-mark-1024.png` (a transparent render of
+new-logo/mark.svg). Run after any logo change to refresh the Play Store icon +
+feature graphic.
+"""
 from PIL import Image, ImageDraw, ImageFont
-import math
 import os
 
-OUT = r"W:\vpn\birdo-client-mobile\store-assets"
-os.makedirs(OUT, exist_ok=True)
+OUT = os.path.dirname(os.path.abspath(__file__))
+MARK = os.path.join(OUT, "brand-mark-1024.png")  # transparent white->violet phoenix
 
-# ── Colours ──────────────────────────────────────────────────────────
-GRAD_START = (139, 92, 246)   # #8B5CF6
-GRAD_END   = (99, 102, 241)   # #6366F1
+# ── Brand palette (matches the new app icon: dark indigo box + violet) ──
+BOX_TOP    = (33, 26, 68)     # #211A44
+BOX_BOT    = (8, 7, 15)       # #08070F
+FEAT_TOP   = (26, 22, 64)     # #1A1640
+FEAT_BOT   = (43, 29, 92)     # #2B1D5C  (a touch of violet so the banner isn't dead-dark)
 WHITE      = (255, 255, 255)
 WHITE_A    = (255, 255, 255, 220)
 
 
-def gradient_bg(w, h):
-    """Create a diagonal linear gradient image."""
+def gradient_bg(w, h, c0, c1):
+    """Diagonal linear gradient from c0 (top-left) to c1 (bottom-right)."""
     img = Image.new("RGBA", (w, h))
+    px = img.load()
     for y in range(h):
         for x in range(w):
             t = (x / w + y / h) / 2
-            r = int(GRAD_START[0] + (GRAD_END[0] - GRAD_START[0]) * t)
-            g = int(GRAD_START[1] + (GRAD_END[1] - GRAD_START[1]) * t)
-            b = int(GRAD_START[2] + (GRAD_END[2] - GRAD_START[2]) * t)
-            img.putpixel((x, y), (r, g, b, 255))
+            px[x, y] = (
+                int(c0[0] + (c1[0] - c0[0]) * t),
+                int(c0[1] + (c1[1] - c0[1]) * t),
+                int(c0[2] + (c1[2] - c0[2]) * t),
+                255,
+            )
     return img
 
 
-def draw_wifi_icon(draw, cx, cy, scale=1.0):
-    """Draw concentric WiFi arcs + center dot."""
-    # Arc radii (from foreground XML, mapped to pixels)
-    arcs = [
-        (24 * scale, 4 * scale),   # outer
-        (16 * scale, 4 * scale),   # middle
-        (8 * scale, 4 * scale),    # inner
-    ]
-    for radius, thickness in arcs:
-        bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-        draw.arc(bbox, start=180, end=360, fill=WHITE, width=max(int(thickness), 2))
-
-    # Center dot
-    dot_r = 3 * scale
-    draw.ellipse([cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r], fill=WHITE)
+def load_mark(size):
+    """Load the phoenix mark, scaled to `size` (square, transparent)."""
+    m = Image.open(MARK).convert("RGBA")
+    return m.resize((size, size), Image.LANCZOS)
 
 
-# ─── 1. App Icon 512×512 ────────────────────────────────────────────
+# ─── 1. App Icon 512×512 (matches the launcher: dark box + phoenix) ──────
 print("Generating app icon 512x512...")
 SIZE = 512
-icon = gradient_bg(SIZE, SIZE)
-draw = ImageDraw.Draw(icon)
+icon = gradient_bg(SIZE, SIZE, BOX_TOP, BOX_BOT)
 
-# Rounded corners mask
+# Phoenix centred at ~62% (Play Store applies its own corner mask)
+mark_px = int(SIZE * 0.62)
+mark = load_mark(mark_px)
+icon.alpha_composite(mark, ((SIZE - mark_px) // 2, int(SIZE * 0.52) - mark_px // 2))
+
+# Rounded-corner mask (Google Play uses ~22%)
 mask = Image.new("L", (SIZE, SIZE), 0)
-mask_draw = ImageDraw.Draw(mask)
-corner_r = int(SIZE * 0.22)  # Google Play uses ~22% corner radius
-mask_draw.rounded_rectangle([0, 0, SIZE, SIZE], radius=corner_r, fill=255)
-
-# Draw wifi icon centered
-cx, cy = SIZE // 2, SIZE // 2
-scale = SIZE / 108  # scale from 108dp viewport to 512px
-draw_wifi_icon(draw, cx, cy, scale)
-
-# Apply rounded mask
-bg = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-icon = Image.composite(icon, bg, mask)
+ImageDraw.Draw(mask).rounded_rectangle([0, 0, SIZE, SIZE], radius=int(SIZE * 0.22), fill=255)
+icon = Image.composite(icon, Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0)), mask)
 icon.save(os.path.join(OUT, "app-icon-512.png"), "PNG")
 print(f"  -> {OUT}\\app-icon-512.png")
 
 
-# ─── 2. Feature Graphic 1024×500 ────────────────────────────────────
+# ─── 2. Feature Graphic 1024×500 ────────────────────────────────────────
 print("Generating feature graphic 1024x500...")
 FW, FH = 1024, 500
-feat = gradient_bg(FW, FH)
+feat = gradient_bg(FW, FH, FEAT_TOP, FEAT_BOT)
+
+# Phoenix on the left-centre
+mark_px = 300
+mark = load_mark(mark_px)
+feat.alpha_composite(mark, (FW // 4 - mark_px // 2, FH // 2 - mark_px // 2))
+
 draw = ImageDraw.Draw(feat)
-
-# WiFi icon on the left-center
-wifi_cx = FW // 4
-wifi_cy = FH // 2
-draw_wifi_icon(draw, wifi_cx, wifi_cy, scale=3.5)
-
-# Text on the right
 try:
-    font_title = ImageFont.truetype("arial.ttf", 56)
+    font_title = ImageFont.truetype("arialbd.ttf", 60)
     font_sub = ImageFont.truetype("arial.ttf", 24)
 except Exception:
     font_title = ImageFont.load_default()
     font_sub = ImageFont.load_default()
 
 text_x = FW // 2 + 20
-draw.text((text_x, FH // 2 - 60), "Birdo VPN", fill=WHITE, font=font_title)
-draw.text((text_x, FH // 2 + 10), "Fast & Secure WireGuard VPN", fill=WHITE_A, font=font_sub)
-draw.text((text_x, FH // 2 + 45), "No logs. No ads. No trackers.", fill=WHITE_A, font=font_sub)
+draw.text((text_x, FH // 2 - 64), "BirdoVPN", fill=WHITE, font=font_title)
+draw.text((text_x, FH // 2 + 14), "Fast & Secure WireGuard® VPN", fill=WHITE_A, font=font_sub)
+draw.text((text_x, FH // 2 + 49), "No logs. No ads. No trackers.", fill=WHITE_A, font=font_sub)
 
 feat.save(os.path.join(OUT, "feature-graphic-1024x500.png"), "PNG")
 print(f"  -> {OUT}\\feature-graphic-1024x500.png")
