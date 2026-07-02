@@ -27,6 +27,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import android.content.Intent
 import android.provider.Settings
+import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.service.VpnState
@@ -567,14 +568,19 @@ fun BirdoNavGraph(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
                         onSelectPlan = { _, _ ->
-                            // Account-management framing (no in-app external
-                            // checkout): open the billing management page on the
-                            // web rather than deep-linking into a "buy this tier"
-                            // checkout flow.
-                            settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            // Play build (IS_PLAY_BUILD): no external-purchase
+                            // steering — the buy/manage buttons are hidden, so
+                            // this is a defensive no-op. Direct/sideload build:
+                            // open the web billing page (account-management
+                            // framing, not an in-app checkout).
+                            if (!BuildConfig.IS_PLAY_BUILD) {
+                                settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            }
                         },
                         onManageOnWeb = {
-                            settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            if (!BuildConfig.IS_PLAY_BUILD) {
+                                settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            }
                         },
                     )
                 }

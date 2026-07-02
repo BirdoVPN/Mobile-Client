@@ -97,8 +97,18 @@ tagging (or wire an auto-increment later). Play rejects a re-used `versionCode`.
 ## Notes / hardening
 - Pin `r0adkll/upload-google-play` to a **verified commit SHA** (the rest of the
   workflow SHA-pins its actions; this one is on the `v1.1.3` tag for first setup).
-- The in-app subscription screen shows plans + a "manage on birdo.app" link.
-  Keep it **account-management framed** (no in-app "buy" button that steers to
-  external checkout) for the smoothest Play review while you have no IAP.
+- **Purchase-steering is now compiled out of the Play build.** The AAB is built
+  with `-PplayBuild=true` → `BuildConfig.IS_PLAY_BUILD=true`, which removes every
+  external-purchase link (the "Manage on web" plan buttons, the toolbar "Web"
+  action, and the "purchased on birdo.app" copy) from the Subscription screen.
+  Premium tiers render as an informational feature comparison only. The direct
+  **sideload APK** (`assembleRelease`, default `false`) keeps the web-billing
+  links — it is not distributed through Play so it is not bound by Play policy.
+  This is stronger than the old "account-management framed" wording and is the
+  safest posture for VPN review. Full sequenced plan: `docs/PLAY-LAUNCH-PLAN.md`.
+- **16 KB page-size compliance is gated in CI** (`scripts/check_16kb_alignment.sh`)
+  — the build fails before signing if any shipped `.so` is not 16 KB-aligned, as
+  Google Play requires for API-35 targets. The Rust JNI lib sets the alignment
+  linker flag in `native/rosenpass-jni/.cargo/config.toml`.
 - Cert pins (`network_security_config.xml`) expire **2027-06-01** — the `lint`
   job already warns as that approaches.

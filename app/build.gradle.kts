@@ -33,6 +33,17 @@ val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint"
     ?: System.getenv("BIRDO_SIGNING_CERT_FINGERPRINT")
     ?: ""
 
+// Google Play distribution flag. When true (CI builds the AAB with
+// -PplayBuild=true), the app removes all steering to external subscription
+// purchase, per Google Play's Payments policy: the free tier works, existing
+// paid accounts are honoured, and premium tiers are shown as an informational
+// feature comparison with no "buy"/"manage on web" purchase link. The default
+// (false) is the direct/sideload APK distributed via GitHub, which is NOT bound
+// by Play policy and keeps the web-billing links for a smoother direct-download
+// upgrade path.
+val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.getenv("BIRDO_PLAY_BUILD"))
+    ?.toBoolean() ?: false
+
 android {
     namespace = "app.birdo.vpn"
     compileSdk = 35
@@ -76,6 +87,10 @@ android {
         // (colon-separated upper-hex values separated by comma/semicolon/space).
         // Release builds now require this so runtime tamper checks are active.
         buildConfigField("String", "SIGNING_CERT_FINGERPRINT", "\"$signingCertFingerprint\"")
+
+        // Play-distribution flag (see isPlayBuild above). Baked into BuildConfig
+        // so UI can hide external-purchase steering in the Play (AAB) build.
+        buildConfigField("boolean", "IS_PLAY_BUILD", "$isPlayBuild")
     }
 
     signingConfigs {
