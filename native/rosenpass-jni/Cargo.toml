@@ -44,7 +44,13 @@ hex = "0.4"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-strip = "symbols"
+# Keep the symbol table (function names) but drop the heavy DWARF debug info, so
+# the shipped librosenpass_jni.so stays small yet is symbolicatable. AGP's
+# `debugSymbolLevel = "FULL"` (app/build.gradle.kts) then bundles these symbols
+# into the AAB for Play Console native crash/ANR symbolication. With the old
+# `strip = "symbols"` the lib was fully stripped, so the AAB carried no native
+# debug symbols and Play warned on every upload.
+strip = "debuginfo"
 panic = "abort"
 overflow-checks = true
 
