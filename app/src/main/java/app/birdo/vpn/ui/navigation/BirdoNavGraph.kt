@@ -376,7 +376,11 @@ fun BirdoNavGraph(
                             vpnViewModel.redeemVoucher(code, onResult)
                         },
                         onManageOnWeb = {
-                            settingsViewModel.openUrl("https://dashboard.birdo.app/")
+                            // Play build: the row is hidden (isPlayBuild), so this
+                            // is a defensive no-op — no external billing steering.
+                            if (!BuildConfig.IS_PLAY_BUILD) {
+                                settingsViewModel.openUrl("https://dashboard.birdo.app/")
+                            }
                         },
                         onLogout = {
                             vpnViewModel.disconnect()

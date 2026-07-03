@@ -52,22 +52,37 @@ The app was already hardened across previous work; verified this pass:
 | **Account deletion** | ✅ In-app account deletion exists (Play requirement for apps with accounts) + web URL `birdo.app/delete-account`. |
 | **Release engineering** | ✅ AGP 8.11, R8 minify + resource shrink, `debugSymbolLevel=FULL`, ABI filter arm64-v8a + x86_64, signed AAB in CI, Sigstore provenance, versionCode from `version.properties`. |
 
-## 2. What this change set added (shipped in the PR that carries this plan)
+## 2. What this change set added
 
+**Play compliance + build (PR #146):**
 1. **`IS_PLAY_BUILD` build flag** (`app/build.gradle.kts`) — `-PplayBuild=true`
-   bakes `BuildConfig.IS_PLAY_BUILD=true`. Gated in `SubscriptionScreen.kt` and
-   `BirdoNavGraph.kt` to remove every purchase-steering surface from the Play
-   build while leaving the sideload APK unchanged.
+   bakes `BuildConfig.IS_PLAY_BUILD=true`. Gated in `SubscriptionScreen.kt`,
+   `ProfileScreen.kt`, and `BirdoNavGraph.kt` to remove every purchase-steering
+   surface from the Play build while leaving the sideload APK unchanged.
 2. **CI build split** (`.github/workflows/android.yml`) — APK built default
    (sideload, keeps links); **AAB built with `-PplayBuild=true`** (Play,
    compliant). Same keystore, same native libs.
 3. **16 KB page-size compliance** — Rust JNI lib sets the alignment linker flag
-   (`native/rosenpass-jni/.cargo/config.toml`); a new CI gate
+   (`native/rosenpass-jni/.cargo/config.toml`); a CI gate
    (`scripts/check_16kb_alignment.sh`) fails the build before signing if **any**
-   shipped `.so` (wg-go, xray, rosenpass-jni) is not 16 KB-aligned. Required for
-   API-35 targets. *(If the gate ever flags the prebuilt Go binaries, bump them
-   to a current build — modern Go/NDK output is already aligned, so this is a
-   guard, not an expected failure.)*
+   `.so` inside the built AAB (`base/lib/**` — our libs *and* every AAR-merged
+   lib: wg-go, xray, Sentry, glance, datastore) is not 16 KB-aligned. Required
+   for API-35 targets.
+
+**Fixes from the adversarial re-audit (same PR / follow-up):**
+4. **Biometric app-lock actually works now** — it was a no-op (the lock state
+   never gated the composition, so cancelling the prompt revealed the full UI).
+   Now a full-screen lock covers the app until authentication succeeds, and it
+   re-locks when the app is backgrounded.
+5. **Profile "Manage on web" link** — was the one purchase-steering link not
+   gated by `IS_PLAY_BUILD`; now hidden in the Play build.
+6. **Always-on VPN toggle disabled** (`SUPPORTS_ALWAYS_ON=false`) — the service
+   can't yet self-establish a tunnel on a headless/boot start, so leaving the
+   toggle on let a user enable lockdown and lose connectivity after every
+   reboot. Disabled = fails safe. Proper headless reconnect is a tracked
+   follow-up (see §8).
+7. **Sentry scrubber** now also redacts exception/stack-trace messages (the
+   real crash-path vector), not just the top-level event message.
 
 ---
 
