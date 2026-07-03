@@ -60,6 +60,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
@@ -96,6 +97,9 @@ fun ProfileScreen(
     isDeletingAccount: Boolean = false,
     deleteAccountError: String? = null,
     onClearDeleteError: () -> Unit = {},
+    // Google Play build: hide the "Manage on web" row, which links out to the
+    // billing dashboard (external-purchase steering). See IS_PLAY_BUILD.
+    isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showVoucherDialog by remember { mutableStateOf(false) }
@@ -125,12 +129,14 @@ fun ProfileScreen(
             subtitle = "Activate a 30 / 90-day code",
             onClick = { showVoucherDialog = true },
         )
-        ProfileActionRow(
-            icon = Icons.AutoMirrored.Outlined.OpenInNew,
-            title = "Manage on web",
-            subtitle = "Open birdo.app in browser",
-            onClick = onManageOnWeb,
-        )
+        if (!isPlayBuild) {
+            ProfileActionRow(
+                icon = Icons.AutoMirrored.Outlined.OpenInNew,
+                title = "Manage on web",
+                subtitle = "Open birdo.app in browser",
+                onClick = onManageOnWeb,
+            )
+        }
         ProfileActionRow(
             icon = Icons.Outlined.Policy,
             title = stringResource(R.string.settings_privacy_policy),

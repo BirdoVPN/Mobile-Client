@@ -390,9 +390,33 @@ jobs:
       - name: Build Release APK and AAB
         # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
         # are set as GITHUB_ENV by the Azure Key Vault step above.
+        #
+        # Two distribution targets from one source tree:
+        #   • APK  (assembleRelease, default IS_PLAY_BUILD=false) → GitHub release,
+        #     direct/sideload install. Keeps the web-billing links; not bound by
+        #     Google Play's Payments policy.
+        #   • AAB  (bundleRelease -PplayBuild=true, IS_PLAY_BUILD=true) → Play
+        #     Console. Strips all external-purchase steering to comply with the
+        #     Play Payments policy.
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:buildRustLibs assembleRelease bundleRelease
+          ./gradlew :app:buildRustLibs
+          ./gradlew assembleRelease
+          ./gradlew bundleRelease -PplayBuild=true
+
+      # Google Play requires 16 KB page-size support for apps targeting API 35+.
+      # Assert every shipped native .so has 16 KB-aligned LOAD segments BEFORE we
+      # sign/upload — a non-aligned lib is rejected by the Play Console. We check
+      # the libs INSIDE the built AAB (base/lib/**), so this covers not just our
+      # own libs (xray, rosenpass-jni) but every .so merged in from AAR
+      # dependencies (wg-go, Sentry, glance, datastore) — the ones the source
+      # jniLibs dir does not contain.
+      - name: Verify 16 KB native library alignment
+        run: |
+          chmod +x scripts/check_16kb_alignment.sh
+          rm -rf "$RUNNER_TEMP/aab-libs"
+          unzip -q -o app/build/outputs/bundle/release/*.aab 'base/lib/*' -d "$RUNNER_TEMP/aab-libs"
+          scripts/check_16kb_alignment.sh "$RUNNER_TEMP/aab-libs/base/lib"
 
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk

@@ -36,13 +36,21 @@ class BirdoApp : Application() {
             options.tracesSampleRate = 1.0
 
             // SEC: Scrub sensitive values from error events before they are sent.
-            // Prevents VPN credentials (UUIDs, keys, endpoints) leaking via
-            // stack traces or breadcrumb messages captured during connection setup.
-            options.beforeSend = io.sentry.SentryOptions.BeforeSendCallback { event, _ ->
-                event.message?.formatted = event.message?.formatted
+            // Covers BOTH the event message AND every exception value/stack-trace
+            // message — the latter is the real vector, since an uncaught crash
+            // (the normal path) has a null event.message but its exception string
+            // can embed a VPN endpoint host/IP, UUIDs, or key material captured
+            // during connection setup. isSendDefaultPii=false and no
+            // screenshots/view-hierarchy/breadcrumb SDK limit the rest.
+            val scrub: (String?) -> String? = { s ->
+                s
                     ?.replace(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE), "[UUID]")
                     ?.replace(Regex("[0-9a-fA-F]{64}"), "[KEY]")
                     ?.replace(Regex("https?://[\\w.:-]+"), "[URL]")
+            }
+            options.beforeSend = io.sentry.SentryOptions.BeforeSendCallback { event, _ ->
+                event.message?.let { it.formatted = scrub(it.formatted) }
+                event.exceptions?.forEach { ex -> ex.value = scrub(ex.value) }
                 event
             }
         }
