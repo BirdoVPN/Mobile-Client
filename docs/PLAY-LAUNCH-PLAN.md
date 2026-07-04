@@ -2,8 +2,9 @@
 
 **Package:** `app.birdo.vpn`  ·  **Model:** login-only (subscriptions bought on
 birdo.app; no in-app purchase)  ·  **Status as of this plan:** code is
-Play-compliant and CI-gated; remaining work is **Play Console setup + the
-mandatory closed-testing window** (both owner-only).
+Play-compliant and CI-gated; remaining work is **the organization developer
+account (see §0 — VPN apps cannot ship from personal accounts) + Console setup**
+(owner-only).
 
 This is the sequenced *plan*. For the mechanical Console/CI wiring steps see the
 companion doc **`docs/PLAY-STORE-SETUP.md`** — this plan references it and adds
@@ -14,24 +15,44 @@ gotchas that actually gate a VPN app.
 
 ## 0. TL;DR — the critical path
 
-The code is ready. The launch clock is dominated by **two owner-only gates**, run
-them in parallel starting now:
+> ### ⚠️ 2026-07-03 POLICY ENFORCEMENT: VPN apps REQUIRE an ORGANIZATION account
+> Google's **Play Console Requirements** policy (support answer 10788890) lists
+> app types that "can only be distributed by organizations" — financial, health,
+> government, and **"apps approved to use the VpnService class."** BirdoVPN uses
+> `VpnService`, so it **cannot ship from a personal developer account, period.**
+> A personal-account app in this category receives a policy violation (ours was
+> enforced 3 Jul 2026). This is NOT a mis-declaration — the app genuinely is a
+> VPN; no App-content answer can change it.
+>
+> **The fix path (owner):**
+> 1. **Get a D-U-N-S number for Birdo Networks Ltd** (free, dnb.co.uk — UK Ltds
+>    often already have one; check the D&B lookup first). This is the org-account
+>    prerequisite and the only step with real lead time (hours→~2 weeks).
+> 2. **Create a NEW Play Console developer account as an ORGANIZATION** ($25):
+>    legal name *Birdo Networks Ltd* (Companies House no. 17136571), the D-U-N-S
+>    number, a `@birdo.app` contact email, website `https://birdo.app`. Complete
+>    org verification.
+> 3. **TRANSFER the app** `app.birdo.vpn` from the personal account to the org
+>    account (Play Console app-transfer flow / help form; free apps with no
+>    purchases transfer simply, ~1–2 days).
+>    **NEVER DELETE the app instead** — a package name that has ever had an
+>    upload is reserved forever, so deleting would burn `app.birdo.vpn`
+>    permanently.
+> 4. Re-wire CI on the new account: Play Console → API access → link/grant the
+>    service account (or a new one) with Release manager, update the
+>    `PLAY_SERVICE_ACCOUNT_JSON` secret if the account changed.
+>
+> **Silver lining:** organization accounts are **exempt from the 12-tester /
+> 14-day closed-testing rule**, so that entire gate disappears. The new critical
+> path is just D-U-N-S + org verification + transfer, then straight to review.
 
-1. **Google Play Console setup** (~1–2 days of work, plus identity verification
-   lead time that can take several days). Account, app, listing, Data safety,
-   content rating, service-account API key.
-2. **Closed testing gate** — if the developer account is a **personal** account
-   created after Nov 2023, Google **requires a closed test with ≥ 12 testers
-   opted-in for ≥ 14 continuous days** before you may even *apply* for production
-   access. This is the single biggest schedule item. **Start it first.**
+The code is ready. The launch clock is now dominated by **one owner-only gate**:
+the organization account (D-U-N-S → verify → transfer). Listing/Data-safety/
+content-rating work carries over unchanged and can be prepared meanwhile.
 
-Realistic timeline: **internal testing today**, **closed test 14+ days**,
-**production review 1–7 days** after that. So ~**2.5–3 weeks** to public on Play
-if it's a personal account; ~**3–7 days** if it's an already-verified
-organisation account (org accounts are exempt from the 12-tester rule).
-
-> ⚠️ **Confirm your account type first** — it determines whether the 14-day gate
-> applies. Play Console → *Account details* → *Developer account type*.
+Realistic timeline: **D-U-N-S + org verification** (days, up to ~2 weeks worst
+case) → **app transfer** (~1–2 days) → **production review** (1–7 days,
+VPN-strict). No 14-day tester clock.
 
 ---
 
@@ -189,8 +210,9 @@ Automated once `PLAY_UPLOAD_ENABLED=true` (see SETUP.md Part C):
 4. For production, use a **staged rollout** (`status: inProgress` + `userFraction`
    e.g. 0.1 → 0.5 → 1.0) so a bad build can be halted.
 
-**Recommended track ladder:** internal (you) → **closed** (≥12 testers, 14 days
-— the gate) → production (staged).
+**Recommended track ladder (organization account):** internal (you) → a short
+closed/open sanity round if you want one (no 12-tester/14-day mandate for org
+accounts) → production (staged).
 
 ---
 
@@ -217,8 +239,8 @@ Billing instead of the web. **Not needed for launch** — launch login-only firs
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Personal account → 14-day / 12-tester gate delays launch | High if personal | Start closed test **day one**; recruit 12 testers now |
-| Identity verification lead time | Medium | Start account verification today |
+| VPN apps = org-account-only (Play Console Requirements) | **Certain — enforced 3 Jul 2026** | D-U-N-S → org account → **transfer** the app (§0). Never delete the app: the package name would be burned forever |
+| D-U-N-S / org verification lead time | Medium | Start today; UK Ltds often already have a D-U-N-S — check the D&B lookup first |
 | Data-safety mismatch flagged | Low | §4b matches code; keep it in sync if SDKs change |
 | Review can't get past login | Medium | Provide reviewer account with an active plan (§3) |
 | 16 KB gate flags prebuilt Go libs | Low | Bump wg-go/xray to current builds (CI will name the file) |
