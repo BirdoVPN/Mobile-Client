@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Android VPN Service with WireGuard tunnel, Kill Switch, and Split Tunneling.
@@ -149,6 +150,21 @@ class BirdoVpnService : VpnService() {
         Thread(r, "birdo-tunnel-setup").apply { isDaemon = true }
     }
 
+    /**
+     * Dedicated executor for the 1 s traffic-stats poll. [readTrafficStats] makes
+     * a blocking JNI call into wg-go ([WgNative.getConfig]) which locks the
+     * device and serialises its full UAPI config — cheap normally, but doing it
+     * on the main thread every second risks an ANR under load. Kept separate from
+     * [tunnelExecutor] so a slow stats read never delays an urgent socket
+     * re-protect during a network handover.
+     */
+    private val statsExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "birdo-stats").apply { isDaemon = true }
+    }
+
+    /** Guards against stats reads piling up if a getConfig ever runs long. */
+    private val statsReadInFlight = AtomicBoolean(false)
+
     /** Main-thread handler for periodic ticks and timeouts. */
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -157,8 +173,29 @@ class BirdoVpnService : VpnService() {
     private val notificationTicker = object : Runnable {
         override fun run() {
             if (currentState is VpnState.Connected) {
-                readTrafficStats()
-                updateNotification(buildConnectedText())
+                // Read wg-go stats off the main thread (blocking JNI getConfig),
+                // then refresh the notification back on the main thread. Skip this
+                // tick if the previous read is still running so reads can't pile
+                // up. rx/tx land in thread-safe StateFlows that buildConnectedText
+                // reads on the main thread.
+                if (statsReadInFlight.compareAndSet(false, true)) {
+                    statsExecutor.execute {
+                        try {
+                            readTrafficStats()
+                        } finally {
+                            statsReadInFlight.set(false)
+                        }
+                        mainHandler.post {
+                            if (currentState is VpnState.Connected) {
+                                updateNotification(buildConnectedText())
+                            }
+                        }
+                    }
+                } else {
+                    // A read is still in flight; just refresh the notification with
+                    // the last-known stats so the timer/uptime still advances.
+                    updateNotification(buildConnectedText())
+                }
                 mainHandler.postDelayed(this, NOTIF_UPDATE_INTERVAL_MS)
             }
         }
@@ -181,13 +218,30 @@ class BirdoVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A null action means the SYSTEM restarted us after an OOM kill
+        // (START_STICKY redelivery), not an app request — every real start sets
+        // an explicit ACTION_* (see VpnManager). The original START intent's
+        // extras (tunnel config + the user's VpnService consent) are gone, so we
+        // can't re-establish. Satisfy the foreground-start requirement, then stop
+        // cleanly instead of parking in a fake "Connecting…" foreground state,
+        // and don't ask to be restarted again.
+        if (intent?.action == null) {
+            Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
+            startForeground(
+                VpnNotificationManager.NOTIFICATION_ID,
+                notifManager.buildForegroundNotification("Disconnected"),
+            )
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         // Android 12+ requires startForeground() within ~5s of EVERY
         // startForegroundService() call (regardless of action) or the app is
         // killed with ForegroundServiceDidNotStartInTimeException. The STOP and
         // unknown branches previously didn't, which intermittently crashed the
         // app on a server switch (rapid STOP→START). Satisfy it up front for
         // every start, then dispatch.
-        val foregroundNotif = when (intent?.action) {
+        val foregroundNotif = when (intent.action) {
             ACTION_STOP -> notifManager.buildForegroundNotification("Disconnecting…")
             ACTION_KILL_SWITCH_BLOCK ->
                 notifManager.buildForegroundNotification("Kill Switch — Blocking traffic")
@@ -195,7 +249,7 @@ class BirdoVpnService : VpnService() {
         }
         startForeground(VpnNotificationManager.NOTIFICATION_ID, foregroundNotif)
 
-        when (intent?.action) {
+        when (intent.action) {
             ACTION_START -> handleStart(intent)
             ACTION_STOP  -> stopTunnel()
             ACTION_KILL_SWITCH_BLOCK -> activateKillSwitch()
@@ -241,6 +295,7 @@ class BirdoVpnService : VpnService() {
         cleanupTunnel()
         activeConfig = null
         tunnelExecutor.shutdownNow()
+        statsExecutor.shutdownNow()
         super.onDestroy()
     }
 

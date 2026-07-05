@@ -151,15 +151,21 @@ class VpnViewModel @Inject constructor(
                 )
             }
         }
-        // Periodic: poll traffic stats & public IP that are still volatile fields
+        // Periodic: poll traffic stats & public IP that are still volatile fields.
+        // Only while Connected — when disconnected these never change, so rewriting
+        // uiState every second just churns recomposition and drains battery for
+        // nothing. (The state collector above still updates uiState on any real
+        // connection-state transition.)
         viewModelScope.launch {
             while (isActive) {
-                _uiState.value = _uiState.value.copy(
-                    rxBytes = app.birdo.vpn.service.BirdoVpnService.rxBytes,
-                    txBytes = app.birdo.vpn.service.BirdoVpnService.txBytes,
-                    publicIp = app.birdo.vpn.service.BirdoVpnService.publicIp,
-                    tick = System.currentTimeMillis(),
-                )
+                if (_uiState.value.vpnState == VpnState.Connected) {
+                    _uiState.value = _uiState.value.copy(
+                        rxBytes = app.birdo.vpn.service.BirdoVpnService.rxBytes,
+                        txBytes = app.birdo.vpn.service.BirdoVpnService.txBytes,
+                        publicIp = app.birdo.vpn.service.BirdoVpnService.publicIp,
+                        tick = System.currentTimeMillis(),
+                    )
+                }
                 delay(1000)
             }
         }

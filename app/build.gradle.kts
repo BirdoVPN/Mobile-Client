@@ -275,13 +275,22 @@ afterEvaluate {
                         val candidates = nativeDirs.flatMap { dir ->
                             fileTree(dir) { include("**/lib$name.so") }.files
                         }
-                        // Use arm64 binary as canonical hash (most common target ABI)
-                        val soFile = candidates.firstOrNull { it.path.contains("arm64-v8a") }
-                            ?: candidates.firstOrNull()
-                            ?: return ""
-                        return MessageDigest.getInstance("SHA-256")
-                            .digest(soFile.readBytes())
-                            .joinToString("") { b -> "%02x".format(b) }
+                        // Hash EVERY shipped ABI variant, keyed by its ABI dir name,
+                        // and encode as "abi=hash;abi=hash". Previously only the
+                        // arm64-v8a hash was baked, so on the x86_64 build the
+                        // runtime hash never matched and integrity silently fell back
+                        // to signature-only verification. The verifier now looks up
+                        // the hash for the device's actual ABI.
+                        val knownAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+                        return candidates.mapNotNull { f ->
+                            val normalized = f.path.replace('\\', '/')
+                            val abi = knownAbis.firstOrNull { normalized.contains("/$it/") }
+                                ?: return@mapNotNull null
+                            val hash = MessageDigest.getInstance("SHA-256")
+                                .digest(f.readBytes())
+                                .joinToString("") { b -> "%02x".format(b) }
+                            "$abi=$hash"
+                        }.distinct().joinToString(";")
                     }
                     val wgHash = hashSo("wg-go")
                     val xrayHash = hashSo("xray").ifBlank { hashSo("Xray") }
