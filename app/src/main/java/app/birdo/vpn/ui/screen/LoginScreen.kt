@@ -292,8 +292,11 @@ fun LoginScreen(
                                 fontWeight = FontWeight.Medium,
                             ),
                             keyboardOptions = KeyboardOptions(
-                                // Text (not Number) so hex backup-code letters are typable.
+                                // Text (not Number) so hex backup-code letters are typable;
+                                // autoCorrect off so the IME can't mangle/compose the code
+                                // (the value is filtered char-by-char in onValueChange anyway).
                                 keyboardType = KeyboardType.Text,
+                                autoCorrect = false,
                                 imeAction = ImeAction.Done,
                             ),
                             keyboardActions = KeyboardActions(
