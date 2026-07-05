@@ -50,9 +50,16 @@ jobs:
       - name: Install fdroidserver
         run: |
           set -euo pipefail
+          # The apt package (2.2.1) ships an old androguard that cannot parse
+          # modern AAPT2 resource tables ("res1 must be zero!"), so install the
+          # current fdroidserver from pip into a venv instead.
           sudo apt-get update
-          sudo apt-get install -y fdroidserver
-          fdroid --version
+          sudo apt-get install -y libmagic1 python3-venv
+          python3 -m venv "$HOME/fdroid-venv"
+          "$HOME/fdroid-venv/bin/pip" install --quiet --upgrade pip wheel
+          "$HOME/fdroid-venv/bin/pip" install --quiet fdroidserver
+          echo "$HOME/fdroid-venv/bin" >> "$GITHUB_PATH"
+          "$HOME/fdroid-venv/bin/fdroid" --version
 
       - name: Materialise repo signing keystore
         env:
@@ -72,6 +79,7 @@ jobs:
             echo "keystorepass: \"${FDROID_KEYSTORE_PASS}\""
             echo "keypass: \"${FDROID_KEYSTORE_PASS}\""
           } >> fdroid/config.yml
+          chmod 600 fdroid/config.yml
 
       - name: Collect release APKs
         env:
