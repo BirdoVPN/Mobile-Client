@@ -15,7 +15,7 @@
     <string name="login_sign_up">Sign up</string>
     <string name="login_2fa_subtitle">Enter your authenticator code</string>
     <string name="login_2fa_code_label">Verification Code</string>
-    <string name="login_2fa_code_hint">Enter the 6-digit code from your authenticator app</string>
+    <string name="login_2fa_code_hint">Enter the 6-digit code from your authenticator, or a backup code</string>
     <string name="login_2fa_verify">Verify</string>
     <string name="login_2fa_verifying">Verifying…</string>
     <string name="login_2fa_back">Back to login</string>

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
+import app.birdo.vpn.utils.is2faCodeComplete
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 
@@ -266,14 +267,18 @@ fun LoginScreen(
                         OutlinedTextField(
                             value = twoFactorCode,
                             onValueChange = { newValue ->
-                                // Allow only digits, max 8 chars (6 for TOTP, 8 for backup codes)
-                                val filtered = newValue.filter { it.isDigit() || it.isLetter() }.take(8)
+                                // Accept a 6-digit TOTP OR a hex backup code (16 hex,
+                                // up to 19 chars with dashes). Keep digits, hex
+                                // letters and dashes; cap at 19.
+                                val filtered = newValue
+                                    .filter { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == '-' }
+                                    .take(19)
                                 twoFactorCode = filtered
                                 onClearError()
                             },
                             placeholder = {
                                 Text(
-                                    "000000",
+                                    "000000 or backup code",
                                     color = BirdoWhite20,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.fillMaxWidth(),
@@ -287,13 +292,14 @@ fun LoginScreen(
                                 fontWeight = FontWeight.Medium,
                             ),
                             keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Number,
+                                // Text (not Number) so hex backup-code letters are typable.
+                                keyboardType = KeyboardType.Text,
                                 imeAction = ImeAction.Done,
                             ),
                             keyboardActions = KeyboardActions(
                                 onDone = {
                                     focusManager.clearFocus()
-                                    if (twoFactorCode.length in 6..8) {
+                                    if (is2faCodeComplete(twoFactorCode)) {
                                         onVerifyTwoFactor(twoFactorCode)
                                     }
                                 },
@@ -330,7 +336,7 @@ fun LoginScreen(
                                 focusManager.clearFocus()
                                 onVerifyTwoFactor(twoFactorCode)
                             },
-                            enabled = twoFactorCode.length in 6..8 && !isLoading,
+                            enabled = is2faCodeComplete(twoFactorCode) && !isLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(52.dp)
