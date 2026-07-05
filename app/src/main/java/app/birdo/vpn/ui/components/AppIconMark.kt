@@ -30,6 +30,14 @@ import app.birdo.vpn.R
  * (an adaptive-icon XML) which Compose's `painterResource()` cannot inflate
  * — it throws `IllegalArgumentException: Only VectorDrawables and rasterized
  * asset types are supported`.
+ *
+ * CRASH FIX: loading the launcher icon must NEVER throw. It previously crashed
+ * the whole app with `Resources$NotFoundException` on real devices, because the
+ * old adaptive-icon foreground was an 832-command potrace VectorDrawable that
+ * Android refused to inflate as an icon. The adaptive vector has been removed
+ * (the icon now resolves to the raster mipmap PNGs), and this load is wrapped in
+ * runCatching so any future resource failure degrades to "no mark" instead of
+ * taking down every screen that shows the brand.
  */
 @Composable
 fun AppIconMark(
@@ -42,9 +50,11 @@ fun AppIconMark(
     val sizePx = with(density) { size.roundToPx() }.coerceAtLeast(1)
 
     val bitmap = remember(sizePx) {
-        val drawable = AppCompatResources.getDrawable(context, R.mipmap.ic_launcher_round)
-            ?: AppCompatResources.getDrawable(context, R.mipmap.ic_launcher)
-        drawable?.toBitmap(width = sizePx, height = sizePx)?.asImageBitmap()
+        runCatching {
+            val drawable = AppCompatResources.getDrawable(context, R.mipmap.ic_launcher_round)
+                ?: AppCompatResources.getDrawable(context, R.mipmap.ic_launcher)
+            drawable?.toBitmap(width = sizePx, height = sizePx)?.asImageBitmap()
+        }.getOrNull()
     }
 
     Box(
