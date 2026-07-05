@@ -16,8 +16,6 @@ on:
   release:
     types: [released]
   workflow_dispatch:
-  push:
-    branches: [fdroid-repo]   # TEMP: validate on the feature branch; removed before merge
 
 permissions:
   contents: write
