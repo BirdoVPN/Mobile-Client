@@ -14,7 +14,12 @@ name: F-Droid repo
 
 on:
   release:
-    types: [released]
+    # 'published' reliably fires when a DRAFT release is published — our releases
+    # are born draft+prerelease (android.yml) then published via `gh release edit`.
+    # GitHub documents that 'released'/'prereleased' do NOT reliably fire for
+    # releases published from a draft, so 'published' + the guard below is correct.
+    # Manual fallback (belt-and-suspenders): `gh workflow run "F-Droid repo"`.
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +32,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Only index stable, published releases into the repo. Skip drafts and
+    # prereleases; always allow manual (workflow_dispatch) runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.release.draft == false && github.event.release.prerelease == false)
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -55,7 +65,9 @@ jobs:
           sudo apt-get install -y libmagic1 python3-venv
           python3 -m venv "$HOME/fdroid-venv"
           "$HOME/fdroid-venv/bin/pip" install --quiet --upgrade pip wheel
-          "$HOME/fdroid-venv/bin/pip" install --quiet fdroidserver
+          # Pinned for reproducibility — bump deliberately after a workflow_dispatch
+          # test (an unpinned latest can change the index format or break APK parsing).
+          "$HOME/fdroid-venv/bin/pip" install --quiet 'fdroidserver==2.4.5'
           echo "$HOME/fdroid-venv/bin" >> "$GITHUB_PATH"
           "$HOME/fdroid-venv/bin/fdroid" --version
 
@@ -126,6 +138,10 @@ jobs:
           mkdir -p _site/fdroid
           cp -r fdroid/repo _site/fdroid/repo
           if [ -d fdroid/archive ]; then cp -r fdroid/archive _site/fdroid/archive; fi
+          # fdroidserver writes bookkeeping to <repo>/status/ (runner paths, OS
+          # version, timestamps). Clients don't need it and it discloses the CI
+          # environment — drop it before publishing.
+          rm -rf _site/fdroid/repo/status _site/fdroid/archive/status
           cp fdroid/site-index.html _site/index.html
           cp fdroid/site-index.html _site/fdroid/index.html
           touch _site/.nojekyll
