@@ -816,7 +816,19 @@ class BirdoVpnService : VpnService() {
             service = this,
             isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
             onUnexpectedExit = {
+                // Fail closed FIRST (block all traffic), THEN hand off to
+                // auto-reconnect. Activating the kill switch alone tears wg-go
+                // down and latches the state at KillSwitchActive, which
+                // VpnManager never treats as a reconnect trigger — so a >3-min
+                // stall (subway/flight-mode/dead-zone) left the user stranded
+                // with all traffic blocked until a manual reconnect, and wg-go
+                // could not self-heal even when connectivity returned. Emitting
+                // Error drives VpnManager's existing exponential-backoff
+                // reconnect (which re-arms the kill switch per attempt and
+                // clears it on a successful connect), matching the desktop
+                // client's behaviour on the same drop.
                 if (isKillSwitchEnabled) activateKillSwitch()
+                updateState(VpnState.Error("Connection lost — reconnecting…"))
             },
         ).also { it.start() }
     }
