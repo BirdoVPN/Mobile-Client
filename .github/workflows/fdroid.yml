@@ -1,0 +1,141 @@
+name: F-Droid repo
+
+# Builds and publishes BirdoVPN's self-hosted F-Droid repository to GitHub Pages.
+# It indexes the developer-signed universal APKs (app-release.apk) attached to
+# our GitHub Releases and signs the F-Droid index with a dedicated repo key.
+#
+# Users add:  https://birdovpn.github.io/Mobile-Client/fdroid/repo
+# The repo is served at Pages path /fdroid/repo, with a landing page at the root.
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+  push:
+    branches: [fdroid-repo]   # TEMP: validate on the feature branch; removed before merge
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: fdroid-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Add Android build-tools to PATH (apksigner)
+        run: |
+          set -euo pipefail
+          : "${ANDROID_HOME:=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          echo "Using build-tools: $BT"
+          echo "$BT" >> "$GITHUB_PATH"
+
+      - name: Install fdroidserver
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y fdroidserver
+          fdroid --version
+
+      - name: Materialise repo signing keystore
+        env:
+          FDROID_KEYSTORE_B64: ${{ secrets.FDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          echo "$FDROID_KEYSTORE_B64" | base64 -d > fdroid/keystore.jks
+          test -s fdroid/keystore.jks
+
+      - name: Inject signing passwords into config
+        env:
+          FDROID_KEYSTORE_PASS: ${{ secrets.FDROID_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "keystorepass: \"${FDROID_KEYSTORE_PASS}\""
+            echo "keypass: \"${FDROID_KEYSTORE_PASS}\""
+          } >> fdroid/config.yml
+
+      - name: Collect release APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p fdroid/repo/icons
+          cp fdroid/icon.png fdroid/repo/icons/icon.png
+          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 60 \
+                   --json tagName,isDraft \
+                   -q '.[] | select(.isDraft==false) | .tagName' \
+                 | grep '^android-v' | head -8 || true)
+          echo "Candidate releases:"; echo "$tags"
+          count=0
+          for t in $tags; do
+            if gh release download "$t" --repo "$GITHUB_REPOSITORY" \
+                 --pattern app-release.apk --dir "/tmp/dl-$t" 2>/dev/null; then
+              cp "/tmp/dl-$t/app-release.apk" "fdroid/repo/birdovpn-${t}.apk"
+              count=$((count+1))
+              echo "  + $t"
+            else
+              echo "  - $t (no app-release.apk asset)"
+            fi
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No release APKs found to index."; exit 1
+          fi
+          ls -la fdroid/repo/*.apk
+
+      - name: Build F-Droid index
+        working-directory: fdroid
+        env:
+          FDROID_KEYSTORE_PASS: ${{ secrets.FDROID_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          fdroid update --create-metadata --pretty --verbose
+          echo "----- repo contents -----"; ls -la repo
+          echo "----- fingerprint -----"
+          keytool -list -keystore keystore.jks -alias birdorepo \
+            -storepass "${FDROID_KEYSTORE_PASS}" 2>/dev/null | grep -i 'SHA256:' || true
+
+      - name: Assemble Pages site
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/fdroid
+          cp -r fdroid/repo _site/fdroid/repo
+          if [ -d fdroid/archive ]; then cp -r fdroid/archive _site/fdroid/archive; fi
+          cp fdroid/site-index.html _site/index.html
+          cp fdroid/site-index.html _site/fdroid/index.html
+          # Safety: never publish signing material or config.
+          find _site -name 'keystore.jks' -delete || true
+          find _site -name 'config.yml'  -delete || true
+          echo "----- site tree -----"; find _site -maxdepth 3 -type d | sort
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

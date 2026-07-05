@@ -1,0 +1,36 @@
+# F-Droid repository configuration — self-hosted BirdoVPN repo.
+#
+# This is NOT an official f-droid.org listing. It is a self-hosted F-Droid
+# repository that serves the exact same developer-signed APKs published on
+# GitHub Releases, so F-Droid users can install BirdoVPN and receive automatic
+# updates without Google Play.
+#
+# The signing secrets (keystorepass / keypass) are NOT stored here. CI appends
+# them at build time from the FDROID_KEYSTORE_PASS GitHub secret. The keystore
+# itself (keystore.jks) is materialised in CI from the FDROID_KEYSTORE_B64
+# secret and is git-ignored.
+
+repo_url: "https://birdovpn.github.io/Mobile-Client/fdroid/repo"
+repo_name: "BirdoVPN"
+repo_description: >-
+  Official self-hosted F-Droid repository for BirdoVPN — a fast, private,
+  quantum-resistant VPN. Add this repository to your F-Droid client to install
+  BirdoVPN and get automatic updates. Every APK here is the same
+  developer-signed build published on GitHub Releases.
+repo_icon: "icon.png"
+
+archive_url: "https://birdovpn.github.io/Mobile-Client/fdroid/archive"
+archive_name: "BirdoVPN (Archive)"
+archive_description: >-
+  Older BirdoVPN releases. Install the newest version from the main repository
+  above unless you specifically need a previous build.
+archive_older: 5
+
+# Repo index signing key. keystore.jks + the passwords are injected by CI.
+keystore: "keystore.jks"
+repo_keyalias: "birdorepo"
+keydname: "CN=BirdoVPN F-Droid Repo, O=Birdo Networks Ltd, C=GB"
+
+# We index prebuilt, already-signed release APKs; we do not build from source
+# in this repo, so no NDK/gradle toolchain is required here.
+make_current_version_link: false
