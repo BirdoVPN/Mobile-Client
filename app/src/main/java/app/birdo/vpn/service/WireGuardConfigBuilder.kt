@@ -85,11 +85,31 @@ object WireGuardConfigBuilder {
             .parsePublicKey(peerPublicKey.toBase64())
             .parseEndpoint(effectiveEndpoint)
             .parsePersistentKeepalive("${(response.persistentKeepalive ?: 25).coerceIn(1, 300)}")
+        var allowedIpCount = 0
         for (cidr in response.allowedIps ?: listOf("0.0.0.0/0", "::/0")) {
-            try { peerBuilder.addAllowedIp(InetNetwork.parse(cidr)) } catch (_: Exception) {}
+            try {
+                peerBuilder.addAllowedIp(InetNetwork.parse(cidr))
+                allowedIpCount++
+            } catch (e: Exception) {
+                // Each cidr is pre-validated by require(isValidCidr) above, so this
+                // only fires on a validator/parser divergence. Log rather than drop
+                // silently so that divergence is observable.
+                Log.w(TAG, "Skipping unparseable allowedIp '$cidr': ${e.message}")
+            }
         }
+        // A peer with no allowed-IPs routes no traffic — a broken tunnel. Fail
+        // loudly instead of returning a config that silently carries nothing.
+        check(allowedIpCount > 0) { "No allowedIPs parsed — tunnel would route no traffic" }
+
         response.presharedKey?.let {
-            try { peerBuilder.parsePreSharedKey(it) } catch (_: Exception) {}
+            try {
+                peerBuilder.parsePreSharedKey(it)
+            } catch (e: Exception) {
+                // The server sent a PSK (pre-validated above). Silently omitting it
+                // would downgrade the connection's cryptographic protection, so fail
+                // the connect rather than proceed without the intended PSK.
+                throw IllegalStateException("Server-provided preshared key failed to parse", e)
+            }
         }
 
         val config = Config.Builder()

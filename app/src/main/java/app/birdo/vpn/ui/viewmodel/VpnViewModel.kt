@@ -151,15 +151,35 @@ class VpnViewModel @Inject constructor(
                 )
             }
         }
-        // Periodic: poll traffic stats & public IP that are still volatile fields
+        // Periodic: poll traffic stats & public IP (volatile service fields the
+        // state collector above doesn't carry). While Connected we refresh every
+        // tick. While disconnected these are reset to 0/null by the service, so we
+        // copy that reset through — but ONLY when it actually changed, so a stale
+        // server IP / byte counter can't linger on the UI after disconnect while
+        // still avoiding the per-second recomposition churn when nothing changes.
         viewModelScope.launch {
             while (isActive) {
-                _uiState.value = _uiState.value.copy(
-                    rxBytes = app.birdo.vpn.service.BirdoVpnService.rxBytes,
-                    txBytes = app.birdo.vpn.service.BirdoVpnService.txBytes,
-                    publicIp = app.birdo.vpn.service.BirdoVpnService.publicIp,
-                    tick = System.currentTimeMillis(),
-                )
+                val svcRx = app.birdo.vpn.service.BirdoVpnService.rxBytes
+                val svcTx = app.birdo.vpn.service.BirdoVpnService.txBytes
+                val svcIp = app.birdo.vpn.service.BirdoVpnService.publicIp
+                val s = _uiState.value
+                val connected = s.vpnState == VpnState.Connected
+                if (connected) {
+                    _uiState.value = s.copy(
+                        rxBytes = svcRx,
+                        txBytes = svcTx,
+                        publicIp = svcIp,
+                        tick = System.currentTimeMillis(),
+                    )
+                } else if (s.rxBytes != svcRx || s.txBytes != svcTx || s.publicIp != svcIp) {
+                    // Disconnected AND stale — flush the service's reset values once.
+                    _uiState.value = s.copy(
+                        rxBytes = svcRx,
+                        txBytes = svcTx,
+                        publicIp = svcIp,
+                        tick = System.currentTimeMillis(),
+                    )
+                }
                 delay(1000)
             }
         }
