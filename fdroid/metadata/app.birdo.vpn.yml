@@ -2,6 +2,12 @@ Categories:
   - Internet
   - Security
 License: CC-BY-NC-4.0
+# Honest disclosure (also stated in the Description):
+#  - NonFreeNet: requires a BirdoVPN account + Birdo's servers to function.
+#  - NonFreeDep: bundles prebuilt native components (Xray, WireGuard-go).
+AntiFeatures:
+  - NonFreeNet
+  - NonFreeDep
 AuthorName: Birdo Networks Ltd
 AuthorWebSite: https://birdo.app
 WebSite: https://birdo.app
