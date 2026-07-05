@@ -1,8 +1,8 @@
 Birdo VPN — fast, private WireGuard VPN with post-quantum encryption.
 
 What's new:
-- Biometric app lock now secures the entire app
-- Security and privacy hardening
-- Performance improvements and bug fixes
+- Fixed a crash on the login screen (the app icon failed to load on some devices)
+- The app logo now displays correctly
+- Stability and reliability improvements
 
-Global server network • no activity logs (warrant canary) • kill switch • DNS leak protection • split tunneling.
+Global server network • no activity logs (warrant canary) • kill switch • DNS leak protection • split tunnelling.
