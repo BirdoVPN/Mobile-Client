@@ -88,23 +88,27 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_CUSTOM_DNS_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_CUSTOM_DNS_ENABLED, value).commit(); signSettings() }
 
+    // These keys are HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS), so every setter
+    // must .commit() synchronously AND re-sign — otherwise the stored HMAC goes
+    // stale and the next launch's tamper check fails, silently reverting the
+    // user's DNS / port / MTU / split-tunnel settings to defaults.
     var customDnsPrimary: String
         get() = prefs.getString(KEY_CUSTOM_DNS_PRIMARY, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_CUSTOM_DNS_PRIMARY, value).apply()
+        set(value) { prefs.edit().putString(KEY_CUSTOM_DNS_PRIMARY, value).commit(); signSettings() }
 
     var customDnsSecondary: String
         get() = prefs.getString(KEY_CUSTOM_DNS_SECONDARY, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_CUSTOM_DNS_SECONDARY, value).apply()
+        set(value) { prefs.edit().putString(KEY_CUSTOM_DNS_SECONDARY, value).commit(); signSettings() }
 
     /** "auto", "51820", "53", or a custom port number as string */
     var wireGuardPort: String
         get() = prefs.getString(KEY_WG_PORT, "auto") ?: "auto"
-        set(value) = prefs.edit().putString(KEY_WG_PORT, value).apply()
+        set(value) { prefs.edit().putString(KEY_WG_PORT, value).commit(); signSettings() }
 
     /** 0 = automatic (use server default) */
     var wireGuardMtu: Int
         get() = prefs.getInt(KEY_WG_MTU, 0)
-        set(value) = prefs.edit().putInt(KEY_WG_MTU, value).apply()
+        set(value) { prefs.edit().putInt(KEY_WG_MTU, value).commit(); signSettings() }
 
     // ── Split Tunneling ──────────────────────────────────────────
     var splitTunnelingEnabled: Boolean
@@ -127,10 +131,10 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_MULTI_HOP_EXIT, null)
         set(value) = prefs.edit().putString(KEY_MULTI_HOP_EXIT, value).apply()
 
-    /** Package names excluded from VPN (bypass VPN) */
+    /** Package names excluded from VPN (bypass VPN). HMAC-protected — must re-sign. */
     var splitTunnelApps: Set<String>
         get() = prefs.getStringSet(KEY_SPLIT_TUNNEL_APPS, emptySet()) ?: emptySet()
-        set(value) = prefs.edit().putStringSet(KEY_SPLIT_TUNNEL_APPS, value).apply()
+        set(value) { prefs.edit().putStringSet(KEY_SPLIT_TUNNEL_APPS, value).commit(); signSettings() }
 
     // ── Favorite Servers ─────────────────────────────────────────
     var favoriteServers: Set<String>

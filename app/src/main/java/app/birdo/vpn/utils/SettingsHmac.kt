@@ -100,9 +100,18 @@ object SettingsHmac {
     }
 
     private fun buildCanonicalData(prefs: SharedPreferences): String {
-        // Build deterministic string of all protected settings
+        // Build deterministic string of all protected settings.
         return PROTECTED_KEYS.joinToString("|") { key ->
-            "$key=${prefs.all[key] ?: "null"}"
+            val value = when (val raw = prefs.all[key]) {
+                null -> "null"
+                // StringSets (e.g. split_tunnel_apps) have UNSTABLE iteration
+                // order, so the identical content would otherwise hash differently
+                // between sign and verify — a false tamper mismatch. Sort them for
+                // a deterministic canonical form.
+                is Set<*> -> raw.map { it.toString() }.sorted().joinToString(",", "[", "]")
+                else -> raw.toString()
+            }
+            "$key=$value"
         }
     }
 
