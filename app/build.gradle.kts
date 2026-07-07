@@ -350,10 +350,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // ── Hilt DI ──────────────────────────────────────────────────
-    // Must match the Hilt Gradle plugin version (2.57.1) or the aggregating task
+    // Must match the Hilt Gradle plugin version (2.57.2) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
-    implementation("com.google.dagger:hilt-android:2.57.1")
-    ksp("com.google.dagger:hilt-compiler:2.57.1")
+    implementation("com.google.dagger:hilt-android:2.57.2")
+    ksp("com.google.dagger:hilt-compiler:2.57.2")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     // ── Networking ───────────────────────────────────────────────
@@ -376,7 +376,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.43.0")
+    implementation("io.sentry:sentry-android:8.47.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
@@ -385,7 +385,7 @@ dependencies {
     // ── Testing ──────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-    testImplementation("io.mockk:mockk:1.14.9")
+    testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("app.cash.turbine:turbine:1.2.1")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
