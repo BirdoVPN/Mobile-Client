@@ -97,10 +97,17 @@ class MainActivity : FragmentActivity() {
         // L-1: FLAG_SECURE blocks screenshots, screen recording, and prevents
         // the activity contents from appearing in the recent-apps thumbnail.
         // Set before any UI is drawn so the lock screen / preview also redact.
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE,
-        )
+        //
+        // Skipped ONLY when a DEBUG build was assembled explicitly for Play Store
+        // screenshot capture (-PallowScreenshots=true → BuildConfig.ALLOW_SCREENSHOTS).
+        // The BuildConfig.DEBUG guard means a RELEASE build ALWAYS sets FLAG_SECURE,
+        // so this capture bypass can never ship to users.
+        if (!(BuildConfig.DEBUG && BuildConfig.ALLOW_SCREENSHOTS)) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE,
+            )
+        }
 
         // Apply theme mode from preferences
         requestNotificationPermission()
