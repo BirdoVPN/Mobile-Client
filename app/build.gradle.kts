@@ -352,8 +352,8 @@ dependencies {
     // ── Hilt DI ──────────────────────────────────────────────────
     // Must match the Hilt Gradle plugin version (2.57.1) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
-    implementation("com.google.dagger:hilt-android:2.57.1")
-    ksp("com.google.dagger:hilt-compiler:2.57.1")
+    implementation("com.google.dagger:hilt-android:2.57.2")
+    ksp("com.google.dagger:hilt-compiler:2.57.2")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
     // ── Networking ───────────────────────────────────────────────
