@@ -203,17 +203,11 @@ and where we stand:
    A VPN behind a login with no test creds = automatic fail.
 5. **Foreground-service justification** — ✅ written into the manifest property.
 6. **16 KB pages** — ✅ CI-gated (§2).
-7. **Deep-link App Links** (`https://birdo.app/connect`, `/dashboard`) declare
-   `autoVerify`. `birdo-web/public/.well-known/assetlinks.json` already exists but
-   currently holds a **placeholder** fingerprint (`SHA256_CERT_FINGERPRINT_HERE`).
-   For the green "verified" auto-open status you must replace it with the
-   **Play App Signing certificate SHA-256** — NOT the upload key — because Google
-   re-signs the distributed app. Get it from **Play Console → (app) → Test and
-   release → App integrity → App signing → *App signing key certificate* →
-   SHA-256**, paste it into **both** fingerprint arrays in that file, and
-   **redeploy birdo.app**. (You can add the *upload* key SHA-256 to the same
-   arrays too so locally-built APKs verify.) Not a launch blocker — the links
-   still function without verification; this is only for the auto-open polish.
+7. **Deep-link App Links** — ✅ **DONE (2026-07-07)**. `birdo.app/.well-known/
+   assetlinks.json` is live with the real **Play App Signing** cert SHA-256
+   (plus the upload-key cert for locally-built APKs) in both statements
+   (birdo-web PR #186, deployed + verified). Certs documented in
+   `docs/PLAY-APP-SIGNING.md`.
 
 ---
 

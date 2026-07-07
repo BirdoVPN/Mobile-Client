@@ -1,0 +1,32 @@
+Birdo VPN is a fast, private VPN built on WireGuard®, with post-quantum key exchange, a kill switch and a strict no-activity-logs policy.
+
+PRIVATE BY DESIGN
+• No activity logs — we do not record what you browse, download or connect to
+• Warrant canary published and updated on our website
+• Anonymous accounts — sign in with a 24-digit ID instead of an email if you prefer
+• Delete your account and its data at any time, right from the app
+
+MODERN, FAST PROTOCOLS
+• WireGuard® tunnelling for high throughput and quick reconnects
+• Post-quantum key exchange layered on top of the tunnel, protecting today's traffic against tomorrow's quantum attacks
+• Stealth mode for networks that block or throttle VPN traffic
+
+STAY PROTECTED
+• Kill switch — if the tunnel drops, traffic stops instead of leaking
+• DNS leak protection with encrypted DNS (DNS-over-HTTPS)
+• Multi-hop — route through two locations for an extra privacy layer
+• Biometric app lock to keep the app itself private
+
+MADE FOR EVERYDAY USE
+• Split tunnelling — choose which apps use the VPN and which go direct
+• Global server locations with live latency so you can pick the best exit
+• Home-screen widget for one-tap connect
+• No ads, no trackers, no analytics SDKs in the app
+
+Get started free — create an account (email or anonymous ID) and connect. Premium tiers add more locations and features.
+
+Birdo VPN uses the Android VpnService API. The persistent notification while connected is required by Android for VPN apps.
+
+Questions? support@birdo.app • Privacy policy: https://birdo.app/privacy
+
+"WireGuard" is a registered trademark of Jason A. Donenfeld.
