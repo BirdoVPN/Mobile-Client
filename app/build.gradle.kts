@@ -329,13 +329,13 @@ dependencies {
 
     // ── Core Android ─────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("androidx.fragment:fragment-ktx:1.8.5")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.appcompat:appcompat:1.7.1")
+    implementation("androidx.fragment:fragment-ktx:1.8.9")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.datastore:datastore-preferences:1.1.2")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
 
     // ── Compose ──────────────────────────────────────────────────
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
@@ -344,17 +344,17 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.navigation:navigation-compose:2.9.8")
     implementation("androidx.compose.material3:material3-window-size-class")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // ── Hilt DI ──────────────────────────────────────────────────
-    // Must match the Hilt Gradle plugin version (2.57.1) or the aggregating task
+    // Must match the Hilt Gradle plugin version (2.57.2) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
-    implementation("com.google.dagger:hilt-android:2.57.1")
-    ksp("com.google.dagger:hilt-compiler:2.57.1")
-    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+    implementation("com.google.dagger:hilt-android:2.57.2")
+    ksp("com.google.dagger:hilt-compiler:2.57.2")
+    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
 
     // ── Networking ───────────────────────────────────────────────
     implementation("com.squareup.retrofit2:retrofit:2.12.0")
@@ -373,10 +373,10 @@ dependencies {
     // XrayManager falls back to bundled xray binary if library is absent.
 
     // ── Security ─────────────────────────────────────────────────
-    implementation("androidx.security:security-crypto:1.1.0-alpha06") // no stable 1.1.x available
+    implementation("androidx.security:security-crypto:1.1.0") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.43.0")
+    implementation("io.sentry:sentry-android:8.47.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
@@ -385,10 +385,10 @@ dependencies {
     // ── Testing ──────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-    testImplementation("io.mockk:mockk:1.14.9")
+    testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("app.cash.turbine:turbine:1.2.1")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
