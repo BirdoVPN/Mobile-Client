@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
+import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.utils.InputValidator
@@ -143,8 +144,8 @@ class AuthViewModel @Inject constructor(
     /** FIX C-2: Verify 2FA token after challenge */
     fun verifyTwoFactor(code: String) {
         val token = _uiState.value.challengeToken ?: return
-        if (code.length !in 6..8) {
-            _uiState.value = _uiState.value.copy(error = "Enter a 6-digit code or 8-character backup code")
+        if (!is2faCodeComplete(code)) {
+            _uiState.value = _uiState.value.copy(error = "Enter a 6-digit code or a backup code")
             return
         }
 

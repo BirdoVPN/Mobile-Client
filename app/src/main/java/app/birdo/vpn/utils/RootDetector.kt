@@ -65,10 +65,14 @@ object RootDetector {
 
     /** Verify this APK was signed by the expected release certificate. */
     fun isPackageSignatureTrusted(context: Context): Boolean {
-        val expected = expectedSigningFingerprints()
-        if (expected.isEmpty()) return false
-        val current = currentSigningFingerprint(context) ?: return false
-        return normalizeFingerprint(current) in expected
+        val current = currentSigningFingerprint(context)?.let { normalizeFingerprint(it) }
+            ?: return false
+        if (current in expectedSigningFingerprints()) return true
+        // Google Play App Signing re-signs the app with the app-signing key
+        // (different from our baked upload-key fingerprint), so on a genuine Play
+        // install the cert legitimately won't match the allow-list. Trust it —
+        // Google's signature is the guarantee; only a sideloaded repackage lacks it.
+        return isInstalledFromPlayStore(context)
     }
 
     // ── Individual Checks ────────────────────────────────────────
@@ -213,7 +217,34 @@ object RootDetector {
         val expected = expectedSigningFingerprints()
         if (expected.isEmpty()) return false
         val current = currentSigningFingerprint(context) ?: return false
-        return normalizeFingerprint(current) !in expected
+        if (normalizeFingerprint(current) in expected) return false
+        // A genuine Google Play install is re-signed by Play App Signing with a
+        // cert we didn't bake — that is NOT tampering. Only flag an unrecognised
+        // cert as a repackage when it did not come from the Play Store.
+        return !isInstalledFromPlayStore(context)
+    }
+
+    /**
+     * True if this package was installed by the Google Play Store (or the
+     * Play-adjacent Market Feedback Agent). Play App Signing re-signs uploaded
+     * apps with the app-signing key, so a Play-installed package's signing cert
+     * legitimately differs from the upload-key fingerprint we bake in — and is
+     * trustworthy. A repackaged/tampered APK is sideloaded, so its installer is
+     * NOT the Play Store, and it stays flagged.
+     */
+    private fun isInstalledFromPlayStore(context: Context): Boolean {
+        return try {
+            val pm = context.packageManager
+            val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                pm.getInstallSourceInfo(context.packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getInstallerPackageName(context.packageName)
+            }
+            installer == "com.android.vending" || installer == "com.google.android.feedback"
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun expectedSigningFingerprints(): Set<String> {

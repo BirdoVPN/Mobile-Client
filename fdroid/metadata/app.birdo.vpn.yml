@@ -1,0 +1,47 @@
+Categories:
+  - Internet
+  - Security
+License: CC-BY-NC-4.0
+# Honest disclosure (also stated in the Description):
+#  - NonFreeNet: requires a BirdoVPN account + Birdo's servers to function.
+#  - NonFreeDep: bundles prebuilt native components (Xray, WireGuard-go).
+AntiFeatures:
+  - NonFreeNet
+  - NonFreeDep
+AuthorName: Birdo Networks Ltd
+AuthorWebSite: https://birdo.app
+WebSite: https://birdo.app
+SourceCode: https://github.com/BirdoVPN/Mobile-Client
+IssueTracker: https://github.com/BirdoVPN/Mobile-Client/issues
+Changelog: https://github.com/BirdoVPN/Mobile-Client/releases
+
+AutoName: BirdoVPN
+Summary: Fast, private, quantum-resistant VPN
+
+Description: |-
+  BirdoVPN is a fast, privacy-first VPN with post-quantum protection built in.
+
+  Your tunnel is secured with WireGuard and wrapped in a post-quantum key
+  exchange (Rosenpass), so traffic captured today cannot be decrypted by a
+  future quantum computer ("harvest now, decrypt later"). An optional stealth
+  transport helps the connection blend in on restrictive networks.
+
+  Features:
+
+  * WireGuard-based tunnel with a post-quantum key exchange layer
+  * A reactive kill switch that blocks traffic if the tunnel drops
+  * Split tunnelling — choose which apps use the VPN
+  * A global network of servers with fast connect and one-tap switching
+  * No activity logs; accounts can be created without an email address
+  * DNS handled inside the tunnel to reduce leaks
+
+  This build is distributed outside Google Play and is signed with Birdo's own
+  release key. It is the same APK published on GitHub Releases. A BirdoVPN
+  account is required to connect to the network.
+
+  Note: the app bundles prebuilt native networking components (Xray and
+  WireGuard-go), which is why it is served from this self-hosted repository
+  rather than the main f-droid.org catalogue.
+
+RepoType: git
+Repo: https://github.com/BirdoVPN/Mobile-Client.git

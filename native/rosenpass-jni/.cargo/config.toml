@@ -1,0 +1,19 @@
+# 16 KB page-size alignment for Android shared libraries.
+#
+# Google Play requires all apps targeting Android 15+ (API 35) to support 16 KB
+# memory pages (enforced for new apps/updates since Nov 2025). Native .so files
+# must have their LOAD segments aligned to 16384 bytes. NDK r27+ does this by
+# default, but we set the linker flag explicitly so the alignment is guaranteed
+# regardless of which NDK cargo-ndk picks up, and the CI `verify-16kb-alignment`
+# step asserts it on every shipped .so.
+#
+# The rustflags below are passed through cargo-ndk to the NDK clang/lld linker.
+
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

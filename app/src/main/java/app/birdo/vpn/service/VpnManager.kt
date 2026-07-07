@@ -167,7 +167,15 @@ class VpnManager @Inject constructor(
             priorState is VpnState.Connecting ||
             priorState is VpnState.Reconnecting
         ) {
-            disconnect()
+            if (priorState is VpnState.Reconnecting) {
+                // We ARE the auto-reconnect job calling connect(). Tear down the
+                // old tunnel WITHOUT cancelAutoReconnect(): disconnect() would
+                // cancel THIS coroutine at its next suspension point, aborting the
+                // reconnect on its first attempt and leaving the kill switch down.
+                tearDownTunnel()
+            } else {
+                disconnect()
+            }
             // Wait (bounded) for the service to confirm the old tunnel is down so
             // the old keyId is unregistered and wg-go is torn down before we
             // register + bring up the new one.
@@ -390,6 +398,19 @@ class VpnManager @Inject constructor(
      */
     suspend fun disconnect() {
         cancelAutoReconnect() // User-initiated disconnect — stop any pending reconnect
+        tearDownTunnel()
+    }
+
+    /**
+     * Tear down the active tunnel (stop the service, notify the backend) WITHOUT
+     * cancelling any in-flight auto-reconnect. [disconnect] wraps this with a
+     * [cancelAutoReconnect] for the user-initiated case; the auto-reconnect job
+     * calls this directly so it does NOT cancel itself mid-flight — doing so
+     * (via disconnect()) aborted the reconnect coroutine at its next suspension
+     * point AND left the kill switch torn down, i.e. a traffic leak that only a
+     * manual reconnect recovered.
+     */
+    private suspend fun tearDownTunnel() {
         _state.value = VpnState.Disconnecting
         transitionStartTime = System.currentTimeMillis()
 

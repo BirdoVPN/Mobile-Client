@@ -33,6 +33,25 @@ val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint"
     ?: System.getenv("BIRDO_SIGNING_CERT_FINGERPRINT")
     ?: ""
 
+// Google Play distribution flag. When true (CI builds the AAB with
+// -PplayBuild=true), the app removes all steering to external subscription
+// purchase, per Google Play's Payments policy: the free tier works, existing
+// paid accounts are honoured, and premium tiers are shown as an informational
+// feature comparison with no "buy"/"manage on web" purchase link. The default
+// (false) is the direct/sideload APK distributed via GitHub, which is NOT bound
+// by Play policy and keeps the web-billing links for a smoother direct-download
+// upgrade path.
+val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.getenv("BIRDO_PLAY_BUILD"))
+    ?.toBoolean() ?: false
+
+// Store-screenshot capture flag. When a DEBUG build is assembled with
+// -PallowScreenshots=true, MainActivity skips FLAG_SECURE so the Play Store
+// listing screenshots can be captured on an emulator/device. It is double-gated
+// by BuildConfig.DEBUG in MainActivity, so a RELEASE build can never ship with
+// screenshots enabled regardless of this value. Default false.
+val allowScreenshots = ((project.findProperty("allowScreenshots") as String?)
+    ?: System.getenv("BIRDO_ALLOW_SCREENSHOTS"))?.toBoolean() ?: false
+
 android {
     namespace = "app.birdo.vpn"
     compileSdk = 35
@@ -76,6 +95,14 @@ android {
         // (colon-separated upper-hex values separated by comma/semicolon/space).
         // Release builds now require this so runtime tamper checks are active.
         buildConfigField("String", "SIGNING_CERT_FINGERPRINT", "\"$signingCertFingerprint\"")
+
+        // Store-screenshot capture flag (see allowScreenshots above). Consumed by
+        // MainActivity, double-gated by BuildConfig.DEBUG so release ignores it.
+        buildConfigField("boolean", "ALLOW_SCREENSHOTS", "$allowScreenshots")
+
+        // Play-distribution flag (see isPlayBuild above). Baked into BuildConfig
+        // so UI can hide external-purchase steering in the Play (AAB) build.
+        buildConfigField("boolean", "IS_PLAY_BUILD", "$isPlayBuild")
     }
 
     signingConfigs {
@@ -260,13 +287,22 @@ afterEvaluate {
                         val candidates = nativeDirs.flatMap { dir ->
                             fileTree(dir) { include("**/lib$name.so") }.files
                         }
-                        // Use arm64 binary as canonical hash (most common target ABI)
-                        val soFile = candidates.firstOrNull { it.path.contains("arm64-v8a") }
-                            ?: candidates.firstOrNull()
-                            ?: return ""
-                        return MessageDigest.getInstance("SHA-256")
-                            .digest(soFile.readBytes())
-                            .joinToString("") { b -> "%02x".format(b) }
+                        // Hash EVERY shipped ABI variant, keyed by its ABI dir name,
+                        // and encode as "abi=hash;abi=hash". Previously only the
+                        // arm64-v8a hash was baked, so on the x86_64 build the
+                        // runtime hash never matched and integrity silently fell back
+                        // to signature-only verification. The verifier now looks up
+                        // the hash for the device's actual ABI.
+                        val knownAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+                        return candidates.mapNotNull { f ->
+                            val normalized = f.path.replace('\\', '/')
+                            val abi = knownAbis.firstOrNull { normalized.contains("/$it/") }
+                                ?: return@mapNotNull null
+                            val hash = MessageDigest.getInstance("SHA-256")
+                                .digest(f.readBytes())
+                                .joinToString("") { b -> "%02x".format(b) }
+                            "$abi=$hash"
+                        }.distinct().joinToString(";")
                     }
                     val wgHash = hashSo("wg-go")
                     val xrayHash = hashSo("xray").ifBlank { hashSo("Xray") }

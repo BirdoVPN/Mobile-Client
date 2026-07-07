@@ -17,13 +17,28 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.fragment.app.FragmentActivity
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.birdo.vpn.data.network.NetworkMonitor
@@ -45,6 +60,11 @@ class MainActivity : FragmentActivity() {
 
     /** Whether the UI is locked behind biometric auth */
     private val isLocked = mutableStateOf(false)
+
+    /** True while a BiometricPrompt is on screen. Guards onStop so the
+     *  device-credential fallback (which backgrounds this activity) does not
+     *  re-arm the lock mid-authentication and cause a prompt loop. */
+    private var isAuthenticating = false
 
     /** Deep link route to navigate to on startup */
     private val deepLinkRoute = mutableStateOf<String?>(null)
@@ -77,10 +97,17 @@ class MainActivity : FragmentActivity() {
         // L-1: FLAG_SECURE blocks screenshots, screen recording, and prevents
         // the activity contents from appearing in the recent-apps thumbnail.
         // Set before any UI is drawn so the lock screen / preview also redact.
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE,
-        )
+        //
+        // Skipped ONLY when a DEBUG build was assembled explicitly for Play Store
+        // screenshot capture (-PallowScreenshots=true → BuildConfig.ALLOW_SCREENSHOTS).
+        // The BuildConfig.DEBUG guard means a RELEASE build ALWAYS sets FLAG_SECURE,
+        // so this capture bypass can never ship to users.
+        if (!(BuildConfig.DEBUG && BuildConfig.ALLOW_SCREENSHOTS)) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE,
+            )
+        }
 
         // Apply theme mode from preferences
         requestNotificationPermission()
@@ -110,26 +137,37 @@ class MainActivity : FragmentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = bgColor,
                 ) {
-                    val vpnViewModel: VpnViewModel = hiltViewModel()
+                    // Biometric app lock: while locked, render an opaque lock
+                    // screen INSTEAD of the app content so nothing is visible or
+                    // interactive behind the prompt. Reading isLocked.value here
+                    // subscribes the composition, so a successful auth (which sets
+                    // isLocked = false) recomposes and reveals the app. The VPN
+                    // view-model / nav graph are only created once unlocked, so no
+                    // account data or network activity happens behind the lock.
+                    if (isLocked.value) {
+                        BiometricLockScreen(onUnlock = { promptBiometric() })
+                    } else {
+                        val vpnViewModel: VpnViewModel = hiltViewModel()
 
-                    // Assign the permission callbacks as a side effect rather than
-                    // during composition. hiltViewModel() returns a stable instance,
-                    // but mutating activity state inside the composable body runs on
-                    // every recomposition; SideEffect keeps it to successful frames.
-                    androidx.compose.runtime.SideEffect {
-                        vpnPermissionCallback = { vpnViewModel.onVpnPermissionGranted() }
-                        vpnPermissionDeniedCallback = { vpnViewModel.onVpnPermissionDenied() }
+                        // Assign the permission callbacks as a side effect rather than
+                        // during composition. hiltViewModel() returns a stable instance,
+                        // but mutating activity state inside the composable body runs on
+                        // every recomposition; SideEffect keeps it to successful frames.
+                        androidx.compose.runtime.SideEffect {
+                            vpnPermissionCallback = { vpnViewModel.onVpnPermissionGranted() }
+                            vpnPermissionDeniedCallback = { vpnViewModel.onVpnPermissionDenied() }
+                        }
+
+                        BirdoNavGraph(
+                            onRequestVpnPermission = { intent ->
+                                vpnPermissionLauncher.launch(intent)
+                            },
+                            appPreferences = appPreferences,
+                            networkMonitor = networkMonitor,
+                            deepLinkRoute = deepLinkRoute.value,
+                            onDeepLinkConsumed = { deepLinkRoute.value = null },
+                        )
                     }
-
-                    BirdoNavGraph(
-                        onRequestVpnPermission = { intent ->
-                            vpnPermissionLauncher.launch(intent)
-                        },
-                        appPreferences = appPreferences,
-                        networkMonitor = networkMonitor,
-                        deepLinkRoute = deepLinkRoute.value,
-                        onDeepLinkConsumed = { deepLinkRoute.value = null },
-                    )
                 }
             }
         }
@@ -149,6 +187,17 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // Re-arm the lock when the app leaves the foreground so returning to it
+        // requires re-authentication (a real app-lock, not just cold-start).
+        // Skip while a prompt is up: the device-credential fallback backgrounds
+        // us, and re-locking there would loop the prompt.
+        if (appPreferences.biometricLockEnabled && !isAuthenticating) {
+            isLocked.value = true
+        }
+    }
+
     override fun onDestroy() {
         // Dismiss the root-warning dialog if it is still showing so its window
         // is not leaked when the activity is destroyed (e.g. config change).
@@ -165,6 +214,7 @@ class MainActivity : FragmentActivity() {
         )
         if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
             // Device has no biometric/credential — unlock anyway
+            isAuthenticating = false
             isLocked.value = false
             return
         }
@@ -181,17 +231,20 @@ class MainActivity : FragmentActivity() {
         val executor = ContextCompat.getMainExecutor(this)
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                isAuthenticating = false
                 isLocked.value = false
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                isAuthenticating = false
                 when (errorCode) {
-                    // User cancelled or pressed the negative button — stay locked,
-                    // they can try again on next resume.
+                    // User cancelled or pressed the negative button — stay locked.
+                    // The BiometricLockScreen stays up with an "Unlock" button, and
+                    // the app content remains hidden until they authenticate.
                     BiometricPrompt.ERROR_USER_CANCELED,
                     BiometricPrompt.ERROR_NEGATIVE_BUTTON,
                     BiometricPrompt.ERROR_CANCELED -> {
-                        // Stay locked.
+                        // Stay locked (isLocked remains true → lock screen shown).
                     }
                     // Hardware can't satisfy the request (no enrolled credential,
                     // sensor unavailable/not present). Mirror the canAuthenticate()
@@ -204,7 +257,7 @@ class MainActivity : FragmentActivity() {
                         isLocked.value = false
                     }
                     // Lockout, timeout, and other transient errors: keep locked but
-                    // surface the reason so the user knows to retry on next resume.
+                    // surface the reason so the user knows to retry.
                     else -> {
                         Log.w("BirdoSecurity", "Biometric auth error ($errorCode: $errString)")
                     }
@@ -212,6 +265,7 @@ class MainActivity : FragmentActivity() {
             }
         }
 
+        isAuthenticating = true
         BiometricPrompt(this, executor, callback).authenticate(promptInfo)
     }
 
@@ -320,5 +374,52 @@ class MainActivity : FragmentActivity() {
     companion object {
         @Suppress("unused")
         private const val TAG = "MainActivity"
+    }
+}
+
+/**
+ * Full-screen opaque lock shown while the biometric app-lock is engaged. It
+ * covers the entire app so no content is visible or interactive behind the
+ * system BiometricPrompt, and offers an explicit "Unlock" action for when the
+ * user dismissed the prompt.
+ */
+@Composable
+private fun BiometricLockScreen(onUnlock: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(56.dp),
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                text = "Birdo VPN is locked",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Verify your identity to continue.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(28.dp))
+            Button(onClick = onUnlock) {
+                Text("Unlock")
+            }
+        }
     }
 }

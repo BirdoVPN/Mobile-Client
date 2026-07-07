@@ -1,0 +1,165 @@
+name: F-Droid repo
+
+# Builds and publishes BirdoVPN's self-hosted F-Droid repository to GitHub Pages
+# (served from the gh-pages branch). It indexes the developer-signed universal
+# APKs (app-release.apk) attached to our GitHub Releases and signs the F-Droid
+# index with a dedicated repo key.
+#
+# Users add:  https://birdovpn.github.io/Mobile-Client/fdroid/repo
+#
+# NOTE: we publish via a plain `git push` to gh-pages rather than the
+# actions/upload-pages-artifact + deploy-pages actions, because those composite
+# actions reference actions/upload-artifact@v4 by TAG, which the org's
+# "require full-length commit SHA" policy rejects transitively.
+
+on:
+  release:
+    # 'published' reliably fires when a DRAFT release is published — our releases
+    # are born draft+prerelease (android.yml) then published via `gh release edit`.
+    # GitHub documents that 'released'/'prereleased' do NOT reliably fire for
+    # releases published from a draft, so 'published' + the guard below is correct.
+    # Manual fallback (belt-and-suspenders): `gh workflow run "F-Droid repo"`.
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fdroid-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Only index stable, published releases into the repo. Skip drafts and
+    # prereleases; always allow manual (workflow_dispatch) runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.release.draft == false && github.event.release.prerelease == false)
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up JDK
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Add Android build-tools to PATH (apksigner)
+        run: |
+          set -euo pipefail
+          : "${ANDROID_HOME:=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          echo "Using build-tools: $BT"
+          echo "$BT" >> "$GITHUB_PATH"
+
+      - name: Install fdroidserver
+        run: |
+          set -euo pipefail
+          # The apt package (2.2.1) ships an old androguard that cannot parse
+          # modern AAPT2 resource tables ("res1 must be zero!"), so install the
+          # current fdroidserver from pip into a venv instead.
+          sudo apt-get update
+          sudo apt-get install -y libmagic1 python3-venv
+          python3 -m venv "$HOME/fdroid-venv"
+          "$HOME/fdroid-venv/bin/pip" install --quiet --upgrade pip wheel
+          # Pinned for reproducibility — bump deliberately after a workflow_dispatch
+          # test (an unpinned latest can change the index format or break APK parsing).
+          "$HOME/fdroid-venv/bin/pip" install --quiet 'fdroidserver==2.4.5'
+          echo "$HOME/fdroid-venv/bin" >> "$GITHUB_PATH"
+          "$HOME/fdroid-venv/bin/fdroid" --version
+
+      - name: Materialise repo signing keystore
+        env:
+          FDROID_KEYSTORE_B64: ${{ secrets.FDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          echo "$FDROID_KEYSTORE_B64" | base64 -d > fdroid/keystore.jks
+          test -s fdroid/keystore.jks
+
+      - name: Inject signing passwords into config
+        env:
+          FDROID_KEYSTORE_PASS: ${{ secrets.FDROID_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "keystorepass: \"${FDROID_KEYSTORE_PASS}\""
+            echo "keypass: \"${FDROID_KEYSTORE_PASS}\""
+          } >> fdroid/config.yml
+          chmod 600 fdroid/config.yml
+
+      - name: Collect release APKs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p fdroid/repo/icons
+          cp fdroid/icon.png fdroid/repo/icons/icon.png
+          tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 60 \
+                   --json tagName,isDraft \
+                   -q '.[] | select(.isDraft==false) | .tagName' \
+                 | grep '^android-v' | head -8 || true)
+          echo "Candidate releases:"; echo "$tags"
+          count=0
+          for t in $tags; do
+            if gh release download "$t" --repo "$GITHUB_REPOSITORY" \
+                 --pattern app-release.apk --dir "/tmp/dl-$t" 2>/dev/null; then
+              cp "/tmp/dl-$t/app-release.apk" "fdroid/repo/birdovpn-${t}.apk"
+              count=$((count+1))
+              echo "  + $t"
+            else
+              echo "  - $t (no app-release.apk asset)"
+            fi
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No release APKs found to index."; exit 1
+          fi
+          ls -la fdroid/repo/*.apk
+
+      - name: Build F-Droid index
+        working-directory: fdroid
+        env:
+          FDROID_KEYSTORE_PASS: ${{ secrets.FDROID_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          fdroid update --create-metadata --pretty --verbose
+          echo "----- repo contents -----"; ls -la repo
+          echo "----- fingerprint -----"
+          keytool -list -keystore keystore.jks -alias birdorepo \
+            -storepass "${FDROID_KEYSTORE_PASS}" 2>/dev/null | grep -i 'SHA256:' || true
+
+      - name: Assemble Pages site
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/fdroid
+          cp -r fdroid/repo _site/fdroid/repo
+          if [ -d fdroid/archive ]; then cp -r fdroid/archive _site/fdroid/archive; fi
+          # fdroidserver writes bookkeeping to <repo>/status/ (runner paths, OS
+          # version, timestamps). Clients don't need it and it discloses the CI
+          # environment — drop it before publishing.
+          rm -rf _site/fdroid/repo/status _site/fdroid/archive/status
+          cp fdroid/site-index.html _site/index.html
+          cp fdroid/site-index.html _site/fdroid/index.html
+          touch _site/.nojekyll
+          # Safety: never publish signing material or config.
+          find _site -name 'keystore.jks' -delete || true
+          find _site -name 'config.yml'  -delete || true
+          echo "----- site tree -----"; find _site -maxdepth 3 -type d | sort
+
+      - name: Publish to gh-pages
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd _site
+          git init -q -b gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Publish F-Droid repo (${GITHUB_SHA::7})"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages:gh-pages
+          echo "Published to gh-pages."

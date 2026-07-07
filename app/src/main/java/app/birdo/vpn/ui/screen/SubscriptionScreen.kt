@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.ui.theme.*
 
@@ -115,6 +116,9 @@ fun SubscriptionScreen(
     billingIsError: Boolean = false,
     billingIsPurchasing: Boolean = false,
     onClearBillingMessage: () -> Unit = {},
+    // Google Play build: hide all external-purchase steering (no "buy"/"manage
+    // on web" links). Premium tiers become an informational feature comparison.
+    isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
 
@@ -134,8 +138,11 @@ fun SubscriptionScreen(
                     }
                 },
                 actions = {
-                    TextButton(onClick = onManageOnWeb) {
-                        Text("Web", color = BirdoWhite60, fontSize = 13.sp)
+                    // Play build: no web-billing steering in the toolbar.
+                    if (!isPlayBuild) {
+                        TextButton(onClick = onManageOnWeb) {
+                            Text("Web", color = BirdoWhite60, fontSize = 13.sp)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
@@ -157,7 +164,7 @@ fun SubscriptionScreen(
             }
 
             Text(
-                "Choose a plan",
+                if (isPlayBuild) "Plans & features" else "Choose a plan",
                 style = MaterialTheme.typography.titleMedium,
                 color = BirdoWhite80,
                 fontWeight = FontWeight.Bold,
@@ -205,6 +212,7 @@ fun SubscriptionScreen(
                     isCurrent = isCurrent,
                     price = if (billingPeriod == "yearly") plan.priceYearly else plan.priceMonthly,
                     isPurchasing = billingIsPurchasing,
+                    showManageButton = !isPlayBuild,
                     onSelect = { onSelectPlan(plan.id, billingPeriod) },
                 )
                 Spacer(Modifier.height(12.dp))
@@ -241,7 +249,7 @@ fun SubscriptionScreen(
                     }
                 }
             }
-            if (!billingReady) {
+            if (!billingReady && !isPlayBuild) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Subscriptions are purchased and managed on birdo.app.",
@@ -252,11 +260,16 @@ fun SubscriptionScreen(
                 )
             }
 
-            // Footer note about vouchers (now on Profile tab) and web management.
+            // Footer note about vouchers (redeemable on the Profile tab). The
+            // Play build omits any steering to external purchase / web billing.
             Spacer(Modifier.height(8.dp))
             Text(
-                "Have a voucher code? Redeem it on the Profile tab. " +
-                    "All purchases can also be managed on birdo.app.",
+                if (isPlayBuild) {
+                    "Have a voucher code? Redeem it on the Profile tab."
+                } else {
+                    "Have a voucher code? Redeem it on the Profile tab. " +
+                        "All purchases can also be managed on birdo.app."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = BirdoWhite40,
                 textAlign = TextAlign.Center,
@@ -358,6 +371,7 @@ private fun PlanCard(
     isCurrent: Boolean,
     price: String,
     isPurchasing: Boolean = false,
+    showManageButton: Boolean = true,
     onSelect: () -> Unit,
 ) {
     val shape = RoundedCornerShape(16.dp)
@@ -458,11 +472,12 @@ private fun PlanCard(
                 }
             }
 
-            if (!isCurrent && plan.id != "RECON") {
+            if (!isCurrent && plan.id != "RECON" && showManageButton) {
                 Spacer(Modifier.height(16.dp))
                 // Account-management framing (no in-app "buy" CTA): subscriptions
                 // are purchased and changed on the web. This opens the billing
                 // page on birdo.app rather than initiating an in-app purchase.
+                // Hidden entirely in the Play build (showManageButton = false).
                 OutlinedButton(
                     onClick = onSelect,
                     enabled = !isPurchasing,

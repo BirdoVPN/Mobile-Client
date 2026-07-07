@@ -106,9 +106,21 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="VPN tunnel that encrypts and routes all user network traffic to a remote VPN server. Must run continuously while user is connected; cannot be deferred or restarted without breaking the encrypted tunnel and exposing user IP/DNS." />
+            <!--
+                Always-on VPN is DISABLED (value="false") so Android greys out the
+                system "Always-on VPN" toggle for this app. The service cannot yet
+                self-establish a tunnel from a system-initiated (null-action) start
+                or after reboot — the WireGuard config is fetched per user-initiated
+                connect and held in memory, and there is no headless re-auth path.
+                Leaving this "true" would let a user enable Always-on + "Block
+                connections without VPN" (lockdown) and then lose all connectivity
+                after every reboot until they manually reconnect. Disabling it fails
+                safe. TODO: implement headless reconnect (re-auth + re-fetch config
+                for the last server in onStartCommand) then flip this back to true.
+            -->
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
-                android:value="true" />
+                android:value="false" />
         </service>
 
         <!-- Quick Settings Tile — Toggle VPN from notification shade -->

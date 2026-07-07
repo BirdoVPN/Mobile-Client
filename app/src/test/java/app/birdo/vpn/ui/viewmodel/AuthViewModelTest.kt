@@ -509,18 +509,30 @@ class AuthViewModelTest {
     }
 
     @Test
-    fun `verifyTwoFactor with 7-char code succeeds (within 6-8 range)`() = runTest {
+    fun `verifyTwoFactor with 16-hex backup code succeeds`() = runTest {
         viewModel = createLoggedOutViewModel()
         coEvery { repository.login(any(), any()) } returns ApiResult.Success(twoFactorChallenge)
         viewModel.login("user@birdo.app", "password")
 
-        coEvery { repository.verifyTwoFactor(any(), any()) } returns
+        coEvery { repository.verifyTwoFactor("challenge_abc123", "ABCD-1234-EF56-7890") } returns
             ApiResult.Success(twoFaVerifyResponse)
         coEvery { repository.getProfile() } returns ApiResult.Success(profile)
 
-        viewModel.verifyTwoFactor("1234567")
+        viewModel.verifyTwoFactor("ABCD-1234-EF56-7890")
 
         assertTrue(viewModel.uiState.value.isLoggedIn)
+    }
+
+    @Test
+    fun `verifyTwoFactor with 7-char code shows validation error (not a valid TOTP or backup code)`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Success(twoFactorChallenge)
+        viewModel.login("user@birdo.app", "password")
+
+        viewModel.verifyTwoFactor("1234567") // 7 chars — neither a 6-digit TOTP nor a group-of-4 backup code
+
+        assertEquals("Enter a 6-digit code or a backup code", viewModel.uiState.value.error)
+        coVerify(exactly = 0) { repository.verifyTwoFactor(any(), any()) }
     }
 
     @Test
@@ -532,7 +544,7 @@ class AuthViewModelTest {
         viewModel.verifyTwoFactor("12345") // 5 chars — too short
 
         val state = viewModel.uiState.value
-        assertEquals("Enter a 6-digit code or 8-character backup code", state.error)
+        assertEquals("Enter a 6-digit code or a backup code", state.error)
         assertFalse(state.isLoggedIn)
         assertTrue(state.requiresTwoFactor) // Still in 2FA state
         coVerify(exactly = 0) { repository.verifyTwoFactor(any(), any()) }
@@ -544,9 +556,9 @@ class AuthViewModelTest {
         coEvery { repository.login(any(), any()) } returns ApiResult.Success(twoFactorChallenge)
         viewModel.login("user@birdo.app", "password")
 
-        viewModel.verifyTwoFactor("123456789") // 9 chars — too long
+        viewModel.verifyTwoFactor("123456789") // 9 chars — not a group-of-4 backup code
 
-        assertEquals("Enter a 6-digit code or 8-character backup code", viewModel.uiState.value.error)
+        assertEquals("Enter a 6-digit code or a backup code", viewModel.uiState.value.error)
         coVerify(exactly = 0) { repository.verifyTwoFactor(any(), any()) }
     }
 
@@ -558,7 +570,7 @@ class AuthViewModelTest {
 
         viewModel.verifyTwoFactor("")
 
-        assertEquals("Enter a 6-digit code or 8-character backup code", viewModel.uiState.value.error)
+        assertEquals("Enter a 6-digit code or a backup code", viewModel.uiState.value.error)
     }
 
     @Test

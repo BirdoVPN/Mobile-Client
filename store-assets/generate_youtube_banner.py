@@ -14,11 +14,13 @@ SAFE_W, SAFE_H = 1546, 423
 SAFE_X = (W - SAFE_W) // 2
 SAFE_Y = (H - SAFE_H) // 2
 
+MARK = os.path.join(OUT, "brand-mark-1024.png")  # transparent phoenix
+
 # Brand palette (matches generate_assets.py)
 GRAD_TOP_LEFT     = (15, 14, 35)        # near-black indigo
 GRAD_MID          = (76, 51, 158)       # deep violet
 GRAD_BOT_RIGHT    = (139, 92, 246)      # #8B5CF6
-ACCENT            = (99, 102, 241)      # #6366F1
+ACCENT            = (124, 58, 237)      # #7C3AED
 WHITE             = (255, 255, 255)
 WHITE_A           = (255, 255, 255, 230)
 WHITE_FAINT       = (255, 255, 255, 40)
@@ -55,18 +57,10 @@ def add_glow(img, cx, cy, radius, color, intensity=180):
     return Image.alpha_composite(img, glow)
 
 
-def draw_wifi_mark(draw, cx, cy, scale=1.0):
-    """Concentric WiFi arcs + center dot — matches the app icon."""
-    arcs = [
-        (24 * scale, 5 * scale),
-        (16 * scale, 5 * scale),
-        (8 * scale, 5 * scale),
-    ]
-    for radius, thickness in arcs:
-        bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-        draw.arc(bbox, start=180, end=360, fill=WHITE, width=max(int(thickness), 2))
-    dot_r = 3 * scale
-    draw.ellipse([cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r], fill=WHITE)
+def paste_mark(img, cx, cy, size):
+    """Composite the phoenix brand mark, centred at (cx, cy)."""
+    m = Image.open(MARK).convert("RGBA").resize((size, size), Image.LANCZOS)
+    img.alpha_composite(m, (int(cx - size / 2), int(cy - size / 2)))
 
 
 def load_font(size, bold=False):
@@ -107,10 +101,10 @@ banner = draw_pixel_grid(banner)
 
 draw = ImageDraw.Draw(banner)
 
-# Center the WiFi mark inside the safe area, on the left
+# Center the phoenix mark inside the safe area, on the left
 mark_cx = SAFE_X + 150
 mark_cy = SAFE_Y + SAFE_H // 2 - 10
-draw_wifi_mark(draw, mark_cx, mark_cy, scale=4.2)
+paste_mark(banner, mark_cx, mark_cy, 300)
 
 # Wordmark + tagline to the right of the mark
 title_font  = load_font(150, bold=True)

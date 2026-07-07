@@ -210,8 +210,16 @@ object XrayManager {
     }
 
     /**
-     * Protect the Xray outbound socket so it bypasses the VPN tunnel.
-     * Without this, Xray's TCP connection to the server would loop back through the VPN.
+     * Connectivity probe / best-effort socket protect for Xray's outbound path.
+     *
+     * NOTE: the *actual* guarantee that Xray's traffic bypasses the tunnel is the
+     * VpnService.Builder.addDisallowedApplication(packageName) call in
+     * BirdoVpnService — that excludes the whole app process (and its children,
+     * incl. the in-process/subprocess Xray) from the tunnel by UID, so Xray's
+     * real outbound socket never loops back regardless of this method. This probe
+     * cannot reach Xray's internal fd (it protects a throwaway socket that it then
+     * closes); it remains only as a reachability check and a defensive extra
+     * protect(). Do NOT treat it as the primary off-tunnel mechanism.
      */
     private fun protectXraySocket(serverHost: String, serverPort: Int) {
         val service = vpnService ?: return

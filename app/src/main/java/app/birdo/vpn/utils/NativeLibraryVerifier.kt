@@ -1,6 +1,7 @@
 package app.birdo.vpn.utils
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import java.io.File
@@ -17,28 +18,42 @@ object NativeLibraryVerifier {
     private const val TAG = "NativeLibVerify"
 
     /**
-     * Known-good SHA-256 hashes of native libraries.
-     * Populated at build time for release builds when available. If a hash is
-     * not registered, release builds require the APK signing certificate to
-     * match the baked allow-list before the library can load.
+     * Known-good SHA-256 hashes of native libraries, keyed by "libname@abi".
+     *
+     * The build pipeline (app/build.gradle.kts) hashes every shipped ABI variant
+     * of each .so and bakes them into BuildConfig as "abi=hash;abi=hash" strings.
+     * A .so differs per ABI, so a single hash only ever matched the arm64-v8a
+     * build; on x86_64 it always mismatched and integrity silently fell back to
+     * signature-only. Keying by ABI lets [verifyLibrary] pin the hash for the
+     * device's actual architecture on every shipped ABI.
+     *
+     * If a hash is not registered, release builds require the APK signing
+     * certificate to match the baked allow-list before the library can load.
      *
      * To regenerate manually:
-     *   sha256sum app/build/intermediates/merged_native_libs/release/out/lib/arm64-v8a/libwg-go.so
+     *   sha256sum app/build/intermediates/merged_native_libs/release/out/lib/<abi>/libwg-go.so
      */
     private val KNOWN_HASHES: Map<String, String> by lazy {
         buildMap {
-            val wgHash = BuildConfig.NATIVE_HASH_WG_GO
+            putAbiHashes("wg-go", BuildConfig.NATIVE_HASH_WG_GO)
             val xrayHash = BuildConfig.NATIVE_HASH_XRAY
+            putAbiHashes("xray", xrayHash)
+            putAbiHashes("Xray", xrayHash)
             // AUDIT-E1: BirdoPQ v1 KEM lib must be hashed too when the build
             // pipeline can produce a stable per-artifact hash.
-            val rosenpassJniHash = BuildConfig.NATIVE_HASH_ROSENPASS_JNI
+            putAbiHashes("rosenpass_jni", BuildConfig.NATIVE_HASH_ROSENPASS_JNI)
+        }
+    }
 
-            if (wgHash.isNotBlank()) put("wg-go", wgHash)
-            if (xrayHash.isNotBlank()) {
-                put("xray", xrayHash)
-                put("Xray", xrayHash)
-            }
-            if (rosenpassJniHash.isNotBlank()) put("rosenpass_jni", rosenpassJniHash)
+    /** Parse a "abi=hash;abi=hash" BuildConfig value into "libname@abi" entries. */
+    private fun MutableMap<String, String>.putAbiHashes(library: String, encoded: String) {
+        if (encoded.isBlank()) return
+        for (part in encoded.split(';')) {
+            val eq = part.indexOf('=')
+            if (eq <= 0) continue
+            val abi = part.substring(0, eq).trim()
+            val hash = part.substring(eq + 1).trim()
+            if (abi.isNotBlank() && hash.isNotBlank()) put("$library@$abi", hash)
         }
     }
 
@@ -73,7 +88,11 @@ object NativeLibraryVerifier {
             return false
         }
 
-        val expectedHash = KNOWN_HASHES[libraryName]
+        // The loaded .so is the one for the device's primary ABI (SUPPORTED_ABIS
+        // is best-first). Pin the hash registered for that ABI; if the build
+        // registered no hashes for this ABI we drop to the signature fallback.
+        val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val expectedHash = KNOWN_HASHES["$libraryName@$abi"]
         if (expectedHash.isNullOrBlank()) {
             if (!RootDetector.hasSigningFingerprintConfigured(context)) {
                 Log.e(TAG, "INTEGRITY FAILURE: no hash and no release signing fingerprint for $libraryName")

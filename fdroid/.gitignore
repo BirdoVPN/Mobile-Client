@@ -1,0 +1,8 @@
+# Generated / secret — never commit these; CI regenerates them each release.
+keystore.jks
+repo/
+archive/
+tmp/
+srclibs/
+.fdroid.*
+config.py
