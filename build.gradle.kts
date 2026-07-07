@@ -5,7 +5,7 @@
 //   bytecode; 8.7.3 crashed lintAnalyzeDebug), Gradle 8.11.1 -> 8.14.3.
 //   See app/shared build.gradle.kts (compilerOptions DSL + ktor 3.3.3 restored).
 plugins {
-    id("com.android.application") version "8.11.1" apply false
+    id("com.android.application") version "8.11.2" apply false
     id("com.android.library") version "8.11.1" apply false
     id("org.jetbrains.kotlin.android") version "2.2.20" apply false
     id("org.jetbrains.kotlin.multiplatform") version "2.2.20" apply false
