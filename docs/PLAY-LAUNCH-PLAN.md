@@ -35,10 +35,11 @@ gotchas that actually gate a VPN app.
 >    the Play App Signing SHA-256 into `birdo-web/public/.well-known/assetlinks.json`
 >    and redeploy birdo.app** (see §5.7 — App Links need the Play cert, not the
 >    upload cert).
-> 3. **Console setup** — Store listing (⚠️ **re-capture the phone screenshots
->    first** — the old ones were corrupt and were removed; see
->    `store-assets/SCREENSHOTS-README.md`), Data-safety (§4b), Content rating (§4c),
->    App access reviewer creds (§3).
+> 3. **Console setup** — Store listing (phone screenshots are **captured, valid,
+>    and ready** in `store-assets/screenshot-0*.png` — just upload them; a
+>    **PlayReviewer** anonymous account with an active plan already exists on prod
+>    for the App-access field), Data-safety (§4b), Content rating (§4c),
+>    App access (§3).
 > 4. **Wire CI on the org account** — Play Console → API access → grant the service
 >    account **Release manager**; set repo secret `PLAY_SERVICE_ACCOUNT_JSON` +
 >    variable `PLAY_UPLOAD_ENABLED=true`. (First AAB upload is manual; CI takes over
@@ -55,12 +56,15 @@ Realistic timeline: **app transfer/create** (~1–2 days if transferring) →
 **listing + data-safety + review submission** (owner, hours) → **production
 review** (1–7 days, VPN-strict).
 
-> **The only NEW code/asset action this pass surfaced:** the phone screenshots in
-> `store-assets/` were corrupt and had to be removed — they must be re-captured
-> from the running app before the listing can be completed (owner; needs an
-> emulator/device — instructions in `store-assets/SCREENSHOTS-README.md`).
-> Everything else (policy gating, manifest, data-safety-vs-code, 16 KB gate,
-> signing, account deletion, privacy page) was verified in place.
+> **Screenshots (resolved this pass):** the old `store-assets/` phone screenshots
+> were corrupt (UTF-16 text-encoding accident) and unusable. They have been
+> **re-captured** from the running app on the emulator — all five are valid
+> 1080×2400 PNGs, committed and ready to upload. This required a new debug-only,
+> opt-in `-PallowScreenshots=true` build flag (`ALLOW_SCREENSHOTS`) that skips
+> `FLAG_SECURE` for capture; a **release build always keeps `FLAG_SECURE`**
+> (double-gated by `BuildConfig.DEBUG`), so screenshots stay blocked for real
+> users. Everything else (policy gating, manifest, data-safety-vs-code, 16 KB
+> gate, signing, account deletion, privacy page) was verified in place.
 
 ---
 

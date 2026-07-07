@@ -44,6 +44,14 @@ val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint"
 val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.getenv("BIRDO_PLAY_BUILD"))
     ?.toBoolean() ?: false
 
+// Store-screenshot capture flag. When a DEBUG build is assembled with
+// -PallowScreenshots=true, MainActivity skips FLAG_SECURE so the Play Store
+// listing screenshots can be captured on an emulator/device. It is double-gated
+// by BuildConfig.DEBUG in MainActivity, so a RELEASE build can never ship with
+// screenshots enabled regardless of this value. Default false.
+val allowScreenshots = ((project.findProperty("allowScreenshots") as String?)
+    ?: System.getenv("BIRDO_ALLOW_SCREENSHOTS"))?.toBoolean() ?: false
+
 android {
     namespace = "app.birdo.vpn"
     compileSdk = 35
@@ -87,6 +95,10 @@ android {
         // (colon-separated upper-hex values separated by comma/semicolon/space).
         // Release builds now require this so runtime tamper checks are active.
         buildConfigField("String", "SIGNING_CERT_FINGERPRINT", "\"$signingCertFingerprint\"")
+
+        // Store-screenshot capture flag (see allowScreenshots above). Consumed by
+        // MainActivity, double-gated by BuildConfig.DEBUG so release ignores it.
+        buildConfigField("boolean", "ALLOW_SCREENSHOTS", "$allowScreenshots")
 
         // Play-distribution flag (see isPlayBuild above). Baked into BuildConfig
         // so UI can hide external-purchase steering in the Play (AAB) build.
