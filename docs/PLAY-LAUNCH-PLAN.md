@@ -15,44 +15,52 @@ gotchas that actually gate a VPN app.
 
 ## 0. TL;DR — the critical path
 
-> ### ⚠️ 2026-07-03 POLICY ENFORCEMENT: VPN apps REQUIRE an ORGANIZATION account
-> Google's **Play Console Requirements** policy (support answer 10788890) lists
-> app types that "can only be distributed by organizations" — financial, health,
-> government, and **"apps approved to use the VpnService class."** BirdoVPN uses
-> `VpnService`, so it **cannot ship from a personal developer account, period.**
-> A personal-account app in this category receives a policy violation (ours was
-> enforced 3 Jul 2026). This is NOT a mis-declaration — the app genuinely is a
-> VPN; no App-content answer can change it.
+> ### ✅ 2026-07-06: ORGANIZATION account acquired — the one hard gate is cleared
+> Google's **Play Console Requirements** policy requires VPN apps (anything using
+> the `VpnService` class) to ship from an **organization** developer account, not
+> a personal one (enforced against us 3 Jul 2026). **That org account now exists**,
+> which removes the only blocker with real lead time — and organization accounts
+> are **exempt from the 12-tester / 14-day closed-testing rule**, so there is no
+> tester clock either.
 >
-> **The fix path (owner):**
-> 1. **Get a D-U-N-S number for Birdo Networks Ltd** (free, dnb.co.uk — UK Ltds
->    often already have one; check the D&B lookup first). This is the org-account
->    prerequisite and the only step with real lead time (hours→~2 weeks).
-> 2. **Create a NEW Play Console developer account as an ORGANIZATION** ($25):
->    legal name *Birdo Networks Ltd* (Companies House no. 17136571), the D-U-N-S
->    number, a `@birdo.app` contact email, website `https://birdo.app`. Complete
->    org verification.
-> 3. **TRANSFER the app** `app.birdo.vpn` from the personal account to the org
->    account (Play Console app-transfer flow / help form; free apps with no
->    purchases transfer simply, ~1–2 days).
->    **NEVER DELETE the app instead** — a package name that has ever had an
->    upload is reserved forever, so deleting would burn `app.birdo.vpn`
->    permanently.
-> 4. Re-wire CI on the new account: Play Console → API access → link/grant the
->    service account (or a new one) with Release manager, update the
->    `PLAY_SERVICE_ACCOUNT_JSON` secret if the account changed.
->
-> **Silver lining:** organization accounts are **exempt from the 12-tester /
-> 14-day closed-testing rule**, so that entire gate disappears. The new critical
-> path is just D-U-N-S + org verification + transfer, then straight to review.
+> **Remaining owner path (all Play Console, ~a few days of clicks + a review):**
+> 1. **App on the org account.** If `app.birdo.vpn` was ever uploaded under the old
+>    personal account, use the Play Console **app-transfer** flow to move it to the
+>    org account (free app, no in-app purchases → simple, ~1–2 days). **NEVER
+>    delete + recreate** — the package name is reserved forever once uploaded, so
+>    deleting would burn `app.birdo.vpn` permanently. If it was never uploaded,
+>    just **create** it fresh under the org account.
+> 2. **Enrol in Play App Signing** (Console offers this on first release). Your
+>    `birdo-release.jks` becomes the *upload* key — no build change. **Then copy
+>    the Play App Signing SHA-256 into `birdo-web/public/.well-known/assetlinks.json`
+>    and redeploy birdo.app** (see §5.7 — App Links need the Play cert, not the
+>    upload cert).
+> 3. **Console setup** — Store listing (⚠️ **re-capture the phone screenshots
+>    first** — the old ones were corrupt and were removed; see
+>    `store-assets/SCREENSHOTS-README.md`), Data-safety (§4b), Content rating (§4c),
+>    App access reviewer creds (§3).
+> 4. **Wire CI on the org account** — Play Console → API access → grant the service
+>    account **Release manager**; set repo secret `PLAY_SERVICE_ACCOUNT_JSON` +
+>    variable `PLAY_UPLOAD_ENABLED=true`. (First AAB upload is manual; CI takes over
+>    after.)
+> 5. **Upload the AAB → Internal → submit for review → promote to production**
+>    (staged rollout). The current release version is **1.3.40** (bumped past the
+>    already-tagged 1.3.39 so the versionCode is fresh).
 
-The code is ready. The launch clock is now dominated by **one owner-only gate**:
-the organization account (D-U-N-S → verify → transfer). Listing/Data-safety/
-content-rating work carries over unchanged and can be prepared meanwhile.
+The code, CI, and compliance are ready and re-verified this pass (§1). The launch
+clock is now just **Console setup + Google's VPN review** — no account lead time,
+no tester clock.
 
-Realistic timeline: **D-U-N-S + org verification** (days, up to ~2 weeks worst
-case) → **app transfer** (~1–2 days) → **production review** (1–7 days,
-VPN-strict). No 14-day tester clock.
+Realistic timeline: **app transfer/create** (~1–2 days if transferring) →
+**listing + data-safety + review submission** (owner, hours) → **production
+review** (1–7 days, VPN-strict).
+
+> **The only NEW code/asset action this pass surfaced:** the phone screenshots in
+> `store-assets/` were corrupt and had to be removed — they must be re-captured
+> from the running app before the listing can be completed (owner; needs an
+> emulator/device — instructions in `store-assets/SCREENSHOTS-README.md`).
+> Everything else (policy gating, manifest, data-safety-vs-code, 16 KB gate,
+> signing, account deletion, privacy page) was verified in place.
 
 ---
 
@@ -192,9 +200,16 @@ and where we stand:
 5. **Foreground-service justification** — ✅ written into the manifest property.
 6. **16 KB pages** — ✅ CI-gated (§2).
 7. **Deep-link App Links** (`https://birdo.app/connect`, `/dashboard`) declare
-   `autoVerify` — for the green "verified" status, host
-   `/.well-known/assetlinks.json` on birdo.app with this app's signing-cert
-   SHA-256. Not a launch blocker (links still work), but do it for polish.
+   `autoVerify`. `birdo-web/public/.well-known/assetlinks.json` already exists but
+   currently holds a **placeholder** fingerprint (`SHA256_CERT_FINGERPRINT_HERE`).
+   For the green "verified" auto-open status you must replace it with the
+   **Play App Signing certificate SHA-256** — NOT the upload key — because Google
+   re-signs the distributed app. Get it from **Play Console → (app) → Test and
+   release → App integrity → App signing → *App signing key certificate* →
+   SHA-256**, paste it into **both** fingerprint arrays in that file, and
+   **redeploy birdo.app**. (You can add the *upload* key SHA-256 to the same
+   arrays too so locally-built APKs verify.) Not a launch blocker — the links
+   still function without verification; this is only for the auto-open polish.
 
 ---
 
