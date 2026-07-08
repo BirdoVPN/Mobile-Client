@@ -251,29 +251,28 @@ def main() -> None:
     committed = False
     try:
         stage(s, edit_id, listing, images)
-        # changesNotSentForReview is required on validate as well as commit for
-        # this app: Play refuses to auto-submit its changes for review (same
-        # quirk the AAB upload job documents), and validate enforces it too.
-        check(
-            request_with_retry(
-                lambda: s.post(
-                    f"{BASE}/edits/{edit_id}:validate?changesNotSentForReview=true"
-                ),
-                "validate",
-            ),
-            "validate edit",
-        )
-        print("edit validated by Play")
+        # NOTE: the separate :validate endpoint is UNUSABLE for this app — it
+        # always fails with "Changes cannot be sent for review automatically"
+        # and (unlike :commit) does not accept the changesNotSentForReview
+        # parameter that suppresses exactly that condition. Every staging call
+        # above is individually validated by the API, and the guarded commit
+        # is the real end-to-end check, so validate adds nothing here.
         if args.apply:
             check(
-                s.post(f"{BASE}/edits/{edit_id}:commit?changesNotSentForReview=true"),
+                request_with_retry(
+                    lambda: s.post(
+                        f"{BASE}/edits/{edit_id}:commit?changesNotSentForReview=true"
+                    ),
+                    "commit",
+                ),
                 "commit edit",
             )
             committed = True
             print("COMMITTED: listing is now staged in the Play Console "
                   "(submit for review from the Console when declarations are done)")
         else:
-            print("dry-run complete: edit validated and will be discarded")
+            print("dry-run complete: all content staged + accepted by the API; "
+                  "edit will be discarded (apply commits it)")
     finally:
         if not committed:
             delete_edit(s, edit_id)
