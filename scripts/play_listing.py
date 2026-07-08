@@ -251,9 +251,15 @@ def main() -> None:
     committed = False
     try:
         stage(s, edit_id, listing, images)
+        # changesNotSentForReview is required on validate as well as commit for
+        # this app: Play refuses to auto-submit its changes for review (same
+        # quirk the AAB upload job documents), and validate enforces it too.
         check(
             request_with_retry(
-                lambda: s.post(f"{BASE}/edits/{edit_id}:validate"), "validate"
+                lambda: s.post(
+                    f"{BASE}/edits/{edit_id}:validate?changesNotSentForReview=true"
+                ),
+                "validate",
             ),
             "validate edit",
         )
