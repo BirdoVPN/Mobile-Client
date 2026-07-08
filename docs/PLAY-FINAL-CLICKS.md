@@ -29,9 +29,10 @@ Teen/PEGI 12. Per §4c.
 
 ## 4. App access (Console → App content → App access)
 "All or some functionality is restricted" → add one instruction set:
-- Anonymous ID: `838568571611737459262143` (Anonymous tab on the login screen)
-- Password: re-run `_local/artifacts/make-reviewer.js` on prod to (re)set it,
-  then paste. Account has an active SOVEREIGN plan.
+- The reviewer test account's anonymous ID and password (kept in the private
+  ops vault — never in this repository). Reviewers sign in on the Anonymous
+  tab of the login screen. The account must have an active premium plan or
+  the VPN review auto-fails.
 - Note: "Subscriptions are purchased on our website; the app is login-only.
   The test account above has an active plan."
 
