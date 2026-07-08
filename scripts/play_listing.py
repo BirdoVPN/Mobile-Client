@@ -120,8 +120,24 @@ def session() -> AuthorizedSession:
 
 def check(resp, what: str):
     if resp.status_code >= 400:
-        # API error bodies never contain our secret; safe to surface.
-        die(f"{what} failed: HTTP {resp.status_code}: {resp.text[:2000]}")
+        # Surface the STRUCTURED error messages rather than the raw body:
+        # GitHub Actions masks any log line containing a secret-matching
+        # substring, and raw Google error bodies have been masked wholesale in
+        # practice — leaving "HTTP 400: ***" which is undebuggable. The
+        # message/reason fields are plain English and survive masking.
+        details = []
+        try:
+            err = resp.json().get("error", {})
+            if err.get("message"):
+                details.append(f"message: {err['message']}")
+            for e in err.get("errors", []):
+                reason = e.get("reason", "?")
+                msg = e.get("message", "")
+                details.append(f"- [{reason}] {msg}")
+        except Exception:  # noqa: BLE001 - non-JSON body
+            details.append(resp.text[:500])
+        detail_text = "\n".join(details) or "(no error detail)"
+        die(f"{what} failed: HTTP {resp.status_code}\n{detail_text}")
     return resp.json() if resp.content else {}
 
 
