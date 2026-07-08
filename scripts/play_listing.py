@@ -37,6 +37,7 @@ import glob
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -118,10 +119,45 @@ def session() -> AuthorizedSession:
     return AuthorizedSession(creds)
 
 
+def request_with_retry(fn, what: str, attempts: int = 3):
+    """Call fn() -> Response, retrying transient Google 5xx/429 errors.
+
+    The androidpublisher API intermittently returns 500 'Internal error
+    encountered.' on image uploads; a blind fail there aborts the whole
+    publish over a blip.
+    """
+    delays = [0, 2, 5]
+    last = None
+    for i in range(attempts):
+        if delays[i]:
+            time.sleep(delays[i])
+        last = fn()
+        if last.status_code < 500 and last.status_code != 429:
+            return last
+        print(f"transient HTTP {last.status_code} on {what} (attempt {i + 1}/{attempts})")
+    return last
+
+
 def check(resp, what: str):
     if resp.status_code >= 400:
-        # API error bodies never contain our secret; safe to surface.
-        die(f"{what} failed: HTTP {resp.status_code}: {resp.text[:2000]}")
+        # Surface the STRUCTURED error messages rather than the raw body:
+        # GitHub Actions masks any log line containing a secret-matching
+        # substring, and raw Google error bodies have been masked wholesale in
+        # practice — leaving "HTTP 400: ***" which is undebuggable. The
+        # message/reason fields are plain English and survive masking.
+        details = []
+        try:
+            err = resp.json().get("error", {})
+            if err.get("message"):
+                details.append(f"message: {err['message']}")
+            for e in err.get("errors", []):
+                reason = e.get("reason", "?")
+                msg = e.get("message", "")
+                details.append(f"- [{reason}] {msg}")
+        except Exception:  # noqa: BLE001 - non-JSON body
+            details.append(resp.text[:500])
+        detail_text = "\n".join(details) or "(no error detail)"
+        die(f"{what} failed: HTTP {resp.status_code}\n{detail_text}")
     return resp.json() if resp.content else {}
 
 
@@ -182,11 +218,14 @@ def stage(s: AuthorizedSession, edit_id: str, listing: dict, images: dict) -> No
             with open(path, "rb") as fh:
                 data = fh.read()
             check(
-                s.post(
-                    f"{UPLOAD_BASE}/edits/{edit_id}/listings/{LANG}/{image_type}"
-                    "?uploadType=media",
-                    data=data,
-                    headers={"Content-Type": "image/png"},
+                request_with_retry(
+                    lambda: s.post(
+                        f"{UPLOAD_BASE}/edits/{edit_id}/listings/{LANG}/{image_type}"
+                        "?uploadType=media",
+                        data=data,
+                        headers={"Content-Type": "image/png"},
+                    ),
+                    f"upload {Path(path).name}",
                 ),
                 f"upload {image_type} {Path(path).name}",
             )
@@ -212,18 +251,28 @@ def main() -> None:
     committed = False
     try:
         stage(s, edit_id, listing, images)
-        check(s.post(f"{BASE}/edits/{edit_id}:validate"), "validate edit")
-        print("edit validated by Play")
+        # NOTE: the separate :validate endpoint is UNUSABLE for this app — it
+        # always fails with "Changes cannot be sent for review automatically"
+        # and (unlike :commit) does not accept the changesNotSentForReview
+        # parameter that suppresses exactly that condition. Every staging call
+        # above is individually validated by the API, and the guarded commit
+        # is the real end-to-end check, so validate adds nothing here.
         if args.apply:
             check(
-                s.post(f"{BASE}/edits/{edit_id}:commit?changesNotSentForReview=true"),
+                request_with_retry(
+                    lambda: s.post(
+                        f"{BASE}/edits/{edit_id}:commit?changesNotSentForReview=true"
+                    ),
+                    "commit",
+                ),
                 "commit edit",
             )
             committed = True
             print("COMMITTED: listing is now staged in the Play Console "
                   "(submit for review from the Console when declarations are done)")
         else:
-            print("dry-run complete: edit validated and will be discarded")
+            print("dry-run complete: all content staged + accepted by the API; "
+                  "edit will be discarded (apply commits it)")
     finally:
         if not committed:
             delete_edit(s, edit_id)
