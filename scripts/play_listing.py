@@ -37,6 +37,7 @@ import glob
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -116,6 +117,25 @@ def session() -> AuthorizedSession:
         info, scopes=["https://www.googleapis.com/auth/androidpublisher"]
     )
     return AuthorizedSession(creds)
+
+
+def request_with_retry(fn, what: str, attempts: int = 3):
+    """Call fn() -> Response, retrying transient Google 5xx/429 errors.
+
+    The androidpublisher API intermittently returns 500 'Internal error
+    encountered.' on image uploads; a blind fail there aborts the whole
+    publish over a blip.
+    """
+    delays = [0, 2, 5]
+    last = None
+    for i in range(attempts):
+        if delays[i]:
+            time.sleep(delays[i])
+        last = fn()
+        if last.status_code < 500 and last.status_code != 429:
+            return last
+        print(f"transient HTTP {last.status_code} on {what} (attempt {i + 1}/{attempts})")
+    return last
 
 
 def check(resp, what: str):
@@ -198,11 +218,14 @@ def stage(s: AuthorizedSession, edit_id: str, listing: dict, images: dict) -> No
             with open(path, "rb") as fh:
                 data = fh.read()
             check(
-                s.post(
-                    f"{UPLOAD_BASE}/edits/{edit_id}/listings/{LANG}/{image_type}"
-                    "?uploadType=media",
-                    data=data,
-                    headers={"Content-Type": "image/png"},
+                request_with_retry(
+                    lambda: s.post(
+                        f"{UPLOAD_BASE}/edits/{edit_id}/listings/{LANG}/{image_type}"
+                        "?uploadType=media",
+                        data=data,
+                        headers={"Content-Type": "image/png"},
+                    ),
+                    f"upload {Path(path).name}",
                 ),
                 f"upload {image_type} {Path(path).name}",
             )
@@ -228,7 +251,12 @@ def main() -> None:
     committed = False
     try:
         stage(s, edit_id, listing, images)
-        check(s.post(f"{BASE}/edits/{edit_id}:validate"), "validate edit")
+        check(
+            request_with_retry(
+                lambda: s.post(f"{BASE}/edits/{edit_id}:validate"), "validate"
+            ),
+            "validate edit",
+        )
         print("edit validated by Play")
         if args.apply:
             check(
