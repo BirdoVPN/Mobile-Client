@@ -1,0 +1,46 @@
+name: Play Store Listing
+
+# Publishes the Play store listing (text + graphics + screenshots) for
+# app.birdo.vpn from the files committed under store-assets/, via
+# scripts/play_listing.py and the Play Developer API.
+#
+# probe   = read-only access check (also verifies the service account works
+#           on the organisation Play account after the app transfer)
+# dry-run = stage + server-side validate, then discard (nothing committed)
+# apply   = stage + validate + commit (listing appears in the Play Console)
+#
+# The Data-safety and Content-rating questionnaires and the App-access
+# reviewer credentials have no public API — those stay Console-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "probe | dry-run | apply"
+        required: true
+        default: probe
+        type: choice
+        options: [probe, dry-run, apply]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: play-listing
+  cancel-in-progress: false
+
+jobs:
+  listing:
+    name: Play listing (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install pinned deps
+        run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
+
+      - name: Run play_listing.py --${{ inputs.mode }}
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: python3 scripts/play_listing.py --${{ inputs.mode }}
