@@ -7,15 +7,15 @@ v1** — a Mullvad-style ML-KEM-1024 KEM-only construction. End-to-end status:
 
 | Layer | Status | File |
 |---|---|---|
-| Rust JNI crate (client) | ✅ done, 5/5 unit tests pass | `rosenpass-jni/src/{lib,handshake,errors}.rs` |
-| Kotlin JNI bridge | ✅ done | `app/src/main/java/app/birdo/vpn/service/RosenpassNative.kt` |
-| Kotlin orchestration | ✅ done | `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt` |
-| Encrypted keystore | ✅ done | `app/src/main/java/app/birdo/vpn/service/RosenpassKeyStore.kt` |
-| API schema (request + response) | ✅ done | `shared/.../model/Models.kt` |
-| Server-side encap binary | ✅ done, 3/3 unit tests pass | `birdo-pq-server/` |
-| Backend `/connect` integration (NestJS) | ✅ done, 4/4 unit tests pass | `birdo-web/backend/src/vpn/birdo-pq.service.ts` |
+| Rust JNI crate (client) |  done, 5/5 unit tests pass | `rosenpass-jni/src/{lib,handshake,errors}.rs` |
+| Kotlin JNI bridge |  done | `app/src/main/java/app/birdo/vpn/service/RosenpassNative.kt` |
+| Kotlin orchestration |  done | `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt` |
+| Encrypted keystore |  done | `app/src/main/java/app/birdo/vpn/service/RosenpassKeyStore.kt` |
+| API schema (request + response) |  done | `shared/.../model/Models.kt` |
+| Server-side encap binary |  done, 3/3 unit tests pass | `birdo-pq-server/` |
+| Backend `/connect` integration (NestJS) |  done, 4/4 unit tests pass | `birdo-web/backend/src/vpn/birdo-pq.service.ts` |
 | Cryptographer audit | ⏳ pending — required before flipping default-on |
-| Staged rollout (1% → 100%) | ⏳ pending — requires audit + telemetry counters |
+| Staged rollout (1% -> 100%) | ⏳ pending — requires audit + telemetry counters |
 
 ### Threat model
 
@@ -92,8 +92,8 @@ already in place). Track upstream:
       - Implicit rejection behaviour of pqcrypto-mlkem
       - Memory zeroization coverage
       - Side-channel review of the JNI marshalling
-- [ ] **On-device integration tests** that exercise generate → upload → decap
-      → WireGuard handshake end-to-end against a staging server.
+- [ ] **On-device integration tests** that exercise generate -> upload -> decap
+      -> WireGuard handshake end-to-end against a staging server.
 - [ ] **Telemetry counters** for `Mode.{DISABLED, SERVER_PROVIDED, BILATERAL}`
       so the 1% rollout can be measured.
 - [ ] **AndroidManifest.xml AD_ID strip** and Play Console data-safety

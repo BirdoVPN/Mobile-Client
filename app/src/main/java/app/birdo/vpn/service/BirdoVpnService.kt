@@ -306,11 +306,11 @@ class BirdoVpnService : VpnService() {
         val parts = mutableListOf<String>()
         // Show protection indicators
         if (stealthActive && quantumActive) {
-            parts.add("🛡️ Stealth + Quantum")
+            parts.add("Stealth + Quantum")
         } else if (stealthActive) {
-            parts.add("🛡️ Stealth")
+            parts.add("Stealth")
         } else if (quantumActive) {
-            parts.add("🔐 Quantum")
+            parts.add("Quantum")
         }
         if (appPrefs.showLocationInNotification) {
             parts.add(connectedServer ?: "Server")
@@ -441,7 +441,7 @@ class BirdoVpnService : VpnService() {
                 _killSwitchActiveFlow.value = true
                 updateState(VpnState.KillSwitchActive)
                 Log.i(TAG, "Kill switch active — all traffic blocked")
-                updateNotification("⛔ Kill Switch Active — Traffic blocked")
+                updateNotification("Kill Switch Active — Traffic blocked")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to activate kill switch", e)

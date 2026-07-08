@@ -69,6 +69,6 @@ xcodebuild -create-xcframework \
     -headers "${HEADERS_DIR}/Headers" \
     -output "${OUT_DIR}"
 
-echo "✅ Built: ${OUT_DIR}"
+echo "[OK] Built: ${OUT_DIR}"
 echo "   Slices: arm64-iOS, arm64+x86_64-iOS-sim"
 echo "   Add the .xcframework to the iosApp Xcode target ('Embed & Sign')."

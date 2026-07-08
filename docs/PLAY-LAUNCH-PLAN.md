@@ -15,7 +15,7 @@ gotchas that actually gate a VPN app.
 
 ## 0. TL;DR — the critical path
 
-> ### ✅ 2026-07-06: ORGANIZATION account acquired — the one hard gate is cleared
+> ###  2026-07-06: ORGANIZATION account acquired — the one hard gate is cleared
 > Google's **Play Console Requirements** policy requires VPN apps (anything using
 > the `VpnService` class) to ship from an **organization** developer account, not
 > a personal one (enforced against us 3 Jul 2026). **That org account now exists**,
@@ -26,7 +26,7 @@ gotchas that actually gate a VPN app.
 > **Remaining owner path (all Play Console, ~a few days of clicks + a review):**
 > 1. **App on the org account.** If `app.birdo.vpn` was ever uploaded under the old
 >    personal account, use the Play Console **app-transfer** flow to move it to the
->    org account (free app, no in-app purchases → simple, ~1–2 days). **NEVER
+>    org account (free app, no in-app purchases -> simple, ~1–2 days). **NEVER
 >    delete + recreate** — the package name is reserved forever once uploaded, so
 >    deleting would burn `app.birdo.vpn` permanently. If it was never uploaded,
 >    just **create** it fresh under the org account.
@@ -40,11 +40,11 @@ gotchas that actually gate a VPN app.
 >    **PlayReviewer** anonymous account with an active plan already exists on prod
 >    for the App-access field), Data-safety (§4b), Content rating (§4c),
 >    App access (§3).
-> 4. **Wire CI on the org account** — Play Console → API access → grant the service
+> 4. **Wire CI on the org account** — Play Console -> API access -> grant the service
 >    account **Release manager**; set repo secret `PLAY_SERVICE_ACCOUNT_JSON` +
 >    variable `PLAY_UPLOAD_ENABLED=true`. (First AAB upload is manual; CI takes over
 >    after.)
-> 5. **Upload the AAB → Internal → submit for review → promote to production**
+> 5. **Upload the AAB -> Internal -> submit for review -> promote to production**
 >    (staged rollout). The current release version is **1.3.40** (bumped past the
 >    already-tagged 1.3.39 so the versionCode is fresh).
 
@@ -52,8 +52,8 @@ The code, CI, and compliance are ready and re-verified this pass (§1). The laun
 clock is now just **Console setup + Google's VPN review** — no account lead time,
 no tester clock.
 
-Realistic timeline: **app transfer/create** (~1–2 days if transferring) →
-**listing + data-safety + review submission** (owner, hours) → **production
+Realistic timeline: **app transfer/create** (~1–2 days if transferring) ->
+**listing + data-safety + review submission** (owner, hours) -> **production
 review** (1–7 days, VPN-strict).
 
 > **Screenshots (resolved this pass):** the old `store-assets/` phone screenshots
@@ -74,16 +74,16 @@ The app was already hardened across previous work; verified this pass:
 
 | Area | State |
 |---|---|
-| **Payments policy** | ✅ Play build (`IS_PLAY_BUILD=true`) compiles out **all** external-purchase steering — no buy buttons, no web-billing links, no "buy on birdo.app" copy. Premium tiers show as an informational feature comparison. (Sideload APK keeps the links; it's not on Play.) |
-| **Permissions** | ✅ `QUERY_ALL_PACKAGES` already replaced with a targeted `<queries>` (launcher intent) for the split-tunnel app picker. No sensitive-permission over-ask. |
-| **Foreground service** | ✅ `specialUse` FGS with a written `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` justification + `SUPPORTS_ALWAYS_ON`. `BIND_VPN_SERVICE` declared. |
-| **Data at rest** | ✅ Auth tokens in `EncryptedSharedPreferences` (Keystore-backed, with corruption recovery). |
-| **Transport** | ✅ Cleartext blocked (`networkSecurityConfig`), SPKI cert-pinning (OkHttp + manifest pin-set, ISRG backup pin, expiry 2027-06-01). |
-| **Native integrity** | ✅ SHA-256 hash-gate on wg-go/xray/rosenpass-jni; signing-cert fingerprint runtime tamper check. |
-| **Crash reporting** | ✅ Sentry with `isSendDefaultPii = false` + `beforeSend` scrubber; no analytics or ad SDKs. |
-| **Self-update** | ✅ None — the app does **not** download/sideload APKs (that would be a Device-and-Network-Abuse violation). Updates come through Play. |
-| **Account deletion** | ✅ In-app account deletion exists (Play requirement for apps with accounts) + web URL `birdo.app/delete-account`. |
-| **Release engineering** | ✅ AGP 8.11, R8 minify + resource shrink, `debugSymbolLevel=FULL`, ABI filter arm64-v8a + x86_64, signed AAB in CI, Sigstore provenance, versionCode from `version.properties`. |
+| **Payments policy** |  Play build (`IS_PLAY_BUILD=true`) compiles out **all** external-purchase steering — no buy buttons, no web-billing links, no "buy on birdo.app" copy. Premium tiers show as an informational feature comparison. (Sideload APK keeps the links; it's not on Play.) |
+| **Permissions** |  `QUERY_ALL_PACKAGES` already replaced with a targeted `<queries>` (launcher intent) for the split-tunnel app picker. No sensitive-permission over-ask. |
+| **Foreground service** |  `specialUse` FGS with a written `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` justification + `SUPPORTS_ALWAYS_ON`. `BIND_VPN_SERVICE` declared. |
+| **Data at rest** |  Auth tokens in `EncryptedSharedPreferences` (Keystore-backed, with corruption recovery). |
+| **Transport** |  Cleartext blocked (`networkSecurityConfig`), SPKI cert-pinning (OkHttp + manifest pin-set, ISRG backup pin, expiry 2027-06-01). |
+| **Native integrity** |  SHA-256 hash-gate on wg-go/xray/rosenpass-jni; signing-cert fingerprint runtime tamper check. |
+| **Crash reporting** |  Sentry with `isSendDefaultPii = false` + `beforeSend` scrubber; no analytics or ad SDKs. |
+| **Self-update** |  None — the app does **not** download/sideload APKs (that would be a Device-and-Network-Abuse violation). Updates come through Play. |
+| **Account deletion** |  In-app account deletion exists (Play requirement for apps with accounts) + web URL `birdo.app/delete-account`. |
+| **Release engineering** |  AGP 8.11, R8 minify + resource shrink, `debugSymbolLevel=FULL`, ABI filter arm64-v8a + x86_64, signed AAB in CI, Sigstore provenance, versionCode from `version.properties`. |
 
 ## 2. What this change set added
 
@@ -132,11 +132,11 @@ bits that trip people up:
 - [ ] **First AAB upload is manual** (the API can't create the app). Download the
       `.aab` from a GitHub release (or run the workflow), upload to **Internal
       testing** by hand. CI takes over after that.
-- [ ] **Service-account JSON** → repo secret `PLAY_SERVICE_ACCOUNT_JSON`; set
+- [ ] **Service-account JSON** -> repo secret `PLAY_SERVICE_ACCOUNT_JSON`; set
       variable `PLAY_UPLOAD_ENABLED=true` to arm the auto-upload job.
 - [ ] **App access** — Google reviews **behind your login**. Create a reviewer
       account on birdo.app **with an active plan** and put the email/password in
-      *App access → All functionality → Instructions*. **Without this the review
+      *App access -> All functionality -> Instructions*. **Without this the review
       fails** (they can't get past your auth). Include a note: *"Subscriptions
       are purchased on our website; this app is login-only. Test credentials
       below have an active plan."*
@@ -146,12 +146,12 @@ bits that trip people up:
 ## 4. Store listing + declarations (concrete answers)
 
 ### 4a. Assets — already generated in `store-assets/`
-- [ ] **App icon** 512×512 → `store-assets/app-icon-512.png`
-- [ ] **Feature graphic** 1024×500 → `store-assets/feature-graphic-1024x500.png`
-- [ ] **Phone screenshots** (≥ 2, up to 8) → `store-assets/screenshot-0*.png`
+- [ ] **App icon** 512×512 -> `store-assets/app-icon-512.png`
+- [ ] **Feature graphic** 1024×500 -> `store-assets/feature-graphic-1024x500.png`
+- [ ] **Phone screenshots** (≥ 2, up to 8) -> `store-assets/screenshot-0*.png`
 - [ ] **Short description** (≤ 80 chars) and **full description** (≤ 4000). Draft
       below.
-- [ ] **What's new** → `distribution/whatsnew/whatsnew-en-US` (≤ 500 chars).
+- [ ] **What's new** -> `distribution/whatsnew/whatsnew-en-US` (≤ 500 chars).
 
 > Suggested short description: *"Fast, private WireGuard® VPN with post-quantum
 > encryption and a kill switch."*
@@ -193,17 +193,17 @@ Declare:
 Google reviews VPN apps more strictly than average. The known rejection causes,
 and where we stand:
 
-1. **Must use the Android `VpnService` API** and declare it — ✅ we do
+1. **Must use the Android `VpnService` API** and declare it —  we do
    (`BIND_VPN_SERVICE`, `specialUse` FGS). Apps that tunnel without `VpnService`
    get pulled.
-2. **No steering to external payment** — ✅ removed in the Play build (§2).
-3. **Data safety must match runtime behaviour** — ✅ §4b matches the code. A
+2. **No steering to external payment** —  removed in the Play build (§2).
+3. **Data safety must match runtime behaviour** —  §4b matches the code. A
    mismatch (e.g. an SDK that phones home) is the top cause of enforcement.
 4. **Reviewer must reach full functionality** — provide the test account (§3).
    A VPN behind a login with no test creds = automatic fail.
-5. **Foreground-service justification** — ✅ written into the manifest property.
-6. **16 KB pages** — ✅ CI-gated (§2).
-7. **Deep-link App Links** — ✅ **DONE (2026-07-07)**. `birdo.app/.well-known/
+5. **Foreground-service justification** —  written into the manifest property.
+6. **16 KB pages** —  CI-gated (§2).
+7. **Deep-link App Links** —  **DONE (2026-07-07)**. `birdo.app/.well-known/
    assetlinks.json` is live with the real **Play App Signing** cert SHA-256
    (plus the upload-key cert for locally-built APKs) in both statements
    (birdo-web PR #186, deployed + verified). Certs documented in
@@ -216,16 +216,16 @@ and where we stand:
 Automated once `PLAY_UPLOAD_ENABLED=true` (see SETUP.md Part C):
 
 1. Bump `version.properties` (Play rejects a re-used `versionCode`), commit.
-2. Tag `android-vX.Y.Z` → push. CI builds/signs the AAB (`-PplayBuild=true`),
+2. Tag `android-vX.Y.Z` -> push. CI builds/signs the AAB (`-PplayBuild=true`),
    runs the 16 KB gate, uploads to the **internal** track, and drafts a GitHub
    release with the sideload APK.
-3. Promote via Actions → *Run workflow* → `play_track = closed / production`.
+3. Promote via Actions -> *Run workflow* -> `play_track = closed / production`.
 4. For production, use a **staged rollout** (`status: inProgress` + `userFraction`
-   e.g. 0.1 → 0.5 → 1.0) so a bad build can be halted.
+   e.g. 0.1 -> 0.5 -> 1.0) so a bad build can be halted.
 
-**Recommended track ladder (organization account):** internal (you) → a short
+**Recommended track ladder (organization account):** internal (you) -> a short
 closed/open sanity round if you want one (no 12-tester/14-day mandate for org
-accounts) → production (staged).
+accounts) -> production (staged).
 
 ---
 
@@ -252,7 +252,7 @@ Billing instead of the web. **Not needed for launch** — launch login-only firs
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| VPN apps = org-account-only (Play Console Requirements) | **Certain — enforced 3 Jul 2026** | D-U-N-S → org account → **transfer** the app (§0). Never delete the app: the package name would be burned forever |
+| VPN apps = org-account-only (Play Console Requirements) | **Certain — enforced 3 Jul 2026** | D-U-N-S -> org account -> **transfer** the app (§0). Never delete the app: the package name would be burned forever |
 | D-U-N-S / org verification lead time | Medium | Start today; UK Ltds often already have a D-U-N-S — check the D&B lookup first |
 | Data-safety mismatch flagged | Low | §4b matches code; keep it in sync if SDKs change |
 | Review can't get past login | Medium | Provide reviewer account with an active plan (§3) |

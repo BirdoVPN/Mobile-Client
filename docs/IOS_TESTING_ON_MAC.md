@@ -58,8 +58,8 @@ cd birdo-client-mobile
 ```
 
 Output:
-- ARM Mac → `shared/build/bin/iosSimulatorArm64/debugFramework/BirdoShared.framework`
-- Intel  → `shared/build/bin/iosX64/debugFramework/BirdoShared.framework`
+- ARM Mac -> `shared/build/bin/iosSimulatorArm64/debugFramework/BirdoShared.framework`
+- Intel  -> `shared/build/bin/iosX64/debugFramework/BirdoShared.framework`
 
 For a real-device or release build:
 
@@ -97,8 +97,8 @@ open — give it a minute).
 
 In Xcode:
 
-1. Scheme picker (top-left) → **BirdoVPN**.
-2. Destination picker → **iPhone 15 Pro** (or any 17.x simulator).
+1. Scheme picker (top-left) -> **BirdoVPN**.
+2. Destination picker -> **iPhone 15 Pro** (or any 17.x simulator).
 3. Hit **▶ Run** (`⌘R`).
 
 First launch builds WireGuardKit (~1–2 min). Subsequent launches are seconds.
@@ -107,12 +107,12 @@ First launch builds WireGuardKit (~1–2 min). Subsequent launches are seconds.
 
 | Feature                          | Simulator | Real device |
 |----------------------------------|:---------:|:-----------:|
-| UI, navigation, animations       | ✅        | ✅          |
-| Login, register, server list     | ✅        | ✅          |
-| 3D globe / Compose UI rendering  | ✅        | ✅          |
-| **Establish a real VPN tunnel**  | ❌        | ✅          |
-| Network Extension entitlement    | ❌        | ✅          |
-| Push notifications, biometrics   | partial   | ✅          |
+| UI, navigation, animations       |         |           |
+| Login, register, server list     |         |           |
+| 3D globe / Compose UI rendering  |         |           |
+| **Establish a real VPN tunnel**  |         |           |
+| Network Extension entitlement    |         |           |
+| Push notifications, biometrics   | partial   |           |
 
 The Simulator can't create a `utun` interface, so the **Connect** button surfaces
 "VPN unavailable in simulator". Everything else — login flow, server picker, theme,
@@ -140,14 +140,14 @@ paid Apple Developer account — a free Apple ID gives you a 7-day provisioning
 profile, plenty for testing.
 
 1. Borrow an iPhone (yours, a friend's, anyone with iOS 17+).
-2. On the iPhone: **Settings ▸ Privacy & Security ▸ Developer Mode** → enable.
+2. On the iPhone: **Settings ▸ Privacy & Security ▸ Developer Mode** -> enable.
 3. Plug it into your Mac via USB. Trust the computer when prompted.
-4. In Xcode: **Settings ▸ Accounts ▸ +** → sign in with any Apple ID.
+4. In Xcode: **Settings ▸ Accounts ▸ +** -> sign in with any Apple ID.
 5. Select the **BirdoVPN** target ▸ **Signing & Capabilities**:
    - Team: pick your Apple ID (Personal Team).
    - Bundle Identifier: change to something unique like `dev.<yourname>.birdo`.
    - Repeat for **PacketTunnel** with `dev.<yourname>.birdo.tunnel`.
-6. Destination picker → choose the connected iPhone.
+6. Destination picker -> choose the connected iPhone.
 7. **▶ Run**.
 
 First launch on the iPhone:

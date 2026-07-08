@@ -10,7 +10,7 @@ before disclosure.
 
 Use GitHub's private vulnerability reporting:
 
-> Repository → **Security** tab → **Report a vulnerability**
+> Repository -> **Security** tab -> **Report a vulnerability**
 
 ### Alternate channel
 

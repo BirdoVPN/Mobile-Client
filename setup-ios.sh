@@ -18,21 +18,21 @@ echo -e "${GREEN}═════════════════════
 echo -e "\n${YELLOW}[1/6] Checking prerequisites...${NC}"
 
 if ! command -v xcodebuild &>/dev/null; then
-  echo -e "${RED}✗ Xcode not found. Install from the Mac App Store.${NC}"
+  echo -e "${RED}[FAIL] Xcode not found. Install from the Mac App Store.${NC}"
   exit 1
 fi
-echo "  ✓ Xcode $(xcodebuild -version | head -1 | awk '{print $2}')"
+echo "[OK] Xcode $(xcodebuild -version | head -1 | awk '{print $2}')"
 
 if ! command -v java &>/dev/null; then
-  echo -e "${RED}✗ Java not found. Install with: brew install openjdk@17${NC}"
+  echo -e "${RED}[FAIL] Java not found. Install with: brew install openjdk@17${NC}"
   exit 1
 fi
-echo "  ✓ Java $(java -version 2>&1 | head -1)"
+echo "[OK] Java $(java -version 2>&1 | head -1)"
 
 if ! command -v brew &>/dev/null; then
-  echo -e "${YELLOW}  ⚠ Homebrew not found — installing XcodeGen via direct download${NC}"
+  echo -e "${YELLOW} [WARN] Homebrew not found — installing XcodeGen via direct download${NC}"
 else
-  echo "  ✓ Homebrew"
+  echo "[OK] Homebrew"
 fi
 
 # ── Step 2: Install XcodeGen (generates .xcodeproj from project.yml) ──
@@ -41,11 +41,11 @@ if ! command -v xcodegen &>/dev/null; then
   if command -v brew &>/dev/null; then
     brew install xcodegen
   else
-    echo -e "${RED}✗ XcodeGen not found. Install Homebrew first, then: brew install xcodegen${NC}"
+    echo -e "${RED}[FAIL] XcodeGen not found. Install Homebrew first, then: brew install xcodegen${NC}"
     exit 1
   fi
 fi
-echo "  ✓ XcodeGen $(xcodegen version 2>/dev/null || echo 'installed')"
+echo "[OK] XcodeGen $(xcodegen version 2>/dev/null || echo 'installed')"
 
 # ── Step 3: Build KMP shared framework ──────────────────────────
 echo -e "\n${YELLOW}[3/6] Building KMP shared framework for iOS Simulator...${NC}"
@@ -66,7 +66,7 @@ fi
 echo "  Architecture: $ARCH → $GRADLE_TARGET"
 
 if [ ! -f "gradlew" ]; then
-  echo -e "${RED}✗ No gradlew found. Run this from the birdo-client-mobile/ directory.${NC}"
+  echo -e "${RED}[FAIL] No gradlew found. Run this from the birdo-client-mobile/ directory.${NC}"
   exit 1
 fi
 
@@ -74,16 +74,16 @@ chmod +x gradlew
 ./gradlew $GRADLE_TARGET --no-daemon
 
 if [ ! -d "$FRAMEWORK_DIR/BirdoShared.framework" ]; then
-  echo -e "${RED}✗ Framework build failed — BirdoShared.framework not found at $FRAMEWORK_DIR${NC}"
+  echo -e "${RED}[FAIL] Framework build failed — BirdoShared.framework not found at $FRAMEWORK_DIR${NC}"
   exit 1
 fi
-echo -e "  ${GREEN}✓ BirdoShared.framework built${NC}"
+echo -e " ${GREEN}[OK] BirdoShared.framework built${NC}"
 
 # ── Step 4: Generate Xcode project ──────────────────────────────
 echo -e "\n${YELLOW}[4/6] Generating Xcode project from project.yml...${NC}"
 cd iosApp
 xcodegen generate
-echo -e "  ${GREEN}✓ BirdoVPN.xcodeproj created${NC}"
+echo -e " ${GREEN}[OK] BirdoVPN.xcodeproj created${NC}"
 
 # ── Step 5: Find a simulator ────────────────────────────────────
 echo -e "\n${YELLOW}[5/6] Finding iOS Simulator...${NC}"
@@ -136,7 +136,7 @@ for devices in data['devices'].values():
 print('Unknown')
 " 2>/dev/null || echo "Unknown")
 
-echo -e "  ✓ Using simulator: $SIM_NAME ($SIMULATOR_ID)"
+echo -e "[OK] Using simulator: $SIM_NAME ($SIMULATOR_ID)"
 
 # ── Step 6: Build and Run ────────────────────────────────────────
 echo -e "\n${YELLOW}[6/6] Building and launching on simulator...${NC}"
@@ -154,7 +154,7 @@ xcodebuild \
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}  ✓ Build complete!                                ${NC}"
+echo -e "${GREEN} [OK] Build complete! ${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════${NC}"
 echo ""
 echo "To run in simulator:"

@@ -10,7 +10,7 @@
 | `screenshot-04-settings.png` | Settings (Appearance / Security / Connection) |
 | `screenshot-05-split-tunneling.png` | Split-tunnelling app picker |
 
-Upload these in the Play Console (Store listing → Phone screenshots). Play needs
+Upload these in the Play Console (Store listing -> Phone screenshots). Play needs
 2–8; all five here qualify (PNG, 1080×2340-ish portrait).
 
 ## How they were captured (for future re-capture)

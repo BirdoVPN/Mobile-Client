@@ -1,9 +1,9 @@
 # Google Play App Signing — `app.birdo.vpn`
 
 **Status: ENROLLED / ACTIVE (auto-enabled).** Play App Signing turned on automatically
-when the first AAB was uploaded to the Play Console. In **Play Console → App integrity →
-App signing** (and on the "Protected with Play" page), *Protect app signing key → Releases
-signed by Play* shows a green ✓. There is nothing to "enrol" — it is already done.
+when the first AAB was uploaded to the Play Console. In **Play Console -> App integrity ->
+App signing** (and on the "Protected with Play" page), *Protect app signing key -> Releases
+signed by Play* shows a green . There is nothing to "enrol" — it is already done.
 
 ## The two keys
 
@@ -22,7 +22,7 @@ that must match the *installed* app (App Links, Credential Manager, API provider
 ## Certificate fingerprints (all public)
 
 These are public certificates — they are published in `assetlinks.json` and shown to anyone in
-the Play Console. Safe to keep in-repo. Read from Play Console → App integrity → App signing.
+the Play Console. Safe to keep in-repo. Read from Play Console -> App integrity -> App signing.
 
 ### App signing key certificate (Google's — use this for App Links / API providers)
 
@@ -54,7 +54,7 @@ MD5      7B:6A:E9:3B:17:88:BF:EE:4B:4F:8C:D8:15:6A:82:CD
 ## If the upload key is ever lost/compromised
 
 Do **not** create a new app — the package name `app.birdo.vpn` is permanent. Use
-**Play Console → App integrity → App signing → Request upload key reset**. Google keeps
+**Play Console -> App integrity -> App signing -> Request upload key reset**. Google keeps
 signing delivered apps with the same (unchanged) app signing key, so existing installs keep
 updating; only our upload cert changes. Update the **upload** cert line in `assetlinks.json`
 afterward; the app-signing line never changes.

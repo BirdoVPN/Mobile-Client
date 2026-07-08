@@ -14,16 +14,16 @@ not internal effort.
 
 | Capability                              | Desktop (Win/macOS/Linux) | Android | iOS |
 | --------------------------------------- | :-----------------------: | :-----: | :-: |
-| WireGuard tunnel                        |             ✅            |    ✅    |  ✅  |
-| RAM-only entry/exit nodes               |             ✅            |    ✅    |  ✅  |
-| Kill switch / always-on VPN             |             ✅            |    ✅    |  ✅  |
-| LAN passthrough                         |             ✅            |    ✅    |  ✅  |
-| IPv6 leak protection                    |             ✅            |    ✅    |  ✅  |
-| DNS leak protection (encrypted DoH)     |             ✅            |    ✅    |  ✅  |
-| Multi-hop (entry → exit)                |             ✅            |    🚧   |  🚧 |
-| Custom DNS                              |             ✅            |    ✅    |  ✅  |
-| Split tunnelling                        |       ✅ (linux/win)      |    ✅    |  ❌¹ |
-| Auto-connect / launch-on-boot           |             ✅            |    ✅    |  ✅  |
+| WireGuard tunnel                        |                         |        |    |
+| RAM-only entry/exit nodes               |                         |        |    |
+| Kill switch / always-on VPN             |                         |        |    |
+| LAN passthrough                         |                         |        |    |
+| IPv6 leak protection                    |                         |        |    |
+| DNS leak protection (encrypted DoH)     |                         |        |    |
+| Multi-hop (entry -> exit)                |                         |       |   |
+| Custom DNS                              |                         |        |    |
+| Split tunnelling                        |        (linux/win)      |        |  ¹ |
+| Auto-connect / launch-on-boot           |                         |        |    |
 
 ¹ Apple does not expose per-app split tunnelling to NetworkExtension; we plan a
   per-domain rule engine instead (see Phase 2).
