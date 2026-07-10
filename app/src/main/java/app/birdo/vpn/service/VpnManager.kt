@@ -167,18 +167,23 @@ class VpnManager @Inject constructor(
             priorState is VpnState.Connecting ||
             priorState is VpnState.Reconnecting
         ) {
-            if (priorState is VpnState.Reconnecting) {
-                // We ARE the auto-reconnect job calling connect(). Tear down the
-                // old tunnel WITHOUT cancelAutoReconnect(): disconnect() would
-                // cancel THIS coroutine at its next suspension point, aborting the
-                // reconnect on its first attempt and leaving the kill switch down.
-                tearDownTunnel()
-            } else {
-                disconnect()
-            }
+            // A user-initiated switch must cancel any pending auto-reconnect; the
+            // Reconnecting branch must NOT — it IS the reconnect job and would
+            // cancel THIS coroutine at its next suspension point, aborting the
+            // reconnect on its first attempt.
+            if (priorState !is VpnState.Reconnecting) cancelAutoReconnect()
+            // Fail-closed teardown: hold the kill-switch blocking interface up
+            // while we unregister the old peer and rebuild. The former paths
+            // (ACTION_STOP via tearDownTunnel()/disconnect()) deactivated the kill
+            // switch and egressed cleartext for the whole rebuild window — the
+            // bounded wait below PLUS the /connect round-trip PLUS Xray/Rosenpass
+            // setup, tens of seconds. switchTeardown() keeps the interface up until
+            // the new tunnel's establish() atomically supersedes it.
+            switchTeardown()
             // Wait (bounded) for the service to confirm the old tunnel is down so
             // the old keyId is unregistered and wg-go is torn down before we
-            // register + bring up the new one.
+            // register + bring up the new one. The blocking interface stays up
+            // throughout this wait (and the /connect call that follows).
             var waited = 0
             while (_state.value !is VpnState.Disconnected && waited < 5000) {
                 delay(150)
@@ -432,6 +437,34 @@ class VpnManager @Inject constructor(
         // Don't set Disconnected here — the service sets currentState = Disconnected
         // after the tunnel is actually stopped. syncState() will pick it up.
         // We stay in Disconnecting until the service confirms.
+    }
+
+    /**
+     * Fail-closed teardown for a server switch or auto-reconnect. Sends
+     * [BirdoVpnService.ACTION_SWITCH_TEARDOWN] instead of ACTION_STOP so the
+     * kill-switch blocking interface stays established for the whole rebuild
+     * window — no cleartext egress while the old peer is unregistered, the
+     * /connect round-trip runs, and the new tunnel is set up. The replacement
+     * tunnel's establish() atomically supersedes the blocking interface. Also
+     * best-effort unregisters the old peer server-side.
+     */
+    private suspend fun switchTeardown() {
+        _state.value = VpnState.Disconnecting
+        transitionStartTime = System.currentTimeMillis()
+
+        val intent = Intent(context, BirdoVpnService::class.java).apply {
+            action = BirdoVpnService.ACTION_SWITCH_TEARDOWN
+            putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
+        }
+        try {
+            context.startForegroundService(intent)
+        } catch (e: Exception) {
+            android.util.Log.e("VpnManager", "startForegroundService(SWITCH_TEARDOWN) failed", e)
+        }
+
+        // Unregister the old peer server-side (best effort) before the new /connect
+        // registers a fresh keypair. The service keeps the kill switch up meanwhile.
+        repository.disconnectVpn()
     }
 
     /**

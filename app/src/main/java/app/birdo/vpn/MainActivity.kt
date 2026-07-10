@@ -270,8 +270,8 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
-     * Parse incoming deep links:
-     * - birdo://connect  → Home screen (auto-connect)
+     * Parse incoming deep links (navigation only — none auto-connect the VPN):
+     * - birdo://connect  → Home screen
      * - birdo://servers  → Server list
      * - birdo://settings → Settings
      * - https://birdo.app/connect   → Home screen
@@ -318,14 +318,11 @@ class MainActivity : FragmentActivity() {
             // tampered settings in the real file are never detected.
             val prefs = getSharedPreferences("birdo_vpn_prefs", MODE_PRIVATE)
             if (!SettingsHmac.verify(prefs)) {
-                Log.e("BirdoSecurity", "Settings HMAC mismatch — resetting to safe defaults")
-                prefs.edit()
-                    .putBoolean("kill_switch_enabled", true)
-                    .putBoolean("stealth_mode_enabled", true)
-                    .putBoolean("quantum_protection_enabled", true)
-                    .putBoolean("split_tunneling_enabled", false)
-                    .apply()
-                SettingsHmac.sign(prefs)
+                Log.e("BirdoSecurity", "Settings HMAC mismatch — resetting ALL protected settings to safe defaults")
+                // Reset EVERY protected key, not just the four booleans: a tampered
+                // custom_dns_* (DNS hijack) or split_tunnel_apps (VPN bypass) would
+                // otherwise survive and be re-signed with a valid HMAC.
+                SettingsHmac.resetToSafeDefaults(prefs)
             }
         } catch (e: Exception) {
             Log.e("BirdoSecurity", "Settings integrity check failed", e)
