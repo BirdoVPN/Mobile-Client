@@ -57,6 +57,13 @@ data class VpnUiState(
     val isLoadingPortForwards: Boolean = false,
 )
 
+/** Persisted multi-hop arming + entry/exit node selection (see [VpnViewModel.multiHop]). */
+data class MultiHopSelection(
+    val enabled: Boolean = false,
+    val entryId: String? = null,
+    val exitId: String? = null,
+)
+
 @HiltViewModel
 class VpnViewModel @Inject constructor(
     private val vpnManager: VpnManager,
@@ -71,6 +78,26 @@ class VpnViewModel @Inject constructor(
     // ── Favorites state (observed by ServerListScreen) ───────────
     private val _favoriteServers = MutableStateFlow(prefs.favoriteServers)
     val favoriteServers: StateFlow<Set<String>> = _favoriteServers.asStateFlow()
+
+    // ── Multi-hop arming + entry/exit selection (observed by HomeScreen) ──
+    // Backed by AppPreferences so the selection survives process death, not
+    // just rotation — HomeScreen previously held this in rememberSaveable
+    // only, so a force-close disarmed multi-hop and dropped both picks.
+    private val _multiHop = MutableStateFlow(
+        MultiHopSelection(
+            enabled = prefs.multiHopEnabled,
+            entryId = prefs.multiHopEntryNodeId,
+            exitId = prefs.multiHopExitNodeId,
+        ),
+    )
+    val multiHop: StateFlow<MultiHopSelection> = _multiHop.asStateFlow()
+
+    fun setMultiHopSelection(enabled: Boolean, entryId: String?, exitId: String?) {
+        prefs.multiHopEnabled = enabled
+        prefs.multiHopEntryNodeId = entryId
+        prefs.multiHopExitNodeId = exitId
+        _multiHop.value = MultiHopSelection(enabled, entryId, exitId)
+    }
 
     init {
         // NOTE: loadServers() is NOT called here — it was causing a race condition
