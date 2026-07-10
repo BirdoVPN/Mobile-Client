@@ -30,7 +30,7 @@ linked from the website. There is no Google Play Store / AAB upload pipeline.
    `android.yml` header). The release job retrieves them via OIDC; **no plain
    GitHub secrets are needed for signing**.
 
-### GitHub variables (Settings → Secrets and variables → Variables)
+### GitHub variables (Settings -> Secrets and variables -> Variables)
 
 | Variable                | Source                                                 |
 | ----------------------- | ------------------------------------------------------ |
@@ -48,16 +48,16 @@ Connect / TestFlight on every `ios-v*` tag.
 
 ### One-time setup
 
-1. **Apple Distribution certificate** (Xcode → Settings → Accounts → "Manage
-   Certificates" → "+" → **Apple Distribution**). Export as `.p12` with a
+1. **Apple Distribution certificate** (Xcode -> Settings -> Accounts -> "Manage
+   Certificates" -> "+" -> **Apple Distribution**). Export as `.p12` with a
    strong password.
 
-2. **Provisioning Profile**: Apple Developer → Certificates, Identifiers &
-   Profiles → Profiles → "+" → **App Store** distribution → bundle ID
-   `app.birdo.vpn` → select the certificate → Download `.mobileprovision`.
+2. **Provisioning Profile**: Apple Developer -> Certificates, Identifiers &
+   Profiles -> Profiles -> "+" -> **App Store** distribution -> bundle ID
+   `app.birdo.vpn` -> select the certificate -> Download `.mobileprovision`.
 
-3. **App Store Connect API key**: App Store Connect → Users and Access → Keys →
-   "+" → grant "App Manager" role. Download the `.p8` (one-time only). Note
+3. **App Store Connect API key**: App Store Connect -> Users and Access -> Keys ->
+   "+" -> grant "App Manager" role. Download the `.p8` (one-time only). Note
    the **Key ID** and **Issuer ID** shown on the page.
 
 ### Encoding for GitHub secrets

@@ -14,7 +14,6 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
@@ -37,6 +36,7 @@ import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
+import app.birdo.vpn.ui.viewmodel.MultiHopSelection
 import app.birdo.vpn.ui.viewmodel.VpnUiState
 import app.birdo.vpn.utils.FormatUtils
 import app.birdo.vpn.utils.countryCodeToFlag
@@ -52,6 +52,8 @@ fun HomeScreen(
     userEmail: String?,
     killSwitchEnabled: Boolean,
     favoriteServers: Set<String> = emptySet(),
+    multiHop: MultiHopSelection = MultiHopSelection(),
+    onMultiHopChange: (enabled: Boolean, entryId: String?, exitId: String?) -> Unit = { _, _, _ -> },
     onConnect: () -> Unit,
     onConnectMultiHop: (entryId: String, exitId: String) -> Unit = { _, _ -> },
     onDisconnect: () -> Unit,
@@ -76,12 +78,15 @@ fun HomeScreen(
 
     // Multi-Hop state — toggle lives in the top bar, server selection happens
     // inline (the single ServerSelector becomes Entry → Exit when armed).
-    // Selections are persisted across configuration changes (rotation) via
-    // rememberSaveable. VpnServer is not Parcelable, so we save the server ids
-    // and resolve them back to VpnServer from the loaded server list.
-    var multiHopEnabled by rememberSaveable { mutableStateOf(false) }
-    var multiHopEntryId by rememberSaveable { mutableStateOf<String?>(null) }
-    var multiHopExitId by rememberSaveable { mutableStateOf<String?>(null) }
+    // State is hoisted to VpnViewModel and persisted in AppPreferences, so the
+    // arming + entry/exit picks survive process death, not just rotation.
+    // VpnServer is not Parcelable, so ids are stored and resolved back to
+    // VpnServer from the loaded server list. Arming is honoured only while the
+    // plan is SOVEREIGN: a persisted armed state from a since-downgraded plan
+    // must not resurrect the paid feature.
+    val multiHopEnabled = multiHop.enabled && isSovereign
+    val multiHopEntryId = multiHop.entryId
+    val multiHopExitId = multiHop.exitId
     val multiHopEntry = remember(multiHopEntryId, state.servers) {
         state.servers.firstOrNull { it.id == multiHopEntryId }
     }
@@ -131,11 +136,12 @@ fun HomeScreen(
                     } else {
                         // Disconnect any in-flight tunnel before swapping modes.
                         if (isConnected) onDisconnect()
-                        multiHopEnabled = !multiHopEnabled
-                        if (!multiHopEnabled) {
-                            multiHopEntryId = null
-                            multiHopExitId = null
-                        }
+                        val arming = !multiHopEnabled
+                        onMultiHopChange(
+                            arming,
+                            if (arming) multiHopEntryId else null,
+                            if (arming) multiHopExitId else null,
+                        )
                     }
                 },
                 onLogout = onLogout,
@@ -266,8 +272,11 @@ fun HomeScreen(
             favoriteServers = favoriteServers,
             sheetState = multiHopSheetState,
             onSelectServer = { srv ->
-                if (target == MultiHopTarget.Entry) multiHopEntryId = srv.id
-                else multiHopExitId = srv.id
+                if (target == MultiHopTarget.Entry) {
+                    onMultiHopChange(multiHopEnabled, srv.id, multiHopExitId)
+                } else {
+                    onMultiHopChange(multiHopEnabled, multiHopEntryId, srv.id)
+                }
                 multiHopPickerTarget = null
             },
             onToggleFavorite = onToggleFavorite,

@@ -47,7 +47,7 @@ repository variable.
      `specialUse` foreground service (already declared in `AndroidManifest.xml`).
 
 6. **Create the Play Developer API service account** (this is the CI credential):
-   - Play Console → *Setup → API access* → link/create a Google Cloud project.
+   - Play Console -> *Setup -> API access* -> link/create a Google Cloud project.
    - Create a **service account** in Google Cloud, then in Play Console grant it
      access with the **Release manager** role (or a custom role with *Releases*
      for the relevant tracks).
@@ -57,7 +57,7 @@ repository variable.
 
 ## Part B — Wire CI (you give me one file; I/you set two values)
 
-In the **birdo-client-mobile** repo → Settings → Secrets and variables → Actions:
+In the **birdo-client-mobile** repo -> Settings -> Secrets and variables -> Actions:
 
 - **Secret** `PLAY_SERVICE_ACCOUNT_JSON` = the full contents of the
   service-account JSON from step A.6.
@@ -72,7 +72,7 @@ job is skipped and nothing reaches Play.
 
 ## Part C — Releasing (automated thereafter)
 
-- **Internal track (default):** push a version tag →
+- **Internal track (default):** push a version tag ->
   ```
   git tag android-v1.0.0 && git push origin android-v1.0.0
   ```
@@ -80,8 +80,8 @@ job is skipped and nothing reaches Play.
   (`status: completed`, so internal testers get it immediately). It also drafts
   a GitHub Release with the sideload APK.
 
-- **Promote to another track:** Actions → *Mobile CI (Android + iOS)* →
-  **Run workflow** → pick `play_track` = `alpha` / `beta` / `production`.
+- **Promote to another track:** Actions -> *Mobile CI (Android + iOS)* ->
+  **Run workflow** -> pick `play_track` = `alpha` / `beta` / `production`.
   (For production, consider a **staged rollout** — set `status: inProgress` +
   a `userFraction` in the `play-upload` step instead of `completed`.)
 
@@ -98,7 +98,7 @@ tagging (or wire an auto-increment later). Play rejects a re-used `versionCode`.
 - Pin `r0adkll/upload-google-play` to a **verified commit SHA** (the rest of the
   workflow SHA-pins its actions; this one is on the `v1.1.3` tag for first setup).
 - **Purchase-steering is now compiled out of the Play build.** The AAB is built
-  with `-PplayBuild=true` → `BuildConfig.IS_PLAY_BUILD=true`, which removes every
+  with `-PplayBuild=true` -> `BuildConfig.IS_PLAY_BUILD=true`, which removes every
   external-purchase link (the "Manage on web" plan buttons, the toolbar "Web"
   action, and the "purchased on birdo.app" copy) from the Subscription screen.
   Premium tiers render as an informational feature comparison only. The direct

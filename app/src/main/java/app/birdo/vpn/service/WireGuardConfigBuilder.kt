@@ -133,9 +133,34 @@ object WireGuardConfigBuilder {
         if (portPref == "auto") return endpoint
         val overridePort = portPref.toIntOrNull() ?: return endpoint
         if (overridePort !in 1..65535) return endpoint
+        // Never rewrite the port of a loopback endpoint. When stealth (Xray
+        // Reality) is active the WireGuard endpoint is the LOCAL relay
+        // (127.0.0.1:<xrayPort>); rewriting that port would point wg-go at a dead
+        // local port and silently break the tunnel. The port override is meant for
+        // the real server endpoint only (to dodge port-based blocking).
+        if (isLoopbackEndpointHost(endpoint)) return endpoint
         val lastColon = endpoint.lastIndexOf(':')
         return if (lastColon > 0) endpoint.substring(0, lastColon + 1) + overridePort
         else "$endpoint:$overridePort"
+    }
+
+    /**
+     * True if the endpoint's host is loopback (127.0.0.0/8, ::1, localhost).
+     * String-only check — deliberately avoids DNS resolution.
+     */
+    private fun isLoopbackEndpointHost(endpoint: String): Boolean {
+        val host = if (endpoint.startsWith("[")) {
+            val close = endpoint.indexOf(']')
+            if (close < 0) return false
+            endpoint.substring(1, close)
+        } else {
+            val colon = endpoint.lastIndexOf(':')
+            if (colon <= 0) return false
+            endpoint.substring(0, colon)
+        }
+        return host.equals("localhost", ignoreCase = true) ||
+            host == "::1" ||
+            host.startsWith("127.")
     }
 
     /** Resolve DNS servers, preferring user overrides when enabled. */

@@ -150,14 +150,14 @@ az role assignment create \
 
 ## Step 6 — Configure GitHub Repository
 
-### Secrets (Settings → Secrets and variables → Actions → Secrets)
+### Secrets (Settings -> Secrets and variables -> Actions -> Secrets)
 
 | Secret name | Value |
 |---|---|
 | `AZURE_TENANT_ID` | Azure AD tenant ID |
 | `AZURE_CLIENT_ID` | App registration client ID |
 
-### Variables (Settings → Secrets and variables → Actions → Variables)
+### Variables (Settings -> Secrets and variables -> Actions -> Variables)
 
 | Variable name | Example value |
 |---|---|

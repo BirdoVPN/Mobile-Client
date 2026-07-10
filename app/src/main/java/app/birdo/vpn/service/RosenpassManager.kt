@@ -25,9 +25,9 @@ import javax.crypto.spec.SecretKeySpec
  *
  * | Mode | When | Provides HNDL resistance? |
  * |------|------|---------------------------|
- * | [Mode.BILATERAL] | Native lib loaded AND server returned a valid ML-KEM ciphertext that decapsulates against our local secret key | ✅ yes (post-quantum) |
- * | [Mode.SERVER_PROVIDED] | Server returned a WireGuard-format PSK in [ConnectResponse.presharedKey] but no ciphertext | ⚠️ partial — relies on TLS for PSK delivery |
- * | [Mode.DISABLED] | Neither bilateral exchange nor server PSK available | ❌ no |
+ * | [Mode.BILATERAL] | Native lib loaded AND server returned a valid ML-KEM ciphertext that decapsulates against our local secret key | Yes (post-quantum) |
+ * | [Mode.SERVER_PROVIDED] | Server returned a WireGuard-format PSK in [ConnectResponse.presharedKey] but no ciphertext | Partial — relies on TLS for PSK delivery |
+ * | [Mode.DISABLED] | Neither bilateral exchange nor server PSK available | No |
  *
  * **Honest disclaimer for marketing copy:** Only [Mode.BILATERAL] provides
  * genuine post-quantum protection against Harvest-Now-Decrypt-Later. The

@@ -54,10 +54,10 @@ for so in "${SO_FILES[@]}"; do
   fi
 
   if [[ $worst_dec -lt $MIN_ALIGN ]]; then
-    echo "  ✗ $so — min LOAD align ${worst_hex} ($worst_dec) < 16384 — NOT 16 KB compatible"
+    echo "[FAIL] $so — min LOAD align ${worst_hex} ($worst_dec) < 16384 — NOT 16 KB compatible"
     fail=1
   else
-    echo "  ✓ $so — min LOAD align ${worst_hex} ($worst_dec)"
+    echo "[OK] $so — min LOAD align ${worst_hex} ($worst_dec)"
   fi
 done
 

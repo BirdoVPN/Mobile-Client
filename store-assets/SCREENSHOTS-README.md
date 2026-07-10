@@ -10,7 +10,7 @@
 | `screenshot-04-settings.png` | Settings (Appearance / Security / Connection) |
 | `screenshot-05-split-tunneling.png` | Split-tunnelling app picker |
 
-Upload these in the Play Console (Store listing → Phone screenshots). Play needs
+Upload these in the Play Console (Store listing -> Phone screenshots). Play needs
 2–8; all five here qualify (PNG, 1080×2340-ish portrait).
 
 ## How they were captured (for future re-capture)
@@ -27,8 +27,10 @@ recording. A DEBUG-only, opt-in build flag disables it **for capture only**:
 $ANDROID_HOME/emulator/emulator -avd Pixel_7_API_35 -no-window -gpu swiftshader_indirect &
 adb install -r -g app/build/outputs/apk/debug/app-debug.apk
 
-#    Reviewer/test login: create it with _local/artifacts/make-reviewer.js
-#    (anonymous account + active plan; log in on the app's "Anonymous ID" tab).
+#    Test login: use a throwaway test account with an active plan (log in on
+#    the app's "Anonymous ID" tab). Never use a real customer account, and
+#    REDACT the account ID from the top bar before committing screenshots --
+#    the app shows it on the home/servers screens.
 #    NOTE when automating: the 24-digit ID field auto-formats, so scripted input
 #    must force cursor-to-end before each digit or it scrambles.
 

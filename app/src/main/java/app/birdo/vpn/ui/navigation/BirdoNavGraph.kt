@@ -329,6 +329,10 @@ fun BirdoNavGraph(
                         userEmail = authState.user?.email,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
+                        multiHop = vpnViewModel.multiHop.collectAsState().value,
+                        onMultiHopChange = { enabled, entryId, exitId ->
+                            vpnViewModel.setMultiHopSelection(enabled, entryId, exitId)
+                        },
                         onConnect = { vpnViewModel.connect() },
                         onConnectMultiHop = { entry, exit -> vpnViewModel.connectMultiHop(entry, exit) },
                         onDisconnect = { vpnViewModel.disconnect() },

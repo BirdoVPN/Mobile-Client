@@ -43,6 +43,44 @@ object SettingsHmac {
     )
 
     /**
+     * Reset EVERY protected setting to a hardened, safe default, then re-sign.
+     *
+     * Called when [verify] fails (tamper detected). Resetting only a SUBSET of
+     * the protected keys — as the old call site did (kill switch / stealth /
+     * quantum / split-tunnel-enabled only) — leaves attacker-controlled values in
+     * place for the rest, and the subsequent [sign] blesses them with a valid
+     * HMAC. The dangerous survivors are `custom_dns_*` (redirect all DNS to a
+     * hostile resolver) and `split_tunnel_apps` (add apps that bypass the VPN).
+     *
+     * Strategy: remove ALL protected keys first (so any key later added to
+     * [PROTECTED_KEYS] reverts to its safe AppPreferences code default
+     * automatically), then explicitly pin the security-critical values for
+     * defense-in-depth and clarity.
+     */
+    fun resetToSafeDefaults(prefs: SharedPreferences) {
+        try {
+            val editor = prefs.edit()
+            PROTECTED_KEYS.forEach { editor.remove(it) }
+            editor
+                .putBoolean("kill_switch_enabled", true)
+                .putBoolean("stealth_mode_enabled", true)
+                .putBoolean("quantum_protection_enabled", true)
+                .putBoolean("split_tunneling_enabled", false)
+                .putStringSet("split_tunnel_apps", emptySet())
+                .putBoolean("custom_dns_enabled", false)
+                .putString("custom_dns_primary", "")
+                .putString("custom_dns_secondary", "")
+                .putString("wireguard_port", "auto")
+                .putInt("wireguard_mtu", 0)
+                .putBoolean("biometric_lock_enabled", false)
+                .commit()
+            sign(prefs)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to reset settings to safe defaults", e)
+        }
+    }
+
+    /**
      * Compute and store HMAC of current protected settings.
      * Call after any protected setting changes.
      */
