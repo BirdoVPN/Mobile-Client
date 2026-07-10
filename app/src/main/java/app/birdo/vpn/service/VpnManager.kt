@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.utils.PlayIntegrityManager
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.network.NetworkMonitor
@@ -205,12 +207,25 @@ class VpnManager @Inject constructor(
             }
         } else null
 
+        // Client attestation: on Play builds, request a Play Integrity token
+        // bound to a fresh server nonce so the backend can confirm this is the
+        // genuine, unmodified official app on a genuine device before it hands
+        // out a WireGuard peer. Non-Play builds and any failure yield null; the
+        // server's ATTESTATION_POLICY then decides. Best-effort here — the token
+        // is attached to the connect, never used to hard-block on the client.
+        val integrityToken: String? = if (BuildConfig.IS_PLAY_BUILD) {
+            repository.getAttestationNonce()?.let { nonce ->
+                PlayIntegrityManager.requestToken(context, nonce)
+            }
+        } else null
+
         val result = repository.connectVpn(
             serverNodeId = serverId,
             deviceName = deviceName,
             stealthMode = prefs.stealthModeEnabled,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
+            integrityToken = integrityToken,
         )
 
         when (result) {

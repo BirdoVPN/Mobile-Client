@@ -327,6 +327,12 @@ dependencies {
     // ── Shared KMP Module ────────────────────────────────────────
     implementation(project(":shared"))
 
+    // ── Play Integrity (official-client attestation) ─────────────
+    // Requests a device/app integrity verdict the backend verifies so only the
+    // genuine, unmodified Play build can obtain a WireGuard peer. Only produces a
+    // valid token on Play-distributed builds; gated by BuildConfig.IS_PLAY_BUILD.
+    implementation("com.google.android.play:integrity:1.4.0")
+
     // ── Core Android ─────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
