@@ -26,6 +26,7 @@ fun BirdoEmptyState(
     description: String? = null,
     action: @Composable (() -> Unit)? = null,
 ) {
+    val palette = BirdoColors.current
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -36,15 +37,15 @@ fun BirdoEmptyState(
             modifier = Modifier
                 .size(64.dp)
                 .clip(CircleShape)
-                .background(BirdoWhite05),
+                .background(palette.surfaceRaised),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = BirdoWhite60, modifier = Modifier.size(28.dp))
+            Icon(icon, contentDescription = null, tint = palette.onSurfaceMuted, modifier = Modifier.size(28.dp))
         }
         Spacer(Modifier.height(16.dp))
         Text(
             text = title,
-            color = Color.White,
+            color = palette.onSurface,
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center,
@@ -53,7 +54,7 @@ fun BirdoEmptyState(
             Spacer(Modifier.height(6.dp))
             Text(
                 text = description,
-                color = BirdoWhite60,
+                color = palette.onSurfaceMuted,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center,
             )

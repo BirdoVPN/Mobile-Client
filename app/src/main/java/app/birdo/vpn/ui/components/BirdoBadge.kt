@@ -31,8 +31,9 @@ fun BirdoBadge(
     icon: ImageVector? = null,
     pulseDot: Boolean = false,
 ) {
+    val palette = BirdoColors.current
     val (bg, fg, border) = when (tone) {
-        BadgeTone.Neutral -> Triple(BirdoWhite05, BirdoWhite80, BirdoBrand.HairlineSoft)
+        BadgeTone.Neutral -> Triple(palette.surfaceRaised, palette.onSurface.copy(alpha = 0.85f), palette.hairlineSoft)
         BadgeTone.Success -> Triple(BirdoGreenBg, BirdoGreenLight, BirdoGreen.copy(alpha = 0.3f))
         BadgeTone.Warning -> Triple(BirdoYellowBg, BirdoYellowLight, BirdoYellow.copy(alpha = 0.3f))
         BadgeTone.Danger  -> Triple(BirdoRedBg, BirdoRed, BirdoRed.copy(alpha = 0.3f))

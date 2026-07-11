@@ -7,6 +7,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
@@ -33,8 +36,29 @@ fun PixelCanvas(
     // Grid data — lazy-init on first composition
     val gridState = remember { PixelGridState() }
 
+    // Power: this canvas sits behind EVERY screen, and its ticker is a plain
+    // `while (true)` in a LaunchedEffect — which keeps running for as long as
+    // the composition is alive, i.e. while the Activity is merely STOPPED.
+    // That is 15 wakeups a second, each walking the whole grid, while the phone
+    // is in the user's pocket and nothing is on screen. Gate it on the
+    // lifecycle: no frames unless we are actually visible.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var animating by remember { mutableStateOf(true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> animating = true
+                Lifecycle.Event.ON_STOP -> animating = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // Animation loop at ~15 fps (66ms) — enough for subtle twinkling
-    LaunchedEffect(Unit) {
+    LaunchedEffect(animating) {
+        if (!animating) return@LaunchedEffect
         while (true) {
             delay(66L)
             gridState.tick()
@@ -105,13 +129,18 @@ private class PixelGridState {
         val total = cols * rows
         if (total == 0) return
 
-        for (i in 0 until total) {
-            // ~0.3% chance of picking a new target per pixel per frame
-            if (Random.nextFloat() < 0.003f) {
-                targetAlpha[i] = Random.nextInt(0, 20) // 0-0.20 alpha range
-            }
+        // Retarget ~0.3% of pixels per frame. Rolling the dice ONCE PER PIXEL to
+        // make a 0.3% decision meant ~1k RNG calls every frame (15k/second) to
+        // change ~3 pixels. Sampling that many indices directly is statistically
+        // the same twinkle for a fraction of the work.
+        val retargets = ((total * 0.003f) + 0.5f).toInt().coerceAtLeast(1)
+        repeat(retargets) {
+            val i = Random.nextInt(total)
+            targetAlpha[i] = Random.nextInt(0, 20) // 0-0.20 alpha range
+        }
 
-            // Ease toward target
+        // Ease every pixel toward its target (cheap int math, no allocation).
+        for (i in 0 until total) {
             val cur = currentAlpha[i]
             val target = targetAlpha[i]
             val spd = speed[i]

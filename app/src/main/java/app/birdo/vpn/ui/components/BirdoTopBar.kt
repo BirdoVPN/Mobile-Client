@@ -9,16 +9,19 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.birdo.vpn.R
 import app.birdo.vpn.ui.theme.*
 
 /**
@@ -34,6 +37,7 @@ fun BirdoTopBar(
     actions: (@Composable RowScope.() -> Unit)? = null,
     showDivider: Boolean = true,
 ) {
+    val palette = BirdoColors.current
     Column(
         modifier
             .fillMaxWidth()
@@ -48,8 +52,10 @@ fun BirdoTopBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (onBack != null) {
+                // 40dp visual chip inside a 48dp minimum interactive area.
                 Box(
                     modifier = Modifier
+                        .minimumInteractiveComponentSize()
                         .size(40.dp)
                         .clip(CircleShape)
                         .background(BirdoWhite05)
@@ -58,26 +64,26 @@ fun BirdoTopBar(
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = BirdoWhite80,
+                        contentDescription = stringResource(R.string.cd_back),
+                        tint = palette.onSurface.copy(alpha = 0.85f),
                         modifier = Modifier.size(20.dp),
                     )
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(8.dp))
             } else {
                 Spacer(Modifier.width(8.dp))
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    color = Color.White,
+                    color = palette.onSurface,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
-                        color = BirdoWhite40,
+                        color = palette.onSurfaceMuted,
                         fontSize = 12.sp,
                     )
                 }
@@ -87,21 +93,22 @@ fun BirdoTopBar(
             }
         }
         if (showDivider) {
-            HorizontalDivider(color = BirdoBrand.HairlineSoft, thickness = 1.dp)
+            HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
         }
     }
 }
 
-/** Round icon button used in BirdoTopBar actions. */
+/** Round icon button used in BirdoTopBar actions — 48dp interactive minimum. */
 @Composable
 fun BirdoIconAction(
     icon: ImageVector,
     contentDescription: String,
     onClick: () -> Unit,
-    tint: Color = BirdoWhite80,
+    tint: Color = BirdoColors.current.onSurface.copy(alpha = 0.85f),
 ) {
     Box(
         modifier = Modifier
+            .minimumInteractiveComponentSize()
             .size(40.dp)
             .clip(CircleShape)
             .clickable(role = Role.Button, onClick = onClick),

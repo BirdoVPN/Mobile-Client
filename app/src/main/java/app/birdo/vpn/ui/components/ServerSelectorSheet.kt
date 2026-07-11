@@ -37,7 +37,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import app.birdo.vpn.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -133,7 +137,7 @@ fun ServerSelectorSheet(
                 IconButton(onClick = onDismiss) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Close",
+                        contentDescription = stringResource(R.string.cd_close),
                         tint = palette.onSurfaceMuted,
                     )
                 }
@@ -143,14 +147,14 @@ fun ServerSelectorSheet(
             BirdoTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = "Search by country or city",
+                placeholder = stringResource(R.string.sheet_search_placeholder),
                 leadingIcon = Icons.Default.Search,
                 trailingIcon = if (searchQuery.isNotBlank()) {
                     {
-                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
+                        IconButton(onClick = { searchQuery = "" }) {
                             Icon(
                                 Icons.Default.Close,
-                                contentDescription = "Clear",
+                                contentDescription = stringResource(R.string.cd_clear),
                                 tint = palette.onSurfaceFaint,
                                 modifier = Modifier.size(16.dp),
                             )
@@ -167,7 +171,8 @@ fun ServerSelectorSheet(
             LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .selectableGroup(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(ServerFilter.entries) { filter ->
@@ -180,10 +185,16 @@ fun ServerSelectorSheet(
                         append(filter.label)
                         if (favCount != null && favCount > 0) append(" ($favCount)")
                     }
+                    // selectable, not clickable: TalkBack must be able to say
+                    // WHICH filter is active, not just render it in accent.
                     Surface(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .clickable(role = Role.Tab) { activeFilter = filter },
+                            .selectable(
+                                selected = isActive,
+                                role = Role.Tab,
+                                onClick = { activeFilter = filter },
+                            ),
                         shape = RoundedCornerShape(20.dp),
                         color = if (isActive) palette.accent.copy(alpha = if (palette.isLight) 0.14f else 0.22f) else palette.surfaceRaised,
                         border = BorderStroke(
@@ -196,7 +207,9 @@ fun ServerSelectorSheet(
                             fontSize = 12.sp,
                             fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
                             color = if (isActive) palette.accent else palette.onSurfaceMuted,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                            modifier = Modifier
+                                .heightIn(min = 40.dp)
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
                         )
                     }
                 }

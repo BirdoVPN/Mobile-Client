@@ -3,6 +3,7 @@ package app.birdo.vpn.ui.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -33,7 +34,7 @@ import app.birdo.vpn.ui.theme.*
 fun BirdoCard(
     modifier: Modifier = Modifier,
     cornerRadius: Dp = 16.dp,
-    surface: Color = BirdoBrand.Surface1,
+    surface: Color = BirdoColors.current.surface,
     border: Brush? = BirdoBrand.GlassStrokeGradient,
     contentPadding: PaddingValues = PaddingValues(16.dp),
     glow: Brush? = null,
@@ -69,17 +70,21 @@ fun BirdoSubCard(
     contentPadding: PaddingValues = PaddingValues(12.dp),
     content: @Composable () -> Unit,
 ) {
+    val palette = BirdoColors.current
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(cornerRadius),
-        color = GlassLight,
-        border = BorderStroke(1.dp, BirdoBrand.HairlineSoft),
+        color = if (palette.isLight) palette.surfaceRaised else GlassLight,
+        border = BorderStroke(1.dp, palette.hairlineSoft),
     ) {
         Box(Modifier.padding(contentPadding)) { content() }
     }
 }
 
-/** Section header with optional small action label on the right. */
+/**
+ * Canonical uppercase section header — accent tick bar + tracked micro-label.
+ * The single style for every settings/list section across the app.
+ */
 @Composable
 fun BirdoSectionHeader(
     title: String,
@@ -87,21 +92,29 @@ fun BirdoSectionHeader(
     actionLabel: String? = null,
     onActionClick: (() -> Unit)? = null,
 ) {
+    val palette = BirdoColors.current
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 8.dp),
+            .padding(start = 4.dp, top = 20.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        Box(
+            modifier = Modifier
+                .size(width = 3.dp, height = 12.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(palette.accent.copy(alpha = 0.85f)),
+        )
+        Spacer(Modifier.width(8.dp))
         Text(
             text = title.uppercase(),
-            color = BirdoWhite60,
+            color = palette.onSurfaceMuted,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            letterSpacing = 1.4.sp,
+            letterSpacing = 1.5.sp,
             modifier = Modifier.weight(1f),
         )
-        if (actionLabel != null) {
+        if (actionLabel != null && onActionClick != null) {
             Text(
                 text = actionLabel,
                 color = BirdoBrand.PurpleSoft,
@@ -109,6 +122,7 @@ fun BirdoSectionHeader(
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onActionClick)
                     .padding(horizontal = 6.dp, vertical = 4.dp),
             )
         }

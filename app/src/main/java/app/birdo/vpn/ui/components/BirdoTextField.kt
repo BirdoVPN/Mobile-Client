@@ -40,12 +40,14 @@ fun BirdoTextField(
     imeAction: ImeAction = ImeAction.Next,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
     textStyle: TextStyle? = null,
+    supportingText: String? = null,
 ) {
+    val palette = BirdoColors.current
     Column(modifier = modifier) {
         if (label != null) {
             Text(
                 text = label,
-                color = BirdoWhite60,
+                color = palette.onSurfaceMuted,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
@@ -55,11 +57,13 @@ fun BirdoTextField(
             value = value,
             onValueChange = onValueChange,
             placeholder = {
-                Text(placeholder, color = BirdoWhite20, fontSize = 14.sp)
+                // White40+ so placeholders stay legible (~2.2:1 at White20)
+                // while remaining visibly quieter than the entered text.
+                Text(placeholder, color = BirdoWhite40, fontSize = 14.sp)
             },
             leadingIcon = leadingIcon?.let { icon ->
                 {
-                    Icon(icon, contentDescription = null, tint = BirdoWhite40, modifier = Modifier.size(18.dp))
+                    Icon(icon, contentDescription = null, tint = palette.onSurfaceFaint, modifier = Modifier.size(18.dp))
                 }
             },
             trailingIcon = trailingIcon,
@@ -69,18 +73,21 @@ fun BirdoTextField(
             visualTransformation = visualTransformation,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction),
             keyboardActions = keyboardActions,
-            textStyle = textStyle ?: TextStyle(fontSize = 14.sp, color = Color.White),
+            textStyle = textStyle ?: TextStyle(fontSize = 14.sp, color = palette.onSurface),
+            supportingText = supportingText?.let { text ->
+                { Text(text, color = if (isError) BirdoRed else palette.onSurfaceMuted, fontSize = 12.sp) }
+            },
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
-                unfocusedBorderColor = BirdoBrand.HairlineSoft,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = BirdoWhite80,
+                unfocusedBorderColor = palette.hairlineSoft,
+                focusedTextColor = palette.onSurface,
+                unfocusedTextColor = palette.onSurface.copy(alpha = 0.85f),
                 cursorColor = BirdoBrand.PurpleSoft,
                 focusedContainerColor = GlassInput,
                 unfocusedContainerColor = GlassInput,
                 disabledContainerColor = GlassInput,
                 disabledBorderColor = BirdoWhite05,
-                disabledTextColor = BirdoWhite40,
+                disabledTextColor = palette.onSurfaceFaint,
                 errorBorderColor = BirdoRed,
                 errorContainerColor = GlassInput,
             ),

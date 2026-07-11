@@ -20,6 +20,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +73,7 @@ fun ServerListScreen(
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var activeFilter by remember { mutableStateOf(ServerFilter.All) }
+    val palette = BirdoColors.current
 
     val filteredServers = remember(servers, searchQuery, activeFilter, favoriteServers) {
         servers
@@ -114,7 +126,7 @@ fun ServerListScreen(
             leadingIcon = Icons.Default.Search,
             trailingIcon = if (searchQuery.isNotBlank()) {
                 {
-                    IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
+                    IconButton(onClick = { searchQuery = "" }) {
                         Icon(Icons.Default.Close, stringResource(R.string.cd_clear), tint = BirdoWhite40, modifier = Modifier.size(16.dp))
                     }
                 }
@@ -129,7 +141,8 @@ fun ServerListScreen(
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .selectableGroup(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(ServerFilter.entries) { filter ->
@@ -142,27 +155,36 @@ fun ServerListScreen(
                     append(filter.label)
                     if (favCount != null && favCount > 0) append(" ($favCount)")
                 }
+                // selectable (not clickable): TalkBack must announce WHICH
+                // filter is active — colour alone doesn't reach a screen reader.
                 Surface(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
-                        .clickable(role = Role.Tab) { activeFilter = filter },
+                        .selectable(
+                            selected = isActive,
+                            role = Role.Tab,
+                            onClick = { activeFilter = filter },
+                        ),
                     shape = RoundedCornerShape(20.dp),
-                    color = if (isActive) BirdoBrand.Surface3 else BirdoBrand.Surface1,
-                    border = BorderStroke(1.dp, if (isActive) BirdoBrand.PurpleSoft.copy(alpha = 0.5f) else BirdoBrand.HairlineSoft),
+                    color = if (isActive) palette.accent.copy(alpha = if (palette.isLight) 0.18f else 0.22f) else palette.surface,
+                    border = BorderStroke(1.dp, if (isActive) palette.accent.copy(alpha = 0.55f) else palette.hairlineSoft),
                 ) {
                     Text(
                         text = text,
                         fontSize = 12.sp,
                         fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (isActive) Color.White else BirdoWhite60,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        color = if (isActive) palette.accent else palette.onSurfaceMuted,
+                        modifier = Modifier
+                            .heightIn(min = 40.dp)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                     )
                 }
             }
         }
 
-        // ── Loading indicator ──
-        if (isLoading) {
+        // Thin progress bar only for refresh-with-content; a first load gets
+        // ghost rows below instead of a blank void.
+        if (isLoading && servers.isNotEmpty()) {
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                 color = BirdoBrand.PurpleSoft,
@@ -176,6 +198,17 @@ fun ServerListScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            if (isLoading && servers.isEmpty()) {
+                item {
+                    val pulse = birdoSkeletonPulse()
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        repeat(6) {
+                            BirdoSkeletonServerRow(pulseAlpha = pulse)
+                        }
+                    }
+                }
+            }
+
             items(
                 items = filteredServers,
                 key = { it.id },
@@ -201,7 +234,7 @@ fun ServerListScreen(
                         },
                         description = when {
                             activeFilter == ServerFilter.Favorites -> stringResource(R.string.servers_favorites_hint)
-                            servers.isEmpty() -> "Pull down to refresh or tap retry."
+                            servers.isEmpty() -> stringResource(R.string.servers_empty_hint)
                             else -> null
                         },
                         action = if (servers.isEmpty() && !isLoading) {
@@ -246,13 +279,31 @@ internal fun ServerCard(
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit,
 ) {
+    val palette = BirdoColors.current
+    val haptics = LocalHapticFeedback.current
     val isOnline = server.isOnline
     val load = server.load
     val loadFraction = remember(load) { (load / 100f).coerceIn(0f, 1f) }
     val loadCol = remember(load) { loadColor(load) }
-    val borderColor = if (isSelected) BirdoBrand.PurpleSoft else BirdoBrand.HairlineSoft
-    val surfaceColor = if (isSelected) BirdoBrand.Surface2 else BirdoBrand.Surface1
-    val nameColor = if (isOnline) Color.White else BirdoWhite40
+    // Solid colours only (the perf note above bans per-frame Brush allocation);
+    // animateColorAsState is allocation-free and makes selection feel deliberate.
+    val borderColor by animateColorAsState(
+        targetValue = if (isSelected) BirdoBrand.PurpleSoft else palette.hairlineSoft,
+        animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
+        label = "cardBorder",
+    )
+    val surfaceColor by animateColorAsState(
+        targetValue = if (isSelected) palette.surfaceRaised else palette.surface,
+        animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
+        label = "cardSurface",
+    )
+    // Springy pop when a server is starred.
+    val starScale by animateFloatAsState(
+        targetValue = if (isFavorite) 1.15f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "starPop",
+    )
+    val nameColor = if (isOnline) palette.onSurface else palette.onSurfaceFaint
 
     val flag = remember(server.countryCode) { countryCodeToFlag(server.countryCode) }
     val location = remember(server.city, server.country) {
@@ -275,7 +326,7 @@ internal fun ServerCard(
             modifier = Modifier
                 .size(40.dp)
                 .clip(FlagShape)
-                .background(BirdoWhite05),
+                .background(palette.surfaceRaised),
             contentAlignment = Alignment.Center,
         ) {
             Text(text = flag, fontSize = 20.sp)
@@ -299,7 +350,7 @@ internal fun ServerCard(
             Text(
                 text = location,
                 fontSize = 12.sp,
-                color = BirdoWhite60,
+                color = palette.onSurfaceMuted,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -311,7 +362,7 @@ internal fun ServerCard(
         Column(horizontalAlignment = Alignment.End) {
             Text(
                 text = "$load%",
-                fontSize = 11.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 fontFamily = FontFamily.Monospace,
                 color = loadCol,
@@ -335,19 +386,27 @@ internal fun ServerCard(
 
         Spacer(Modifier.width(6.dp))
 
-        // Favorite star (lightweight Box.clickable — no IconButton ripple stack)
+        // Favorite star (lightweight Box.clickable — no IconButton ripple stack).
+        // 36dp visual, 48dp hit area: this sits in a fast-scrolling list, the
+        // hardest place to hit a small target.
         Box(
             modifier = Modifier
+                .minimumInteractiveComponentSize()
                 .size(36.dp)
                 .clip(CircleShape)
-                .clickable(role = Role.Button, onClick = onToggleFavorite),
+                .clickable(role = Role.Button) {
+                    haptics.performHapticFeedback(HapticFeedbackType.ToggleOn)
+                    onToggleFavorite()
+                },
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
                 contentDescription = if (isFavorite) stringResource(R.string.cd_remove_favorite) else stringResource(R.string.cd_add_favorite),
-                tint = if (isFavorite) BirdoYellowLight else BirdoWhite40,
-                modifier = Modifier.size(18.dp),
+                tint = if (isFavorite) BirdoYellowLight else palette.onSurfaceFaint,
+                modifier = Modifier
+                    .size(18.dp)
+                    .scale(starScale),
             )
         }
     }

@@ -22,9 +22,20 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,6 +48,7 @@ import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.MultiHopSelection
+import app.birdo.vpn.ui.viewmodel.TrafficStats
 import app.birdo.vpn.ui.viewmodel.VpnUiState
 import app.birdo.vpn.utils.FormatUtils
 import app.birdo.vpn.utils.countryCodeToFlag
@@ -49,6 +61,7 @@ import app.birdo.vpn.utils.countryCodeToFlag
 @Composable
 fun HomeScreen(
     state: VpnUiState,
+    trafficStats: TrafficStats,
     userEmail: String?,
     killSwitchEnabled: Boolean,
     favoriteServers: Set<String> = emptySet(),
@@ -98,6 +111,14 @@ fun HomeScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val multiHopUpsell = stringResource(R.string.home_multihop_upsell)
+
+    // The moment protection engages is the emotional peak of the app — mark it
+    // with a confirm haptic so the user physically feels the tunnel come up.
+    LaunchedEffect(isConnected) {
+        if (isConnected) haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Mullvad-style full-bleed background map. Everything else floats
@@ -130,10 +151,12 @@ fun HomeScreen(
                 multiHopUnlocked = isSovereign,
                 onToggleMultiHop = {
                     if (!isSovereign) {
+                        haptics.performHapticFeedback(HapticFeedbackType.Reject)
                         scope.launch {
-                            snackbarHostState.showSnackbar("Multi-Hop is a SOVEREIGN feature. Upgrade to enable.")
+                            snackbarHostState.showSnackbar(multiHopUpsell)
                         }
                     } else {
+                        haptics.performHapticFeedback(HapticFeedbackType.ToggleOn)
                         // Disconnect any in-flight tunnel before swapping modes.
                         if (isConnected) onDisconnect()
                         val arming = !multiHopEnabled
@@ -174,6 +197,10 @@ fun HomeScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp, vertical = 16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    // Single source of vertical rhythm — banners no longer bake
+                    // in their own top padding, so spacing is uniform whichever
+                    // combination of stats/alerts is visible.
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     AnimatedVisibility(
                         visible = isConnected,
@@ -181,23 +208,24 @@ fun HomeScreen(
                             slideInVertically(initialOffsetY = { 16 }),
                         exit = fadeOut(),
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            StatsRow(state = state)
-                            Spacer(Modifier.height(10.dp))
-                        }
+                        StatsRow(connectedSince = state.connectedSince, stats = trafficStats)
                     }
 
                     AnimatedVisibility(visible = isKillSwitchActive) {
-                        Column { KillSwitchAlert(); Spacer(Modifier.height(10.dp)) }
+                        HomeBanner(
+                            icon = Icons.Default.Shield,
+                            message = stringResource(R.string.kill_switch_blocking),
+                        )
                     }
 
                     if (isError) {
-                        ErrorBanner((state.vpnState as VpnState.Error).message)
-                        Spacer(Modifier.height(10.dp))
+                        HomeBanner(
+                            icon = Icons.Default.ErrorOutline,
+                            message = (state.vpnState as VpnState.Error).message,
+                        )
                     }
                     if (state.error != null) {
-                        ErrorBanner(state.error)
-                        Spacer(Modifier.height(10.dp))
+                        HomeBanner(icon = Icons.Default.ErrorOutline, message = state.error)
                     }
 
                     if (multiHopEnabled) {
@@ -222,8 +250,6 @@ fun HomeScreen(
                         )
                     }
 
-                    Spacer(Modifier.height(10.dp))
-
                     CompactConnectButton(
                         isConnected = isConnected,
                         isConnecting = isConnecting,
@@ -232,25 +258,45 @@ fun HomeScreen(
                         multiHopArmed = multiHopEnabled,
                         onClick = {
                             when {
-                                isConnected -> onDisconnect()
+                                isConnected -> {
+                                    haptics.performHapticFeedback(HapticFeedbackType.Reject)
+                                    onDisconnect()
+                                }
                                 isConnecting || isDisconnecting -> Unit
-                                multiHopEnabled && multiHopEntry != null && multiHopExit != null && multiHopEntry?.id != multiHopExit?.id ->
+                                multiHopEnabled && multiHopEntry != null && multiHopExit != null && multiHopEntry?.id != multiHopExit?.id -> {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onConnectMultiHop(multiHopEntry!!.id, multiHopExit!!.id)
+                                }
                                 multiHopEnabled -> Unit // disabled until both selected
-                                else -> onConnect()
+                                else -> {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onConnect()
+                                }
                             }
                         },
                     )
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(0.dp))
                 }
             }
         }
 
+        // Brand-styled snackbar — the stock M3 inverseSurface pill is a light
+        // grey slab against the dark glass. Lift it above the action panel too.
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 96.dp),
+        ) { data ->
+            Snackbar(
+                snackbarData = data,
+                containerColor = palette.surfaceElevated,
+                contentColor = palette.onSurface,
+                actionColor = palette.accent,
+                shape = RoundedCornerShape(14.dp),
+            )
+        }
     }
 
     if (showServerSheet) {
@@ -295,26 +341,47 @@ private fun MultiHopTopAction(
     unlocked: Boolean,
     onClick: () -> Unit,
 ) {
-    val tint = when {
-        !unlocked -> BirdoWhite40
-        enabled -> BirdoBrand.Purple
-        else -> Color.White
-    }
-    val bg = if (enabled && unlocked) BirdoBrand.Purple.copy(alpha = 0.18f) else BirdoWhite05
-    val border = if (enabled && unlocked) BirdoBrand.Purple.copy(alpha = 0.55f) else BirdoBrand.HairlineSoft
+    val tint by animateColorAsState(
+        targetValue = when {
+            !unlocked -> BirdoWhite40
+            enabled -> BirdoBrand.Purple
+            else -> Color.White
+        },
+        animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
+        label = "multiHopTint",
+    )
+    val bg by animateColorAsState(
+        targetValue = if (enabled && unlocked) BirdoBrand.Purple.copy(alpha = 0.18f) else BirdoWhite05,
+        animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
+        label = "multiHopBg",
+    )
+    val border by animateColorAsState(
+        targetValue = if (enabled && unlocked) BirdoBrand.Purple.copy(alpha = 0.55f) else BirdoBrand.HairlineSoft,
+        animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
+        label = "multiHopBorder",
+    )
+    val label = stringResource(if (unlocked) R.string.cd_multihop else R.string.cd_multihop_locked)
+    val onState = stringResource(R.string.state_on)
+    val offState = stringResource(R.string.state_off)
 
     Box(
         modifier = Modifier
+            // 40dp visual chip, 48dp hit area.
+            .minimumInteractiveComponentSize()
             .size(40.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(bg)
             .border(1.dp, border, RoundedCornerShape(12.dp))
-            .clickable(role = Role.Button, onClick = onClick),
+            .toggleable(value = enabled, role = Role.Switch, onValueChange = { onClick() })
+            .semantics {
+                contentDescription = label
+                stateDescription = if (enabled) onState else offState
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = Icons.AutoMirrored.Filled.AltRoute,
-            contentDescription = "Multi-Hop",
+            contentDescription = null,
             tint = tint,
             modifier = Modifier.size(20.dp),
         )
@@ -352,7 +419,7 @@ private fun MultiHopServerPair(
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         MultiHopServerCard(
-            label = "Entry server",
+            label = stringResource(R.string.home_entry_server),
             server = entry,
             enabled = enabled,
             onClick = onPickEntry,
@@ -368,7 +435,7 @@ private fun MultiHopServerPair(
         }
         Spacer(Modifier.height(8.dp))
         MultiHopServerCard(
-            label = "Exit server",
+            label = stringResource(R.string.home_exit_server),
             server = exit,
             enabled = enabled,
             onClick = onPickExit,
@@ -376,9 +443,9 @@ private fun MultiHopServerPair(
         if (entry != null && exit != null && entry.id == exit.id) {
             Spacer(Modifier.height(6.dp))
             Text(
-                "Entry and exit must be different servers.",
+                stringResource(R.string.home_entry_exit_must_differ),
                 color = BirdoRed,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
             )
         }
     }
@@ -417,13 +484,13 @@ private fun MultiHopServerCard(
                 Text(
                     text = label.uppercase(),
                     color = BirdoBrand.Purple,
-                    fontSize = 10.sp,
+                    fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp,
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = server?.name ?: "Choose…",
+                    text = server?.name ?: stringResource(R.string.home_choose_server),
                     color = Color.White,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -518,18 +585,6 @@ private fun BrandLockup() {
     }
 }
 
-// ── Ambient Glow ────────────────────────────────────────────────────────────
-
-@Composable
-private fun HeroAmbientGlow(isConnected: Boolean, isError: Boolean, modifier: Modifier = Modifier) {
-    val brush: Brush = when {
-        isError -> BirdoBrand.ErrorGradient
-        isConnected -> BirdoBrand.ConnectedGradient
-        else -> BirdoBrand.IdleGradient
-    }
-    Box(modifier.background(brush))
-}
-
 // ── Status Pill ────────────────────────────────────────────────────────────
 
 @Composable
@@ -551,8 +606,27 @@ private fun StatusPill(
         isError -> { text = stringResource(R.string.status_error); tone = BadgeTone.Danger; icon = Icons.Default.ErrorOutline; pulse = false }
         else -> { text = stringResource(R.string.status_not_connected); tone = BadgeTone.Neutral; icon = Icons.Default.WifiOff; pulse = false }
     }
-    Box(modifier = modifier.testTag(TestTags.VPN_STATUS)) {
-        BirdoBadge(text = text, tone = tone, icon = icon, pulseDot = pulse)
+    // Polite live region: TalkBack announces every connection-state change —
+    // for a VPN, silent state transitions are a safety problem, not a nicety.
+    Box(
+        modifier = modifier
+            .testTag(TestTags.VPN_STATUS)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+    ) {
+        AnimatedContent(
+            targetState = text,
+            transitionSpec = {
+                (fadeIn(tween(BirdoMotion.Standard, easing = BirdoMotion.Decel)) +
+                    slideInVertically(
+                        animationSpec = tween(BirdoMotion.Standard, easing = BirdoMotion.Decel),
+                        initialOffsetY = { it / 2 },
+                    ))
+                    .togetherWith(fadeOut(tween(BirdoMotion.Quick, easing = BirdoMotion.Accel)))
+            },
+            label = "statusPill",
+        ) { animatedText ->
+            BirdoBadge(text = animatedText, tone = tone, icon = icon, pulseDot = pulse)
+        }
     }
 }
 
@@ -560,8 +634,8 @@ private fun StatusPill(
 
 /**
  * Pill-style connect/disconnect action sized to match [ServerSelector] so the
- * two stack as a tidy pair under a much larger globe. Replaces the previous
- * 168dp [HeroConnectButton] which dominated the screen.
+ * two stack as a tidy pair under a much larger globe. State changes morph the
+ * gradient (idle violet → busy → connected green) instead of hard-cutting.
  */
 @Composable
 private fun CompactConnectButton(
@@ -574,27 +648,56 @@ private fun CompactConnectButton(
 ) {
     val busy = isConnecting || isDisconnecting
     val multiHopBlocked = multiHopArmed && !multiHopReady && !isConnected
-    val brush: Brush = when {
-        isConnected -> Brush.linearGradient(listOf(BirdoGreen, Color(0xFF166534)))
-        busy -> Brush.linearGradient(listOf(BirdoBrand.PurpleSoft, BirdoBrand.PurpleDeep))
-        multiHopBlocked -> Brush.linearGradient(listOf(BirdoWhite10, BirdoWhite10))
-        multiHopReady -> Brush.linearGradient(listOf(BirdoBrand.Purple, BirdoBrand.PurpleDeep))
-        else -> BirdoBrand.PrimaryGradient
+
+    // The idle → connecting → connected transition is the most important state
+    // change in the app: morph the gradient rather than hard-cutting it.
+    val (targetStart, targetEnd) = when {
+        isConnected -> BirdoGreen to Color(0xFF166534)
+        busy -> BirdoBrand.PurpleSoft to BirdoBrand.PurpleDeep
+        multiHopBlocked -> BirdoWhite10 to BirdoWhite10
+        multiHopReady -> BirdoBrand.Purple to BirdoBrand.PurpleDeep
+        else -> Color(0xFF7C3AED) to Color(0xFF4C1D95) // PrimaryGradient stops
     }
+    val startColor by animateColorAsState(
+        targetValue = targetStart,
+        animationSpec = tween(BirdoMotion.Emphasis, easing = BirdoMotion.Decel),
+        label = "connectStart",
+    )
+    val endColor by animateColorAsState(
+        targetValue = targetEnd,
+        animationSpec = tween(BirdoMotion.Emphasis, easing = BirdoMotion.Decel),
+        label = "connectEnd",
+    )
+    val shadowColor by animateColorAsState(
+        targetValue = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f),
+        animationSpec = tween(BirdoMotion.Emphasis, easing = BirdoMotion.Decel),
+        label = "connectShadow",
+    )
+    val brush = Brush.linearGradient(listOf(startColor, endColor))
+
     val label = when {
         isConnected -> stringResource(R.string.disconnect)
         isConnecting -> stringResource(R.string.connecting)
         isDisconnecting -> stringResource(R.string.disconnecting)
-        multiHopBlocked -> "Choose entry & exit"
-        multiHopReady -> "Connect Multi-Hop"
+        multiHopBlocked -> stringResource(R.string.home_choose_entry_exit)
+        multiHopReady -> stringResource(R.string.home_connect_multihop)
         else -> stringResource(R.string.connect)
     }
-    val shadowColor = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f)
+
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = tween(120, easing = BirdoMotion.EaseStandard),
+        label = "connectPress",
+    )
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(60.dp)
+            // Min-height, not fixed: labels must survive large font scales.
+            .heightIn(min = 60.dp)
+            .scale(pressScale)
             .shadow(
                 elevation = 14.dp,
                 shape = RoundedCornerShape(16.dp),
@@ -604,7 +707,14 @@ private fun CompactConnectButton(
             .clip(RoundedCornerShape(16.dp))
             .background(brush)
             .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(16.dp))
-            .clickable(enabled = !busy, role = Role.Button, onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = !busy,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(vertical = 12.dp)
             .testTag(TestTags.CONNECT_BUTTON),
         contentAlignment = Alignment.Center,
     ) {
@@ -635,131 +745,20 @@ private fun CompactConnectButton(
     }
 }
 
-// ── Hero Connect Button ────────────────────────────────────────────────────
-
-@Composable
-private fun HeroConnectButton(
-    isConnected: Boolean,
-    isConnecting: Boolean,
-    isDisconnecting: Boolean,
-    onClick: () -> Unit,
-) {
-    val transition = rememberInfiniteTransition(label = "btn")
-
-    val ring1Scale by transition.animateFloat(
-        initialValue = 1f, targetValue = 1.6f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
-        label = "r1s",
-    )
-    val ring1Alpha by transition.animateFloat(
-        initialValue = 0.35f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
-        label = "r1a",
-    )
-    val ring2Scale by transition.animateFloat(
-        initialValue = 1f, targetValue = 1.4f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing, delayMillis = 500), RepeatMode.Restart),
-        label = "r2s",
-    )
-    val ring2Alpha by transition.animateFloat(
-        initialValue = 0.25f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing, delayMillis = 500), RepeatMode.Restart),
-        label = "r2a",
-    )
-
-    val buttonSize = 168.dp
-
-    Box(
-        modifier = Modifier.size(buttonSize * 1.7f),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (isConnected) {
-            Box(
-                Modifier
-                    .size(buttonSize)
-                    .scale(ring1Scale)
-                    .clip(CircleShape)
-                    .background(BirdoGreen.copy(alpha = ring1Alpha)),
-            )
-            Box(
-                Modifier
-                    .size(buttonSize)
-                    .scale(ring2Scale)
-                    .clip(CircleShape)
-                    .background(BirdoGreen.copy(alpha = ring2Alpha)),
-            )
-        }
-
-        if (!isConnected && !isConnecting && !isDisconnecting) {
-            Box(
-                Modifier
-                    .size(buttonSize * 1.4f)
-                    .clip(CircleShape)
-                    .background(BirdoBrand.IdleGradient),
-            )
-        }
-
-        // Outer gradient halo ring
-        Box(
-            modifier = Modifier
-                .size(buttonSize + 14.dp)
-                .clip(CircleShape)
-                .background(
-                    when {
-                        isConnected -> Brush.linearGradient(listOf(BirdoGreen, BirdoBrand.Teal))
-                        isConnecting || isDisconnecting -> Brush.linearGradient(listOf(BirdoBrand.PurpleSoft, BirdoBrand.PurpleDeep))
-                        else -> BirdoBrand.PrimaryGradient
-                    }
-                ),
-        )
-
-        // Inner button
-        Box(
-            modifier = Modifier
-                .size(buttonSize)
-                .shadow(
-                    elevation = if (isConnected) 28.dp else 16.dp,
-                    shape = CircleShape,
-                    ambientColor = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f),
-                    spotColor = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f),
-                )
-                .clip(CircleShape)
-                .background(
-                    when {
-                        isConnected -> Brush.radialGradient(listOf(BirdoGreen, Color(0xFF166534)))
-                        isConnecting || isDisconnecting -> Brush.radialGradient(listOf(BirdoBrand.PurpleDeep, Color(0xFF2E1065)))
-                        else -> Brush.radialGradient(listOf(BirdoBrand.Surface3, BirdoBrand.Surface1))
-                    }
-                )
-                .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-                .clickable(role = Role.Button, onClick = onClick)
-                .testTag(TestTags.CONNECT_BUTTON),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (isConnecting || isDisconnecting) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(64.dp),
-                    color = Color.White,
-                    trackColor = Color.White.copy(alpha = 0.2f),
-                    strokeWidth = 4.dp,
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Default.PowerSettingsNew,
-                    contentDescription = if (isConnected) stringResource(R.string.disconnect)
-                    else stringResource(R.string.connect),
-                    tint = if (isConnected) Color.White else BirdoWhite80,
-                    modifier = Modifier.size(58.dp),
-                )
-            }
-        }
-    }
-}
-
 // ── Stats Row ──────────────────────────────────────────────────────────────
 
+/**
+ * Reads [TrafficStats] — deliberately NOT VpnUiState — so the per-second byte
+ * tick recomposes only these three tiles, not the whole Connect screen.
+ * `stats.tickMs` is read so the duration recomputes each poll while connected.
+ */
 @Composable
-private fun StatsRow(state: VpnUiState) {
+private fun StatsRow(connectedSince: Long, stats: TrafficStats) {
+    val duration = remember(connectedSince, stats.tickMs) {
+        FormatUtils.formatDuration(connectedSince)
+    }
+    val rx = remember(stats.rxBytes) { FormatUtils.formatBytes(stats.rxBytes) }
+    val tx = remember(stats.txBytes) { FormatUtils.formatBytes(stats.txBytes) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -767,21 +766,21 @@ private fun StatsRow(state: VpnUiState) {
         StatTile(
             icon = Icons.Default.Schedule,
             label = stringResource(R.string.stats_duration),
-            value = FormatUtils.formatDuration(state.connectedSince),
+            value = duration,
             tint = BirdoBrand.PurpleSoft,
             modifier = Modifier.weight(1f),
         )
         StatTile(
             icon = Icons.Default.ArrowDownward,
             label = stringResource(R.string.stats_download),
-            value = FormatUtils.formatBytes(state.rxBytes),
+            value = rx,
             tint = BirdoGreenLight,
             modifier = Modifier.weight(1f),
         )
         StatTile(
             icon = Icons.Default.ArrowUpward,
             label = stringResource(R.string.stats_upload),
-            value = FormatUtils.formatBytes(state.txBytes),
+            value = tx,
             tint = BirdoBlue,
             modifier = Modifier.weight(1f),
         )
@@ -808,26 +807,58 @@ private fun StatTile(
         ) {
             Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(6.dp))
-            Text(
-                text = value,
-                color = Color.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // Roll the digits rather than teleporting them. Only recomposes when
+            // the FORMATTED string changes, so a stat ticking within the same
+            // display unit costs nothing.
+            AnimatedContent(
+                targetState = value,
+                transitionSpec = {
+                    (fadeIn(tween(BirdoMotion.Quick)) +
+                        slideInVertically(
+                            animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.Decel),
+                            initialOffsetY = { it / 2 },
+                        ))
+                        .togetherWith(
+                            fadeOut(tween(BirdoMotion.Instant)) +
+                                slideOutVertically(
+                                    animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.Accel),
+                                    targetOffsetY = { -it / 2 },
+                                ),
+                        )
+                },
+                label = "statValue",
+            ) { animatedValue ->
+                Text(
+                    text = animatedValue,
+                    color = BirdoColors.current.onSurface,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
 
-// ── Kill Switch Alert ──────────────────────────────────────────────────────
+// ── Banner ────────────────────────────────────────────────────────────────
 
+/**
+ * One banner for every inline alert on the Connect screen (kill switch,
+ * connect error, transient API error). No internal padding — the parent
+ * Column owns vertical rhythm. Assertive live region: an alert that appears
+ * silently is an alert a TalkBack user never receives.
+ */
 @Composable
-private fun KillSwitchAlert() {
+private fun HomeBanner(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    message: String,
+    modifier: Modifier = Modifier,
+) {
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(top = 16.dp),
+            .semantics { liveRegion = LiveRegionMode.Assertive },
         shape = RoundedCornerShape(14.dp),
         color = BirdoRedBg,
         border = androidx.compose.foundation.BorderStroke(1.dp, BirdoRed.copy(alpha = 0.3f)),
@@ -836,34 +867,7 @@ private fun KillSwitchAlert() {
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Default.Shield, null, tint = BirdoRed, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(10.dp))
-            Text(
-                stringResource(R.string.kill_switch_blocking),
-                color = BirdoRed,
-                fontSize = 13.sp,
-            )
-        }
-    }
-}
-
-// ── Error Banner ───────────────────────────────────────────────────────────
-
-@Composable
-private fun ErrorBanner(message: String) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 12.dp),
-        shape = RoundedCornerShape(14.dp),
-        color = BirdoRedBg,
-        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoRed.copy(alpha = 0.3f)),
-    ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Default.ErrorOutline, null, tint = BirdoRed, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = null, tint = BirdoRed, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
             Text(
                 text = message,

@@ -120,7 +120,7 @@
     <string name="delete_dialog_cancel">Cancel</string>
 
     <!-- VPN Settings Screen -->
-    <string name="settings_section_vpn">VPN Protocol</string>
+    <string name="settings_section_vpn">VPN</string>
     <string name="settings_vpn_settings">VPN Settings</string>
     <string name="settings_vpn_settings_desc">Protocol, DNS, port, and MTU</string>
     <string name="vpn_settings_title">VPN Settings</string>
@@ -145,6 +145,82 @@
     <string name="vpn_settings_mtu_hint">e.g. 1420</string>
     <string name="vpn_settings_mtu_range">Valid range: 1280-1500</string>
     <string name="vpn_settings_changes_note">Changes take effect on next connection</string>
+    <string name="vpn_settings_section_security">Security</string>
+    <string name="vpn_settings_section_features">Features</string>
+    <string name="vpn_settings_stealth_title">Stealth Mode · Premium</string>
+    <string name="vpn_settings_stealth_desc">Premium feature — available on the Operative and Sovereign plans. Routes through Xray Reality to bypass deep packet inspection, making VPN traffic look like normal HTTPS. Free (Recon) accounts can enable it here, but it only activates with a paid subscription.</string>
+    <string name="vpn_settings_quantum_title">Quantum Protection</string>
+    <string name="vpn_settings_quantum_desc">Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.</string>
+    <string name="cd_locked_feature">Premium feature — upgrade to unlock</string>
+    <!-- Home / Connect -->
+    <string name="home_multihop_upsell">Multi-Hop is a SOVEREIGN feature. Upgrade to enable.</string>
+    <string name="home_entry_server">Entry server</string>
+    <string name="home_exit_server">Exit server</string>
+    <string name="home_choose_server">Choose…</string>
+    <string name="home_choose_entry_exit">Choose entry &amp; exit</string>
+    <string name="home_connect_multihop">Connect Multi-Hop</string>
+    <string name="home_entry_exit_must_differ">Entry and exit must be different servers.</string>
+    <string name="cd_multihop">Multi-Hop</string>
+    <string name="cd_multihop_locked">Multi-Hop — SOVEREIGN plan required</string>
+    <string name="state_on">On</string>
+    <string name="state_off">Off</string>
+    <string name="cd_show_password">Show password</string>
+    <string name="cd_hide_password">Hide password</string>
+    <string name="cd_widget_connected">Birdo VPN — protected via %1$s. Double-tap to open the app.</string>
+    <string name="cd_widget_disconnected">Birdo VPN — not connected. Double-tap to connect.</string>
+    <string name="servers_empty_hint">Pull down to refresh or tap retry.</string>
+    <!-- Settings -->
+    <string name="settings_subtitle">App preferences &amp; account</string>
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_section_security">Security</string>
+    <string name="settings_biometric">Biometric Lock</string>
+    <string name="settings_biometric_desc">Require fingerprint or PIN to open app</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_desc">Dark, light, or follow system</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_system">System</string>
+    <!-- Port forwarding -->
+    <string name="port_forward_title">Port Forwarding</string>
+    <string name="port_forward_info">Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.</string>
+    <string name="port_forward_new_rule">New rule</string>
+    <string name="port_forward_active_rules">Active rules</string>
+    <string name="port_forward_internal_port">Internal port</string>
+    <string name="port_forward_port_hint">e.g. 8080</string>
+    <string name="port_forward_port_range">Port must be 1-65535</string>
+    <string name="port_forward_protocol">Protocol</string>
+    <string name="port_forward_add_rule">Add rule</string>
+    <string name="port_forward_empty">No port forwarding rules yet. Add one above to get started.</string>
+    <string name="port_forward_delete_rule">Delete rule</string>
+    <string name="port_forward_delete_title">Delete this rule?</string>
+    <string name="port_forward_delete_message">Port %1$d \u2192 %2$d will stop being forwarded. Any service relying on it becomes unreachable.</string>
+    <string name="port_forward_delete_confirm">Delete</string>
+    <!-- Subscription -->
+    <string name="subscription_title">Manage Subscription</string>
+    <string name="subscription_choose_plan">Choose a plan</string>
+    <string name="subscription_plans_features">Plans &amp; features</string>
+    <string name="subscription_monthly">Monthly</string>
+    <string name="subscription_yearly">Yearly · Save 20%</string>
+    <string name="subscription_manage_web">Manage on web</string>
+    <string name="subscription_web_note">Subscriptions are purchased and managed on birdo.app.</string>
+    <string name="subscription_voucher_note">Have a voucher code? Redeem it on the Profile tab.</string>
+    <string name="subscription_voucher_note_web">Have a voucher code? Redeem it on the Profile tab. All purchases can also be managed on birdo.app.</string>
+    <string name="subscription_active">Active subscription</string>
+    <string name="subscription_inactive">Inactive</string>
+    <string name="subscription_badge_active">ACTIVE</string>
+    <string name="subscription_badge_inactive">INACTIVE</string>
+    <string name="subscription_metric_devices">Devices</string>
+    <string name="subscription_metric_bandwidth">Bandwidth</string>
+    <string name="subscription_metric_premium">Premium</string>
+    <string name="subscription_unlimited">Unlimited</string>
+    <string name="subscription_popular">POPULAR</string>
+    <string name="subscription_current">CURRENT</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="sheet_search_placeholder">Search by country or city</string>
+    <string name="cd_close">Close</string>
+    <string name="widget_tap_to_connect">Tap to connect</string>
+    <string name="yes">Yes</string>
+    <string name="no">No</string>
     <string name="settings_version">Version %s</string>
     <string name="cd_open">Open</string>
 

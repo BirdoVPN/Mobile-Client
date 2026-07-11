@@ -7,7 +7,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,7 +21,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.BuildConfig
+import androidx.compose.ui.res.stringResource
+import app.birdo.vpn.R
 import app.birdo.vpn.data.model.SubscriptionStatus
+import app.birdo.vpn.ui.components.BirdoCard
+import app.birdo.vpn.ui.components.BirdoIconAction
+import app.birdo.vpn.ui.components.BirdoSegmentedControl
+import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 
 private data class PlanInfo(
@@ -32,9 +37,11 @@ private data class PlanInfo(
     val priceMonthly: String,
     val priceYearly: String,
     val features: List<String>,
-    val accent: Color,
     val isPopular: Boolean = false,
-)
+) {
+    /** Tier colour — single source of truth, shared with Profile. */
+    val accent: Color get() = BirdoBrand.planAccent(id)
+}
 
 private val plans = listOf(
     PlanInfo(
@@ -52,7 +59,6 @@ private val plans = listOf(
             "Kill switch",
             "DNS leak protection",
         ),
-        accent = BirdoWhite40,
     ),
     PlanInfo(
         id = "OPERATIVE",
@@ -74,7 +80,6 @@ private val plans = listOf(
             "Biometric lock",
             "Priority support",
         ),
-        accent = Color(0xFF8B5CF6),
         isPopular = true,
     ),
     PlanInfo(
@@ -100,7 +105,6 @@ private val plans = listOf(
             "Custom DNS",
             "Priority support",
         ),
-        accent = Color(0xFFF59E0B),
     ),
 )
 
@@ -121,31 +125,23 @@ fun SubscriptionScreen(
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
+    val palette = BirdoColors.current
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        "Manage Subscription",
-                        fontWeight = FontWeight.Bold,
-                        color = BirdoWhite80,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = BirdoWhite60)
-                    }
-                },
+            BirdoTopBar(
+                title = stringResource(R.string.subscription_title),
+                onBack = onNavigateBack,
                 actions = {
                     // Play build: no web-billing steering in the toolbar.
                     if (!isPlayBuild) {
-                        TextButton(onClick = onManageOnWeb) {
-                            Text("Web", color = BirdoWhite60, fontSize = 13.sp)
-                        }
+                        BirdoIconAction(
+                            icon = Icons.Default.OpenInNew,
+                            contentDescription = stringResource(R.string.subscription_manage_web),
+                            onClick = onManageOnWeb,
+                        )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             )
         },
         containerColor = Color.Transparent,
@@ -164,43 +160,24 @@ fun SubscriptionScreen(
             }
 
             Text(
-                if (isPlayBuild) "Plans & features" else "Choose a plan",
+                stringResource(if (isPlayBuild) R.string.subscription_plans_features else R.string.subscription_choose_plan),
                 style = MaterialTheme.typography.titleMedium,
-                color = BirdoWhite80,
+                color = palette.onSurface,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 4.dp, bottom = 10.dp),
             )
 
-            // Billing period toggle
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                color = BirdoSurface,
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp),
-                ) {
-                    listOf("monthly" to "Monthly", "yearly" to "Yearly · Save 20%").forEach { (key, label) ->
-                        Surface(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (billingPeriod == key) Color.White else Color.Transparent,
-                            onClick = { billingPeriod = key },
-                        ) {
-                            Text(
-                                label,
-                                modifier = Modifier.padding(vertical = 10.dp),
-                                textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = if (billingPeriod == key) FontWeight.Bold else FontWeight.Normal,
-                                color = if (billingPeriod == key) Color.Black else BirdoWhite60,
-                            )
-                        }
-                    }
-                }
-            }
+            // Billing period toggle — the shared control, so the selected
+            // segment is accent-tinted like everywhere else (it used to be a
+            // solid white slab, alien to the dark-glass system).
+            BirdoSegmentedControl(
+                options = listOf(
+                    "monthly" to stringResource(R.string.subscription_monthly),
+                    "yearly" to stringResource(R.string.subscription_yearly),
+                ),
+                selectedKey = billingPeriod,
+                onSelect = { billingPeriod = it },
+            )
 
             Spacer(Modifier.height(16.dp))
 
@@ -244,7 +221,7 @@ fun SubscriptionScreen(
                             color = if (billingIsError) BirdoRed else BirdoGreen,
                         )
                         TextButton(onClick = onClearBillingMessage) {
-                            Text("Dismiss", color = BirdoWhite60, fontSize = 12.sp)
+                            Text(stringResource(R.string.dismiss), color = palette.onSurfaceMuted, fontSize = 12.sp)
                         }
                     }
                 }
@@ -252,9 +229,9 @@ fun SubscriptionScreen(
             if (!billingReady && !isPlayBuild) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Subscriptions are purchased and managed on birdo.app.",
+                    stringResource(R.string.subscription_web_note),
                     style = MaterialTheme.typography.bodySmall,
-                    color = BirdoWhite40,
+                    color = palette.onSurfaceMuted,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                 )
@@ -264,14 +241,12 @@ fun SubscriptionScreen(
             // Play build omits any steering to external purchase / web billing.
             Spacer(Modifier.height(8.dp))
             Text(
-                if (isPlayBuild) {
-                    "Have a voucher code? Redeem it on the Profile tab."
-                } else {
-                    "Have a voucher code? Redeem it on the Profile tab. " +
-                        "All purchases can also be managed on birdo.app."
-                },
+                stringResource(
+                    if (isPlayBuild) R.string.subscription_voucher_note
+                    else R.string.subscription_voucher_note_web,
+                ),
                 style = MaterialTheme.typography.bodySmall,
-                color = BirdoWhite40,
+                color = palette.onSurfaceMuted,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -286,17 +261,14 @@ fun SubscriptionScreen(
 @Composable
 private fun CurrentPlanHero(sub: SubscriptionStatus) {
     val isActive = sub.status.equals("ACTIVE", ignoreCase = true)
-    val planAccent = when (sub.plan.uppercase()) {
-        "SOVEREIGN" -> Color(0xFFF59E0B)
-        "OPERATIVE" -> Color(0xFF8B5CF6)
-        else -> BirdoWhite60
-    }
-    Surface(
+    val palette = BirdoColors.current
+    val planAccent = BirdoBrand.planAccent(sub.plan)
+    BirdoCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = BirdoSurface,
+        cornerRadius = 18.dp,
+        contentPadding = PaddingValues(18.dp),
     ) {
-        Column(modifier = Modifier.padding(18.dp)) {
+        Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -312,24 +284,24 @@ private fun CurrentPlanHero(sub: SubscriptionStatus) {
                     Text(
                         sub.plan.uppercase(),
                         style = MaterialTheme.typography.titleMedium,
-                        color = Color.White,
+                        color = palette.onSurface,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        if (isActive) "Active subscription" else "Inactive",
+                        stringResource(if (isActive) R.string.subscription_active else R.string.subscription_inactive),
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (isActive) BirdoGreen else BirdoWhite40,
+                        color = if (isActive) BirdoGreen else palette.onSurfaceMuted,
                     )
                 }
                 Surface(
                     shape = RoundedCornerShape(999.dp),
-                    color = if (isActive) BirdoGreen.copy(alpha = 0.18f) else BirdoWhite10,
+                    color = if (isActive) BirdoGreen.copy(alpha = 0.18f) else palette.surfaceRaised,
                 ) {
                     Text(
-                        if (isActive) "ACTIVE" else "INACTIVE",
+                        stringResource(if (isActive) R.string.subscription_badge_active else R.string.subscription_badge_inactive),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        color = if (isActive) BirdoGreen else BirdoWhite60,
-                        fontSize = 10.sp,
+                        color = if (isActive) BirdoGreen else palette.onSurfaceMuted,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                     )
                 }
@@ -337,18 +309,18 @@ private fun CurrentPlanHero(sub: SubscriptionStatus) {
             Spacer(Modifier.height(14.dp))
             Row(modifier = Modifier.fillMaxWidth()) {
                 MetricCell(
-                    "Devices",
+                    stringResource(R.string.subscription_metric_devices),
                     "${sub.activeConnections}/${sub.maxConnections}",
                     Modifier.weight(1f),
                 )
                 MetricCell(
-                    "Bandwidth",
-                    if (sub.bandwidthLimitGb > 0) "${sub.bandwidthLimitGb} GB" else "Unlimited",
+                    stringResource(R.string.subscription_metric_bandwidth),
+                    if (sub.bandwidthLimitGb > 0) "${sub.bandwidthLimitGb} GB" else stringResource(R.string.subscription_unlimited),
                     Modifier.weight(1f),
                 )
                 MetricCell(
-                    "Premium",
-                    if (sub.hasPremiumServers) "Yes" else "No",
+                    stringResource(R.string.subscription_metric_premium),
+                    stringResource(if (sub.hasPremiumServers) R.string.yes else R.string.no),
                     Modifier.weight(1f),
                 )
             }
@@ -358,10 +330,11 @@ private fun CurrentPlanHero(sub: SubscriptionStatus) {
 
 @Composable
 private fun MetricCell(label: String, value: String, modifier: Modifier = Modifier) {
+    val palette = BirdoColors.current
     Column(modifier = modifier) {
-        Text(label, color = BirdoWhite40, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+        Text(label, color = palette.onSurfaceMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
         Spacer(Modifier.height(2.dp))
-        Text(value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(value, color = palette.onSurface, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -374,28 +347,22 @@ private fun PlanCard(
     showManageButton: Boolean = true,
     onSelect: () -> Unit,
 ) {
+    val palette = BirdoColors.current
     val shape = RoundedCornerShape(16.dp)
-    val borderModifier = if (plan.isPopular) {
-        Modifier.border(
-            width = 1.dp,
-            brush = Brush.linearGradient(listOf(plan.accent, plan.accent.copy(alpha = 0.3f))),
-            shape = shape,
-        )
+    val popularBorder = if (plan.isPopular) {
+        Brush.linearGradient(listOf(plan.accent, plan.accent.copy(alpha = 0.3f)))
     } else {
-        Modifier
+        BirdoBrand.GlassStrokeGradient
     }
 
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(borderModifier),
-        shape = shape,
-        color = BirdoSurface,
+    BirdoCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 16.dp,
+        border = popularBorder,
+        contentPadding = PaddingValues(20.dp),
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
+            modifier = Modifier.fillMaxWidth(),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -407,7 +374,7 @@ private fun PlanCard(
                             plan.name,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            color = BirdoWhite80,
+                            color = palette.onSurface,
                         )
                         if (plan.isPopular) {
                             Spacer(Modifier.width(8.dp))
@@ -416,7 +383,7 @@ private fun PlanCard(
                                 color = plan.accent.copy(alpha = 0.15f),
                             ) {
                                 Text(
-                                    "POPULAR",
+                                    stringResource(R.string.subscription_popular),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = plan.accent,
@@ -431,7 +398,7 @@ private fun PlanCard(
                                 color = BirdoGreen.copy(alpha = 0.15f),
                             ) {
                                 Text(
-                                    "CURRENT",
+                                    stringResource(R.string.subscription_current),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = BirdoGreen,
@@ -440,13 +407,13 @@ private fun PlanCard(
                             }
                         }
                     }
-                    Text(plan.tagline, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40)
+                    Text(plan.tagline, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted)
                 }
                 Text(
                     price,
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = if (plan.id == "RECON") BirdoWhite60 else Color.White,
+                    color = if (plan.id == "RECON") palette.onSurfaceMuted else palette.onSurface,
                 )
             }
 
@@ -467,7 +434,7 @@ private fun PlanCard(
                     Text(
                         feature,
                         style = MaterialTheme.typography.bodySmall,
-                        color = BirdoWhite60,
+                        color = palette.onSurfaceMuted,
                     )
                 }
             }
@@ -478,35 +445,15 @@ private fun PlanCard(
                 // are purchased and changed on the web. This opens the billing
                 // page on birdo.app rather than initiating an in-app purchase.
                 // Hidden entirely in the Play build (showManageButton = false).
-                OutlinedButton(
+                app.birdo.vpn.ui.components.BirdoButton(
+                    text = stringResource(R.string.subscription_manage_web),
                     onClick = onSelect,
+                    variant = app.birdo.vpn.ui.components.BirdoButtonVariant.Secondary,
+                    icon = Icons.Default.OpenInNew,
+                    isLoading = isPurchasing,
                     enabled = !isPurchasing,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = BirdoWhite80,
-                    ),
-                ) {
-                    if (isPurchasing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = BirdoWhite80,
-                        )
-                    } else {
-                        Icon(
-                            Icons.Default.OpenInNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Manage on web",
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(vertical = 4.dp),
-                        )
-                    }
-                }
+                )
             }
         }
     }

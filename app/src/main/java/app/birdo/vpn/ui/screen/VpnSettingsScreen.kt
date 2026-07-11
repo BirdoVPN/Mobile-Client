@@ -8,7 +8,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,7 +19,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -28,6 +26,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
+import app.birdo.vpn.ui.components.BirdoCard
+import app.birdo.vpn.ui.components.BirdoSectionHeader
+import app.birdo.vpn.ui.components.BirdoTextField
+import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
 import app.birdo.vpn.utils.InputValidator
@@ -62,28 +64,13 @@ fun VpnSettingsScreen(
     var mtuText by remember { mutableStateOf(
         if (state.wireGuardMtu > 0) state.wireGuardMtu.toString() else ""
     ) }
+    val palette = BirdoColors.current
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        stringResource(R.string.vpn_settings_title),
-                        fontWeight = FontWeight.Bold,
-                        color = BirdoWhite80,
-                        fontFamily = FontFamily.SansSerif,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.cd_back),
-                            tint = BirdoWhite60,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+            BirdoTopBar(
+                title = stringResource(R.string.vpn_settings_title),
+                onBack = onBack,
             )
         },
         containerColor = Color.Transparent,
@@ -96,7 +83,7 @@ fun VpnSettingsScreen(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             // ── Security Section ─────────────────────────────────
-            item { VpnSectionHeader("SECURITY") }
+            item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_security)) }
 
             item {
                 // Kill switch is intentionally an always-on, locked control:
@@ -119,11 +106,8 @@ fun VpnSettingsScreen(
                 VpnToggle(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
-                    title = "Stealth Mode · Premium",
-                    description = "Premium feature — available on the Operative and Sovereign plans. " +
-                        "Routes through Xray Reality to bypass deep packet inspection, making VPN " +
-                        "traffic look like normal HTTPS. Free (Recon) accounts can enable it here, " +
-                        "but it only activates with a paid subscription.",
+                    title = stringResource(R.string.vpn_settings_stealth_title),
+                    description = stringResource(R.string.vpn_settings_stealth_desc),
                     checked = state.stealthModeEnabled,
                     onCheckedChange = onStealthModeChange,
                 )
@@ -133,8 +117,8 @@ fun VpnSettingsScreen(
                 VpnToggle(
                     icon = Icons.Default.Lock,
                     iconColor = BirdoPurple,
-                    title = "Quantum Protection",
-                    description = "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
+                    title = stringResource(R.string.vpn_settings_quantum_title),
+                    description = stringResource(R.string.vpn_settings_quantum_desc),
                     checked = state.quantumProtectionEnabled && quantumUnlocked,
                     onCheckedChange = onQuantumProtectionChange,
                     locked = !quantumUnlocked,
@@ -143,7 +127,7 @@ fun VpnSettingsScreen(
             }
 
             // ── Network Section ──────────────────────────────────
-            item { VpnSectionHeader(stringResource(R.string.vpn_settings_section_network)) }
+            item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_network)) }
 
             item {
                 VpnToggle(
@@ -157,7 +141,7 @@ fun VpnSettingsScreen(
             }
 
             // ── DNS Section ──────────────────────────────────────
-            item { VpnSectionHeader(stringResource(R.string.vpn_settings_section_dns)) }
+            item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_dns)) }
 
             item {
                 VpnToggle(
@@ -174,7 +158,7 @@ fun VpnSettingsScreen(
 
             if (state.customDnsEnabled && customDnsUnlocked) {
                 item {
-                    VpnTextField(
+                    BirdoTextField(
                         value = state.customDnsPrimary,
                         onValueChange = onCustomDnsPrimaryChange,
                         label = stringResource(R.string.vpn_settings_dns_primary),
@@ -182,10 +166,11 @@ fun VpnSettingsScreen(
                         keyboardType = KeyboardType.Decimal,
                         isError = state.customDnsPrimary.isNotBlank() &&
                             !InputValidator.isValidDnsAddress(state.customDnsPrimary),
+                        modifier = Modifier.padding(vertical = 4.dp),
                     )
                 }
                 item {
-                    VpnTextField(
+                    BirdoTextField(
                         value = state.customDnsSecondary,
                         onValueChange = onCustomDnsSecondaryChange,
                         label = stringResource(R.string.vpn_settings_dns_secondary),
@@ -193,24 +178,29 @@ fun VpnSettingsScreen(
                         keyboardType = KeyboardType.Decimal,
                         isError = state.customDnsSecondary.isNotBlank() &&
                             !InputValidator.isValidDnsAddress(state.customDnsSecondary),
+                        modifier = Modifier.padding(vertical = 4.dp),
                     )
                 }
             }
 
             // ── WireGuard Section ────────────────────────────────
-            item { VpnSectionHeader(stringResource(R.string.vpn_settings_section_wireguard)) }
+            item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_wireguard)) }
 
             // Port selection
             item {
-                VpnCardSurface {
-                    Column(modifier = Modifier.padding(16.dp)) {
+                BirdoCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = 14.dp,
+                    contentPadding = PaddingValues(16.dp),
+                ) {
+                    Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Router, stringResource(R.string.vpn_settings_port), tint = BirdoGreen, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.width(14.dp))
                             Text(
                                 stringResource(R.string.vpn_settings_port),
                                 style = MaterialTheme.typography.titleSmall,
-                                color = BirdoWhite80,
+                                color = palette.onSurface,
                                 fontWeight = FontWeight.Medium,
                             )
                         }
@@ -251,8 +241,8 @@ fun VpnSettingsScreen(
                                     selected = selectedPort == option,
                                     onClick = null,
                                     colors = RadioButtonDefaults.colors(
-                                        selectedColor = BirdoWhite,
-                                        unselectedColor = BirdoWhite40,
+                                        selectedColor = palette.accent,
+                                        unselectedColor = palette.onSurfaceFaint,
                                     ),
                                 )
                                 Spacer(Modifier.width(8.dp))
@@ -264,7 +254,7 @@ fun VpnSettingsScreen(
                                         else -> stringResource(R.string.vpn_settings_port_custom)
                                     },
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = BirdoWhite80,
+                                    color = palette.onSurface.copy(alpha = 0.85f),
                                 )
                             }
                         }
@@ -272,7 +262,7 @@ fun VpnSettingsScreen(
                         // Custom port text field
                         if (selectedPort == "custom") {
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
+                            BirdoTextField(
                                 value = customPortText,
                                 onValueChange = { text ->
                                     val filtered = text.filter { it.isDigit() }.take(5)
@@ -282,11 +272,8 @@ fun VpnSettingsScreen(
                                         onWireGuardPortChange(filtered)
                                     }
                                 },
-                                label = { Text(stringResource(R.string.vpn_settings_port_custom_hint)) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                singleLine = true,
-                                colors = vpnTextFieldColors(),
-                                modifier = Modifier.fillMaxWidth(),
+                                label = stringResource(R.string.vpn_settings_port_custom_hint),
+                                keyboardType = KeyboardType.Number,
                             )
                         }
                     }
@@ -295,8 +282,12 @@ fun VpnSettingsScreen(
 
             // MTU
             item {
-                VpnCardSurface {
-                    Column(modifier = Modifier.padding(16.dp)) {
+                BirdoCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = 14.dp,
+                    contentPadding = PaddingValues(16.dp),
+                ) {
+                    Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Tune, stringResource(R.string.vpn_settings_mtu), tint = BirdoYellow, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.width(14.dp))
@@ -304,13 +295,13 @@ fun VpnSettingsScreen(
                                 Text(
                                     stringResource(R.string.vpn_settings_mtu),
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = BirdoWhite80,
+                                    color = palette.onSurface,
                                     fontWeight = FontWeight.Medium,
                                 )
                                 Text(
                                     stringResource(R.string.vpn_settings_mtu_desc),
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = BirdoWhite40,
+                                    color = palette.onSurfaceMuted,
                                 )
                             }
                         }
@@ -341,22 +332,22 @@ fun VpnSettingsScreen(
                                 checked = state.wireGuardMtu == 0,
                                 onCheckedChange = null,
                                 colors = CheckboxDefaults.colors(
-                                    checkedColor = BirdoWhite,
-                                    checkmarkColor = BirdoBlack,
-                                    uncheckedColor = BirdoWhite40,
+                                    checkedColor = palette.accent,
+                                    checkmarkColor = Color.White,
+                                    uncheckedColor = palette.onSurfaceFaint,
                                 ),
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 stringResource(R.string.vpn_settings_mtu_auto),
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = BirdoWhite80,
+                                color = palette.onSurface.copy(alpha = 0.85f),
                             )
                         }
 
                         if (state.wireGuardMtu != 0) {
                             Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
+                            BirdoTextField(
                                 value = mtuText,
                                 onValueChange = { text ->
                                     val filtered = text.filter { it.isDigit() }.take(4)
@@ -366,12 +357,9 @@ fun VpnSettingsScreen(
                                         onWireGuardMtuChange(mtu)
                                     }
                                 },
-                                label = { Text(stringResource(R.string.vpn_settings_mtu_hint)) },
-                                supportingText = { Text(stringResource(R.string.vpn_settings_mtu_range), color = BirdoWhite40) },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                singleLine = true,
-                                colors = vpnTextFieldColors(),
-                                modifier = Modifier.fillMaxWidth(),
+                                label = stringResource(R.string.vpn_settings_mtu_hint),
+                                supportingText = stringResource(R.string.vpn_settings_mtu_range),
+                                keyboardType = KeyboardType.Number,
                             )
                         }
                     }
@@ -384,25 +372,25 @@ fun VpnSettingsScreen(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
-                    color = BirdoWhite10,
+                    color = palette.surfaceRaised,
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.Info, null, tint = BirdoWhite40, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Info, null, tint = palette.onSurfaceFaint, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
                         Text(
                             stringResource(R.string.vpn_settings_changes_note),
                             style = MaterialTheme.typography.bodySmall,
-                            color = BirdoWhite60,
+                            color = palette.onSurfaceMuted,
                         )
                     }
                 }
             }
 
             // ── Features Section ────────────────────────────────────
-            item { VpnSectionHeader("FEATURES") }
+            item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_features)) }
 
             item {
                 VpnLink(
@@ -424,40 +412,6 @@ fun VpnSettingsScreen(
 // ── Reusable Components ──────────────────────────────────────────────────────
 
 @Composable
-private fun VpnSectionHeader(title: String) {
-    Row(
-        modifier = Modifier.padding(start = 4.dp, top = 18.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(width = 3.dp, height = 12.dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(BirdoBlue.copy(alpha = 0.7f)),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.labelMedium,
-            color = BirdoWhite60,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 1.2.sp,
-        )
-    }
-}
-
-@Composable
-private fun VpnCardSurface(content: @Composable () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = BirdoSurface,
-    ) {
-        content()
-    }
-}
-
-@Composable
 private fun VpnToggle(
     icon: ImageVector,
     iconColor: Color,
@@ -473,7 +427,12 @@ private fun VpnToggle(
     locked: Boolean = false,
     onLockedTap: () -> Unit = {},
 ) {
-    VpnCardSurface {
+    val palette = BirdoColors.current
+    BirdoCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 14.dp,
+        contentPadding = PaddingValues(0.dp),
+    ) {
         val rowModifier = if (locked) {
             Modifier
                 .fillMaxWidth()
@@ -488,33 +447,35 @@ private fun VpnToggle(
             modifier = rowModifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = if (locked) BirdoWhite40 else iconColor, modifier = Modifier.size(22.dp))
+            Icon(icon, title, tint = if (locked) palette.onSurfaceFaint else iconColor, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(title, style = MaterialTheme.typography.titleSmall, color = palette.onSurface, fontWeight = FontWeight.Medium)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(8.dp))
             if (locked) {
                 Icon(
                     Icons.Default.Lock,
-                    contentDescription = "Premium feature — upgrade to unlock",
-                    tint = BirdoWhite40,
+                    contentDescription = stringResource(R.string.cd_locked_feature),
+                    tint = palette.onSurfaceFaint,
                     modifier = Modifier.size(20.dp),
                 )
             } else {
+                // onCheckedChange = null: the row's toggleable owns the
+                // interaction so TalkBack sees ONE labeled switch, not two.
                 Switch(
                     checked = checked,
-                    onCheckedChange = onCheckedChange,
+                    onCheckedChange = null,
                     enabled = enabled,
                     modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.Black,
-                        checkedTrackColor = Color.White,
-                        checkedBorderColor = Color.White,
-                        uncheckedThumbColor = BirdoWhite80,
-                        uncheckedTrackColor = BirdoWhite20,
-                        uncheckedBorderColor = BirdoWhite20,
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = palette.accent,
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedThumbColor = palette.onSurfaceMuted,
+                        uncheckedTrackColor = palette.surfaceRaised,
+                        uncheckedBorderColor = palette.hairlineSoft,
                     ),
                 )
             }
@@ -531,7 +492,12 @@ private fun VpnLink(
     onClick: () -> Unit,
     locked: Boolean = false,
 ) {
-    VpnCardSurface {
+    val palette = BirdoColors.current
+    BirdoCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 14.dp,
+        contentPadding = PaddingValues(0.dp),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -540,56 +506,19 @@ private fun VpnLink(
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = if (locked) BirdoWhite40 else iconColor, modifier = Modifier.size(22.dp))
+            Icon(icon, title, tint = if (locked) palette.onSurfaceFaint else iconColor, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall, color = BirdoWhite80, fontWeight = FontWeight.Medium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = BirdoWhite40, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(title, style = MaterialTheme.typography.titleSmall, color = palette.onSurface, fontWeight = FontWeight.Medium)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(8.dp))
             Icon(
                 if (locked) Icons.Default.Lock else Icons.Default.ChevronRight,
-                contentDescription = if (locked) "Premium feature — upgrade to unlock" else null,
-                tint = BirdoWhite40,
+                contentDescription = if (locked) stringResource(R.string.cd_locked_feature) else null,
+                tint = palette.onSurfaceFaint,
                 modifier = Modifier.size(20.dp),
             )
         }
     }
 }
-
-@Composable
-private fun VpnTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    placeholder: String,
-    keyboardType: KeyboardType = KeyboardType.Text,
-    isError: Boolean = false,
-) {
-    VpnCardSurface {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(label) },
-            placeholder = { Text(placeholder, color = BirdoWhite20) },
-            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-            singleLine = true,
-            isError = isError,
-            colors = vpnTextFieldColors(),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        )
-    }
-}
-
-@Composable
-private fun vpnTextFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = BirdoWhite,
-    unfocusedTextColor = BirdoWhite80,
-    focusedBorderColor = BirdoWhite60,
-    unfocusedBorderColor = BirdoWhite20,
-    cursorColor = BirdoWhite,
-    focusedLabelColor = BirdoWhite60,
-    unfocusedLabelColor = BirdoWhite40,
-)

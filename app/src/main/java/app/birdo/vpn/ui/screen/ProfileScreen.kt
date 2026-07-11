@@ -69,6 +69,7 @@ import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.theme.BirdoBrand
 import app.birdo.vpn.ui.theme.BirdoColors
 import app.birdo.vpn.ui.theme.BirdoGreen
+import app.birdo.vpn.ui.theme.BirdoRed
 import app.birdo.vpn.ui.theme.BirdoSurface
 import app.birdo.vpn.ui.theme.BirdoWhite60
 import app.birdo.vpn.ui.theme.BirdoWhite80
@@ -395,7 +396,7 @@ private fun StatusPillSmall(active: Boolean) {
             .background(bg)
             .padding(horizontal = 10.dp, vertical = 4.dp),
     ) {
-        Text(text = label, color = fg, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text(text = label, color = fg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -429,17 +430,13 @@ private fun PlanChip(plan: String) {
         Text(
             text = plan.uppercase(),
             color = Color.White,
-            fontSize = 10.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
         )
     }
 }
 
-private fun planGradient(plan: String): Brush = when (plan.uppercase()) {
-    "SOVEREIGN" -> Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFF4C1D95)))
-    "OPERATIVE" -> Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4338CA)))
-    else -> Brush.linearGradient(listOf(Color(0xFF475569), Color(0xFF334155)))
-}
+private fun planGradient(plan: String): Brush = BirdoBrand.planGradient(plan)
 
 @Composable
 private fun SectionLabel(label: String) {
@@ -463,8 +460,8 @@ private fun ProfileActionRow(
     destructive: Boolean = false,
 ) {
     val palette = BirdoColors.current
-    val iconTint = if (destructive) Color(0xFFEF4444) else palette.accent
-    val titleColor = if (destructive) Color(0xFFEF4444) else palette.onBackground
+    val iconTint = if (destructive) BirdoRed else palette.accent
+    val titleColor = if (destructive) BirdoRed else palette.onBackground
 
     BirdoCard(
         modifier = Modifier
@@ -554,10 +551,10 @@ private fun DeleteAccountDialog(
     AlertDialog(
         onDismissRequest = { if (!isDeletingAccount) onDismiss() },
         containerColor = BirdoSurface,
-        titleContentColor = Color(0xFFEF4444),
+        titleContentColor = BirdoRed,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(22.dp))
+                Icon(Icons.Default.Warning, contentDescription = null, tint = BirdoRed, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(stringResource(R.string.delete_dialog_title), fontWeight = FontWeight.Bold)
             }
@@ -581,14 +578,14 @@ private fun DeleteAccountDialog(
                     isError = error != null,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color(0xFFEF4444),
+                        focusedBorderColor = BirdoRed,
                         cursorColor = BirdoWhite80,
-                        focusedLabelColor = Color(0xFFEF4444),
+                        focusedLabelColor = BirdoRed,
                     ),
                 )
                 if (error != null) {
                     Spacer(Modifier.height(4.dp))
-                    Text(error, style = MaterialTheme.typography.bodySmall, color = Color(0xFFEF4444))
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = BirdoRed)
                 }
             }
         },
@@ -597,7 +594,7 @@ private fun DeleteAccountDialog(
                 onClick = { onConfirm(password) },
                 enabled = password.isNotBlank() && !isDeletingAccount,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFEF4444),
+                    containerColor = BirdoRed,
                     contentColor = Color.White,
                 ),
             ) {
@@ -682,7 +679,7 @@ private fun VoucherRedeemDialog(
                     Text(
                         msg,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (resultIsSuccess) BirdoGreen else Color(0xFFEF4444),
+                        color = if (resultIsSuccess) BirdoGreen else BirdoRed,
                     )
                 }
             }

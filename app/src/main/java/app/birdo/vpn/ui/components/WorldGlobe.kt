@@ -1,19 +1,23 @@
 package app.birdo.vpn.ui.components
 
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -65,55 +69,65 @@ fun WorldGlobe(
 ) {
     val palette = BirdoColors.current
 
-    val infinite = rememberInfiniteTransition(label = "globe")
-    val pulse by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "pulse",
-    )
-    val arcShimmer by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "arcShimmer",
-    )
-    val twinkle by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(3600, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "twinkle",
-    )
-    val idleSpin by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(90_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "idleSpin",
-    )
+    // Power: the globe is a full-screen Canvas driven by five infinite
+    // animations. Compose keeps invalidating it at the display refresh rate
+    // (90/120 Hz on modern phones) for as long as it is composed — even while
+    // the Activity is STOPPED, because an InfiniteTransition is not
+    // lifecycle-aware. Gate the whole thing on the lifecycle: when the app
+    // isn't at least STARTED (screen off, recents, another app on top) we stop
+    // driving the animations entirely and draw one static frame.
+    //
+    // The idle rotation is also intentionally slow (a 90s revolution), so
+    // redrawing 22k land cells 120x/second buys nothing visible. We snap the
+    // animation clock to ~30 fps, which is smooth for this content and cuts
+    // globe frame work by 2-4x on a high-refresh display.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var animating by remember { mutableStateOf(true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> animating = true
+                Lifecycle.Event.ON_STOP -> animating = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // ONE animation clock instead of five InfiniteTransitions. Every cyclic
+    // value below is a pure function of elapsed time, so a single monotonic
+    // millisecond counter reproduces them exactly — but invalidates the Canvas
+    // at our chosen cadence rather than the display's, and stops dead when the
+    // app is not visible. Elapsed time accumulates across pauses so the sun and
+    // the spin resume where they left off instead of snapping back.
+    var clockMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(animating) {
+        if (!animating) return@LaunchedEffect
+        var lastFrame = withFrameMillis { it }
+        var lastEmit = clockMs
+        while (true) {
+            withFrameMillis { frame ->
+                val delta = frame - lastFrame
+                lastFrame = frame
+                // Guard against a huge delta if the choreographer stalls.
+                val accumulated = clockMs + delta.coerceIn(0L, 250L)
+                if (accumulated - lastEmit >= FRAME_INTERVAL_MS) {
+                    lastEmit = accumulated
+                    clockMs = accumulated
+                }
+            }
+        }
+    }
+
+    val pulse = cyclePhase(clockMs, 1800L)
+    val arcShimmer = cyclePhase(clockMs, 2400L)
+    val twinkle = cyclePhase(clockMs, 3600L)
+    val idleSpin = cyclePhase(clockMs, 90_000L) * 360f
     // Day/night terminator: the sun's longitude sweeps a full revolution
     // every 2 minutes. Independent of the camera so you can see the shadow
     // crawl across continents while the globe is still / focused.
-    val sunSpin by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(120_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "sunSpin",
-    )
+    val sunSpin = cyclePhase(clockMs, 120_000L) * 360f
 
     // One-shot precomputation. ~22 k land cells stored as packed floats.
     val landSamples = remember { precomputeLandSamples() }
@@ -243,6 +257,17 @@ fun WorldGlobe(
 private const val LAND_STRIDE_ROW = 2
 private const val LAND_STRIDE_COL = 2
 private const val STAR_COUNT = 90
+
+/**
+ * Globe animation cadence. ~30 fps: the fastest thing on screen is a 1.8s dot
+ * pulse and the planet takes 90s to turn, so nothing here reads as smoother at
+ * 120 fps — it just burns 4x the frames redrawing 22k land cells.
+ */
+private const val FRAME_INTERVAL_MS = 33L
+
+/** Normalized 0..1 phase of a cycle of [periodMs] at time [clockMs]. */
+private fun cyclePhase(clockMs: Long, periodMs: Long): Float =
+    (clockMs % periodMs).toFloat() / periodMs.toFloat()
 
 private class LandSamples(
     /** Packed `[sinPhi, cosPhi, lonRad]` per cell. */

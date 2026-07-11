@@ -34,8 +34,6 @@ data class VpnUiState(
     val needsVpnPermission: Boolean = false,
     val killSwitchActive: Boolean = false,
     val tick: Long = 0L,
-    val rxBytes: Long = 0L,
-    val txBytes: Long = 0L,
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
@@ -64,6 +62,26 @@ data class MultiHopSelection(
     val exitId: String? = null,
 )
 
+/**
+ * Hot, high-frequency counters kept OUT of [VpnUiState] on purpose.
+ *
+ * These tick every second while connected and the foreground UI is visible.
+ * Folding them into VpnUiState made every tick a new UiState instance, so the
+ * whole Home tree — globe, top bar, server selector, connect button — was
+ * invalidated once a second just to redraw three little numbers. Collected as
+ * its own flow, only the stats row recomposes.
+ */
+data class TrafficStats(
+    val rxBytes: Long = 0L,
+    val txBytes: Long = 0L,
+    /**
+     * Wall clock at the last poll. Drives the connected-duration readout, which
+     * must keep counting up even while the byte counters are idle. Advanced only
+     * while connected, so a disconnected app emits nothing.
+     */
+    val tickMs: Long = 0L,
+)
+
 @HiltViewModel
 class VpnViewModel @Inject constructor(
     private val vpnManager: VpnManager,
@@ -74,6 +92,10 @@ class VpnViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(VpnUiState())
     val uiState: StateFlow<VpnUiState> = _uiState.asStateFlow()
+
+    // Hot counters on their own flow — see [TrafficStats].
+    private val _trafficStats = MutableStateFlow(TrafficStats())
+    val trafficStats: StateFlow<TrafficStats> = _trafficStats.asStateFlow()
 
     // ── Favorites state (observed by ServerListScreen) ───────────
     private val _favoriteServers = MutableStateFlow(prefs.favoriteServers)
@@ -179,38 +201,44 @@ class VpnViewModel @Inject constructor(
             }
         }
         // Periodic: poll traffic stats & public IP (volatile service fields the
-        // state collector above doesn't carry). While Connected we refresh every
-        // tick. While disconnected these are reset to 0/null by the service, so we
-        // copy that reset through — but ONLY when it actually changed, so a stale
-        // server IP / byte counter can't linger on the UI after disconnect while
-        // still avoiding the per-second recomposition churn when nothing changes.
+        // state collector above doesn't carry).
+        //
+        // Traffic counters go to their own [trafficStats] flow so a per-second
+        // byte tick only recomposes the stats row — not the globe, top bar,
+        // server selector and connect button, which is what happened when they
+        // lived on VpnUiState. `publicIp` and `tick` stay on VpnUiState but are
+        // only re-emitted when they genuinely change, so a connected-but-idle
+        // tunnel produces ZERO UiState emissions per tick.
         viewModelScope.launch {
             while (isActive) {
                 val svcRx = app.birdo.vpn.service.BirdoVpnService.rxBytes
                 val svcTx = app.birdo.vpn.service.BirdoVpnService.txBytes
                 val svcIp = app.birdo.vpn.service.BirdoVpnService.publicIp
+
                 val s = _uiState.value
                 val connected = s.vpnState == VpnState.Connected
+                val stats = _trafficStats.value
+                // While connected, advance the tick every poll so the duration
+                // readout counts up. While disconnected, only flush the service's
+                // reset values (once) — no idle emissions.
                 if (connected) {
-                    _uiState.value = s.copy(
+                    _trafficStats.value = TrafficStats(
                         rxBytes = svcRx,
                         txBytes = svcTx,
-                        publicIp = svcIp,
-                        tick = System.currentTimeMillis(),
+                        tickMs = System.currentTimeMillis(),
                     )
-                } else if (s.rxBytes != svcRx || s.txBytes != svcTx || s.publicIp != svcIp) {
-                    // Disconnected AND stale — flush the service's reset values once.
-                    _uiState.value = s.copy(
-                        rxBytes = svcRx,
-                        txBytes = svcTx,
-                        publicIp = svcIp,
-                        tick = System.currentTimeMillis(),
-                    )
+                } else if (stats.rxBytes != svcRx || stats.txBytes != svcTx) {
+                    _trafficStats.value = TrafficStats(rxBytes = svcRx, txBytes = svcTx, tickMs = 0L)
                 }
+
+                if (s.publicIp != svcIp) {
+                    _uiState.value = s.copy(publicIp = svcIp, tick = System.currentTimeMillis())
+                }
+
                 // Live 1s cadence only matters while the UI is visible. When the
-                // app is backgrounded nothing observes uiState, so match the
-                // service's adaptive ticker (8s) and stop waking the main thread /
-                // re-emitting UiState every second behind the user's back.
+                // app is backgrounded nothing observes these flows, so match the
+                // service's adaptive ticker (8s) and stop waking the main thread
+                // behind the user's back.
                 delay(if (app.birdo.vpn.service.BirdoVpnService.uiForeground) 1000L else 8000L)
             }
         }

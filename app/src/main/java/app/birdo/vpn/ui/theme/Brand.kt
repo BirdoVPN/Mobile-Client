@@ -92,4 +92,22 @@ object BirdoBrand {
         get() = Brush.linearGradient(
             colors = listOf(PurpleSoft, Pink),
         )
+
+    // ── Plan tier identity ────────────────────────────────────────────
+    // Single source of truth for subscription-tier colors so SOVEREIGN is
+    // the same violet on every screen (Profile, Subscription, badges).
+
+    /** Accent color for a subscription plan slug (case-insensitive). */
+    fun planAccent(plan: String?): Color = when (plan?.uppercase()) {
+        "SOVEREIGN" -> Purple
+        "OPERATIVE" -> Indigo
+        else -> Color(0xFF64748B) // slate-500 — RECON / free tier
+    }
+
+    /** Hero gradient for a subscription plan slug (case-insensitive). */
+    fun planGradient(plan: String?): Brush = when (plan?.uppercase()) {
+        "SOVEREIGN" -> Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFF4C1D95)))
+        "OPERATIVE" -> Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4338CA)))
+        else -> Brush.linearGradient(listOf(Color(0xFF475569), Color(0xFF334155)))
+    }
 }
