@@ -44,6 +44,7 @@ typealias VpnServer = app.birdo.vpn.shared.model.VpnServer
 typealias ConnectRequest = app.birdo.vpn.shared.model.ConnectRequest
 typealias ServerNodeInfo = app.birdo.vpn.shared.model.ServerNodeInfo
 typealias ConnectResponse = app.birdo.vpn.shared.model.ConnectResponse
+typealias AttestationNonceResponse = app.birdo.vpn.shared.model.AttestationNonceResponse
 
 // ─── Multi-Hop ───────────────────────────────────────────────────────────────
 typealias MultiHopRoute = app.birdo.vpn.shared.model.MultiHopRoute
