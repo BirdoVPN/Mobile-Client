@@ -195,6 +195,11 @@ data class VpnServer(
 // ─── VPN Connect ─────────────────────────────────────────────────────────────
 
 @Serializable
+/** Response of GET vpn/attestation/nonce — the value the Play Integrity token binds to. */
+data class AttestationNonceResponse(
+    val nonce: String,
+)
+
 data class ConnectRequest(
     val serverNodeId: String? = null,
     val deviceName: String? = null,
@@ -210,6 +215,13 @@ data class ConnectRequest(
      * connect — see `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt`.
      */
     val pqClientPublicKey: String? = null,
+    /**
+     * Google Play Integrity token (official Android Play build only), bound to a
+     * server-issued nonce (GET vpn/attestation/nonce). The backend verifies it
+     * and enforces ATTESTATION_POLICY so only the genuine, unmodified Play app
+     * can obtain a peer. Null on non-Play builds / when integrity is unavailable.
+     */
+    val integrityToken: String? = null,
 )
 
 @Serializable

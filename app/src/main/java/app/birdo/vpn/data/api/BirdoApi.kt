@@ -79,6 +79,10 @@ interface BirdoApi {
     @GET("vpn/servers")
     suspend fun getServers(): Response<List<VpnServer>>
 
+    /** Single-use Play Integrity nonce to bind the attestation token to (anti-replay). */
+    @GET("vpn/attestation/nonce")
+    suspend fun attestationNonce(): Response<AttestationNonceResponse>
+
     @POST("vpn/connect")
     suspend fun connect(
         @Body request: ConnectRequest,

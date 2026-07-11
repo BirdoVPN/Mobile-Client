@@ -322,12 +322,27 @@ class BirdoRepository @Inject constructor(
         return result
     }
 
+    /**
+     * Fetch a single-use Play Integrity nonce from the backend. Returns null on
+     * any failure (non-fatal — connect then proceeds without an attestation token
+     * and the server policy decides what to do).
+     */
+    suspend fun getAttestationNonce(): String? {
+        return try {
+            val res = api.attestationNonce()
+            if (res.isSuccessful) res.body()?.nonce else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun connectVpn(
         serverNodeId: String,
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
+        integrityToken: String? = null,
     ): ApiResult<ConnectResponse> {
         // FIX-1-1: Generate X25519 keypair locally — private key never leaves the device.
         // Uses wireguard-android's crypto module which wraps Curve25519.
@@ -349,6 +364,7 @@ class BirdoRepository @Inject constructor(
                     stealthMode = stealthMode,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
+                    integrityToken = integrityToken,
                 ))
             }
             if (result is ApiResult.Success) {
