@@ -55,8 +55,30 @@ class BirdoVpnService : VpnService() {
         private const val TAG = "BirdoVPN"
         /** Max time (ms) to allow tunnel setup before forcing an error. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
-        /** Interval (ms) for periodic notification updates (timer tick). */
-        private const val NOTIF_UPDATE_INTERVAL_MS = 1_000L
+        /**
+         * POWER: the notification-refresh cadence drives a blocking wg-go
+         * getConfig JNI read (readTrafficStats) on every tick, 24/7 while
+         * connected — the single biggest steady-state battery cost of the
+         * service. The elapsed timer is rendered NATIVELY by the notification's
+         * chronometer (setUsesChronometer), so a tick is only needed to refresh
+         * the byte counters. When the app UI is FOREGROUND (the user is watching
+         * live stats) we tick fast; when BACKGROUND (screen off, just the
+         * ongoing notification) we tick ~8x slower — the byte counter in a
+         * notification does not need per-second precision. This cuts the
+         * background wg-go reads / CPU wakeups ~8x with no visible change.
+         */
+        private const val NOTIF_UPDATE_INTERVAL_FG_MS = 1_000L
+        private const val NOTIF_UPDATE_INTERVAL_BG_MS = 8_000L
+
+        /**
+         * Set by MainActivity onResume/onStop. Chooses the notification/stats
+         * tick cadence above. @Volatile so the ticker (main thread) sees the
+         * activity's writes immediately.
+         */
+        @Volatile var uiForeground: Boolean = false
+
+        private fun notifTickIntervalMs(): Long =
+            if (uiForeground) NOTIF_UPDATE_INTERVAL_FG_MS else NOTIF_UPDATE_INTERVAL_BG_MS
 
         const val ACTION_START = "app.birdo.vpn.START_VPN"
         const val ACTION_STOP = "app.birdo.vpn.STOP_VPN"
@@ -206,7 +228,7 @@ class BirdoVpnService : VpnService() {
                     // the last-known stats so the timer/uptime still advances.
                     updateNotification(buildConnectedText())
                 }
-                mainHandler.postDelayed(this, NOTIF_UPDATE_INTERVAL_MS)
+                mainHandler.postDelayed(this, notifTickIntervalMs())
             }
         }
     }
@@ -361,7 +383,7 @@ class BirdoVpnService : VpnService() {
 
     private fun startNotificationTicker() {
         mainHandler.removeCallbacks(notificationTicker)
-        mainHandler.postDelayed(notificationTicker, NOTIF_UPDATE_INTERVAL_MS)
+        mainHandler.postDelayed(notificationTicker, notifTickIntervalMs())
     }
 
     private fun stopNotificationTicker() {

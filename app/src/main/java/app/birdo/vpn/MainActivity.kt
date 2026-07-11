@@ -43,6 +43,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.ui.navigation.BirdoNavGraph
 import app.birdo.vpn.ui.navigation.Screen
 import app.birdo.vpn.ui.theme.BirdoTheme
@@ -182,6 +183,10 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // POWER: tell the VPN service the UI is foreground so it refreshes traffic
+        // stats fast (1s) while the user is watching; it drops to a slow (8s)
+        // cadence in the background to cut wg-go getConfig JNI reads / CPU wakeups.
+        BirdoVpnService.uiForeground = true
         if (appPreferences.biometricLockEnabled && isLocked.value) {
             promptBiometric()
         }
@@ -189,6 +194,8 @@ class MainActivity : FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // POWER: UI is no longer visible — let the service throttle stats reads.
+        BirdoVpnService.uiForeground = false
         // Re-arm the lock when the app leaves the foreground so returning to it
         // requires re-authentication (a real app-lock, not just cold-start).
         // Skip while a prompt is up: the device-credential fallback backgrounds
