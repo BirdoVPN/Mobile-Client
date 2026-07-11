@@ -105,7 +105,7 @@ internal class VpnNotificationManager(private val context: Context) {
         }
 
         val accentColor = when (state) {
-            is VpnState.Connected -> 0xFF22C55E.toInt()  // Green
+            is VpnState.Connected -> 0xFF34D399.toInt()  // emerald-400 — protected
             is VpnState.Error     -> 0xFFEF4444.toInt()  // Red
             else                  -> 0xFF6B7280.toInt()  // Gray
         }

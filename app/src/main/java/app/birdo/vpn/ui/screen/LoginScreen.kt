@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,7 +39,10 @@ import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.utils.is2faCodeComplete
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 
 /**
  * Login screen matching the Windows client's glassmorphic design:
@@ -109,7 +113,7 @@ fun LoginScreen(
             // ── Brand mark (app launcher icon) ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 60)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 60, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 16 }),
             ) {
                 app.birdo.vpn.ui.components.AppIconMark(
@@ -122,7 +126,7 @@ fun LoginScreen(
             // ── Status Badge (matches Windows: pinging dot + "Secure Connection") ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 100)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 100, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Surface(
@@ -168,7 +172,7 @@ fun LoginScreen(
             // ── "Welcome Back" gradient text ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 150)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 150, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Text(
@@ -188,7 +192,7 @@ fun LoginScreen(
             // ── Subtitle ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 200)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 200, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Text(
@@ -213,6 +217,9 @@ fun LoginScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 16.dp)
+                        // Assertive: a login failure that appears silently is a
+                        // failure a TalkBack user never learns about.
+                        .semantics { liveRegion = LiveRegionMode.Assertive }
                         .testTag(TestTags.LOGIN_ERROR),
                     shape = RoundedCornerShape(12.dp),
                     color = BirdoRedBg,
@@ -279,7 +286,7 @@ fun LoginScreen(
                             placeholder = {
                                 Text(
                                     "000000 or backup code",
-                                    color = BirdoWhite20,
+                                    color = BirdoWhite40,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
@@ -308,7 +315,7 @@ fun LoginScreen(
                                 },
                             ),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = BirdoWhite20,
+                                focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
                                 unfocusedBorderColor = BirdoWhite10,
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = BirdoWhite80,
@@ -342,7 +349,7 @@ fun LoginScreen(
                             enabled = is2faCodeComplete(twoFactorCode) && !isLoading,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
+                                .heightIn(min = 52.dp)
                                 .testTag(TestTags.LOGIN_2FA_VERIFY_BUTTON),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -382,7 +389,8 @@ fun LoginScreen(
                             color = BirdoWhite40,
                             textDecoration = TextDecoration.Underline,
                             modifier = Modifier
-                                .clickable(role = Role.Button) {
+                                .minimumInteractiveComponentSize()
+                        .clickable(role = Role.Button) {
                                     twoFactorCode = ""
                                     onCancelTwoFactor()
                                 }
@@ -396,7 +404,7 @@ fun LoginScreen(
             // ── Email field ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 250)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 250, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Column {
@@ -414,7 +422,7 @@ fun LoginScreen(
                             onClearError()
                         },
                         placeholder = {
-                            Text(stringResource(R.string.email_placeholder), color = BirdoWhite20)
+                            Text(stringResource(R.string.email_placeholder), color = BirdoWhite40)
                         },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
@@ -425,11 +433,11 @@ fun LoginScreen(
                             onNext = { focusManager.moveFocus(FocusDirection.Down) }
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                            focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
                             unfocusedBorderColor = BirdoBrand.HairlineSoft,
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
-                            cursorColor = BirdoBrand.PurpleSoft,
+                            cursorColor = BirdoBrand.AccentSoft,
                             focusedContainerColor = GlassInput,
                             unfocusedContainerColor = GlassInput,
                         ),
@@ -444,7 +452,7 @@ fun LoginScreen(
             // ── Password field ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 280)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 280, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Column {
@@ -462,14 +470,17 @@ fun LoginScreen(
                             onClearError()
                         },
                         placeholder = {
-                            Text("••••••••", color = BirdoWhite20)
+                            Text("••••••••", color = BirdoWhite40)
                         },
                         trailingIcon = {
                             IconButton(onClick = { showPassword = !showPassword }) {
                                 Icon(
                                     if (showPassword) Icons.Default.VisibilityOff
                                     else Icons.Default.Visibility,
-                                    stringResource(R.string.cd_toggle_password),
+                                    stringResource(
+                                        if (showPassword) R.string.cd_hide_password
+                                        else R.string.cd_show_password,
+                                    ),
                                     tint = BirdoWhite40,
                                 )
                             }
@@ -490,11 +501,11 @@ fun LoginScreen(
                             }
                         ),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                            focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
                             unfocusedBorderColor = BirdoBrand.HairlineSoft,
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
-                            cursorColor = BirdoBrand.PurpleSoft,
+                            cursorColor = BirdoBrand.AccentSoft,
                             focusedContainerColor = GlassInput,
                             unfocusedContainerColor = GlassInput,
                         ),
@@ -509,7 +520,7 @@ fun LoginScreen(
             // ── Submit button (solid white, black text — matching Windows) ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 300)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 300, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Button(
@@ -520,7 +531,7 @@ fun LoginScreen(
                     enabled = email.trim().isNotEmpty() && password.isNotBlank() && !isLoading,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp)
+                        .heightIn(min = 52.dp)
                         .testTag(TestTags.LOGIN_BUTTON),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -557,7 +568,7 @@ fun LoginScreen(
             // ── Sign up link ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 350)),
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 350, easing = BirdoMotion.Decel)),
             ) {
                 Row(
                     horizontalArrangement = Arrangement.Center,
@@ -574,7 +585,9 @@ fun LoginScreen(
                         fontWeight = FontWeight.Medium,
                         textDecoration = TextDecoration.Underline,
                         modifier = Modifier
-                            .clickable(role = Role.Button) { onSignUp() }
+                            .minimumInteractiveComponentSize()
+                            .minimumInteractiveComponentSize()
+                        .clickable(role = Role.Button) { onSignUp() }
                             .testTag(TestTags.LOGIN_SIGN_UP),
                     )
                 }
@@ -585,7 +598,7 @@ fun LoginScreen(
             // ── Continue Anonymously ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(500, delayMillis = 400)),
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 400, easing = BirdoMotion.Decel)),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     OutlinedButton(
@@ -706,11 +719,11 @@ private fun AnonymousLoginDialog(
                         onNext = { focusManager.moveFocus(FocusDirection.Down) },
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                        focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
                         unfocusedBorderColor = BirdoBrand.HairlineSoft,
                         focusedTextColor = Color.White,
                         unfocusedTextColor = BirdoWhite80,
-                        cursorColor = BirdoBrand.PurpleSoft,
+                        cursorColor = BirdoBrand.AccentSoft,
                         focusedContainerColor = GlassInput,
                         unfocusedContainerColor = GlassInput,
                     ),
@@ -757,11 +770,11 @@ private fun AnonymousLoginDialog(
                         },
                     ),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                        focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
                         unfocusedBorderColor = BirdoBrand.HairlineSoft,
                         focusedTextColor = Color.White,
                         unfocusedTextColor = BirdoWhite80,
-                        cursorColor = BirdoBrand.PurpleSoft,
+                        cursorColor = BirdoBrand.AccentSoft,
                         focusedContainerColor = GlassInput,
                         unfocusedContainerColor = GlassInput,
                     ),

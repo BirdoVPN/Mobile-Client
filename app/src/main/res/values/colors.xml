@@ -23,10 +23,10 @@
     <color name="widget_surface">#FF141414</color>
     <color name="widget_connected_bg">#FF0A0A0A</color>
     <color name="widget_disconnected_bg">#FF0A0A0A</color>
-    <color name="widget_connected_accent">#FF22C55E</color>
+    <color name="widget_connected_accent">#FF34D399</color>
     <color name="widget_disconnected_accent">#FF6B7280</color>
     <color name="widget_text">#FFF2F2F2</color>
     <color name="widget_text_dim">#99FFFFFF</color>
-    <color name="widget_green_bg">#1A22C55E</color>
+    <color name="widget_green_bg">#1A34D399</color>
     <color name="widget_red_bg">#1AEF4444</color>
 </resources>

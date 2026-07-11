@@ -4,9 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
@@ -16,12 +14,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import app.birdo.vpn.R
 import app.birdo.vpn.data.model.PortForward
+import app.birdo.vpn.ui.components.BirdoButton
+import app.birdo.vpn.ui.components.BirdoButtonVariant
+import app.birdo.vpn.ui.components.BirdoCard
+import app.birdo.vpn.ui.components.BirdoSectionHeader
+import app.birdo.vpn.ui.components.BirdoSegmentedControl
+import app.birdo.vpn.ui.components.BirdoTextField
+import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -36,31 +44,19 @@ fun PortForwardScreen(
 ) {
     var portText by remember { mutableStateOf("") }
     var selectedProtocol by remember { mutableStateOf("tcp") }
+    // Deleting a forwarding rule tears down a live DNAT mapping — confirm it.
+    var pendingDelete by remember { mutableStateOf<PortForward?>(null) }
+    val palette = BirdoColors.current
 
     val portValue = portText.toIntOrNull()
     val isPortValid = portValue != null && portValue in 1..65535
+    val showPortError = portText.isNotEmpty() && !isPortValid
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        "Port Forwarding",
-                        fontWeight = FontWeight.Bold,
-                        color = BirdoWhite80,
-                        fontFamily = FontFamily.SansSerif,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = BirdoWhite60,
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+            BirdoTopBar(
+                title = stringResource(R.string.port_forward_title),
+                onBack = onBack,
             )
         },
         containerColor = Color.Transparent,
@@ -77,18 +73,18 @@ fun PortForwardScreen(
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
-                    color = BirdoWhite10,
+                    color = palette.surfaceRaised,
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.Info, null, tint = BirdoWhite40, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Info, null, tint = palette.onSurfaceFaint, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            "Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.",
+                            stringResource(R.string.port_forward_info),
                             style = MaterialTheme.typography.bodySmall,
-                            color = BirdoWhite60,
+                            color = palette.onSurfaceMuted,
                         )
                     }
                 }
@@ -99,7 +95,9 @@ fun PortForwardScreen(
                 item {
                     Spacer(Modifier.height(4.dp))
                     Surface(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { liveRegion = LiveRegionMode.Assertive },
                         shape = RoundedCornerShape(12.dp),
                         color = BirdoRedBg,
                     ) {
@@ -114,135 +112,67 @@ fun PortForwardScreen(
             }
 
             // ── New Rule Section ─────────────────────────────────
-            item {
-                Text(
-                    text = "NEW RULE",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = BirdoWhite40,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
-                    letterSpacing = 0.5.sp,
-                )
-            }
+            item { BirdoSectionHeader(stringResource(R.string.port_forward_new_rule)) }
 
             item {
-                Surface(
+                BirdoCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = BirdoSurface,
+                    cornerRadius = 14.dp,
+                    contentPadding = PaddingValues(16.dp),
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        OutlinedTextField(
+                    Column {
+                        BirdoTextField(
                             value = portText,
                             onValueChange = { text ->
                                 portText = text.filter { it.isDigit() }.take(5)
                             },
-                            label = { Text("Internal Port") },
-                            placeholder = { Text("e.g. 8080", color = BirdoWhite20) },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            isError = portText.isNotEmpty() && !isPortValid,
-                            supportingText = if (portText.isNotEmpty() && !isPortValid) {
-                                { Text("Port must be 1-65535", color = BirdoRed) }
+                            label = stringResource(R.string.port_forward_internal_port),
+                            placeholder = stringResource(R.string.port_forward_port_hint),
+                            keyboardType = KeyboardType.Number,
+                            isError = showPortError,
+                            supportingText = if (showPortError) {
+                                stringResource(R.string.port_forward_port_range)
                             } else null,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = BirdoWhite,
-                                unfocusedTextColor = BirdoWhite80,
-                                focusedBorderColor = BirdoWhite60,
-                                unfocusedBorderColor = BirdoWhite20,
-                                cursorColor = BirdoWhite,
-                                focusedLabelColor = BirdoWhite60,
-                                unfocusedLabelColor = BirdoWhite40,
-                            ),
-                            modifier = Modifier.fillMaxWidth(),
                         )
 
                         Spacer(Modifier.height(12.dp))
 
-                        // Protocol toggle
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Protocol",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = BirdoWhite60,
-                            )
-                            Spacer(Modifier.width(12.dp))
-
-                            SingleChoiceSegmentedButtonRow {
-                                SegmentedButton(
-                                    selected = selectedProtocol == "tcp",
-                                    onClick = { selectedProtocol = "tcp" },
-                                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
-                                    colors = SegmentedButtonDefaults.colors(
-                                        activeContainerColor = BirdoWhite10,
-                                        activeContentColor = BirdoWhite,
-                                        inactiveContainerColor = Color.Transparent,
-                                        inactiveContentColor = BirdoWhite40,
-                                        activeBorderColor = BirdoWhite20,
-                                        inactiveBorderColor = BirdoWhite20,
-                                    ),
-                                ) {
-                                    Text("TCP")
-                                }
-                                SegmentedButton(
-                                    selected = selectedProtocol == "udp",
-                                    onClick = { selectedProtocol = "udp" },
-                                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
-                                    colors = SegmentedButtonDefaults.colors(
-                                        activeContainerColor = BirdoWhite10,
-                                        activeContentColor = BirdoWhite,
-                                        inactiveContainerColor = Color.Transparent,
-                                        inactiveContentColor = BirdoWhite40,
-                                        activeBorderColor = BirdoWhite20,
-                                        inactiveBorderColor = BirdoWhite20,
-                                    ),
-                                ) {
-                                    Text("UDP")
-                                }
-                            }
-                        }
+                        Text(
+                            stringResource(R.string.port_forward_protocol),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.onSurfaceMuted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        BirdoSegmentedControl(
+                            options = listOf("tcp" to "TCP", "udp" to "UDP"),
+                            selectedKey = selectedProtocol,
+                            onSelect = { selectedProtocol = it },
+                        )
 
                         Spacer(Modifier.height(16.dp))
 
-                        Button(
+                        BirdoButton(
+                            text = stringResource(R.string.port_forward_add_rule),
                             onClick = {
                                 if (isPortValid) {
                                     onCreate(portValue!!, selectedProtocol)
                                     portText = ""
                                 }
                             },
+                            variant = BirdoButtonVariant.Brand,
+                            icon = Icons.Default.Add,
                             enabled = isPortValid && !isLoading,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = BirdoGreen,
-                                contentColor = BirdoBlack,
-                                disabledContainerColor = BirdoWhite10,
-                                disabledContentColor = BirdoWhite40,
-                            ),
-                            shape = RoundedCornerShape(10.dp),
+                            isLoading = isLoading,
                             modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Add Rule", fontWeight = FontWeight.SemiBold)
-                        }
+                        )
                     }
                 }
             }
 
             // ── Active Rules Section ─────────────────────────────
-            item {
-                Text(
-                    text = "ACTIVE RULES",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = BirdoWhite40,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp),
-                    letterSpacing = 0.5.sp,
-                )
-            }
+            item { BirdoSectionHeader(stringResource(R.string.port_forward_active_rules)) }
 
-            // Loading
-            if (isLoading) {
+            if (isLoading && portForwards.isEmpty()) {
                 item {
                     Box(
                         modifier = Modifier
@@ -251,7 +181,7 @@ fun PortForwardScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         CircularProgressIndicator(
-                            color = BirdoWhite60,
+                            color = palette.accent,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(24.dp),
                         )
@@ -259,35 +189,29 @@ fun PortForwardScreen(
                 }
             }
 
-            // Empty state
             if (!isLoading && portForwards.isEmpty()) {
                 item {
-                    Surface(
+                    BirdoCard(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        color = BirdoSurface,
+                        cornerRadius = 14.dp,
                     ) {
                         Text(
-                            text = "No port forwarding rules yet. Add one above to get started.",
+                            text = stringResource(R.string.port_forward_empty),
                             style = MaterialTheme.typography.bodyMedium,
-                            color = BirdoWhite40,
-                            modifier = Modifier.padding(16.dp),
+                            color = palette.onSurfaceMuted,
                         )
                     }
                 }
             }
 
-            // Port forward list
             items(portForwards, key = { it.id }) { pf ->
-                Surface(
+                BirdoCard(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    color = BirdoSurface,
+                    cornerRadius = 14.dp,
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
@@ -303,41 +227,40 @@ fun PortForwardScreen(
                                 Text(
                                     text = "${pf.externalPort}",
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = BirdoWhite80,
+                                    color = palette.onSurface,
                                     fontWeight = FontWeight.Medium,
                                 )
                                 Text(
                                     text = " → ",
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = BirdoWhite40,
+                                    color = palette.onSurfaceFaint,
                                 )
                                 Text(
                                     text = "${pf.internalPort}",
                                     style = MaterialTheme.typography.titleSmall,
-                                    color = BirdoWhite80,
+                                    color = palette.onSurface,
                                     fontWeight = FontWeight.Medium,
                                 )
                             }
-                            Spacer(Modifier.height(2.dp))
+                            Spacer(Modifier.height(4.dp))
 
-                            // Protocol badge
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
-                                color = BirdoWhite10,
+                                color = palette.surfaceRaised,
                             ) {
                                 Text(
                                     text = pf.protocol.uppercase(),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = BirdoWhite60,
+                                    color = palette.onSurfaceMuted,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 )
                             }
                         }
 
-                        IconButton(onClick = { onDelete(pf.id) }) {
+                        IconButton(onClick = { pendingDelete = pf }) {
                             Icon(
                                 Icons.Default.Delete,
-                                contentDescription = "Delete rule",
+                                contentDescription = stringResource(R.string.port_forward_delete_rule),
                                 tint = BirdoRed,
                             )
                         }
@@ -347,5 +270,31 @@ fun PortForwardScreen(
 
             item { Spacer(Modifier.height(32.dp)) }
         }
+    }
+
+    pendingDelete?.let { pf ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            containerColor = palette.surfaceElevated,
+            titleContentColor = BirdoRed,
+            textContentColor = palette.onSurfaceMuted,
+            title = { Text(stringResource(R.string.port_forward_delete_title), fontWeight = FontWeight.Bold) },
+            text = {
+                Text(stringResource(R.string.port_forward_delete_message, pf.externalPort, pf.internalPort))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(pf.id)
+                    pendingDelete = null
+                }) {
+                    Text(stringResource(R.string.port_forward_delete_confirm), color = BirdoRed, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text(stringResource(R.string.delete_dialog_cancel), color = palette.onSurfaceMuted)
+                }
+            },
+        )
     }
 }

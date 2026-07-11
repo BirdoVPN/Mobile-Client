@@ -12,7 +12,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import app.birdo.vpn.R
+import app.birdo.vpn.ui.components.BirdoTextField
+import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.AppInfo
 
@@ -51,22 +52,13 @@ fun SplitTunnelScreen(
 
     val excludedCount = apps.count { it.isExcluded }
 
+    val palette = BirdoColors.current
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        stringResource(R.string.split_tunnel_title),
-                        fontWeight = FontWeight.Bold,
-                        color = BirdoWhite80,
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.cd_back), tint = BirdoWhite60)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+            BirdoTopBar(
+                title = stringResource(R.string.split_tunnel_title),
+                onBack = onBack,
             )
         },
         containerColor = Color.Transparent,
@@ -82,7 +74,7 @@ fun SplitTunnelScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 shape = RoundedCornerShape(12.dp),
-                color = Color(0xFFA855F7).copy(alpha = 0.1f),
+                color = palette.accentBg,
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
@@ -91,38 +83,28 @@ fun SplitTunnelScreen(
                     Icon(
                         Icons.Default.Info,
                         stringResource(R.string.cd_info),
-                        tint = Color(0xFFA855F7),
+                        tint = palette.accent,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
                         text = stringResource(R.string.split_tunnel_info, excludedCount),
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFA855F7).copy(alpha = 0.8f),
+                        color = palette.accent,
                     )
                 }
             }
 
             // Search bar
-            OutlinedTextField(
+            BirdoTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text(stringResource(R.string.split_tunnel_search_placeholder), color = BirdoWhite20) },
-                leadingIcon = { Icon(Icons.Default.Search, stringResource(R.string.cd_search), tint = BirdoWhite40) },
+                placeholder = stringResource(R.string.split_tunnel_search_placeholder),
+                leadingIcon = Icons.Default.Search,
                 singleLine = true,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = BirdoWhite40,
-                    unfocusedBorderColor = BirdoBorder,
-                    focusedTextColor = BirdoWhite,
-                    unfocusedTextColor = BirdoWhite80,
-                    cursorColor = BirdoWhite,
-                    focusedContainerColor = BirdoSurface,
-                    unfocusedContainerColor = BirdoSurface,
-                ),
-                shape = RoundedCornerShape(12.dp),
             )
 
             if (isLoading) {
@@ -130,7 +112,7 @@ fun SplitTunnelScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator(color = BirdoWhite40, strokeWidth = 2.dp)
+                    CircularProgressIndicator(color = palette.accent, strokeWidth = 2.dp)
                 }
             } else {
                 LazyColumn(
@@ -156,8 +138,9 @@ private fun AppItem(
     app: AppInfo,
     onToggle: () -> Unit,
 ) {
+    val palette = BirdoColors.current
     val bgColor by animateColorAsState(
-        targetValue = if (app.isExcluded) Color(0xFFA855F7).copy(alpha = 0.08f) else BirdoSurface,
+        targetValue = if (app.isExcluded) palette.accentBg else palette.surface,
         label = "appBg",
     )
 
@@ -189,10 +172,10 @@ private fun AppItem(
                     modifier = Modifier
                         .size(36.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(BirdoWhite10),
+                        .background(palette.surfaceRaised),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Default.Android, stringResource(R.string.cd_app), tint = BirdoWhite40, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Android, stringResource(R.string.cd_app), tint = palette.onSurfaceFaint, modifier = Modifier.size(20.dp))
                 }
             }
 
@@ -202,7 +185,7 @@ private fun AppItem(
                 Text(
                     text = app.label,
                     style = MaterialTheme.typography.titleSmall,
-                    color = BirdoWhite80,
+                    color = palette.onSurface,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -210,10 +193,10 @@ private fun AppItem(
                 Text(
                     text = app.packageName,
                     style = MaterialTheme.typography.bodySmall,
-                    color = BirdoWhite20,
+                    color = palette.onSurfaceMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontSize = 10.sp,
+                    fontSize = 12.sp,
                 )
             }
 
@@ -223,26 +206,28 @@ private fun AppItem(
             if (app.isExcluded) {
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = Color(0xFFA855F7).copy(alpha = 0.2f),
+                    color = palette.accent.copy(alpha = 0.2f),
                 ) {
                     Text(
                         stringResource(R.string.split_tunnel_bypass_badge),
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFFA855F7),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        fontSize = 9.sp,
+                        color = palette.accent,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                     )
                 }
                 Spacer(Modifier.width(8.dp))
             }
 
+            // onCheckedChange = null: the row toggleable is the single labeled
+            // accessibility target; a live Checkbox adds a second, unlabeled one.
             Checkbox(
                 checked = app.isExcluded,
-                onCheckedChange = { onToggle() },
+                onCheckedChange = null,
                 colors = CheckboxDefaults.colors(
-                    checkedColor = Color(0xFFA855F7),
-                    uncheckedColor = BirdoWhite20,
+                    checkedColor = palette.accent,
+                    uncheckedColor = palette.onSurfaceFaint,
                     checkmarkColor = Color.White,
                 ),
             )

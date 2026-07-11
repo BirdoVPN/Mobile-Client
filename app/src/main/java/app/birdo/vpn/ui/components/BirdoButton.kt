@@ -78,7 +78,8 @@ fun BirdoButton(
 
     Box(
         modifier = modifier
-            .height(height)
+            // Min-height (not fixed) so labels survive 1.3x+ font scaling.
+            .heightIn(min = height)
             .scale(pressScale)
             .clip(shape)
             .then(if (brush != null && enabled) Modifier.background(brush, shape) else Modifier.background(effectiveBg, shape))

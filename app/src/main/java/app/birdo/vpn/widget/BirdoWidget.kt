@@ -14,6 +14,8 @@ import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.layout.*
+import androidx.glance.semantics.contentDescription
+import androidx.glance.semantics.semantics
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
@@ -49,7 +51,7 @@ private fun BirdoWidgetContent(
     val primaryText = ColorProvider(Color(0xFFF2F2F2))
     val dimText = ColorProvider(Color(0x99FFFFFF))
     val accentColor = if (isConnected) {
-        ColorProvider(Color(0xFF22C55E))
+        ColorProvider(Color(0xFF34D399)) // emerald-400 — protected
     } else {
         ColorProvider(Color(0xFF6B7280))
     }
@@ -66,11 +68,21 @@ private fun BirdoWidgetContent(
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
     }
 
+    val context = LocalContext.current
+    // Without this the whole widget is an unlabeled clickable surface: TalkBack
+    // reads the three Texts but never says it is actionable or what a tap does.
+    val widgetDescription = if (isConnected) {
+        context.getString(R.string.cd_widget_connected, serverName ?: context.getString(R.string.app_name))
+    } else {
+        context.getString(R.string.cd_widget_disconnected)
+    }
+
     Box(
         modifier = GlanceModifier
             .fillMaxSize()
             .background(bgDrawable)
             .clickable(actionStartActivity(intent))
+            .semantics { contentDescription = widgetDescription }
             .padding(16.dp),
     ) {
         Column(
@@ -93,7 +105,7 @@ private fun BirdoWidgetContent(
                 Spacer(modifier = GlanceModifier.width(8.dp))
 
                 Text(
-                    text = "Birdo VPN",
+                    text = LocalContext.current.getString(R.string.app_name),
                     style = TextStyle(
                         color = primaryText,
                         fontSize = 14.sp,
@@ -106,7 +118,9 @@ private fun BirdoWidgetContent(
 
             // Status text
             Text(
-                text = if (isConnected) "Protected" else "Not connected",
+                text = LocalContext.current.getString(
+                    if (isConnected) R.string.status_protected else R.string.status_not_connected,
+                ),
                 style = TextStyle(
                     color = accentColor,
                     fontSize = 13.sp,
@@ -121,7 +135,7 @@ private fun BirdoWidgetContent(
                     text = serverName,
                     style = TextStyle(
                         color = dimText,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                     ),
                     maxLines = 1,
                 )
@@ -130,10 +144,10 @@ private fun BirdoWidgetContent(
             if (!isConnected) {
                 Spacer(modifier = GlanceModifier.height(2.dp))
                 Text(
-                    text = "Tap to connect",
+                    text = LocalContext.current.getString(R.string.widget_tap_to_connect),
                     style = TextStyle(
                         color = dimText,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                     ),
                 )
             }

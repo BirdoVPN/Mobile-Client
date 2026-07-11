@@ -194,12 +194,13 @@ data class VpnServer(
 
 // ─── VPN Connect ─────────────────────────────────────────────────────────────
 
-@Serializable
 /** Response of GET vpn/attestation/nonce — the value the Play Integrity token binds to. */
+@Serializable
 data class AttestationNonceResponse(
     val nonce: String,
 )
 
+@Serializable
 data class ConnectRequest(
     val serverNodeId: String? = null,
     val deviceName: String? = null,
@@ -316,6 +317,15 @@ data class MultiHopConnectRequest(
     val stealthMode: Boolean = false,
     val quantumProtection: Boolean = false,
     val pqClientPublicKey: String? = null,
+    /**
+     * Google Play Integrity token — see [ConnectRequest.integrityToken].
+     *
+     * The backend enforces attestation on the multi-hop connect exactly as it
+     * does on the single-hop one. Without this field a client could reach a
+     * peer-issuing endpoint while skipping attestation entirely, so multi-hop
+     * MUST attach the same token single-hop does.
+     */
+    val integrityToken: String? = null,
 )
 
 @Serializable

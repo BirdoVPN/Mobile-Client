@@ -57,6 +57,38 @@ private val bottomNavItems = listOf(
     BottomNavItem(Screen.Settings, R.string.settings_title, Icons.Default.Settings),
 )
 
+// ── Shared navigation transitions (BirdoMotion rhythm) ──────────────────
+// Tabs crossfade with a whisper of scale; pushed sub-screens slide in from
+// the right and slide back out on pop, while the screen beneath dims.
+private val tabEnter: AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> EnterTransition = {
+    fadeIn(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Standard, easing = BirdoMotion.Decel)) +
+        scaleIn(
+            initialScale = 0.98f,
+            animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Standard, easing = BirdoMotion.Decel),
+        )
+}
+private val tabExit: AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> ExitTransition = {
+    fadeOut(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Quick, easing = BirdoMotion.Accel))
+}
+private val pushEnter: AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> EnterTransition = {
+    slideInHorizontally(
+        animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Emphasis, easing = BirdoMotion.Decel),
+        initialOffsetX = { it },
+    ) + fadeIn(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Standard, easing = BirdoMotion.Decel))
+}
+private val pushPopExit: AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> ExitTransition = {
+    slideOutHorizontally(
+        animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Emphasis, easing = BirdoMotion.Accel),
+        targetOffsetX = { it },
+    ) + fadeOut(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Standard, easing = BirdoMotion.Accel))
+}
+private val underExit: AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> ExitTransition = {
+    fadeOut(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Quick, easing = BirdoMotion.Accel))
+}
+private val underPopEnter: AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> EnterTransition = {
+    fadeIn(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Standard, easing = BirdoMotion.Decel))
+}
+
 @Composable
 fun BirdoNavGraph(
     onRequestVpnPermission: (android.content.Intent) -> Unit,
@@ -268,8 +300,8 @@ fun BirdoNavGraph(
             // ── GDPR Consent ─────────────────────────────────────────
             composable(
                 Screen.Consent.route,
-                enterTransition = { fadeIn() },
-                exitTransition = { fadeOut() },
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
             ) {
                 AdaptiveContainer {
                     val consentContext = androidx.compose.ui.platform.LocalContext.current
@@ -290,8 +322,8 @@ fun BirdoNavGraph(
             // ── Login ────────────────────────────────────────────────
             composable(
                 Screen.Login.route,
-                enterTransition = { fadeIn() },
-                exitTransition = { fadeOut() },
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
             ) {
                 AdaptiveContainer {
                     val context = androidx.compose.ui.platform.LocalContext.current
@@ -320,12 +352,13 @@ fun BirdoNavGraph(
             // ── Home (Connect tab) ──────────────────────────────────
             composable(
                 Screen.Home.route,
-                enterTransition = { fadeIn() },
-                exitTransition = { fadeOut() },
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
             ) {
                 AdaptiveContainer {
                     HomeScreen(
                         state = vpnState,
+                        trafficStats = vpnViewModel.trafficStats.collectAsState().value,
                         userEmail = authState.user?.email,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
@@ -359,8 +392,8 @@ fun BirdoNavGraph(
             // ── Profile (Profile tab) ───────────────────────────────
             composable(
                 Screen.Profile.route,
-                enterTransition = { fadeIn() },
-                exitTransition = { fadeOut() },
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
             ) {
                 AdaptiveContainer {
                     val context = LocalContext.current
@@ -405,8 +438,8 @@ fun BirdoNavGraph(
             // ── Server list (Servers tab) ───────────────────────────
             composable(
                 Screen.ServerList.route,
-                enterTransition = { fadeIn() },
-                exitTransition = { fadeOut() },
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
             ) {
                 AdaptiveContainer {
                     ServerListScreen(
@@ -425,8 +458,8 @@ fun BirdoNavGraph(
             // ── Settings (Settings tab) ─────────────────────────────
             composable(
                 Screen.Settings.route,
-                enterTransition = { fadeIn() },
-                exitTransition = { fadeOut() },
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
             ) {
                 AdaptiveContainer {
                     val context = LocalContext.current
@@ -444,27 +477,14 @@ fun BirdoNavGraph(
                             )
                         },
                         onSplitTunnelingChange = { settingsViewModel.setSplitTunneling(it) },
-                        onToggleAppExclude = { settingsViewModel.toggleAppExclusion(it) },
                         onOpenSplitTunnelApps = {
                             navController.navigate(Screen.SplitTunnel.route)
                         },
                         onOpenVpnSettings = {
                             navController.navigate(Screen.VpnSettings.route)
                         },
-                        onOpenUrl = { settingsViewModel.openUrl(it) },
-                        onDeleteAccount = { password ->
-                            vpnViewModel.disconnect()
-                            authViewModel.deleteAccount(password)
-                        },
-                        isDeletingAccount = authState.isDeletingAccount,
-                        deleteAccountError = authState.deleteAccountError,
-                        onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
-                        onOpenSubscription = {
-                            vpnViewModel.fetchSubscription()
-                            navController.navigate(Screen.Subscription.route)
-                        },
                     )
                 }
             }
@@ -472,8 +492,10 @@ fun BirdoNavGraph(
             // ── VPN Settings ───────────────────────────────────────
             composable(
                 Screen.VpnSettings.route,
-                enterTransition = { slideInHorizontally(initialOffsetX = { it }) },
-                exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
+                enterTransition = pushEnter,
+                exitTransition = underExit,
+                popEnterTransition = underPopEnter,
+                popExitTransition = pushPopExit,
             ) {
                 AdaptiveContainer {
                     // Plan gating mirrors the Multi-Hop pattern on the Connect
@@ -506,28 +528,13 @@ fun BirdoNavGraph(
                 }
             }
 
-            // ── Multi-Hop (Double VPN) ──────────────────────────────
-            composable(
-                Screen.MultiHop.route,
-                enterTransition = { slideInHorizontally(initialOffsetX = { it }) },
-                exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
-            ) {
-                AdaptiveContainer {
-                    MultiHopScreen(
-                        servers = vpnState.servers,
-                        isConnecting = vpnState.vpnState is app.birdo.vpn.service.VpnState.Connecting,
-                        error = vpnState.error,
-                        onConnect = { entry, exit -> vpnViewModel.connectMultiHop(entry, exit) },
-                        onBack = { navController.popBackStack() },
-                    )
-                }
-            }
-
             // ── Port Forwarding ─────────────────────────────────────
             composable(
                 Screen.PortForward.route,
-                enterTransition = { slideInHorizontally(initialOffsetX = { it }) },
-                exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
+                enterTransition = pushEnter,
+                exitTransition = underExit,
+                popEnterTransition = underPopEnter,
+                popExitTransition = pushPopExit,
             ) {
                 LaunchedEffect(Unit) {
                     vpnViewModel.loadPortForwards()
@@ -547,8 +554,10 @@ fun BirdoNavGraph(
             // ── Split Tunnel app selection ──────────────────────────
             composable(
                 Screen.SplitTunnel.route,
-                enterTransition = { slideInHorizontally(initialOffsetX = { it }) },
-                exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
+                enterTransition = pushEnter,
+                exitTransition = underExit,
+                popEnterTransition = underPopEnter,
+                popExitTransition = pushPopExit,
             ) {
                 // Load apps when entering screen
                 LaunchedEffect(Unit) {
@@ -568,8 +577,10 @@ fun BirdoNavGraph(
             // ── Subscription ────────────────────────────────────────
             composable(
                 Screen.Subscription.route,
-                enterTransition = { slideInHorizontally(initialOffsetX = { it }) },
-                exitTransition = { slideOutHorizontally(targetOffsetX = { it }) },
+                enterTransition = pushEnter,
+                exitTransition = underExit,
+                popEnterTransition = underPopEnter,
+                popExitTransition = pushPopExit,
             ) {
                 AdaptiveContainer {
                     SubscriptionScreen(

@@ -207,17 +207,7 @@ class VpnManager @Inject constructor(
             }
         } else null
 
-        // Client attestation: on Play builds, request a Play Integrity token
-        // bound to a fresh server nonce so the backend can confirm this is the
-        // genuine, unmodified official app on a genuine device before it hands
-        // out a WireGuard peer. Non-Play builds and any failure yield null; the
-        // server's ATTESTATION_POLICY then decides. Best-effort here — the token
-        // is attached to the connect, never used to hard-block on the client.
-        val integrityToken: String? = if (BuildConfig.IS_PLAY_BUILD) {
-            repository.getAttestationNonce()?.let { nonce ->
-                PlayIntegrityManager.requestToken(context, nonce)
-            }
-        } else null
+        val integrityToken = requestAttestationToken()
 
         val result = repository.connectVpn(
             serverNodeId = serverId,
@@ -278,6 +268,27 @@ class VpnManager @Inject constructor(
     }
 
     /**
+     * Client attestation, shared by EVERY peer-issuing connect path.
+     *
+     * On Play builds we fetch a single-use server nonce and bind a Play
+     * Integrity token to it, so the backend can confirm this is the genuine,
+     * unmodified official app on a genuine device before it hands out a
+     * WireGuard peer. Non-Play builds (direct APK / F-Droid) and any failure
+     * yield null; the server's ATTESTATION_POLICY decides what that means.
+     *
+     * Deliberately a single helper: the backend enforces attestation on the
+     * multi-hop connect as well as the single-hop one, so any peer-issuing call
+     * that forgot to attach a token would be an attestation bypass on one path
+     * and a broken feature on the other the moment policy flips to enforce.
+     * Never hard-blocks on the client — the server owns the decision.
+     */
+    private suspend fun requestAttestationToken(): String? {
+        if (!BuildConfig.IS_PLAY_BUILD) return null
+        val nonce = repository.getAttestationNonce() ?: return null
+        return PlayIntegrityManager.requestToken(context, nonce)
+    }
+
+    /**
      * Connect through an entry and exit server with the same advanced feature
      * contract as single-hop: Stealth and BirdoPQ are requested up front and
      * the service fails closed if the server enables them but the local engine
@@ -297,6 +308,8 @@ class VpnManager @Inject constructor(
             }
         } else null
 
+        val integrityToken = requestAttestationToken()
+
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
         val result = repository.connectMultiHop(
             entryNodeId = entryNodeId,
@@ -305,6 +318,7 @@ class VpnManager @Inject constructor(
             stealthMode = prefs.stealthModeEnabled,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
+            integrityToken = integrityToken,
         )
 
         when (result) {
