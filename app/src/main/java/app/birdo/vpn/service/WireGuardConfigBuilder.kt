@@ -84,7 +84,12 @@ object WireGuardConfigBuilder {
         val peerBuilder = Peer.Builder()
             .parsePublicKey(peerPublicKey.toBase64())
             .parseEndpoint(effectiveEndpoint)
-            .parsePersistentKeepalive("${(response.persistentKeepalive ?: 25).coerceIn(1, 300)}")
+            // Floor the keepalive at 10s: a keepalive of 1-2s wakes the radio
+            // every second or two (heavy battery drain) for no benefit, and the
+            // value is server-supplied — clamp defensively so a misconfigured or
+            // compromised backend can never drive the client's radio that hard.
+            // Default WireGuard keepalive is 25s; 10s honours any sane override.
+            .parsePersistentKeepalive("${(response.persistentKeepalive ?: 25).coerceIn(10, 300)}")
         var allowedIpCount = 0
         for (cidr in response.allowedIps ?: listOf("0.0.0.0/0", "::/0")) {
             try {
