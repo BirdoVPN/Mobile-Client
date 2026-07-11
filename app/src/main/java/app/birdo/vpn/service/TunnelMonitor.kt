@@ -30,7 +30,19 @@ class TunnelMonitor(
 ) {
     companion object {
         private const val TAG = "TunnelMonitor"
-        private const val CHECK_INTERVAL_MS = 5_000L
+        /**
+         * Monitor cadence. The socket re-protect this loop performs is already
+         * handled reactively by [registerDefaultNetworkCallback] at the exact
+         * moment the underlying transport changes (the only time a re-protect is
+         * needed), so this periodic pass is a rare-case backstop, not the primary
+         * mechanism. The stall check only needs to fire well inside
+         * [STALL_THRESHOLD_SEC]. A 5s cadence therefore ran a blocking wg-go
+         * getConfig JNI read ~36x more often than required and, in the
+         * background, undercut the notification ticker's deliberate 8s floor. 30s
+         * still detects a dead tunnel within ~180-210s while cutting this loop's
+         * CPU wakeups and getConfig serializations ~6x.
+         */
+        private const val CHECK_INTERVAL_MS = 30_000L
         /**
          * Maximum age (seconds) for the last successful WireGuard handshake
          * before we declare the tunnel dead. WireGuard rekeys every ~120s under

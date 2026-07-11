@@ -849,6 +849,7 @@ class BirdoVpnService : VpnService() {
                 builder.addRoute("::", 0)
             }
         } else {
+            var hasV6Default = false
             for (cidr in config.allowedIps ?: listOf("0.0.0.0/0", "::/0")) {
                 try {
                     val parts = cidr.split("/")
@@ -856,7 +857,19 @@ class BirdoVpnService : VpnService() {
                     val prefix = if (parts.size > 1) parts[1].toInt() else
                         if (cidr.contains(":")) 128 else 32
                     builder.addRoute(addr, prefix)
+                    if (addr == "::" && prefix == 0) hasV6Default = true
                 } catch (e: Exception) { Log.w(TAG, "Invalid route: $cidr — ${e.message}") }
+            }
+            // Enforce an IPv6 blackhole client-side even when the server omits
+            // ::/0 from allowedIps. Our nodes are IPv4-only, so capturing all IPv6
+            // into the tunnel drops it instead of letting it egress below the
+            // tunnel on the physical adapter (a v6 default on the NIC would
+            // otherwise win). Guarded so we never add a duplicate ::/0 (Android
+            // throws IllegalArgumentException on duplicate routes).
+            if (!hasV6Default) {
+                try { builder.addRoute("::", 0) } catch (e: Exception) {
+                    Log.w(TAG, "Failed to add IPv6 blackhole route: ${e.message}")
+                }
             }
         }
 

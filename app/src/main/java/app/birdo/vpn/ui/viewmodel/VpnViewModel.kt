@@ -207,7 +207,11 @@ class VpnViewModel @Inject constructor(
                         tick = System.currentTimeMillis(),
                     )
                 }
-                delay(1000)
+                // Live 1s cadence only matters while the UI is visible. When the
+                // app is backgrounded nothing observes uiState, so match the
+                // service's adaptive ticker (8s) and stop waking the main thread /
+                // re-emitting UiState every second behind the user's back.
+                delay(if (app.birdo.vpn.service.BirdoVpnService.uiForeground) 1000L else 8000L)
             }
         }
     }
