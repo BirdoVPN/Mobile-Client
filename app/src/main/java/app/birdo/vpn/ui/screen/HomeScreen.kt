@@ -108,6 +108,20 @@ fun HomeScreen(
     val multiHopExit = remember(multiHopExitId, state.servers) {
         state.servers.firstOrNull { it.id == multiHopExitId }
     }
+    // A connectable multi-hop route, or null. Resolving it once means the connect
+    // button and its click handler can't disagree about readiness, and neither
+    // needs `!!` to reach the servers it just proved are non-null.
+    val multiHopRoute: Pair<VpnServer, VpnServer>? =
+        if (multiHopEnabled &&
+            multiHopEntry != null &&
+            multiHopExit != null &&
+            multiHopEntry.id != multiHopExit.id
+        ) {
+            multiHopEntry to multiHopExit
+        } else {
+            null
+        }
+
     var multiHopPickerTarget by remember { mutableStateOf<MultiHopTarget?>(null) }
     val multiHopSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -266,7 +280,7 @@ fun HomeScreen(
                         isConnected = isConnected,
                         isConnecting = isConnecting,
                         isDisconnecting = isDisconnecting,
-                        multiHopReady = multiHopEnabled && multiHopEntry != null && multiHopExit != null && multiHopEntry?.id != multiHopExit?.id,
+                        multiHopReady = multiHopRoute != null,
                         multiHopArmed = multiHopEnabled,
                         onClick = {
                             when {
@@ -275,9 +289,9 @@ fun HomeScreen(
                                     onDisconnect()
                                 }
                                 isConnecting || isDisconnecting -> Unit
-                                multiHopEnabled && multiHopEntry != null && multiHopExit != null && multiHopEntry?.id != multiHopExit?.id -> {
+                                multiHopRoute != null -> {
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onConnectMultiHop(multiHopEntry!!.id, multiHopExit!!.id)
+                                    onConnectMultiHop(multiHopRoute.first.id, multiHopRoute.second.id)
                                 }
                                 multiHopEnabled -> Unit // disabled until both selected
                                 else -> {
@@ -361,19 +375,19 @@ private fun MultiHopTopAction(
     val tint by animateColorAsState(
         targetValue = when {
             !unlocked -> BirdoWhite40
-            enabled -> BirdoBrand.Purple
+            enabled -> BirdoBrand.Accent
             else -> Color.White
         },
         animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
         label = "multiHopTint",
     )
     val bg by animateColorAsState(
-        targetValue = if (enabled && unlocked) BirdoBrand.Purple.copy(alpha = 0.18f) else BirdoWhite05,
+        targetValue = if (enabled && unlocked) BirdoBrand.Accent.copy(alpha = 0.18f) else BirdoWhite05,
         animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
         label = "multiHopBg",
     )
     val border by animateColorAsState(
-        targetValue = if (enabled && unlocked) BirdoBrand.Purple.copy(alpha = 0.55f) else BirdoBrand.HairlineSoft,
+        targetValue = if (enabled && unlocked) BirdoBrand.Accent.copy(alpha = 0.55f) else BirdoBrand.HairlineSoft,
         animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
         label = "multiHopBorder",
     )
@@ -500,7 +514,7 @@ private fun MultiHopServerCard(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = label.uppercase(),
-                    color = BirdoBrand.Purple,
+                    color = BirdoBrand.Accent,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.sp,
@@ -564,6 +578,11 @@ private fun HomeTopBar(
                 BrandLockup()
                 Spacer(Modifier.weight(1f))
                 if (userEmail != null) {
+                    // A weight(1f) spacer collapses to ZERO once the row's content
+                    // overflows, which it does for an anonymous account id — the
+                    // username then sits flush against "Birdo VPN" with no gap at
+                    // all. The start padding is what actually guarantees the gap;
+                    // the spacer only distributes what is left over.
                     Text(
                         text = userEmail,
                         color = palette.onSurfaceFaint,
@@ -571,8 +590,8 @@ private fun HomeTopBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
-                            .padding(end = 6.dp)
-                            .widthIn(max = 160.dp),
+                            .padding(start = 12.dp, end = 6.dp)
+                            .widthIn(max = 120.dp),
                     )
                 }
                 BirdoIconAction(
@@ -598,6 +617,8 @@ private fun BrandLockup() {
             color = palette.onBackground,
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -687,11 +708,11 @@ private fun CompactConnectButton(
     // The idle → connecting → connected transition is the most important state
     // change in the app: morph the gradient rather than hard-cutting it.
     val (targetStart, targetEnd) = when {
-        isConnected -> BirdoGreen to Color(0xFF166534)
-        busy -> BirdoBrand.PurpleSoft to BirdoBrand.PurpleDeep
+        isConnected -> BirdoGreen to BirdoAccentDeep
+        busy -> BirdoBrand.AccentSoft to BirdoBrand.AccentDeep
         multiHopBlocked -> BirdoWhite10 to BirdoWhite10
-        multiHopReady -> BirdoBrand.Purple to BirdoBrand.PurpleDeep
-        else -> Color(0xFF7C3AED) to Color(0xFF4C1D95) // PrimaryGradient stops
+        multiHopReady -> BirdoBrand.Accent to BirdoBrand.AccentDeep
+        else -> Color(0xFF047857) to Color(0xFF064E3B) // PrimaryGradient stops (deep emerald)
     }
     val startColor by animateColorAsState(
         targetValue = targetStart,
@@ -704,7 +725,7 @@ private fun CompactConnectButton(
         label = "connectEnd",
     )
     val shadowColor by animateColorAsState(
-        targetValue = if (isConnected) BirdoGreenShadow else BirdoBrand.Purple.copy(alpha = 0.45f),
+        targetValue = if (isConnected) BirdoGreenShadow else BirdoBrand.Accent.copy(alpha = 0.45f),
         animationSpec = tween(BirdoMotion.Emphasis, easing = BirdoMotion.Decel),
         label = "connectShadow",
     )
@@ -802,7 +823,7 @@ private fun StatsRow(connectedSince: Long, stats: TrafficStats) {
             icon = Icons.Default.Schedule,
             label = stringResource(R.string.stats_duration),
             value = duration,
-            tint = BirdoBrand.PurpleSoft,
+            tint = BirdoBrand.AccentSoft,
             modifier = Modifier.weight(1f),
         )
         StatTile(

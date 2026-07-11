@@ -78,11 +78,11 @@ fun BirdoTextField(
                 { Text(text, color = if (isError) BirdoRed else palette.onSurfaceMuted, fontSize = 12.sp) }
             },
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = BirdoBrand.PurpleSoft.copy(alpha = 0.6f),
+                focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
                 unfocusedBorderColor = palette.hairlineSoft,
                 focusedTextColor = palette.onSurface,
                 unfocusedTextColor = palette.onSurface.copy(alpha = 0.85f),
-                cursorColor = BirdoBrand.PurpleSoft,
+                cursorColor = BirdoBrand.AccentSoft,
                 focusedContainerColor = GlassInput,
                 unfocusedContainerColor = GlassInput,
                 disabledContainerColor = GlassInput,

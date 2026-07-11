@@ -10,13 +10,12 @@ import androidx.compose.ui.graphics.Color
  */
 object BirdoBrand {
     // ── Core brand stops ──────────────────────────────────────────────
-    val PurpleDeep  = Color(0xFF6D28D9) // violet-700
-    val Purple      = BirdoPurple        // #A855F7
-    val PurpleSoft  = Color(0xFFC4B5FD)  // violet-300
-    val Pink        = Color(0xFFEC4899)  // pink-500
-    val Cyan        = Color(0xFF22D3EE)  // cyan-400
-    val Teal        = Color(0xFF14B8A6)  // teal-500
-    val Indigo      = Color(0xFF6366F1)  // indigo-500
+    val AccentDeep  = Color(0xFF047857)  // emerald-700
+    val Accent      = BirdoAccent         // emerald-500 #10B981
+    val AccentSoft  = Color(0xFF6EE7B7)   // emerald-300
+    val Cyan        = Color(0xFF22D3EE)   // cyan-400
+    val Teal        = Color(0xFF14B8A6)   // teal-500
+    val Indigo      = Color(0xFF6366F1)   // indigo-500
 
     // ── Surface elevation tiers (dark theme) ──────────────────────────
     val Surface0 = Color(0xFF050507)   // App background
@@ -29,13 +28,18 @@ object BirdoBrand {
     // ── Brushes ───────────────────────────────────────────────────────
 
     /**
-     * Primary brand fill — a restrained monochrome deep-purple gradient that
-     * matches the app icon. The previous purple→pink version was deliberately
-     * removed because the app is otherwise all dark-purple + neutral greys.
+     * Primary brand fill — a restrained, DEEP emerald gradient (emerald-700 →
+     * emerald-900).
+     *
+     * Deliberately dark: this is the idle Connect CTA, and the connected one is
+     * a luminous mint. With a green brand, hue can no longer carry connection
+     * state, so the two must differ by luminance instead — see the note in
+     * Color.kt. A bright emerald here would make "protected" and "not
+     * protected" look alike, which on a VPN is a privacy bug, not a style one.
      */
     val PrimaryGradient: Brush
         get() = Brush.linearGradient(
-            colors = listOf(Color(0xFF7C3AED), Color(0xFF4C1D95)),
+            colors = listOf(Color(0xFF047857), Color(0xFF064E3B)),
         )
 
     /** Cool secondary gradient — info / tech accents. */
@@ -51,10 +55,10 @@ object BirdoBrand {
             radius = 700f,
         )
 
-    /** Disconnected ambient (subtle purple bloom). */
+    /** Disconnected ambient (subtle emerald bloom). */
     val IdleGradient: Brush
         get() = Brush.radialGradient(
-            colors = listOf(Purple.copy(alpha = 0.18f), Color.Transparent),
+            colors = listOf(Accent.copy(alpha = 0.18f), Color.Transparent),
             radius = 800f,
         )
 
@@ -87,27 +91,29 @@ object BirdoBrand {
             colors = listOf(Color.White, Color.White.copy(alpha = 0.55f)),
         )
 
-    /** Brand text gradient — purple→pink for accent words. */
+    /** Brand text gradient — mint→teal for accent words. */
     val BrandTextGradient: Brush
         get() = Brush.linearGradient(
-            colors = listOf(PurpleSoft, Pink),
+            colors = listOf(AccentSoft, Teal),
         )
 
     // ── Plan tier identity ────────────────────────────────────────────
-    // Single source of truth for subscription-tier colors so SOVEREIGN is
-    // the same violet on every screen (Profile, Subscription, badges).
+    // Single source of truth for subscription-tier colors, so a tier looks the
+    // same on every screen (Profile, Subscription, badges). Tiers stay
+    // distinguishable inside the emerald family: SOVEREIGN is the brand itself,
+    // OPERATIVE steps to teal, RECON stays neutral slate.
 
     /** Accent color for a subscription plan slug (case-insensitive). */
     fun planAccent(plan: String?): Color = when (plan?.uppercase()) {
-        "SOVEREIGN" -> Purple
-        "OPERATIVE" -> Indigo
+        "SOVEREIGN" -> Accent
+        "OPERATIVE" -> Teal
         else -> Color(0xFF64748B) // slate-500 — RECON / free tier
     }
 
     /** Hero gradient for a subscription plan slug (case-insensitive). */
     fun planGradient(plan: String?): Brush = when (plan?.uppercase()) {
-        "SOVEREIGN" -> Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFF4C1D95)))
-        "OPERATIVE" -> Brush.linearGradient(listOf(Color(0xFF6366F1), Color(0xFF4338CA)))
+        "SOVEREIGN" -> Brush.linearGradient(listOf(Color(0xFF059669), Color(0xFF064E3B)))
+        "OPERATIVE" -> Brush.linearGradient(listOf(Color(0xFF0D9488), Color(0xFF115E59)))
         else -> Brush.linearGradient(listOf(Color(0xFF475569), Color(0xFF334155)))
     }
 }

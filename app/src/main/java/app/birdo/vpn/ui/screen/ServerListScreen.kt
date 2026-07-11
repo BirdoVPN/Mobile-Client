@@ -187,7 +187,7 @@ fun ServerListScreen(
         if (isLoading && servers.isNotEmpty()) {
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                color = BirdoBrand.PurpleSoft,
+                color = BirdoBrand.AccentSoft,
                 trackColor = BirdoWhite05,
             )
         }
@@ -288,7 +288,7 @@ internal fun ServerCard(
     // Solid colours only (the perf note above bans per-frame Brush allocation);
     // animateColorAsState is allocation-free and makes selection feel deliberate.
     val borderColor by animateColorAsState(
-        targetValue = if (isSelected) BirdoBrand.PurpleSoft else palette.hairlineSoft,
+        targetValue = if (isSelected) BirdoBrand.AccentSoft else palette.hairlineSoft,
         animationSpec = tween(BirdoMotion.Quick, easing = BirdoMotion.EaseStandard),
         label = "cardBorder",
     )

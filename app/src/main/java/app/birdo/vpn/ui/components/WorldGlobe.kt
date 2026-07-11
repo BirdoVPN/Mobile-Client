@@ -200,18 +200,25 @@ fun WorldGlobe(
     val effectiveLat = focusLatTarget * focus
     val effectiveLon = lerpAngleDeg(idleLon, focusLonTarget, focus)
 
+    // NOTE: the "light" theme here is Birdo's DIM-light theme (a slate near-dark,
+    // #1B1C24) — not a true white theme. These used to be a daylight globe on a
+    // near-white #EEF1F8 sky, which painted a glaring white panel into the middle
+    // of an otherwise dim UI: exactly the "too bright" complaint the dim theme
+    // exists to answer. Both themes now render a NIGHT earth; the dim theme just
+    // sits a few steps lighter than the OLED one, and the sky is taken straight
+    // from the palette so it can never drift from the app background again.
     val isLight = palette.isLight
-    val space = if (isLight) Color(0xFFEEF1F8) else Color(0xFF030714)
-    val starColor = if (isLight) Color(0xFF8B95AB) else Color(0xFFB6C5E2)
-    val oceanCore = if (isLight) Color(0xFFD8E0EE) else Color(0xFF1A3050)
-    val oceanRim = if (isLight) Color(0xFFAEBACF) else Color(0xFF071426)
-    val landDimC = if (isLight) Color(0xFF6E7C95) else Color(0xFF1F4364)
-    val landMidC = if (isLight) Color(0xFF7E8DA6) else Color(0xFF356D9F)
-    val landLitC = if (isLight) Color(0xFF98A6BE) else Color(0xFF59A8E0)
-    val atmosphere = if (isLight) Color(0xFF8AAACE) else Color(0xFF4983C7)
-    val rim = if (isLight) Color(0xFF6E96C2) else Color(0xFF7BB2E6)
+    val space = if (isLight) palette.background else Color(0xFF030714)
+    val starColor = if (isLight) Color(0xFF5A6580) else Color(0xFFB6C5E2)
+    val oceanCore = if (isLight) Color(0xFF26334A) else Color(0xFF1A3050)
+    val oceanRim = if (isLight) Color(0xFF141B29) else Color(0xFF071426)
+    val landDimC = if (isLight) Color(0xFF33445F) else Color(0xFF1F4364)
+    val landMidC = if (isLight) Color(0xFF46628A) else Color(0xFF356D9F)
+    val landLitC = if (isLight) Color(0xFF5E86B5) else Color(0xFF59A8E0)
+    val atmosphere = if (isLight) Color(0xFF4B7BB0) else Color(0xFF4983C7)
+    val rim = if (isLight) Color(0xFF6C9AC9) else Color(0xFF7BB2E6)
     val accent = palette.accent
-    val connected = if (isLight) Color(0xFF1F8F4E) else Color(0xFF44D17E)
+    val connected = if (isLight) Color(0xFF059669) else Color(0xFF34D399)
 
     // Sun position: slow east-to-west drift in longitude with a small
     // seasonal-ish latitude tilt so the terminator isn't a perfect vertical.

@@ -129,7 +129,7 @@ fun VpnSettingsScreen(
             item {
                 VpnToggle(
                     icon = Icons.Default.Lock,
-                    iconColor = BirdoPurple,
+                    iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_quantum_title),
                     description = stringResource(R.string.vpn_settings_quantum_desc),
                     checked = state.quantumProtectionEnabled && quantumUnlocked,
@@ -159,7 +159,7 @@ fun VpnSettingsScreen(
             item {
                 VpnToggle(
                     icon = Icons.Default.Dns,
-                    iconColor = BirdoPurple,
+                    iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_custom_dns),
                     description = stringResource(R.string.vpn_settings_custom_dns_desc),
                     checked = state.customDnsEnabled && customDnsUnlocked,

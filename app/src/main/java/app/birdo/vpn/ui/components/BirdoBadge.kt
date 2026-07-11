@@ -38,7 +38,7 @@ fun BirdoBadge(
         BadgeTone.Warning -> Triple(BirdoYellowBg, BirdoYellowLight, BirdoYellow.copy(alpha = 0.3f))
         BadgeTone.Danger  -> Triple(BirdoRedBg, BirdoRed, BirdoRed.copy(alpha = 0.3f))
         BadgeTone.Info    -> Triple(BirdoBlueBg, BirdoBlue, BirdoBlue.copy(alpha = 0.3f))
-        BadgeTone.Brand   -> Triple(BirdoPurpleBg, BirdoBrand.PurpleSoft, BirdoBrand.Purple.copy(alpha = 0.3f))
+        BadgeTone.Brand   -> Triple(BirdoAccentBg, BirdoBrand.AccentSoft, BirdoBrand.Accent.copy(alpha = 0.3f))
     }
     Surface(
         modifier = modifier,

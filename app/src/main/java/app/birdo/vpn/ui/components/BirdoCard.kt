@@ -117,7 +117,7 @@ fun BirdoSectionHeader(
         if (actionLabel != null && onActionClick != null) {
             Text(
                 text = actionLabel,
-                color = BirdoBrand.PurpleSoft,
+                color = BirdoBrand.AccentSoft,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier

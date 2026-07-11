@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import app.birdo.vpn.ui.theme.BirdoColors
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -66,6 +67,12 @@ fun PixelCanvas(
         }
     }
 
+    // White squares at up to 20% alpha read as a faint shimmer on OLED black, but
+    // on the dim-light theme's slate (#1B1C24) the same squares are a blotchy,
+    // dirty-looking checkerboard — they have far less contrast to hide behind.
+    // Damp them hard on the lighter surface so the texture stays ambient.
+    val intensity = if (BirdoColors.current.isLight) 0.3f else 1f
+
     Canvas(modifier = modifier.fillMaxSize()) {
         val canvasWidth = size.width
         val canvasHeight = size.height
@@ -83,7 +90,7 @@ fun PixelCanvas(
         val pixelSizeObj = Size(pixelSize, pixelSize)
         for (row in 0 until gridState.rows) {
             for (col in 0 until gridState.cols) {
-                val alpha = gridState.getAlpha(col, row)
+                val alpha = gridState.getAlpha(col, row) * intensity
                 if (alpha > 0.005f) {
                     drawRect(
                         color = Color.White,

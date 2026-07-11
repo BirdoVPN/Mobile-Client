@@ -27,17 +27,25 @@ val BirdoWhite20 = Color(0x33FFFFFF)     // 20% — borders/toggles
 val BirdoWhite10 = Color(0x1AFFFFFF)     // 10% — subtle bg
 val BirdoWhite05 = Color(0x0DFFFFFF)     // 5% — very subtle
 
-// Primary accent — purple (#A855F7) matching Windows client
-val BirdoPurple = Color(0xFFA855F7)      // Primary accent
-val BirdoPurpleDark = Color(0xFF7C3AED)  // Purple-600
-val BirdoPurpleLight = Color(0xFFC084FC) // Purple-300
-val BirdoPurpleBg = Color(0x1AA855F7)    // 10% opacity
+// ─── Primary accent — EMERALD ────────────────────────────────────────────────
+// Matches the web rebrand (birdo.app): emerald-500 #10B981 / emerald-600
+// #059669, keyed off the green hero globe.
+val BirdoAccent = Color(0xFF10B981)      // emerald-500 — primary accent
+val BirdoAccentDeep = Color(0xFF059669)  // emerald-600
+val BirdoAccentSoft = Color(0xFF6EE7B7)  // emerald-300 — focus rings, links
+val BirdoAccentBg = Color(0x1A10B981)    // 10% opacity
 
-// Status colors — matching Windows client Tailwind classes
-val BirdoGreen = Color(0xFF22C55E)       // green-500 — Connected state
-val BirdoGreenLight = Color(0xFF4ADE80)  // green-400 — text
-val BirdoGreenBg = Color(0x1A22C55E)     // 10% opacity — status badge bg
-val BirdoGreenShadow = Color(0x4D22C55E) // 30% opacity — glow
+// ─── Status colors ───────────────────────────────────────────────────────────
+// The brand is now green, so "connected" can no longer be signalled by hue
+// alone — an emerald idle button and a green connected button would look the
+// same, and misreading that on a VPN is a privacy problem, not a cosmetic one.
+// Connection state is separated by LUMINANCE instead: the idle CTA is a deep,
+// dark emerald (BirdoBrand.PrimaryGradient) and the connected one is this
+// luminous mint, plus the glow and the pulsing dot.
+val BirdoGreen = Color(0xFF34D399)       // emerald-400 — Connected (luminous)
+val BirdoGreenLight = Color(0xFF6EE7B7)  // emerald-300 — text
+val BirdoGreenBg = Color(0x1A34D399)     // 10% opacity — status badge bg
+val BirdoGreenShadow = Color(0x4D34D399) // 30% opacity — glow
 
 val BirdoYellow = Color(0xFFEAB308)      // yellow-500 — Connecting state
 val BirdoYellowLight = Color(0xFFFACC15) // yellow-400 — text
@@ -72,8 +80,8 @@ val BirdoLightOnBackground     = Color(0xFFE8E9F0) // Body text
 val BirdoLightOnSurfaceVariant = Color(0xFFB7B9C9) // Secondary text
 val BirdoLightOutline          = Color(0x33FFFFFF) // Strong border
 val BirdoLightOutlineSoft      = Color(0x1AFFFFFF) // Subtle divider
-val BirdoLightPrimary          = Color(0xFFB794F6) // softer violet for dim background
-val BirdoLightAccentBg         = Color(0x29A855F7) // 16% purple — pops on dim grey
+val BirdoLightAccent           = Color(0xFF34D399) // emerald-400 — pops on dim slate
+val BirdoLightAccentBg         = Color(0x2910B981) // 16% emerald on dim grey
 
 // ─── Semantic Color Palette (theme-aware) ────────────────────────────────────
 /**
@@ -115,12 +123,12 @@ val BirdoDarkPalette = BirdoSemanticPalette(
     onSurfaceFaint = BirdoWhite40,
     hairline = Color(0x1FFFFFFF),
     hairlineSoft = Color(0x14FFFFFF),
-    accent = BirdoPurple,
-    accentBg = BirdoPurpleBg,
+    accent = BirdoAccent,
+    accentBg = BirdoAccentBg,
     mapWater = Color(0x4D0B0B1A),       // translucent so the pixel canvas reads through
-    mapLand = Color(0x33C4B5FD),        // dim violet land
-    mapDot = Color(0xFFA855F7),
-    mapDotMuted = Color(0x66A855F7),
+    mapLand = Color(0x336EE7B7),        // dim mint land
+    mapDot = BirdoAccent,
+    mapDotMuted = Color(0x6610B981),
 )
 
 val BirdoLightPalette = BirdoSemanticPalette(
@@ -135,12 +143,12 @@ val BirdoLightPalette = BirdoSemanticPalette(
     onSurfaceFaint = Color(0xFF7A7C8E),
     hairline = Color(0x33FFFFFF),
     hairlineSoft = Color(0x1AFFFFFF),
-    accent = BirdoLightPrimary,
+    accent = BirdoLightAccent,
     accentBg = BirdoLightAccentBg,
     mapWater = Color(0x661B1C24),       // translucent matching dim background
-    mapLand = Color(0x55B794F6),        // soft violet on dim background
-    mapDot = BirdoLightPrimary,
-    mapDotMuted = Color(0x80B794F6),
+    mapLand = Color(0x5534D399),        // soft mint on dim background
+    mapDot = BirdoLightAccent,
+    mapDotMuted = Color(0x8034D399),
 )
 
 val LocalBirdoColors = androidx.compose.runtime.staticCompositionLocalOf { BirdoDarkPalette }

@@ -49,7 +49,7 @@ fun ConsentScreen(
         Icon(
             imageVector = Icons.Default.Shield,
             contentDescription = stringResource(R.string.cd_privacy),
-            tint = BirdoPurple,
+            tint = BirdoAccent,
             modifier = Modifier.size(64.dp),
         )
 
@@ -115,7 +115,7 @@ fun ConsentScreen(
         ) {
             Text(
                 text = stringResource(R.string.consent_read_privacy_policy),
-                color = BirdoPurple,
+                color = BirdoAccent,
                 fontSize = 14.sp,
                 textDecoration = TextDecoration.Underline,
             )
@@ -131,7 +131,7 @@ fun ConsentScreen(
                 .height(52.dp)
                 .testTag(TestTags.CONSENT_ACCEPT),
             shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = BirdoPurple),
+            colors = ButtonDefaults.buttonColors(containerColor = BirdoAccent),
         ) {
             Text(
                 text = stringResource(R.string.consent_agree),

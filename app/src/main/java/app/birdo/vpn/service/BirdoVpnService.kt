@@ -720,6 +720,19 @@ class BirdoVpnService : VpnService() {
             // path can't recover it. The kernel/wg-go now owns the key.
             activeConfig = activeConfig?.copy(privateKey = "", presharedKey = null)
 
+            // The tunnel is up, so we are no longer in the blocking state — clear
+            // the kill-switch flag.
+            //
+            // Every failure path arms the kill switch, but the SUCCESS path used
+            // to leave the flag set: a successful establish() atomically
+            // supersedes the blocking interface (see the note above the rebuild),
+            // so deactivateKillSwitch() is deliberately not called here, and
+            // nothing else reset it. The result was that any connect following a
+            // failed attempt showed "Protected" and "Kill Switch — All traffic
+            // blocked" at the same time — a flatly contradictory claim about
+            // whether the user's traffic was flowing. Observed on-device.
+            _killSwitchActiveFlow.value = false
+
             updateState(VpnState.Connected)
             _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
             _connectedSinceFlow.value = System.currentTimeMillis()

@@ -51,7 +51,7 @@ private fun BirdoWidgetContent(
     val primaryText = ColorProvider(Color(0xFFF2F2F2))
     val dimText = ColorProvider(Color(0x99FFFFFF))
     val accentColor = if (isConnected) {
-        ColorProvider(Color(0xFF22C55E))
+        ColorProvider(Color(0xFF34D399)) // emerald-400 — protected
     } else {
         ColorProvider(Color(0xFF6B7280))
     }
