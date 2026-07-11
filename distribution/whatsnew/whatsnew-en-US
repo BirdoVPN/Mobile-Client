@@ -1,7 +1,9 @@
 Birdo VPN — fast, private WireGuard VPN with post-quantum encryption.
 
 What's new:
-- Reliability improvements for the Google Play version
-- Security and stability fixes
+- Refreshed look: new emerald design, smoother animations and haptics
+- Better battery life — background animations no longer run while the app is closed
+- Accessibility: connection changes announced by TalkBack, larger touch targets
+- Fixed a bug that could prevent connecting
 
-Global server network • no activity logs (warrant canary) • kill switch • DNS leak protection • split tunnelling.
+Global server network • no activity logs • kill switch • DNS leak protection • split tunnelling.
