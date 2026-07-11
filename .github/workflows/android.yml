@@ -633,7 +633,21 @@ jobs:
         with:
           name: release-apk
           path: release-apk/
-      - name: Upload AAB to Google Play
+      # ── Play upload: auto-submit for review, with a fallback ────────────────
+      # Historically the Play API refused to send this app's edit for review
+      # automatically ("Changes cannot be sent for review automatically") — that
+      # is the API's behaviour for an app whose first release has not yet been
+      # made through the Console. The app is now published under the org account,
+      # so auto-submit should be accepted and we try it FIRST.
+      #
+      # It is attempted with continue-on-error because a refusal must not cost us
+      # the upload: if the API still declines, the fallback step below commits the
+      # same edit without auto-review, so the AAB always lands on the track and
+      # can be submitted from the Console. Never let the review flag be the reason
+      # a release fails to ship.
+      - name: Upload AAB to Google Play (auto-submit for review)
+        id: play_auto
+        continue-on-error: true
         uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5 (node24)
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
@@ -642,9 +656,25 @@ jobs:
           track: ${{ github.event.inputs.play_track || 'internal' }}
           status: completed
           whatsNewDirectory: distribution/whatsnew
-          # The Play API refuses to auto-submit the edit for review for this app
-          # ("Changes cannot be sent for review automatically"); committing the
-          # edit without auto-review lets the AAB upload succeed (it lands on the
-          # track) — submit it for review from the Play Console UI.
+          changesNotSentForReview: false
+
+      - name: Upload AAB to Google Play (fallback — submit from Console)
+        if: steps.play_auto.outcome == 'failure'
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5 (node24)
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: app.birdo.vpn
+          releaseFiles: release-apk/*.aab
+          track: ${{ github.event.inputs.play_track || 'internal' }}
+          status: completed
+          whatsNewDirectory: distribution/whatsnew
           changesNotSentForReview: true
+
+      - name: Report which Play path was used
+        run: |
+          if [ "${{ steps.play_auto.outcome }}" = "success" ]; then
+            echo "::notice::AAB uploaded and SENT FOR REVIEW automatically."
+          else
+            echo "::warning::Auto-submit was refused by the Play API; the AAB was uploaded WITHOUT review. Submit it from the Play Console."
+          fi
 
