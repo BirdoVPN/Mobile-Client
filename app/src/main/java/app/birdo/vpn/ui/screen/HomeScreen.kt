@@ -587,6 +587,29 @@ private fun BrandLockup() {
 
 // ── Status Pill ────────────────────────────────────────────────────────────
 
+/** One immutable bundle so the pill animates label + tone + icon as a unit. */
+@androidx.compose.runtime.Immutable
+private data class StatusVisual(
+    val text: String,
+    val tone: BadgeTone,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector?,
+    val pulse: Boolean,
+)
+
+@Composable
+private fun statusFor(
+    isConnected: Boolean,
+    isConnecting: Boolean,
+    isDisconnecting: Boolean,
+    isError: Boolean,
+): StatusVisual = when {
+    isConnected -> StatusVisual(stringResource(R.string.status_protected), BadgeTone.Success, null, pulse = true)
+    isConnecting -> StatusVisual(stringResource(R.string.connecting), BadgeTone.Warning, Icons.Default.Sync, pulse = false)
+    isDisconnecting -> StatusVisual(stringResource(R.string.disconnecting), BadgeTone.Warning, Icons.Default.Sync, pulse = false)
+    isError -> StatusVisual(stringResource(R.string.status_error), BadgeTone.Danger, Icons.Default.ErrorOutline, pulse = false)
+    else -> StatusVisual(stringResource(R.string.status_not_connected), BadgeTone.Neutral, Icons.Default.WifiOff, pulse = false)
+}
+
 @Composable
 private fun StatusPill(
     isConnected: Boolean,
@@ -595,17 +618,12 @@ private fun StatusPill(
     isError: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val text: String
-    val tone: BadgeTone
-    val icon: androidx.compose.ui.graphics.vector.ImageVector?
-    val pulse: Boolean
-    when {
-        isConnected -> { text = stringResource(R.string.status_protected); tone = BadgeTone.Success; icon = null; pulse = true }
-        isConnecting -> { text = stringResource(R.string.connecting); tone = BadgeTone.Warning; icon = Icons.Default.Sync; pulse = false }
-        isDisconnecting -> { text = stringResource(R.string.disconnecting); tone = BadgeTone.Warning; icon = Icons.Default.Sync; pulse = false }
-        isError -> { text = stringResource(R.string.status_error); tone = BadgeTone.Danger; icon = Icons.Default.ErrorOutline; pulse = false }
-        else -> { text = stringResource(R.string.status_not_connected); tone = BadgeTone.Neutral; icon = Icons.Default.WifiOff; pulse = false }
-    }
+    // The animated state carries text, tone, icon and pulse TOGETHER. Animating
+    // on the text alone and reading the rest from the enclosing scope would
+    // render the OUTGOING label in the INCOMING colour mid-crossfade — e.g.
+    // "Connecting…" flashing green on its way out.
+    val status = statusFor(isConnected, isConnecting, isDisconnecting, isError)
+
     // Polite live region: TalkBack announces every connection-state change —
     // for a VPN, silent state transitions are a safety problem, not a nicety.
     Box(
@@ -614,7 +632,7 @@ private fun StatusPill(
             .semantics { liveRegion = LiveRegionMode.Polite },
     ) {
         AnimatedContent(
-            targetState = text,
+            targetState = status,
             transitionSpec = {
                 (fadeIn(tween(BirdoMotion.Standard, easing = BirdoMotion.Decel)) +
                     slideInVertically(
@@ -624,8 +642,8 @@ private fun StatusPill(
                     .togetherWith(fadeOut(tween(BirdoMotion.Quick, easing = BirdoMotion.Accel)))
             },
             label = "statusPill",
-        ) { animatedText ->
-            BirdoBadge(text = animatedText, tone = tone, icon = icon, pulseDot = pulse)
+        ) { s ->
+            BirdoBadge(text = s.text, tone = s.tone, icon = s.icon, pulseDot = s.pulse)
         }
     }
 }

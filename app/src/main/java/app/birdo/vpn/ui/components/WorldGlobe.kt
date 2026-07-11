@@ -105,16 +105,23 @@ fun WorldGlobe(
     LaunchedEffect(animating) {
         if (!animating) return@LaunchedEffect
         var lastFrame = withFrameMillis { it }
+        // `elapsed` free-runs on every vsync; `clockMs` (the snapshot state the
+        // Canvas reads) is only PUBLISHED once per FRAME_INTERVAL_MS. Keeping
+        // these separate matters: accumulating into the published value instead
+        // would discard every sub-threshold frame's delta, and since one frame
+        // is 8-16ms and the threshold is 33ms, the clock would never advance at
+        // all — a frozen globe on every normal display.
+        var elapsed = clockMs
         var lastEmit = clockMs
         while (true) {
             withFrameMillis { frame ->
-                val delta = frame - lastFrame
-                lastFrame = frame
                 // Guard against a huge delta if the choreographer stalls.
-                val accumulated = clockMs + delta.coerceIn(0L, 250L)
-                if (accumulated - lastEmit >= FRAME_INTERVAL_MS) {
-                    lastEmit = accumulated
-                    clockMs = accumulated
+                val delta = (frame - lastFrame).coerceIn(0L, 250L)
+                lastFrame = frame
+                elapsed += delta
+                if (elapsed - lastEmit >= FRAME_INTERVAL_MS) {
+                    lastEmit = elapsed
+                    clockMs = elapsed
                 }
             }
         }
