@@ -194,12 +194,13 @@ data class VpnServer(
 
 // ─── VPN Connect ─────────────────────────────────────────────────────────────
 
-@Serializable
 /** Response of GET vpn/attestation/nonce — the value the Play Integrity token binds to. */
+@Serializable
 data class AttestationNonceResponse(
     val nonce: String,
 )
 
+@Serializable
 data class ConnectRequest(
     val serverNodeId: String? = null,
     val deviceName: String? = null,

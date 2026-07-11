@@ -139,6 +139,7 @@
     <string name="vpn_settings_port_auto">Automatic</string>
     <string name="vpn_settings_port_custom">Custom</string>
     <string name="vpn_settings_port_custom_hint">Port number</string>
+    <string name="vpn_settings_port_range">Enter a port between 1 and 65535</string>
     <string name="vpn_settings_mtu">WireGuard MTU</string>
     <string name="vpn_settings_mtu_desc">Packet size — lower values improve reliability on unstable networks</string>
     <string name="vpn_settings_mtu_auto">Automatic (server default)</string>

@@ -18,6 +18,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -114,6 +116,12 @@ fun HomeScreen(
     val haptics = LocalHapticFeedback.current
     val multiHopUpsell = stringResource(R.string.home_multihop_upsell)
 
+    // Measured height of the bottom action panel — the snackbar rides just above
+    // it. The panel grows and shrinks with connection state, so this cannot be a
+    // constant.
+    var bottomPanelHeightPx by remember { mutableIntStateOf(0) }
+    val bottomPanelHeight = with(LocalDensity.current) { bottomPanelHeightPx.toDp() }
+
     // The moment protection engages is the emotional peak of the app — mark it
     // with a confirm haptic so the user physically feels the tunnel come up.
     LaunchedEffect(isConnected) {
@@ -190,7 +198,11 @@ fun HomeScreen(
                 color = palette.surface.copy(alpha = 0.92f),
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Report the panel's real height so the snackbar can sit just
+                    // above it in every state instead of guessing an inset.
+                    .onSizeChanged { bottomPanelHeightPx = it.height },
             ) {
                 Column(
                     modifier = Modifier
@@ -275,19 +287,24 @@ fun HomeScreen(
                             }
                         },
                     )
-
-                    Spacer(Modifier.height(0.dp))
                 }
             }
         }
 
         // Brand-styled snackbar — the stock M3 inverseSurface pill is a light
-        // grey slab against the dark glass. Lift it above the action panel too.
+        // grey slab against the dark glass.
+        //
+        // It sits in the Column directly ABOVE the action panel rather than
+        // being overlaid on the Box with a guessed bottom offset: the panel's
+        // height changes with state (stats row, banners, the multi-hop entry/exit
+        // pair), so any fixed inset is wrong in most states and would land the
+        // snackbar on top of the server selector.
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 96.dp),
+                .padding(horizontal = 16.dp)
+                .padding(bottom = bottomPanelHeight + 12.dp),
         ) { data ->
             Snackbar(
                 snackbarData = data,
