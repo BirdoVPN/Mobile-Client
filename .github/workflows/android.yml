@@ -645,6 +645,15 @@ jobs:
       # same edit without auto-review, so the AAB always lands on the track and
       # can be submitted from the Console. Never let the review flag be the reason
       # a release fails to ship.
+      # A tagged release goes to PRODUCTION. A manual run still defaults to
+      # internal, so dispatching the workflow can never surprise anyone with a
+      # live rollout.
+      #
+      # This is deliberately ONE upload rather than "internal now, promote to
+      # production later": a promotion would re-upload the same AAB, and Play
+      # rejects a versionCode it has already seen ("Version code N has already
+      # been used"). Shipping the tag straight to its target track is the only
+      # path that actually works.
       - name: Upload AAB to Google Play (auto-submit for review)
         id: play_auto
         continue-on-error: true
@@ -653,7 +662,7 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: app.birdo.vpn
           releaseFiles: release-apk/*.aab
-          track: ${{ github.event.inputs.play_track || 'internal' }}
+          track: ${{ github.event.inputs.play_track || 'production' }}
           status: completed
           whatsNewDirectory: distribution/whatsnew
           changesNotSentForReview: false
@@ -665,7 +674,7 @@ jobs:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           packageName: app.birdo.vpn
           releaseFiles: release-apk/*.aab
-          track: ${{ github.event.inputs.play_track || 'internal' }}
+          track: ${{ github.event.inputs.play_track || 'production' }}
           status: completed
           whatsNewDirectory: distribution/whatsnew
           changesNotSentForReview: true
