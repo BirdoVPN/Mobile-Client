@@ -1,4 +1,11 @@
-framework module BirdoPQNative {
+// NOT a `framework module`: the xcframework ships a STATIC LIBRARY
+// (libbirdo_pq_ios.a + Headers/), not a .framework bundle. With
+// `framework module`, clang looks for the umbrella header inside a
+// framework structure that does not exist and fails with
+// "umbrella header 'birdo_pq_ios.h' not found" — even though the header
+// sits right next to this file. Xcode copies these Headers into
+// $BUILT_PRODUCTS_DIR/include, which is a plain header dir.
+module BirdoPQNative {
     umbrella header "birdo_pq_ios.h"
 
     export *

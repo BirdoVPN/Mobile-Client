@@ -19,7 +19,7 @@ struct LoginView: View {
                 // Logo
                 Image(systemName: "bird.fill")
                     .font(.system(size: 48))
-                    .foregroundColor(BirdoTheme.purple)
+                    .foregroundColor(BirdoTheme.accent)
 
                 Text("Birdo VPN")
                     .font(.title.bold())
@@ -86,7 +86,7 @@ struct LoginView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(BirdoTheme.purple)
+            .background(BirdoTheme.accent)
             .foregroundColor(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .disabled(email.isEmpty || password.isEmpty || authVM.isLoading)
@@ -98,7 +98,7 @@ struct LoginView: View {
                     }
                 }
                 .font(.subheadline)
-                .foregroundColor(BirdoTheme.purple)
+                .foregroundColor(BirdoTheme.accentSoft)
 
                 Spacer()
 
@@ -140,7 +140,7 @@ struct LoginView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(BirdoTheme.purple)
+            .background(BirdoTheme.accent)
             .foregroundColor(.white)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .disabled(twoFactorCode.count != 6 || authVM.isLoading)

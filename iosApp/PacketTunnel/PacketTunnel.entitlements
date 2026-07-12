@@ -6,8 +6,25 @@
     <array>
         <string>packet-tunnel-provider</string>
     </array>
-    <key>com.apple.security.personal-vpn</key>
-    <true/>
+    <!--
+      com.apple.security.personal-vpn was removed here: it is a macOS-only
+      entitlement key and is invalid on iOS.
+
+      keychain-access-groups: must stay IDENTICAL to the host app's
+      (BirdoVPN.entitlements) — the extension reads the WireGuard private key
+      and PSK the host app writes to the shared keychain (service
+      "app.birdo.vpn.shared"). $(AppIdentifierPrefix) expands to "<TEAMID>."
+      at signing time, so the real group is "<TEAMID>.app.birdo.vpn". The
+      runtime code (PacketTunnelProvider's shared-keychain reads and
+      KeychainService.resolveSharedAccessGroup) currently passes the
+      UNPREFIXED literal "app.birdo.vpn" as kSecAttrAccessGroup, which only
+      resolves on unsigned/simulator builds. Once a paid Apple Developer team
+      signs these targets, those literals must carry the real TEAMID prefix.
+
+      No App Group (com.apple.security.application-groups) is declared on
+      purpose: app <-> extension sharing is keychain-only; nothing uses a
+      shared container.
+    -->
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>

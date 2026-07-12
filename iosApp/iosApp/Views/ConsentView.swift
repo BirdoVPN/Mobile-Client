@@ -12,7 +12,7 @@ struct ConsentView: View {
 
                 Image(systemName: "shield.fill")
                     .font(.system(size: 56))
-                    .foregroundColor(BirdoTheme.purple)
+                    .foregroundColor(BirdoTheme.accent)
 
                 Text("Privacy First")
                     .font(.title.bold())
@@ -36,7 +36,7 @@ struct ConsentView: View {
 
                 Link("Read Full Privacy Policy", destination: URL(string: "https://birdo.app/privacy")!)
                     .font(.subheadline)
-                    .foregroundColor(BirdoTheme.purple)
+                    .foregroundColor(BirdoTheme.accentSoft)
 
                 Button(action: onAccept) {
                     Text("I Agree")
@@ -45,7 +45,7 @@ struct ConsentView: View {
                         .padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(BirdoTheme.purple)
+                .tint(BirdoTheme.accent)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
 
                 Button(action: onDecline) {

@@ -43,7 +43,11 @@ struct HomeView: View {
 
                     Spacer()
 
-                    serverSelector
+                    VStack(spacing: 12) {
+                        serverSelector
+                        multiHopRow
+                    }
+                    .padding(.bottom, 16)
                 }
                 .padding(.horizontal, 32)
             }
@@ -125,7 +129,11 @@ struct HomeView: View {
     private var connectionButton: some View {
         let size: CGFloat = 128
         let isActive = vpnVM.isConnected
-        let bg = isActive ? BirdoTheme.green : (vpnVM.isConnecting ? BirdoTheme.yellow : BirdoTheme.white10)
+        // Luminance rule: the idle CTA is the DARK emerald gradient; the
+        // luminous green (+ glow) is reserved for the CONNECTED state.
+        let bg: AnyShapeStyle = isActive
+            ? AnyShapeStyle(BirdoTheme.green)
+            : (vpnVM.isConnecting ? AnyShapeStyle(BirdoTheme.yellow) : AnyShapeStyle(BirdoTheme.primaryGradient))
 
         return ZStack {
             if isActive {
@@ -209,7 +217,7 @@ struct HomeView: View {
                 SecurityBadge(icon: "eye.slash.fill", label: "Stealth", color: BirdoTheme.blue)
             }
             if vpnVM.quantumActive {
-                SecurityBadge(icon: "lock.fill", label: "Quantum", color: BirdoTheme.purpleLight)
+                SecurityBadge(icon: "lock.fill", label: "Quantum", color: BirdoTheme.accentSoft)
             }
         }
     }
@@ -284,7 +292,44 @@ struct HomeView: View {
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(BirdoTheme.border, lineWidth: 1))
         }
         .disabled(vpnVM.isConnected || vpnVM.isConnecting)
-        .padding(.bottom, 16)
+    }
+
+    // MARK: - Multi-Hop Row
+
+    private var multiHopRow: some View {
+        NavigationLink(destination: MultiHopView()) {
+            HStack(spacing: 14) {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(BirdoTheme.accentBg)
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.subheadline)
+                            .foregroundColor(BirdoTheme.accent)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Multi-Hop")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundColor(.white)
+
+                    Text("Route through two servers")
+                        .font(.caption)
+                        .foregroundColor(BirdoTheme.white60)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .foregroundColor(BirdoTheme.white40)
+                    .font(.caption)
+            }
+            .padding(16)
+            .background(BirdoTheme.glassLight)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(BirdoTheme.border, lineWidth: 1))
+        }
+        .disabled(vpnVM.isConnected || vpnVM.isConnecting)
     }
 }
 

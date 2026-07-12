@@ -1,30 +1,39 @@
-name: iOS CI & Build (PAUSED)
+name: iOS CI & Build
 
 # ============================================================================
-# DEVELOPMENT PAUSED -- 2026-04-27
+# PLATFORM PARITY -- resumed 2026-07-12 (was paused 2026-04-27)
 # ----------------------------------------------------------------------------
-# Active development on the iOS client is paused while we focus on shipping
-# the Windows and Android clients. The iOS app is publicly listed as
-# "currently awaiting release".
+# iOS rides the SAME release train as Android: an `android-v*` tag builds
+# both platforms from the same version.properties, and the UNSIGNED iOS .ipa
+# is attached to the same draft GitHub Release as the Android artifacts.
 #
-# This workflow is intentionally restricted to manual `workflow_dispatch`
-# only -- no push, tag, or pull_request triggers -- so that:
-#   * we don't burn macOS runner minutes on builds we won't ship
-#   * a stale tag doesn't accidentally publish to TestFlight
-#   * the YAML and signing wiring is preserved for the day we resume
+# DELIBERATELY NOT DONE HERE:
+#   * No code signing. No provisioning. CODE_SIGNING_ALLOWED=NO everywhere.
+#   * No TestFlight / App Store upload. The `release-ios` job below remains
+#     hard-disabled (`if: false`). Publishing to Apple is an OWNER decision
+#     that additionally requires a live Apple Developer membership and the
+#     Network Extension entitlement -- see docs/IOS-RELEASE.md.
 #
-# To resume: restore the original `on:` block (push/tags/pull_request) and
-# remove this banner. Original triggers (kept for reference):
-#   push.branches:        [main, develop]
-#   push.tags:            ['ios-v*']
-#   pull_request.branches:[main]
+# The repo is public, so macOS runner minutes are free.
 # ============================================================================
 
 on:
+  push:
+    tags:
+      - 'android-v*'   # one mobile release train: same tag ships both platforms
+  pull_request:
+    branches: [main]
+    paths:
+      - 'iosApp/**'
+      - 'shared/**'
+      - 'native/birdo-pq-ios/**'
+      - 'scripts/build-birdo-pq-xcframework.sh'
+      - '.github/workflows/ios.yml'
+      - 'version.properties'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., 1.0.0) -- iOS dev is paused; manual runs only'
+        description: 'Ignored -- version always comes from version.properties'
         required: false
         type: string
 
@@ -41,6 +50,43 @@ env:
   JAVA_DISTRIBUTION: 'temurin'
 
 jobs:
+  # -- Build BirdoPQNative.xcframework (Rust ML-KEM-1024) ----------------
+  # project.yml links iosApp/Vendor/BirdoPQNative.xcframework, but the
+  # binary is NOT in the repo (and never was -- the "binary cache" the old
+  # comment promised didn't exist). It must be built from the Rust crate at
+  # native/birdo-pq-ios on every pipeline run, cached by source hash so the
+  # ~6 min Rust build only reruns when the crate actually changes.
+  pq-framework:
+    name: Build PQ XCFramework
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Cache XCFramework by crate hash
+        id: pq-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: iosApp/Vendor/BirdoPQNative.xcframework
+          key: birdo-pq-xcfw-${{ hashFiles('native/birdo-pq-ios/**', 'scripts/build-birdo-pq-xcframework.sh') }}
+
+      - name: Install Rust iOS targets
+        if: steps.pq-cache.outputs.cache-hit != 'true'
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
+      - name: Build XCFramework from Rust crate
+        if: steps.pq-cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x scripts/build-birdo-pq-xcframework.sh
+          ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: birdo-pq-xcframework
+          path: iosApp/Vendor/BirdoPQNative.xcframework
+          if-no-files-found: error
+          retention-days: 5
+
   # -- Build KMP Shared Framework --------------------------------------
   shared-framework:
     name: Build Shared Framework (iOS)
@@ -73,13 +119,14 @@ jobs:
         with:
           name: shared-framework-ios
           path: shared/build/bin/iosArm64/releaseFramework/
+          if-no-files-found: error
           retention-days: 5
 
   # -- Build iOS App (no signing) --------------------------------------
   build-ios:
     name: Build iOS App
     runs-on: macos-14
-    needs: shared-framework
+    needs: [shared-framework, pq-framework]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -88,6 +135,55 @@ jobs:
         with:
           name: shared-framework-ios
           path: shared/build/bin/iosArm64/releaseFramework/
+
+      - name: Download PQ XCFramework
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: birdo-pq-xcframework
+          path: iosApp/Vendor/BirdoPQNative.xcframework
+
+      # The xcframework only works if BOTH the modulemap and the umbrella header
+      # survive the artifact round-trip: `import BirdoPQNative` resolves through
+      # the modulemap, which names birdo_pq_ios.h as its umbrella. A missing
+      # header shows up much later as an inscrutable "could not build
+      # Objective-C module" — assert it here instead.
+      - name: Verify PQ XCFramework layout
+        run: |
+          FW=iosApp/Vendor/BirdoPQNative.xcframework
+          echo "--- tree:"; find "$FW" | sed "s|^|  |"
+          missing=0
+          for slice in "$FW"/ios-arm64 "$FW"/ios-arm64_x86_64-simulator; do
+            [ -d "$slice" ] || { echo "::error::missing slice $slice"; missing=1; continue; }
+            for f in Headers/birdo_pq_ios.h Headers/module.modulemap libbirdo_pq_ios.a; do
+              [ -e "$slice/$f" ] || { echo "::error::$slice/$f is missing"; missing=1; }
+            done
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "PQ xcframework layout OK"
+
+      # Single-source versioning: both platforms are stamped from
+      # version.properties. CURRENT_PROJECT_VERSION mirrors Android's
+      # versionCode formula so a given build number means the same thing
+      # on both stores of record.
+      - name: Derive version from version.properties
+        id: ver
+        run: |
+          MAJOR=$(sed -n 's/^VERSION_MAJOR=//p' version.properties | tr -d '[:space:]')
+          MINOR=$(sed -n 's/^VERSION_MINOR=//p' version.properties | tr -d '[:space:]')
+          PATCH=$(sed -n 's/^VERSION_PATCH=//p' version.properties | tr -d '[:space:]')
+          echo "name=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+          echo "code=$((MAJOR*10000 + MINOR*100 + PATCH))" >> "$GITHUB_OUTPUT"
+          echo "iOS version ${MAJOR}.${MINOR}.${PATCH} (build $((MAJOR*10000 + MINOR*100 + PATCH)))"
+
+      - name: Set up Go (for wireguard-go)
+        # libwg-go.a is built from the vendored Makefile. macOS runners cache Go
+        # but do NOT put it on PATH (actions/runner-images#13675), so `make`
+        # would fail with "go: command not found". Pinned to 1.24 — the vendored
+        # wireguard-go is 2023-vintage and untested on 1.26.
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5
+        with:
+          go-version: '1.24'
+          cache: false
 
       - name: Select Xcode 16
         run: |
@@ -103,33 +199,88 @@ jobs:
         working-directory: iosApp
         run: xcodegen generate
 
+      # SwiftPM emits -lwg-go but cannot build the Go archive (upstream README).
+      # Upstream's answer is an Xcode External Build System target; that died
+      # with "Internal inconsistency error: never received target ended message"
+      # and swallows make's output, so we invoke the same Makefile directly and
+      # get a readable log. See iosApp/Vendor/wireguard-apple/BIRDO-PATCHES.md.
+      - name: Build wireguard-go (device)
+        run: |
+          chmod +x scripts/build-wireguard-go.sh
+          ./scripts/build-wireguard-go.sh iphoneos "$RUNNER_TEMP/wg-go-iphoneos"
+
       - name: Build iOS app (no signing)
         working-directory: iosApp
         run: |
+          set -o pipefail
           xcodebuild build \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
+            -derivedDataPath build \
+            LIBWG_GO_DIR="$RUNNER_TEMP/wg-go-iphoneos" \
+            MARKETING_VERSION="${{ steps.ver.outputs.name }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.ver.outputs.code }}" \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
             | xcpretty
 
+      # An unsigned .ipa is just Payload/<app>.app zipped. It cannot run a
+      # packet tunnel without Apple entitlements, but it is the standard
+      # re-signable artifact shape and proves the app assembles end to end.
+      - name: Package unsigned IPA
+        working-directory: iosApp
+        run: |
+          APP="build/Build/Products/Release-iphoneos/BirdoVPN.app"
+          test -d "$APP" || { echo "::error::BirdoVPN.app not found at $APP"; find build -name '*.app' -maxdepth 5; exit 1; }
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry "BirdoVPN-iOS-v${{ steps.ver.outputs.name }}-unsigned.ipa" Payload
+          ls -la BirdoVPN-iOS-*.ipa
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: birdo-vpn-ios-unsigned
-          path: iosApp/build/Release-iphoneos/
+          path: iosApp/BirdoVPN-iOS-v*-unsigned.ipa
+          if-no-files-found: error
           retention-days: 30
 
   # -- iOS Simulator Tests ---------------------------------------------
   test-ios:
     name: iOS Simulator Tests
     runs-on: macos-14
+    needs: pq-framework
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download PQ XCFramework
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: birdo-pq-xcframework
+          path: iosApp/Vendor/BirdoPQNative.xcframework
+
+      # The xcframework only works if BOTH the modulemap and the umbrella header
+      # survive the artifact round-trip: `import BirdoPQNative` resolves through
+      # the modulemap, which names birdo_pq_ios.h as its umbrella. A missing
+      # header shows up much later as an inscrutable "could not build
+      # Objective-C module" — assert it here instead.
+      - name: Verify PQ XCFramework layout
+        run: |
+          FW=iosApp/Vendor/BirdoPQNative.xcframework
+          echo "--- tree:"; find "$FW" | sed "s|^|  |"
+          missing=0
+          for slice in "$FW"/ios-arm64 "$FW"/ios-arm64_x86_64-simulator; do
+            [ -d "$slice" ] || { echo "::error::missing slice $slice"; missing=1; continue; }
+            for f in Headers/birdo_pq_ios.h Headers/module.modulemap libbirdo_pq_ios.a; do
+              [ -e "$slice/$f" ] || { echo "::error::$slice/$f is missing"; missing=1; }
+            done
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          echo "PQ xcframework layout OK"
 
       - name: Set up JDK
         uses: actions/setup-java@0f481fcb613427c0f801b606911222b5b6f3083a # v5
@@ -151,6 +302,16 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
 
+      - name: Set up Go (for wireguard-go)
+        # libwg-go.a is built from the vendored Makefile. macOS runners cache Go
+        # but do NOT put it on PATH (actions/runner-images#13675), so `make`
+        # would fail with "go: command not found". Pinned to 1.24 — the vendored
+        # wireguard-go is 2023-vintage and untested on 1.26.
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5
+        with:
+          go-version: '1.24'
+          cache: false
+
       - name: Select Xcode 16
         run: |
           XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
@@ -165,18 +326,110 @@ jobs:
         working-directory: iosApp
         run: xcodegen generate
 
+      # The test host is the app, which embeds PacketTunnel, which links
+      # -lwg-go — so even a pure-Swift unit test needs a SIMULATOR slice of the
+      # Go archive. Upstream's Makefile has no simulator GOOS at all; ours does
+      # (see BIRDO-PATCHES.md), which is the only reason this can link.
+      - name: Build wireguard-go (simulator)
+        run: |
+          chmod +x scripts/build-wireguard-go.sh
+          ./scripts/build-wireguard-go.sh iphonesimulator "$RUNNER_TEMP/wg-go-sim"
+
       - name: Run iOS tests
         working-directory: iosApp
         run: |
+          set -o pipefail
+          # No OS= pin: the runner image decides which iOS runtime ships with
+          # its Xcode; pinning one (the old OS=18.0) breaks on every image bump.
+          # Select the simulator by UDID, never by name.
+          #
+          # A bare name makes xcodebuild default to OS:latest, and the runner
+          # image routinely carries devices that only exist under an OLDER
+          # runtime — it offered "iPhone 15 Pro", which is absent from the
+          # latest runtime, so the lookup failed. Pinning an OS instead just
+          # breaks on the next image bump. A UDID from simctl is a device that
+          # concretely exists, runtime and all.
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | test("^iPhone"))] | last | .udid')
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+            echo "::error::no available iPhone simulator on this runner"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator UDID: $UDID"
           xcodebuild test \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.0' \
+            -destination "platform=iOS Simulator,id=$UDID" \
             -configuration Debug \
+            LIBWG_GO_DIR="$RUNNER_TEMP/wg-go-sim" \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
+
+  # -- Attach unsigned IPA to the Android draft release -----------------
+  # One mobile release train: android.yml's draft-release job creates a DRAFT
+  # GitHub Release for the android-v* tag; this job attaches the unsigned iOS
+  # IPA to that same release so both platforms ship together when the owner
+  # clicks Publish.
+  #
+  # Safety facts this design rests on (verified against the sibling workflows):
+  #   * fdroid.yml downloads assets by the exact pattern `app-release.apk`
+  #     (fdroid.yml:108) — an extra .ipa asset cannot poison the F-Droid repo.
+  #   * The draft may not exist yet when we finish (Android builds take
+  #     15-25 min), so we wait; if the wait times out we create the draft
+  #     ourselves — android.yml uses softprops "create or update", which will
+  #     then update the same tag-keyed release rather than duplicate it.
+  #   * iOS failure must never block the Android release: this job only ever
+  #     ADDS an asset. If it fails, the release simply ships without the IPA.
+  attach-release:
+    name: Attach iOS IPA to Release
+    runs-on: ubuntu-latest
+    needs: build-ios
+    if: startsWith(github.ref, 'refs/tags/android-v')
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: birdo-vpn-ios-unsigned
+          path: dist
+
+      - name: Wait for the Android draft release, then attach
+        run: |
+          IPA=$(ls dist/BirdoVPN-iOS-v*-unsigned.ipa | head -1)
+          test -n "$IPA" || { echo "::error::no IPA in artifact"; exit 1; }
+
+          # Wait up to 40 min for android.yml's draft-release job. Drafts are
+          # not tag-addressable through every gh code path, so existence is
+          # checked via the releases LIST (which always includes drafts).
+          release_exists() {
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" | grep -q .
+          }
+          for i in $(seq 1 80); do
+            if release_exists; then
+              echo "Release $TAG exists (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 80 ]; then
+              echo "Release $TAG never appeared; creating the draft ourselves."
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --draft --prerelease --title "$TAG" \
+                --notes "Draft created by iOS pipeline; Android assets pending." \
+                || true
+              break
+            fi
+            sleep 30
+          done
+
+          gh release upload "$TAG" "$IPA" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Attached $(basename "$IPA") to $TAG"
 
   # -- Signed Release & TestFlight Upload ---------------------------
   # DISABLED while iOS is paused. Kept in source so release wiring is preserved,
@@ -224,6 +477,16 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew :shared:linkReleaseFrameworkIosArm64
+
+      - name: Set up Go (for wireguard-go)
+        # libwg-go.a is built from the vendored Makefile. macOS runners cache Go
+        # but do NOT put it on PATH (actions/runner-images#13675), so `make`
+        # would fail with "go: command not found". Pinned to 1.24 — the vendored
+        # wireguard-go is 2023-vintage and untested on 1.26.
+        uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5
+        with:
+          go-version: '1.24'
+          cache: false
 
       - name: Select Xcode 16
         run: |
@@ -291,6 +554,7 @@ jobs:
       - name: Archive (xcodebuild)
         working-directory: iosApp
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
@@ -304,6 +568,7 @@ jobs:
 
       - name: Export IPA
         run: |
+          set -o pipefail
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
             -exportPath  "$RUNNER_TEMP/export" \

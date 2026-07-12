@@ -22,7 +22,7 @@ struct MultiHopView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "arrow.triangle.branch")
                         .font(.title3)
-                        .foregroundColor(BirdoTheme.purple)
+                        .foregroundColor(BirdoTheme.accent)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Double VPN")
                             .font(.headline)
@@ -89,7 +89,7 @@ struct MultiHopView: View {
                         .padding(.vertical, 14)
                         .background(
                             (selectedEntry != nil && selectedExit != nil && !sameServerWarning)
-                                ? BirdoTheme.purple
+                                ? BirdoTheme.accent
                                 : BirdoTheme.white10
                         )
                         .cornerRadius(14)
@@ -122,7 +122,7 @@ struct MultiHopView: View {
             } label: {
                 HStack {
                     Image(systemName: icon)
-                        .foregroundColor(BirdoTheme.purple)
+                        .foregroundColor(BirdoTheme.accent)
                     Text(label)
                         .font(.subheadline.weight(.medium))
                         .foregroundColor(BirdoTheme.white80)

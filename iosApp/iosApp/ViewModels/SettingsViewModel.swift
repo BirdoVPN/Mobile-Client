@@ -11,10 +11,6 @@ final class SettingsViewModel: ObservableObject {
     @Published var autoConnect: Bool {
         didSet { persist("auto_connect", autoConnect) }
     }
-    @Published var notificationsEnabled: Bool {
-        didSet { persist("notifications", notificationsEnabled) }
-    }
-
     // MARK: - Security
     @Published var biometricLockEnabled: Bool {
         didSet { persist("biometric_lock", biometricLockEnabled) }
@@ -54,12 +50,16 @@ final class SettingsViewModel: ObservableObject {
 
     init() {
         let d = UserDefaults.standard
-        killSwitchEnabled = d.bool(forKey: "kill_switch")
+        // Kill switch and quantum protection default ON (lockdown-by-default,
+        // matching Android). `bool(forKey:)` alone returns false for an
+        // absent key, which would silently disarm both on a fresh install.
+        killSwitchEnabled = d.object(forKey: "kill_switch") == nil
+            ? true : d.bool(forKey: "kill_switch")
         autoConnect = d.bool(forKey: "auto_connect")
-        notificationsEnabled = d.bool(forKey: "notifications")
         biometricLockEnabled = d.bool(forKey: "biometric_lock")
         stealthModeEnabled = d.bool(forKey: "stealth_mode")
-        quantumProtectionEnabled = d.bool(forKey: "quantum_protection")
+        quantumProtectionEnabled = d.object(forKey: "quantum_protection") == nil
+            ? true : d.bool(forKey: "quantum_protection")
         localNetworkSharing = d.bool(forKey: "local_network_sharing")
         customDnsEnabled = d.bool(forKey: "custom_dns")
         customDnsPrimary = d.string(forKey: "custom_dns_primary") ?? ""

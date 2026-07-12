@@ -11,14 +11,32 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: false
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
     TARGETED_DEVICE_FAMILY: "1"
+    # Version single-source: version.properties at the repo root. CI parses it
+    # and overrides these on the xcodebuild command line so iOS and Android
+    # always carry the same versionName/versionCode. The values below are only
+    # local-dev fallbacks — bump version.properties, not these.
+    # CURRENT_PROJECT_VERSION mirrors Android: major*10000 + minor*100 + patch.
+    MARKETING_VERSION: "1.3.42"
+    CURRENT_PROJECT_VERSION: "10342"
 
 # WireGuardKit ships the Go tunnel runtime + WireGuardAdapter used by both
 # the host app (for type-safe TunnelConfiguration) and the PacketTunnel
 # extension (to actually carry packets).
 packages:
   WireGuardKit:
-    url: https://git.zx2c4.com/wireguard-apple
-    branch: master
+    # VENDORED, not fetched. Upstream's Package.swift has been unconsumable via
+    # SwiftPM since WireGuard/wireguard-apple@901fe1c (Feb 2023): it declares
+    # swift-tools-version:5.3 while using .iOS(.v15)/.macOS(.v12), which need
+    # PackageDescription >= 5.5, so the manifest fails to compile and SwiftPM
+    # reports a bare "Invalid manifest". The official WireGuard app builds these
+    # sources as Xcode targets, so upstream never hit it. Every tag, including
+    # 1.0.16-27, carries the bug.
+    #
+    # Vendoring (rather than depending on a fork) also removes a build-time
+    # network dependency from a VPN's tunnel supply chain: the exact tunnel code
+    # we ship is in-tree and reviewable. Provenance + our two patches:
+    # iosApp/Vendor/wireguard-apple/BIRDO-PATCHES.md
+    path: Vendor/wireguard-apple
 
 targets:
   BirdoVPN:
@@ -28,10 +46,6 @@ targets:
       - path: iosApp
         excludes:
           - Info.plist
-    info:
-      path: iosApp/Info.plist
-    entitlements:
-      path: iosApp/BirdoVPN.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn
@@ -47,8 +61,10 @@ targets:
           - "BirdoShared"
     dependencies:
       - target: PacketTunnel
-      - package: WireGuardKit
-        product: WireGuardKit
+      # NOTE: the app target does NOT link WireGuardKit. Its only use was
+      # `PrivateKey()` for keygen, which is plain X25519 — CryptoKit's
+      # Curve25519 does it without dragging the ~10 MB wireguard-go archive
+      # into the main binary. Only the PacketTunnel extension needs the engine.
       # AUDIT-C1: BirdoPQNative.xcframework wraps the Rust ML-KEM-1024
       # library at native/birdo-pq-ios. Build it on a macOS host with
       # `scripts/build-birdo-pq-xcframework.sh` (one-shot; output lives at
@@ -65,10 +81,11 @@ targets:
       - path: PacketTunnel
         excludes:
           - Info.plist
-    info:
-      path: PacketTunnel/Info.plist
-    entitlements:
-      path: PacketTunnel/PacketTunnel.entitlements
+    # ONE settings block. There were briefly two, and YAML silently keeps only
+    # the last duplicate key — which dropped PRODUCT_BUNDLE_IDENTIFIER and
+    # INFOPLIST_FILE, so Xcode generated a default Info.plist with no
+    # NSExtension dictionary and the simulator refused to install the app
+    # ("extensionDictionary must be set"). Keep these merged.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tunnel
@@ -82,6 +99,63 @@ targets:
           - "$(inherited)"
           - "-framework"
           - "BirdoShared"
+        # Where the CI step drops libwg-go.a (see scripts/build-wireguard-go.sh).
+        # Empty locally; the linker just ignores an empty search path.
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(LIBWG_GO_DIR)"
     dependencies:
+      # SwiftPM emits `-lwg-go` (WireGuardKitGo's linkerSettings) but CANNOT
+      # build the Go archive — upstream's README says so outright.
+      #
+      # Upstream's prescription is an External Build System ("legacy") target
+      # running the Makefile. That machinery died here with Xcode's
+      # "Internal inconsistency error: never received target ended message"
+      # AND swallows make's output, making it undebuggable. So ios.yml builds
+      # libwg-go.a as an explicit step (same Makefile, same Xcode env vars)
+      # and passes its directory in via LIBWG_GO_DIR -> LIBRARY_SEARCH_PATHS.
       - package: WireGuardKit
         product: WireGuardKit
+
+  # The app's first test target. APIContractTests pins the wire protocol
+  # against docs/IOS-PARITY-CONTRACT.md so request/response shapes cannot
+  # silently drift — the failure mode that hit Android (ConnectRequest lost
+  # @Serializable: compiled green, threw at runtime).
+  BirdoVPNTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BirdoVPNTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tests
+        # A plain unit-test bundle needs no handwritten Info.plist.
+        GENERATE_INFOPLIST_FILE: true
+        # `@testable import BirdoVPN` makes the compiler load BirdoVPN's
+        # .swiftmodule, which references BirdoShared; that framework lives
+        # outside the build-products dir, so mirror the app's search paths.
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework"
+          - "$(SRCROOT)/../shared/build/bin/iosArm64/releaseFramework"
+    dependencies:
+      # TEST_HOST / BUNDLE_LOADER are derived automatically by XcodeGen for a
+      # unit-test bundle that depends on an application target.
+      - target: BirdoVPN
+
+# CI drives `xcodebuild test -scheme BirdoVPN` (ios.yml test-ios job). Define
+# the scheme explicitly so its Test action is guaranteed to contain
+# BirdoVPNTests — auto-created schemes don't reliably pick up test bundles.
+schemes:
+  BirdoVPN:
+    build:
+      targets:
+        BirdoVPN: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - BirdoVPNTests
+    archive:
+      config: Release

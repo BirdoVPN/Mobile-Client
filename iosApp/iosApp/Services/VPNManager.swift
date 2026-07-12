@@ -14,6 +14,42 @@ import NetworkExtension
 /// - `excludeLocalNetworks = true` keeps AirPlay / printers reachable.
 /// - `disconnectOnSleep = false` keeps the tunnel up across screen-off so
 ///   background fetches stay protected.
+/// The user's tunnel-affecting settings, snapshotted at connect time.
+/// Reads the exact keys SettingsViewModel persists. Kill switch and quantum
+/// protection default ON for fresh installs — same lockdown-by-default
+/// posture as Android; `UserDefaults.bool` alone would silently default them
+/// OFF because the key is absent.
+struct TunnelPreferences {
+    var killSwitch: Bool = true
+    var localNetworkSharing: Bool = false
+    var autoConnect: Bool = false
+    var quantumProtection: Bool = true
+    var customDnsEnabled: Bool = false
+    var customDnsPrimary: String = ""
+    var customDnsSecondary: String = ""
+    var wireGuardPort: String = "auto"
+    var mtuOverride: Int? = nil
+
+    static func load(from defaults: UserDefaults = .standard) -> TunnelPreferences {
+        var p = TunnelPreferences()
+        if defaults.object(forKey: "kill_switch") != nil {
+            p.killSwitch = defaults.bool(forKey: "kill_switch")
+        }
+        if defaults.object(forKey: "quantum_protection") != nil {
+            p.quantumProtection = defaults.bool(forKey: "quantum_protection")
+        }
+        p.localNetworkSharing = defaults.bool(forKey: "local_network_sharing")
+        p.autoConnect = defaults.bool(forKey: "auto_connect")
+        p.customDnsEnabled = defaults.bool(forKey: "custom_dns")
+        p.customDnsPrimary = defaults.string(forKey: "custom_dns_primary") ?? ""
+        p.customDnsSecondary = defaults.string(forKey: "custom_dns_secondary") ?? ""
+        p.wireGuardPort = defaults.string(forKey: "wg_port") ?? "auto"
+        let mtu = defaults.integer(forKey: "wg_mtu")
+        p.mtuOverride = (1280...1500).contains(mtu) ? mtu : nil
+        return p
+    }
+}
+
 final class VPNManager: @unchecked Sendable {
     static let shared = VPNManager()
 
@@ -34,7 +70,7 @@ final class VPNManager: @unchecked Sendable {
 
     // MARK: - Public
 
-    func connect(config: VPNConnectionConfig) async throws {
+    func connect(config: VPNConnectionConfig, preferences: TunnelPreferences = .load()) async throws {
         // SEC: validate the server response BEFORE any keychain write or
         // VPN preferences mutation. A malformed response must never reach
         // the system VPN configuration store.
@@ -91,9 +127,11 @@ final class VPNManager: @unchecked Sendable {
             "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
         ]
         // SEC: kill switch — block all traffic when the tunnel is not up.
+        // Driven by the user's toggle (default ON via TunnelPreferences);
+        // hardcoding `true` here made the Settings switch a lie.
         if #available(iOS 14.0, *) {
-            proto.includeAllNetworks = true
-            proto.excludeLocalNetworks = true
+            proto.includeAllNetworks = preferences.killSwitch
+            proto.excludeLocalNetworks = preferences.localNetworkSharing
             proto.enforceRoutes = true
         }
         proto.disconnectOnSleep = false
@@ -102,11 +140,13 @@ final class VPNManager: @unchecked Sendable {
         mgr.isEnabled = true
         mgr.localizedDescription = "Birdo VPN"
 
-        // On-demand: keep the tunnel up automatically across reachability changes.
+        // On-demand: reconnect automatically across reachability changes.
+        // Tied to the user's Auto-Connect toggle; the kill switch does not
+        // depend on this (includeAllNetworks blocks regardless).
         let connectRule = NEOnDemandRuleConnect()
         connectRule.interfaceTypeMatch = .any
         mgr.onDemandRules = [connectRule]
-        mgr.isOnDemandEnabled = true
+        mgr.isOnDemandEnabled = preferences.autoConnect
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             mgr.saveToPreferences { error in
@@ -188,18 +228,25 @@ final class VPNManager: @unchecked Sendable {
     private func ensureManager() async throws -> NETunnelProviderManager {
         if let mgr = manager { return mgr }
 
-        return try await withCheckedThrowingContinuation { cont in
-            NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
-                if let error {
-                    cont.resume(throwing: error)
-                    return
+        // NETunnelProviderManager is not Sendable, so Swift 6 refuses to let it
+        // cross the continuation boundary. NetworkExtension delivers these
+        // completions on its own serial queue and the value is only read by the
+        // caller awaiting here, so the hop is safe — but say so EXPLICITLY with
+        // a narrow box rather than disabling concurrency checking for the file.
+        let boxed: UncheckedSendableBox<NETunnelProviderManager> =
+            try await withCheckedThrowingContinuation { cont in
+                NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+                    if let error {
+                        cont.resume(throwing: error)
+                        return
+                    }
+                    let mgr = managers?.first ?? NETunnelProviderManager()
+                    self?.manager = mgr
+                    self?.observeStatus(mgr)
+                    cont.resume(returning: UncheckedSendableBox(value: mgr))
                 }
-                let mgr = managers?.first ?? NETunnelProviderManager()
-                self?.manager = mgr
-                self?.observeStatus(mgr)
-                cont.resume(returning: mgr)
             }
-        }
+        return boxed.value
     }
 
     private func observeStatus(_ manager: NETunnelProviderManager) {
@@ -242,10 +289,17 @@ final class VPNManager: @unchecked Sendable {
         for ip in config.allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
-        lines.append("PersistentKeepalive = 25")
+        lines.append("PersistentKeepalive = \(config.persistentKeepalive ?? 25)")
 
         return lines.joined(separator: "\n")
     }
+}
+
+/// Carries a non-Sendable value across ONE known-safe concurrency hop.
+/// Kept private and minimal on purpose: an `@unchecked Sendable` escape hatch
+/// should be as small as the hop it exists for.
+private struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
 }
 
 enum VPNManagerError: Error, LocalizedError {

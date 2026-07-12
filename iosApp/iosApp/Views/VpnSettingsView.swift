@@ -11,12 +11,23 @@ struct VpnSettingsView: View {
         List {
             // Security
             Section("SECURITY") {
-                SettingsToggle(icon: "eye.slash.fill", iconColor: BirdoTheme.blue,
-                               title: "Stealth Mode",
-                               description: "Route through Xray Reality to bypass DPI",
-                               isOn: $settingsVM.stealthModeEnabled)
+                // iOS has no Xray engine yet — the protocol layer always sends
+                // stealthMode: false. Shown disabled rather than hidden so the
+                // feature gap is honest.
+                VStack(alignment: .leading, spacing: 4) {
+                    SettingsToggle(icon: "eye.slash.fill", iconColor: BirdoTheme.white40,
+                                   title: "Stealth Mode",
+                                   description: "Route through Xray Reality to bypass DPI",
+                                   isOn: .constant(false))
+                        .disabled(true)
 
-                SettingsToggle(icon: "lock.fill", iconColor: BirdoTheme.purple,
+                    Text("Not available on iOS yet")
+                        .font(.caption2)
+                        .foregroundColor(BirdoTheme.white40)
+                        .padding(.leading, 36)
+                }
+
+                SettingsToggle(icon: "lock.fill", iconColor: BirdoTheme.accent,
                                title: "Quantum Protection",
                                description: "Post-quantum pre-shared key via Rosenpass",
                                isOn: $settingsVM.quantumProtectionEnabled)
@@ -34,7 +45,7 @@ struct VpnSettingsView: View {
 
             // DNS
             Section("DNS") {
-                SettingsToggle(icon: "server.rack", iconColor: BirdoTheme.purple,
+                SettingsToggle(icon: "server.rack", iconColor: BirdoTheme.accent,
                                title: "Custom DNS",
                                description: "Use your own DNS servers",
                                isOn: $settingsVM.customDnsEnabled)

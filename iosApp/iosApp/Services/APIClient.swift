@@ -1,10 +1,15 @@
 import Foundation
 import CommonCrypto
-import BirdoShared
+#if canImport(UIKit)
+import UIKit
+#endif
 
-/// Client version pinned to the Android value so backend rate-limiters and
-/// telemetry treat both platforms uniformly. Update with each release.
-private let kBirdoClientVersion = "1.2.0"
+/// Client version read from the bundle, which CI stamps from
+/// version.properties — the same single source that versions Android. A
+/// hardcoded copy here is exactly how the last one rotted ("1.2.0" while
+/// Android shipped 1.3.41).
+private let kBirdoClientVersion =
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
 
 /// HTTP client for the Birdo VPN API. Uses shared KMP model types.
 final class APIClient: @unchecked Sendable {
@@ -48,128 +53,132 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Auth
 
-    func login(email: String, password: String) async throws -> LoginResultType {
-        let body = try encoder.encode(LoginBody(email: email, password: password))
-        let data = try await post(path: "/auth/login", body: body, authenticated: false)
-
-        // Check if 2FA required
-        if let parsed = try? decoder.decode(TwoFactorRequiredResponse.self, from: data),
-           parsed.requiresTwoFactor {
-            return .twoFactorRequired
-        }
-
-        let tokens = try decoder.decode(TokensResponse.self, from: data)
-        return .success(TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken))
+    func login(email: String, password: String) async throws -> LoginResponse {
+        let body = try encoder.encode(LoginRequest(
+            email: email,
+            password: password,
+            deviceId: nil,
+            deviceName: await Self.deviceName(),
+            deviceType: "phone",
+            platform: "ios",
+            platformVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            appVersion: kBirdoClientVersion
+        ))
+        let data = try await post(path: "/auth/login/desktop", body: body, authenticated: false)
+        return try decoder.decode(LoginResponse.self, from: data)
     }
 
-    func verifyTwoFactor(email: String, password: String, code: String) async throws -> TokenPairData {
-        let body = try encoder.encode(TwoFactorBody(email: email, password: password, code: code))
+    func verifyTwoFactor(challengeToken: String, code: String) async throws -> TwoFactorVerifyResponse {
+        let body = try encoder.encode(TwoFactorVerifyRequest(challengeToken: challengeToken, token: code))
         let data = try await post(path: "/auth/2fa/verify", body: body, authenticated: false)
-        let tokens = try decoder.decode(TokensResponse.self, from: data)
-        return TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
+        return try decoder.decode(TwoFactorVerifyResponse.self, from: data)
     }
 
-    func loginAnonymous() async throws -> TokenPairData {
-        // AUDIT-M-DRIFT: backend route is `@Post('login/anonymous')` on the
-        // controller mounted at `/auth`, i.e. `/auth/login/anonymous`. The
-        // previous path `/auth/anonymous` 404'd.
-        let data = try await post(path: "/auth/login/anonymous", body: nil, authenticated: false)
-        let tokens = try decoder.decode(TokensResponse.self, from: data)
-        return TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
+    func loginAnonymous(anonymousId: String) async throws -> AnonymousLoginResponse {
+        let body = try encoder.encode(AnonymousLoginRequest(
+            anonymousId: anonymousId,
+            password: nil,
+            deviceId: nil,
+            deviceName: await Self.deviceName(),
+            deviceType: "phone",
+            platform: "ios",
+            platformVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            appVersion: kBirdoClientVersion
+        ))
+        let data = try await post(path: "/auth/login/anonymous", body: body, authenticated: false)
+        return try decoder.decode(AnonymousLoginResponse.self, from: data)
     }
 
-    func deleteAccount() async throws {
-        _ = try await performRequest(method: "DELETE", path: "/auth/account", body: nil, authenticated: true)
+    func logout() async {
+        // Best-effort server-side session invalidation; local state is wiped
+        // by the caller regardless of the outcome.
+        _ = try? await post(path: "/auth/logout", body: nil, authenticated: true)
+    }
+
+    /// GDPR account deletion. The backend requires the password IN THE BODY
+    /// of the DELETE — collecting it in the UI and not sending it (the old
+    /// behaviour) deleted nothing.
+    func deleteAccount(password: String) async throws {
+        let body = try encoder.encode(DeleteAccountRequest(password: password))
+        _ = try await performRequest(method: "DELETE", path: "/v1/gdpr/delete", body: body, authenticated: true)
+    }
+
+    // MARK: - Subscription
+
+    func fetchSubscription() async throws -> SubscriptionStatus {
+        let data = try await get(path: "/vpn/stats")
+        return try decoder.decode(SubscriptionStatus.self, from: data)
     }
 
     // MARK: - Servers
 
-    func fetchServers() async throws -> [ServerInfo] {
-        let data = try await get(path: "/servers")
-        return try decoder.decode([ServerInfo].self, from: data)
+    func fetchServers() async throws -> [VpnServer] {
+        let data = try await get(path: "/vpn/servers")
+        return try decoder.decode([VpnServer].self, from: data)
     }
 
-    // MARK: - VPN Config
+    // MARK: - Connect / lifecycle
 
-    func getConnectConfig(serverId: String) async throws -> VPNConnectionConfig {
-        // AUDIT-C1: attach the persistent ML-KEM-1024 client public key so the
-        // server can encapsulate against it and ship the ciphertext back in
-        // `rosenpassPublicKey` for true bilateral PQ PSK derivation.
-        // The Swift `BirdoPQManager` lazy-generates + persists the keypair on
-        // first call; if the call returns nil we proceed without PQ rather
-        // than block the connect.
-        let pqPk = BirdoPQManager.shared.clientPublicKeyBase64()
-        let body = try encoder.encode(
-            ConnectBody(
-                serverId: serverId,
-                quantumProtection: pqPk == nil ? nil : true,
-                pqClientPublicKey: pqPk
-            )
-        )
+    func connect(_ request: ConnectRequest) async throws -> ConnectResponse {
+        let body = try encoder.encode(request)
         let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
-        return try decoder.decode(VPNConnectionConfig.self, from: data)
+        return try decoder.decode(ConnectResponse.self, from: data)
     }
 
-    func getMultiHopConfig(entryId: String, exitId: String) async throws -> VPNConnectionConfig {
-        let body = try encoder.encode(MultiHopBody(entryId: entryId, exitId: exitId))
-        let data = try await post(path: "/vpn/multi-hop", body: body, authenticated: true)
-        return try decoder.decode(VPNConnectionConfig.self, from: data)
+    func connectMultiHop(_ request: MultiHopConnectRequest) async throws -> MultiHopConnectResponse {
+        let body = try encoder.encode(request)
+        let data = try await post(path: "/vpn/multi-hop/connect", body: body, authenticated: true)
+        return try decoder.decode(MultiHopConnectResponse.self, from: data)
+    }
+
+    /// Server-side teardown of a connection slot. Best-effort by design: the
+    /// local tunnel MUST come down even if this call fails, so callers fire
+    /// it without gating the disconnect on the result.
+    func disconnectConnection(keyId: String) async {
+        let encoded = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyId
+        _ = try? await performRequest(method: "DELETE", path: "/vpn/connections/\(encoded)", body: nil, authenticated: true)
+    }
+
+    func heartbeat(keyId: String) async throws -> HeartbeatResponse {
+        let encoded = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyId
+        let data = try await post(path: "/vpn/heartbeat/\(encoded)", body: nil, authenticated: true)
+        return try decoder.decode(HeartbeatResponse.self, from: data)
     }
 
     // MARK: - Port Forwarding
 
-    func createPortForward(port: Int, proto: String) async throws -> PortForwardEntry {
-        let body = try encoder.encode(PortForwardBody(internalPort: port, proto: proto))
-        let data = try await post(path: "/vpn/port-forward", body: body, authenticated: true)
-        return try decoder.decode(PortForwardEntry.self, from: data)
+    func listPortForwards() async throws -> [PortForward] {
+        let data = try await get(path: "/vpn/port-forwards")
+        return try decoder.decode([PortForward].self, from: data)
+    }
+
+    func createPortForward(internalPort: Int, proto: String) async throws -> PortForward {
+        let body = try encoder.encode(CreatePortForwardRequest(internalPort: internalPort, protocol: proto))
+        let data = try await post(path: "/vpn/port-forwards", body: body, authenticated: true)
+        let response = try decoder.decode(CreatePortForwardResponse.self, from: data)
+        guard response.success, let forward = response.portForward else {
+            throw APIError.server(response.message ?? "Port forward could not be created.")
+        }
+        return forward
     }
 
     func deletePortForward(id: String) async throws {
         _ = try await performRequest(
             method: "DELETE",
-            path: "/vpn/port-forward/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)",
+            path: "/vpn/port-forwards/\(id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id)",
             body: nil,
             authenticated: true
         )
     }
 
-    // MARK: - Speed Test
+    // MARK: - Helpers
 
-    func measureLatency() async throws -> (latencyMs: Int, jitterMs: Int) {
-        var latencies: [Int] = []
-        for _ in 0..<5 {
-            let start = CFAbsoluteTimeGetCurrent()
-            _ = try await get(path: "/ping")
-            let ms = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-            latencies.append(ms)
-        }
-        let avg = latencies.reduce(0, +) / max(latencies.count, 1)
-        let jitter = latencies.count > 1
-            ? latencies.map { abs($0 - avg) }.reduce(0, +) / (latencies.count - 1)
-            : 0
-        return (avg, jitter)
-    }
-
-    func measureDownload() async throws -> Double {
-        let start = CFAbsoluteTimeGetCurrent()
-        let data = try await get(path: "/speedtest/download")
-        // Floor elapsed at 1 microsecond: a sub-millisecond (or clock-skewed
-        // non-positive) measurement would otherwise yield .infinity/NaN Mbps,
-        // which renders as "inf Mbps" in the UI.
-        let elapsed = max(CFAbsoluteTimeGetCurrent() - start, 0.000001)
-        let bits = Double(data.count) * 8
-        return bits / elapsed / 1_000_000 // Mbps
-    }
-
-    func measureUpload() async throws -> Double {
-        let payload = Data(repeating: 0, count: 1_000_000) // 1 MB
-        let start = CFAbsoluteTimeGetCurrent()
-        _ = try await post(path: "/speedtest/upload", body: payload, authenticated: true)
-        // Floor elapsed at 1 microsecond (see measureDownload) to avoid
-        // .infinity/NaN Mbps on a sub-millisecond or non-positive interval.
-        let elapsed = max(CFAbsoluteTimeGetCurrent() - start, 0.000001)
-        let bits = Double(payload.count) * 8
-        return bits / elapsed / 1_000_000
+    private static func deviceName() async -> String {
+        #if canImport(UIKit)
+        return await MainActor.run { UIDevice.current.name }
+        #else
+        return "iPhone"
+        #endif
     }
 
     // MARK: - Token Refresh
@@ -178,11 +187,13 @@ final class APIClient: @unchecked Sendable {
         guard let refresh = keychain.refreshToken else {
             throw APIError.unauthorized
         }
-        let body = try encoder.encode(RefreshBody(refreshToken: refresh))
+        let body = try encoder.encode(RefreshRequest(refreshToken: refresh))
         let data = try await post(path: "/auth/refresh", body: body, authenticated: false)
-        let tokens = try decoder.decode(TokensResponse.self, from: data)
+        let tokens = try decoder.decode(RefreshResponse.self, from: data)
+        // The backend only rotates the refresh token sometimes; keep the old
+        // one when no replacement is issued or the session dies on refresh.
         keychain.save(accessToken: tokens.accessToken,
-                      refreshToken: tokens.refreshToken,
+                      refreshToken: tokens.refreshToken ?? refresh,
                       email: keychain.userEmail)
     }
 
@@ -248,15 +259,26 @@ final class APIClient: @unchecked Sendable {
             }
             guard (200...299).contains(retryHttp.statusCode) else {
                 if retryHttp.statusCode == 401 { throw APIError.unauthorized }
-                throw APIError.httpError(retryHttp.statusCode)
+                throw Self.errorFor(status: retryHttp.statusCode, data: retryData)
             }
             return retryData
         }
 
         guard (200...299).contains(http.statusCode) else {
-            throw APIError.httpError(http.statusCode)
+            throw Self.errorFor(status: http.statusCode, data: data)
         }
         return data
+    }
+
+    /// Prefer the backend's structured error body over a bare status code —
+    /// "Device limit reached - remove a device to connect" beats "Server
+    /// error (403)".
+    private static func errorFor(status: Int, data: Data) -> APIError {
+        if let body = try? JSONDecoder().decode(ApiErrorBody.self, from: data),
+           let message = body.message, !message.isEmpty {
+            return .server(message)
+        }
+        return .httpError(status)
     }
 }
 
@@ -343,27 +365,34 @@ private final class PinningDelegate: NSObject, URLSessionDelegate {
         let attrs = SecKeyCopyAttributes(key) as? [CFString: Any] ?? [:]
         let type = (attrs[kSecAttrKeyType] as? String) ?? ""
         let size = (attrs[kSecAttrKeySizeInBits] as? Int) ?? 0
+        // Hoist the CFString->String casts OUT of the patterns. Inside a
+        // `case`, `x as String` is a type-CASTING pattern, not a cast
+        // expression, so `case (kSecAttrKeyTypeRSA as String, 2048)` does not
+        // compare against `type` at all — it fails to type-check against a
+        // String tuple element.
+        let rsa = kSecAttrKeyTypeRSA as String
+        let ecPrime = kSecAttrKeyTypeECSECPrimeRandom as String
         switch (type, size) {
-        case (kSecAttrKeyTypeRSA as String, 2048):
+        case (rsa, 2048):
             return Data([
                 0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
                 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
                 0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
             ])
-        case (kSecAttrKeyTypeRSA as String, 4096):
+        case (rsa, 4096):
             return Data([
                 0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09,
                 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
                 0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
             ])
-        case (kSecAttrKeyTypeECSECPrimeRandom as String, 256):
+        case (ecPrime, 256):
             return Data([
                 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
                 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
                 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
                 0x42, 0x00,
             ])
-        case (kSecAttrKeyTypeECSECPrimeRandom as String, 384):
+        case (ecPrime, 384):
             return Data([
                 0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86,
                 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
@@ -390,6 +419,8 @@ enum APIError: Error, LocalizedError {
     case invalidResponse
     case unauthorized
     case httpError(Int)
+    /// The backend's own human-readable error message (ApiErrorBody.message).
+    case server(String)
 
     var errorDescription: String? {
         switch self {
@@ -397,51 +428,9 @@ enum APIError: Error, LocalizedError {
         case .invalidResponse: return "Invalid server response"
         case .unauthorized: return "Session expired. Please log in again."
         case .httpError(let code): return "Server error (\(code))"
+        case .server(let message): return message
         }
     }
-}
-
-private struct LoginBody: Encodable {
-    let email: String
-    let password: String
-}
-
-private struct TwoFactorBody: Encodable {
-    let email: String
-    let password: String
-    let code: String
-}
-
-private struct ConnectBody: Encodable {
-    let serverId: String
-    /// AUDIT-C1: opt the user into bilateral PQ when we have a client pk to
-    /// send. Server interprets this together with `pqClientPublicKey`.
-    let quantumProtection: Bool?
-    /// AUDIT-C1: BirdoPQ v1 ML-KEM-1024 client public key (Base64).
-    let pqClientPublicKey: String?
-}
-
-private struct MultiHopBody: Encodable {
-    let entryId: String
-    let exitId: String
-}
-
-private struct PortForwardBody: Encodable {
-    let internalPort: Int
-    let proto: String
-}
-
-private struct RefreshBody: Encodable {
-    let refreshToken: String
-}
-
-private struct TokensResponse: Decodable {
-    let accessToken: String
-    let refreshToken: String
-}
-
-private struct TwoFactorRequiredResponse: Decodable {
-    let requiresTwoFactor: Bool
 }
 
 /// VPN connection configuration returned by server.
@@ -455,6 +444,7 @@ struct VPNConnectionConfig: Decodable {
     let dns: [String]
     let allowedIPs: [String]
     let mtu: Int?
+    let persistentKeepalive: Int?
 
     /// AUDIT-C1 (BirdoPQ v1, optional): set when the server received a
     /// `pqClientPublicKey` and produced a per-connect ML-KEM ciphertext for
@@ -555,5 +545,61 @@ enum VPNConfigValidationError: LocalizedError {
         case .invalidMTU:           return "Server returned an out-of-range MTU."
         case .invalidDNS:           return "Server returned an invalid DNS address."
         }
+    }
+}
+
+extension VPNConnectionConfig {
+    /// Build a tunnel config from a ConnectResponse and the CLIENT-generated
+    /// private key (contract rule 1: the server must never know it; a
+    /// server-sent privateKey is only honoured when we did not send a
+    /// clientPublicKey).
+    ///
+    /// IPv6 leak rule (contract rule 6): even when the node gives us no IPv6
+    /// address, ::/0 must be claimed in AllowedIPs so v6 traffic blackholes
+    /// inside the tunnel instead of leaking around it.
+    init(response r: ConnectResponse, clientPrivateKey: String?) throws {
+        guard r.success else {
+            throw APIError.server(r.message ?? "Connection was refused by the server.")
+        }
+        guard let endpoint = r.endpoint, let serverKey = r.serverPublicKey else {
+            throw VPNConfigValidationError.invalidServerAddress
+        }
+        // endpoint is "host:port" ("[v6]:port" for IPv6 hosts) — split on the
+        // LAST colon so v6 literals survive.
+        guard let idx = endpoint.lastIndex(of: ":"),
+              let port = Int(endpoint[endpoint.index(after: idx)...]) else {
+            throw VPNConfigValidationError.invalidPort
+        }
+        var host = String(endpoint[..<idx])
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+
+        guard let privateKey = clientPrivateKey ?? r.privateKey else {
+            throw VPNConfigValidationError.invalidPrivateKey
+        }
+
+        var addresses: [String] = []
+        if let v4 = r.assignedIp, !v4.isEmpty { addresses.append(v4) }
+        if let v6 = r.clientIpv6, !v6.isEmpty { addresses.append(v6) }
+
+        var allowed = r.allowedIps ?? ["0.0.0.0/0", "::/0"]
+        if !allowed.contains("::/0") { allowed.append("::/0") }
+
+        self.init(
+            serverAddress: host,
+            serverPort: port,
+            privateKey: privateKey,
+            publicKey: serverKey,
+            presharedKey: r.presharedKey,
+            addresses: addresses,
+            dns: r.dns ?? [],
+            allowedIPs: allowed,
+            mtu: r.mtu,
+            persistentKeepalive: r.persistentKeepalive,
+            quantumEnabled: r.quantumEnabled,
+            rosenpassPublicKey: r.rosenpassPublicKey,
+            rosenpassEndpoint: r.rosenpassEndpoint
+        )
     }
 }

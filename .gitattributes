@@ -3,3 +3,7 @@
 gradlew     text eol=lf
 *.bat       text eol=crlf
 gradlew.bat text eol=crlf
+
+# Vendored WireGuardKit: a CRLF Makefile makes GOOS "ios" and a CRLF .diff
+# will not apply — both fatal on the macOS runner.
+iosApp/Vendor/wireguard-apple/** text eol=lf

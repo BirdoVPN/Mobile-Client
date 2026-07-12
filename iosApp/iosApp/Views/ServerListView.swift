@@ -192,7 +192,7 @@ private struct ServerRow: View {
 
             // Load indicator
             Circle()
-                .fill(loadColor(server.load))
+                .fill(loadColor(Int(server.load)))
                 .frame(width: 8, height: 8)
 
             // Favorite
@@ -218,23 +218,9 @@ private struct ServerRow: View {
         .opacity(server.isOnline ? 1.0 : 0.5)
     }
 
-    private func loadColor(_ load: Int32) -> Color {
+    private func loadColor(_ load: Int) -> Color {
         if load < 50 { return BirdoTheme.green }
         if load < 80 { return BirdoTheme.yellow }
         return BirdoTheme.red
     }
-}
-
-/// Lightweight server representation for the iOS app.
-struct ServerInfo: Identifiable {
-    let id: String
-    let name: String
-    let country: String
-    let countryCode: String
-    let city: String
-    let load: Int32
-    let isPremium: Bool
-    let isStreaming: Bool
-    let isP2p: Bool
-    let isOnline: Bool
 }

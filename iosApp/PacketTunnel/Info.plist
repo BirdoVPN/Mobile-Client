@@ -4,12 +4,19 @@
 <dict>
     <key>CFBundleDisplayName</key>
     <string>Birdo VPN Tunnel</string>
+    <!-- REQUIRED for an app extension. Without it installd rejects the
+         whole app: MIAppExtensionBundle validateBundleMetadataWithError
+         -> MissingBundleNameString. The host app plist had it; this one
+         did not, and nothing caught it because the app had never been
+         installed anywhere. -->
+    <key>CFBundleName</key>
+    <string>PacketTunnel</string>
     <key>CFBundleIdentifier</key>
     <string>app.birdo.vpn.tunnel</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$(MARKETING_VERSION)</string>
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleExecutable</key>

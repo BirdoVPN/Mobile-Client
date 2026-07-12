@@ -21,10 +21,6 @@ struct SettingsView: View {
                     SettingsToggle(icon: "wifi", iconColor: BirdoTheme.blue,
                                    title: "Auto-Connect", description: "Connect on app launch",
                                    isOn: $settingsVM.autoConnect)
-
-                    SettingsToggle(icon: "bell.fill", iconColor: BirdoTheme.yellow,
-                                   title: "Notifications", description: "Show connection status alerts",
-                                   isOn: $settingsVM.notificationsEnabled)
                 }
                 .listRowBackground(BirdoTheme.surface)
 
@@ -33,6 +29,11 @@ struct SettingsView: View {
                     NavigationLink(destination: VpnSettingsView()) {
                         SettingsRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
                                     title: "VPN Settings", description: "DNS, WireGuard port, MTU, stealth")
+                    }
+
+                    NavigationLink(destination: PortForwardView()) {
+                        SettingsRow(icon: "network", iconColor: BirdoTheme.accent,
+                                    title: "Port Forwarding", description: "Allow inbound connections through the VPN")
                     }
                 }
                 .listRowBackground(BirdoTheme.surface)
@@ -95,11 +96,10 @@ struct SettingsView: View {
             .alert("Delete Account", isPresented: $showDeleteDialog) {
                 SecureField("Enter password", text: $deletePassword)
                 Button("Delete", role: .destructive) {
-                    // Password capture is currently informational only — the
-                    // backend re-authenticates via the live access token. We
-                    // wipe the entered value immediately after the call to
-                    // avoid keeping it in SwiftUI state longer than needed.
-                    authVM.deleteAccount()
+                    // The backend requires the password in the DELETE body
+                    // (v1/gdpr/delete). Wipe the entered value immediately
+                    // after the call so it doesn't linger in SwiftUI state.
+                    authVM.deleteAccount(password: deletePassword)
                     deletePassword = ""
                 }
                 .disabled(deletePassword.isEmpty)

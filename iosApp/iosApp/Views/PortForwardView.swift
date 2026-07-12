@@ -35,6 +35,7 @@ struct PortForwardView: View {
         }
         .background(BirdoTheme.black.ignoresSafeArea())
         .navigationTitle("Port Forwarding")
+        .onAppear { vpnVM.loadPortForwards() }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -42,7 +43,7 @@ struct PortForwardView: View {
                     showCreateSheet = true
                 } label: {
                     Image(systemName: "plus.circle.fill")
-                        .foregroundColor(BirdoTheme.purple)
+                        .foregroundColor(BirdoTheme.accent)
                 }
             }
         }
@@ -91,7 +92,7 @@ struct PortForwardView: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, 24)
                     .padding(.vertical, 12)
-                    .background(BirdoTheme.purple)
+                    .background(BirdoTheme.accent)
                     .cornerRadius(12)
             }
             Spacer()
@@ -110,8 +111,9 @@ struct PortForwardView: View {
                 Text("Port \(entry.internalPort)")
                     .font(.subheadline.weight(.medium))
                     .foregroundColor(.white)
-                if let ext = entry.externalPort {
-                    Text("External: \(ext)")
+                // externalPort is non-optional on the canonical model.
+                if entry.externalPort > 0 {
+                    Text("External: \(entry.externalPort)")
                         .font(.caption)
                         .foregroundColor(BirdoTheme.white60)
                 }
@@ -173,7 +175,7 @@ struct PortForwardView: View {
                         .padding(.vertical, 14)
                         .background(
                             Int(portText).map { (1...65535).contains($0) } == true
-                                ? BirdoTheme.purple
+                                ? BirdoTheme.accent
                                 : BirdoTheme.white10
                         )
                         .cornerRadius(14)
@@ -198,9 +200,3 @@ struct PortForwardView: View {
 
 // MARK: - Model
 
-struct PortForwardEntry: Identifiable {
-    let id: String
-    let internalPort: Int
-    let externalPort: Int?
-    let proto: String
-}

@@ -1,8 +1,8 @@
 import Foundation
 import SwiftUI
-import BirdoShared
 
-/// Manages authentication state: login, logout, 2FA, anonymous login.
+/// Manages authentication state: login, logout, 2FA, anonymous login, and the
+/// current subscription (read-only — plans are changed on the website).
 @MainActor
 final class AuthViewModel: ObservableObject {
     // MARK: - Published State
@@ -20,8 +20,11 @@ final class AuthViewModel: ObservableObject {
     private let keychain: KeychainService
 
     @Published var twoFactorCode = ""
+    /// The 2FA challenge is a server-issued token, NOT re-sent credentials.
+    /// The old flow kept the user's plaintext password in memory across the
+    /// whole 2FA hop; the challenge-token protocol removes that entirely.
+    private var pendingChallengeToken: String?
     private var pendingLoginEmail = ""
-    private var pendingLoginPassword = ""
 
     init(api: APIClient = .shared, keychain: KeychainService = .shared) {
         self.api = api
@@ -35,6 +38,7 @@ final class AuthViewModel: ObservableObject {
             // A logged-in session implies prior consent; preserve a stored
             // consent flag too rather than letting one source clobber the other.
             hasConsented = true
+            refreshSubscription()
         } else {
             hasConsented = storedConsent
         }
@@ -55,26 +59,18 @@ final class AuthViewModel: ObservableObject {
     func login(email: String, password: String) {
         isLoading = true
         error = nil
-        pendingLoginEmail = email
-        pendingLoginPassword = password
 
         Task {
             do {
-                let result = try await api.login(email: email, password: password)
-                switch result {
-                case .success(let tokens):
-                    keychain.save(accessToken: tokens.accessToken,
-                                  refreshToken: tokens.refreshToken,
-                                  email: email)
-                    userEmail = email
-                    isLoggedIn = true
-                    // No 2FA step will consume these; clear them now.
-                    pendingLoginEmail = ""
-                    pendingLoginPassword = ""
-                case .twoFactorRequired:
+                let response = try await api.login(email: email, password: password)
+                if response.requiresTwoFactor == true {
+                    pendingChallengeToken = response.challengeToken
+                    pendingLoginEmail = email
                     requiresTwoFactor = true
-                case .failure(let message):
-                    error = message
+                } else if let tokens = response.tokens {
+                    completeLogin(tokens: tokens, email: email)
+                } else {
+                    error = "Sign-in failed. Check your email and password."
                 }
                 isLoading = false
             } catch {
@@ -90,34 +86,32 @@ final class AuthViewModel: ObservableObject {
         // may never populate.
         twoFactorCode = code
         guard !twoFactorCode.isEmpty else { return }
+        guard let challengeToken = pendingChallengeToken else {
+            error = "The sign-in challenge expired. Please sign in again."
+            requiresTwoFactor = false
+            return
+        }
         isLoading = true
         error = nil
 
         Task {
             do {
-                let tokens = try await api.verifyTwoFactor(
-                    email: pendingLoginEmail,
-                    password: pendingLoginPassword,
+                let response = try await api.verifyTwoFactor(
+                    challengeToken: challengeToken,
                     code: twoFactorCode
                 )
-                keychain.save(accessToken: tokens.accessToken,
-                              refreshToken: tokens.refreshToken,
-                              email: pendingLoginEmail)
-                userEmail = pendingLoginEmail
-                requiresTwoFactor = false
-                isLoggedIn = true
-                twoFactorCode = ""
-                // Drop the retained plaintext credentials as soon as they are
-                // no longer needed to shrink the in-memory exposure window.
-                pendingLoginEmail = ""
-                pendingLoginPassword = ""
+                if response.ok, let tokens = response.tokens {
+                    completeLogin(tokens: tokens, email: pendingLoginEmail)
+                    requiresTwoFactor = false
+                    pendingChallengeToken = nil
+                    pendingLoginEmail = ""
+                    twoFactorCode = ""
+                } else {
+                    error = "That code didn't work. Try again."
+                }
                 isLoading = false
             } catch {
                 self.error = error.localizedDescription
-                // Clear the plaintext password on failure too, so it does not
-                // linger in memory across failed verification attempts.
-                pendingLoginEmail = ""
-                pendingLoginPassword = ""
                 isLoading = false
             }
         }
@@ -126,8 +120,8 @@ final class AuthViewModel: ObservableObject {
     func cancelTwoFactor() {
         requiresTwoFactor = false
         twoFactorCode = ""
+        pendingChallengeToken = nil
         pendingLoginEmail = ""
-        pendingLoginPassword = ""
     }
 
     func loginAnonymous() {
@@ -136,12 +130,13 @@ final class AuthViewModel: ObservableObject {
 
         Task {
             do {
-                let tokens = try await api.loginAnonymous()
-                keychain.save(accessToken: tokens.accessToken,
-                              refreshToken: tokens.refreshToken,
-                              email: nil)
-                userEmail = nil
-                isLoggedIn = true
+                let response = try await api.loginAnonymous(anonymousId: Self.anonymousId())
+                guard let tokens = response.tokens else {
+                    error = "Anonymous sign-in failed. Try again."
+                    isLoading = false
+                    return
+                }
+                completeLogin(tokens: tokens, email: nil)
                 isLoading = false
             } catch {
                 self.error = error.localizedDescription
@@ -151,6 +146,7 @@ final class AuthViewModel: ObservableObject {
     }
 
     func logout() {
+        Task { await api.logout() }
         keychain.clear()
         // AUDIT-C1: drop the persisted ML-KEM-1024 client identity so the
         // next user gets a fresh PQ keypair instead of inheriting this one.
@@ -159,17 +155,21 @@ final class AuthViewModel: ObservableObject {
         isLoggedIn = false
         requiresTwoFactor = false
         error = nil
-        // Ensure no plaintext credentials linger after sign-out.
+        currentPlan = nil
+        subscriptionExpiry = nil
+        pendingChallengeToken = nil
         pendingLoginEmail = ""
-        pendingLoginPassword = ""
         twoFactorCode = ""
     }
 
-    func deleteAccount() {
+    /// GDPR deletion. The password goes IN THE REQUEST — the backend requires
+    /// it (DELETE v1/gdpr/delete with body). The old code collected the
+    /// password in the UI and then never sent it, so nothing was deleted.
+    func deleteAccount(password: String) {
         isLoading = true
         Task {
             do {
-                try await api.deleteAccount()
+                try await api.deleteAccount(password: password)
                 logout()
             } catch {
                 self.error = error.localizedDescription
@@ -178,37 +178,40 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
-    /// Begin a StoreKit 2 purchase for the given plan + billing period.
-    /// On success the user's entitlement set is refreshed so the UI flips
-    /// to the new plan immediately. Errors surface via `self.error`.
-    func subscribe(plan: Plan, billing: BillingPeriod) {
-        // RECON is the free tier and has no StoreKit product to purchase.
-        guard !plan.isFree else { return }
-        let productID = StoreKitService.productID(
-            planSlug: plan.rawValue,
-            isYearly: billing == .yearly
-        )
-        isLoading = true
+    // MARK: - Subscription (read-only; managed on birdo.app)
+
+    func refreshSubscription() {
         Task {
-            let store = StoreKitService.shared
-            let ok = await store.purchase(productID: productID)
-            if !ok, let storeError = store.lastError {
-                self.error = storeError
+            do {
+                let status = try await api.fetchSubscription()
+                currentPlan = Plan(rawValue: status.plan) ?? .recon
+                subscriptionExpiry = status.subscriptionEndsAt
+            } catch {
+                // Non-fatal: plan display degrades to RECON; next refresh retries.
             }
-            isLoading = false
         }
     }
-}
 
-// MARK: - Login result for ViewModel
+    // MARK: - Helpers
 
-enum LoginResultType {
-    case success(TokenPairData)
-    case twoFactorRequired
-    case failure(String)
-}
+    private func completeLogin(tokens: TokenPair, email: String?) {
+        keychain.save(accessToken: tokens.accessToken,
+                      refreshToken: tokens.refreshToken,
+                      email: email)
+        userEmail = email
+        isLoggedIn = true
+        refreshSubscription()
+    }
 
-struct TokenPairData {
-    let accessToken: String
-    let refreshToken: String
+    /// Stable per-install anonymous identity. An identifier, not a secret —
+    /// UserDefaults is the right home (Android keeps its equivalent in prefs).
+    private static func anonymousId() -> String {
+        let key = "anonymous_id"
+        if let existing = UserDefaults.standard.string(forKey: key) {
+            return existing
+        }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
+    }
 }

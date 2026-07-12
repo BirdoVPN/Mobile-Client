@@ -28,6 +28,14 @@ import BirdoPQNative
 /// never syncs to iCloud Keychain. The PacketTunnel extension never reads
 /// it — only the host app needs PSK derivation, and the derived 32-byte
 /// PSK is what gets handed to the extension via the shared keychain.
+// The C ABI's length macros import as Int32; every Swift API that uses
+// them (Array(repeating:count:), Data.prefix/suffix) wants Int. Convert
+// once here instead of at each call site.
+private let pqPublicKeyLen = Int(BIRDO_PQ_PUBLIC_KEY_LEN)
+private let pqSecretKeyLen = Int(BIRDO_PQ_SECRET_KEY_LEN)
+private let pqCiphertextLen = Int(BIRDO_PQ_CIPHERTEXT_LEN)
+private let pqPskLen = Int(BIRDO_PQ_PSK_LEN)
+
 final class BirdoPQManager: @unchecked Sendable {
     static let shared = BirdoPQManager()
 
@@ -85,7 +93,7 @@ final class BirdoPQManager: @unchecked Sendable {
         guard quantumEnabled, let ctB64 = rosenpassPublicKeyBase64 else {
             return nil
         }
-        guard let ct = Data(base64Encoded: ctB64), ct.count == BIRDO_PQ_CIPHERTEXT_LEN else {
+        guard let ct = Data(base64Encoded: ctB64), ct.count == pqCiphertextLen else {
             NSLog("BirdoPQ: malformed/missing ciphertext")
             return nil
         }
@@ -101,7 +109,7 @@ final class BirdoPQManager: @unchecked Sendable {
             return nil
         }
 
-        var psk = [UInt8](repeating: 0, count: BIRDO_PQ_PSK_LEN)
+        var psk = [UInt8](repeating: 0, count: pqPskLen)
         let rc = kp.sk.withUnsafeBytes { skPtr -> Int32 in
             ct.withUnsafeBytes { ctPtr -> Int32 in
                 nonce.withUnsafeBytes { noncePtr -> Int32 in
@@ -180,8 +188,8 @@ final class BirdoPQManager: @unchecked Sendable {
     }
 
     private func generateKeypair() -> (pk: Data, sk: Data)? {
-        var pk = [UInt8](repeating: 0, count: BIRDO_PQ_PUBLIC_KEY_LEN)
-        var sk = [UInt8](repeating: 0, count: BIRDO_PQ_SECRET_KEY_LEN)
+        var pk = [UInt8](repeating: 0, count: pqPublicKeyLen)
+        var sk = [UInt8](repeating: 0, count: pqSecretKeyLen)
         let rc = birdo_pq_generate_keypair(&pk, pk.count, &sk, sk.count)
         if rc != BIRDO_PQ_OK {
             NSLog("BirdoPQ: generate_keypair failed rc=\(rc)")
@@ -207,7 +215,7 @@ final class BirdoPQManager: @unchecked Sendable {
         let status = SecItemCopyMatching(q as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         // Layout: pk (1568) || sk (3168).
-        let expected = BIRDO_PQ_PUBLIC_KEY_LEN + BIRDO_PQ_SECRET_KEY_LEN
+        let expected = pqPublicKeyLen + pqSecretKeyLen
         guard data.count == expected else {
             NSLog("BirdoPQ: stored keypair has wrong size \(data.count); discarding")
             // Self-heal: drop the corrupt blob so the next call regenerates.
@@ -220,8 +228,8 @@ final class BirdoPQManager: @unchecked Sendable {
             SecItemDelete(del as CFDictionary)
             return nil
         }
-        let pk = data.prefix(BIRDO_PQ_PUBLIC_KEY_LEN)
-        let sk = data.suffix(BIRDO_PQ_SECRET_KEY_LEN)
+        let pk = data.prefix(pqPublicKeyLen)
+        let sk = data.suffix(pqSecretKeyLen)
         return (Data(pk), Data(sk))
     }
 
