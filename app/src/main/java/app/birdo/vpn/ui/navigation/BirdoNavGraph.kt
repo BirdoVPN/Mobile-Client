@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -33,6 +34,8 @@ import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
+import app.birdo.vpn.ui.components.BillingChoice
+import app.birdo.vpn.ui.components.BirdoBillingChoiceSheet
 import app.birdo.vpn.ui.components.PixelCanvas
 import app.birdo.vpn.ui.screen.*
 import app.birdo.vpn.ui.TestTags
@@ -89,6 +92,7 @@ private val underPopEnter: AnimatedContentTransitionScope<androidx.navigation.Na
     fadeIn(animationSpec = androidx.compose.animation.core.tween(BirdoMotion.Standard, easing = BirdoMotion.Decel))
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BirdoNavGraph(
     onRequestVpnPermission: (android.content.Intent) -> Unit,
@@ -583,25 +587,68 @@ fun BirdoNavGraph(
                 popExitTransition = pushPopExit,
             ) {
                 AdaptiveContainer {
+                    // Purchase routing has THREE distinct cases, and conflating
+                    // them is how an app gets pulled from the store:
+                    //
+                    //  1. Not a Play build (direct APK / F-Droid) — always free to
+                    //     open the web checkout. Unchanged behaviour.
+                    //  2. Play build, NOT enrolled in external offers — must not
+                    //     steer anywhere. Silent no-op, exactly as today.
+                    //  3. Play build, ENROLLED — may offer a side-by-side choice.
+                    //
+                    // Case 3 requires BOTH flags. Being a Play build is deliberately
+                    // not sufficient on its own: unenrolled steering is a policy
+                    // violation and the package name does not survive a removal.
+                    val externalOffersAllowed =
+                        BuildConfig.IS_PLAY_BUILD && BuildConfig.PLAY_EXTERNAL_OFFERS
+                    val openWebCheckout = {
+                        settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                    }
+                    var showBillingChoice by rememberSaveable { mutableStateOf(false) }
+                    val billingSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
                         onSelectPlan = { _, _ ->
-                            // Play build (IS_PLAY_BUILD): no external-purchase
-                            // steering — the buy/manage buttons are hidden, so
-                            // this is a defensive no-op. Direct/sideload build:
-                            // open the web billing page (account-management
-                            // framing, not an in-app checkout).
-                            if (!BuildConfig.IS_PLAY_BUILD) {
-                                settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            when {
+                                externalOffersAllowed -> showBillingChoice = true
+                                !BuildConfig.IS_PLAY_BUILD -> openWebCheckout()
+                                else -> Unit // Play build, unenrolled: no steering.
                             }
                         },
                         onManageOnWeb = {
-                            if (!BuildConfig.IS_PLAY_BUILD) {
-                                settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
+                            when {
+                                externalOffersAllowed -> showBillingChoice = true
+                                !BuildConfig.IS_PLAY_BUILD -> openWebCheckout()
+                                else -> Unit
                             }
                         },
+                        // Show the buy/manage CTAs in an enrolled Play build too —
+                        // that is the whole point of enrolling.
+                        isPlayBuild = BuildConfig.IS_PLAY_BUILD && !externalOffersAllowed,
                     )
+
+                    if (showBillingChoice) {
+                        BirdoBillingChoiceSheet(
+                            sheetState = billingSheetState,
+                            onChoose = { choice ->
+                                showBillingChoice = false
+                                when (choice) {
+                                    BillingChoice.Web -> openWebCheckout()
+                                    // Google Play Billing is not implemented: the
+                                    // chosen route links out to the existing Polar
+                                    // checkout, which keeps Polar as merchant of
+                                    // record and leaves the FreeAgent/HMRC pipeline
+                                    // untouched. The option is only ever rendered if
+                                    // offerGooglePlayBilling is turned on, which it
+                                    // is not.
+                                    BillingChoice.GooglePlay -> Unit
+                                }
+                            },
+                            onDismiss = { showBillingChoice = false },
+                        )
+                    }
                 }
             }
 

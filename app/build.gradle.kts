@@ -103,6 +103,21 @@ android {
         // Play-distribution flag (see isPlayBuild above). Baked into BuildConfig
         // so UI can hide external-purchase steering in the Play (AAB) build.
         buildConfigField("boolean", "IS_PLAY_BUILD", "$isPlayBuild")
+
+        // ── Play external-offers (link-out billing) ────────────────────────
+        // From 30 Jun 2026 Google permits linking out to your own checkout in
+        // the UK/US/EEA — but ONLY for developers enrolled in the billing-choice
+        // / external-offers programme. Unenrolled steering is a policy violation
+        // and gets the app pulled; the package name does not come back.
+        //
+        // This is therefore a SEPARATE flag from IS_PLAY_BUILD and defaults to
+        // FALSE. It must be turned on deliberately (-PplayExternalOffers=true),
+        // and only AFTER enrolment is confirmed in the Play Console. Being a
+        // Play build must never by itself be enough to make the app steer.
+        // See birdo-web/docs/PLAY-LINK-OUT-BILLING.md.
+        val playExternalOffers = (project.findProperty("playExternalOffers") as String?)
+            ?.toBoolean() ?: false
+        buildConfigField("boolean", "PLAY_EXTERNAL_OFFERS", "$playExternalOffers")
     }
 
     signingConfigs {
