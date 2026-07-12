@@ -23,8 +23,8 @@ TABLET_7_SIZE = (1200, 1920)
 TABLET_10_SIZE = (1600, 2560)
 
 # Background gradient colors (match app theme)
-BG_TOP = (30, 15, 60)      # Dark purple
-BG_BOTTOM = (15, 10, 35)   # Darker purple
+BG_TOP = (15, 60, 52)      # Dark emerald
+BG_BOTTOM = (10, 35, 27)   # Darker emerald
 
 
 def create_gradient(size, top_color, bottom_color):
