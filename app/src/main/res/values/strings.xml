@@ -216,6 +216,15 @@
     <string name="subscription_unlimited">Unlimited</string>
     <string name="subscription_popular">POPULAR</string>
     <string name="subscription_current">CURRENT</string>
+    <!-- Billing choice (Play external-offers / link-out). Copy must stay NEUTRAL:
+         the programme forbids steering away from, or disparaging, Google's option. -->
+    <string name="billing_choice_title">Choose how to subscribe</string>
+    <string name="billing_choice_subtitle">Both options give you the same plan and the same features.</string>
+    <string name="billing_choice_play_title">Google Play</string>
+    <string name="billing_choice_play_subtitle">Pay with your Google Play account</string>
+    <string name="billing_choice_web_title">Continue on birdo.app</string>
+    <string name="billing_choice_web_subtitle">Pay by card or crypto on our website</string>
+    <string name="billing_choice_note">You can manage or cancel your subscription at any time.</string>
     <string name="dismiss">Dismiss</string>
     <string name="sheet_search_placeholder">Search by country or city</string>
     <string name="cd_close">Close</string>
