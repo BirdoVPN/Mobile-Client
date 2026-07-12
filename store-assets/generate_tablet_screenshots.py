@@ -4,7 +4,7 @@ Creates 7-inch (1200x1920) and 10-inch (1600x2560) tablet screenshots
 by centering phone screenshots on a dark background with device-style framing.
 """
 
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 import os
 
 STORE_DIR = os.path.dirname(os.path.abspath(__file__))
