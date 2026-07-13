@@ -258,8 +258,10 @@ class VpnViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(
                         servers = servers,
                         isLoadingServers = false,
+                        // Never auto-select a node this plan can't use: the user
+                        // would tap Connect and eat a server-side refusal.
                         selectedServer = _uiState.value.selectedServer
-                            ?: servers.firstOrNull { it.isOnline },
+                            ?: servers.firstOrNull { it.isOnline && it.accessible },
                     )
                 }
                 is ApiResult.Error -> {
@@ -320,6 +322,11 @@ class VpnViewModel @Inject constructor(
     }
 
     fun selectServer(server: VpnServer) {
+        // Defence in depth: the list already renders out-of-plan nodes locked
+        // and inert, so reaching here means a caller bypassed that. Refuse
+        // rather than switch a live tunnel onto a node the backend will reject.
+        if (!server.accessible) return
+
         val prev = _uiState.value.selectedServer
         _uiState.value = _uiState.value.copy(selectedServer = server)
 

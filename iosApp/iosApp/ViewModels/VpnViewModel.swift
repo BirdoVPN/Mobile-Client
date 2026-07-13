@@ -82,6 +82,10 @@ final class VpnViewModel: ObservableObject {
     }
 
     func selectServer(_ server: ServerInfo) {
+        // Defence in depth: the list renders out-of-plan nodes locked and inert,
+        // so reaching here means a caller bypassed that. The backend would
+        // refuse the connect anyway.
+        guard server.accessible else { return }
         selectedServer = server
     }
 
