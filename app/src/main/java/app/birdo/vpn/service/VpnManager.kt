@@ -414,10 +414,14 @@ class VpnManager @Inject constructor(
         }
 
         val servers = (serversResult as ApiResult.Success).data
+        // Pick the lowest-load node THIS user's plan can actually use.
+        // `accessible` is the server's own verdict (plan rank >= node minPlan),
+        // so it covers every plan; the old `!isPremium` filter hard-coded the
+        // free user's view and then fell back to ANY online node — which handed
+        // paying-plan-less users a node the backend would refuse.
         val bestServer = servers
-            .filter { it.isOnline && !it.isPremium }
+            .filter { it.isOnline && it.accessible }
             .minByOrNull { it.load }
-            ?: servers.firstOrNull { it.isOnline }
 
         if (bestServer == null) {
             _state.value = VpnState.Error("No servers available")

@@ -186,10 +186,34 @@ data class VpnServer(
     val ipAddress: String = "",
     val port: Int = 51820,
     val load: Int = 0,
+    /**
+     * Minimum plan required to use this node: RECON | OPERATIVE | SOVEREIGN.
+     * Owner-controlled per node. A String (not an enum) on purpose: a plan the
+     * client has never heard of must not blow up decoding of the whole list.
+     */
+    val minPlan: String = "RECON",
+    /**
+     * Server-computed: does THIS user's plan reach [minPlan]? The backend is
+     * the only authority on access — the client just renders it. Defaults to
+     * true so an older backend that doesn't emit the field doesn't blank the
+     * list; the node would simply refuse the connect, as it does today.
+     */
+    val accessible: Boolean = true,
+    /** Convenience mirror of `minPlan != "RECON"`, emitted by the backend. */
     val isPremium: Boolean = false,
-    val isStreaming: Boolean = false,
-    val isP2p: Boolean = false,
+    /** Low-load / high-throughput node. NOT a streaming-unblocking claim. */
+    val isHighSpeed: Boolean = false,
+    /** Node supports inbound port forwarding (see PortForwardScreen). */
+    val isPortForwarding: Boolean = false,
     val isOnline: Boolean = true,
+    /**
+     * DEPRECATED — the backend now hard-codes both to false. Kept purely so
+     * this model still decodes the legacy keys. Do not read them: use
+     * [isHighSpeed] / [isPortForwarding].
+     */
+    val isStreaming: Boolean = false,
+    /** DEPRECATED — see [isStreaming]. */
+    val isP2p: Boolean = false,
 )
 
 // ─── VPN Connect ─────────────────────────────────────────────────────────────
