@@ -57,8 +57,8 @@
     <!-- Server List Screen -->
     <string name="filter_all">All</string>
     <string name="filter_favorites">Favorites</string>
-    <string name="filter_streaming">Streaming</string>
-    <string name="filter_p2p">P2P</string>
+    <string name="filter_high_speed">High-Speed</string>
+    <string name="filter_port_forwarding">Port Forwarding</string>
     <string name="servers_title">Servers</string>
     <string name="cd_refresh">Refresh</string>
     <string name="cd_search">Search</string>
@@ -223,7 +223,7 @@
     <string name="billing_choice_play_title">Google Play</string>
     <string name="billing_choice_play_subtitle">Pay with your Google Play account</string>
     <string name="billing_choice_web_title">Continue on birdo.app</string>
-    <string name="billing_choice_web_subtitle">Pay by card or crypto on our website</string>
+    <string name="billing_choice_web_subtitle">Pay by card on our website</string>
     <string name="billing_choice_note">You can manage or cancel your subscription at any time.</string>
     <string name="dismiss">Dismiss</string>
     <string name="sheet_search_placeholder">Search by country or city</string>
@@ -284,8 +284,11 @@
     <string name="signing_in">Signing in…</string>
     <string name="quick_connect">Quick Connect</string>
     <string name="premium">PRO</string>
-    <string name="streaming">Streaming</string>
-    <string name="p2p">P2P</string>
+    <!-- Server access: a node the current plan cannot reach (server-computed
+         `accessible: false`). Shown locked rather than offered and refused. -->
+    <string name="cd_server_locked">Locked — requires the %1$s plan</string>
+    <string name="servers_no_high_speed">No high-speed servers right now</string>
+    <string name="servers_no_port_forwarding">No port-forwarding servers right now</string>
     <string name="servers_online" formatted="false">%d of %d online</string>
 
     <!-- Widget -->

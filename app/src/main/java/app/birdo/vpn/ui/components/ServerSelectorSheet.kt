@@ -81,13 +81,15 @@ fun ServerSelectorSheet(
                 val matchesFilter = when (activeFilter) {
                     ServerFilter.All -> true
                     ServerFilter.Favorites -> favoriteServers.contains(server.id)
-                    ServerFilter.Streaming -> server.isStreaming
-                    ServerFilter.P2P -> server.isP2p
+                    ServerFilter.HighSpeed -> server.isHighSpeed
+                    ServerFilter.PortForwarding -> server.isPortForwarding
                 }
                 matchesSearch && matchesFilter
             }
             .sortedWith(
+                // Same ordering as ServerListScreen: locked nodes below usable.
                 compareByDescending<VpnServer> { favoriteServers.contains(it.id) }
+                    .thenBy { !it.accessible }
                     .thenBy { !it.isOnline }
                     .thenBy { it.load }
                     .thenBy { it.name }
@@ -178,11 +180,12 @@ fun ServerSelectorSheet(
                 items(ServerFilter.entries) { filter ->
                     val isActive = filter == activeFilter
                     val favCount = if (filter == ServerFilter.Favorites) favoriteServers.size else null
+                    val label = stringResource(filter.labelRes)
                     val text = buildString {
                         if (filter.icon.isNotEmpty()) {
                             append(filter.icon); append(" ")
                         }
-                        append(filter.label)
+                        append(label)
                         if (favCount != null && favCount > 0) append(" ($favCount)")
                     }
                     // selectable, not clickable: TalkBack must be able to say
