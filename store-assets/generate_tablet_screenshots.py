@@ -4,7 +4,7 @@ Creates 7-inch (1200x1920) and 10-inch (1600x2560) tablet screenshots
 by centering phone screenshots on a dark background with device-style framing.
 """
 
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 import os
 
 STORE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,8 +23,8 @@ TABLET_7_SIZE = (1200, 1920)
 TABLET_10_SIZE = (1600, 2560)
 
 # Background gradient colors (match app theme)
-BG_TOP = (30, 15, 60)      # Dark purple
-BG_BOTTOM = (15, 10, 35)   # Darker purple
+BG_TOP = (15, 60, 52)      # Dark emerald
+BG_BOTTOM = (10, 35, 27)   # Darker emerald
 
 
 def create_gradient(size, top_color, bottom_color):

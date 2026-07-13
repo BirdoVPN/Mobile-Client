@@ -8,13 +8,13 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 
 OUT = os.path.dirname(os.path.abspath(__file__))
-MARK = os.path.join(OUT, "brand-mark-1024.png")  # transparent white->violet phoenix
+MARK = os.path.join(OUT, "brand-mark-1024.png")  # transparent white->emerald phoenix
 
-# ── Brand palette (matches the new app icon: dark indigo box + violet) ──
-BOX_TOP    = (33, 26, 68)     # #211A44
-BOX_BOT    = (8, 7, 15)       # #08070F
-FEAT_TOP   = (26, 22, 64)     # #1A1640
-FEAT_BOT   = (43, 29, 92)     # #2B1D5C  (a touch of violet so the banner isn't dead-dark)
+# ── Brand palette (matches the new app icon: dark emerald box + mint) ──
+BOX_TOP    = (26, 68, 54)     # #1A4436
+BOX_BOT    = (7, 15, 12)      # #070F0C
+FEAT_TOP   = (22, 64, 47)     # #16402F
+FEAT_BOT   = (29, 92, 74)     # #1D5C4A  (a touch of emerald so the banner isn't dead-dark)
 WHITE      = (255, 255, 255)
 WHITE_A    = (255, 255, 255, 220)
 
@@ -43,18 +43,11 @@ def load_mark(size):
 
 # ─── 1. App Icon 512×512 (matches the launcher: dark box + phoenix) ──────
 print("Generating app icon 512x512...")
+# Play wants a full-bleed opaque square (Play applies its own corner mask);
+# use the glossy emerald master so the listing matches the launcher exactly.
 SIZE = 512
-icon = gradient_bg(SIZE, SIZE, BOX_TOP, BOX_BOT)
-
-# Phoenix centred at ~62% (Play Store applies its own corner mask)
-mark_px = int(SIZE * 0.62)
-mark = load_mark(mark_px)
-icon.alpha_composite(mark, ((SIZE - mark_px) // 2, int(SIZE * 0.52) - mark_px // 2))
-
-# Rounded-corner mask (Google Play uses ~22%)
-mask = Image.new("L", (SIZE, SIZE), 0)
-ImageDraw.Draw(mask).rounded_rectangle([0, 0, SIZE, SIZE], radius=int(SIZE * 0.22), fill=255)
-icon = Image.composite(icon, Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0)), mask)
+FULLBLEED = os.path.join(OUT, "app-icon-fullbleed-1024.png")
+icon = Image.open(FULLBLEED).convert("RGBA").resize((SIZE, SIZE), Image.LANCZOS)
 icon.save(os.path.join(OUT, "app-icon-512.png"), "PNG")
 print(f"  -> {OUT}\\app-icon-512.png")
 

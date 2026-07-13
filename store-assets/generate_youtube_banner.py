@@ -17,10 +17,10 @@ SAFE_Y = (H - SAFE_H) // 2
 MARK = os.path.join(OUT, "brand-mark-1024.png")  # transparent phoenix
 
 # Brand palette (matches generate_assets.py)
-GRAD_TOP_LEFT     = (15, 14, 35)        # near-black indigo
-GRAD_MID          = (76, 51, 158)       # deep violet
-GRAD_BOT_RIGHT    = (139, 92, 246)      # #8B5CF6
-ACCENT            = (124, 58, 237)      # #7C3AED
+GRAD_TOP_LEFT     = (14, 35, 25)        # near-black emerald
+GRAD_MID          = (51, 158, 128)      # deep emerald
+GRAD_BOT_RIGHT    = (16, 185, 129)      # #10B981
+ACCENT            = (5, 150, 105)       # #059669
 WHITE             = (255, 255, 255)
 WHITE_A           = (255, 255, 255, 230)
 WHITE_FAINT       = (255, 255, 255, 40)
