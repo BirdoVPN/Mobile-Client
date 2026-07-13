@@ -121,6 +121,13 @@ class VpnManagerTest {
         load: Int = 30,
         isPremium: Boolean = false,
         isOnline: Boolean = true,
+        /**
+         * Server-computed: does this user's plan reach the node's minPlan?
+         * Defaults to a RECON (free) user's view — a premium node is locked —
+         * which is what these quickConnect cases model. Pass explicitly to
+         * model a paid user.
+         */
+        accessible: Boolean = !isPremium,
     ) = VpnServer(
         id = id,
         name = name,
@@ -131,9 +138,11 @@ class VpnManagerTest {
         ipAddress = "185.199.108.153",
         port = 51820,
         load = load,
+        minPlan = if (isPremium) "OPERATIVE" else "RECON",
+        accessible = accessible,
         isPremium = isPremium,
-        isStreaming = false,
-        isP2p = false,
+        isHighSpeed = false,
+        isPortForwarding = false,
         isOnline = isOnline,
     )
 
@@ -364,9 +373,28 @@ class VpnManagerTest {
     }
 
     @Test
-    fun `quickConnect falls back to any online server when no free servers`() = runTest {
+    fun `quickConnect errors rather than picking an out-of-plan server`() = runTest {
+        // A RECON user, fleet of premium-only online nodes. The old code fell
+        // back to "any online server" and connected to a node the backend was
+        // always going to refuse. Refusing locally is the honest answer.
         val servers = listOf(
             makeServer(id = "srv-prem", load = 10, isPremium = true),
+            makeServer(id = "srv-offline", load = 5, isOnline = false),
+        )
+        coEvery { repository.getServers() } returns ApiResult.Success(servers)
+
+        val result = vpnManager.quickConnect()
+
+        assertTrue(result is ApiResult.Error)
+        coVerify(exactly = 0) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `quickConnect uses a premium node when the plan reaches it`() = runTest {
+        // Same fleet, but the user's plan clears the node's minPlan, so the
+        // backend marks it accessible.
+        val servers = listOf(
+            makeServer(id = "srv-prem", load = 10, isPremium = true, accessible = true),
             makeServer(id = "srv-offline", load = 5, isOnline = false),
         )
         coEvery { repository.getServers() } returns ApiResult.Success(servers)

@@ -8,11 +8,16 @@ struct ServerListView: View {
     @State private var searchQuery = ""
     @State private var activeFilter: ServerFilter = .all
 
+    /// The old "Streaming" / "P2P" pills matched NOTHING in production — both
+    /// flags were cosmetic and false on every node. They are replaced by the
+    /// two capabilities Birdo actually ships: a low-load / high-throughput
+    /// node, and inbound port forwarding. Birdo offers no streaming-unblocking
+    /// and no P2P servers, so no pill may imply otherwise.
     enum ServerFilter: String, CaseIterable {
-        case all       = "All"
-        case favorites = "⭐ Favorites"
-        case streaming = "📺 Streaming"
-        case p2p       = "📁 P2P"
+        case all            = "All"
+        case favorites      = "⭐ Favorites"
+        case highSpeed      = "⚡ High-Speed"
+        case portForwarding = "⇄ Port Forwarding"
     }
 
     private var filteredServers: [ServerInfo] {
@@ -25,10 +30,10 @@ struct ServerListView: View {
 
                 let matchesFilter: Bool = {
                     switch activeFilter {
-                    case .all:       return true
-                    case .favorites: return vpnVM.favoriteIds.contains(server.id)
-                    case .streaming: return server.isStreaming
-                    case .p2p:       return server.isP2p
+                    case .all:            return true
+                    case .favorites:      return vpnVM.favoriteIds.contains(server.id)
+                    case .highSpeed:      return server.isHighSpeed
+                    case .portForwarding: return server.isPortForwarding
                     }
                 }()
 
@@ -38,6 +43,9 @@ struct ServerListView: View {
                 let aFav = vpnVM.favoriteIds.contains($0.id)
                 let bFav = vpnVM.favoriteIds.contains($1.id)
                 if aFav != bFav { return aFav }
+                // Locked nodes (plan too low) sink below usable ones — shown,
+                // not hidden, so the user can see what a plan unlocks.
+                if $0.accessible != $1.accessible { return $0.accessible }
                 if $0.isOnline != $1.isOnline { return $0.isOnline }
                 if $0.load != $1.load { return $0.load < $1.load }
                 return $0.name < $1.name
@@ -160,6 +168,11 @@ private struct ServerRow: View {
     let onSelect: () -> Void
     let onToggleFavorite: () -> Void
 
+    /// A node the current plan can't reach is shown locked and inert — offering
+    /// it would only earn a server-side refusal.
+    private var isLocked: Bool { !server.accessible }
+    private var isSelectable: Bool { server.isOnline && !isLocked }
+
     var body: some View {
         HStack(spacing: 12) {
             // Flag
@@ -174,9 +187,14 @@ private struct ServerRow: View {
                 HStack(spacing: 6) {
                     Text(server.name)
                         .font(.subheadline.weight(.medium))
-                        .foregroundColor(server.isOnline ? .white : BirdoTheme.white40)
+                        .foregroundColor(isSelectable ? .white : BirdoTheme.white40)
 
-                    if server.isPremium {
+                    if isLocked {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundColor(BirdoTheme.white40)
+                            .accessibilityLabel("Locked — requires the \(server.minPlan) plan")
+                    } else if server.isPremium {
                         Image(systemName: "crown.fill")
                             .font(.caption2)
                             .foregroundColor(BirdoTheme.yellow)
@@ -214,8 +232,8 @@ private struct ServerRow: View {
         .background(isSelected ? BirdoTheme.white05 : .clear)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
-        .opacity(server.isOnline ? 1.0 : 0.5)
+        .onTapGesture { if isSelectable { onSelect() } }
+        .opacity(isSelectable ? 1.0 : 0.5)
     }
 
     private func loadColor(_ load: Int32) -> Color {
@@ -226,15 +244,51 @@ private struct ServerRow: View {
 }
 
 /// Lightweight server representation for the iOS app.
-struct ServerInfo: Identifiable {
+struct ServerInfo: Identifiable, Decodable {
     let id: String
     let name: String
     let country: String
     let countryCode: String
     let city: String
     let load: Int32
+    /// Minimum plan required for this node: RECON | OPERATIVE | SOVEREIGN.
+    let minPlan: String
+    /// Server-computed: does THIS user's plan reach `minPlan`? The backend is
+    /// the only authority on access — the client just renders it.
+    let accessible: Bool
     let isPremium: Bool
-    let isStreaming: Bool
-    let isP2p: Bool
+    /// Low-load / high-throughput node. NOT a streaming-unblocking claim.
+    let isHighSpeed: Bool
+    /// Node supports inbound port forwarding (see PortForwardView).
+    let isPortForwarding: Bool
     let isOnline: Bool
+
+    /// Hand-rolled so a missing key degrades to a safe default instead of
+    /// throwing and blanking the WHOLE server list. Swift's synthesized
+    /// `Decodable` ignores property default values, so this has to be explicit.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        country = try c.decodeIfPresent(String.self, forKey: .country) ?? ""
+        countryCode = try c.decodeIfPresent(String.self, forKey: .countryCode) ?? ""
+        city = try c.decodeIfPresent(String.self, forKey: .city) ?? ""
+        load = try c.decodeIfPresent(Int32.self, forKey: .load) ?? 0
+        minPlan = try c.decodeIfPresent(String.self, forKey: .minPlan) ?? "RECON"
+        // Default true: an older backend that doesn't emit the field must not
+        // lock the user out of every node client-side.
+        accessible = try c.decodeIfPresent(Bool.self, forKey: .accessible) ?? true
+        isPremium = try c.decodeIfPresent(Bool.self, forKey: .isPremium) ?? false
+        isHighSpeed = try c.decodeIfPresent(Bool.self, forKey: .isHighSpeed) ?? false
+        isPortForwarding = try c.decodeIfPresent(Bool.self, forKey: .isPortForwarding) ?? false
+        isOnline = try c.decodeIfPresent(Bool.self, forKey: .isOnline) ?? true
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, country, countryCode, city, load
+        case minPlan, accessible, isPremium, isHighSpeed, isPortForwarding, isOnline
+        // DEPRECATED keys `isStreaming` / `isP2p` are still emitted by the
+        // backend as hard-coded `false` for already-shipped clients. They are
+        // deliberately NOT decoded here: nothing may read them again.
+    }
 }

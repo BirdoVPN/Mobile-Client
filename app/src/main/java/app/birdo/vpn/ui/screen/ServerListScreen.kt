@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.annotation.StringRes
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.VpnServer
 import androidx.compose.ui.semantics.Role
@@ -47,16 +48,22 @@ import app.birdo.vpn.utils.countryCodeToFlag
 /**
  * Server list screen — matches the Windows client design:
  * - Search input with glass styling
- * - Filter pills: All | ★ Favorites | 🎬 Streaming | ↓ P2P
+ * - Filter pills: All | ★ Favorites | ⚡ High-Speed | ⇄ Port Forwarding
  * - Server cards with country flag, name, load bar, favorite star
  * - White-based color scheme (no purple accents)
  * - Selected server: subtle white ring (ring-white/20)
+ *
+ * The old "Streaming" / "P2P" pills were removed: both flags were cosmetic and
+ * false on every node, so the pills matched NOTHING in production. They are
+ * replaced by the two capabilities Birdo actually ships — a low-load /
+ * high-throughput node, and inbound port forwarding. Birdo does not offer
+ * streaming-unblocking or P2P servers, so a pill must not imply it does.
  */
-enum class ServerFilter(val label: String, val icon: String) {
-    All("All", ""),
-    Favorites("Favorites", "★"),
-    Streaming("Streaming", "🎬"),
-    P2P("P2P", "⬇"),
+enum class ServerFilter(@StringRes val labelRes: Int, val icon: String) {
+    All(R.string.filter_all, ""),
+    Favorites(R.string.filter_favorites, "★"),
+    HighSpeed(R.string.filter_high_speed, "⚡"),
+    PortForwarding(R.string.filter_port_forwarding, "⇄"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -86,14 +93,17 @@ fun ServerListScreen(
                 val matchesFilter = when (activeFilter) {
                     ServerFilter.All -> true
                     ServerFilter.Favorites -> favoriteServers.contains(server.id)
-                    ServerFilter.Streaming -> server.isStreaming
-                    ServerFilter.P2P -> server.isP2p
+                    ServerFilter.HighSpeed -> server.isHighSpeed
+                    ServerFilter.PortForwarding -> server.isPortForwarding
                 }
 
                 matchesSearch && matchesFilter
             }
             .sortedWith(
+                // Locked nodes (plan too low) sink below usable ones — they are
+                // shown, not hidden, so the user can see what a plan unlocks.
                 compareByDescending<VpnServer> { favoriteServers.contains(it.id) }
+                    .thenBy { !it.accessible }
                     .thenBy { !it.isOnline }
                     .thenBy { it.load }
                     .thenBy { it.name }
@@ -148,11 +158,12 @@ fun ServerListScreen(
             items(ServerFilter.entries) { filter ->
                 val isActive = filter == activeFilter
                 val favCount = if (filter == ServerFilter.Favorites) favoriteServers.size else null
+                val label = stringResource(filter.labelRes)
                 val text = buildString {
                     if (filter.icon.isNotEmpty()) {
                         append(filter.icon); append(" ")
                     }
-                    append(filter.label)
+                    append(label)
                     if (favCount != null && favCount > 0) append(" ($favCount)")
                 }
                 // selectable (not clickable): TalkBack must announce WHICH
@@ -230,6 +241,8 @@ fun ServerListScreen(
                         title = when {
                             activeFilter == ServerFilter.Favorites -> stringResource(R.string.servers_no_favorites)
                             searchQuery.isNotBlank() -> stringResource(R.string.servers_no_match, searchQuery)
+                            activeFilter == ServerFilter.HighSpeed -> stringResource(R.string.servers_no_high_speed)
+                            activeFilter == ServerFilter.PortForwarding -> stringResource(R.string.servers_no_port_forwarding)
                             else -> stringResource(R.string.no_servers)
                         },
                         description = when {
@@ -282,6 +295,11 @@ internal fun ServerCard(
     val palette = BirdoColors.current
     val haptics = LocalHapticFeedback.current
     val isOnline = server.isOnline
+    // `accessible` is computed server-side from the user's plan vs the node's
+    // minPlan. A locked node is shown (so the user can see what a plan buys)
+    // but cannot be picked — offering it would only earn a server-side refusal.
+    val isLocked = !server.accessible
+    val isSelectable = isOnline && !isLocked
     val load = server.load
     val loadFraction = remember(load) { (load / 100f).coerceIn(0f, 1f) }
     val loadCol = remember(load) { loadColor(load) }
@@ -303,7 +321,7 @@ internal fun ServerCard(
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
         label = "starPop",
     )
-    val nameColor = if (isOnline) palette.onSurface else palette.onSurfaceFaint
+    val nameColor = if (isSelectable) palette.onSurface else palette.onSurfaceFaint
 
     val flag = remember(server.countryCode) { countryCodeToFlag(server.countryCode) }
     val location = remember(server.city, server.country) {
@@ -316,9 +334,9 @@ internal fun ServerCard(
             .clip(ServerCardShape)
             .background(surfaceColor)
             .border(if (isSelected) 1.5.dp else 1.dp, borderColor, ServerCardShape)
-            .clickable(enabled = isOnline, role = Role.Button, onClick = onSelect)
+            .clickable(enabled = isSelectable, role = Role.Button, onClick = onSelect)
             .padding(horizontal = 12.dp, vertical = 10.dp)
-            .then(if (!isOnline) Modifier.alpha(0.5f) else Modifier),
+            .then(if (!isSelectable) Modifier.alpha(0.5f) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Country flag badge
@@ -346,6 +364,17 @@ internal fun ServerCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                if (isLocked) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        // Not decorative: the lock IS the reason the row is
+                        // inert, so TalkBack has to say which plan unlocks it.
+                        contentDescription = stringResource(R.string.cd_server_locked, server.minPlan),
+                        tint = palette.onSurfaceFaint,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
             Text(
                 text = location,
