@@ -1,0 +1,16 @@
+# Intermediates from generate_icon.py / generate_feature_graphic.py.
+# Tracked: the three icon masters, the feature graphic, and everything they derive
+# (see generate_assets.py). Everything below is reproducible on demand:
+#     python store-assets/generate_assets.py --render
+preview-*.png
+study-*.png
+thumb-*.png
+icon-play-512.png
+ic_launcher_round-192.png
+
+# Android adaptive-icon layers. Rendered, correct, and deliberately NOT shipped: the app
+# uses legacy mipmaps only. See issue #150 — the adaptive icon was removed because its
+# foreground was an 832-command VectorDrawable that crashed on inflate, not because
+# adaptive icons are unwanted. These PNG layers have no such problem, so enabling them is
+# a real option (it is what stops Android 8+ launchers shrinking the icon onto a white plate).
+adaptive-*.png
