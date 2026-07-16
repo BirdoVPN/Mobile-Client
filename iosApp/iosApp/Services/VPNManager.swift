@@ -90,11 +90,15 @@ final class VPNManager: @unchecked Sendable {
             "wg-private-key-ref": "wg_private_key",
             "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
         ]
-        // SEC: kill switch — block all traffic when the tunnel is not up.
+        // SEC: kill switch — when ON, block all traffic while the tunnel is not
+        // up. User-toggleable, default ON: read the raw stored value so a fresh
+        // install (absent key) defaults true even before the settings view model
+        // has registered its defaults.
+        let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
         if #available(iOS 14.0, *) {
-            proto.includeAllNetworks = true
+            proto.includeAllNetworks = killSwitch
             proto.excludeLocalNetworks = true
-            proto.enforceRoutes = true
+            proto.enforceRoutes = killSwitch
         }
         proto.disconnectOnSleep = false
 
@@ -102,11 +106,18 @@ final class VPNManager: @unchecked Sendable {
         mgr.isEnabled = true
         mgr.localizedDescription = "Birdo VPN"
 
-        // On-demand: keep the tunnel up automatically across reachability changes.
-        let connectRule = NEOnDemandRuleConnect()
-        connectRule.interfaceTypeMatch = .any
-        mgr.onDemandRules = [connectRule]
-        mgr.isOnDemandEnabled = true
+        // On-demand: with the kill switch ON, keep the tunnel up automatically
+        // across reachability changes. With it OFF, disable on-demand so a tunnel
+        // drop lets traffic fall back to the open network instead of reconnecting.
+        if killSwitch {
+            let connectRule = NEOnDemandRuleConnect()
+            connectRule.interfaceTypeMatch = .any
+            mgr.onDemandRules = [connectRule]
+            mgr.isOnDemandEnabled = true
+        } else {
+            mgr.onDemandRules = nil
+            mgr.isOnDemandEnabled = false
+        }
 
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             mgr.saveToPreferences { error in

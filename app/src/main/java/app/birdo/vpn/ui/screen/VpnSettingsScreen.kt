@@ -51,6 +51,7 @@ fun VpnSettingsScreen(
     onWireGuardMtuChange: (Int) -> Unit,
     onStealthModeChange: (Boolean) -> Unit,
     onQuantumProtectionChange: (Boolean) -> Unit,
+    onKillSwitchChange: (Boolean) -> Unit,
     onOpenPortForward: () -> Unit,
     onBack: () -> Unit,
     // ── Plan gating ──────────────────────────────────────────────
@@ -77,6 +78,9 @@ fun VpnSettingsScreen(
     var mtuText by rememberSaveable {
         mutableStateOf(if (state.wireGuardMtu > 0) state.wireGuardMtu.toString() else "")
     }
+    // Turning the kill switch OFF weakens leak protection, so it is gated behind
+    // an explicit confirmation dialog (enabling it stays immediate).
+    var showKillSwitchDisableDialog by rememberSaveable { mutableStateOf(false) }
     val palette = BirdoColors.current
 
     Scaffold(
@@ -99,18 +103,28 @@ fun VpnSettingsScreen(
             item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_security)) }
 
             item {
-                // Kill switch is intentionally an always-on, locked control:
-                // for security it can never be disabled (AppPreferences pins the
-                // backing pref to `true`). It is rendered non-interactive with no
-                // wired callback so there is nothing dangling behind the toggle.
+                // Kill switch defaults ON (the safe choice) but is user-toggleable.
+                // Enabling is immediate; disabling is gated behind a confirmation
+                // dialog because it trades leak-proofing for connectivity — if the
+                // tunnel drops, apps fall back to the open internet and can briefly
+                // expose the real IP. The service gates every activateKillSwitch() on
+                // the value behind this toggle, so turning it off genuinely lets
+                // traffic through.
                 VpnToggle(
                     icon = Icons.Default.Shield,
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
                     description = stringResource(R.string.settings_kill_switch_desc),
-                    checked = true,
-                    onCheckedChange = {},
-                    enabled = false,
+                    checked = state.killSwitchEnabled,
+                    onCheckedChange = { enabled ->
+                        if (enabled) {
+                            onKillSwitchChange(true)
+                        } else {
+                            // Leave the toggle ON (state unchanged) until the user
+                            // confirms in the warning dialog below.
+                            showKillSwitchDisableDialog = true
+                        }
+                    },
                     testTag = TestTags.KILL_SWITCH_TOGGLE,
                 )
             }
@@ -427,6 +441,42 @@ fun VpnSettingsScreen(
             }
 
             item { Spacer(Modifier.height(32.dp)) }
+        }
+
+        if (showKillSwitchDisableDialog) {
+            AlertDialog(
+                onDismissRequest = { showKillSwitchDisableDialog = false },
+                containerColor = palette.surfaceElevated,
+                titleContentColor = palette.onSurface,
+                textContentColor = palette.onSurfaceMuted,
+                title = {
+                    Text(
+                        stringResource(R.string.settings_kill_switch_disable_title),
+                        fontWeight = FontWeight.Bold,
+                    )
+                },
+                text = { Text(stringResource(R.string.settings_kill_switch_disable_msg)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onKillSwitchChange(false)
+                        showKillSwitchDisableDialog = false
+                    }) {
+                        Text(
+                            stringResource(R.string.settings_kill_switch_disable_confirm),
+                            color = BirdoRed,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showKillSwitchDisableDialog = false }) {
+                        Text(
+                            stringResource(R.string.delete_dialog_cancel),
+                            color = palette.onSurfaceMuted,
+                        )
+                    }
+                },
+            )
         }
     }
 }

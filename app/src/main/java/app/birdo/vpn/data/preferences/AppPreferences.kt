@@ -22,9 +22,17 @@ class AppPreferences @Inject constructor(
         context.getSharedPreferences("birdo_vpn_prefs", Context.MODE_PRIVATE)
 
     // ── Kill Switch ──────────────────────────────────────────────
+    /** Blocks all traffic if the tunnel drops. Default ON (the safe choice),
+     *  but user-toggleable — some users prefer their device to fall back to the
+     *  open internet rather than lose connectivity, and mainstream VPNs offer
+     *  the choice. The service layer gates every activateKillSwitch() call on the
+     *  EXTRA_KILL_SWITCH intent extra sourced from this value, so turning it off
+     *  genuinely lets traffic through on disconnect.
+     *  commit() (synchronous) like the other security-critical settings so the
+     *  value is durably persisted before the tunnel is (re)built. */
     var killSwitchEnabled: Boolean
-        get() = true
-        set(@Suppress("UNUSED_PARAMETER") value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, true).apply(); signSettings() }
+        get() = prefs.getBoolean(KEY_KILL_SWITCH, true)
+        set(value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, value).commit(); signSettings() }
 
     // ── Privacy / GDPR Consent ───────────────────────────────────
     var hasAcceptedPrivacyPolicy: Boolean

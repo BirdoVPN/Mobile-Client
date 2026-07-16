@@ -98,7 +98,11 @@ final class APIClient: @unchecked Sendable {
         // The Swift `BirdoPQManager` lazy-generates + persists the keypair on
         // first call; if the call returns nil we proceed without PQ rather
         // than block the connect.
-        let pqPk = BirdoPQManager.shared.clientPublicKeyBase64()
+        // Post-quantum protection is ON by default; user can disable it via the
+        // Quantum Protection toggle. Read the raw stored value so an absent key
+        // (fresh install) defaults true regardless of view-model init order.
+        let quantumEnabled = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
+        let pqPk = quantumEnabled ? BirdoPQManager.shared.clientPublicKeyBase64() : nil
         let body = try encoder.encode(
             ConnectBody(
                 serverId: serverId,

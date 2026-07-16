@@ -8,15 +8,27 @@ struct SettingsView: View {
 
     @State private var showDeleteDialog = false
     @State private var deletePassword = ""
+    @State private var showKillSwitchWarning = false
 
     var body: some View {
         NavigationView {
             List {
                 // Connection
                 Section("Connection") {
+                    // Enabling is immediate; disabling routes through a
+                    // confirmation alert (leave the toggle ON until confirmed).
                     SettingsToggle(icon: "shield.fill", iconColor: BirdoTheme.green,
                                    title: "Kill Switch", description: "Block internet if VPN drops",
-                                   isOn: $settingsVM.killSwitchEnabled)
+                                   isOn: Binding(
+                                       get: { settingsVM.killSwitchEnabled },
+                                       set: { newValue in
+                                           if newValue {
+                                               settingsVM.killSwitchEnabled = true
+                                           } else {
+                                               showKillSwitchWarning = true
+                                           }
+                                       }
+                                   ))
 
                     SettingsToggle(icon: "wifi", iconColor: BirdoTheme.blue,
                                    title: "Auto-Connect", description: "Connect on app launch",
@@ -108,6 +120,14 @@ struct SettingsView: View {
                 }
             } message: {
                 Text("This action is permanent and cannot be undone. All your data will be deleted.")
+            }
+            .alert("Disable Kill Switch?", isPresented: $showKillSwitchWarning) {
+                Button("Disable", role: .destructive) {
+                    settingsVM.killSwitchEnabled = false
+                }
+                Button("Keep Enabled", role: .cancel) { }
+            } message: {
+                Text("With the kill switch off, your internet keeps flowing if the VPN drops, which can briefly expose your real IP address and traffic.")
             }
         }
     }
