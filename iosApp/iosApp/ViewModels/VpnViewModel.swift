@@ -112,6 +112,9 @@ final class VpnViewModel: ObservableObject {
             do {
                 let config = try await api.getConnectConfig(serverId: server.id)
                 try await vpnManager.connect(config: config)
+                // Honest indicator: light the "Quantum" badge only when a true
+                // bilateral ML-KEM PSK was actually derived for this connection.
+                quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 connectedSince = Date()
                 isConnected = true
                 isConnecting = false
@@ -128,6 +131,7 @@ final class VpnViewModel: ObservableObject {
             vpnManager.disconnect()
             isConnected = false
             isConnecting = false
+            quantumActive = false
             connectedSince = nil
             bytesReceived = 0
             bytesSent = 0
@@ -143,6 +147,7 @@ final class VpnViewModel: ObservableObject {
             do {
                 let config = try await api.getMultiHopConfig(entryId: entryId, exitId: exitId)
                 try await vpnManager.connect(config: config)
+                quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 connectedSince = Date()
                 isConnected = true
                 isConnecting = false
@@ -226,6 +231,7 @@ final class VpnViewModel: ObservableObject {
         case .disconnected, .invalid:
             isConnected = false
             isConnecting = false
+            quantumActive = false
             connectedSince = nil
             stopStatsTimer()
         case .disconnecting:

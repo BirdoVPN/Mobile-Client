@@ -519,6 +519,7 @@ fun BirdoNavGraph(
                         onWireGuardMtuChange = { settingsViewModel.setWireGuardMtu(it) },
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
                         onQuantumProtectionChange = { settingsViewModel.setQuantumProtection(it) },
+                        onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onOpenPortForward = { navController.navigate(Screen.PortForward.route) },
                         onBack = { navController.popBackStack() },
                         customDnsUnlocked = isSovereign,

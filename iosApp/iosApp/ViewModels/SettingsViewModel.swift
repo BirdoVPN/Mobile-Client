@@ -54,6 +54,26 @@ final class SettingsViewModel: ObservableObject {
 
     init() {
         let d = UserDefaults.standard
+
+        // One-time migration: the kill-switch and quantum-protection toggles were
+        // previously cosmetic (they persisted a value but nothing read it), so any
+        // stored value is unreliable. Clear those two keys once so every user
+        // starts from the real, security-forward defaults registered below. An
+        // explicit value the user sets AFTER this migration is honoured normally.
+        if d.bool(forKey: "settings_migrated_v2") == false {
+            d.removeObject(forKey: "kill_switch")
+            d.removeObject(forKey: "quantum_protection")
+            d.set(true, forKey: "settings_migrated_v2")
+        }
+
+        // Security-forward defaults: an ABSENT key reads `true`. register() does
+        // NOT persist, so an explicitly stored `false` (user turned it off) still
+        // wins over these. Must run before the reads below.
+        d.register(defaults: [
+            "kill_switch": true,
+            "quantum_protection": true,
+        ])
+
         killSwitchEnabled = d.bool(forKey: "kill_switch")
         autoConnect = d.bool(forKey: "auto_connect")
         notificationsEnabled = d.bool(forKey: "notifications")

@@ -82,6 +82,9 @@
     <string name="settings_section_connection">Connection</string>
     <string name="settings_kill_switch">Kill Switch</string>
     <string name="settings_kill_switch_desc">Block all traffic if VPN disconnects</string>
+    <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
+    <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on — and for a system-guaranteed block, enable Android\'s \"Always-on VPN\" with \"Block connections without VPN\" in system VPN settings.</string>
+    <string name="settings_kill_switch_disable_confirm">Turn off anyway</string>
     <string name="settings_auto_connect">Auto-Connect</string>
     <string name="settings_auto_connect_desc">Connect to VPN on app startup</string>
     <string name="settings_notifications">Notifications</string>
