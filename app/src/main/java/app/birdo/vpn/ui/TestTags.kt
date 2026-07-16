@@ -15,6 +15,8 @@ object TestTags {
     const val LOGIN_2FA_CODE_FIELD = "login_2fa_code_field"
     const val LOGIN_2FA_VERIFY_BUTTON = "login_2fa_verify_button"
     const val LOGIN_2FA_BACK_BUTTON = "login_2fa_back_button"
+    const val LOGIN_SSO_GOOGLE = "login_sso_google"
+    const val LOGIN_SSO_GITHUB = "login_sso_github"
     const val LOGIN_ANONYMOUS_BUTTON = "login_anonymous_button"
     const val LOGIN_ANONYMOUS_ID_FIELD = "login_anonymous_id_field"
     const val LOGIN_ANONYMOUS_PASSWORD_FIELD = "login_anonymous_password_field"

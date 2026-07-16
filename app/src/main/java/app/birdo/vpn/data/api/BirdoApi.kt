@@ -33,6 +33,17 @@ interface BirdoApi {
         @Body request: AnonymousLoginRequest,
     ): Response<AnonymousLoginResponse>
 
+    /**
+     * Native SSO handoff exchange. Swaps the web broker's single-use PKCE-bound
+     * code (delivered to the app via the birdo://auth redirect) for tokens. The
+     * X-Desktop-Client header is added globally by AuthInterceptor. Response is
+     * the same shape as password login (LoginResponse).
+     */
+    @POST("auth/native/exchange")
+    suspend fun exchangeNativeOAuth(
+        @Body request: NativeOAuthExchangeRequest,
+    ): Response<LoginResponse>
+
     @POST("auth/logout")
     suspend fun logout(): Response<Unit>
 

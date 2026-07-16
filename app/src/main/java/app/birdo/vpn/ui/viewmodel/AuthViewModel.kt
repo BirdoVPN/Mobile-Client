@@ -1,10 +1,15 @@
 package app.birdo.vpn.ui.viewmodel
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
+import app.birdo.vpn.utils.PkceGenerator
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
@@ -138,6 +143,86 @@ class AuthViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    // ── Native SSO (Google / GitHub) ─────────────────────────────────────────
+    // The app is a public PKCE client of Birdo: startSso opens the system
+    // browser to the Birdo broker; the browser redirects back to birdo://auth,
+    // which MainActivity routes into completeSso to exchange the code for tokens.
+
+    private data class PendingOauth(val verifier: String, val state: String)
+
+    /** In-memory PKCE state for the in-flight SSO attempt. Held only for the
+     *  short browser round-trip; if the process is killed mid-flow the user
+     *  simply retries (no tokens or secrets are persisted). */
+    private var pendingOauth: PendingOauth? = null
+
+    /** Begin native SSO for `provider` ("google" | "github"): generate PKCE +
+     *  anti-CSRF state, then open the system browser at the Birdo broker. */
+    fun startSso(provider: String, context: Context) {
+        if (provider != "google" && provider != "github") {
+            _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
+            return
+        }
+        val pkce = PkceGenerator.generate()
+        val state = PkceGenerator.randomState()
+        pendingOauth = PendingOauth(pkce.verifier, state)
+
+        val url = "${BuildConfig.WEB_BASE_URL}/native/oauth/start" +
+            "?provider=$provider" +
+            "&code_challenge=${pkce.challenge}" +
+            "&redirect_uri=${Uri.encode("birdo://auth")}" +
+            "&state=$state"
+        try {
+            // System browser (ACTION_VIEW), NOT a WebView — the redirect returns
+            // via the birdo://auth intent-filter to MainActivity.
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            _uiState.value = _uiState.value.copy(error = null)
+        } catch (e: Exception) {
+            pendingOauth = null
+            _uiState.value = _uiState.value.copy(error = "Could not open the browser to sign in.")
+        }
+    }
+
+    /** Handle the birdo://auth?code=&state= redirect: verify state, then
+     *  exchange the handoff code (+ our PKCE verifier) for tokens. Reuses the
+     *  same 2FA / profile-fetch path as password login. */
+    fun completeSso(code: String, state: String) {
+        val pending = pendingOauth
+        if (pending == null) {
+            _uiState.value = _uiState.value.copy(error = "Sign-in session expired. Please try again.")
+            return
+        }
+        if (state != pending.state) {
+            pendingOauth = null
+            _uiState.value = _uiState.value.copy(error = "Sign-in could not be verified. Please try again.")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            when (val result = repository.exchangeNativeOAuth(code, pending.verifier)) {
+                is ApiResult.Success -> when (val loginResult = result.data) {
+                    is LoginResult.TwoFactorRequired -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            requiresTwoFactor = true,
+                            challengeToken = loginResult.challengeToken,
+                        )
+                    }
+                    is LoginResult.Success -> fetchProfileAfterLogin()
+                }
+                is ApiResult.Error -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = parseLoginError(result.message),
+                    )
+                }
+            }
+            pendingOauth = null
         }
     }
 

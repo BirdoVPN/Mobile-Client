@@ -111,6 +111,47 @@ class BirdoRepository @Inject constructor(
         }
     }
 
+    /**
+     * Native SSO: exchange the web broker's handoff code (+ our PKCE verifier)
+     * for tokens. Mirrors [login] — tokens stored only on a complete Success
+     * (no 2FA pending). The response is the same shape as password login.
+     */
+    suspend fun exchangeNativeOAuth(code: String, codeVerifier: String): ApiResult<LoginResult> {
+        return try {
+            val device = deviceInfoProvider.current()
+            val response = api.exchangeNativeOAuth(NativeOAuthExchangeRequest(
+                code = code,
+                codeVerifier = codeVerifier,
+                deviceId = device.deviceId,
+                deviceName = device.deviceName,
+                deviceType = device.deviceType,
+                platform = device.platform,
+                platformVersion = device.platformVersion,
+                appVersion = device.appVersion,
+            ))
+            if (response.isSuccessful && response.body() != null) {
+                val result = response.body()!!.toLoginResult()
+                if (result is LoginResult.Success) {
+                    val tokens = result.tokens
+                    if (tokens.accessToken.isBlank()) {
+                        return ApiResult.Error("Unexpected server response (no tokens)", 0)
+                    }
+                    tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
+                }
+                ApiResult.Success(result)
+            } else {
+                ApiResult.Error(
+                    InputValidator.sanitizeErrorMessage(
+                        response.errorBody()?.string(), "Sign-in failed"
+                    ),
+                    response.code(),
+                )
+            }
+        } catch (e: Exception) {
+            ApiResult.Error(e.message ?: "Network error")
+        }
+    }
+
     /** FIX C-2: Verify 2FA code after receiving a challenge token from login */
     suspend fun verifyTwoFactor(challengeToken: String, code: String): ApiResult<TwoFactorVerifyResponse> {
         return try {

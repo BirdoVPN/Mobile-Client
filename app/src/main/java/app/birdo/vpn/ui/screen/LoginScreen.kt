@@ -66,6 +66,7 @@ fun LoginScreen(
     onCancelTwoFactor: () -> Unit = {},
     onSignUp: () -> Unit = {},
     onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
+    onSsoLogin: (provider: String) -> Unit = {},
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -563,7 +564,73 @@ fun LoginScreen(
                 }
             }
 
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(20.dp))
+
+            // ── Continue with Google / GitHub (native SSO, no password) ──
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 330, easing = BirdoMotion.Decel)),
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = stringResource(R.string.login_sso_divider),
+                        fontSize = 11.sp,
+                        color = BirdoWhite40,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onSsoLogin("google")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_SSO_GOOGLE),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = BirdoWhite60,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_sso_google),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onSsoLogin("github")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_SSO_GITHUB),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = BirdoWhite60,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_sso_github),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
 
             // ── Sign up link ──
             AnimatedVisibility(

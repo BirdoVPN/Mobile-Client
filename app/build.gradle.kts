@@ -79,6 +79,10 @@ android {
         }
 
         buildConfigField("String", "API_BASE_URL", "\"https://api.birdo.app\"")
+        // Web app origin hosting the /native/oauth/* SSO broker routes. Distinct
+        // from API_BASE_URL: the broker lives on the Next.js app host (birdo.app),
+        // the exchange goes to the API host (api.birdo.app).
+        buildConfigField("String", "WEB_BASE_URL", "\"https://birdo.app\"")
         buildConfigField("String", "APP_VERSION", "\"$computedVersionName\"")
         // Sentry DSN — loaded from local.properties (dev) or CI environment variable
         val sentryDsn = localProperties.getProperty("SENTRY_DSN")

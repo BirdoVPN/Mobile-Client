@@ -70,6 +70,9 @@ class MainActivity : FragmentActivity() {
     /** Deep link route to navigate to on startup */
     private val deepLinkRoute = mutableStateOf<String?>(null)
 
+    /** Native-SSO redirect payload (code, state) from birdo://auth. */
+    private val oauthCallback = mutableStateOf<Pair<String, String>?>(null)
+
     private var vpnPermissionCallback: (() -> Unit)? = null
     private var vpnPermissionDeniedCallback: (() -> Unit)? = null
 
@@ -115,6 +118,7 @@ class MainActivity : FragmentActivity() {
         checkRootStatus()
         verifySettingsIntegrity()
         deepLinkRoute.value = parseDeepLink(intent)
+        oauthCallback.value = parseOAuthCallback(intent)
 
         // Lock on cold start if biometric enabled
         if (appPreferences.biometricLockEnabled) {
@@ -167,6 +171,8 @@ class MainActivity : FragmentActivity() {
                             networkMonitor = networkMonitor,
                             deepLinkRoute = deepLinkRoute.value,
                             onDeepLinkConsumed = { deepLinkRoute.value = null },
+                            oauthCallback = oauthCallback.value,
+                            onOauthConsumed = { oauthCallback.value = null },
                         )
                     }
                 }
@@ -178,6 +184,9 @@ class MainActivity : FragmentActivity() {
         super.onNewIntent(intent)
         parseDeepLink(intent)?.let { route ->
             deepLinkRoute.value = route
+        }
+        parseOAuthCallback(intent)?.let { cb ->
+            oauthCallback.value = cb
         }
     }
 
@@ -300,6 +309,20 @@ class MainActivity : FragmentActivity() {
             }
             else -> null
         }
+    }
+
+    /**
+     * Native-SSO redirect: `birdo://auth?code=<handoff>&state=<state>`. Returns
+     * the (code, state) pair for the ViewModel to exchange, or null for any other
+     * intent. Kept separate from [parseDeepLink] (which returns a nav route) — the
+     * SSO callback carries data, not a destination.
+     */
+    private fun parseOAuthCallback(intent: Intent?): Pair<String, String>? {
+        val data: Uri = intent?.data ?: return null
+        if (data.scheme != "birdo" || data.host != "auth") return null
+        val code = data.getQueryParameter("code") ?: return null
+        val state = data.getQueryParameter("state") ?: return null
+        return code to state
     }
 
     private fun requestNotificationPermission() {

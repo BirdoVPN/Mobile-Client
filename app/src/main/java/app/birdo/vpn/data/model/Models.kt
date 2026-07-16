@@ -19,6 +19,7 @@ typealias TwoFactorVerifyRequest = app.birdo.vpn.shared.model.TwoFactorVerifyReq
 typealias TwoFactorVerifyResponse = app.birdo.vpn.shared.model.TwoFactorVerifyResponse
 typealias RefreshRequest = app.birdo.vpn.shared.model.RefreshRequest
 typealias RefreshResponse = app.birdo.vpn.shared.model.RefreshResponse
+typealias NativeOAuthExchangeRequest = app.birdo.vpn.shared.model.NativeOAuthExchangeRequest
 
 // ─── User ────────────────────────────────────────────────────────────────────
 typealias UserProfile = app.birdo.vpn.shared.model.UserProfile
