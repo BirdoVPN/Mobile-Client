@@ -435,6 +435,7 @@ class BirdoRepository @Inject constructor(
                 api.connect(ConnectRequest(
                     serverNodeId = serverNodeId,
                     deviceName = deviceName,
+                    deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
                     quantumProtection = quantumProtection,
@@ -543,6 +544,7 @@ class BirdoRepository @Inject constructor(
                     entryNodeId = entryNodeId,
                     exitNodeId = exitNodeId,
                     deviceName = deviceName,
+                    deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
                     quantumProtection = quantumProtection,

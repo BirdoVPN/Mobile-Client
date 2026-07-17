@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CardGiftcard
@@ -53,13 +54,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.RedeemVoucherResponse
@@ -200,9 +207,20 @@ private fun ProfileIdentityCard(
     publicIp: String?,
 ) {
     val palette = BirdoColors.current
-    val email = user?.email ?: "Anonymous"
-    val name = user?.name?.takeIf { it.isNotBlank() } ?: email.substringBefore('@')
+    val rawEmail = user?.email ?: ""
+    // Anonymous accounts carry a synthetic `anon_<24-digit-id>@anonymous.local`
+    // email; the 24-digit id IS the account's recovery credential.
+    val isAnon = rawEmail.startsWith("anon_") && rawEmail.endsWith("@anonymous.local")
+    val accountNumber = if (isAnon) rawEmail.removePrefix("anon_").removeSuffix("@anonymous.local") else null
+    val displayName = when {
+        !user?.name.isNullOrBlank() -> user!!.name!!
+        isAnon -> "Anonymous account"
+        rawEmail.isNotBlank() -> rawEmail.substringBefore('@')
+        else -> "Account"
+    }
     val plan = subscription?.plan ?: "RECON"
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
 
     BirdoCard(
         modifier = Modifier.fillMaxWidth(),
@@ -212,25 +230,74 @@ private fun ProfileIdentityCard(
         contentPadding = PaddingValues(20.dp),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // square = true: show the full square logo (Fit, no crop) instead
-                // of the round-masked mark whose corners clip the artwork.
-                app.birdo.vpn.ui.components.AppIconMark(size = 56.dp, cornerRadius = 18.dp, square = true)
-                Spacer(Modifier.width(14.dp))
+            // Identity header — no app icon here (it lives in Settings → About).
+            // Long emails / 24-digit anon ids truncate gracefully so the plan chip
+            // never gets pushed off-screen.
+            Row(verticalAlignment = Alignment.Top) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = name,
+                        text = displayName,
                         color = palette.onBackground,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        text = email,
-                        color = palette.onSurfaceMuted,
-                        fontSize = 13.sp,
+                    if (!isAnon && rawEmail.isNotBlank()) {
+                        Text(
+                            text = rawEmail,
+                            color = palette.onSurfaceMuted,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                PlanChip(plan = plan)
+            }
+
+            // Anonymous account number — copyable QOL (it's the only credential,
+            // so users need to save it). Tapping the copy button puts the FULL id
+            // on the clipboard even though the display truncates.
+            if (accountNumber != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(palette.surfaceRaised)
+                        .clickable(role = Role.Button) {
+                            clipboard.setText(AnnotatedString(accountNumber))
+                            Toast.makeText(context, "Account number copied", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "ACCOUNT NUMBER",
+                            color = palette.onSurfaceFaint,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = accountNumber,
+                            color = palette.onBackground,
+                            fontSize = 14.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(top = 1.dp),
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "Copy account number",
+                        tint = palette.accent,
+                        modifier = Modifier.padding(8.dp).size(18.dp),
                     )
                 }
-                PlanChip(plan = plan)
             }
 
             Row(

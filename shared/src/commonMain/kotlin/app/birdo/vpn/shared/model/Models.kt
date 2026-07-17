@@ -260,6 +260,13 @@ data class AttestationNonceResponse(
 data class ConnectRequest(
     val serverNodeId: String? = null,
     val deviceName: String? = null,
+    /**
+     * Stable device identity (see DeviceInfoProvider). Survives app UPDATE and
+     * REINSTALL, so the backend reclaims THIS device's own connection slot on
+     * reconnect instead of treating it as a new device (which used to trip
+     * "device limit reached" after every update).
+     */
+    val deviceId: String? = null,
     val preferredRegion: String? = null,
     val clientPublicKey: String? = null,
     val stealthMode: Boolean = false,
@@ -369,6 +376,8 @@ data class MultiHopConnectRequest(
     val entryNodeId: String,
     val exitNodeId: String,
     val deviceName: String? = null,
+    /** Stable device identity — see [ConnectRequest.deviceId]. */
+    val deviceId: String? = null,
     val clientPublicKey: String? = null,
     val stealthMode: Boolean = false,
     val quantumProtection: Boolean = false,
