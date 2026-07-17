@@ -484,10 +484,6 @@ fun BirdoNavGraph(
             ) {
                 AdaptiveContainer {
                     val context = LocalContext.current
-                    // Split tunneling is OPERATIVE+. Plan-string only → anon RECON
-                    // and email/SSO RECON are gated identically.
-                    val settingsPlan = vpnState.subscription?.plan?.uppercase()
-                    val splitUnlocked = settingsPlan == "OPERATIVE" || settingsPlan == "SOVEREIGN"
                     SettingsScreen(
                         state = settingsState,
                         onAutoConnectChange = { settingsViewModel.setAutoConnect(it) },
@@ -510,11 +506,6 @@ fun BirdoNavGraph(
                         },
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
-                        splitTunnelUnlocked = splitUnlocked,
-                        onUpgradeRequired = {
-                            vpnViewModel.fetchSubscription()
-                            navController.navigate(Screen.Subscription.route)
-                        },
                     )
                 }
             }

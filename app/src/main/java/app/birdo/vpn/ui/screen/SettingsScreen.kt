@@ -60,10 +60,6 @@ fun SettingsScreen(
     onOpenVpnSettings: () -> Unit,
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
-    // Split tunneling is OPERATIVE+. Gated by PLAN only (an anonymous RECON user
-    // is treated identically to an email/SSO RECON user).
-    splitTunnelUnlocked: Boolean = true,
-    onUpgradeRequired: (feature: String) -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -182,21 +178,18 @@ fun SettingsScreen(
             }
 
             item {
+                // Split tunneling is available on every tier (not gated).
                 SettingsToggle(
                     icon = Icons.AutoMirrored.Filled.CallSplit,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_split_tunnel),
                     description = stringResource(R.string.settings_split_tunnel_desc),
-                    // `&& splitTunnelUnlocked` so a persisted-on state can't
-                    // resurface after a downgrade; locked row routes to upgrade.
-                    checked = state.splitTunnelingEnabled && splitTunnelUnlocked,
+                    checked = state.splitTunnelingEnabled,
                     onCheckedChange = onSplitTunnelingChange,
-                    locked = !splitTunnelUnlocked,
-                    onLockedTap = { onUpgradeRequired("Split Tunneling") },
                 )
             }
 
-            if (state.splitTunnelingEnabled && splitTunnelUnlocked) {
+            if (state.splitTunnelingEnabled) {
                 item {
                     SettingsLink(
                         icon = Icons.Default.Apps,
