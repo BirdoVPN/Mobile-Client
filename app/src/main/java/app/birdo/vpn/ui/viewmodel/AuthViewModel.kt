@@ -1,10 +1,16 @@
 package app.birdo.vpn.ui.viewmodel
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.data.auth.OAuthStateStore
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
+import app.birdo.vpn.utils.PkceGenerator
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
@@ -35,6 +41,7 @@ data class AuthUiState(
 class AuthViewModel @Inject constructor(
     private val repository: BirdoRepository,
     private val tokenManager: TokenManager,
+    private val oauthStore: OAuthStateStore,
 ) : ViewModel() {
 
     companion object {
@@ -141,6 +148,86 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    // ── Native SSO (Google / GitHub) ─────────────────────────────────────────
+    // The app is a public PKCE client of Birdo: startSso opens the system
+    // browser to the Birdo broker; the browser redirects back to birdo://auth,
+    // which MainActivity routes into completeSso to exchange the code for tokens.
+
+    /** Begin native SSO for `provider` ("google" | "github"): generate PKCE +
+     *  anti-CSRF state, persist them (the browser round-trip may recreate this
+     *  ViewModel / the Activity / the process), then open the system browser at
+     *  the Birdo broker. */
+    fun startSso(provider: String, context: Context) {
+        if (provider != "google" && provider != "github") {
+            _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
+            return
+        }
+        val pkce = PkceGenerator.generate()
+        val state = PkceGenerator.randomState()
+        // Persist to disk — in-memory state does NOT survive the browser
+        // round-trip when Android recreates the Activity/ViewModel on the
+        // birdo://auth redirect (that made every sign-in fail "session expired").
+        oauthStore.save(pkce.verifier, state)
+
+        val url = "${BuildConfig.WEB_BASE_URL}/native/oauth/start" +
+            "?provider=$provider" +
+            "&code_challenge=${pkce.challenge}" +
+            "&redirect_uri=${Uri.encode("birdo://auth")}" +
+            "&state=$state"
+        try {
+            // System browser (ACTION_VIEW), NOT a WebView — the redirect returns
+            // via the birdo://auth intent-filter to MainActivity.
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            _uiState.value = _uiState.value.copy(error = null)
+        } catch (e: Exception) {
+            oauthStore.clear()
+            _uiState.value = _uiState.value.copy(error = "Could not open the browser to sign in.")
+        }
+    }
+
+    /** Handle the birdo://auth?code=&state= redirect: verify state, then
+     *  exchange the handoff code (+ our PKCE verifier) for tokens. Reuses the
+     *  same 2FA / profile-fetch path as password login. Reads the pending PKCE
+     *  state from disk so it works even if a new ViewModel handles the callback. */
+    fun completeSso(code: String, state: String) {
+        val pending = oauthStore.load()
+        if (pending == null) {
+            _uiState.value = _uiState.value.copy(error = "Sign-in session expired. Please try again.")
+            return
+        }
+        val (verifier, savedState) = pending
+        if (state != savedState) {
+            oauthStore.clear()
+            _uiState.value = _uiState.value.copy(error = "Sign-in could not be verified. Please try again.")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            when (val result = repository.exchangeNativeOAuth(code, verifier)) {
+                is ApiResult.Success -> when (val loginResult = result.data) {
+                    is LoginResult.TwoFactorRequired -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            requiresTwoFactor = true,
+                            challengeToken = loginResult.challengeToken,
+                        )
+                    }
+                    is LoginResult.Success -> fetchProfileAfterLogin()
+                }
+                is ApiResult.Error -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = parseLoginError(result.message),
+                    )
+                }
+            }
+            oauthStore.clear()
+        }
+    }
+
     /** FIX C-2: Verify 2FA token after challenge */
     fun verifyTwoFactor(code: String) {
         val token = _uiState.value.challengeToken ?: return
@@ -220,6 +307,35 @@ class AuthViewModel @Inject constructor(
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
                             error = "Anonymous login failed",
+                        )
+                    }
+                }
+                is ApiResult.Error -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = parseLoginError(result.message),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Create a NEW anonymous account in-app and sign in. For users who don't
+     * want email/SSO. The 24-digit ID is the only credential; on success the
+     * user should be told to save it (surfaced via the profile screen).
+     */
+    fun registerAnonymous() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            when (val result = repository.registerAnonymous()) {
+                is ApiResult.Success -> {
+                    if (result.data.ok) {
+                        fetchProfileAfterLogin()
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            error = "Could not create an anonymous account. Please try again.",
                         )
                     }
                 }

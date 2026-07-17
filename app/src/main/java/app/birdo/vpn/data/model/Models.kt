@@ -19,6 +19,7 @@ typealias TwoFactorVerifyRequest = app.birdo.vpn.shared.model.TwoFactorVerifyReq
 typealias TwoFactorVerifyResponse = app.birdo.vpn.shared.model.TwoFactorVerifyResponse
 typealias RefreshRequest = app.birdo.vpn.shared.model.RefreshRequest
 typealias RefreshResponse = app.birdo.vpn.shared.model.RefreshResponse
+typealias NativeOAuthExchangeRequest = app.birdo.vpn.shared.model.NativeOAuthExchangeRequest
 
 // ─── User ────────────────────────────────────────────────────────────────────
 typealias UserProfile = app.birdo.vpn.shared.model.UserProfile
@@ -27,6 +28,7 @@ typealias SubscriptionStatus = app.birdo.vpn.shared.model.SubscriptionStatus
 // ─── Anonymous Login ─────────────────────────────────────────────────────────
 typealias AnonymousLoginRequest = app.birdo.vpn.shared.model.AnonymousLoginRequest
 typealias AnonymousLoginResponse = app.birdo.vpn.shared.model.AnonymousLoginResponse
+typealias DeviceInfoRequest = app.birdo.vpn.shared.model.DeviceInfoRequest
 
 // ─── Vouchers ────────────────────────────────────────────────────────────────
 typealias RedeemVoucherRequest = app.birdo.vpn.shared.model.RedeemVoucherRequest

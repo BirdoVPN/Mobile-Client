@@ -52,6 +52,26 @@ data class LoginResponse(
     }
 }
 
+/**
+ * Native SSO handoff exchange. Presents the single-use handoff `code` the web
+ * broker delivered to the app's `birdo://auth` redirect, plus the PKCE
+ * `code_verifier` this app generated at the start of the flow (proves it is the
+ * same client the challenge was bound to). The response reuses [LoginResponse]
+ * (backend returns the same `{ ok, tokens }` / `{ requiresTwoFactor, challengeToken }`
+ * shape as password login).
+ */
+@Serializable
+data class NativeOAuthExchangeRequest(
+    val code: String,
+    @SerialName("code_verifier") val codeVerifier: String,
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+    val deviceType: String? = null,
+    val platform: String? = null,
+    val platformVersion: String? = null,
+    val appVersion: String? = null,
+)
+
 @Serializable
 data class TwoFactorVerifyRequest(
     // FIX-MOBILE-COMPAT: Backend Zod schema VerifyCodeSchema expects camelCase.
@@ -112,6 +132,18 @@ data class SubscriptionStatus(
 data class AnonymousLoginRequest(
     @SerialName("anonymousId") val anonymousId: String,
     val password: String? = null,
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+    val deviceType: String? = null,
+    val platform: String? = null,
+    val platformVersion: String? = null,
+    val appVersion: String? = null,
+)
+
+/** Body for POST /auth/register/anonymous — device context only (all optional);
+ *  the server mints the 24-digit ID. Response reuses [AnonymousLoginResponse]. */
+@Serializable
+data class DeviceInfoRequest(
     val deviceId: String? = null,
     val deviceName: String? = null,
     val deviceType: String? = null,

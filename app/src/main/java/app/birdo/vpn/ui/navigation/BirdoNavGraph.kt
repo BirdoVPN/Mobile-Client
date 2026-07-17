@@ -100,6 +100,9 @@ fun BirdoNavGraph(
     networkMonitor: NetworkMonitor,
     deepLinkRoute: String? = null,
     onDeepLinkConsumed: () -> Unit = {},
+    /** Native-SSO redirect payload (code, state) from birdo://auth. */
+    oauthCallback: Pair<String, String>? = null,
+    onOauthConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val authViewModel: AuthViewModel = hiltViewModel()
@@ -177,6 +180,18 @@ fun BirdoNavGraph(
                 launchSingleTop = true
             }
             onDeepLinkConsumed()
+        }
+    }
+
+    // Native SSO: the birdo://auth redirect brings back (code, state) — hand it
+    // to the ViewModel to exchange for tokens. Fires regardless of login state
+    // (the whole point is to log in). Consumed once so a recomposition can't
+    // replay the single-use code.
+    LaunchedEffect(oauthCallback) {
+        val cb = oauthCallback
+        if (cb != null) {
+            authViewModel.completeSso(cb.first, cb.second)
+            onOauthConsumed()
         }
     }
 
@@ -349,6 +364,8 @@ fun BirdoNavGraph(
                             )
                             context.startActivity(intent)
                         },
+                        onSsoLogin = { provider -> authViewModel.startSso(provider, context) },
+                        onCreateAnonymous = { authViewModel.registerAnonymous() },
                     )
                 }
             }

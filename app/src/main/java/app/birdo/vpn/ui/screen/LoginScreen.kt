@@ -5,6 +5,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -19,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -44,6 +45,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 
+/** Which authentication method the standard login form shows. */
+private enum class AuthTab { Email, Anonymous, Sso }
+
 /**
  * Login screen matching the Windows client's glassmorphic design:
  * - Pure black background
@@ -66,67 +70,41 @@ fun LoginScreen(
     onCancelTwoFactor: () -> Unit = {},
     onSignUp: () -> Unit = {},
     onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
+    onSsoLogin: (provider: String) -> Unit = {},
+    onCreateAnonymous: () -> Unit = {},
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var twoFactorCode by remember { mutableStateOf("") }
-    var showAnonymousDialog by remember { mutableStateOf(false) }
+    // Which auth method the standard (non-2FA) form shows: Email or Anonymous.
+    var activeTab by remember { mutableStateOf(AuthTab.Email) }
+    var anonId by remember { mutableStateOf("") }
+    var anonPassword by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
 
     // Stagger animation
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
-    // Pinging dot animation
-    val infiniteTransition = rememberInfiniteTransition(label = "ping")
-    val pingScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "pingScale",
-    )
-    val pingAlpha by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "pingAlpha",
-    )
-
-    Box(
+    // Scrollable + centered: centers the form when it fits, and scrolls instead
+    // of CLIPPING when the content is taller than the viewport (small screens, or
+    // once the SSO buttons were added the bottom Sign-up / Anonymous rows were
+    // being cut off the bottom edge). vertical padding keeps the first/last rows
+    // off the very edges when scrolled.
+    Column(
         modifier = Modifier
-            .fillMaxSize(),
-        contentAlignment = Alignment.Center,
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 32.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            // ── Brand mark (app launcher icon) ──
+            // ── Status badge: small SQUARE app mark next to "Secure Connection",
+            //     centered. (Replaces the large top icon + the pinging dot.) ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 60, easing = BirdoMotion.Decel)) +
-                    slideInVertically(initialOffsetY = { 16 }),
-            ) {
-                app.birdo.vpn.ui.components.AppIconMark(
-                    size = 72.dp,
-                    cornerRadius = 20.dp,
-                )
-            }
-            Spacer(Modifier.height(20.dp))
-
-            // ── Status Badge (matches Windows: pinging dot + "Secure Connection") ──
-            AnimatedVisibility(
-                visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 100, easing = BirdoMotion.Decel)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 80, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Surface(
@@ -135,27 +113,15 @@ fun LoginScreen(
                     border = null,
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // Pinging dot
-                        Box(contentAlignment = Alignment.Center) {
-                            // Ping ring
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .scale(pingScale)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = pingAlpha * 0.6f)),
-                            )
-                            // Solid dot
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White),
-                            )
-                        }
+                        // Full square launcher image (not the round-cropped mark).
+                        app.birdo.vpn.ui.components.AppIconMark(
+                            size = 26.dp,
+                            cornerRadius = 6.dp,
+                            square = true,
+                        )
                         Spacer(Modifier.width(10.dp))
                         Text(
                             stringResource(R.string.login_status_badge),
@@ -320,8 +286,8 @@ fun LoginScreen(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = BirdoWhite80,
                                 cursorColor = Color.White,
-                                focusedContainerColor = GlassInput,
-                                unfocusedContainerColor = GlassInput,
+                                focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                                unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                             ),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
@@ -399,8 +365,51 @@ fun LoginScreen(
                     }
                 }
             } else {
-                // ── Standard Login Form ─────────────────────────────────
+                // ── Standard Login Form (tabbed: Email | Anonymous) ──
 
+            // ── Auth method tabs: Email | Anonymous ──
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 235, easing = BirdoMotion.Decel)) +
+                    slideInVertically(initialOffsetY = { 20 }),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BirdoWhite05)
+                        .padding(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    AuthTabButton(
+                        label = stringResource(R.string.login_tab_email),
+                        selected = activeTab == AuthTab.Email,
+                        modifier = Modifier.weight(1f).testTag(TestTags.LOGIN_TAB_EMAIL),
+                        onClick = { activeTab = AuthTab.Email; onClearError() },
+                    )
+                    AuthTabButton(
+                        label = stringResource(R.string.login_tab_anonymous),
+                        selected = activeTab == AuthTab.Anonymous,
+                        modifier = Modifier.weight(1f).testTag(TestTags.LOGIN_TAB_ANONYMOUS),
+                        onClick = { activeTab = AuthTab.Anonymous; onClearError() },
+                    )
+                    AuthTabButton(
+                        label = stringResource(R.string.login_tab_sso),
+                        selected = activeTab == AuthTab.Sso,
+                        modifier = Modifier.weight(1f).testTag(TestTags.LOGIN_TAB_SSO),
+                        onClick = { activeTab = AuthTab.Sso; onClearError() },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // Fixed-height content well so switching Email/Anonymous/SSO does NOT
+            // change the column height and jolt everything up/down. Sized to the
+            // tallest tab (Anonymous); shorter tabs top-align within it.
+            Column(modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp)) {
+            when (activeTab) {
+            AuthTab.Email -> {
             // ── Email field ──
             AnimatedVisibility(
                 visible = visible,
@@ -438,8 +447,8 @@ fun LoginScreen(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
                             cursorColor = BirdoBrand.AccentSoft,
-                            focusedContainerColor = GlassInput,
-                            unfocusedContainerColor = GlassInput,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_EMAIL_FIELD),
@@ -506,8 +515,8 @@ fun LoginScreen(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
                             cursorColor = BirdoBrand.AccentSoft,
-                            focusedContainerColor = GlassInput,
-                            unfocusedContainerColor = GlassInput,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_PASSWORD_FIELD),
@@ -562,8 +571,205 @@ fun LoginScreen(
                     }
                 }
             }
+            }
+            AuthTab.Anonymous -> {
+                // ── Anonymous form (inline; replaces the old dialog) ──
+                Column {
+                    Text(
+                        stringResource(R.string.login_anonymous_id_label),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = BirdoWhite60,
+                        modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
+                    )
+                    OutlinedTextField(
+                        value = anonId,
+                        onValueChange = { next -> anonId = next.filter { it.isDigit() }.take(24); onClearError() },
+                        placeholder = { Text(stringResource(R.string.login_anonymous_id_placeholder), color = BirdoWhite40, fontSize = 13.sp) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) }),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
+                            unfocusedBorderColor = BirdoBrand.HairlineSoft,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = BirdoWhite80,
+                            cursorColor = BirdoBrand.AccentSoft,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_ANONYMOUS_ID_FIELD),
+                    )
+                    Text(
+                        stringResource(R.string.login_anonymous_caption_inline),
+                        fontSize = 11.sp,
+                        color = BirdoWhite40,
+                        modifier = Modifier.padding(top = 6.dp, start = 4.dp),
+                    )
+                }
 
-            Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(14.dp))
+
+                Column {
+                    Text(
+                        stringResource(R.string.login_anonymous_password_label),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = BirdoWhite60,
+                        modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
+                    )
+                    OutlinedTextField(
+                        value = anonPassword,
+                        onValueChange = { anonPassword = it; onClearError() },
+                        placeholder = { Text("••••••••", color = BirdoWhite40) },
+                        trailingIcon = {
+                            IconButton(onClick = { showPassword = !showPassword }) {
+                                Icon(
+                                    if (showPassword) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    stringResource(if (showPassword) R.string.cd_hide_password else R.string.cd_show_password),
+                                    tint = BirdoWhite40,
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            focusManager.clearFocus()
+                            if (anonId.length == 24) onLoginAnonymous(anonId, anonPassword.takeIf { it.isNotBlank() })
+                        }),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
+                            unfocusedBorderColor = BirdoBrand.HairlineSoft,
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = BirdoWhite80,
+                            cursorColor = BirdoBrand.AccentSoft,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_ANONYMOUS_PASSWORD_FIELD),
+                    )
+                }
+
+                Spacer(Modifier.height(28.dp))
+
+                Button(
+                    onClick = { focusManager.clearFocus(); onLoginAnonymous(anonId, anonPassword.takeIf { it.isNotBlank() }) },
+                    enabled = anonId.length == 24 && !isLoading,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag(TestTags.LOGIN_ANONYMOUS_SUBMIT),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                        disabledContainerColor = BirdoWhite20,
+                        disabledContentColor = BirdoWhite40,
+                    ),
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(stringResource(R.string.login_connecting), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    } else {
+                        Text(stringResource(R.string.login_anonymous_submit), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
+
+                // Create a brand-new anonymous account in-app (no email, no SSO).
+                Text(
+                    text = stringResource(R.string.login_anonymous_create),
+                    fontSize = 13.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium,
+                    textDecoration = TextDecoration.Underline,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .minimumInteractiveComponentSize()
+                        .clickable(enabled = !isLoading, role = Role.Button) {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onCreateAnonymous()
+                        }
+                        .testTag(TestTags.LOGIN_ANONYMOUS_CREATE),
+                )
+            }
+            AuthTab.Sso -> {
+            // ── Continue with Google / GitHub (native SSO, no password) ──
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 260, easing = BirdoMotion.Decel)),
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = stringResource(R.string.login_sso_tab_caption),
+                        fontSize = 12.sp,
+                        color = BirdoWhite40,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onSsoLogin("google")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_SSO_GOOGLE),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.12f),
+                            contentColor = Color.White,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_sso_google),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onSsoLogin("github")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_SSO_GITHUB),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.12f),
+                            contentColor = Color.White,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_sso_github),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
+            }
+            }
+            }
+            }
+
+            Spacer(Modifier.height(20.dp))
 
             // ── Sign up link ──
             AnimatedVisibility(
@@ -572,6 +778,10 @@ fun LoginScreen(
             ) {
                 Row(
                     horizontalArrangement = Arrangement.Center,
+                    // Center-align vertically: "Sign up" carries a 48dp min touch
+                    // target so its box is taller than the plain prompt text; with
+                    // the default (top) alignment the two didn't sit on one line.
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
                         text = stringResource(R.string.login_no_account),
@@ -585,240 +795,38 @@ fun LoginScreen(
                         fontWeight = FontWeight.Medium,
                         textDecoration = TextDecoration.Underline,
                         modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .minimumInteractiveComponentSize()
-                        .clickable(role = Role.Button) { onSignUp() }
+                            .clickable(role = Role.Button) { onSignUp() }
+                            .padding(vertical = 12.dp, horizontal = 4.dp)
                             .testTag(TestTags.LOGIN_SIGN_UP),
                     )
                 }
             }
-
-            Spacer(Modifier.height(16.dp))
-
-            // ── Continue Anonymously ──
-            AnimatedVisibility(
-                visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 400, easing = BirdoMotion.Decel)),
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    OutlinedButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            showAnonymousDialog = true
-                            onClearError()
-                        },
-                        enabled = !isLoading,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag(TestTags.LOGIN_ANONYMOUS_BUTTON),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = BirdoWhite60,
-                            disabledContentColor = BirdoWhite20,
-                        ),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
-                    ) {
-                        Text(
-                            stringResource(R.string.login_anonymous_button),
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.login_anonymous_no_account_link),
-                        fontSize = 11.sp,
-                        color = BirdoWhite40,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                    )
-                }
-            }
             } // end else (standard login form)
+    }
+}
+
+/** Segmented tab button for the Email | Anonymous switcher. */
+@Composable
+private fun AuthTabButton(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier.height(40.dp),
+        shape = RoundedCornerShape(9.dp),
+        color = if (selected) Color.White.copy(alpha = 0.14f) else Color.Transparent,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = label,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (selected) Color.White else BirdoWhite60,
+            )
         }
     }
-
-    if (showAnonymousDialog) {
-        AnonymousLoginDialog(
-            isLoading = isLoading,
-            onDismiss = { showAnonymousDialog = false },
-            onSubmit = { id, pwd ->
-                showAnonymousDialog = false
-                onLoginAnonymous(id, pwd)
-            },
-        )
-    }
 }
 
-/**
- * Modal dialog for entering an anonymous account ID + optional password.
- * Mirrors the website's login flow for accounts with `/^\d{24}$/` IDs.
- * Account creation is web-only — this dialog only logs into existing accounts.
- */
-@Composable
-private fun AnonymousLoginDialog(
-    isLoading: Boolean,
-    onDismiss: () -> Unit,
-    onSubmit: (anonymousId: String, password: String?) -> Unit,
-) {
-    var rawId by remember { mutableStateOf("") }
-    var pwd by remember { mutableStateOf("") }
-    var showPwd by remember { mutableStateOf(false) }
-    val focusManager = LocalFocusManager.current
-
-    val digits = rawId.filter { it.isDigit() }.take(24)
-    val canSubmit = digits.length == 24 && !isLoading
-
-    AlertDialog(
-        onDismissRequest = { if (!isLoading) onDismiss() },
-        containerColor = Color(0xFF0A0A0A),
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                stringResource(R.string.login_anonymous_dialog_title),
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 18.sp,
-            )
-        },
-        text = {
-            Column {
-                Text(
-                    stringResource(R.string.login_anonymous_dialog_subtitle),
-                    color = BirdoWhite60,
-                    fontSize = 13.sp,
-                )
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    stringResource(R.string.login_anonymous_id_label),
-                    color = BirdoWhite60,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
-                )
-                OutlinedTextField(
-                    value = formatAnonymousId(digits),
-                    onValueChange = { input ->
-                        rawId = input.filter { it.isDigit() }.take(24)
-                    },
-                    placeholder = {
-                        Text(stringResource(R.string.login_anonymous_id_placeholder), color = BirdoWhite20, fontSize = 13.sp)
-                    },
-                    singleLine = true,
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        letterSpacing = 1.sp,
-                        fontSize = 14.sp,
-                    ),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.NumberPassword,
-                        imeAction = ImeAction.Next,
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
-                        unfocusedBorderColor = BirdoBrand.HairlineSoft,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = BirdoWhite80,
-                        cursorColor = BirdoBrand.AccentSoft,
-                        focusedContainerColor = GlassInput,
-                        unfocusedContainerColor = GlassInput,
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag(TestTags.LOGIN_ANONYMOUS_ID_FIELD),
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${digits.length} / 24",
-                    color = if (digits.length == 24) BirdoWhite60 else BirdoWhite40,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(start = 4.dp),
-                )
-                Spacer(Modifier.height(14.dp))
-                Text(
-                    stringResource(R.string.login_anonymous_password_label),
-                    color = BirdoWhite60,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
-                )
-                OutlinedTextField(
-                    value = pwd,
-                    onValueChange = { pwd = it },
-                    placeholder = { Text("••••••••", color = BirdoWhite20) },
-                    trailingIcon = {
-                        IconButton(onClick = { showPwd = !showPwd }) {
-                            Icon(
-                                if (showPwd) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                stringResource(R.string.cd_toggle_password),
-                                tint = BirdoWhite40,
-                            )
-                        }
-                    },
-                    singleLine = true,
-                    visualTransformation = if (showPwd) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            focusManager.clearFocus()
-                            if (canSubmit) onSubmit(digits, pwd.ifBlank { null })
-                        },
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
-                        unfocusedBorderColor = BirdoBrand.HairlineSoft,
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = BirdoWhite80,
-                        cursorColor = BirdoBrand.AccentSoft,
-                        focusedContainerColor = GlassInput,
-                        unfocusedContainerColor = GlassInput,
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag(TestTags.LOGIN_ANONYMOUS_PASSWORD_FIELD),
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onSubmit(digits, pwd.ifBlank { null }) },
-                enabled = canSubmit,
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = Color.Black,
-                    disabledContainerColor = BirdoWhite20,
-                    disabledContentColor = BirdoWhite40,
-                ),
-                modifier = Modifier.testTag(TestTags.LOGIN_ANONYMOUS_SUBMIT),
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        color = Color.Black,
-                        strokeWidth = 2.dp,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.login_anonymous_signing_in), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                } else {
-                    Text(stringResource(R.string.login_anonymous_submit), fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isLoading) {
-                Text(stringResource(R.string.login_anonymous_cancel), color = BirdoWhite60, fontSize = 13.sp)
-            }
-        },
-    )
-}
-
-/** Format a digits-only string as XXXX XXXX XXXX XXXX XXXX XXXX (groups of 4). */
-private fun formatAnonymousId(digits: String): String =
-    digits.chunked(4).joinToString(" ")

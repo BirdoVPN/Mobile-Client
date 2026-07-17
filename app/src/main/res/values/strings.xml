@@ -20,6 +20,19 @@
     <string name="login_2fa_verifying">Verifying…</string>
     <string name="login_2fa_back">Back to login</string>
 
+    <!-- Native SSO -->
+    <string name="login_sso_divider">or continue with</string>
+    <string name="login_sso_google">Continue with Google</string>
+    <string name="login_sso_github">Continue with GitHub</string>
+
+    <!-- Auth method tabs + inline anonymous form -->
+    <string name="login_tab_email">Email</string>
+    <string name="login_tab_anonymous">Anonymous</string>
+    <string name="login_tab_sso">SSO</string>
+    <string name="login_sso_tab_caption">Sign in with your Google or GitHub account</string>
+    <string name="login_anonymous_caption_inline">Enter the 24-digit ID from your anonymous account</string>
+    <string name="login_anonymous_create">Create a new anonymous account</string>
+
     <!-- Anonymous Login -->
     <string name="login_anonymous_button">Login with Anonymous ID</string>
     <string name="login_anonymous_signing_in">Signing in…</string>
