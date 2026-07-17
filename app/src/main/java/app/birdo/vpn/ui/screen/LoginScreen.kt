@@ -772,8 +772,11 @@ fun LoginScreen(
             Spacer(Modifier.height(20.dp))
 
             // ── Sign up link ──
+            // Hidden on the Anonymous tab: an anonymous account is created in-app
+            // ("Create anonymous account"), not via the web "Sign Up" flow, so the
+            // prompt is irrelevant (and misleading) there. Kept on Email / SSO.
             AnimatedVisibility(
-                visible = visible,
+                visible = visible && activeTab != AuthTab.Anonymous,
                 enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 350, easing = BirdoMotion.Decel)),
             ) {
                 Row(

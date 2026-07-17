@@ -484,6 +484,10 @@ fun BirdoNavGraph(
             ) {
                 AdaptiveContainer {
                     val context = LocalContext.current
+                    // Split tunneling is OPERATIVE+. Plan-string only → anon RECON
+                    // and email/SSO RECON are gated identically.
+                    val settingsPlan = vpnState.subscription?.plan?.uppercase()
+                    val splitUnlocked = settingsPlan == "OPERATIVE" || settingsPlan == "SOVEREIGN"
                     SettingsScreen(
                         state = settingsState,
                         onAutoConnectChange = { settingsViewModel.setAutoConnect(it) },
@@ -506,6 +510,11 @@ fun BirdoNavGraph(
                         },
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
+                        splitTunnelUnlocked = splitUnlocked,
+                        onUpgradeRequired = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
                     )
                 }
             }
@@ -526,6 +535,10 @@ fun BirdoNavGraph(
                     // Locked toggles route to the upgrade flow instead of toggling.
                     val plan = vpnState.subscription?.plan?.uppercase()
                     val isSovereign = plan == "SOVEREIGN"
+                    // Stealth + Split tunnel are OPERATIVE-and-above. Keyed on the
+                    // plan string only — an anonymous account on RECON is gated
+                    // exactly like an email/SSO account on RECON.
+                    val isOperativeOrAbove = plan == "OPERATIVE" || plan == "SOVEREIGN"
                     VpnSettingsScreen(
                         state = settingsState,
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
@@ -539,6 +552,7 @@ fun BirdoNavGraph(
                         onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onOpenPortForward = { navController.navigate(Screen.PortForward.route) },
                         onBack = { navController.popBackStack() },
+                        stealthUnlocked = isOperativeOrAbove,
                         customDnsUnlocked = isSovereign,
                         portForwardUnlocked = isSovereign,
                         quantumUnlocked = true,

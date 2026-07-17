@@ -60,6 +60,10 @@ fun SettingsScreen(
     onOpenVpnSettings: () -> Unit,
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
+    // Split tunneling is OPERATIVE+. Gated by PLAN only (an anonymous RECON user
+    // is treated identically to an email/SSO RECON user).
+    splitTunnelUnlocked: Boolean = true,
+    onUpgradeRequired: (feature: String) -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -183,12 +187,16 @@ fun SettingsScreen(
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_split_tunnel),
                     description = stringResource(R.string.settings_split_tunnel_desc),
-                    checked = state.splitTunnelingEnabled,
+                    // `&& splitTunnelUnlocked` so a persisted-on state can't
+                    // resurface after a downgrade; locked row routes to upgrade.
+                    checked = state.splitTunnelingEnabled && splitTunnelUnlocked,
                     onCheckedChange = onSplitTunnelingChange,
+                    locked = !splitTunnelUnlocked,
+                    onLockedTap = { onUpgradeRequired("Split Tunneling") },
                 )
             }
 
-            if (state.splitTunnelingEnabled) {
+            if (state.splitTunnelingEnabled && splitTunnelUnlocked) {
                 item {
                     SettingsLink(
                         icon = Icons.Default.Apps,
@@ -259,6 +267,11 @@ private fun SettingsToggle(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     testTag: String? = null,
+    // When `locked`, the switch is non-interactive and the whole row taps
+    // through to `onLockedTap` (the upgrade flow) — mirrors VpnToggle so premium
+    // gating looks identical wherever it appears.
+    locked: Boolean = false,
+    onLockedTap: () -> Unit = {},
 ) {
     val palette = BirdoColors.current
     BirdoCard(
@@ -266,36 +279,52 @@ private fun SettingsToggle(
         cornerRadius = 16.dp,
         contentPadding = PaddingValues(0.dp),
     ) {
-        Row(
-            modifier = Modifier
+        val rowModifier = if (locked) {
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .clickable(role = Role.Button, onClick = onLockedTap)
+        } else {
+            Modifier
                 .fillMaxWidth()
                 .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+        }
+        Row(
+            modifier = rowModifier.padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SettingIconChip(icon = icon, iconColor = iconColor, contentDescription = title)
+            SettingIconChip(icon = icon, iconColor = if (locked) palette.onSurfaceFaint else iconColor, contentDescription = title)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
             }
             Spacer(Modifier.width(8.dp))
-            // onCheckedChange = null: the row's toggleable owns the interaction,
-            // so TalkBack sees ONE labeled switch instead of a labeled row plus
-            // a second, unlabeled "On, switch" stop.
-            Switch(
-                checked = checked,
-                onCheckedChange = null,
-                modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = palette.accent,
-                    checkedBorderColor = Color.Transparent,
-                    uncheckedThumbColor = palette.onSurfaceMuted,
-                    uncheckedTrackColor = palette.surfaceRaised,
-                    uncheckedBorderColor = palette.hairlineSoft,
-                ),
-            )
+            if (locked) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = stringResource(R.string.cd_locked_feature),
+                    tint = palette.onSurfaceFaint,
+                    modifier = Modifier.size(20.dp),
+                )
+            } else {
+                // onCheckedChange = null: the row's toggleable owns the interaction,
+                // so TalkBack sees ONE labeled switch instead of a labeled row plus
+                // a second, unlabeled "On, switch" stop.
+                Switch(
+                    checked = checked,
+                    onCheckedChange = null,
+                    modifier = testTag?.let { Modifier.testTag(it) } ?: Modifier,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = palette.accent,
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedThumbColor = palette.onSurfaceMuted,
+                        uncheckedTrackColor = palette.surfaceRaised,
+                        uncheckedBorderColor = palette.hairlineSoft,
+                    ),
+                )
+            }
         }
     }
 }
