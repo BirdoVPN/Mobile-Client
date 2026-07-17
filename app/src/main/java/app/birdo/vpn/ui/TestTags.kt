@@ -19,6 +19,7 @@ object TestTags {
     const val LOGIN_SSO_GITHUB = "login_sso_github"
     const val LOGIN_TAB_EMAIL = "login_tab_email"
     const val LOGIN_TAB_ANONYMOUS = "login_tab_anonymous"
+    const val LOGIN_TAB_SSO = "login_tab_sso"
     const val LOGIN_ANONYMOUS_CREATE = "login_anonymous_create"
     const val LOGIN_ANONYMOUS_BUTTON = "login_anonymous_button"
     const val LOGIN_ANONYMOUS_ID_FIELD = "login_anonymous_id_field"

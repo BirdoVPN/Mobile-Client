@@ -28,6 +28,8 @@
     <!-- Auth method tabs + inline anonymous form -->
     <string name="login_tab_email">Email</string>
     <string name="login_tab_anonymous">Anonymous</string>
+    <string name="login_tab_sso">SSO</string>
+    <string name="login_sso_tab_caption">Sign in with your Google or GitHub account</string>
     <string name="login_anonymous_caption_inline">Enter the 24-digit ID from your anonymous account</string>
     <string name="login_anonymous_create">Create a new anonymous account</string>
 

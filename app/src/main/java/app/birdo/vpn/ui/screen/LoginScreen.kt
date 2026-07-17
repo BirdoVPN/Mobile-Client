@@ -47,7 +47,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 
 /** Which authentication method the standard login form shows. */
-private enum class AuthTab { Email, Anonymous }
+private enum class AuthTab { Email, Anonymous, Sso }
 
 /**
  * Login screen matching the Windows client's glassmorphic design:
@@ -439,12 +439,19 @@ fun LoginScreen(
                         modifier = Modifier.weight(1f).testTag(TestTags.LOGIN_TAB_ANONYMOUS),
                         onClick = { activeTab = AuthTab.Anonymous; onClearError() },
                     )
+                    AuthTabButton(
+                        label = stringResource(R.string.login_tab_sso),
+                        selected = activeTab == AuthTab.Sso,
+                        modifier = Modifier.weight(1f).testTag(TestTags.LOGIN_TAB_SSO),
+                        onClick = { activeTab = AuthTab.Sso; onClearError() },
+                    )
                 }
             }
 
             Spacer(Modifier.height(20.dp))
 
-            if (activeTab == AuthTab.Email) {
+            when (activeTab) {
+            AuthTab.Email -> {
             // ── Email field ──
             AnimatedVisibility(
                 visible = visible,
@@ -606,7 +613,8 @@ fun LoginScreen(
                     }
                 }
             }
-            } else {
+            }
+            AuthTab.Anonymous -> {
                 // ── Anonymous form (inline; replaces the old dialog) ──
                 Column {
                     Text(
@@ -731,19 +739,19 @@ fun LoginScreen(
                         .testTag(TestTags.LOGIN_ANONYMOUS_CREATE),
                 )
             }
-
-            Spacer(Modifier.height(20.dp))
-
+            AuthTab.Sso -> {
             // ── Continue with Google / GitHub (native SSO, no password) ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 330, easing = BirdoMotion.Decel)),
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 260, easing = BirdoMotion.Decel)),
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = stringResource(R.string.login_sso_divider),
-                        fontSize = 11.sp,
+                        text = stringResource(R.string.login_sso_tab_caption),
+                        fontSize = 12.sp,
                         color = BirdoWhite40,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 4.dp),
                     )
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(
@@ -797,6 +805,8 @@ fun LoginScreen(
                     }
                 }
             }
+            }
+            }
 
             Spacer(Modifier.height(20.dp))
 
@@ -807,6 +817,10 @@ fun LoginScreen(
             ) {
                 Row(
                     horizontalArrangement = Arrangement.Center,
+                    // Center-align vertically: "Sign up" carries a 48dp min touch
+                    // target so its box is taller than the plain prompt text; with
+                    // the default (top) alignment the two didn't sit on one line.
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
                         text = stringResource(R.string.login_no_account),
@@ -820,9 +834,8 @@ fun LoginScreen(
                         fontWeight = FontWeight.Medium,
                         textDecoration = TextDecoration.Underline,
                         modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .minimumInteractiveComponentSize()
-                        .clickable(role = Role.Button) { onSignUp() }
+                            .clickable(role = Role.Button) { onSignUp() }
+                            .padding(vertical = 12.dp, horizontal = 4.dp)
                             .testTag(TestTags.LOGIN_SIGN_UP),
                     )
                 }
