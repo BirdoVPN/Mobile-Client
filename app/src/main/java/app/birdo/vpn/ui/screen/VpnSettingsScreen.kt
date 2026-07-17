@@ -58,6 +58,7 @@ fun VpnSettingsScreen(
     // Premium toggles mirror the Multi-Hop pattern on the Connect screen:
     // when the feature is locked, the control shows a lock affordance and
     // tapping it routes the user to the upgrade flow instead of toggling.
+    stealthUnlocked: Boolean = true,
     customDnsUnlocked: Boolean = true,
     portForwardUnlocked: Boolean = true,
     quantumUnlocked: Boolean = true,
@@ -130,13 +131,19 @@ fun VpnSettingsScreen(
             }
 
             item {
+                // Stealth mode is OPERATIVE+. `&& stealthUnlocked` on `checked`
+                // means a persisted-on state can't resurface after a downgrade;
+                // the lock affordance routes to the upgrade flow (matches Quantum
+                // / Custom-DNS / Port-forward gating).
                 VpnToggle(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_stealth_title),
                     description = stringResource(R.string.vpn_settings_stealth_desc),
-                    checked = state.stealthModeEnabled,
+                    checked = state.stealthModeEnabled && stealthUnlocked,
                     onCheckedChange = onStealthModeChange,
+                    locked = !stealthUnlocked,
+                    onLockedTap = { onUpgradeRequired("Stealth Mode") },
                 )
             }
 
