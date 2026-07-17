@@ -321,6 +321,35 @@ class AuthViewModel @Inject constructor(
     }
 
     /**
+     * Create a NEW anonymous account in-app and sign in. For users who don't
+     * want email/SSO. The 24-digit ID is the only credential; on success the
+     * user should be told to save it (surfaced via the profile screen).
+     */
+    fun registerAnonymous() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+            when (val result = repository.registerAnonymous()) {
+                is ApiResult.Success -> {
+                    if (result.data.ok) {
+                        fetchProfileAfterLogin()
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            error = "Could not create an anonymous account. Please try again.",
+                        )
+                    }
+                }
+                is ApiResult.Error -> {
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = parseLoginError(result.message),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * GDPR Art. 17: Delete the user's account permanently.
      * Requires password re-confirmation for security.
      */

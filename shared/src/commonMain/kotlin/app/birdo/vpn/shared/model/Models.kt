@@ -140,6 +140,18 @@ data class AnonymousLoginRequest(
     val appVersion: String? = null,
 )
 
+/** Body for POST /auth/register/anonymous — device context only (all optional);
+ *  the server mints the 24-digit ID. Response reuses [AnonymousLoginResponse]. */
+@Serializable
+data class DeviceInfoRequest(
+    val deviceId: String? = null,
+    val deviceName: String? = null,
+    val deviceType: String? = null,
+    val platform: String? = null,
+    val platformVersion: String? = null,
+    val appVersion: String? = null,
+)
+
 @Serializable
 data class AnonymousLoginResponse(
     val ok: Boolean = false,

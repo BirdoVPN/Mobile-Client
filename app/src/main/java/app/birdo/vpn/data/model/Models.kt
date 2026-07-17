@@ -28,6 +28,7 @@ typealias SubscriptionStatus = app.birdo.vpn.shared.model.SubscriptionStatus
 // ─── Anonymous Login ─────────────────────────────────────────────────────────
 typealias AnonymousLoginRequest = app.birdo.vpn.shared.model.AnonymousLoginRequest
 typealias AnonymousLoginResponse = app.birdo.vpn.shared.model.AnonymousLoginResponse
+typealias DeviceInfoRequest = app.birdo.vpn.shared.model.DeviceInfoRequest
 
 // ─── Vouchers ────────────────────────────────────────────────────────────────
 typealias RedeemVoucherRequest = app.birdo.vpn.shared.model.RedeemVoucherRequest

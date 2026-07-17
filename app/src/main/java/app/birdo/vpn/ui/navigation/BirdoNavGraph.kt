@@ -365,6 +365,7 @@ fun BirdoNavGraph(
                             context.startActivity(intent)
                         },
                         onSsoLogin = { provider -> authViewModel.startSso(provider, context) },
+                        onCreateAnonymous = { authViewModel.registerAnonymous() },
                     )
                 }
             }

@@ -34,6 +34,16 @@ interface BirdoApi {
     ): Response<AnonymousLoginResponse>
 
     /**
+     * Create a NEW anonymous account in-app (server mints the 24-digit ID) and
+     * return tokens. Body is device context only. X-Desktop-Client is added
+     * globally by AuthInterceptor.
+     */
+    @POST("auth/register/anonymous")
+    suspend fun registerAnonymous(
+        @Body request: DeviceInfoRequest,
+    ): Response<AnonymousLoginResponse>
+
+    /**
      * Native SSO handoff exchange. Swaps the web broker's single-use PKCE-bound
      * code (delivered to the app via the birdo://auth redirect) for tokens. The
      * X-Desktop-Client header is added globally by AuthInterceptor. Response is
