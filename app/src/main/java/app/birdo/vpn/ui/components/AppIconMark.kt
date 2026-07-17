@@ -43,15 +43,20 @@ import app.birdo.vpn.R
 fun AppIconMark(
     size: Dp = 40.dp,
     cornerRadius: Dp = 12.dp,
+    // When true, load the SQUARE launcher (`ic_launcher`) and show it whole
+    // (Fit, no crop) instead of the round-masked variant whose square artwork
+    // gets its corners clipped. Used by the login header.
+    square: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val sizePx = with(density) { size.roundToPx() }.coerceAtLeast(1)
 
-    val bitmap = remember(sizePx) {
+    val bitmap = remember(sizePx, square) {
         runCatching {
-            val drawable = AppCompatResources.getDrawable(context, R.mipmap.ic_launcher_round)
+            val primary = if (square) R.mipmap.ic_launcher else R.mipmap.ic_launcher_round
+            val drawable = AppCompatResources.getDrawable(context, primary)
                 ?: AppCompatResources.getDrawable(context, R.mipmap.ic_launcher)
             drawable?.toBitmap(width = sizePx, height = sizePx)?.asImageBitmap()
         }.getOrNull()
@@ -68,7 +73,7 @@ fun AppIconMark(
                 bitmap = bitmap,
                 contentDescription = null,
                 modifier = Modifier.size(size),
-                contentScale = ContentScale.Crop,
+                contentScale = if (square) ContentScale.Fit else ContentScale.Crop,
             )
         }
     }

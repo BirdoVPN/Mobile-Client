@@ -21,7 +21,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -88,27 +87,6 @@ fun LoginScreen(
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
-    // Pinging dot animation
-    val infiniteTransition = rememberInfiniteTransition(label = "ping")
-    val pingScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 2f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "pingScale",
-    )
-    val pingAlpha by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "pingAlpha",
-    )
-
     // Scrollable + centered: centers the form when it fits, and scrolls instead
     // of CLIPPING when the content is taller than the viewport (small screens, or
     // once the SSO buttons were added the bottom Sign-up / Anonymous rows were
@@ -122,23 +100,11 @@ fun LoginScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-            // ── Brand mark (app launcher icon) ──
+            // ── Status badge: small SQUARE app mark next to "Secure Connection",
+            //     centered. (Replaces the large top icon + the pinging dot.) ──
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 60, easing = BirdoMotion.Decel)) +
-                    slideInVertically(initialOffsetY = { 16 }),
-            ) {
-                app.birdo.vpn.ui.components.AppIconMark(
-                    size = 72.dp,
-                    cornerRadius = 20.dp,
-                )
-            }
-            Spacer(Modifier.height(20.dp))
-
-            // ── Status Badge (matches Windows: pinging dot + "Secure Connection") ──
-            AnimatedVisibility(
-                visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 100, easing = BirdoMotion.Decel)) +
+                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 80, easing = BirdoMotion.Decel)) +
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Surface(
@@ -147,27 +113,15 @@ fun LoginScreen(
                     border = null,
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // Pinging dot
-                        Box(contentAlignment = Alignment.Center) {
-                            // Ping ring
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .scale(pingScale)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = pingAlpha * 0.6f)),
-                            )
-                            // Solid dot
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White),
-                            )
-                        }
+                        // Full square launcher image (not the round-cropped mark).
+                        app.birdo.vpn.ui.components.AppIconMark(
+                            size = 26.dp,
+                            cornerRadius = 6.dp,
+                            square = true,
+                        )
                         Spacer(Modifier.width(10.dp))
                         Text(
                             stringResource(R.string.login_status_badge),
@@ -332,8 +286,8 @@ fun LoginScreen(
                                 focusedTextColor = Color.White,
                                 unfocusedTextColor = BirdoWhite80,
                                 cursorColor = Color.White,
-                                focusedContainerColor = GlassInput,
-                                unfocusedContainerColor = GlassInput,
+                                focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                                unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                             ),
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
@@ -450,6 +404,10 @@ fun LoginScreen(
 
             Spacer(Modifier.height(20.dp))
 
+            // Fixed-height content well so switching Email/Anonymous/SSO does NOT
+            // change the column height and jolt everything up/down. Sized to the
+            // tallest tab (Anonymous); shorter tabs top-align within it.
+            Column(modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp)) {
             when (activeTab) {
             AuthTab.Email -> {
             // ── Email field ──
@@ -489,8 +447,8 @@ fun LoginScreen(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
                             cursorColor = BirdoBrand.AccentSoft,
-                            focusedContainerColor = GlassInput,
-                            unfocusedContainerColor = GlassInput,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_EMAIL_FIELD),
@@ -557,8 +515,8 @@ fun LoginScreen(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
                             cursorColor = BirdoBrand.AccentSoft,
-                            focusedContainerColor = GlassInput,
-                            unfocusedContainerColor = GlassInput,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_PASSWORD_FIELD),
@@ -637,8 +595,8 @@ fun LoginScreen(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
                             cursorColor = BirdoBrand.AccentSoft,
-                            focusedContainerColor = GlassInput,
-                            unfocusedContainerColor = GlassInput,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_ANONYMOUS_ID_FIELD),
@@ -687,8 +645,8 @@ fun LoginScreen(
                             focusedTextColor = Color.White,
                             unfocusedTextColor = BirdoWhite80,
                             cursorColor = BirdoBrand.AccentSoft,
-                            focusedContainerColor = GlassInput,
-                            unfocusedContainerColor = GlassInput,
+                            focusedContainerColor = Color.White.copy(alpha = 0.12f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_ANONYMOUS_PASSWORD_FIELD),
@@ -767,10 +725,11 @@ fun LoginScreen(
                             .testTag(TestTags.LOGIN_SSO_GOOGLE),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = BirdoWhite60,
+                            containerColor = Color.White.copy(alpha = 0.12f),
+                            contentColor = Color.White,
                             disabledContentColor = BirdoWhite20,
                         ),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
                     ) {
                         Text(
                             stringResource(R.string.login_sso_google),
@@ -792,10 +751,11 @@ fun LoginScreen(
                             .testTag(TestTags.LOGIN_SSO_GITHUB),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = BirdoWhite60,
+                            containerColor = Color.White.copy(alpha = 0.12f),
+                            contentColor = Color.White,
                             disabledContentColor = BirdoWhite20,
                         ),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoWhite10),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
                     ) {
                         Text(
                             stringResource(R.string.login_sso_github),
@@ -804,6 +764,7 @@ fun LoginScreen(
                         )
                     }
                 }
+            }
             }
             }
             }
