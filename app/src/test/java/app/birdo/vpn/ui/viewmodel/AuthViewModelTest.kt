@@ -24,6 +24,7 @@ class AuthViewModelTest {
 
     private lateinit var repository: BirdoRepository
     private lateinit var tokenManager: TokenManager
+    private lateinit var oauthStore: app.birdo.vpn.data.auth.OAuthStateStore
     private lateinit var viewModel: AuthViewModel
     private val testDispatcher = UnconfinedTestDispatcher()
 
@@ -45,6 +46,7 @@ class AuthViewModelTest {
         Dispatchers.setMain(testDispatcher)
         repository = mockk(relaxed = true)
         tokenManager = mockk(relaxed = true)
+        oauthStore = mockk(relaxed = true)
         io.mockk.every { tokenManager.isLoggedIn() } returns true
         // Default: no existing session
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
@@ -55,7 +57,7 @@ class AuthViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager)
+    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager, oauthStore)
 
     /**
      * Helper: create a ViewModel that is already past the init checkSession,

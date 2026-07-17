@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.data.auth.OAuthStateStore
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
@@ -40,6 +41,7 @@ data class AuthUiState(
 class AuthViewModel @Inject constructor(
     private val repository: BirdoRepository,
     private val tokenManager: TokenManager,
+    private val oauthStore: OAuthStateStore,
 ) : ViewModel() {
 
     companion object {
@@ -151,15 +153,10 @@ class AuthViewModel @Inject constructor(
     // browser to the Birdo broker; the browser redirects back to birdo://auth,
     // which MainActivity routes into completeSso to exchange the code for tokens.
 
-    private data class PendingOauth(val verifier: String, val state: String)
-
-    /** In-memory PKCE state for the in-flight SSO attempt. Held only for the
-     *  short browser round-trip; if the process is killed mid-flow the user
-     *  simply retries (no tokens or secrets are persisted). */
-    private var pendingOauth: PendingOauth? = null
-
     /** Begin native SSO for `provider` ("google" | "github"): generate PKCE +
-     *  anti-CSRF state, then open the system browser at the Birdo broker. */
+     *  anti-CSRF state, persist them (the browser round-trip may recreate this
+     *  ViewModel / the Activity / the process), then open the system browser at
+     *  the Birdo broker. */
     fun startSso(provider: String, context: Context) {
         if (provider != "google" && provider != "github") {
             _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
@@ -167,7 +164,10 @@ class AuthViewModel @Inject constructor(
         }
         val pkce = PkceGenerator.generate()
         val state = PkceGenerator.randomState()
-        pendingOauth = PendingOauth(pkce.verifier, state)
+        // Persist to disk — in-memory state does NOT survive the browser
+        // round-trip when Android recreates the Activity/ViewModel on the
+        // birdo://auth redirect (that made every sign-in fail "session expired").
+        oauthStore.save(pkce.verifier, state)
 
         val url = "${BuildConfig.WEB_BASE_URL}/native/oauth/start" +
             "?provider=$provider" +
@@ -182,29 +182,31 @@ class AuthViewModel @Inject constructor(
             context.startActivity(intent)
             _uiState.value = _uiState.value.copy(error = null)
         } catch (e: Exception) {
-            pendingOauth = null
+            oauthStore.clear()
             _uiState.value = _uiState.value.copy(error = "Could not open the browser to sign in.")
         }
     }
 
     /** Handle the birdo://auth?code=&state= redirect: verify state, then
      *  exchange the handoff code (+ our PKCE verifier) for tokens. Reuses the
-     *  same 2FA / profile-fetch path as password login. */
+     *  same 2FA / profile-fetch path as password login. Reads the pending PKCE
+     *  state from disk so it works even if a new ViewModel handles the callback. */
     fun completeSso(code: String, state: String) {
-        val pending = pendingOauth
+        val pending = oauthStore.load()
         if (pending == null) {
             _uiState.value = _uiState.value.copy(error = "Sign-in session expired. Please try again.")
             return
         }
-        if (state != pending.state) {
-            pendingOauth = null
+        val (verifier, savedState) = pending
+        if (state != savedState) {
+            oauthStore.clear()
             _uiState.value = _uiState.value.copy(error = "Sign-in could not be verified. Please try again.")
             return
         }
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-            when (val result = repository.exchangeNativeOAuth(code, pending.verifier)) {
+            when (val result = repository.exchangeNativeOAuth(code, verifier)) {
                 is ApiResult.Success -> when (val loginResult = result.data) {
                     is LoginResult.TwoFactorRequired -> {
                         _uiState.value = _uiState.value.copy(
@@ -222,7 +224,7 @@ class AuthViewModel @Inject constructor(
                     )
                 }
             }
-            pendingOauth = null
+            oauthStore.clear()
         }
     }
 
