@@ -5,6 +5,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -100,17 +102,19 @@ fun LoginScreen(
         label = "pingAlpha",
     )
 
-    Box(
+    // Scrollable + centered: centers the form when it fits, and scrolls instead
+    // of CLIPPING when the content is taller than the viewport (small screens, or
+    // once the SSO buttons were added the bottom Sign-up / Anonymous rows were
+    // being cut off the bottom edge). vertical padding keeps the first/last rows
+    // off the very edges when scrolled.
+    Column(
         modifier = Modifier
-            .fillMaxSize(),
-        contentAlignment = Alignment.Center,
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 32.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
             // ── Brand mark (app launcher icon) ──
             AnimatedVisibility(
                 visible = visible,
@@ -703,7 +707,6 @@ fun LoginScreen(
                 }
             }
             } // end else (standard login form)
-        }
     }
 
     if (showAnonymousDialog) {
