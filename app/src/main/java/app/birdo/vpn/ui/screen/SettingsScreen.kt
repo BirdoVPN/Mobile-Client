@@ -216,7 +216,7 @@ fun SettingsScreen(
                     contentPadding = PaddingValues(16.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        app.birdo.vpn.ui.components.AppIconMark(size = 44.dp, cornerRadius = 12.dp)
+                        app.birdo.vpn.ui.components.AppIconMark(size = 44.dp, cornerRadius = 12.dp, square = true)
                         Spacer(Modifier.width(14.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(stringResource(R.string.app_name), color = palette.onBackground, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)

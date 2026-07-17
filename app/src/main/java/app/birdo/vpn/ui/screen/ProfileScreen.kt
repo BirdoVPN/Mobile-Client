@@ -213,7 +213,9 @@ private fun ProfileIdentityCard(
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                app.birdo.vpn.ui.components.AppIconMark(size = 56.dp, cornerRadius = 18.dp)
+                // square = true: show the full square logo (Fit, no crop) instead
+                // of the round-masked mark whose corners clip the artwork.
+                app.birdo.vpn.ui.components.AppIconMark(size = 56.dp, cornerRadius = 18.dp, square = true)
                 Spacer(Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
