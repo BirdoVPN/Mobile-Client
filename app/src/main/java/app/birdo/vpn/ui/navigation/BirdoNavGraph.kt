@@ -57,6 +57,9 @@ private data class BottomNavItem(
 private val bottomNavItems = listOf(
     BottomNavItem(Screen.Profile, R.string.profile_title, Icons.Outlined.Person),
     BottomNavItem(Screen.Home, R.string.connect, Icons.Default.PowerSettingsNew),
+    // Data usage / plan — shown for ALL user types (anon, SSO, email). The screen
+    // renders the free-tier cap gauge for RECON and an "Unlimited" state for paid.
+    BottomNavItem(Screen.Limit, R.string.limit, Icons.Default.Speed),
     BottomNavItem(Screen.Settings, R.string.settings_title, Icons.Default.Settings),
 )
 
@@ -114,24 +117,6 @@ fun BirdoNavGraph(
     val authState by authViewModel.uiState.collectAsState()
     val vpnState by vpnViewModel.uiState.collectAsState()
     val settingsState by settingsViewModel.uiState.collectAsState()
-
-    // Anonymous users get an extra "Limit" tab (their free-tier data meter).
-    // Same rule as ProfileScreen. On cold start user is briefly null → not anon
-    // yet; the tab pops in once the profile loads (recomposition handles it).
-    val accountEmail = authState.user?.email ?: ""
-    val isAnonUser = accountEmail.startsWith("anon_") && accountEmail.endsWith("@anonymous.local")
-    val navItems = remember(isAnonUser) {
-        if (isAnonUser) {
-            listOf(
-                BottomNavItem(Screen.Profile, R.string.profile_title, Icons.Outlined.Person),
-                BottomNavItem(Screen.Home, R.string.connect, Icons.Default.PowerSettingsNew),
-                BottomNavItem(Screen.Limit, R.string.limit, Icons.Default.Speed),
-                BottomNavItem(Screen.Settings, R.string.settings_title, Icons.Default.Settings),
-            )
-        } else {
-            bottomNavItems
-        }
-    }
 
     // Handle VPN permission requests
     LaunchedEffect(vpnState.needsVpnPermission) {
@@ -237,7 +222,7 @@ fun BirdoNavGraph(
                         tonalElevation = 0.dp,
                         modifier = Modifier.background(palette.surface),
                     ) {
-                        navItems.forEach { item ->
+                        bottomNavItems.forEach { item ->
                             val isSelected = navBackStackEntry?.destination?.hierarchy?.any {
                                 it.route == item.screen.route
                             } == true

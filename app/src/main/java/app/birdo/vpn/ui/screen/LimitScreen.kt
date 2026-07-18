@@ -81,7 +81,17 @@ fun LimitScreen(
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        SectionHeading("Data Limit")
+        // Header — shown for every user type so the section always states the
+        // current plan, then the card below shows its data allowance.
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            SectionHeading("Your Plan")
+            Text(
+                planDisplayName(subscription?.plan),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = palette.onSurface,
+            )
+        }
 
         BirdoCard(modifier = Modifier.fillMaxWidth()) {
             if (!hasCap) {
@@ -351,6 +361,12 @@ private fun SectionHeading(text: String) {
         letterSpacing = 1.2.sp,
         color = BirdoColors.current.onSurfaceMuted,
     )
+}
+
+private fun planDisplayName(plan: String?): String = when (plan?.uppercase()) {
+    "OPERATIVE" -> "Operative plan"
+    "SOVEREIGN" -> "Sovereign plan"
+    else -> "Free plan"
 }
 
 private fun gaugeColor(fraction: Float): Color = when {
