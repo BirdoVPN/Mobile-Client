@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -16,7 +17,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -157,17 +158,35 @@ fun LimitScreen(
                             fontSize = 12.sp,
                             color = palette.onSurfaceMuted,
                         )
-                        IconButton(onClick = onRefresh, modifier = Modifier.size(30.dp)) {
-                            Icon(
-                                Icons.Filled.Refresh,
-                                contentDescription = "Refresh usage",
-                                tint = palette.onSurfaceMuted,
-                                modifier = Modifier.size(16.dp),
-                            )
-                        }
                     }
 
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(10.dp))
+
+                    // Prominent refresh: a tonal accent pill, unmistakably a button.
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(BirdoAccent.copy(alpha = if (palette.isLight) 0.16f else 0.14f))
+                            .clickable(role = Role.Button, onClick = onRefresh)
+                            .padding(horizontal = 16.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = BirdoAccent,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text(
+                            "Refresh usage",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = BirdoAccent,
+                        )
+                    }
+
+                    Spacer(Modifier.height(14.dp))
                     HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
                     Spacer(Modifier.height(14.dp))
 
