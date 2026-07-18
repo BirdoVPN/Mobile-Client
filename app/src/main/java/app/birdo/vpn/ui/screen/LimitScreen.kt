@@ -7,11 +7,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,14 +50,17 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
- * Anonymous-only "Limit" section: the free-tier (RECON) data allowance as a
- * speed-dial gauge. Reads /vpn/stats (bandwidthUsedGb / bandwidthLimitGb /
- * bandwidthPeriodEnd / bandwidthIsFresh) — real per-user usage synced from the
- * nodes every ~5 min. Honest about staleness (never presents a frozen number as
- * live) and hides the meter entirely for unlimited/paid subscriptions.
+ * "Limit" section, shown for every user type: the current plan and its data
+ * allowance. Free (RECON) plans get a speed-dial gauge of the 10 GB/mo cap;
+ * paid plans get the unlimited state. Reads /vpn/stats (bandwidthUsedGb /
+ * bandwidthLimitGb / bandwidthPeriodEnd / bandwidthIsFresh) — real per-user
+ * usage of BOTH directions (uploads + downloads), synced from the nodes about
+ * every minute and flushed on disconnect. Honest about staleness: never
+ * presents a frozen number as live.
  */
 @Composable
 fun LimitScreen(
@@ -79,49 +87,60 @@ fun LimitScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // Header — shown for every user type so the section always states the
-        // current plan, then the card below shows its data allowance.
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            SectionHeading("Your Plan")
-            Text(
-                planDisplayName(subscription?.plan),
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = palette.onSurface,
-            )
+        // ── Plan header: name on the left, allowance pill on the right ──
+        Column {
+            SectionLabel("Your Plan")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    planDisplayName(subscription?.plan),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.onSurface,
+                )
+                if (subscription != null) {
+                    AllowancePill(
+                        text = if (hasCap) "$limitGb GB / month" else "Unlimited",
+                        palette = palette,
+                    )
+                }
+            }
         }
 
         BirdoCard(modifier = Modifier.fillMaxWidth()) {
-            if (!hasCap) {
-                UnlimitedState(palette)
-            } else {
-                Column(
+            when {
+                subscription == null -> LoadingState(palette)
+                !hasCap -> UnlimitedState(palette)
+                else -> Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     SpeedDialGauge(
                         fraction = fraction,
                         usedGb = usedGb,
                         limitGb = limitGb,
                         color = meterColor,
-                        trackColor = palette.onSurface.copy(alpha = if (palette.isLight) 0.10f else 0.14f),
+                        trackColor = palette.onSurface.copy(alpha = if (palette.isLight) 0.09f else 0.14f),
+                        knobCenterColor = palette.surface,
                         usedTextColor = palette.onSurface,
                         subTextColor = palette.onSurfaceMuted,
                         modifier = Modifier
-                            .padding(top = 6.dp)
-                            .size(228.dp),
+                            .padding(top = 4.dp)
+                            .size(232.dp),
                     )
 
-                    // Freshness line — the meter is only as honest as the last sync.
+                    // Freshness — the meter is only as honest as the last sync.
                     val freshnessText = when {
                         neverSynced -> "Awaiting first sync — connect to start counting"
-                        isFresh -> relativeAgo(subscription?.bandwidthLastSyncAt)?.let { "Updated $it" }
+                        isFresh -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Updated $it" }
                             ?: "Up to date"
-                        else -> "May be delayed — " + (relativeAgo(subscription?.bandwidthLastSyncAt)
-                            ?.let { "last update $it" } ?: "awaiting sync")
+                        else -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Last update $it" }
+                            ?: "May be delayed"
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -137,43 +156,72 @@ fun LimitScreen(
                             freshnessText,
                             fontSize = 12.sp,
                             color = palette.onSurfaceMuted,
-                            textAlign = TextAlign.Center,
+                        )
+                        IconButton(onClick = onRefresh, modifier = Modifier.size(30.dp)) {
+                            Icon(
+                                Icons.Filled.Refresh,
+                                contentDescription = "Refresh usage",
+                                tint = palette.onSurfaceMuted,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
+                    Spacer(Modifier.height(14.dp))
+
+                    // Used / Left / Resets — equal columns with hairline separators.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        StatCell("Used", formatGb(usedGb), meterColor, palette, Modifier.weight(1f))
+                        StatDivider(palette)
+                        StatCell("Left", formatGb(remainingGb), palette.onSurface, palette, Modifier.weight(1f))
+                        StatDivider(palette)
+                        StatCell(
+                            "Resets",
+                            formatResetDate(subscription.bandwidthPeriodEnd) ?: "Monthly",
+                            palette.onSurface,
+                            palette,
+                            Modifier.weight(1f),
                         )
                     }
-                }
 
-                Spacer(Modifier.height(16.dp))
-
-                // Used / Remaining / Resets breakdown.
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    StatCell("Used", formatGb(usedGb), meterColor, palette.onSurfaceMuted)
-                    StatCell("Remaining", formatGb(remainingGb), palette.onSurface, palette.onSurfaceMuted)
-                    StatCell(
-                        "Resets",
-                        formatResetDate(subscription?.bandwidthPeriodEnd) ?: "Monthly",
-                        palette.onSurface,
-                        palette.onSurfaceMuted,
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "Counts uploads and downloads · Updates about every minute",
+                        fontSize = 11.sp,
+                        color = palette.onSurfaceFaint,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
         }
 
-        if (hasCap) {
+        if (subscription != null && hasCap) {
             BirdoCard(modifier = Modifier.fillMaxWidth()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        Icon(
-                            Icons.Filled.Bolt,
-                            contentDescription = null,
-                            tint = BirdoAccent,
-                            modifier = Modifier.size(20.dp),
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(BirdoAccent.copy(alpha = 0.14f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Bolt,
+                                contentDescription = null,
+                                tint = BirdoAccent,
+                                modifier = Modifier.size(19.dp),
+                            )
+                        }
                         Text(
                             if (fraction >= 0.9f) "You're almost out of data" else "Need more data?",
                             fontSize = 15.sp,
@@ -182,8 +230,9 @@ fun LimitScreen(
                         )
                     }
                     Text(
-                        "Free accounts include ${limitGb} GB per month. Upgrade to Operative for unlimited data on every server.",
+                        "Free accounts include $limitGb GB per month. Upgrade to Operative for unlimited data on every server.",
                         fontSize = 13.sp,
+                        lineHeight = 18.sp,
                         color = palette.onSurfaceMuted,
                     )
                     BirdoButton(
@@ -193,20 +242,17 @@ fun LimitScreen(
                         size = BirdoButtonSize.Medium,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    BirdoButton(
-                        text = "Refresh usage",
-                        onClick = onRefresh,
-                        variant = BirdoButtonVariant.Ghost,
-                        size = BirdoButtonSize.Small,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
         }
     }
 }
 
-/** Speedometer-style arc: 270° sweep with a gap at the bottom, ticks + pointer. */
+/**
+ * Speedometer arc: 270° sweep with the gap at the bottom. Clean track +
+ * progress + a knob at the current position; the percentage readout sits in
+ * the bottom gap so the centre stays uncluttered.
+ */
 @Composable
 private fun SpeedDialGauge(
     fraction: Float,
@@ -214,6 +260,7 @@ private fun SpeedDialGauge(
     limitGb: Long,
     color: Color,
     trackColor: Color,
+    knobCenterColor: Color,
     usedTextColor: Color,
     subTextColor: Color,
     modifier: Modifier = Modifier,
@@ -224,17 +271,18 @@ private fun SpeedDialGauge(
         label = "gaugeFill",
     )
     val density = LocalDensity.current
-    val strokePx = with(density) { 20.dp.toPx() }
-    val tickLenPx = with(density) { 9.dp.toPx() }
-    val tickWidthPx = with(density) { 2.dp.toPx() }
-    val pointerRadiusPx = with(density) { 8.dp.toPx() }
+    val strokePx = with(density) { 18.dp.toPx() }
+    val knobOuterPx = with(density) { 13.dp.toPx() }
+    val knobInnerPx = with(density) { 5.5.dp.toPx() }
 
     val startAngle = 135f
     val sweep = 270f
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val inset = strokePx / 2f + tickLenPx
+            // The knob is the widest element riding the arc — inset for it so
+            // nothing clips at the edges and the arc stays optically centred.
+            val inset = max(strokePx / 2f, knobOuterPx) + 2f
             val diameter = min(size.width, size.height) - inset * 2f
             val topLeft = Offset(
                 (size.width - diameter) / 2f,
@@ -255,85 +303,109 @@ private fun SpeedDialGauge(
                 style = Stroke(width = strokePx, cap = StrokeCap.Round),
             )
             // Progress.
-            drawArc(
-                color = color,
-                startAngle = startAngle,
-                sweepAngle = sweep * animated,
-                useCenter = false,
-                topLeft = topLeft,
-                size = arcSize,
-                style = Stroke(width = strokePx, cap = StrokeCap.Round),
-            )
-            // Tick marks around the arc (11 ticks → 10 segments).
-            val ticks = 10
-            for (i in 0..ticks) {
-                val a = Math.toRadians((startAngle + sweep * (i.toFloat() / ticks)).toDouble())
-                val outer = radius + strokePx / 2f + with(density) { 3.dp.toPx() }
-                val inner = outer + tickLenPx
-                val cosA = cos(a).toFloat()
-                val sinA = sin(a).toFloat()
-                drawLine(
-                    color = trackColor,
-                    start = Offset(center.x + cosA * outer, center.y + sinA * outer),
-                    end = Offset(center.x + cosA * inner, center.y + sinA * inner),
-                    strokeWidth = tickWidthPx,
-                    cap = StrokeCap.Round,
+            if (animated > 0f) {
+                drawArc(
+                    color = color,
+                    startAngle = startAngle,
+                    sweepAngle = sweep * animated,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = arcSize,
+                    style = Stroke(width = strokePx, cap = StrokeCap.Round),
                 )
             }
-            // Pointer dot at the current value.
+            // Knob at the current position: colored ring + surface-colored core.
             val pa = Math.toRadians((startAngle + sweep * animated).toDouble())
-            drawCircle(
-                color = color,
-                radius = pointerRadiusPx,
-                center = Offset(
-                    center.x + cos(pa).toFloat() * radius,
-                    center.y + sin(pa).toFloat() * radius,
-                ),
+            val knobCenter = Offset(
+                center.x + cos(pa).toFloat() * radius,
+                center.y + sin(pa).toFloat() * radius,
             )
+            drawCircle(color = color, radius = knobOuterPx, center = knobCenter)
+            drawCircle(color = knobCenterColor, radius = knobInnerPx, center = knobCenter)
         }
 
-        // Center readout.
+        // Centre readout: the number is the hero, the unit line supports it.
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                formatGb(usedGb),
-                fontSize = 34.sp,
+                gaugeValue(usedGb),
+                fontSize = 40.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 color = usedTextColor,
             )
             Text(
-                "of ${limitGb} GB",
-                fontSize = 14.sp,
-                color = subTextColor,
-            )
-            Text(
-                "${(fraction * 100).toInt()}% used",
-                fontSize = 12.sp,
+                "of $limitGb GB used",
+                fontSize = 13.sp,
                 color = subTextColor,
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
+
+        // Percentage sits in the bottom gap of the arc.
+        Text(
+            "${(fraction * 100).roundToInt()}%",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            fontFamily = FontFamily.Monospace,
+            color = subTextColor,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 2.dp),
+        )
+    }
+}
+
+@Composable
+private fun LoadingState(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        CircularProgressIndicator(
+            color = BirdoAccent,
+            strokeWidth = 3.dp,
+            modifier = Modifier.size(32.dp),
+        )
+        Text(
+            "Loading your usage…",
+            fontSize = 13.sp,
+            color = palette.onSurfaceMuted,
+        )
     }
 }
 
 @Composable
 private fun UnlimitedState(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette) {
     Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(
-            Icons.Filled.Speed,
-            contentDescription = null,
-            tint = BirdoAccent,
-            modifier = Modifier.size(40.dp),
-        )
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(BirdoAccent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Speed,
+                contentDescription = null,
+                tint = BirdoAccent,
+                modifier = Modifier.size(30.dp),
+            )
+        }
         Text(
             "Unlimited data",
             fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
             color = palette.onSurface,
+            modifier = Modifier.padding(top = 4.dp),
         )
         Text(
             "Your plan has no data cap — use as much as you like.",
@@ -345,21 +417,67 @@ private fun UnlimitedState(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette)
 }
 
 @Composable
-private fun StatCell(label: String, value: String, valueColor: Color, labelColor: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = valueColor)
-        Text(label, fontSize = 11.sp, color = labelColor, modifier = Modifier.padding(top = 2.dp))
+private fun StatCell(
+    label: String,
+    value: String,
+    valueColor: Color,
+    palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            label.uppercase(),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 1.2.sp,
+            color = palette.onSurfaceMuted,
+        )
+        Text(
+            value,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = valueColor,
+            modifier = Modifier.padding(top = 3.dp),
+        )
     }
 }
 
 @Composable
-private fun SectionHeading(text: String) {
+private fun StatDivider(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette) {
+    Box(
+        Modifier
+            .width(1.dp)
+            .height(30.dp)
+            .background(palette.hairlineSoft),
+    )
+}
+
+@Composable
+private fun AllowancePill(text: String, palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(BirdoAccent.copy(alpha = if (palette.isLight) 0.12f else 0.16f))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Text(
+            text,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = BirdoAccent,
+        )
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
     Text(
         text.uppercase(),
-        fontSize = 12.sp,
+        fontSize = 11.sp,
         fontWeight = FontWeight.SemiBold,
-        letterSpacing = 1.2.sp,
+        letterSpacing = 1.5.sp,
         color = BirdoColors.current.onSurfaceMuted,
+        modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
     )
 }
 
@@ -375,9 +493,19 @@ private fun gaugeColor(fraction: Float): Color = when {
     else -> BirdoAccent
 }
 
+/** Big dial number: "0.52", "1.7", "10" — unit lives in the line below. */
+private fun gaugeValue(gb: Double): String {
+    val safe = max(0.0, gb)
+    return when {
+        safe >= 10.0 -> "${safe.roundToInt()}"
+        safe >= 1.0 -> "${(Math.round(safe * 10.0) / 10.0)}"
+        else -> "${(Math.round(safe * 100.0) / 100.0)}"
+    }
+}
+
 private fun formatGb(gb: Double): String {
     val safe = max(0.0, gb)
-    return if (safe >= 10.0) "${safe.toInt()} GB"
+    return if (safe >= 10.0) "${safe.roundToInt()} GB"
     else "${(Math.round(safe * 100.0) / 100.0)} GB"
 }
 
