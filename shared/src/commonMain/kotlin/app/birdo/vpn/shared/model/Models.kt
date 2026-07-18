@@ -113,7 +113,13 @@ data class UserProfile(
 /**
  * FIX-MOBILE-COMPAT: Realigned with backend `GET /vpn/stats` (VpnQueryService.getUsageStats).
  * Backend returns: { plan, status, activeConnections, maxConnections, bandwidthLimitGb,
- *                    hasPremiumServers, subscriptionEndsAt }
+ *                    bandwidthUsedGb, bandwidthPeriodEnd, bandwidthLastSyncAt,
+ *                    bandwidthIsFresh, hasPremiumServers, subscriptionEndsAt }
+ *
+ * `bandwidthLimitGb` stays a non-null Long: the backend sends null for unlimited
+ * (paid / reward window) and coerceInputValues maps that to 0 — so 0 == unlimited
+ * (readers gate on `> 0`). The usage fields below are only populated for a real
+ * RECON cap; they are null for unlimited subs, so the data meter simply hides.
  */
 @Serializable
 data class SubscriptionStatus(
@@ -122,6 +128,14 @@ data class SubscriptionStatus(
     val activeConnections: Int = 0,
     val maxConnections: Int = 1,
     val bandwidthLimitGb: Long = 0,
+    /** GB used this period (2dp). null = unlimited sub (no meter). */
+    val bandwidthUsedGb: Double? = null,
+    /** ISO-8601 instant when the current cap window resets. */
+    val bandwidthPeriodEnd: String? = null,
+    /** ISO-8601 instant of the last node usage sync (counters sync ~every 5 min). */
+    val bandwidthLastSyncAt: String? = null,
+    /** True when the usage figure was synced recently (<6 min); false/null = stale/awaiting first sync. */
+    val bandwidthIsFresh: Boolean? = null,
     val hasPremiumServers: Boolean = false,
     val subscriptionEndsAt: String? = null,
 )

@@ -115,6 +115,24 @@ fun BirdoNavGraph(
     val vpnState by vpnViewModel.uiState.collectAsState()
     val settingsState by settingsViewModel.uiState.collectAsState()
 
+    // Anonymous users get an extra "Limit" tab (their free-tier data meter).
+    // Same rule as ProfileScreen. On cold start user is briefly null → not anon
+    // yet; the tab pops in once the profile loads (recomposition handles it).
+    val accountEmail = authState.user?.email ?: ""
+    val isAnonUser = accountEmail.startsWith("anon_") && accountEmail.endsWith("@anonymous.local")
+    val navItems = remember(isAnonUser) {
+        if (isAnonUser) {
+            listOf(
+                BottomNavItem(Screen.Profile, R.string.profile_title, Icons.Outlined.Person),
+                BottomNavItem(Screen.Home, R.string.connect, Icons.Default.PowerSettingsNew),
+                BottomNavItem(Screen.Limit, R.string.limit, Icons.Default.Speed),
+                BottomNavItem(Screen.Settings, R.string.settings_title, Icons.Default.Settings),
+            )
+        } else {
+            bottomNavItems
+        }
+    }
+
     // Handle VPN permission requests
     LaunchedEffect(vpnState.needsVpnPermission) {
         if (vpnState.needsVpnPermission) {
@@ -203,6 +221,7 @@ fun BirdoNavGraph(
         Screen.Home.route,
         Screen.ServerList.route,
         Screen.Settings.route,
+        Screen.Limit.route,
     )
 
     val palette = BirdoColors.current
@@ -218,7 +237,7 @@ fun BirdoNavGraph(
                         tonalElevation = 0.dp,
                         modifier = Modifier.background(palette.surface),
                     ) {
-                        bottomNavItems.forEach { item ->
+                        navItems.forEach { item ->
                             val isSelected = navBackStackEntry?.destination?.hierarchy?.any {
                                 it.route == item.screen.route
                             } == true
@@ -452,6 +471,28 @@ fun BirdoNavGraph(
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
+                    )
+                }
+            }
+
+            // ── Data limit (anon-only tab) ──────────────────────────
+            composable(
+                Screen.Limit.route,
+                enterTransition = tabEnter,
+                exitTransition = tabExit,
+            ) {
+                AdaptiveContainer {
+                    // Force a live read on focus so the meter isn't a 30s-stale
+                    // cached figure when the user deliberately opens their usage.
+                    LaunchedEffect(Unit) { vpnViewModel.fetchSubscription(forceRefresh = true) }
+                    LimitScreen(
+                        user = authState.user,
+                        subscription = vpnState.subscription,
+                        onRefresh = { vpnViewModel.fetchSubscription(forceRefresh = true) },
+                        onUpgrade = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
                     )
                 }
             }
