@@ -545,6 +545,12 @@ fun BirdoNavGraph(
                 popExitTransition = pushPopExit,
             ) {
                 AdaptiveContainer {
+                    // Commit pending text-field edits (MTU/port/DNS) as ONE
+                    // reapply blip when this screen is left, so the live tunnel
+                    // rebuilds with the final value, not every half-typed one.
+                    DisposableEffect(Unit) {
+                        onDispose { settingsViewModel.commitPendingReapply() }
+                    }
                     // Plan gating mirrors the Multi-Hop pattern on the Connect
                     // screen: Custom DNS and Port Forwarding are SOVEREIGN-only.
                     // Post-quantum protection is a FREE-tier feature (per the
@@ -615,6 +621,10 @@ fun BirdoNavGraph(
                 // Load apps when entering screen
                 LaunchedEffect(Unit) {
                     settingsViewModel.loadInstalledApps()
+                }
+                // Apply the whole app-selection edit as one blip on exit.
+                DisposableEffect(Unit) {
+                    onDispose { settingsViewModel.commitPendingReapply() }
                 }
 
                 AdaptiveContainer {

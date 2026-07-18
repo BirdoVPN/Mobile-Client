@@ -93,10 +93,27 @@ class BirdoVpnService : VpnService() {
          * establish() atomically supersedes it.
          */
         const val ACTION_SWITCH_TEARDOWN = "app.birdo.vpn.SWITCH_TEARDOWN"
+        /**
+         * Runtime settings push (no tunnel rebuild): updates flags the service
+         * consults during the CURRENT session — today just the kill switch,
+         * which is otherwise captured once from the START intent and would
+         * ignore a mid-session toggle until the next connect. TUN-level
+         * settings (MTU, routes, split tunnel, DNS…) go through a full
+         * reapply-reconnect instead (VpnManager.requestSettingsReapply()).
+         */
+        const val ACTION_UPDATE_SETTINGS = "app.birdo.vpn.UPDATE_SETTINGS"
 
         const val EXTRA_KILL_SWITCH = "kill_switch"
         const val EXTRA_SPLIT_TUNNEL_ENABLED = "split_tunnel_enabled"
         const val EXTRA_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
+        /**
+         * SWITCH_TEARDOWN only: force the fail-closed blocking interface up for
+         * this teardown even when the kill switch is OFF. Used by the settings
+         * reapply blip so a deliberate, app-initiated ~2s rebuild never leaks
+         * cleartext, regardless of the user's kill-switch preference (which
+         * governs UNEXPECTED drops, not this momentary reconnect).
+         */
+        const val EXTRA_FORCE_BLOCK = "force_block"
 
         @Volatile var currentState: VpnState = VpnState.Disconnected; private set
 
@@ -145,7 +162,14 @@ class BirdoVpnService : VpnService() {
         }
 
         @Volatile private var activeConfig: ConnectResponse? = null
-        private var isKillSwitchEnabled: Boolean = true
+        // @Volatile: written on the main thread by handleUpdateSettings (live
+        // settings push) and read on the tunnel executor by the drop handler.
+        @Volatile private var isKillSwitchEnabled: Boolean = true
+        // True while startTunnel() runs on the tunnel executor. Set on the main
+        // thread in handleStart before the executor hand-off and cleared in its
+        // finally; handleUpdateSettings reads it to avoid releasing the block
+        // while an establish() is in flight (the one unsafe window).
+        @Volatile private var tunnelSetupInProgress = false
         private var isSplitTunnelingEnabled: Boolean = false
         private var splitTunnelAppList: Set<String> = emptySet()
 
@@ -279,6 +303,16 @@ class BirdoVpnService : VpnService() {
                 notifManager.buildForegroundNotification("Reconnecting…", VpnState.Connecting)
             ACTION_KILL_SWITCH_BLOCK ->
                 notifManager.buildForegroundNotification("Kill Switch — Blocking traffic")
+            // A settings push must not flash "Connecting…" over a healthy
+            // session — keep the notification truthful for the actual state.
+            ACTION_UPDATE_SETTINGS -> notifManager.buildForegroundNotification(
+                when {
+                    killSwitchActive -> "Kill Switch Active — Traffic blocked"
+                    currentState is VpnState.Connected -> buildConnectedText()
+                    else -> "Updating settings…"
+                },
+                currentState,
+            )
             else -> notifManager.buildForegroundNotification("Connecting…", VpnState.Connecting)
         }
         startForeground(VpnNotificationManager.NOTIFICATION_ID, foregroundNotif)
@@ -288,6 +322,7 @@ class BirdoVpnService : VpnService() {
             ACTION_STOP  -> stopTunnel()
             ACTION_SWITCH_TEARDOWN -> switchTeardown(intent)
             ACTION_KILL_SWITCH_BLOCK -> activateKillSwitch()
+            ACTION_UPDATE_SETTINGS -> handleUpdateSettings(intent)
         }
         return START_STICKY
     }
@@ -305,6 +340,11 @@ class BirdoVpnService : VpnService() {
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         mainHandler.postDelayed(connectTimeoutRunnable, CONNECT_TIMEOUT_MS)
 
+        // Mark tunnel setup in-flight on the MAIN thread (serialized with
+        // handleUpdateSettings) BEFORE handing off to the executor, so a
+        // concurrent kill-switch-off toggle never releases the block while
+        // startTunnel() is mid-establish. Cleared in the executor's finally.
+        tunnelSetupInProgress = true
         tunnelExecutor.execute {
             try {
                 startTunnel()
@@ -312,7 +352,89 @@ class BirdoVpnService : VpnService() {
                 Log.e(TAG, "Unhandled error in tunnel setup", t)
                 updateState(VpnState.Error(t.message ?: "Tunnel crashed"))
                 mainHandler.post { updateNotification("Connection failed") }
+            } finally {
+                // Deferred-release pickup: if the user turned the kill switch OFF
+                // WHILE this establish was in flight, handleUpdateSettings couldn't
+                // release the block (the tunnelSetupInProgress gate deferred it).
+                // Now that setup is done and — if it failed — the block is still
+                // up, honour fail-open here.
+                //
+                // CLEAR THE GATE FIRST, then re-read isKillSwitchEnabled. Doing the
+                // release check before clearing the gate was a lost update: a
+                // toggle landing between the check and the clear was dropped by
+                // BOTH this finally (read stale `true`) and handleUpdateSettings
+                // (saw the gate still set → deferred to this finally, which had
+                // already decided). Clearing first makes the two orderings form an
+                // impossible cycle, so whichever handler runs last observes the
+                // toggle and releases. A double deactivateKillSwitch is idempotent.
+                tunnelSetupInProgress = false
+                if (!isKillSwitchEnabled && killSwitchActive &&
+                    currentState !is VpnState.Connected
+                ) {
+                    deactivateKillSwitch()
+                    mainHandler.post { updateNotification("Reconnecting…") }
+                }
             }
+        }
+    }
+
+    /**
+     * Apply a mid-session settings push — FLAG ONLY, never touches the tunnel.
+     * The kill-switch flag is otherwise captured ONCE from the START intent, so
+     * a user who enables it while connected believes they're drop-protected but
+     * the running session still holds the old value. This updates the flag the
+     * drop handler ([TunnelMonitor.onUnexpectedExit]) consults, so a subsequent
+     * drop is handled per the new preference.
+     *
+     * Deliberately does NOT tear anything down: an earlier version called
+     * stopTunnel() when the kill switch was disabled "while blocking", but
+     * killSwitchActive is also latched true throughout every reconnect/reapply
+     * rebuild — so that stopTunnel() raced an in-flight startTunnel() on the
+     * tunnel executor and could strand a destroyed service claiming "Connected"
+     * over live cleartext. Flag-only is race-free. A user who wants out of an
+     * active block uses Disconnect (which is a clean, ordered teardown).
+     */
+    private fun handleUpdateSettings(intent: Intent) {
+        isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
+        Log.i(TAG, "Runtime settings update (flag-only): killSwitchEnabled=$isKillSwitchEnabled")
+
+        // Kill switch turned OFF while it's actively blocking a DEAD tunnel:
+        // honour fail-open by releasing the block. Safe whenever no establish()
+        // is in flight — gate on `!tunnelSetupInProgress` (executor idle) rather
+        // than on specific states, because the block also lingers in Disconnected
+        // during an auto-reconnect BACKOFF (switchTeardown keeps it up, the next
+        // /connect hasn't dispatched ACTION_START yet). currentState is never
+        // Connected here (killSwitchActive is cleared on connect success).
+        if (!isKillSwitchEnabled && killSwitchActive && !tunnelSetupInProgress) {
+            deactivateKillSwitch()
+            if (currentState is VpnState.KillSwitchActive) {
+                // KillSwitchActive was the resting state (nothing reconnecting) —
+                // releasing it means we're fully idle; settle to Disconnected.
+                updateState(VpnState.Disconnected)
+                _connectedServerFlow.value = null
+                _connectedSinceFlow.value = 0L
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } else {
+                // Error / Disconnected (mid auto-reconnect): block released, let
+                // VpnManager's reconnect continue fail-open.
+                mainHandler.post { updateNotification("Reconnecting…") }
+            }
+            return
+        }
+
+        if (currentState is VpnState.Disconnected && !killSwitchActive) {
+            // Nothing is running — a stale push started us; don't park in a
+            // fake foreground state.
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
+        // Live session: refresh the notification so its kill-switch line
+        // reflects the new value immediately.
+        if (currentState is VpnState.Connected) {
+            mainHandler.post { updateNotification(buildConnectedText()) }
         }
     }
 
@@ -1042,15 +1164,18 @@ class BirdoVpnService : VpnService() {
      */
     private fun switchTeardown(intent: Intent) {
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
-        Log.i(TAG, "Switch/reconnect teardown — holding kill switch (enabled=$isKillSwitchEnabled)")
+        // A settings reapply forces the block up for its brief rebuild even when
+        // the kill switch is off, so the deliberate ~2s blip can't leak.
+        val forceBlock = intent.getBooleanExtra(EXTRA_FORCE_BLOCK, false)
+        Log.i(TAG, "Switch/reconnect teardown — holding block (ks=$isKillSwitchEnabled force=$forceBlock)")
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         stopNotificationTicker()
-        // Ensure fail-closed: if the kill switch is on but no blocking interface is
-        // up yet (e.g. a user-initiated switch from a healthy tunnel — the tunnel fd
+        // Ensure fail-closed: if the block should be up but no blocking interface is
+        // yet (e.g. a user-initiated switch from a healthy tunnel — the tunnel fd
         // lives in wg-go, not vpnInterface), arm it now. On an auto-reconnect the
         // blocking interface is already up from TunnelMonitor.onUnexpectedExit, so
         // this is a no-op there. establish() for the new tunnel supersedes it.
-        if (isKillSwitchEnabled && vpnInterface == null) {
+        if ((isKillSwitchEnabled || forceBlock) && vpnInterface == null) {
             activateKillSwitch()
         } else {
             // wg-go may still be running (user switch from a live tunnel); tear the
