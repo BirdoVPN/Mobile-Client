@@ -162,7 +162,7 @@
     <string name="vpn_settings_mtu_auto">Automatic (server default)</string>
     <string name="vpn_settings_mtu_hint">e.g. 1420</string>
     <string name="vpn_settings_mtu_range">Valid range: 1280-1500</string>
-    <string name="vpn_settings_changes_note">Changes take effect on next connection</string>
+    <string name="vpn_settings_changes_note">Changes apply when you leave this screen — if you’re connected, the VPN reconnects for a moment (still protected) to apply them</string>
     <string name="vpn_settings_section_security">Security</string>
     <string name="vpn_settings_section_features">Features</string>
     <string name="vpn_settings_stealth_title">Stealth Mode · Premium</string>
