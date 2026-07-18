@@ -161,10 +161,15 @@ fun ProfileScreen(
         Spacer(Modifier.height(8.dp))
 
         SectionLabel("Session")
+        // Anonymous accounts carry a synthetic `anon_…@anonymous.local` email —
+        // never surface that string; it reads as a bug.
+        val signOutSubtitle = user?.email?.let { e ->
+            if (e.startsWith("anon_") && e.endsWith("@anonymous.local")) "Anonymous account" else e
+        } ?: "Sign out of this device"
         ProfileActionRow(
             icon = Icons.AutoMirrored.Outlined.Logout,
             title = "Sign out",
-            subtitle = user?.email ?: "Sign out of this device",
+            subtitle = signOutSubtitle,
             onClick = onLogout,
             destructive = true,
         )
@@ -383,14 +388,17 @@ private fun SubscriptionCard(
                 Spacer(Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "$plan plan",
+                        text = planTitle(plan),
                         color = palette.onBackground,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
                         text = when {
-                            endsAtFormatted != null -> "Renews $endsAtFormatted"
+                            endsAtFormatted != null && isActive -> "Renews $endsAtFormatted"
+                            // Canceled / expiring: the date is when access ENDS,
+                            // calling that "Renews" would be a lie.
+                            endsAtFormatted != null -> "Access until $endsAtFormatted"
                             isActive -> "Active subscription"
                             else -> "Free tier — upgrade for premium"
                         },
@@ -405,12 +413,13 @@ private fun SubscriptionCard(
             if (subscription != null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     BenefitChip(
-                        label = "${subscription.maxConnections} devices",
+                        label = if (subscription.maxConnections.toInt() == 1) "1 device"
+                        else "${subscription.maxConnections} devices",
                     )
                     BenefitChip(
                         label = if (subscription.bandwidthLimitGb > 0)
-                            "${subscription.bandwidthLimitGb} GB / mo"
-                        else "Unlimited",
+                            "${subscription.bandwidthLimitGb} GB / month"
+                        else "Unlimited data",
                     )
                     if (subscription.hasPremiumServers) {
                         BenefitChip(label = "Premium servers")
@@ -507,6 +516,14 @@ private fun PlanChip(plan: String) {
 
 private fun planGradient(plan: String): Brush = BirdoBrand.planGradient(plan)
 
+/** Friendly plan naming — matches the Limit tab ("Free plan", not "RECON plan"). */
+private fun planTitle(plan: String): String = when (plan.uppercase()) {
+    "RECON" -> "Free plan"
+    "OPERATIVE" -> "Operative plan"
+    "SOVEREIGN" -> "Sovereign plan"
+    else -> "$plan plan"
+}
+
 @Composable
 private fun SectionLabel(label: String) {
     val palette = BirdoColors.current
@@ -583,26 +600,30 @@ private fun ProfileActionRow(
 }
 
 /**
- * Parses a backend renewal-date string and returns it as plain `yyyy-MM-dd`.
- * Accepts ISO-8601 with time-zone (`2026-05-12T00:00:00Z`) or already-formatted
- * `yyyy-MM-dd`. Returns null if input is null/blank/unparseable.
+ * Parses a backend renewal-date string and returns it as a friendly
+ * "MMM d, yyyy" (e.g. "Aug 12, 2026") — matches the human date style used on
+ * the Limit tab instead of a raw ISO date. Accepts ISO-8601 with time-zone
+ * (`2026-05-12T00:00:00Z`) or plain `yyyy-MM-dd`. Returns null if input is
+ * null/blank/unparseable.
  */
+private val RENEWAL_DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d, yyyy")
+
 private fun formatRenewalDate(raw: String?): String? {
     val v = raw?.trim().orEmpty()
     if (v.isEmpty()) return null
     // 1. Already a plain date.
-    runCatching { return LocalDate.parse(v).format(DateTimeFormatter.ISO_LOCAL_DATE) }
+    runCatching { return LocalDate.parse(v).format(RENEWAL_DATE_FORMAT) }
     // 2. Offset / zoned date-time.
     runCatching {
         return OffsetDateTime.parse(v)
             .atZoneSameInstant(ZoneId.systemDefault())
             .toLocalDate()
-            .format(DateTimeFormatter.ISO_LOCAL_DATE)
+            .format(RENEWAL_DATE_FORMAT)
     }
     // 3. Trim trailing time portion as a fallback.
     val datePart = v.substringBefore('T')
     runCatching {
-        return LocalDate.parse(datePart).format(DateTimeFormatter.ISO_LOCAL_DATE)
+        return LocalDate.parse(datePart).format(RENEWAL_DATE_FORMAT)
     }
     return null
 }
