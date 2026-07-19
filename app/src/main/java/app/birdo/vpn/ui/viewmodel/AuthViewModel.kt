@@ -16,6 +16,7 @@ import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,6 +54,18 @@ class AuthViewModel @Inject constructor(
 
     /** Sliding window of recent failed login attempt timestamps. */
     private val loginAttempts = mutableListOf<Instant>()
+
+    /**
+     * The in-flight auth request (email login / anon login / anon register).
+     *
+     * SESSION-DEDUP: the login buttons disable on `isLoading`, but Compose applies
+     * that state asynchronously, so two fast taps can BOTH pass the `enabled`
+     * check before the first recomposition and fire two logins seconds apart.
+     * Each backend login mints a session row, so a double-submit surfaced as
+     * duplicate "Active sessions" for one device. This single-flights auth: a new
+     * submit while one is already running is ignored.
+     */
+    private var authJob: Job? = null
 
     // FAST COLD START: Decide isLoggedIn synchronously from the locally
     // stored token so the NavHost can route straight to Home. The profile
@@ -119,7 +132,9 @@ class AuthViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
+        // Single-flight: ignore a double-submit while a login is already running.
+        if (authJob?.isActive == true) return
+        authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             when (val result = repository.login(trimmedEmail, password)) {
                 is ApiResult.Success -> {
@@ -281,7 +296,9 @@ class AuthViewModel @Inject constructor(
      * this client never creates new accounts.
      */
     fun loginAnonymous(anonymousId: String, password: String? = null) {
-        viewModelScope.launch {
+        // Single-flight: ignore a double-submit while a login is already running.
+        if (authJob?.isActive == true) return
+        authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             val cleanId = anonymousId.filter { it.isDigit() }
             if (cleanId.length != 24) {
@@ -326,7 +343,9 @@ class AuthViewModel @Inject constructor(
      * user should be told to save it (surfaced via the profile screen).
      */
     fun registerAnonymous() {
-        viewModelScope.launch {
+        // Single-flight: ignore a double-submit while a request is already running.
+        if (authJob?.isActive == true) return
+        authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             when (val result = repository.registerAnonymous()) {
                 is ApiResult.Success -> {
