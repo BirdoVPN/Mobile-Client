@@ -108,6 +108,18 @@ data class UserProfile(
     val name: String? = null,
     val emailVerified: Boolean = false,
     val createdAt: String = "",
+    /**
+     * Whether this account has a password at all. SSO accounts sign in through
+     * Google/GitHub and have none, so any UI that demands a password from them
+     * (the delete-account dialog) can never be satisfied.
+     *
+     * Defaults to `true` deliberately: if the field is missing because the app
+     * is talking to a backend that predates it, fall back to the old
+     * always-ask behaviour rather than silently dropping the password prompt
+     * for accounts that genuinely need one.
+     */
+    val hasPassword: Boolean = true,
+    val isSSO: Boolean = false,
 )
 
 /**
