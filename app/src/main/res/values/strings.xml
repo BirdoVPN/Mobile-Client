@@ -131,6 +131,9 @@
     <!-- Delete Account Dialog -->
     <string name="delete_dialog_title">Delete Account</string>
     <string name="delete_dialog_message">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted. Enter your password to confirm.</string>
+    <!-- Shown to accounts with no password (SSO and anonymous), which cannot be
+         asked to confirm a credential they do not have. -->
+    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted.</string>
     <string name="delete_dialog_password_label">Password</string>
     <string name="delete_dialog_confirm">Delete My Account</string>
     <string name="delete_dialog_deleting">Deleting…</string>

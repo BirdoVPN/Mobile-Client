@@ -186,6 +186,11 @@ fun ProfileScreen(
 
     if (showDeleteDialog) {
         DeleteAccountDialog(
+            // SSO and password-less anonymous accounts have no password to
+            // confirm. The backend already accepts a password-less delete from
+            // them (GDPR Art. 17); it was this dialog that trapped them, by
+            // keeping Delete disabled until a non-blank password was typed.
+            requiresPassword = user?.hasPassword ?: true,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
             onConfirm = { password -> onDeleteAccount(password) },
@@ -631,6 +636,7 @@ private fun formatRenewalDate(raw: String?): String? {
 /** Confirmation dialog requiring password re-entry before account deletion. */
 @Composable
 private fun DeleteAccountDialog(
+    requiresPassword: Boolean,
     isDeletingAccount: Boolean,
     error: String?,
     onConfirm: (String) -> Unit,
@@ -652,27 +658,32 @@ private fun DeleteAccountDialog(
         text = {
             Column {
                 Text(
-                    stringResource(R.string.delete_dialog_message),
+                    stringResource(
+                        if (requiresPassword) R.string.delete_dialog_message
+                        else R.string.delete_dialog_message_no_password
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = BirdoWhite60,
                 )
-                Spacer(Modifier.height(16.dp))
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text(stringResource(R.string.delete_dialog_password_label)) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true,
-                    enabled = !isDeletingAccount,
-                    isError = error != null,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = BirdoRed,
-                        cursorColor = BirdoWhite80,
-                        focusedLabelColor = BirdoRed,
-                    ),
-                )
+                if (requiresPassword) {
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text(stringResource(R.string.delete_dialog_password_label)) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        enabled = !isDeletingAccount,
+                        isError = error != null,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BirdoRed,
+                            cursorColor = BirdoWhite80,
+                            focusedLabelColor = BirdoRed,
+                        ),
+                    )
+                }
                 if (error != null) {
                     Spacer(Modifier.height(4.dp))
                     Text(error, style = MaterialTheme.typography.bodySmall, color = BirdoRed)
@@ -682,7 +693,7 @@ private fun DeleteAccountDialog(
         confirmButton = {
             Button(
                 onClick = { onConfirm(password) },
-                enabled = password.isNotBlank() && !isDeletingAccount,
+                enabled = (!requiresPassword || password.isNotBlank()) && !isDeletingAccount,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = BirdoRed,
                     contentColor = Color.White,
