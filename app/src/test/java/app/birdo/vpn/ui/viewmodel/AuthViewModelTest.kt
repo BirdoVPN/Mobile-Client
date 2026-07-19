@@ -11,6 +11,7 @@ import app.birdo.vpn.data.auth.TokenManager
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
@@ -334,6 +335,45 @@ class AuthViewModelTest {
         assertTrue(state.isLoggedIn)
         assertNull(state.user) // No profile data, but still logged in
         assertFalse(state.isLoading)
+    }
+
+    @Test
+    fun `double-submit while a login is in-flight only calls repository once (single-flight)`() = runTest {
+        // SESSION-DEDUP: the login buttons disable on isLoading, but Compose applies
+        // that async, so two fast taps can both fire. Each backend login mints a
+        // session row, so a double-submit showed up as duplicate "Active sessions".
+        viewModel = createLoggedOutViewModel()
+        val gate = CompletableDeferred<Unit>()
+        // Hold the first login open so the second submit lands while it's running.
+        // coAnswers is a member of MockKStubScope (not importable) — call it on the
+        // scope returned by coEvery.
+        coEvery { repository.login(any(), any()) }.coAnswers {
+            gate.await()
+            ApiResult.Success(loginSuccess)
+        }
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.login("user@birdo.app", "password") // launches, suspends at the gate
+        viewModel.login("user@birdo.app", "password") // ignored — a login is already in-flight
+        gate.complete(Unit) // release the first
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { repository.login(any(), any()) }
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+    }
+
+    @Test
+    fun `a second login after the first completes is allowed (guard only blocks in-flight)`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Invalid credentials", 401)
+        viewModel.login("user@birdo.app", "wrongpass") // completes (fails)
+
+        coEvery { repository.login(any(), any()) } returns ApiResult.Success(loginSuccess)
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        viewModel.login("user@birdo.app", "correct") // not blocked — prior job is done
+
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+        coVerify(exactly = 2) { repository.login(any(), any()) }
     }
 
     @Test
