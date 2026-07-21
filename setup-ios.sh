@@ -79,14 +79,41 @@ if [ ! -d "$FRAMEWORK_DIR/BirdoShared.framework" ]; then
 fi
 echo -e " ${GREEN}[OK] BirdoShared.framework built${NC}"
 
-# ── Step 4: Generate Xcode project ──────────────────────────────
-echo -e "\n${YELLOW}[4/6] Generating Xcode project from project.yml...${NC}"
+# ── Step 4: Build the BirdoPQNative XCFramework ──────────────────
+# Gitignored build artifact (Rust ML-KEM-1024). project.yml links
+# Vendor/BirdoPQNative.xcframework, so the Xcode build fails without it.
+echo -e "\n${YELLOW}[4/8] Building BirdoPQNative.xcframework...${NC}"
+"$SCRIPT_DIR/scripts/build-birdo-pq-xcframework.sh" >/dev/null
+echo -e " ${GREEN}[OK] BirdoPQNative.xcframework built${NC}"
+
+# ── Step 5: Build libwg-go.a (WireGuard Go tunnel runtime) ───────
+# WireGuardKit's Package.swift declares .linkedLibrary("wg-go"), but SwiftPM
+# cannot run the Makefile that produces it — without this the PacketTunnel
+# extension fails to link with: ld: library 'wg-go' not found.
+# NOTE: the upstream Makefile maps GOOS only for macosx/iphoneos, so the
+# simulator needs GOOS_iphonesimulator=ios passed explicitly.
+echo -e "\n${YELLOW}[5/8] Building libwg-go.a (iOS Simulator)...${NC}"
+if ! command -v go &>/dev/null; then
+  echo -e "${RED}[FAIL] Go not found (required by WireGuardKitGo). Install with: brew install go${NC}"
+  exit 1
+fi
+WG_LIB_DIR="$SCRIPT_DIR/iosApp/.build-wg/iphonesimulator"
+mkdir -p "$WG_LIB_DIR"
+( cd "$SCRIPT_DIR/iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo" && \
+  make ARCHS=arm64 PLATFORM_NAME=iphonesimulator GOOS_iphonesimulator=ios \
+       SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+       CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+       CONFIGURATION_TEMP_DIR=/tmp/birdo-wggo-sim >/dev/null )
+echo -e " ${GREEN}[OK] libwg-go.a -> $WG_LIB_DIR${NC}"
+
+# ── Step 6: Generate Xcode project ──────────────────────────────
+echo -e "\n${YELLOW}[6/8] Generating Xcode project from project.yml...${NC}"
 cd iosApp
 xcodegen generate
 echo -e " ${GREEN}[OK] BirdoVPN.xcodeproj created${NC}"
 
 # ── Step 5: Find a simulator ────────────────────────────────────
-echo -e "\n${YELLOW}[5/6] Finding iOS Simulator...${NC}"
+echo -e "\n${YELLOW}[7/8] Finding iOS Simulator...${NC}"
 
 # Prefer iPhone 15/16/17 models
 SIMULATOR_ID=$(xcrun simctl list devices available -j | python3 -c "
@@ -139,17 +166,26 @@ print('Unknown')
 echo -e "[OK] Using simulator: $SIM_NAME ($SIMULATOR_ID)"
 
 # ── Step 6: Build and Run ────────────────────────────────────────
-echo -e "\n${YELLOW}[6/6] Building and launching on simulator...${NC}"
+echo -e "\n${YELLOW}[8/8] Building and launching on simulator...${NC}"
 
 # Boot simulator if needed
 xcrun simctl boot "$SIMULATOR_ID" 2>/dev/null || true
 open -a Simulator
 
+# ARCHS/EXCLUDED_ARCHS: the KMP framework above is built ONLY for
+# iosSimulatorArm64, so an x86_64 simulator slice cannot link.
+# LIBRARY_SEARCH_PATHS: where step 5 put libwg-go.a (resolves -lwg-go).
 xcodebuild \
   -project BirdoVPN.xcodeproj \
   -scheme BirdoVPN \
   -destination "id=$SIMULATOR_ID" \
   -configuration Debug \
+  ARCHS=arm64 \
+  EXCLUDED_ARCHS=x86_64 \
+  LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+  CODE_SIGN_IDENTITY="" \
+  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGNING_ALLOWED=NO \
   build 2>&1 | tail -5
 
 echo ""

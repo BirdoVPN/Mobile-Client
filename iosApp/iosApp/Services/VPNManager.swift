@@ -11,7 +11,9 @@ import NetworkExtension
 ///   plaintext in NEVPN system preferences).
 /// - `includeAllNetworks = true` enables the iOS kill switch: traffic is
 ///   blocked when the tunnel is down, even on cellular.
-/// - `excludeLocalNetworks = true` keeps AirPlay / printers reachable.
+/// - `excludeLocalNetworks` tracks the user's Local Network Sharing setting
+///   (default OFF, matching Android): ON keeps AirPlay / printers reachable by
+///   routing LAN traffic around the tunnel; OFF carries the LAN in the tunnel.
 /// - `disconnectOnSleep = false` keeps the tunnel up across screen-off so
 ///   background fetches stay protected.
 final class VPNManager: @unchecked Sendable {
@@ -95,9 +97,15 @@ final class VPNManager: @unchecked Sendable {
         // install (absent key) defaults true even before the settings view model
         // has registered its defaults.
         let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
+        // Local Network Sharing is a user setting (default OFF, matching
+        // Android's `AppPreferences.localNetworkSharing`). `excludeLocalNetworks`
+        // routes LAN traffic *around* the tunnel, so hard-coding it to `true`
+        // exempted every user's whole local subnet from the VPN regardless of
+        // what the toggle said.
+        let localNetworkSharing = UserDefaults.standard.bool(forKey: "local_network_sharing")
         if #available(iOS 14.0, *) {
             proto.includeAllNetworks = killSwitch
-            proto.excludeLocalNetworks = true
+            proto.excludeLocalNetworks = localNetworkSharing
             proto.enforceRoutes = killSwitch
         }
         proto.disconnectOnSleep = false
@@ -136,22 +144,33 @@ final class VPNManager: @unchecked Sendable {
     }
 
     func disconnect() {
-        manager?.connection.stopVPNTunnel()
-        // Also disable on-demand so the tunnel stays down when the user asked.
-        manager?.isOnDemandEnabled = false
-        manager?.saveToPreferences { error in
-            if let error {
-                // Persisting the on-demand-disabled state failed; without it
-                // the tunnel may auto-reconnect against the user's explicit
-                // disconnect. Surface it instead of swallowing silently.
-                NSLog("[VPNManager] disconnect saveToPreferences failed: %@", error.localizedDescription)
-            }
-        }
         // SEC: wipe shared secrets from keychain — the kernel tunnel has
         // already consumed them; nothing else needs them after disconnect.
         let keychain = KeychainService.shared
         keychain.deleteShared(key: "wg_private_key")
         keychain.deleteShared(key: "wg_preshared_key")
+
+        guard let mgr = manager else { return }
+
+        // ORDER MATTERS: on-demand must be disabled *and persisted* BEFORE the
+        // tunnel is stopped. Stopping first leaves the on-demand rule live, so
+        // iOS immediately re-dials the tunnel it was just told to tear down and
+        // the user's explicit disconnect bounces straight back to connected.
+        mgr.isOnDemandEnabled = false
+        mgr.onDemandRules = nil
+        // `mgr` is not Sendable, so it is re-read through `self` inside the
+        // completion rather than captured — the same pattern `ensureManager()`
+        // already uses for this type.
+        mgr.saveToPreferences { [weak self] error in
+            if let error {
+                // Persisting the on-demand-disabled state failed; the rule may
+                // still be live and re-dial after the stop below. Surface it
+                // instead of swallowing silently.
+                NSLog("[VPNManager] disconnect saveToPreferences failed: %@", error.localizedDescription)
+            }
+            // Stop on BOTH paths — a failed save must never leave the tunnel up.
+            self?.manager?.connection.stopVPNTunnel()
+        }
     }
 
     /// Query the PacketTunnel extension for live transfer stats via the
@@ -199,7 +218,12 @@ final class VPNManager: @unchecked Sendable {
     private func ensureManager() async throws -> NETunnelProviderManager {
         if let mgr = manager { return mgr }
 
-        return try await withCheckedThrowingContinuation { cont in
+        // `NETunnelProviderManager` is not Sendable, so it can't be handed back
+        // through the continuation (`resume(returning:)` takes a `sending`
+        // value, and `mgr` has already escaped into `self.manager`). Resume
+        // with Void and re-read the stored manager instead — the same property
+        // the rest of this type already reads.
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
                 if let error {
                     cont.resume(throwing: error)
@@ -208,9 +232,12 @@ final class VPNManager: @unchecked Sendable {
                 let mgr = managers?.first ?? NETunnelProviderManager()
                 self?.manager = mgr
                 self?.observeStatus(mgr)
-                cont.resume(returning: mgr)
+                cont.resume()
             }
         }
+
+        guard let mgr = manager else { throw VPNManagerError.managerUnavailable }
+        return mgr
     }
 
     private func observeStatus(_ manager: NETunnelProviderManager) {
@@ -239,33 +266,105 @@ final class VPNManager: @unchecked Sendable {
         for addr in config.addresses {
             lines.append("Address = \(addr)")
         }
-        if !config.dns.isEmpty {
-            lines.append("DNS = \(config.dns.joined(separator: ", "))")
-        }
-        if let mtu = config.mtu {
-            lines.append("MTU = \(mtu)")
-        }
+        // DNS is never omitted: a tunnel with no DNS line leaves the device on
+        // its current (ISP / captive Wi-Fi) resolver while tunnelled — a DNS
+        // leak. Android's `resolveDnsServers` falls back the same way.
+        let dnsServers = resolveDnsServers(config)
+        lines.append("DNS = \(dnsServers.joined(separator: ", "))")
+        // MTU: user override wins, else the server value, else WireGuard's 1420
+        // default — clamped to the same 1280...1500 window Android enforces.
+        // Previously the user's MTU setting was collected but never applied.
+        let userMtu = UserDefaults.standard.integer(forKey: "wg_mtu")
+        let effectiveMtu = min(max(userMtu > 0 ? userMtu : (config.mtu ?? 1420), 1280), 1500)
+        lines.append("MTU = \(effectiveMtu)")
 
         lines.append("")
         lines.append("[Peer]")
         lines.append("PublicKey = \(config.publicKey)")
-        lines.append("Endpoint = \(config.serverAddress):\(config.serverPort)")
-        for ip in config.allowedIPs {
+        lines.append("Endpoint = \(endpointString(host: config.serverAddress, port: effectivePort(config.serverPort)))")
+        // A peer with no AllowedIPs routes NO traffic. The server normally sends
+        // the full-tunnel pair; if it sent none, fall back to it rather than
+        // building a tunnel that silently carries nothing (matches Android's
+        // `?: listOf("0.0.0.0/0", "::/0")` plus its allowed-IP count check).
+        let allowedIPs = config.allowedIPs.isEmpty ? ["0.0.0.0/0", "::/0"] : config.allowedIPs
+        for ip in allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
         lines.append("PersistentKeepalive = 25")
 
         return lines.joined(separator: "\n")
     }
+
+    /// Resolve DNS servers, preferring the user's custom entries.
+    /// Mirrors Android's `WireGuardConfigBuilder.resolveDnsServers`.
+    private func resolveDnsServers(_ config: VPNConnectionConfig) -> [String] {
+        let fallback = ["1.1.1.1", "1.0.0.1"]
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "custom_dns") {
+            let custom = [
+                defaults.string(forKey: "custom_dns_primary") ?? "",
+                defaults.string(forKey: "custom_dns_secondary") ?? "",
+            ]
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { Self.isUsableDnsAddress($0) }
+            return custom.isEmpty ? fallback : custom
+        }
+        let serverDns = config.dns.filter { Self.isUsableDnsAddress($0) }
+        return serverDns.isEmpty ? fallback : serverDns
+    }
+
+    /// A DNS entry must be an IP literal (a hostname would have to be resolved
+    /// by the resolver we are configuring) and must not be loopback or
+    /// unspecified. This also stops user-typed text in the custom-DNS fields
+    /// from injecting extra lines into the generated wg-quick config.
+    private static func isUsableDnsAddress(_ s: String) -> Bool {
+        var v4 = in_addr()
+        var v6 = in6_addr()
+        if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
+            let host = UInt32(bigEndian: v4.s_addr)
+            return host != 0 && (host >> 24) != 127   // reject 0.0.0.0 and 127/8
+        }
+        if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
+            let bytes = withUnsafeBytes(of: &v6) { Array($0) }
+            if bytes.allSatisfy({ $0 == 0 }) { return false }                        // ::
+            if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return false } // ::1
+            return true
+        }
+        return false
+    }
+
+    /// Apply the user's WireGuard port override. "auto", "custom" (the picker's
+    /// placeholder tag) and any out-of-range value keep the server-provided
+    /// port — same contract as Android's `applyPortOverride`.
+    private func effectivePort(_ serverPort: Int) -> Int {
+        guard let pref = UserDefaults.standard.string(forKey: "wg_port"),
+              let override = Int(pref),
+              (1...65535).contains(override) else {
+            return serverPort
+        }
+        return override
+    }
+
+    /// `host:port`, bracketing IPv6 literals. `Endpoint = fd00::1:51820` is
+    /// ambiguous and WireGuard rejects it — it must be `[fd00::1]:51820`.
+    private func endpointString(host: String, port: Int) -> String {
+        if host.contains(":") && !host.hasPrefix("[") {
+            return "[\(host)]:\(port)"
+        }
+        return "\(host):\(port)"
+    }
 }
 
 enum VPNManagerError: Error, LocalizedError {
     case keychainUnavailable
+    case managerUnavailable
 
     var errorDescription: String? {
         switch self {
         case .keychainUnavailable:
             return "Secure storage unavailable. Restart the app and try again."
+        case .managerUnavailable:
+            return "VPN configuration unavailable. Restart the app and try again."
         }
     }
 }

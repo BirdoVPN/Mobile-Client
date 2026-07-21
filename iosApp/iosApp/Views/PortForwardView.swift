@@ -10,7 +10,10 @@ struct PortForwardView: View {
     @State private var selectedProtocol = "TCP"
     @State private var deleteTarget: PortForwardEntry?
 
-    private let protocols = ["TCP", "UDP", "Both"]
+    // The backend's `createPortForwardSchema` accepts only `tcp` or `udp`
+    // (a strict zod enum) — there is no combined option, so offering "Both"
+    // produced a rule the API always rejected. Sent lower-cased by APIClient.
+    private let protocols = ["TCP", "UDP"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +39,16 @@ struct PortForwardView: View {
         .background(BirdoTheme.black.ignoresSafeArea())
         .navigationTitle("Port Forwarding")
         .navigationBarTitleDisplayMode(.inline)
+        // The list was never populated from the server, so existing forwards
+        // were invisible on every launch and the screen only ever showed rules
+        // created during the current session.
+        .task {
+            do {
+                vpnVM.portForwards = try await APIClient.shared.fetchPortForwards()
+            } catch {
+                vpnVM.error = error.localizedDescription
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -62,7 +75,8 @@ struct PortForwardView: View {
             }
         } message: {
             if let target = deleteTarget {
-                Text("Remove port \(target.internalPort) (\(target.proto)) forwarding?")
+                // The API stores/returns the protocol lower-cased.
+                Text("Remove port \(target.internalPort) (\(target.proto.uppercased())) forwarding?")
             }
         }
     }
@@ -119,7 +133,7 @@ struct PortForwardView: View {
 
             Spacer()
 
-            Text(entry.proto)
+            Text(entry.proto.uppercased())
                 .font(.caption2.weight(.semibold))
                 .foregroundColor(BirdoTheme.blue)
                 .padding(.horizontal, 8)
@@ -198,9 +212,15 @@ struct PortForwardView: View {
 
 // MARK: - Model
 
-struct PortForwardEntry: Identifiable {
+struct PortForwardEntry: Identifiable, Decodable {
     let id: String
     let internalPort: Int
     let externalPort: Int?
     let proto: String
+
+    // The API field is `protocol`, which is a Swift keyword — map it to `proto`.
+    private enum CodingKeys: String, CodingKey {
+        case id, internalPort, externalPort
+        case proto = "protocol"
+    }
 }

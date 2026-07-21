@@ -27,7 +27,14 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+                // PINNED to 1.9.0 — must match the Kotlin 2.2.21 pin in the root
+                // build.gradle.kts. 1.10.0/1.11.0 ship Kotlin/Native klibs with ABI
+                // 2.3.0 (built by the 2.3.x compiler), which Kotlin 2.2.21 cannot
+                // read: the iOS framework fails with "incompatible ABI version".
+                // The JVM/Android path tolerates the skew, which is why this only
+                // ever broke the iOS build. Bump this ONLY together with Kotlin
+                // (and KSP/Hilt/Compose, which are version-locked to it).
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
                 implementation("io.ktor:ktor-client-core:3.3.3")
                 implementation("io.ktor:ktor-client-content-negotiation:3.3.3")

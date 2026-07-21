@@ -35,6 +35,9 @@ final class AuthViewModel: ObservableObject {
             // A logged-in session implies prior consent; preserve a stored
             // consent flag too rather than letting one source clobber the other.
             hasConsented = true
+            // Entitlements live with the App Store, not in our keychain, so the
+            // plan badge has to be re-derived on every launch.
+            refreshEntitlements()
         } else {
             hasConsented = storedConsent
         }
@@ -53,6 +56,12 @@ final class AuthViewModel: ObservableObject {
     }
 
     func login(email: String, password: String) {
+        // Single-flight. SwiftUI applies `.disabled(authVM.isLoading)` on the
+        // next render pass, so two fast taps both clear the enabled check and
+        // fire two logins. Every backend login mints a Session row, which is
+        // exactly what surfaced as duplicate "Active sessions" for one device on
+        // Android (fixed there with the same guard).
+        guard !isLoading else { return }
         isLoading = true
         error = nil
         pendingLoginEmail = email
@@ -63,9 +72,18 @@ final class AuthViewModel: ObservableObject {
                 let result = try await api.login(email: email, password: password)
                 switch result {
                 case .success(let tokens):
-                    keychain.save(accessToken: tokens.accessToken,
-                                  refreshToken: tokens.refreshToken,
-                                  email: email)
+                    // A failed keychain write is fatal to the session: every
+                    // later request would go out unauthenticated and the login
+                    // would be gone at next launch. Refuse to report success.
+                    guard keychain.save(accessToken: tokens.accessToken,
+                                        refreshToken: tokens.refreshToken,
+                                        email: email) else {
+                        error = "Could not securely store your session. Please try again."
+                        pendingLoginEmail = ""
+                        pendingLoginPassword = ""
+                        isLoading = false
+                        return
+                    }
                     userEmail = email
                     isLoggedIn = true
                     // No 2FA step will consume these; clear them now.
@@ -75,10 +93,16 @@ final class AuthViewModel: ObservableObject {
                     requiresTwoFactor = true
                 case .failure(let message):
                     error = message
+                    // No 2FA step will consume these either — don't leave the
+                    // plaintext password sitting in memory after a rejection.
+                    pendingLoginEmail = ""
+                    pendingLoginPassword = ""
                 }
                 isLoading = false
             } catch {
                 self.error = error.localizedDescription
+                pendingLoginEmail = ""
+                pendingLoginPassword = ""
                 isLoading = false
             }
         }
@@ -90,6 +114,8 @@ final class AuthViewModel: ObservableObject {
         // may never populate.
         twoFactorCode = code
         guard !twoFactorCode.isEmpty else { return }
+        // Single-flight — see login().
+        guard !isLoading else { return }
         isLoading = true
         error = nil
 
@@ -100,9 +126,16 @@ final class AuthViewModel: ObservableObject {
                     password: pendingLoginPassword,
                     code: twoFactorCode
                 )
-                keychain.save(accessToken: tokens.accessToken,
-                              refreshToken: tokens.refreshToken,
-                              email: pendingLoginEmail)
+                guard keychain.save(accessToken: tokens.accessToken,
+                                    refreshToken: tokens.refreshToken,
+                                    email: pendingLoginEmail) else {
+                    // See login(): a lost keychain write means no session at all.
+                    error = "Could not securely store your session. Please try again."
+                    pendingLoginEmail = ""
+                    pendingLoginPassword = ""
+                    isLoading = false
+                    return
+                }
                 userEmail = pendingLoginEmail
                 requiresTwoFactor = false
                 isLoggedIn = true
@@ -131,15 +164,22 @@ final class AuthViewModel: ObservableObject {
     }
 
     func loginAnonymous() {
+        // Single-flight — see login().
+        guard !isLoading else { return }
         isLoading = true
         error = nil
 
         Task {
             do {
                 let tokens = try await api.loginAnonymous()
-                keychain.save(accessToken: tokens.accessToken,
-                              refreshToken: tokens.refreshToken,
-                              email: nil)
+                guard keychain.save(accessToken: tokens.accessToken,
+                                    refreshToken: tokens.refreshToken,
+                                    email: nil) else {
+                    // See login(): a lost keychain write means no session at all.
+                    error = "Could not securely store your session. Please try again."
+                    isLoading = false
+                    return
+                }
                 userEmail = nil
                 isLoggedIn = true
                 isLoading = false
@@ -159,17 +199,27 @@ final class AuthViewModel: ObservableObject {
         isLoggedIn = false
         requiresTwoFactor = false
         error = nil
+        // Clear the previous account's entitlement view, otherwise the next user
+        // to sign in on this device inherits its plan badge. Also drop any
+        // in-flight loading flag so the login form isn't left spinning/disabled.
+        currentPlan = nil
+        subscriptionExpiry = nil
+        isLoading = false
         // Ensure no plaintext credentials linger after sign-out.
         pendingLoginEmail = ""
         pendingLoginPassword = ""
         twoFactorCode = ""
     }
 
-    func deleteAccount() {
+    /// GDPR Art. 17 erasure. `password` is REQUIRED by the backend for accounts
+    /// that have one (email signups) and ignored for SSO/anonymous accounts —
+    /// see gdpr.controller.ts, which 401s a password account with no password.
+    func deleteAccount(password: String?) {
         isLoading = true
+        error = nil
         Task {
             do {
-                try await api.deleteAccount()
+                try await api.deleteAccount(password: password)
                 logout()
             } catch {
                 self.error = error.localizedDescription
@@ -184,19 +234,51 @@ final class AuthViewModel: ObservableObject {
     func subscribe(plan: Plan, billing: BillingPeriod) {
         // RECON is the free tier and has no StoreKit product to purchase.
         guard !plan.isFree else { return }
+        guard !isLoading else { return }
         let productID = StoreKitService.productID(
             planSlug: plan.rawValue,
             isYearly: billing == .yearly
         )
         isLoading = true
+        error = nil
         Task {
             let store = StoreKitService.shared
             let ok = await store.purchase(productID: productID)
-            if !ok, let storeError = store.lastError {
+            if ok {
+                // Honour the contract stated above. Nothing ever assigned
+                // `currentPlan`, so the "CURRENT" badge never appeared and the
+                // user could buy a plan they already owned.
+                await store.refreshEntitlements()
+                currentPlan = highestEntitledPlan(in: store.purchasedProductIDs)
+            } else if let storeError = store.lastError {
                 self.error = storeError
             }
             isLoading = false
         }
+    }
+
+    /// Refresh `currentPlan` from the App Store's active entitlements. Called on
+    /// launch for an existing session so the plan badge survives a relaunch.
+    func refreshEntitlements() {
+        Task {
+            let store = StoreKitService.shared
+            await store.refreshEntitlements()
+            currentPlan = highestEntitledPlan(in: store.purchasedProductIDs)
+        }
+    }
+
+    /// Map an active StoreKit entitlement set to the highest plan it grants.
+    /// Returns `nil` when nothing paid is active — RECON (free) has no product,
+    /// so an absent entitlement is not evidence of a RECON subscription.
+    private func highestEntitledPlan(in productIDs: Set<String>) -> Plan? {
+        for plan in [Plan.sovereign, Plan.operative] {
+            let monthly = StoreKitService.productID(planSlug: plan.rawValue, isYearly: false)
+            let yearly = StoreKitService.productID(planSlug: plan.rawValue, isYearly: true)
+            if productIDs.contains(monthly) || productIDs.contains(yearly) {
+                return plan
+            }
+        }
+        return nil
     }
 }
 

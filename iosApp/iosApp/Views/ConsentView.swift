@@ -8,8 +8,6 @@ struct ConsentView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                Spacer().frame(height: 48)
-
                 Image(systemName: "shield.fill")
                     .font(.system(size: 56))
                     .foregroundColor(BirdoTheme.purple)
@@ -22,6 +20,9 @@ struct ConsentView: View {
                     .font(.subheadline)
                     .foregroundColor(BirdoTheme.white60)
                     .multilineTextAlignment(.center)
+                    // Without this a multi-line Text can be truncated instead of
+                    // growing when the user raises Dynamic Type.
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 24)
 
                 VStack(alignment: .leading, spacing: 16) {
@@ -62,12 +63,21 @@ struct ConsentView: View {
                 Text("Consent is required to use the VPN service.")
                     .font(.caption2)
                     .foregroundColor(BirdoTheme.white20)
-
-                Spacer().frame(height: 32)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity)
+            // Real padding rather than leading/trailing Spacers: a Spacer is
+            // flexible, so inside a ScrollView it does not reliably reserve
+            // room and the trailing caption ended up under the home indicator.
             .padding(.horizontal, 24)
+            .padding(.top, 48)
+            .padding(.bottom, 32)
         }
-        .background(BirdoTheme.black)
+        // Matches every other screen: the colour fills the safe-area strips
+        // while the ScrollView keeps its safe-area content insets, so the
+        // first and last rows stay clear of the notch and home indicator.
+        .background(BirdoTheme.black.ignoresSafeArea())
     }
 }
 
@@ -83,6 +93,8 @@ private struct DataItem: View {
             Text(description)
                 .font(.caption)
                 .foregroundColor(BirdoTheme.white60)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

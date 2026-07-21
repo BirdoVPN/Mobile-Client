@@ -101,7 +101,7 @@ final class BirdoPQManager: @unchecked Sendable {
             return nil
         }
 
-        var psk = [UInt8](repeating: 0, count: BIRDO_PQ_PSK_LEN)
+        var psk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_PSK_LEN))
         let rc = kp.sk.withUnsafeBytes { skPtr -> Int32 in
             ct.withUnsafeBytes { ctPtr -> Int32 in
                 nonce.withUnsafeBytes { noncePtr -> Int32 in
@@ -180,8 +180,8 @@ final class BirdoPQManager: @unchecked Sendable {
     }
 
     private func generateKeypair() -> (pk: Data, sk: Data)? {
-        var pk = [UInt8](repeating: 0, count: BIRDO_PQ_PUBLIC_KEY_LEN)
-        var sk = [UInt8](repeating: 0, count: BIRDO_PQ_SECRET_KEY_LEN)
+        var pk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_PUBLIC_KEY_LEN))
+        var sk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_SECRET_KEY_LEN))
         let rc = birdo_pq_generate_keypair(&pk, pk.count, &sk, sk.count)
         if rc != BIRDO_PQ_OK {
             NSLog("BirdoPQ: generate_keypair failed rc=\(rc)")
@@ -220,8 +220,8 @@ final class BirdoPQManager: @unchecked Sendable {
             SecItemDelete(del as CFDictionary)
             return nil
         }
-        let pk = data.prefix(BIRDO_PQ_PUBLIC_KEY_LEN)
-        let sk = data.suffix(BIRDO_PQ_SECRET_KEY_LEN)
+        let pk = data.prefix(Int(BIRDO_PQ_PUBLIC_KEY_LEN))
+        let sk = data.suffix(Int(BIRDO_PQ_SECRET_KEY_LEN))
         return (Data(pk), Data(sk))
     }
 

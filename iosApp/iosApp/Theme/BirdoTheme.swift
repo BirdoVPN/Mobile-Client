@@ -8,16 +8,20 @@ enum BirdoTheme {
     static let card        = Color(hex: 0x161616)
     static let border      = Color.white.opacity(0.06)
 
-    static let purple      = Color(hex: 0x8B5CF6)
-    static let purpleLight = Color(hex: 0xA78BFA)
+    // Primary accent — EMERALD. Names kept for call-site compatibility; the
+    // values are Android's BirdoAccent / BirdoAccentSoft (emerald-500 / -300).
+    static let purple      = Color(hex: 0x10B981)
+    static let purpleLight = Color(hex: 0x6EE7B7)
 
-    static let green       = Color(hex: 0x22C55E)
-    static let greenLight  = Color(hex: 0x4ADE80)
-    static let greenBg     = Color(hex: 0x22C55E).opacity(0.1)
-    static let greenShadow = Color(hex: 0x22C55E).opacity(0.5)
+    // Connected state — emerald-400. The brand is green, so connection state is
+    // separated from the accent by LUMINANCE, not hue (see Android Color.kt).
+    static let green       = Color(hex: 0x34D399)
+    static let greenLight  = Color(hex: 0x6EE7B7)
+    static let greenBg     = Color(hex: 0x34D399).opacity(0.1)
+    static let greenShadow = Color(hex: 0x34D399).opacity(0.3)
 
-    static let red         = Color(hex: 0xEF4444)
-    static let redBg       = Color(hex: 0xEF4444).opacity(0.1)
+    static let red         = Color(hex: 0xF87171)
+    static let redBg       = Color(hex: 0xF87171).opacity(0.1)
 
     static let yellow      = Color(hex: 0xEAB308)
     static let yellowLight = Color(hex: 0xFACC15)

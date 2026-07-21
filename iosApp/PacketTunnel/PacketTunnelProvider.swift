@@ -56,9 +56,23 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             completionHandler(TunnelError.missingConfig)
             return
         }
-        let presharedKey: String? = presharedKeyRef.isEmpty
-            ? nil
-            : readSharedKeychain(account: presharedKeyRef)
+        // The host app sets `wg-preshared-key-ref` to a non-empty account name
+        // ONLY when it actually wrote a PSK. If we cannot read it back, the
+        // server still has that PSK configured for this peer, so a tunnel built
+        // without it can never complete a handshake — and silently omitting it
+        // would be a crypto downgrade if the server ever tolerated it. Fail
+        // closed and loudly, matching Android's `WireGuardConfigBuilder`, which
+        // throws rather than proceed without an expected PSK.
+        var presharedKey: String?
+        if !presharedKeyRef.isEmpty {
+            guard let psk = readSharedKeychain(account: presharedKeyRef), !psk.isEmpty else {
+                os_log("Expected preshared key missing from shared keychain — refusing to build a downgraded tunnel",
+                       log: log, type: .error)
+                completionHandler(TunnelError.missingConfig)
+                return
+            }
+            presharedKey = psk
+        }
 
         // Reconstruct a complete `wg-quick` config (with the keys) and parse
         // it into a WireGuardKit `TunnelConfiguration`. The reconstructed
@@ -90,12 +104,26 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         adapter.start(tunnelConfiguration: tunnelConfiguration) { [weak self] adapterError in
-            guard let self else { return }
+            // `self` is deliberately NOT guard-let'd first: NetworkExtension
+            // waits on `completionHandler` indefinitely, so any path that
+            // returns without calling it wedges the extension in "Connecting"
+            // until the system kills it. Every branch below completes.
             if let adapterError {
-                os_log("Adapter start failed: %{public}@",
-                       log: self.log, type: .error,
+                // %{private}@, NOT %{public}@: `WireGuardAdapterError.dnsResolution`
+                // carries `DNSResolutionError.address` — the VPN server endpoint
+                // the user connected to. Logging that publicly writes the chosen
+                // exit node into the unified log / sysdiagnose, which is exactly
+                // the connection metadata the no-logs policy says does not exist.
+                os_log("Adapter start failed: %{private}@",
+                       log: self?.log ?? .default, type: .error,
                        String(describing: adapterError))
                 completionHandler(TunnelError.adapterFailed(String(describing: adapterError)))
+                return
+            }
+            guard let self else {
+                // Provider deallocated between start and callback — fail closed
+                // rather than report a tunnel nothing is left to manage.
+                completionHandler(TunnelError.adapterFailed("provider deallocated"))
                 return
             }
             os_log("Tunnel up", log: self.log, type: .info)
@@ -107,7 +135,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        os_log("Stopping tunnel, reason: %{public}d", log: log, type: .info, reason.rawValue)
+        // %ld, not %d: `reason.rawValue` is a 64-bit Int and os_log's Swift
+        // overlay encodes it as 8 bytes — %d would print a garbage value.
+        os_log("Stopping tunnel, reason: %{public}ld", log: log, type: .info, reason.rawValue)
         adapter.stop { [weak self] error in
             if let error {
                 os_log("Adapter stop failed: %{public}@",

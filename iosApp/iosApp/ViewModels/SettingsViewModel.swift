@@ -85,7 +85,13 @@ final class SettingsViewModel: ObservableObject {
         customDnsPrimary = d.string(forKey: "custom_dns_primary") ?? ""
         customDnsSecondary = d.string(forKey: "custom_dns_secondary") ?? ""
         wireGuardPort = d.string(forKey: "wg_port") ?? "auto"
-        wireGuardMtu = Int32(d.integer(forKey: "wg_mtu"))
+        // `integer(forKey:)` is an `Int` read straight from a user-writable
+        // plist: an out-of-Int32-range value would TRAP the conversion and crash
+        // on launch. 0 is the "Auto MTU" sentinel the settings UI keys off, so
+        // preserve it exactly; clamp anything else into the WireGuard-legal
+        // range rather than surfacing a value the tunnel would reject.
+        let storedMtu = d.integer(forKey: "wg_mtu")
+        wireGuardMtu = storedMtu == 0 ? 0 : Int32(min(max(storedMtu, 1280), 1500))
     }
 
     // MARK: - Helpers

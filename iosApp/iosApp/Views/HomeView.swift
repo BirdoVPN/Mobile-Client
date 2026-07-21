@@ -12,43 +12,49 @@ struct HomeView: View {
             // Header
             header
 
-            ScrollView {
-                VStack(spacing: 24) {
-                    Spacer().frame(height: 32)
+            // GeometryReader gives the scroll content a minimum height equal to
+            // the visible area. Without it the trailing Spacer() below is
+            // proposed no height inside the ScrollView, so it collapsed and the
+            // server selector never sat at the bottom of the screen.
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 24) {
+                        statusBadge
 
-                    statusBadge
+                        if vpnVM.isConnected, let server = vpnVM.selectedServer?.name {
+                            Text(server)
+                                .font(.subheadline)
+                                .foregroundColor(BirdoTheme.white60)
+                        }
 
-                    if vpnVM.isConnected, let server = vpnVM.selectedServer?.name {
-                        Text(server)
-                            .font(.subheadline)
-                            .foregroundColor(BirdoTheme.white60)
+                        Spacer().frame(height: 4)
+
+                        connectionButton
+
+                        if vpnVM.isConnected {
+                            statsRow
+                            securityBadges
+                        }
+
+                        if vpnVM.killSwitchActive {
+                            killSwitchBanner
+                        }
+
+                        if let error = vpnVM.error {
+                            errorBanner(error)
+                        }
+
+                        Spacer()
+
+                        serverSelector
                     }
-
-                    Spacer().frame(height: 4)
-
-                    connectionButton
-
-                    if vpnVM.isConnected {
-                        statsRow
-                        securityBadges
-                    }
-
-                    if vpnVM.killSwitchActive {
-                        killSwitchBanner
-                    }
-
-                    if let error = vpnVM.error {
-                        errorBanner(error)
-                    }
-
-                    Spacer()
-
-                    serverSelector
+                    .padding(.horizontal, 32)
+                    .padding(.top, 32)
+                    .frame(maxWidth: .infinity, minHeight: proxy.size.height)
                 }
-                .padding(.horizontal, 32)
             }
         }
-        .background(BirdoTheme.black)
+        .background(BirdoTheme.black.ignoresSafeArea())
     }
 
     // MARK: - Header
@@ -79,7 +85,9 @@ struct HomeView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .frame(height: 48)
+            // minHeight, not height: a hard 48pt clipped the title and the
+            // logout glyph once Dynamic Type went above the default sizes.
+            .frame(minHeight: 48)
 
             Divider().background(BirdoTheme.white05)
         }
@@ -222,6 +230,7 @@ struct HomeView: View {
                 .font(.caption)
             Text("Kill switch is blocking all traffic")
                 .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundColor(BirdoTheme.red)
         .padding(12)
@@ -237,8 +246,11 @@ struct HomeView: View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.caption)
+            // Backend error strings are arbitrary length — let them wrap
+            // instead of being truncated to a single ellipsised line.
             Text(message)
                 .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundColor(BirdoTheme.red)
         .padding(12)
@@ -295,13 +307,19 @@ private struct StatsCard: View {
     let value: String
 
     var body: some View {
+        // Three cards share the row, so a long value ("00:00:00", "1.23 GB")
+        // has to shrink rather than truncate.
         VStack(spacing: 4) {
             Text(label)
                 .font(.caption2)
                 .foregroundColor(BirdoTheme.white60)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Text(value)
                 .font(.caption.weight(.semibold))
                 .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity)
         .padding(12)

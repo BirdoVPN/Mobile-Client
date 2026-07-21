@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
 
     @State private var showDeleteDialog = false
+    /// Cleared on both Delete and Cancel so the plaintext never outlives the alert.
     @State private var deletePassword = ""
     @State private var showKillSwitchWarning = false
 
@@ -105,21 +106,21 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .alert("Delete Account", isPresented: $showDeleteDialog) {
-                SecureField("Enter password", text: $deletePassword)
+                // The password IS sent now. gdpr.controller.ts rejects erasure
+                // with 401 when the account has a password hash and the body
+                // carries none, so dropping this field entirely made deletion
+                // impossible for every email-signup account. It stays OPTIONAL
+                // (not a button gate) because SSO and anonymous accounts have no
+                // hash and must still be able to delete — the backend skips the
+                // check for those and ignores whatever is sent.
+                SecureField("Password (if you have one)", text: $deletePassword)
                 Button("Delete", role: .destructive) {
-                    // Password capture is currently informational only — the
-                    // backend re-authenticates via the live access token. We
-                    // wipe the entered value immediately after the call to
-                    // avoid keeping it in SwiftUI state longer than needed.
-                    authVM.deleteAccount()
+                    authVM.deleteAccount(password: deletePassword)
                     deletePassword = ""
                 }
-                .disabled(deletePassword.isEmpty)
-                Button("Cancel", role: .cancel) {
-                    deletePassword = ""
-                }
+                Button("Cancel", role: .cancel) { deletePassword = "" }
             } message: {
-                Text("This action is permanent and cannot be undone. All your data will be deleted.")
+                Text("This action is permanent and cannot be undone. All your data will be deleted. If you signed up with an email and password, enter your password to confirm.")
             }
             .alert("Disable Kill Switch?", isPresented: $showKillSwitchWarning) {
                 Button("Disable", role: .destructive) {

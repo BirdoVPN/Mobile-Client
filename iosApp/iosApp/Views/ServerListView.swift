@@ -263,6 +263,14 @@ struct ServerInfo: Identifiable, Decodable {
     let isPortForwarding: Bool
     let isOnline: Bool
 
+    /// Regional-indicator flag for `countryCode`. Computed, never stored, so
+    /// decoding is unaffected; falls back to 🌐 on a missing/malformed code.
+    var flag: String {
+        let code = countryCode.uppercased()
+        guard code.count == 2, code.allSatisfy({ $0.isASCII && $0.isLetter }) else { return "🌐" }
+        return flagEmoji(code)
+    }
+
     /// Hand-rolled so a missing key degrades to a safe default instead of
     /// throwing and blanking the WHOLE server list. Swift's synthesized
     /// `Decodable` ignores property default values, so this has to be explicit.

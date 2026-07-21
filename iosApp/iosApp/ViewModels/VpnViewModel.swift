@@ -33,7 +33,10 @@ final class VpnViewModel: ObservableObject {
     // MARK: - Private
     private let api: APIClient
     private let vpnManager: VPNManager
-    private var statsTimer: Timer?
+    // `nonisolated(unsafe)` so the nonisolated `deinit` below can still invalidate
+    // the Timer (Swift 6 forbids touching MainActor-isolated non-Sendable state
+    // from deinit). Every read/write outside deinit is on the main actor.
+    nonisolated(unsafe) private var statsTimer: Timer?
 
     init(api: APIClient = .shared, vpnManager: VPNManager = .shared) {
         self.api = api
@@ -69,12 +72,21 @@ final class VpnViewModel: ObservableObject {
             return
         }
         isLoadingServers = true
+        error = nil
         Task {
             defer { isLoadingServers = false }
             do {
                 let list = try await api.fetchServers()
                 servers = list
                 serverCacheTimestamp = Date()
+                // Mirror the Android `loadServers()`: pre-select the best usable
+                // node. Without this nothing ever assigns `selectedServer`, so a
+                // fresh install's first Connect tap always failed with
+                // "Select a server first". Never auto-select an out-of-plan or
+                // offline node — the backend would refuse the connect anyway.
+                if selectedServer == nil {
+                    selectedServer = list.first { $0.isOnline && $0.accessible }
+                }
             } catch {
                 self.error = error.localizedDescription
             }
@@ -105,6 +117,10 @@ final class VpnViewModel: ObservableObject {
             error = "Select a server first"
             return
         }
+        // Re-entrancy guard, matching the Android VpnViewModel: a second tap
+        // while a connect is already in flight mints a second tunnel session
+        // (and a second server-side peer) for the same device.
+        guard !isConnecting else { return }
         isConnecting = true
         error = nil
 
@@ -115,10 +131,10 @@ final class VpnViewModel: ObservableObject {
                 // Honest indicator: light the "Quantum" badge only when a true
                 // bilateral ML-KEM PSK was actually derived for this connection.
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
-                connectedSince = Date()
-                isConnected = true
-                isConnecting = false
-                startStatsTimer()
+                // `startVPNTunnel()` only REQUESTS the tunnel — it is still
+                // handshaking at this point. `isConnected`, `connectedSince` and
+                // the stats timer are owned by handleStatusChange(.connected) so
+                // the UI never shows "Protected" before the tunnel actually is.
             } catch {
                 self.error = error.localizedDescription
                 isConnecting = false
@@ -127,19 +143,25 @@ final class VpnViewModel: ObservableObject {
     }
 
     func disconnect() {
-        Task {
-            vpnManager.disconnect()
-            isConnected = false
-            isConnecting = false
-            quantumActive = false
-            connectedSince = nil
-            bytesReceived = 0
-            bytesSent = 0
-            stopStatsTimer()
-        }
+        // Runs synchronously: callers rely on the tunnel being torn down BEFORE
+        // the next statement (HomeView's sign-out does `disconnect()` then
+        // `logout()`, which wipes the keychain the extension reads its secrets
+        // from). The previous `Task { … }` wrapper deferred the whole body by a
+        // main-actor hop, so the keychain was cleared first.
+        vpnManager.disconnect()
+        isConnected = false
+        isConnecting = false
+        quantumActive = false
+        connectedSince = nil
+        bytesReceived = 0
+        bytesSent = 0
+        stopStatsTimer()
     }
 
     func connectMultiHop(entryId: String, exitId: String) {
+        // Same re-entrancy guard as connect(): the multi-hop sheet dismisses on
+        // tap but does not disable its button on `isConnecting`.
+        guard !isConnecting else { return }
         isConnecting = true
         error = nil
 
@@ -148,10 +170,7 @@ final class VpnViewModel: ObservableObject {
                 let config = try await api.getMultiHopConfig(entryId: entryId, exitId: exitId)
                 try await vpnManager.connect(config: config)
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
-                connectedSince = Date()
-                isConnected = true
-                isConnecting = false
-                startStatsTimer()
+                // Connected-state ownership: see connect().
             } catch {
                 self.error = error.localizedDescription
                 isConnecting = false
@@ -226,6 +245,13 @@ final class VpnViewModel: ObservableObject {
         case .connected:
             isConnected = true
             isConnecting = false
+            // The connected session is owned here rather than at request time so
+            // it also covers tunnels the system brings up on its own (on-demand
+            // rules, or a reassert after a network change). Previously those
+            // paths left the duration pinned at 00:00 with the byte counters
+            // frozen at zero, because only connect() ever started the timer.
+            if connectedSince == nil { connectedSince = Date() }
+            startStatsTimer()
         case .connecting, .reasserting:
             isConnecting = true
         case .disconnected, .invalid:
@@ -233,6 +259,10 @@ final class VpnViewModel: ObservableObject {
             isConnecting = false
             quantumActive = false
             connectedSince = nil
+            // Match disconnect(): an OS-initiated drop must not leave the last
+            // session's byte counts on screen for the next connection.
+            bytesReceived = 0
+            bytesSent = 0
             stopStatsTimer()
         case .disconnecting:
             isConnecting = false
@@ -242,6 +272,11 @@ final class VpnViewModel: ObservableObject {
     }
 
     private func startStatsTimer() {
+        // Idempotent: `.connected` can be delivered more than once for a single
+        // session (e.g. after a reassert). Overwriting `statsTimer` without
+        // invalidating the old one orphaned a repeating Timer on the run loop —
+        // it kept firing and kept its closure alive for the process lifetime.
+        stopStatsTimer()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
