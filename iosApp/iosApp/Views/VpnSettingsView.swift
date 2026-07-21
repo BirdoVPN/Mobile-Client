@@ -81,7 +81,7 @@ struct VpnSettingsView: View {
                         TextField("Port number (1-65535)", text: $customPortText)
                             .keyboardType(.numberPad)
                             .textFieldStyle(BirdoTextFieldStyle())
-                            .onChange(of: customPortText) { newValue in
+                            .onChange(of: customPortText) { _, newValue in
                                 let filtered = String(newValue.filter(\.isNumber).prefix(5))
                                 customPortText = filtered
                             }
@@ -104,7 +104,7 @@ struct VpnSettingsView: View {
                         TextField("MTU (1280-1500)", text: $mtuText)
                             .keyboardType(.numberPad)
                             .textFieldStyle(BirdoTextFieldStyle())
-                            .onChange(of: mtuText) { newValue in
+                            .onChange(of: mtuText) { _, newValue in
                                 mtuText = String(newValue.filter(\.isNumber).prefix(4))
                                 if let val = Int(mtuText) {
                                     settingsVM.wireGuardMtu = Int32(min(max(val, 1280), 1500))

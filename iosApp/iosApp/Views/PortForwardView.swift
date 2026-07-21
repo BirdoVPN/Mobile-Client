@@ -157,7 +157,7 @@ struct PortForwardView: View {
                     TextField("e.g. 8080", text: $portText)
                         .keyboardType(.numberPad)
                         .textFieldStyle(BirdoTextFieldStyle())
-                        .onChange(of: portText) { newValue in
+                        .onChange(of: portText) { _, newValue in
                             portText = String(newValue.filter(\.isNumber).prefix(5))
                         }
                 }

@@ -518,10 +518,16 @@ private final class PinningDelegate: NSObject, URLSessionDelegate {
         }
 
         // Then SPKI pinning: at least one cert in the chain must match.
-        let count = SecTrustGetCertificateCount(trust)
-        for i in 0..<count {
-            guard let cert = SecTrustGetCertificateAtIndex(trust, i),
-                  let pubKey = SecCertificateCopyKey(cert),
+        // SecTrustCopyCertificateChain (iOS 15+) replaces the deprecated
+        // SecTrustGetCertificateAtIndex/SecTrustGetCertificateCount pair.
+        // If the chain cannot be read we FAIL CLOSED — never fall through to
+        // .useCredential, which would silently disable pinning.
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        for cert in chain {
+            guard let pubKey = SecCertificateCopyKey(cert),
                   let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
                 continue
             }

@@ -126,7 +126,7 @@ struct LoginView: View {
                 .font(.title2.monospaced())
                 .focused($focusedField, equals: .twoFactor)
                 .textFieldStyle(BirdoTextFieldStyle())
-                .onChange(of: twoFactorCode) { newValue in
+                .onChange(of: twoFactorCode) { _, newValue in
                     twoFactorCode = String(newValue.prefix(6).filter(\.isNumber))
                 }
 
