@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
+import app.birdo.vpn.data.model.AppUpdateInfo
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
@@ -77,6 +78,10 @@ fun HomeScreen(
     onRefreshServers: () -> Unit = {},
     onOpenServers: () -> Unit,
     onLogout: () -> Unit,
+    updateInfo: AppUpdateInfo? = null,
+    showUpdateBanner: Boolean = false,
+    onUpdateApp: () -> Unit = {},
+    onDismissUpdate: () -> Unit = {},
 ) {
     val palette = BirdoColors.current
     val isConnected = state.vpnState is VpnState.Connected
@@ -235,6 +240,18 @@ fun HomeScreen(
                         exit = fadeOut(),
                     ) {
                         StatsRow(connectedSince = state.connectedSince, stats = trafficStats)
+                    }
+
+                    // Server-driven update nudge. Optional updates are a calm,
+                    // dismissible card; a backend-declared REQUIRED update (the
+                    // owner-set floor that also refuses connects with 426) has
+                    // no dismiss affordance.
+                    if (showUpdateBanner && updateInfo != null) {
+                        UpdateBanner(
+                            info = updateInfo,
+                            onUpdate = onUpdateApp,
+                            onDismiss = if (updateInfo.updateRequired) null else onDismissUpdate,
+                        )
                     }
 
                     AnimatedVisibility(visible = isKillSwitchActive) {
@@ -931,6 +948,87 @@ private fun HomeBanner(
                 fontSize = 13.sp,
                 modifier = Modifier.weight(1f),
             )
+        }
+    }
+}
+
+// ── Update banner ──────────────────────────────────────────────────────────
+
+/**
+ * App-update nudge. Emerald (brand accent) for an optional update, red for a
+ * required one — matching HomeBanner's severity language. `onDismiss = null`
+ * removes the dismiss affordance entirely (required updates).
+ */
+@Composable
+private fun UpdateBanner(
+    info: AppUpdateInfo,
+    onUpdate: () -> Unit,
+    onDismiss: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val required = info.updateRequired
+    val accent = if (required) BirdoRed else BirdoAccent
+    val bg = if (required) BirdoRedBg else BirdoAccentBg
+    val title = stringResource(
+        if (required) R.string.update_required_title else R.string.update_available_title,
+    )
+    val body = if (required) {
+        stringResource(R.string.update_required_body)
+    } else {
+        stringResource(R.string.update_available_body, info.latestVersion ?: "")
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        shape = RoundedCornerShape(14.dp),
+        color = bg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.3f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.SystemUpdate,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    color = accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = body,
+                    color = BirdoWhite60,
+                    fontSize = 12.sp,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            TextButton(onClick = onUpdate) {
+                Text(
+                    text = stringResource(R.string.update_action),
+                    color = accent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = stringResource(R.string.cd_dismiss_update),
+                        tint = BirdoWhite40,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
         }
     }
 }
