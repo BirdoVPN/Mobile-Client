@@ -69,6 +69,15 @@ interface BirdoApi {
     @GET("v1/gdpr/export")
     suspend fun exportUserData(): Response<GdprExportResponse>
 
+    // ── App updates ──────────────────────────────────────────────
+
+    /**
+     * Server-driven update policy: latest published release + the owner-set
+     * support floor. Public endpoint (no auth), safe to poll at launch.
+     */
+    @GET("updates/android/{version}")
+    suspend fun checkAppUpdate(@Path("version") version: String): Response<AppUpdateInfo>
+
     // ── User ─────────────────────────────────────────────────────
 
     @GET("auth/me")
