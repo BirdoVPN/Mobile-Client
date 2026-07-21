@@ -1,352 +1,492 @@
 import SwiftUI
-import BirdoShared
 
-/// Main connect screen with power button, stats, and server selector.
+/// Home (Connect) screen — Android HomeScreen parity per
+/// spec-home-servers-consent.md §3, emerald visual identity per
+/// spec-pixelcanvas-design.md §4.
+///
+/// Structure, top to bottom: HomeTopBar (brand lockup + identity + logout) →
+/// StatusPill hero (+ kill-switch / quantum chips) → breathing space (the
+/// app-root PixelCanvas shows through — tab roots stay transparent, per the
+/// placement contract) → bottom action panel (connected stats, banners,
+/// server selector, connect CTA).
+///
+/// THE GREEN BUDGET (privacy invariant, do not "fix"): connection state is
+/// separated by LUMINANCE, never hue — idle CTA is DEEP emerald
+/// (`Gradients.connectIdle`), connected is luminous mint + glow + pulse.
 struct HomeView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
     @EnvironmentObject var authVM: AuthViewModel
     @EnvironmentObject var settingsVM: SettingsViewModel
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var showLogoutConfirm = false
+    // Haptic triggers — `.sensoryFeedback` fires on value CHANGE only, so a
+    // bumped counter plays exactly one tap's worth of feedback.
+    @State private var connectHapticTick = 0
+    @State private var disconnectHapticTick = 0
+
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            header
+            topBar
 
-            // GeometryReader gives the scroll content a minimum height equal to
-            // the visible area. Without it the trailing Spacer() below is
-            // proposed no height inside the ScrollView, so it collapsed and the
-            // server selector never sat at the bottom of the screen.
-            GeometryReader { proxy in
-                ScrollView {
-                    VStack(spacing: 24) {
-                        statusBadge
+            statusArea
+                .padding(.top, 12)
 
-                        if vpnVM.isConnected, let server = vpnVM.selectedServer?.name {
-                            Text(server)
-                                .font(.subheadline)
-                                .foregroundColor(BirdoTheme.white60)
-                        }
+            // The globe hero was not ported (no iOS WorldGlobe); the root
+            // PixelCanvas twinkles through this gap instead.
+            Spacer(minLength: 0)
 
-                        Spacer().frame(height: 4)
-
-                        connectionButton
-
-                        if vpnVM.isConnected {
-                            statsRow
-                            securityBadges
-                        }
-
-                        if vpnVM.killSwitchActive {
-                            killSwitchBanner
-                        }
-
-                        if let error = vpnVM.error {
-                            errorBanner(error)
-                        }
-
-                        Spacer()
-
-                        serverSelector
-                    }
-                    .padding(.horizontal, 32)
-                    .padding(.top, 32)
-                    .frame(maxWidth: .infinity, minHeight: proxy.size.height)
+            bottomPanel
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Tab-root screens are transparent over the ONE app-root PixelCanvas.
+        .background(Color.clear)
+        // The screen draws its own top bar; an empty system bar would push
+        // everything down and paint over the canvas.
+        .toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            // Defensive kick — cheap thanks to the 60 s TTL + in-flight guard.
+            // The app root owns the real login-flip / cold-start load.
+            vpnVM.loadServers()
+        }
+        .sensoryFeedback(.impact(weight: .heavy), trigger: connectHapticTick)
+        .sensoryFeedback(.warning, trigger: disconnectHapticTick)
+        // Android parity: a Confirm haptic the moment the state becomes
+        // Connected (not when the user taps — when the tunnel actually is up).
+        .sensoryFeedback(.success, trigger: vpnVM.isConnected) { _, nowConnected in
+            nowConnected
+        }
+        .birdoConfirmDialog(
+            isPresented: $showLogoutConfirm,
+            title: "Log Out?",
+            message: vpnVM.isConnected
+                ? "You are still connected. Logging out will disconnect."
+                : "Are you sure you want to log out?",
+            confirmLabel: "Log Out",
+            onConfirm: {
+                Task { @MainActor in
+                    // Order is load-bearing: disconnectForSignOut() tears the
+                    // tunnel down and AWAITS the server-side slot release
+                    // BEFORE logout() wipes the keychain the extension reads.
+                    await vpnVM.disconnectForSignOut()
+                    authVM.logout()
                 }
             }
-        }
-        .background(BirdoTheme.black.ignoresSafeArea())
+        )
     }
 
-    // MARK: - Header
+    /// Reduce Motion: return nil so state changes land instantly.
+    private func anim(_ animation: Animation) -> Animation? {
+        reduceMotion ? nil : animation
+    }
 
-    private var header: some View {
+    // MARK: - Top Bar (Android §3.2)
+
+    private var topBar: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 10) {
+                // Real brand asset — the SF-symbol bird placeholder is dead.
+                BirdoLogo.topBar
+
                 Text("Birdo VPN")
-                    .font(.headline)
-                    .foregroundColor(.white)
-                Spacer()
-                if let email = authVM.userEmail {
-                    Text(email)
-                        .font(.caption2)
-                        .foregroundColor(BirdoTheme.white40)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(BirdoTheme.onBackground)
+                    .lineLimit(1)
+
+                Spacer(minLength: BirdoTheme.Spacing.md)
+
+                if let identity = accountIdentity {
+                    Text(identity)
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
                         .lineLimit(1)
-                        .frame(maxWidth: 140, alignment: .trailing)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 120, alignment: .trailing)
                 }
-                Button(action: {
-                    // Tear down the tunnel before clearing keychain credentials
-                    // so the extension never tries to (re)connect with missing
-                    // secrets, and on-demand rules can't resurrect the tunnel.
-                    vpnVM.disconnect()
-                    authVM.logout()
-                }) {
+
+                Button {
+                    showLogoutConfirm = true
+                } label: {
                     Image(systemName: "rectangle.portrait.and.arrow.right")
-                        .foregroundColor(BirdoTheme.white40)
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(BirdoTheme.white05))
                 }
+                .buttonStyle(PressScaleButtonStyle())
+                .frame(minWidth: BirdoTheme.Spacing.minTouch,
+                       minHeight: BirdoTheme.Spacing.minTouch)
+                .accessibilityLabel("Logout")
             }
             .padding(.horizontal, 16)
-            // minHeight, not height: a hard 48pt clipped the title and the
-            // logout glyph once Dynamic Type went above the default sizes.
+            .padding(.vertical, 4)
+            // minHeight, not height: a hard 48pt clipped the row once Dynamic
+            // Type went above the default sizes.
             .frame(minHeight: 48)
 
-            Divider().background(BirdoTheme.white05)
+            Rectangle()
+                .fill(BirdoTheme.hairlineSoft)
+                .frame(height: 1)
         }
-        .background(BirdoTheme.glassStrong)
+        .background(
+            BirdoTheme.surface.opacity(0.78)
+                .ignoresSafeArea(edges: .top)
+        )
     }
 
-    // MARK: - Status Badge
+    /// Android shows the email here; for anonymous accounts it shows the
+    /// 24-digit anonymous ID instead.
+    private var accountIdentity: String? {
+        if let email = authVM.userEmail { return email }
+        if authVM.isAnonymousAccount { return authVM.anonymousAccountNumber }
+        return nil
+    }
 
-    private var statusBadge: some View {
-        let (bg, fg, icon, label) = statusConfig
-        return HStack(spacing: 8) {
-            if vpnVM.isConnecting {
-                ProgressView()
-                    .scaleEffect(0.7)
-                    .tint(fg)
-            } else {
-                Image(systemName: icon)
-                    .font(.caption)
+    // MARK: - Status Hero (Android §3.3, desktop §4.2–4.4)
+
+    /// Android only pattern-matches Connected/Connecting/Error — everything
+    /// else falls through to the neutral pill (spec warning 4). iOS cannot
+    /// observe "Disconnecting…" (the VM keeps `isConnected` until the drop
+    /// actually lands), so that state renders as Protected until it does.
+    private var statusText: String {
+        if vpnVM.isConnected { return "Protected" }
+        if vpnVM.isConnecting { return "Connecting…" }
+        if vpnVM.error != nil { return "Connection Error" }
+        return "Not Connected"
+    }
+
+    private var statusTone: StatusBadgePill.Tone {
+        if vpnVM.isConnected { return .success }
+        if vpnVM.isConnecting { return .warning }
+        if vpnVM.error != nil { return .danger }
+        return .neutral
+    }
+
+    private var statusIcon: String? {
+        if vpnVM.isConnected { return nil } // pulse dot instead
+        if vpnVM.isConnecting { return "arrow.triangle.2.circlepath" }
+        if vpnVM.error != nil { return "exclamationmark.circle" }
+        return "wifi.slash"
+    }
+
+    private var statusArea: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                StatusBadgePill(statusText,
+                                tone: statusTone,
+                                icon: statusIcon,
+                                pulse: vpnVM.isConnected)
+                    // Recreate the pill per state: the crossfade replaces
+                    // Android's AnimatedContent, and a fresh PulsingDot replays
+                    // its finite 3-burst on every re-entry into Connected.
+                    .id(statusText)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity))
             }
-            Text(label)
-                .font(.subheadline.weight(.medium))
-        }
-        .foregroundColor(fg)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(bg)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(fg.opacity(0.2), lineWidth: 1))
-    }
+            .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.standard)),
+                       value: statusText)
 
-    private var statusConfig: (Color, Color, String, String) {
-        if vpnVM.isConnected {
-            return (BirdoTheme.greenBg, BirdoTheme.greenLight, "wifi", "Protected")
-        } else if vpnVM.isConnecting {
-            return (BirdoTheme.yellowBg, BirdoTheme.yellowLight, "wifi", "Connecting…")
-        } else {
-            return (BirdoTheme.white05, BirdoTheme.white40, "wifi.slash", "Not Connected")
-        }
-    }
-
-    // MARK: - Connection Button
-
-    private var connectionButton: some View {
-        let size: CGFloat = 128
-        let isActive = vpnVM.isConnected
-        let bg = isActive ? BirdoTheme.green : (vpnVM.isConnecting ? BirdoTheme.yellow : BirdoTheme.white10)
-
-        return ZStack {
-            if isActive {
-                Circle()
-                    .fill(BirdoTheme.green.opacity(0.15))
-                    .frame(width: size * 1.4, height: size * 1.4)
-                    .scaleEffect(1.0)
-                    .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: isActive)
-            }
-
-            Button(action: {
-                if vpnVM.isConnected {
-                    vpnVM.disconnect()
-                } else if !vpnVM.isConnecting {
-                    vpnVM.connect()
-                }
-            }) {
-                ZStack {
-                    Circle()
-                        .fill(bg)
-                        .frame(width: size, height: size)
-                        .shadow(color: isActive ? BirdoTheme.greenShadow : .clear, radius: 24)
-
-                    if !isActive && !vpnVM.isConnecting {
-                        Circle()
-                            .stroke(BirdoTheme.white20, lineWidth: 1)
-                            .frame(width: size, height: size)
+            // Feature chips (desktop §4.4 pattern — under the pill, brand
+            // tone). Kill Switch reflects the standing setting (iOS has no
+            // reliable "blocking now" signal); Quantum is the HONEST indicator
+            // — lit only when a bilateral ML-KEM PSK was derived.
+            if settingsVM.killSwitchEnabled || vpnVM.quantumActive {
+                HStack(spacing: 8) {
+                    if settingsVM.killSwitchEnabled {
+                        StatusBadgePill("Kill Switch",
+                                        tone: .brand,
+                                        icon: "checkmark.shield.fill")
+                            .accessibilityLabel("Kill switch enabled")
                     }
-
-                    if vpnVM.isConnecting {
-                        ProgressView()
-                            .scaleEffect(1.5)
-                            .tint(.white)
-                    } else {
-                        Image(systemName: "power")
-                            .font(.system(size: 42))
-                            .foregroundColor(isActive ? .white : BirdoTheme.white60)
+                    if vpnVM.quantumActive {
+                        StatusBadgePill("Quantum",
+                                        tone: .brand,
+                                        icon: "lock.fill")
+                            .accessibilityLabel("Quantum protection active")
                     }
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .buttonStyle(.plain)
         }
-        .frame(width: size * 1.6, height: size * 1.6)
+        .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
+                   value: vpnVM.quantumActive)
+        .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
+                   value: settingsVM.killSwitchEnabled)
     }
 
-    // MARK: - Stats
+    // MARK: - Bottom Action Panel (Android §3.4)
+
+    private var bottomPanel: some View {
+        VStack(spacing: 10) {
+            if vpnVM.isConnected {
+                statsRow
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if vpnVM.isReapplyingSettings {
+                reapplyBanner
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
+
+            if let message = vpnVM.error {
+                // Backend refusals arrive verbatim in `error` (device cap,
+                // plan gate, node offline/maintenance, 426 version floor,
+                // heartbeat revocation) — render the server's own words,
+                // never rephrase. ErrorBanner announces assertively.
+                ErrorBanner(message, icon: "exclamationmark.circle")
+            }
+
+            serverSelector
+
+            connectButton
+        }
+        .frame(maxWidth: 480) // AdaptiveContainer parity (Android §8)
+        .padding(.horizontal, BirdoTheme.Spacing.screenH)
+        .padding(.vertical, BirdoTheme.Spacing.screenV)
+        .frame(maxWidth: .infinity)
+        .background(panelBackground)
+        // Stats reveal: fade + slide, Standard/Decel, 80 ms delay (§3.4 item 1).
+        .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.standard).delay(0.08)),
+                   value: vpnVM.isConnected)
+        .animation(anim(BirdoTheme.Motion.easeStandard()), value: vpnVM.error)
+        .animation(anim(BirdoTheme.Motion.easeStandard()),
+                   value: vpnVM.isReapplyingSettings)
+    }
+
+    /// Sheet-look panel: top corners 24, near-opaque surface fill (no blur —
+    /// materials smear over the moving pixel grid), 1pt top hairline.
+    private var panelBackground: some View {
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: BirdoTheme.Radius.xl,
+            bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0,
+            topTrailingRadius: BirdoTheme.Radius.xl,
+            style: .continuous
+        )
+        return ZStack(alignment: .top) {
+            shape.fill(BirdoTheme.surface.opacity(0.92))
+            Rectangle()
+                .fill(BirdoTheme.hairlineSoft)
+                .frame(height: 1)
+        }
+        .clipShape(shape)
+    }
+
+    // MARK: - Connected Stats (Android §3.5)
 
     private var statsRow: some View {
-        HStack(spacing: 8) {
-            StatsCard(label: "Duration", value: formattedDuration)
-            StatsCard(label: "Download", value: formattedBytes(vpnVM.bytesReceived))
-            StatsCard(label: "Upload", value: formattedBytes(vpnVM.bytesSent))
+        HStack(spacing: 10) {
+            // Duration derives from `connectedSince` inside a TimelineView so
+            // ONLY this tile re-renders each second — the per-second tick must
+            // never invalidate the whole screen (spec perf contract, and the
+            // byte counters alone won't redraw the clock when IPC values
+            // repeat).
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                StatCard(icon: "clock",
+                         iconColor: BirdoTheme.accentSoft,
+                         value: durationText(at: context.date),
+                         label: "Duration")
+            }
+            StatCard(icon: "arrow.down",
+                     iconColor: BirdoTheme.greenLight,
+                     value: Self.formatBytes(vpnVM.bytesReceived),
+                     label: "Download")
+            StatCard(icon: "arrow.up",
+                     iconColor: BirdoTheme.blue,
+                     value: Self.formatBytes(vpnVM.bytesSent),
+                     label: "Upload")
         }
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
-    private var formattedDuration: String {
+    /// "MM:SS" or "H:MM:SS" — hours unpadded, min/sec zero-padded, "00:00"
+    /// when idle (Android format, exactly).
+    private func durationText(at date: Date) -> String {
         guard let since = vpnVM.connectedSince else { return "00:00" }
-        let elapsed = max(0, Int(Date().timeIntervalSince(since)))
+        let elapsed = max(0, Int(date.timeIntervalSince(since)))
         let hours = elapsed / 3600
         let minutes = (elapsed % 3600) / 60
         let seconds = elapsed % 60
         if hours > 0 {
-            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    private func formattedBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .binary)
+    /// Android byte format: "N B" below 1024; KB/MB 1 decimal; GB 2 decimals
+    /// (e.g. "45.3 MB", "1.20 GB").
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let b = Double(max(0, bytes))
+        if b < 1024 { return "\(Int(b)) B" }
+        let kb = b / 1024
+        if kb < 1024 { return String(format: "%.1f KB", kb) }
+        let mb = kb / 1024
+        if mb < 1024 { return String(format: "%.1f MB", mb) }
+        return String(format: "%.2f GB", mb / 1024)
     }
 
-    // MARK: - Security Badges
+    // MARK: - Settings-Blip Banner
 
-    private var securityBadges: some View {
-        HStack(spacing: 12) {
-            if settingsVM.killSwitchEnabled {
-                SecurityBadge(icon: "shield.fill", label: "Kill Switch", color: BirdoTheme.greenLight)
-            }
-            if vpnVM.stealthActive {
-                SecurityBadge(icon: "eye.slash.fill", label: "Stealth", color: BirdoTheme.blue)
-            }
-            if vpnVM.quantumActive {
-                SecurityBadge(icon: "lock.fill", label: "Quantum", color: BirdoTheme.purpleLight)
-            }
+    /// Shown while `reapplySettings()` bounces the tunnel (apply-on-change).
+    private var reapplyBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 18))
+            Text("Applying settings — reconnecting…")
+                .font(.system(size: 13))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .foregroundStyle(BirdoTheme.accentSoft)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                .fill(BirdoTheme.accentBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                .strokeBorder(BirdoTheme.accentA(0.3), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
     }
 
-    // MARK: - Kill Switch Banner
-
-    private var killSwitchBanner: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "shield.fill")
-                .font(.caption)
-            Text("Kill switch is blocking all traffic")
-                .font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .foregroundColor(BirdoTheme.red)
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BirdoTheme.redBg)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(BirdoTheme.red.opacity(0.2), lineWidth: 1))
-    }
-
-    // MARK: - Error Banner
-
-    private func errorBanner(_ message: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.caption)
-            // Backend error strings are arbitrary length — let them wrap
-            // instead of being truncated to a single ellipsised line.
-            Text(message)
-                .font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .foregroundColor(BirdoTheme.red)
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BirdoTheme.redBg)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    // MARK: - Server Selector
+    // MARK: - Server Selector (Android §3.7)
 
     private var serverSelector: some View {
-        NavigationLink(destination: ServerListView()) {
-            HStack(spacing: 14) {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(BirdoTheme.white10)
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Text(vpnVM.selectedServer.map { flagEmoji($0.countryCode) } ?? "🌐")
-                            .font(.title3)
-                    )
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(vpnVM.selectedServer?.name ?? "Select Server")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundColor(.white)
-
-                    if let server = vpnVM.selectedServer {
-                        Text("\(server.city.isEmpty ? server.country : server.city) · \(server.load)% load")
-                            .font(.caption)
-                            .foregroundColor(BirdoTheme.white60)
+        NavigationLink {
+            ServerListView()
+        } label: {
+            BirdoCard(horizontalPadding: 14, verticalPadding: 14) {
+                HStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub,
+                                         style: .continuous)
+                            .fill(BirdoTheme.white05)
+                        RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub,
+                                         style: .continuous)
+                            .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
+                        Text(vpnVM.selectedServer?.flag ?? "🌐")
+                            .font(.system(size: 22))
                     }
+                    .frame(width: 44, height: 44)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vpnVM.selectedServer?.name ?? "Select Server")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(BirdoTheme.onSurface)
+                            .lineLimit(1)
+                        if let server = vpnVM.selectedServer {
+                            // Two spaces around the middle dot — Android
+                            // renders "%s  ·  %d%% load" exactly.
+                            Text("\(server.city.isEmpty ? server.country : server.city)  ·  \(server.load)% load")
+                                .font(BirdoTheme.Fonts.bodySmall)
+                                .foregroundStyle(BirdoTheme.white60)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(BirdoTheme.white40)
+                        .accessibilityHidden(true)
                 }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .foregroundColor(BirdoTheme.white40)
-                    .font(.caption)
+                .frame(maxWidth: .infinity)
             }
-            .padding(16)
-            .background(BirdoTheme.glassLight)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(BirdoTheme.border, lineWidth: 1))
         }
-        .disabled(vpnVM.isConnected || vpnVM.isConnecting)
-        .padding(.bottom, 16)
+        .buttonStyle(PressScaleButtonStyle())
+        // Android disables the selector only while connecting/disconnecting;
+        // browsing while CONNECTED stays allowed (live server switch).
+        .disabled(vpnVM.isConnecting)
+        .opacity(vpnVM.isConnecting ? 0.5 : 1)
+        .accessibilityHint("Select server")
     }
-}
 
-// MARK: - Supporting Views
+    // MARK: - Connect CTA (Android §3.4 CompactConnectButton)
 
-private struct StatsCard: View {
-    let label: String
-    let value: String
+    private enum ConnectCTA: Equatable { case idle, busy, connected }
 
-    var body: some View {
-        // Three cards share the row, so a long value ("00:00:00", "1.23 GB")
-        // has to shrink rather than truncate.
-        VStack(spacing: 4) {
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(BirdoTheme.white60)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+    private var cta: ConnectCTA {
+        if vpnVM.isConnected { return .connected }
+        if vpnVM.isConnecting { return .busy }
+        return .idle
+    }
+
+    private var ctaLabel: String {
+        switch cta {
+        case .connected: return "Disconnect"
+        case .busy:      return "Connecting…"
+        case .idle:      return "Connect"
         }
-        .frame(maxWidth: .infinity)
-        .padding(12)
-        .background(BirdoTheme.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(BirdoTheme.border, lineWidth: 1))
     }
-}
 
-private struct SecurityBadge: View {
-    let icon: String
-    let label: String
-    let color: Color
+    private var connectButton: some View {
+        Button(action: handleConnectTap) {
+            HStack(spacing: 10) {
+                if cta == .busy {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "power")
+                        .font(.system(size: 22, weight: .semibold))
+                }
+                Text(ctaLabel)
+                    .font(.system(size: 16, weight: .semibold))
+            }
+            .foregroundStyle(Color.white)
+            .frame(maxWidth: .infinity, minHeight: 60)
+            .background(
+                // Gradients can't tween in SwiftUI, and the spec forbids a
+                // hard cut — crossfade three cheap layers instead. Idle stays
+                // DEEP emerald, connected is the mint fill (green budget).
+                ZStack {
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
+                                     style: .continuous)
+                        .fill(BirdoTheme.Gradients.connectIdle)
+                        .opacity(cta == .idle ? 1 : 0)
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
+                                     style: .continuous)
+                        .fill(BirdoTheme.Gradients.connectBusy)
+                        .opacity(cta == .busy ? 1 : 0)
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
+                                     style: .continuous)
+                        .fill(BirdoTheme.Gradients.connectConnected)
+                        .opacity(cta == .connected ? 1 : 0)
+                }
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
+                                 style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: BirdoTheme.Radius.card,
+                                           style: .continuous))
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .disabled(cta == .busy)
+        .shadow(color: cta == .connected ? BirdoTheme.greenShadow : BirdoTheme.accentA(0.45),
+                radius: 16, x: 0, y: 14)
+        .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.emphasis)), value: cta)
+        .accessibilityLabel(ctaLabel)
+    }
 
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .font(.caption2)
-                .foregroundColor(color)
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(BirdoTheme.white60)
+    private func handleConnectTap() {
+        if vpnVM.isConnected {
+            disconnectHapticTick += 1
+            vpnVM.disconnect()
+        } else if !vpnVM.isConnecting {
+            connectHapticTick += 1
+            // Refusals ("Select a server first", device caps, plan gates,
+            // offline nodes, 426) land in vpnVM.error → banner above.
+            vpnVM.connect()
         }
     }
 }
 
 /// Convert a 2-letter country code to a flag emoji.
+/// Module-level on purpose: `ServerInfo.flag` (ServerListView.swift) calls
+/// this too — do not move or duplicate it.
 func flagEmoji(_ code: String) -> String {
     guard code.count == 2 else { return "🌐" }
     let base: UInt32 = 0x1F1E6

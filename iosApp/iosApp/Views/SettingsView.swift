@@ -1,142 +1,130 @@
 import SwiftUI
 
-/// Settings screen matching Android — kill switch, auto-connect, notifications, etc.
+/// Settings tab root — Android SettingsScreen parity (spec-secondary-screens
+/// §1) minus what cannot exist on iOS:
+///   - Appearance/Theme picker: the iOS design system is dark-only
+///     (BirdoTheme carries no light palette), so a theme control would be a
+///     dead toggle — omitted until iOS theming ships.
+///   - Notifications (+ Show IP / Show Server Location / system-settings
+///     link): iOS has no connection notifications; the flag was removed from
+///     SettingsViewModel.
+///   - Split Tunneling: per-app VPN is MDM-only on iOS, so the section is
+///     OMITTED entirely (platform-constraints §1.4) — not shown locked.
+///
+/// Account/session rows (voucher, policies, sign out, delete) live on the
+/// Profile tab per Android — this screen no longer hosts them.
+///
+/// T1 fix: NO nested NavigationView — ContentView's NavigationStack owns push
+/// behavior; this screen hides the system bar and renders the Android-style
+/// glass top bar itself. Tab-root contract: background stays transparent so
+/// the app-root PixelCanvas shows through.
+@MainActor
 struct SettingsView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
-    @EnvironmentObject var authVM: AuthViewModel
-    @EnvironmentObject var vpnVM: VpnViewModel
 
-    @State private var showDeleteDialog = false
-    /// Cleared on both Delete and Cancel so the plaintext never outlives the alert.
-    @State private var deletePassword = ""
-    @State private var showKillSwitchWarning = false
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+    }
 
     var body: some View {
-        NavigationView {
-            List {
-                // Connection
-                Section("Connection") {
-                    // Enabling is immediate; disabling routes through a
-                    // confirmation alert (leave the toggle ON until confirmed).
-                    SettingsToggle(icon: "shield.fill", iconColor: BirdoTheme.green,
-                                   title: "Kill Switch", description: "Block internet if VPN drops",
-                                   isOn: Binding(
-                                       get: { settingsVM.killSwitchEnabled },
-                                       set: { newValue in
-                                           if newValue {
-                                               settingsVM.killSwitchEnabled = true
-                                           } else {
-                                               showKillSwitchWarning = true
-                                           }
-                                       }
-                                   ))
+        VStack(spacing: 0) {
+            topBar
 
-                    SettingsToggle(icon: "wifi", iconColor: BirdoTheme.blue,
-                                   title: "Auto-Connect", description: "Connect on app launch",
-                                   isOn: $settingsVM.autoConnect)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    SectionHeader("Security")
+                    SettingsToggleRow(icon: "faceid", iconColor: BirdoTheme.green,
+                                      title: "Biometric Lock",
+                                      // Android: "Require fingerprint or PIN to open app"
+                                      // — reworded for iOS hardware (owner review).
+                                      description: "Require Face ID or passcode to open app",
+                                      isOn: $settingsVM.biometricLockEnabled)
 
-                    SettingsToggle(icon: "bell.fill", iconColor: BirdoTheme.yellow,
-                                   title: "Notifications", description: "Show connection status alerts",
-                                   isOn: $settingsVM.notificationsEnabled)
-                }
-                .listRowBackground(BirdoTheme.surface)
+                    SectionHeader("Connection")
+                    SettingsToggleRow(icon: "wifi", iconColor: BirdoTheme.blue,
+                                      title: "Auto-Connect",
+                                      description: "Connect to VPN on app startup",
+                                      isOn: $settingsVM.autoConnect)
 
-                // VPN Protocol
-                Section("VPN Protocol") {
-                    NavigationLink(destination: VpnSettingsView()) {
-                        SettingsRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
-                                    title: "VPN Settings", description: "DNS, WireGuard port, MTU, stealth")
+                    SectionHeader("VPN")
+                    NavigationLink {
+                        VpnSettingsView()
+                    } label: {
+                        SettingsLinkRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
+                                        title: "VPN Settings",
+                                        description: "Protocol, DNS, port, and MTU")
                     }
-                }
-                .listRowBackground(BirdoTheme.surface)
+                    .buttonStyle(PressScaleButtonStyle())
 
-                // Security
-                Section("Security") {
-                    SettingsToggle(icon: "faceid", iconColor: BirdoTheme.green,
-                                   title: "Biometric Lock", description: "Require Face ID / Touch ID to open",
-                                   isOn: $settingsVM.biometricLockEnabled)
-                }
-                .listRowBackground(BirdoTheme.surface)
+                    SectionHeader("About")
+                    aboutCard
 
-                // Account
-                Section("Account") {
-                    NavigationLink(destination: SubscriptionView()) {
-                        SettingsRow(icon: "creditcard", iconColor: BirdoTheme.white60,
-                                    title: "Subscription", description: "View plans & billing")
-                    }
-
-                    Link(destination: URL(string: "https://birdo.app/privacy")!) {
-                        SettingsRow(icon: "hand.raised.fill", iconColor: BirdoTheme.white60,
-                                    title: "Privacy Policy", description: "birdo.app/privacy")
-                    }
-
-                    Link(destination: URL(string: "https://birdo.app/terms")!) {
-                        SettingsRow(icon: "doc.text", iconColor: BirdoTheme.white60,
-                                    title: "Terms of Service", description: "birdo.app/terms")
-                    }
-
-                    Button(action: { showDeleteDialog = true }) {
-                        SettingsRow(icon: "trash.fill", iconColor: BirdoTheme.red,
-                                    title: "Delete Account", description: "Permanently delete your account",
-                                    titleColor: BirdoTheme.red)
-                    }
+                    Spacer().frame(height: 32)
                 }
-                .listRowBackground(BirdoTheme.surface)
-
-                // About
-                Section("About") {
-                    HStack(spacing: 14) {
-                        Image(systemName: "info.circle")
-                            .foregroundColor(BirdoTheme.white60)
-                            .frame(width: 22)
-                        VStack(alignment: .leading) {
-                            Text("Birdo VPN")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(BirdoTheme.white80)
-                            Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")")
-                                .font(.caption)
-                                .foregroundColor(BirdoTheme.white40)
-                        }
-                    }
-                }
-                .listRowBackground(BirdoTheme.surface)
-            }
-            .scrollContentBackground(.hidden)
-            .background(BirdoTheme.black)
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .alert("Delete Account", isPresented: $showDeleteDialog) {
-                // The password IS sent now. gdpr.controller.ts rejects erasure
-                // with 401 when the account has a password hash and the body
-                // carries none, so dropping this field entirely made deletion
-                // impossible for every email-signup account. It stays OPTIONAL
-                // (not a button gate) because SSO and anonymous accounts have no
-                // hash and must still be able to delete — the backend skips the
-                // check for those and ignores whatever is sent.
-                SecureField("Password (if you have one)", text: $deletePassword)
-                Button("Delete", role: .destructive) {
-                    authVM.deleteAccount(password: deletePassword)
-                    deletePassword = ""
-                }
-                Button("Cancel", role: .cancel) { deletePassword = "" }
-            } message: {
-                Text("This action is permanent and cannot be undone. All your data will be deleted. If you signed up with an email and password, enter your password to confirm.")
-            }
-            .alert("Disable Kill Switch?", isPresented: $showKillSwitchWarning) {
-                Button("Disable", role: .destructive) {
-                    settingsVM.killSwitchEnabled = false
-                }
-                Button("Keep Enabled", role: .cancel) { }
-            } message: {
-                Text("With the kill switch off, your internet keeps flowing if the VPN drops, which can briefly expose your real IP address and traffic.")
+                .padding(.horizontal, BirdoTheme.Spacing.screenH)
+                .padding(.vertical, BirdoTheme.Spacing.screenV)
             }
         }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    // MARK: - Top bar (Android BirdoTopBar — no back button on a tab root)
+
+    private var topBar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Settings")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(BirdoTheme.onSurface)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("App preferences & account")
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minHeight: 56)
+
+            Rectangle()
+                .fill(BirdoTheme.hairlineSoft)
+                .frame(height: 1)
+        }
+        .background(BirdoTheme.glassStrong.ignoresSafeArea(edges: .top))
+    }
+
+    // MARK: - About (not tappable)
+
+    private var aboutCard: some View {
+        BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
+            HStack(spacing: 12) {
+                BirdoLogo(.boxed(size: 44, cornerRadius: 12))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Birdo VPN")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(BirdoTheme.onSurface)
+                    Text("Version \(appVersion)")
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(BirdoTheme.accent)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
-// MARK: - Reusable Components
+// MARK: - Rows (Android §1: card + 36pt icon chip + title/desc + control)
 
-struct SettingsToggle: View {
+/// Whole-row toggle target announcing a single switch (Android §0.3) — the
+/// inner Toggle is a visual only; the surrounding Button handles the tap.
+private struct SettingsToggleRow: View {
     let icon: String
     let iconColor: Color
     let title: String
@@ -144,47 +132,89 @@ struct SettingsToggle: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        Toggle(isOn: $isOn) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .foregroundColor(iconColor)
-                    .frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundColor(BirdoTheme.white80)
-                    Text(description)
-                        .font(.caption)
-                        .foregroundColor(BirdoTheme.white40)
-                        .lineLimit(1)
+        Button {
+            withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
+                isOn.toggle()
+            }
+        } label: {
+            BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
+                HStack(spacing: 12) {
+                    SettingsIconChip(icon: icon, color: iconColor)
+                    SettingsRowText(title: title, description: description)
+                    Spacer(minLength: 8)
+                    Toggle("", isOn: $isOn)
+                        .labelsHidden()
+                        .tint(BirdoTheme.accent)
+                        .allowsHitTesting(false)
                 }
             }
         }
-        .tint(.white)
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityRepresentation {
+            Toggle(isOn: $isOn) { Text(title) }
+        }
     }
 }
 
-struct SettingsRow: View {
+/// Navigation row: icon chip + title/desc + trailing chevron (18pt, faint).
+private struct SettingsLinkRow: View {
     let icon: String
     let iconColor: Color
     let title: String
     let description: String
-    var titleColor: Color = BirdoTheme.white80
 
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .foregroundColor(iconColor)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundColor(titleColor)
-                Text(description)
-                    .font(.caption)
-                    .foregroundColor(BirdoTheme.white40)
-                    .lineLimit(1)
+        BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
+            HStack(spacing: 12) {
+                SettingsIconChip(icon: icon, color: iconColor)
+                SettingsRowText(title: title, description: description)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                    .accessibilityHidden(true)
             }
         }
+    }
+}
+
+/// 36pt rounded chip (r10, surfaceRaised, hairlineSoft border) with an
+/// 18pt icon — the Settings-tab leading treatment.
+private struct SettingsIconChip: View {
+    let icon: String
+    let color: Color
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 16))
+            .foregroundStyle(color)
+            .frame(width: 36, height: 36)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(BirdoTheme.surfaceRaised)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
+            )
+            .accessibilityHidden(true)
+    }
+}
+
+private struct SettingsRowText: View {
+    let title: String
+    let description: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(BirdoTheme.Fonts.labelLarge)
+                .foregroundStyle(BirdoTheme.onBackground)
+            Text(description)
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                .lineLimit(2)
+        }
+        .multilineTextAlignment(.leading)
     }
 }

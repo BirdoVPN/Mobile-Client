@@ -1,42 +1,89 @@
 import Foundation
 import SwiftUI
 import NetworkExtension
-import BirdoShared
 
-/// Manages VPN connection state, server list, speed tests, port forwarding.
+/// Manages VPN connection state, server list, subscription/plan state,
+/// the 30 s heartbeat, speed tests and port forwarding.
+///
+/// Error surfaces are PER-SCREEN (S2): `error` is the connect-path slot the
+/// Home banner renders; `serversError`, `subscriptionError` and
+/// `portForwardError` belong to their own screens, so a failed refresh is
+/// never invisible or misattributed to Home.
 @MainActor
 final class VpnViewModel: ObservableObject {
     // MARK: - Connection State
     @Published var isConnected = false
     @Published var isConnecting = false
+    /// Connect-path error. Backend refusals arrive as the server's own words
+    /// (`APIError.serverMessage`, incl. 2xx `{success:false}` envelopes and the
+    /// 426 version-floor body) — render verbatim, never rephrase.
     @Published var error: String?
+    /// True while a settings "blip" reconnect is in flight — Home shows
+    /// "Applying settings — reconnecting…" off this.
+    @Published private(set) var isReapplyingSettings = false
 
     // MARK: - Servers
     @Published var servers: [ServerInfo] = []
     @Published var selectedServer: ServerInfo?
     @Published var favoriteIds: Set<String> = []
     @Published var isLoadingServers = false
+    /// S2 fix: the Servers screen renders THIS (with a retry affordance)
+    /// instead of the shared connect slot — a failed refresh used to be
+    /// indistinguishable from an empty fleet, with the error text surfacing
+    /// later on the Home tab.
+    @Published var serversError: String?
+
+    // MARK: - Subscription (GET /vpn/stats — the canonical plan source)
+    @Published private(set) var subscription: VpnStats?
+    @Published private(set) var isLoadingSubscription = false
+    @Published var subscriptionError: String?
 
     // MARK: - Stats
     @Published var bytesReceived: Int64 = 0
     @Published var bytesSent: Int64 = 0
+    /// Wall-clock start of the current session. Drive the Duration readout
+    /// with `TimelineView(.periodic(from:by:1))` off this date — the stats
+    /// timer only republishes byte counters, and identical IPC values must
+    /// not be what keeps the clock ticking.
     @Published var connectedSince: Date?
 
     // MARK: - Features
-    @Published var killSwitchActive = false
-    @Published var stealthActive = false
+    /// Honest indicator: lit only when a true bilateral ML-KEM PSK was
+    /// actually derived for this connection (BirdoPQManager mode).
     @Published var quantumActive = false
 
     // MARK: - Port Forwarding
     @Published var portForwards: [PortForwardEntry] = []
+    @Published private(set) var isLoadingPortForwards = false
+    /// Per-screen error surface for the Port Forwarding screen (S2 pattern).
+    @Published var portForwardError: String?
+
+    // MARK: - Hooks
+    /// Fired when any call in this model dies with `APIError.unauthorized`
+    /// (single-flight refresh exhausted). The app root wires this to
+    /// `authVM.logout()` — without it a user with a stale refresh token stays
+    /// "logged in" forever while every call fails into empty screens (S3).
+    var onUnauthorized: (() -> Void)?
 
     // MARK: - Private
     private let api: APIClient
     private let vpnManager: VPNManager
     // `nonisolated(unsafe)` so the nonisolated `deinit` below can still invalidate
-    // the Timer (Swift 6 forbids touching MainActor-isolated non-Sendable state
+    // the Timers (Swift 6 forbids touching MainActor-isolated non-Sendable state
     // from deinit). Every read/write outside deinit is on the main actor.
     nonisolated(unsafe) private var statsTimer: Timer?
+    nonisolated(unsafe) private var heartbeatTimer: Timer?
+
+    /// Server-side handle of the live connection (`keyId` from the connect
+    /// response). Persisted so a relaunch while the tunnel extension is still
+    /// up can release the slot on the next user disconnect. Without this,
+    /// every iOS disconnect leaked the user's connection slot until server
+    /// eviction — fatal on the free tier's single slot, where the phantom
+    /// session then refused the user's own reconnects.
+    private(set) var activeKeyId: String?
+    private static let lastKeyIdDefaultsKey = "last_key_id"
+
+    private static let heartbeatInterval: TimeInterval = 30
 
     init(api: APIClient = .shared, vpnManager: VPNManager = .shared) {
         self.api = api
@@ -46,6 +93,11 @@ final class VpnViewModel: ObservableObject {
         if let ids = UserDefaults.standard.stringArray(forKey: "favorite_servers") {
             favoriteIds = Set(ids)
         }
+
+        // Reclaim the connection handle across a process restart: the tunnel
+        // extension outlives the app, so the session this handle names may
+        // still be up right now.
+        activeKeyId = UserDefaults.standard.string(forKey: Self.lastKeyIdDefaultsKey)
 
         // Observe VPN status
         vpnManager.onStatusChange = { [weak self] status in
@@ -71,8 +123,9 @@ final class VpnViewModel: ObservableObject {
            Date().timeIntervalSince(ts) < Self.serverCacheTTL {
             return
         }
+        guard !isLoadingServers else { return }
         isLoadingServers = true
-        error = nil
+        serversError = nil
         Task {
             defer { isLoadingServers = false }
             do {
@@ -88,7 +141,8 @@ final class VpnViewModel: ObservableObject {
                     selectedServer = list.first { $0.isOnline && $0.accessible }
                 }
             } catch {
-                self.error = error.localizedDescription
+                serversError = error.localizedDescription
+                reportUnauthorized(error)
             }
         }
     }
@@ -110,6 +164,44 @@ final class VpnViewModel: ObservableObject {
         UserDefaults.standard.set(Array(favoriteIds), forKey: "favorite_servers")
     }
 
+    // MARK: - Subscription / Plan Gating
+
+    private var subscriptionFetchedAt: Date?
+    private static let subscriptionCacheTTL: TimeInterval = 30
+
+    /// Refresh the canonical plan/usage snapshot. 30 s client cache mirrors
+    /// Android's repository: tab-focus refreshes ride the cache; the Limit
+    /// screen's "Refresh usage" and voucher-success paths pass `force: true`.
+    func refreshSubscription(force: Bool = false) {
+        if !force,
+           subscription != nil,
+           let ts = subscriptionFetchedAt,
+           Date().timeIntervalSince(ts) < Self.subscriptionCacheTTL {
+            return
+        }
+        guard !isLoadingSubscription else { return }
+        isLoadingSubscription = true
+        subscriptionError = nil
+        Task {
+            defer { isLoadingSubscription = false }
+            do {
+                subscription = try await api.fetchVpnStats()
+                subscriptionFetchedAt = Date()
+            } catch {
+                // Keep any cached snapshot — a refresh failure must never
+                // downgrade a paid user's UI to RECON.
+                subscriptionError = error.localizedDescription
+                reportUnauthorized(error)
+            }
+        }
+    }
+
+    /// Server-truth plan slug, uppercased. "RECON" until /vpn/stats answers —
+    /// locks render closed rather than flashing premium features open.
+    var currentPlan: String { (subscription?.plan ?? "RECON").uppercased() }
+    var isSovereign: Bool { subscription?.isSovereign ?? false }
+    var isOperativeOrHigher: Bool { subscription?.isOperativeOrHigher ?? false }
+
     // MARK: - Connection
 
     func connect() {
@@ -127,7 +219,19 @@ final class VpnViewModel: ObservableObject {
         Task {
             do {
                 let config = try await api.getConnectConfig(serverId: server.id)
-                try await vpnManager.connect(config: config)
+                // The server-side peer now EXISTS — remember its handle so both
+                // the disconnect path and the failure path below can release
+                // the connection slot (the free tier has exactly one).
+                setActiveKeyId(config.keyId)
+                do {
+                    try await vpnManager.connect(config: config)
+                } catch {
+                    // Local tunnel setup failed AFTER the server minted a peer:
+                    // release it or the dead peer holds the user's slot until
+                    // eviction and their own retry reads as "device limit".
+                    releaseServerSlot()
+                    throw error
+                }
                 // Honest indicator: light the "Quantum" badge only when a true
                 // bilateral ML-KEM PSK was actually derived for this connection.
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
@@ -137,25 +241,42 @@ final class VpnViewModel: ObservableObject {
                 // the UI never shows "Protected" before the tunnel actually is.
             } catch {
                 self.error = error.localizedDescription
+                reportUnauthorized(error)
                 isConnecting = false
+                isReapplyingSettings = false
             }
         }
     }
 
     func disconnect() {
+        // A user-initiated teardown wins over any pending settings blip.
+        isReapplyingSettings = false
+        // Release the server-side peer (fire-and-forget DELETE): tearing down
+        // only the local tunnel leaves the peer holding the user's connection
+        // slot until server eviction.
+        releaseServerSlot()
         // Runs synchronously: callers rely on the tunnel being torn down BEFORE
-        // the next statement (HomeView's sign-out does `disconnect()` then
-        // `logout()`, which wipes the keychain the extension reads its secrets
-        // from). The previous `Task { … }` wrapper deferred the whole body by a
-        // main-actor hop, so the keychain was cleared first.
+        // the next statement (sign-out does `disconnect()` then `logout()`,
+        // which wipes the keychain the extension reads its secrets from).
         vpnManager.disconnect()
-        isConnected = false
-        isConnecting = false
-        quantumActive = false
-        connectedSince = nil
-        bytesReceived = 0
-        bytesSent = 0
-        stopStatsTimer()
+        resetSessionState()
+    }
+
+    /// Sign-out variant: tears the tunnel down synchronously (the keychain the
+    /// extension reads must still exist at that point) and AWAITS the
+    /// server-side slot release before returning, so the caller can wipe
+    /// credentials immediately after without the DELETE racing token removal.
+    /// Order stays load-bearing: `await disconnectForSignOut()` BEFORE
+    /// `authVM.logout()`.
+    func disconnectForSignOut() async {
+        isReapplyingSettings = false
+        let keyId = activeKeyId
+        setActiveKeyId(nil)
+        vpnManager.disconnect()
+        resetSessionState()
+        if let keyId {
+            try? await api.disconnect(keyId: keyId)
+        }
     }
 
     func connectMultiHop(entryId: String, exitId: String) {
@@ -168,25 +289,97 @@ final class VpnViewModel: ObservableObject {
         Task {
             do {
                 let config = try await api.getMultiHopConfig(entryId: entryId, exitId: exitId)
-                try await vpnManager.connect(config: config)
+                setActiveKeyId(config.keyId)
+                do {
+                    try await vpnManager.connect(config: config)
+                } catch {
+                    releaseServerSlot()
+                    throw error
+                }
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // Connected-state ownership: see connect().
             } catch {
                 self.error = error.localizedDescription
+                reportUnauthorized(error)
                 isConnecting = false
+                isReapplyingSettings = false
             }
         }
     }
 
+    /// Settings "blip" (Android apply-on-change, path 2): rebuild the live
+    /// tunnel so changed tunnel-shape settings (quantum, DNS, local network
+    /// sharing, port, MTU) take effect. Wired to
+    /// `SettingsViewModel.onSettingsReapplyNeeded` at the app root; no-op
+    /// unless connected. The immediate reconnect replaces this device's
+    /// server-side slot atomically (`evictForConnect` reclaims by deviceId),
+    /// so the old peer needs no DELETE round-trip and a free-tier slot is
+    /// never double-consumed. A user disconnect during the blip WINS:
+    /// `disconnect()` clears `isReapplyingSettings`, which gates the deferred
+    /// reconnect below.
+    func reapplySettings() {
+        guard isConnected, !isConnecting, selectedServer != nil else { return }
+        guard !isReapplyingSettings else { return }
+        isReapplyingSettings = true
+        error = nil
+        vpnManager.disconnect()
+        Task { [weak self] in
+            // Let the teardown's save→stop sequence land first, so its
+            // stopVPNTunnel cannot arrive after the new session's start and
+            // kill the rebuilt tunnel.
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, self.isReapplyingSettings else { return }
+            self.connect()
+        }
+    }
+
+    /// Android parity ("Auto-Connect — connect to VPN on app startup", 1.5 s
+    /// delay). Call once from the app root when the logged-in shell appears.
+    /// No-op unless the preference is ON and nothing is connected/connecting.
+    func autoConnectIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: "auto_connect") else { return }
+        guard !isConnected, !isConnecting else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self else { return }
+            guard !self.isConnected, !self.isConnecting else { return }
+            if self.selectedServer == nil {
+                self.selectedServer = self.servers.first { $0.isOnline && $0.accessible }
+            }
+            guard self.selectedServer != nil else { return }
+            self.connect()
+        }
+    }
+
     // MARK: - Port Forwarding
+
+    func loadPortForwards() {
+        guard !isLoadingPortForwards else { return }
+        isLoadingPortForwards = true
+        portForwardError = nil
+        Task {
+            defer { isLoadingPortForwards = false }
+            do {
+                portForwards = try await api.fetchPortForwards()
+            } catch {
+                portForwardError = error.localizedDescription
+                reportUnauthorized(error)
+            }
+        }
+    }
 
     func createPortForward(internalPort: Int, proto: String) {
         Task {
             do {
                 let entry = try await api.createPortForward(port: internalPort, proto: proto)
                 portForwards.append(entry)
+                portForwardError = nil
             } catch {
-                self.error = error.localizedDescription
+                // "Port forwarding requires a Sovereign subscription", "No
+                // active VPN connection…" — backend refusals, shown verbatim
+                // on the Port Forwarding screen itself.
+                portForwardError = error.localizedDescription
+                reportUnauthorized(error)
             }
         }
     }
@@ -197,7 +390,8 @@ final class VpnViewModel: ObservableObject {
                 try await api.deletePortForward(id: id)
                 portForwards.removeAll { $0.id == id }
             } catch {
-                self.error = error.localizedDescription
+                portForwardError = error.localizedDescription
+                reportUnauthorized(error)
             }
         }
     }
@@ -234,6 +428,7 @@ final class VpnViewModel: ObservableObject {
                 onComplete(result)
             } catch {
                 self.error = error.localizedDescription
+                reportUnauthorized(error)
             }
         }
     }
@@ -245,6 +440,7 @@ final class VpnViewModel: ObservableObject {
         case .connected:
             isConnected = true
             isConnecting = false
+            isReapplyingSettings = false
             // The connected session is owned here rather than at request time so
             // it also covers tunnels the system brings up on its own (on-demand
             // rules, or a reassert after a network change). Previously those
@@ -252,6 +448,7 @@ final class VpnViewModel: ObservableObject {
             // frozen at zero, because only connect() ever started the timer.
             if connectedSince == nil { connectedSince = Date() }
             startStatsTimer()
+            startHeartbeat()
         case .connecting, .reasserting:
             isConnecting = true
         case .disconnected, .invalid:
@@ -264,12 +461,106 @@ final class VpnViewModel: ObservableObject {
             bytesReceived = 0
             bytesSent = 0
             stopStatsTimer()
+            stopHeartbeat()
+            // `activeKeyId` deliberately survives here: a transient OS drop
+            // (network change with the kill switch re-dialling) resumes the
+            // SAME server-side session, and a settings blip passes through
+            // .disconnected on its way back up. Only a user disconnect or a
+            // server-side revocation clears the handle.
         case .disconnecting:
             isConnecting = false
         @unknown default:
             break
         }
     }
+
+    private func resetSessionState() {
+        isConnected = false
+        isConnecting = false
+        quantumActive = false
+        connectedSince = nil
+        bytesReceived = 0
+        bytesSent = 0
+        stopStatsTimer()
+        stopHeartbeat()
+    }
+
+    // MARK: - Connection Slot (keyId) Bookkeeping
+
+    private func setActiveKeyId(_ keyId: String?) {
+        activeKeyId = keyId
+        let defaults = UserDefaults.standard
+        if let keyId {
+            defaults.set(keyId, forKey: Self.lastKeyIdDefaultsKey)
+        } else {
+            defaults.removeObject(forKey: Self.lastKeyIdDefaultsKey)
+        }
+    }
+
+    /// Fire-and-forget `DELETE /vpn/connections/{keyId}`. Best effort: if the
+    /// request fails, the next connect from this deviceId reclaims the slot
+    /// server-side and eviction covers the rest. NEVER routed through the
+    /// unauthorized hook — this can legitimately run mid-logout.
+    private func releaseServerSlot() {
+        guard let keyId = activeKeyId else { return }
+        setActiveKeyId(nil)
+        Task { [api] in
+            do {
+                try await api.disconnect(keyId: keyId)
+            } catch {
+                NSLog("[VpnViewModel] connection slot release failed: %@",
+                      error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Heartbeat (30 s, Android VpnManager.startHeartbeat parity)
+
+    private func startHeartbeat() {
+        // Idempotent for the same reason as startStatsTimer().
+        stopHeartbeat()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval,
+                                              repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.sendHeartbeat()
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+    }
+
+    private func sendHeartbeat() async {
+        guard isConnected, let keyId = activeKeyId else { return }
+        let result: HeartbeatResult
+        do {
+            result = try await api.heartbeat(keyId: keyId)
+        } catch {
+            // Transient network/API failure — NEVER tear down a live tunnel
+            // over a missed heartbeat (Android logs and moves on too).
+            NSLog("[VpnViewModel] heartbeat failed: %@", error.localizedDescription)
+            return
+        }
+        if !result.valid {
+            // Revoked server-side (silent free-tier eviction, admin revoke…).
+            // This heartbeat is the ONLY way the client learns about it. The
+            // peer is already gone, so drop the handle rather than DELETE it,
+            // then tear down locally and tell the user why in the server's
+            // own words.
+            let message = result.message ?? "Connection has been revoked. Please reconnect."
+            setActiveKeyId(nil)
+            disconnect()
+            error = message
+        } else if result.serverOnline == false {
+            // Android parity: log only. The node may flap during maintenance;
+            // the session stays valid and the message repeats if it persists.
+            NSLog("[VpnViewModel] heartbeat: current server reports offline")
+        }
+    }
+
+    // MARK: - Stats Timer
 
     private func startStatsTimer() {
         // Idempotent: `.connected` can be delivered more than once for a single
@@ -292,12 +583,19 @@ final class VpnViewModel: ObservableObject {
         statsTimer = nil
     }
 
-    // AUDIT-H: guarantee the repeating stats Timer is torn down if this
-    // ViewModel is deallocated while a connection is still active (e.g. before
-    // a disconnect/status-change notification arrives). Without this the Timer
+    private func reportUnauthorized(_ error: Error) {
+        if case APIError.unauthorized = error {
+            onUnauthorized?()
+        }
+    }
+
+    // AUDIT-H: guarantee the repeating Timers are torn down if this ViewModel
+    // is deallocated while a connection is still active (e.g. before a
+    // disconnect/status-change notification arrives). Without this a Timer
     // retains its closure target via the run loop and leaks. `invalidate()` is
     // safe to call from deinit and removes the timer from the run loop.
     deinit {
         statsTimer?.invalidate()
+        heartbeatTimer?.invalidate()
     }
 }

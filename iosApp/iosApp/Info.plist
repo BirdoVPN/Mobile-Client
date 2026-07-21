@@ -69,5 +69,23 @@
     <string>Birdo VPN uses Face ID to protect your account.</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <!-- Custom URL scheme `birdo` (spec-auth-flow §4): the SSO broker 302s its
+         PKCE handoff to birdo://auth (ASWebAuthenticationSession matches on
+         this scheme — without the registration a plain-browser fallback never
+         returns to the app), and Android-parity deep links
+         (birdo://connect|servers|settings) ride the same scheme. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>app.birdo.vpn</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>birdo</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

@@ -1,12 +1,13 @@
 import Foundation
 import NetworkExtension
+import Security
 
 /// Wraps NETunnelProviderManager for starting/stopping the WireGuard VPN tunnel.
 ///
 /// Security posture:
-/// - The WireGuard private key & PSK are written to the **shared App Group
-///   keychain** (see `KeychainService.setSharedSecret`) and the tunnel
-///   extension reads them by ID. They never appear in
+/// - The WireGuard private key & PSK are written to the **shared keychain
+///   access group** (see `writeSharedSecret`) and the tunnel extension reads
+///   them by ID. They never appear in
 ///   `NETunnelProviderProtocol.providerConfiguration` (which is stored in
 ///   plaintext in NEVPN system preferences).
 /// - `includeAllNetworks = true` enables the iOS kill switch: traffic is
@@ -18,6 +19,24 @@ import NetworkExtension
 ///   background fetches stay protected.
 final class VPNManager: @unchecked Sendable {
     static let shared = VPNManager()
+
+    /// AUDIT-C1: fully-qualified keychain access group shared with the
+    /// PacketTunnel extension. The entitlement grants
+    /// `$(AppIdentifierPrefix)app.birdo.vpn`, and on a PHYSICAL device an
+    /// explicit `kSecAttrAccessGroup` must name the team-prefixed group
+    /// exactly — the bare `"app.birdo.vpn"` literal fails with
+    /// errSecMissingEntitlement (-34018), so every real-device connect threw
+    /// `keychainUnavailable`. The simulator does not enforce this, which is
+    /// how the unprefixed value ever appeared to work.
+    /// MUST stay in lockstep with `PacketTunnelProvider.sharedAccessGroup`
+    /// on the extension side — the two targets do not share source files, so
+    /// the constant is declared once per side (team id pinned in project.yml).
+    static let sharedKeychainAccessGroup = "KPUFGR98A5.app.birdo.vpn"
+
+    /// Keychain service the tunnel secrets live under. Same literal
+    /// `KeychainService.sharedService` uses, so the auth layer's blanket
+    /// shared-secret wipe on logout still covers these accounts.
+    private static let sharedKeychainService = "app.birdo.vpn.shared"
 
     var onStatusChange: ((NEVPNStatus) -> Void)?
 
@@ -65,20 +84,21 @@ final class VPNManager: @unchecked Sendable {
 
         // Park secrets in the shared keychain — the extension reads them by
         // ID instead of receiving them through plaintext provider config.
-        let keychain = KeychainService.shared
-        guard keychain.setSharedSecret(key: "wg_private_key", value: config.privateKey) else {
+        // Written directly against the fully-qualified access group (AUDIT-C1)
+        // so a real device never trips the unprefixed-group entitlement check.
+        guard writeSharedSecret(account: "wg_private_key", value: config.privateKey) else {
             throw VPNManagerError.keychainUnavailable
         }
         if let psk = effectivePsk, !psk.isEmpty {
-            guard keychain.setSharedSecret(key: "wg_preshared_key", value: psk) else {
+            guard writeSharedSecret(account: "wg_preshared_key", value: psk) else {
                 // SEC: if the PSK write fails the extension would read a
                 // missing secret and the tunnel would fail silently. Wipe the
                 // already-written private key so we don't leave half-state.
-                keychain.deleteShared(key: "wg_private_key")
+                deleteSharedSecret(account: "wg_private_key")
                 throw VPNManagerError.keychainUnavailable
             }
         } else {
-            keychain.deleteShared(key: "wg_preshared_key")
+            deleteSharedSecret(account: "wg_preshared_key")
         }
 
         // Build a redacted WG config string (no PrivateKey / PresharedKey).
@@ -146,9 +166,8 @@ final class VPNManager: @unchecked Sendable {
     func disconnect() {
         // SEC: wipe shared secrets from keychain — the kernel tunnel has
         // already consumed them; nothing else needs them after disconnect.
-        let keychain = KeychainService.shared
-        keychain.deleteShared(key: "wg_private_key")
-        keychain.deleteShared(key: "wg_preshared_key")
+        deleteSharedSecret(account: "wg_private_key")
+        deleteSharedSecret(account: "wg_preshared_key")
 
         guard let mgr = manager else { return }
 
@@ -170,6 +189,46 @@ final class VPNManager: @unchecked Sendable {
             }
             // Stop on BOTH paths — a failed save must never leave the tunnel up.
             self?.manager?.connection.stopVPNTunnel()
+        }
+    }
+
+    /// Push the kill-switch flag into the persisted VPN configuration WITHOUT
+    /// rebuilding the tunnel (Android parity, §0.6 path 1: kill switch is a
+    /// runtime flag push, never a reconnect). The part that matters — what
+    /// happens when the tunnel DROPS — is the on-demand rule set, and that
+    /// applies from the moment the preferences save lands: ON re-dials and
+    /// keeps traffic tunnelled; OFF lets a drop fall back to the open network.
+    /// `includeAllNetworks`/`enforceRoutes` are persisted here too, but iOS
+    /// honours protocol-level changes only from the next tunnel start.
+    ///
+    /// On-demand is armed only while a session is live: arming it with the
+    /// tunnel down would make iOS immediately dial a VPN the user has not
+    /// asked for (toggling the kill switch while disconnected must not
+    /// connect). Disarming is always safe. No-op when no VPN configuration
+    /// exists yet — connect() reads the persisted UserDefaults value anyway.
+    func applyKillSwitchFlag(_ enabled: Bool) {
+        guard let mgr = manager else { return }
+        if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
+            proto.includeAllNetworks = enabled
+            proto.enforceRoutes = enabled
+            mgr.protocolConfiguration = proto
+        }
+        let status = mgr.connection.status
+        let sessionActive = status == .connected || status == .connecting || status == .reasserting
+        if enabled && sessionActive {
+            let connectRule = NEOnDemandRuleConnect()
+            connectRule.interfaceTypeMatch = .any
+            mgr.onDemandRules = [connectRule]
+            mgr.isOnDemandEnabled = true
+        } else if !enabled {
+            mgr.onDemandRules = nil
+            mgr.isOnDemandEnabled = false
+        }
+        mgr.saveToPreferences { error in
+            if let error {
+                NSLog("[VPNManager] applyKillSwitchFlag saveToPreferences failed: %@",
+                      error.localizedDescription)
+            }
         }
     }
 
@@ -201,6 +260,42 @@ final class VPNManager: @unchecked Sendable {
                 cont.resume(returning: (0, 0))
             }
         }
+    }
+
+    // MARK: - Shared Tunnel Secrets (host ↔ extension keychain)
+
+    /// Write a tunnel secret into the shared access group with the same
+    /// attribute posture as `KeychainService` (data-protection keychain,
+    /// AfterFirstUnlockThisDeviceOnly so the extension can read it while the
+    /// device is locked, never synced to iCloud). Owned here rather than in
+    /// `KeychainService` so both sides of the C1 fix pin the SAME
+    /// fully-qualified group literal.
+    @discardableResult
+    private func writeSharedSecret(account: String, value: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        deleteSharedSecret(account: account)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.sharedKeychainService,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessGroup as String: Self.sharedKeychainAccessGroup,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+    }
+
+    private func deleteSharedSecret(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.sharedKeychainService,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: Self.sharedKeychainAccessGroup,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     // MARK: - Private
@@ -317,7 +412,10 @@ final class VPNManager: @unchecked Sendable {
     /// by the resolver we are configuring) and must not be loopback or
     /// unspecified. This also stops user-typed text in the custom-DNS fields
     /// from injecting extra lines into the generated wg-quick config.
-    private static func isUsableDnsAddress(_ s: String) -> Bool {
+    /// Internal (not private): `SettingsViewModel` runs the SAME check on the
+    /// custom-DNS fields so the UI's validity feedback and the persisted-value
+    /// gate can never drift from what the tunnel builder actually accepts.
+    static func isUsableDnsAddress(_ s: String) -> Bool {
         var v4 = in_addr()
         var v6 = in6_addr()
         if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {

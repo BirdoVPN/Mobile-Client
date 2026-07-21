@@ -18,6 +18,18 @@ import os.log
 class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = OSLog(subsystem: "app.birdo.vpn.tunnel", category: "tunnel")
 
+    /// Fully-qualified keychain access group shared with the host app.
+    /// The entitlement grants `$(AppIdentifierPrefix)app.birdo.vpn`, and on a
+    /// PHYSICAL device an explicit `kSecAttrAccessGroup` must name the
+    /// team-prefixed group exactly — the bare `"app.birdo.vpn"` literal fails
+    /// with errSecMissingEntitlement (-34018), so every real-device tunnel
+    /// start died with missingConfig. The simulator does not enforce this,
+    /// which is how the unprefixed value ever appeared to work.
+    /// MUST stay in lockstep with `VPNManager.sharedKeychainAccessGroup` on
+    /// the host side — the two targets do not share source files, so the
+    /// constant is declared once per side (team id is pinned in project.yml).
+    private static let sharedAccessGroup = "KPUFGR98A5.app.birdo.vpn"
+
     private lazy var adapter: WireGuardAdapter = {
         WireGuardAdapter(with: self) { [weak self] level, message in
             guard let self else { return }
@@ -247,12 +259,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Read a shared-keychain string by account, scoped to the
     /// `app.birdo.vpn.shared` service that the host app writes to.
     private func readSharedKeychain(account: String) -> String? {
-        let group = "app.birdo.vpn"
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "app.birdo.vpn.shared",
             kSecAttrAccount as String: account,
-            kSecAttrAccessGroup as String: group,
+            kSecAttrAccessGroup as String: Self.sharedAccessGroup,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
             kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,

@@ -1,100 +1,169 @@
 import SwiftUI
+import UIKit
 
-/// GDPR consent screen — must be accepted before using the app.
+/// GDPR consent gate — shown once, on first launch, BEFORE Login (routing:
+/// `!authVM.hasConsented`). Copy is exact per spec-auth-flow.md §0 /
+/// spec-home-servers-consent.md §5; visuals keep the legacy dark consent card
+/// (`surfaceVariant`) over the PixelCanvas ambient grid.
+///
+/// Android's Decline terminates the app (finishAffinity). iOS cannot
+/// self-exit, so declining stays here and briefly emphasises the
+/// required-notice footnote instead (recon warning 12).
 struct ConsentView: View {
-    let onAccept: () -> Void
-    let onDecline: () -> Void
+    @EnvironmentObject var authVM: AuthViewModel
+    @Environment(\.openURL) private var openURL
+
+    @StateObject private var pixelModel = PixelGridModel()
+
+    /// Lifts the footnote out of its faint tier for a moment after Decline.
+    @State private var declineEmphasis = false
+    @State private var emphasisResetTask: Task<Void, Never>?
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Image(systemName: "shield.fill")
-                    .font(.system(size: 56))
-                    .foregroundColor(BirdoTheme.purple)
+        ZStack {
+            // Opaque black base + own canvas — Consent is a root route and
+            // must fully occlude whatever sits behind it.
+            BirdoTheme.black.ignoresSafeArea()
+            PixelCanvasView(model: pixelModel)
 
-                Text("Privacy First")
-                    .font(.title.bold())
-                    .foregroundColor(.white)
+            ScrollView {
+                VStack(spacing: 0) {
+                    Image(systemName: "shield.fill")
+                        .font(.system(size: 64))
+                        .foregroundStyle(BirdoTheme.accent)
+                        .accessibilityLabel("Privacy")
 
-                Text("Birdo VPN operates a strict zero-logs policy on RAM-only volatile infrastructure. No VPN usage data is stored. We collect only account-level data necessary to operate the service.")
-                    .font(.subheadline)
-                    .foregroundColor(BirdoTheme.white60)
-                    .multilineTextAlignment(.center)
-                    // Without this a multi-line Text can be truncated instead of
-                    // growing when the user raises Dynamic Type.
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 24)
+                    Text("Your Privacy Matters")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(BirdoTheme.onBackground)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 16)
 
-                VStack(alignment: .leading, spacing: 16) {
-                    DataItem(title: "No Activity Logs", description: "Zero-logs policy on RAM-only volatile infrastructure. No browsing, traffic, DNS, timestamps, or IPs logged.")
-                    DataItem(title: "Account Data Only", description: "Only email and basic account info stored in a separate database — never on VPN servers.")
-                    DataItem(title: "Crash Reports", description: "Anonymous crash data helps us fix bugs (opt-out available).")
-                    DataItem(title: "No Data Sales", description: "Your data is never sold, shared, or monetized.")
+                    Text("Before using Birdo VPN, please review how your data is handled.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(BirdoTheme.white60)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(4)
+                        // Without this a multi-line Text can be truncated
+                        // instead of growing at larger Dynamic Type sizes.
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 8)
+
+                    dataSummaryCard
+                        .padding(.top, 24)
+
+                    Button {
+                        if let url = URL(string: "https://birdo.app/privacy") { openURL(url) }
+                    } label: {
+                        Text("Read the full Privacy Policy")
+                            .font(.system(size: 14))
+                            .underline()
+                            .foregroundStyle(BirdoTheme.accent)
+                            .frame(minHeight: 44) // touch target
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                    .padding(.top, 16)
+
+                    // acceptConsent() persists the flag AND the
+                    // privacyConsentTimestamp — nothing else to do here.
+                    PrimaryButton("I Agree & Continue",
+                                  variant: .brand,
+                                  fontSize: 16,
+                                  action: { authVM.acceptConsent() })
+                        .padding(.top, 24)
+                        .accessibilityIdentifier("consent_accept")
+
+                    declineButton
+                        .padding(.top, 12)
+
+                    Text("You must accept the privacy policy to use Birdo VPN.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(declineEmphasis ? BirdoTheme.white80 : BirdoTheme.white20)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 8)
                 }
-                .padding(20)
-                .background(BirdoTheme.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-
-                Link("Read Full Privacy Policy", destination: URL(string: "https://birdo.app/privacy")!)
-                    .font(.subheadline)
-                    .foregroundColor(BirdoTheme.purple)
-
-                Button(action: onAccept) {
-                    Text("I Agree")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(BirdoTheme.purple)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                Button(action: onDecline) {
-                    Text("Decline")
-                        .foregroundColor(BirdoTheme.white40)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(BirdoTheme.white20, lineWidth: 1)
-                )
-
-                Text("Consent is required to use the VPN service.")
-                    .font(.caption2)
-                    .foregroundColor(BirdoTheme.white20)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 480) // iPad parity (Android AdaptiveContainer)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.top, 48)
+                .padding(.bottom, 32)
             }
-            .frame(maxWidth: .infinity)
-            // Real padding rather than leading/trailing Spacers: a Spacer is
-            // flexible, so inside a ScrollView it does not reliably reserve
-            // room and the trailing caption ended up under the home indicator.
-            .padding(.horizontal, 24)
-            .padding(.top, 48)
-            .padding(.bottom, 32)
         }
-        // Matches every other screen: the colour fills the safe-area strips
-        // while the ScrollView keeps its safe-area content insets, so the
-        // first and last rows stay clear of the notch and home indicator.
-        .background(BirdoTheme.black.ignoresSafeArea())
+        .pixelCanvasTouchTrail(pixelModel)
+        .onDisappear { emphasisResetTask?.cancel() }
     }
-}
 
-private struct DataItem: View {
-    let title: String
-    let description: String
+    // MARK: - Data summary card
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(.white)
-            Text(description)
-                .font(.caption)
-                .foregroundColor(BirdoTheme.white60)
-                .fixedSize(horizontal: false, vertical: true)
+    private var dataSummaryCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            consentItem(
+                title: "No Activity Logs",
+                description: "Birdo VPN operates a strict zero-logs policy on RAM-only volatile infrastructure. No browsing activity, DNS queries, traffic content, connection timestamps, or IP addresses are logged.")
+            consentItem(
+                title: "Account Data Only",
+                description: "Only your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on VPN servers.")
+            consentItem(
+                title: "Crash Reports",
+                description: "Anonymous crash reports help fix bugs faster. No personal data is included.")
+            consentItem(
+                title: "No Data Sales",
+                description: "Your data is never sold, shared with advertisers, or used for profiling.")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.card, style: .continuous)
+                .fill(BirdoTheme.surfaceVariant)
+        )
+    }
+
+    private func consentItem(title: String, description: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(BirdoTheme.onBackground)
+            Text(description)
+                .font(.system(size: 13))
+                .foregroundStyle(BirdoTheme.white60)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - Decline
+
+    private var declineButton: some View {
+        Button(action: decline) {
+            Text("Decline")
+                .font(.system(size: 14))
+                .foregroundStyle(BirdoTheme.white40)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .overlay(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                        .strokeBorder(BirdoTheme.white20, lineWidth: 1)
+                )
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityIdentifier("consent_decline")
+    }
+
+    /// iOS cannot terminate itself — stay on Consent and draw the eye to the
+    /// footnote so declining reads as "blocked", not broken.
+    private func decline() {
+        authVM.declineConsent()
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        emphasisResetTask?.cancel()
+        withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.standard)) {
+            declineEmphasis = true
+        }
+        emphasisResetTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.6))
+            guard !Task.isCancelled else { return }
+            withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.standard)) {
+                declineEmphasis = false
+            }
+        }
     }
 }

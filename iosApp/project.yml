@@ -62,6 +62,9 @@ targets:
     # hand-written Info.plist and emptied BirdoVPN.entitlements to `<dict/>` on
     # every `xcodegen generate`. The real files are referenced via INFOPLIST_FILE
     # and CODE_SIGN_ENTITLEMENTS below, which leaves them untouched.
+    # For the same reason the `birdo` custom URL scheme (SSO PKCE callback +
+    # deep links) is registered directly in iosApp/Info.plist (CFBundleURLTypes)
+    # — never add it here via an `info:` block.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn

@@ -1,13 +1,14 @@
 import Foundation
 import CommonCrypto
 import UIKit
-import BirdoShared
 
-/// Client version pinned to the Android value so backend rate-limiters and
-/// telemetry treat both platforms uniformly. Update with each release.
-private let kBirdoClientVersion = "1.2.0"
+/// Client version reported in the User-Agent and every device payload. Read
+/// from the bundle so a release bump propagates automatically — backend
+/// telemetry keys off this value. Fallback covers unit-test bundles only.
+private let kBirdoClientVersion: String =
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
 
-/// HTTP client for the Birdo VPN API. Uses shared KMP model types.
+/// HTTP client for the Birdo VPN API.
 final class APIClient: @unchecked Sendable {
     static let shared = APIClient()
 
@@ -21,17 +22,9 @@ final class APIClient: @unchecked Sendable {
     /// instead of racing each other or retrying with the stale token.
     private let refreshActor = RefreshCoordinator()
 
-    /// AUDIT-M-DRIFT: the backend's 2FA login gate is challenge-token based —
-    /// `/auth/login/desktop` hands back `{ requiresTwoFactor, challengeToken }`
-    /// and `/auth/2fa/verify` consumes that token (see
-    /// backend/src/auth/two-factor.controller.ts `VerifyCodeSchema`). It does
-    /// NOT re-accept email/password. Park the token here between the two calls
-    /// so the ViewModel's existing signatures stay unchanged.
-    private let challengeStore = ChallengeStore()
-
-    /// Memoised IDFV — see `deviceId()`. Idempotent, so a concurrent double-read
-    /// simply recomputes the same value.
-    private var cachedDeviceId: String?
+    /// Memoised device identity — see `deviceContext()`. Idempotent, so a
+    /// concurrent double-read simply recomputes the same value.
+    private var cachedDeviceContext: DeviceIdentity?
 
     init(
         baseURL: URL = URL(string: "https://api.birdo.app")!,
@@ -61,69 +54,144 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Auth
 
-    func login(email: String, password: String) async throws -> LoginResultType {
+    func login(email: String, password: String) async throws -> LoginResult {
         // AUDIT-M-DRIFT: `/auth/login` is the WEB route — it answers `{ ok: true }`
         // and sets httpOnly cookies, returning no tokens at all, so a native client
         // could never obtain credentials from it. `/auth/login/desktop` is the
         // JSON-token route for bundled clients (gated on X-Desktop-Client, which
         // this session sets globally). Mirrors Android `BirdoApi.login`.
-        let body = try encoder.encode(LoginBody(email: email, password: password, deviceId: await deviceId()))
+        let device = await deviceContext()
+        let body = try encoder.encode(LoginBody(
+            email: email,
+            password: password,
+            deviceId: device.id,
+            deviceName: device.name,
+            platformVersion: device.osVersion,
+            appVersion: kBirdoClientVersion
+        ))
         let data = try await post(path: "/auth/login/desktop", body: body, authenticated: false)
-        let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
-
-        // 2FA gate: the backend withholds tokens and hands back a challenge token.
-        if parsed.requiresTwoFactor == true, let challenge = parsed.challengeToken {
-            await challengeStore.set(challenge)
-            return .twoFactorRequired
-        }
-
-        guard let tokens = parsed.tokens else {
-            throw APIError.invalidResponse
-        }
-        return .success(TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken))
+        return try parseAuthResponse(data)
     }
 
-    /// `email`/`password` are unused on the wire — the backend identifies the
-    /// pending login by the challenge token issued at `login()`, not by
-    /// re-presented credentials. Kept in the signature so callers are unchanged.
-    func verifyTwoFactor(email: String, password: String, code: String) async throws -> TokenPairData {
-        // PEEK, don't take: the backend calls `consumeChallengeToken` ONLY after
-        // the code verifies (two-factor.controller.ts:267, after the !success
-        // throw at :261) and rate-limits the route at 10 attempts/min, so a
-        // wrong code leaves the challenge valid and a retry is expected.
-        // Destroying it on the first attempt stranded the user on the 2FA
-        // screen — AuthViewModel keeps `requiresTwoFactor` true on error, so
-        // every retry threw .unauthorized with no path forward. Matches
-        // Android, which re-reads `uiState.challengeToken` on each attempt.
-        guard let challenge = await challengeStore.peek() else {
-            throw APIError.unauthorized
-        }
-        let body = try encoder.encode(TwoFactorBody(challengeToken: challenge, token: code))
+    /// The backend identifies the pending login by the challenge token issued
+    /// alongside `{ requiresTwoFactor: true }` — it never re-accepts
+    /// email/password. The token lives in the ViewModel between the two calls
+    /// (NOT the keychain) and SURVIVES a failed code: the backend consumes it
+    /// only after a successful verify (two-factor.controller.ts, rate-limited
+    /// 10/min), so retrying a mistyped code with the same token is expected.
+    func verifyTwoFactor(challengeToken: String, code: String) async throws -> TokenPairData {
+        let body = try encoder.encode(TwoFactorBody(challengeToken: challengeToken, token: code))
         let data = try await post(path: "/auth/2fa/verify", body: body, authenticated: false)
         let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
-        guard let tokens = parsed.tokens else {
+        guard let tokens = parsed.tokens, !tokens.accessToken.isEmpty else {
             throw APIError.invalidResponse
         }
-        // Server-side single-use is now spent — drop our copy so it can never
-        // be replayed against a later login.
-        await challengeStore.clear()
         return TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
     }
 
-    func loginAnonymous() async throws -> TokenPairData {
-        // AUDIT-M-DRIFT: `/auth/login/anonymous` logs in to an EXISTING account and
-        // REQUIRES a 24-digit `anonymousId` (AnonymousLoginSchema) — calling it with
-        // an empty body 400s. The in-app "create an anonymous account" path the UI
-        // actually offers is `@Post('register/anonymous')`, whose body is device
-        // context only and which mints the ID server-side. Mirrors Android
-        // `BirdoApi.registerAnonymous`.
-        let body = try encoder.encode(DeviceInfoBody(deviceId: await deviceId()))
+    /// Log in to an EXISTING anonymous account. `anonymousId` is the 24-digit
+    /// account number; `password` is sent only when non-nil (the backend
+    /// deliberately rejects a password supplied to a password-less account, so
+    /// callers must pass nil — not "" — when the field was left blank).
+    /// Anonymous accounts CAN have 2FA (set via the website), hence the
+    /// `LoginResult` return.
+    func loginAnonymous(anonymousId: String, password: String?) async throws -> LoginResult {
+        let device = await deviceContext()
+        let body = try encoder.encode(AnonymousLoginBody(
+            anonymousId: anonymousId,
+            password: password,
+            deviceId: device.id,
+            deviceName: device.name,
+            platformVersion: device.osVersion,
+            appVersion: kBirdoClientVersion
+        ))
+        let data = try await post(path: "/auth/login/anonymous", body: body, authenticated: false)
+        return try parseAuthResponse(data)
+    }
+
+    /// Create a NEW anonymous account — `POST /auth/register/anonymous`
+    /// (answers HTTP 201; body is device context only, the server mints the
+    /// 24-digit ID). The returned `anonymousId` is surfaced ONCE and is the
+    /// account's sole recovery credential — callers MUST persist/display it.
+    /// Server rate limit: 3 creations per IP per hour.
+    func registerAnonymous() async throws -> AnonymousRegistration {
+        let device = await deviceContext()
+        let body = try encoder.encode(DeviceInfoBody(
+            deviceId: device.id,
+            deviceName: device.name,
+            platformVersion: device.osVersion,
+            appVersion: kBirdoClientVersion
+        ))
         let data = try await post(path: "/auth/register/anonymous", body: body, authenticated: false)
         let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
-        guard let tokens = parsed.tokens else {
-            throw APIError.invalidResponse
+        guard parsed.ok != false, let tokens = parsed.tokens, !tokens.accessToken.isEmpty else {
+            throw APIError.serverMessage("Could not create an anonymous account. Please try again.")
         }
-        return TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
+        return AnonymousRegistration(
+            anonymousId: parsed.anonymousId,
+            tokens: TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
+        )
+    }
+
+    /// SSO handoff exchange — `POST /auth/native/exchange`. The `code` is the
+    /// single-use, ~60s-lived, PKCE-bound token the broker redirected back
+    /// with (`birdo://auth?code=…`); fire this EXACTLY once per code (a replay
+    /// gets 401 "This sign-in code has already been used"). Response shape is
+    /// identical to password login — SSO does NOT bypass a user's 2FA.
+    func exchangeSsoCode(code: String, codeVerifier: String) async throws -> LoginResult {
+        let device = await deviceContext()
+        let body = try encoder.encode(SsoExchangeBody(
+            code: code,
+            codeVerifier: codeVerifier,
+            deviceId: device.id,
+            deviceName: device.name,
+            platformVersion: device.osVersion,
+            appVersion: kBirdoClientVersion
+        ))
+        let data = try await post(path: "/auth/native/exchange", body: body, authenticated: false)
+        return try parseAuthResponse(data)
+    }
+
+    /// Identity hydration — `GET /auth/me` (Bearer). Login is never blocked on
+    /// this call; a failure leaves the session logged-in with `user == nil`.
+    /// Moved off the brute-force rate bucket server-side (web #279), but do
+    /// not poll it.
+    func fetchProfile() async throws -> UserProfile {
+        let data = try await get(path: "/auth/me")
+        return try decoder.decode(UserProfile.self, from: data)
+    }
+
+    /// Best-effort server-side session revocation — `POST /auth/logout`.
+    /// Never throws: local sign-out proceeds regardless. Takes the bearer
+    /// token explicitly because the caller clears the keychain synchronously
+    /// right after firing this (the stored token would already be gone).
+    func logout(bearerToken: String?) async {
+        guard let token = bearerToken, !token.isEmpty else { return }
+        guard let url = URL(string: "/auth/logout", relativeTo: baseURL),
+              url.scheme?.lowercased() == "https" else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        _ = try? await session.data(for: request)
+    }
+
+    /// Shared response handling for `/auth/login/desktop`,
+    /// `/auth/login/anonymous` and `/auth/native/exchange`: either a full
+    /// token pair or a pending 2FA challenge. Note the mixed casing is the
+    /// wire contract — `tokens.access_token` snake_case, `requiresTwoFactor`
+    /// camelCase.
+    private func parseAuthResponse(_ data: Data) throws -> LoginResult {
+        let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
+        if parsed.requiresTwoFactor == true, let challenge = parsed.challengeToken, !challenge.isEmpty {
+            return .twoFactorRequired(challengeToken: challenge)
+        }
+        guard parsed.ok != false,
+              let tokens = parsed.tokens,
+              !tokens.accessToken.isEmpty, !tokens.refreshToken.isEmpty else {
+            throw APIError.serverMessage("Unexpected server response (no tokens)")
+        }
+        return .success(TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken))
     }
 
     /// - Parameter password: the account password, required by the backend for
@@ -186,7 +254,7 @@ final class APIClient: @unchecked Sendable {
         let body = try encoder.encode(
             ConnectBody(
                 serverNodeId: serverId,
-                deviceId: await deviceId(),
+                deviceId: await deviceContext().id,
                 quantumProtection: pqPk == nil ? nil : true,
                 pqClientPublicKey: pqPk
             )
@@ -206,7 +274,7 @@ final class APIClient: @unchecked Sendable {
             MultiHopBody(
                 entryNodeId: entryId,
                 exitNodeId: exitId,
-                deviceId: await deviceId(),
+                deviceId: await deviceContext().id,
                 quantumProtection: pqPk == nil ? nil : true,
                 pqClientPublicKey: pqPk
             )
@@ -236,6 +304,33 @@ final class APIClient: @unchecked Sendable {
             throw APIError.serverMessage(envelope.message ?? "Could not connect. Please try again.")
         }
         return try decoder.decode(VPNConnectionConfig.self, from: data)
+    }
+
+    // MARK: - Subscription Stats & Heartbeat
+
+    /// `GET /vpn/stats` — the CANONICAL subscription/plan source (there is no
+    /// `/users/subscription` route). Powers plan gating, the Limit tab's usage
+    /// meter and the Profile/Subscription current-plan cards. Callers cache
+    /// ~30 s client-side (VpnViewModel does, mirroring Android's repository);
+    /// do not poll it tighter.
+    func fetchVpnStats() async throws -> VpnStats {
+        let data = try await get(path: "/vpn/stats")
+        return try decoder.decode(VpnStats.self, from: data)
+    }
+
+    /// `POST /vpn/heartbeat/{keyId}` — 30 s keepalive while connected, mirroring
+    /// Android's `VpnManager.startHeartbeat`. The backend answers
+    /// `{ valid, serverOnline, message? }`; `valid: false` means the connection
+    /// was revoked server-side (free-tier eviction is silent by design — this
+    /// heartbeat is the ONLY way a replaced client ever learns about it).
+    func heartbeat(keyId: String) async throws -> HeartbeatResult {
+        let data = try await performRequest(
+            method: "POST",
+            path: "/vpn/heartbeat/\(keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyId)",
+            body: nil,
+            authenticated: true
+        )
+        return try decoder.decode(HeartbeatResult.self, from: data)
     }
 
     // MARK: - Port Forwarding
@@ -341,16 +436,58 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Device Identity
 
-    /// SSOT device identity (see `ConnectDto.deviceId`: "Android SSAID hash /
-    /// iOS IDFV / desktop host hash"). Sent on login and connect so a returning
-    /// install reclaims its OWN connection slot instead of burning a new one.
-    /// Cached after the first main-actor hop; `identifierForVendor` is stable for
-    /// the lifetime of the vendor's apps on the device.
-    private func deviceId() async -> String? {
-        if let cached = cachedDeviceId { return cached }
-        let value = await MainActor.run { UIDevice.current.identifierForVendor?.uuidString }
-        cachedDeviceId = value
-        return value
+    /// SSOT device identity, mirroring Android's derivation
+    /// (`"android_" + first32hex(SHA-256(SSAID + "|birdo-vpn-device-ssot-v1"))`):
+    /// iOS uses `"ios_" + first32hex(SHA-256(IDFV + salt))`, PERSISTED IN THE
+    /// KEYCHAIN so it survives reinstall (bare `identifierForVendor` does not —
+    /// it resets when the last vendor app is removed). The stored value is
+    /// load-bearing: it keys the server-side trusted-device 2FA skip and
+    /// connection-slot reclamation (unstable IDs read as "device limit
+    /// reached" after every reinstall). Cached after the first resolution;
+    /// the mint is idempotent while IDFV is available.
+    private func deviceContext() async -> DeviceIdentity {
+        if let cached = cachedDeviceContext { return cached }
+        let (idfv, osVersion) = await MainActor.run {
+            (UIDevice.current.identifierForVendor?.uuidString, UIDevice.current.systemVersion)
+        }
+        let deviceId: String
+        if let stored = keychain.deviceId {
+            deviceId = stored
+        } else {
+            let seed = (idfv ?? UUID().uuidString) + "|birdo-vpn-device-ssot-v1"
+            let derived = "ios_" + String(Self.sha256Hex(seed).prefix(32))
+            // Re-check before persisting: a concurrent first-call may have
+            // minted (only divergent when IDFV was nil — random fallback).
+            if let raced = keychain.deviceId {
+                deviceId = raced
+            } else {
+                keychain.saveDeviceId(derived)
+                deviceId = derived
+            }
+        }
+        let context = DeviceIdentity(id: deviceId, name: Self.deviceModelName(), osVersion: osVersion)
+        cachedDeviceContext = context
+        return context
+    }
+
+    /// Hardware model identifier, e.g. "Apple iPhone15,3" (Android parity is
+    /// "Samsung SM-S926B" style). Fallback `iOS device`.
+    private static func deviceModelName() -> String {
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machine = withUnsafeBytes(of: &systemInfo.machine) { rawBuffer in
+            String(decoding: rawBuffer.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        return machine.isEmpty ? "iOS device" : "Apple \(machine)"
+    }
+
+    private static func sha256Hex(_ input: String) -> String {
+        let data = Data(input.utf8)
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes {
+            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Core HTTP
@@ -450,22 +587,6 @@ final class APIClient: @unchecked Sendable {
 /// Serialises concurrent token refreshes. The first 401 starts the refresh;
 /// every subsequent caller awaits the same in-flight task and then retries
 /// with the freshly-stored token.
-/// Holds the short-lived 2FA challenge token between `login()` and
-/// `verifyTwoFactor()`. The token survives a FAILED verification (the backend
-/// only consumes it on success) so the user can retry a mistyped code;
-/// `clear()` drops it once it has actually been spent, so a stale token can
-/// never be replayed against a later login attempt. `set()` on a new login
-/// overwrites any leftover token.
-private actor ChallengeStore {
-    private var token: String?
-
-    func set(_ value: String) { token = value }
-
-    func peek() -> String? { token }
-
-    func clear() { token = nil }
-}
-
 private actor RefreshCoordinator {
     private var inFlight: Task<Void, Error>?
 
@@ -615,6 +736,156 @@ enum APIError: Error, LocalizedError {
     }
 }
 
+/// Complete token pair from a successful authentication.
+struct TokenPairData: Sendable {
+    let accessToken: String
+    let refreshToken: String
+}
+
+/// Outcome of a credential/SSO login round: either a full token pair, or a
+/// pending 2FA challenge. The challenge token belongs in ViewModel state
+/// (never the keychain) and is consumed server-side only on a SUCCESSFUL
+/// verify — a wrong code leaves it valid for retries.
+enum LoginResult: Sendable {
+    case success(TokenPairData)
+    case twoFactorRequired(challengeToken: String)
+}
+
+/// Result of `POST /auth/register/anonymous`. The minted 24-digit ID is
+/// returned ONCE and is the account's sole recovery credential — persist it
+/// and surface it to the user before proceeding.
+struct AnonymousRegistration: Sendable {
+    let anonymousId: String?
+    let tokens: TokenPairData
+}
+
+/// Identity model from `GET /auth/me`. Unknown wire keys are ignored and
+/// every field is defaulted so a new backend field can never break decoding.
+struct UserProfile: Sendable, Equatable {
+    let id: String
+    let email: String?
+    let name: String?
+    let emailVerified: Bool
+    /// Drives the delete-account dialog (password confirmation). DEFAULTS
+    /// TRUE when absent — fail-safe: ask for a password rather than let a
+    /// password account delete without one.
+    let hasPassword: Bool
+    let isSSO: Bool
+
+    /// Anonymous accounts carry the synthetic email
+    /// `anon_<24digits>@anonymous.local`. Never render it — it "reads as a
+    /// bug"; show `Anonymous account` + the account-number card instead.
+    var isAnonymous: Bool {
+        guard let email else { return false }
+        return email.hasPrefix("anon_") && email.hasSuffix("@anonymous.local")
+    }
+
+    /// The 24-digit account number extracted from the synthetic email;
+    /// nil for non-anonymous accounts.
+    var anonymousAccountNumber: String? {
+        guard isAnonymous, let email,
+              let atIndex = email.firstIndex(of: "@") else { return nil }
+        let start = email.index(email.startIndex, offsetBy: "anon_".count)
+        guard start < atIndex else { return nil }
+        let digits = String(email[start..<atIndex])
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return digits
+    }
+}
+
+extension UserProfile: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case id, email, name, emailVerified, hasPassword, isSSO
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        email = try c.decodeIfPresent(String.self, forKey: .email)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        emailVerified = try c.decodeIfPresent(Bool.self, forKey: .emailVerified) ?? false
+        hasPassword = try c.decodeIfPresent(Bool.self, forKey: .hasPassword) ?? true
+        isSSO = try c.decodeIfPresent(Bool.self, forKey: .isSSO) ?? false
+    }
+}
+
+/// Canonical subscription/bandwidth truth from `GET /vpn/stats` (spec §3.4).
+/// Every field is defaulted so a shape change can never blank the plan.
+struct VpnStats: Sendable, Equatable {
+    /// "RECON" | "OPERATIVE" | "SOVEREIGN" — compare case-insensitively.
+    let plan: String
+    let status: String
+    let activeConnections: Int
+    let maxConnections: Int
+    /// Wire `null` is coerced to 0 and **0 means unlimited** — the deliberate
+    /// Android-parity convention (`hasCap = limitGb > 0`). Never render
+    /// "0 GB / month".
+    let bandwidthLimitGb: Double
+    let bandwidthUsedGb: Double
+    let bandwidthPeriodEnd: String?
+    let bandwidthLastSyncAt: String?
+    /// true = synced < 3 min ago; nil = never synced yet.
+    let bandwidthIsFresh: Bool?
+    let hasPremiumServers: Bool
+    let subscriptionEndsAt: String?
+
+    var hasBandwidthCap: Bool { bandwidthLimitGb > 0 }
+    var isSovereign: Bool { plan.caseInsensitiveCompare("SOVEREIGN") == .orderedSame }
+    var isOperativeOrHigher: Bool {
+        isSovereign || plan.caseInsensitiveCompare("OPERATIVE") == .orderedSame
+    }
+}
+
+/// Compatibility alias — some call sites name the /vpn/stats model this way.
+typealias SubscriptionStatus = VpnStats
+
+extension VpnStats: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case plan, status, activeConnections, maxConnections
+        case bandwidthLimitGb, bandwidthUsedGb, bandwidthPeriodEnd
+        case bandwidthLastSyncAt, bandwidthIsFresh, hasPremiumServers
+        case subscriptionEndsAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        plan = try c.decodeIfPresent(String.self, forKey: .plan) ?? "RECON"
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
+        activeConnections = try c.decodeIfPresent(Int.self, forKey: .activeConnections) ?? 0
+        maxConnections = try c.decodeIfPresent(Int.self, forKey: .maxConnections) ?? 1
+        bandwidthLimitGb = try c.decodeIfPresent(Double.self, forKey: .bandwidthLimitGb) ?? 0
+        bandwidthUsedGb = try c.decodeIfPresent(Double.self, forKey: .bandwidthUsedGb) ?? 0
+        bandwidthPeriodEnd = try c.decodeIfPresent(String.self, forKey: .bandwidthPeriodEnd)
+        bandwidthLastSyncAt = try c.decodeIfPresent(String.self, forKey: .bandwidthLastSyncAt)
+        bandwidthIsFresh = try c.decodeIfPresent(Bool.self, forKey: .bandwidthIsFresh)
+        hasPremiumServers = try c.decodeIfPresent(Bool.self, forKey: .hasPremiumServers) ?? false
+        subscriptionEndsAt = try c.decodeIfPresent(String.self, forKey: .subscriptionEndsAt)
+    }
+}
+
+/// Response of `POST /vpn/heartbeat/{keyId}`. `valid: false` means the
+/// connection was revoked server-side (silent free-tier eviction) — the
+/// client must disconnect and surface `message`. Fail-open on decode
+/// surprises: an absent `valid` must never kill a live tunnel.
+struct HeartbeatResult: Sendable {
+    let valid: Bool
+    let serverOnline: Bool?
+    let message: String?
+}
+
+extension HeartbeatResult: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case valid, serverOnline, message
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        valid = try c.decodeIfPresent(Bool.self, forKey: .valid) ?? true
+        serverOnline = try c.decodeIfPresent(Bool.self, forKey: .serverOnline)
+        message = try c.decodeIfPresent(String.self, forKey: .message)
+    }
+}
+
 /// Nest error envelope. `message` is a string for thrown HttpExceptions and an
 /// array of strings for class-validator failures, so decode both.
 private struct APIErrorBody: Decodable {
@@ -642,26 +913,76 @@ private struct APIErrorBody: Decodable {
     let message: Message?
 }
 
+/// Resolved device identity attached to every auth call. The full six-field
+/// payload (deviceId/deviceName/deviceType/platform/platformVersion/appVersion)
+/// is flattened into each request body below.
+private struct DeviceIdentity: Sendable {
+    let id: String
+    let name: String
+    let osVersion: String
+}
+
 private struct LoginBody: Encodable {
     let email: String
     let password: String
     /// Device attribution — also lets a trusted device skip the 2FA challenge.
-    let deviceId: String?
+    let deviceId: String
+    let deviceName: String
     let deviceType = "MOBILE"
     let platform = "IOS"
+    let platformVersion: String
+    let appVersion: String
+}
+
+/// Body for `POST /auth/login/anonymous` — the 24-digit account ID plus
+/// optional password. A nil password is OMITTED from the JSON (synthesized
+/// Encodable uses encodeIfPresent): the backend deliberately answers 401
+/// "Invalid credentials" when a password is supplied to a password-less
+/// account, so an empty string must never be sent.
+private struct AnonymousLoginBody: Encodable {
+    let anonymousId: String
+    let password: String?
+    let deviceId: String
+    let deviceName: String
+    let deviceType = "MOBILE"
+    let platform = "IOS"
+    let platformVersion: String
+    let appVersion: String
 }
 
 /// Body for `POST /auth/register/anonymous` — device context only; the server
 /// mints the 24-digit anonymous ID.
 private struct DeviceInfoBody: Encodable {
-    let deviceId: String?
+    let deviceId: String
+    let deviceName: String
     let deviceType = "MOBILE"
     let platform = "IOS"
+    let platformVersion: String
+    let appVersion: String
 }
 
 private struct TwoFactorBody: Encodable {
     let challengeToken: String
     let token: String
+}
+
+/// Body for `POST /auth/native/exchange`. Wire casing is EXACT:
+/// `code_verifier` is snake_case (RFC 7636 vocabulary), device fields camelCase.
+private struct SsoExchangeBody: Encodable {
+    let code: String
+    let codeVerifier: String
+    let deviceId: String
+    let deviceName: String
+    let deviceType = "MOBILE"
+    let platform = "IOS"
+    let platformVersion: String
+    let appVersion: String
+
+    private enum CodingKeys: String, CodingKey {
+        case code
+        case codeVerifier = "code_verifier"
+        case deviceId, deviceName, deviceType, platform, platformVersion, appVersion
+    }
 }
 
 private struct DeleteAccountBody: Encodable {
@@ -715,16 +1036,19 @@ private struct TokenPairDTO: Decodable {
     }
 }
 
-/// Shared response shape of `/auth/login/desktop`, `/auth/2fa/verify` and
-/// `/auth/register/anonymous`: tokens on success, or a 2FA challenge.
+/// Shared response shape of `/auth/login/desktop`, `/auth/login/anonymous`,
+/// `/auth/register/anonymous`, `/auth/native/exchange` and `/auth/2fa/verify`:
+/// tokens on success, or a 2FA challenge.
 private struct AuthTokensResponse: Decodable {
+    let ok: Bool?
     let tokens: TokenPairDTO?
     let requiresTwoFactor: Bool?
     let challengeToken: String?
-    /// Returned ONLY by `/auth/register/anonymous`, and only once. It is the
-    /// sole credential for an anonymous account — `/auth/me` never replays it
-    /// and `/auth/login/anonymous` demands it — so dropping it here would make
-    /// the account permanently unrecoverable after a logout or reinstall.
+    /// Returned by `/auth/register/anonymous` (minted) and echoed by
+    /// `/auth/login/anonymous`. For a fresh registration it is surfaced only
+    /// once and is the sole credential for the account — `/auth/me` never
+    /// replays it directly (only via the synthetic email) — so dropping it
+    /// would make the account unrecoverable after a logout or reinstall.
     let anonymousId: String?
 }
 
