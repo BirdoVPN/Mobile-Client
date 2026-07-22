@@ -350,7 +350,7 @@ dependencies {
     // Requests a device/app integrity verdict the backend verifies so only the
     // genuine, unmodified Play build can obtain a WireGuard peer. Only produces a
     // valid token on Play-distributed builds; gated by BuildConfig.IS_PLAY_BUILD.
-    implementation("com.google.android.play:integrity:1.4.0")
+    implementation("com.google.android.play:integrity:1.6.0")
 
     // ── Core Android ─────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.15.0")
@@ -401,7 +401,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.47.0")
+    implementation("io.sentry:sentry-android:8.49.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
