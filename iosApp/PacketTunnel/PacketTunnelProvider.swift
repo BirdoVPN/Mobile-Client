@@ -15,7 +15,14 @@ import os.log
 /// - Forwards `NEPacketTunnelProvider` → adapter network-settings calls,
 ///   honouring per-address CIDR for both IPv4 and IPv6.
 /// - Implements live transfer-stats IPC for the host app (`stats` message).
-class PacketTunnelProvider: NEPacketTunnelProvider {
+/// `@unchecked Sendable` (finding #2): the liveness heartbeat runs in a
+/// `Task`, whose closure is `@Sendable` and therefore requires a Sendable
+/// `self`. The only cross-context mutable state is `heartbeatTask`, guarded by
+/// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatSession` are set
+/// once and treated as effectively immutable thereafter (the existing stats /
+/// wake callbacks already read them off-thread). Mirrors the codebase's
+/// `VPNManager: @unchecked Sendable` posture on the host side.
+final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private let log = OSLog(subsystem: "app.birdo.vpn.tunnel", category: "tunnel")
 
     /// Fully-qualified keychain access group shared with the host app.
@@ -29,6 +36,34 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     /// the host side — the two targets do not share source files, so the
     /// constant is declared once per side (team id is pinned in project.yml).
     private static let sharedAccessGroup = "KPUFGR98A5.app.birdo.vpn"
+
+    /// Liveness heartbeat (finding #2). The 30 s keepalive MUST run here, not
+    /// in the host app: iOS suspends the host seconds after the device locks,
+    /// so a host-app timer stops and the backend reaps the peer after 5 min —
+    /// with the kill switch ON (includeAllNetworks) that blackholes ALL device
+    /// traffic. The extension lives exactly as long as the tunnel and its
+    /// URLSession rides the live tunnel, so it can keep the peer alive as long
+    /// as the tunnel is up.
+    private static let heartbeatInterval: TimeInterval = 30
+    /// Base URL of the API — same host the host app's APIClient targets.
+    private static let apiBaseURL = URL(string: "https://api.birdo.app")!
+
+    /// Serialises access to `heartbeatTask` between `startTunnel`'s completion
+    /// and `stopTunnel`, both delivered on NetworkExtension's callback context.
+    private let heartbeatLock = NSLock()
+    private var heartbeatTask: Task<Void, Never>?
+
+    /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
+    /// header or body is ever written to disk, matching the host APIClient.
+    private lazy var heartbeatSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 30
+        config.httpCookieStorage = nil
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config)
+    }()
 
     private lazy var adapter: WireGuardAdapter = {
         WireGuardAdapter(with: self) { [weak self] level, message in
@@ -57,6 +92,17 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             completionHandler(TunnelError.missingConfig)
             return
         }
+
+        // Heartbeat credentials (finding #2). Passed via providerConfiguration
+        // each connect so the token is fresh; readable only by this app's own
+        // appex. Absent keyId/token simply means no extension heartbeat (older
+        // host build) — the tunnel still works, it just can't self-report
+        // liveness. NEVER log the token.
+        let heartbeatKeyId = (proto.providerConfiguration?["hb-key-id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let heartbeatToken = (proto.providerConfiguration?["hb-access-token"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let heartbeatClientVersion = (proto.providerConfiguration?["hb-client-version"] as? String) ?? "1.0.0"
 
         // Read secrets out of the shared keychain. The IDs are passed via
         // providerConfiguration; the actual material never appears there.
@@ -139,6 +185,15 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
             os_log("Tunnel up", log: self.log, type: .info)
+            // finding #2: start the in-extension liveness heartbeat now that
+            // the tunnel is up. Only when the host passed a keyId + token.
+            if let keyId = heartbeatKeyId, !keyId.isEmpty,
+               let token = heartbeatToken, !token.isEmpty {
+                self.startHeartbeat(keyId: keyId, token: token, clientVersion: heartbeatClientVersion)
+            } else {
+                os_log("No heartbeat credentials in provider config — extension heartbeat disabled",
+                       log: self.log, type: .info)
+            }
             completionHandler(nil)
         }
     }
@@ -150,6 +205,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         // %ld, not %d: `reason.rawValue` is a 64-bit Int and os_log's Swift
         // overlay encodes it as 8 bytes — %d would print a garbage value.
         os_log("Stopping tunnel, reason: %{public}ld", log: log, type: .info, reason.rawValue)
+        // finding #2: tear the heartbeat down first so no request outlives the
+        // tunnel (and so a cancelTunnelWithError re-entry can't double-start).
+        stopHeartbeat()
         adapter.stop { [weak self] error in
             if let error {
                 os_log("Adapter stop failed: %{public}@",
@@ -204,6 +262,90 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             completionHandler?(#"{"ok":true}"#.data(using: .utf8))
         default:
             completionHandler?(nil)
+        }
+    }
+
+    // MARK: - Heartbeat (finding #2)
+
+    /// Start the 30 s liveness loop. Mirrors the host `APIClient.heartbeat`
+    /// request exactly: `POST https://api.birdo.app/vpn/heartbeat/{keyId}` with
+    /// `Authorization: Bearer <token>` + `X-Desktop-Client: birdo-ios`. The
+    /// backend answers `{ valid, serverOnline, message? }`. On `valid == false`
+    /// (revoked / evicted) we tear the tunnel down with `cancelTunnelWithError`
+    /// so a dead peer stops blackholing traffic even while the host app is
+    /// suspended. Transport failures and a stale-token 401 are IGNORED — a
+    /// missed heartbeat or an expired token must never kill a live tunnel.
+    private func startHeartbeat(keyId: String, token: String, clientVersion: String) {
+        heartbeatLock.lock()
+        heartbeatTask?.cancel()
+        let interval = Self.heartbeatInterval
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                if Task.isCancelled { return }
+                guard let self else { return }
+                await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
+            }
+        }
+        heartbeatLock.unlock()
+    }
+
+    private func stopHeartbeat() {
+        heartbeatLock.lock()
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+        heartbeatLock.unlock()
+    }
+
+    /// One heartbeat round-trip. `valid == false` → cancel the tunnel. Anything
+    /// else (network error, 401 from a stale token, 5xx, decode surprise) is
+    /// logged and swallowed so the tunnel survives.
+    private func sendHeartbeat(keyId: String, token: String, clientVersion: String) async {
+        guard let encodedKeyId = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "/vpn/heartbeat/\(encodedKeyId)", relativeTo: Self.apiBaseURL),
+              url.scheme?.lowercased() == "https" else {
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("birdo-ios", forHTTPHeaderField: "X-Desktop-Client")
+        request.setValue("Birdo-iOS/\(clientVersion) (iOS)", forHTTPHeaderField: "User-Agent")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await heartbeatSession.data(for: request)
+        } catch {
+            // Transient transport failure — NEVER tear down over a missed beat.
+            os_log("Heartbeat transport failure (ignored)", log: log, type: .info)
+            return
+        }
+        guard let http = response as? HTTPURLResponse else { return }
+        // A stale/expired token surfaces as 401 here (the extension cannot
+        // refresh tokens — it has no refresh token). Do NOT tear down: the host
+        // app passes a fresh token on the next connect, and the kernel tunnel's
+        // PersistentKeepalive keeps handshaking so the backend's handshake-age
+        // check keeps the peer alive. Only an explicit {valid:false} tears down.
+        guard (200...299).contains(http.statusCode) else {
+            os_log("Heartbeat HTTP %{public}ld (ignored)", log: log, type: .info, http.statusCode)
+            return
+        }
+        // Fail OPEN on any decode surprise: an absent/garbled `valid` must never
+        // kill a live tunnel (matches the host HeartbeatResult default).
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        let valid = (json["valid"] as? Bool) ?? true
+        if !valid {
+            os_log("Heartbeat reports connection revoked — tearing tunnel down",
+                   log: log, type: .info)
+            stopHeartbeat()
+            // Tearing down here (rather than silently) is the whole point: a
+            // revoked/evicted peer must stop routing so the device isn't left
+            // blackholing traffic into a peer the server already deleted.
+            cancelTunnelWithError(TunnelError.connectionRevoked)
         }
     }
 
@@ -281,12 +423,17 @@ enum TunnelError: Error, LocalizedError {
     case missingConfig
     case invalidConfig
     case adapterFailed(String)
+    /// The backend heartbeat reported the peer is no longer valid (revoked or
+    /// free-tier evicted). Tearing down on this is what stops a dead peer from
+    /// blackholing all traffic under the kill switch.
+    case connectionRevoked
 
     var errorDescription: String? {
         switch self {
         case .missingConfig: return "Missing tunnel configuration"
         case .invalidConfig: return "Invalid tunnel configuration"
         case .adapterFailed(let msg): return "Tunnel adapter failed: \(msg)"
+        case .connectionRevoked: return "Connection has been revoked. Please reconnect."
         }
     }
 }

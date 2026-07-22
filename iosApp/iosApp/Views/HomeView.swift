@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Home (Connect) screen — Android HomeScreen parity per
 /// spec-home-servers-consent.md §3, emerald visual identity per
@@ -21,6 +22,10 @@ struct HomeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var showLogoutConfirm = false
+    /// Multi-Hop entry (spec §3.2 item 1). SOVEREIGN opens the flow; a lower
+    /// plan gets the upsell snackbar instead.
+    @State private var showMultiHop = false
+    @State private var multiHopUpsell: String?
     // Haptic triggers — `.sensoryFeedback` fires on value CHANGE only, so a
     // bumped counter plays exactly one tap's worth of feedback.
     @State private var connectHapticTick = 0
@@ -49,6 +54,24 @@ struct HomeView: View {
             // Defensive kick — cheap thanks to the 60 s TTL + in-flight guard.
             // The app root owns the real login-flip / cold-start load.
             vpnVM.loadServers()
+            // Keep the Multi-Hop gate honest: the plan slug drives lock vs open.
+            vpnVM.refreshSubscription()
+        }
+        // Multi-Hop flow — pushed for SOVEREIGN users from the top-bar chip.
+        .navigationDestination(isPresented: $showMultiHop) {
+            MultiHopView()
+        }
+        // Upsell snackbar for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy).
+        .overlay(alignment: .bottom) {
+            if let notice = multiHopUpsell {
+                multiHopUpsellSnackbar(notice)
+            }
+        }
+        .task(id: multiHopUpsell) {
+            guard multiHopUpsell != nil else { return }
+            try? await Task.sleep(for: .seconds(3.2))
+            guard !Task.isCancelled else { return }
+            withAnimation(BirdoTheme.Motion.accel()) { multiHopUpsell = nil }
         }
         .sensoryFeedback(.impact(weight: .heavy), trigger: connectHapticTick)
         .sensoryFeedback(.warning, trigger: disconnectHapticTick)
@@ -86,6 +109,9 @@ struct HomeView: View {
     private var topBar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
+                // Multi-Hop chip is the FIRST top-bar element (spec §3.2 item 1).
+                multiHopChip
+
                 // Real brand asset — the SF-symbol bird placeholder is dead.
                 BirdoLogo.topBar
 
@@ -143,6 +169,90 @@ struct HomeView: View {
         return nil
     }
 
+    // MARK: - Multi-Hop entry chip (Android §3.2 item 1)
+
+    /// Multi-Hop is SOVEREIGN-only. Non-SOVEREIGN shows a locked chip whose tap
+    /// fires the upsell snackbar; SOVEREIGN opens the full Multi-Hop flow. The
+    /// server is the authority — this lock is cosmetic (MultiHopView and the
+    /// backend both re-gate).
+    private var multiHopChip: some View {
+        let unlocked = vpnVM.isSovereign
+        return Button(action: handleMultiHopTap) {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(unlocked ? BirdoTheme.accent : BirdoTheme.white40)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        RoundedRectangle(cornerRadius: BirdoTheme.Radius.sm,
+                                         style: .continuous)
+                            .fill(unlocked ? BirdoTheme.accentA(0.18) : BirdoTheme.white05)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: BirdoTheme.Radius.sm,
+                                         style: .continuous)
+                            .strokeBorder(
+                                unlocked ? BirdoTheme.accentA(0.55) : BirdoTheme.hairlineSoft,
+                                lineWidth: 1
+                            )
+                    )
+
+                if !unlocked {
+                    // 14pt black badge with a small lock, bottom-right.
+                    ZStack {
+                        Circle().fill(Color.black.opacity(0.6))
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 14, height: 14)
+                    .offset(x: 3, y: 3)
+                }
+            }
+            .frame(width: 48, height: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityLabel(unlocked
+            ? "Multi-Hop"
+            : "Multi-Hop — SOVEREIGN plan required")
+    }
+
+    private func handleMultiHopTap() {
+        if vpnVM.isSovereign {
+            showMultiHop = true
+        } else {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            let message = "Multi-Hop is a SOVEREIGN feature. Upgrade to enable."
+            withAnimation(BirdoTheme.Motion.decel()) { multiHopUpsell = message }
+            AccessibilityNotification.Announcement(message).post()
+        }
+    }
+
+    private func multiHopUpsellSnackbar(_ notice: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 14))
+                .foregroundStyle(BirdoTheme.accentSoft)
+            Text(notice)
+                .font(.system(size: 13))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                .fill(BirdoTheme.surfaceElevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
+        )
+        .padding(.horizontal, BirdoTheme.Spacing.lg)
+        .padding(.bottom, BirdoTheme.Spacing.xl)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
     // MARK: - Status Hero (Android §3.3, desktop §4.2–4.4)
 
     /// Android only pattern-matches Connected/Connecting/Error — everything
@@ -150,6 +260,9 @@ struct HomeView: View {
     /// observe "Disconnecting…" (the VM keeps `isConnected` until the drop
     /// actually lands), so that state renders as Protected until it does.
     private var statusText: String {
+        // A live server switch tears the tunnel down and rebuilds it on the new
+        // node — never show "Protected" over the new name until it lands.
+        if vpnVM.isSwitching { return "Switching server…" }
         if vpnVM.isConnected { return "Protected" }
         if vpnVM.isConnecting { return "Connecting…" }
         if vpnVM.error != nil { return "Connection Error" }
@@ -157,6 +270,7 @@ struct HomeView: View {
     }
 
     private var statusTone: StatusBadgePill.Tone {
+        if vpnVM.isSwitching { return .warning }
         if vpnVM.isConnected { return .success }
         if vpnVM.isConnecting { return .warning }
         if vpnVM.error != nil { return .danger }
@@ -164,6 +278,7 @@ struct HomeView: View {
     }
 
     private var statusIcon: String? {
+        if vpnVM.isSwitching { return "arrow.triangle.2.circlepath" }
         if vpnVM.isConnected { return nil } // pulse dot instead
         if vpnVM.isConnecting { return "arrow.triangle.2.circlepath" }
         if vpnVM.error != nil { return "exclamationmark.circle" }
@@ -176,7 +291,7 @@ struct HomeView: View {
                 StatusBadgePill(statusText,
                                 tone: statusTone,
                                 icon: statusIcon,
-                                pulse: vpnVM.isConnected)
+                                pulse: vpnVM.isConnected && !vpnVM.isSwitching)
                     // Recreate the pill per state: the crossfade replaces
                     // Android's AnimatedContent, and a fresh PulsingDot replays
                     // its finite 3-burst on every re-entry into Connected.
@@ -188,17 +303,19 @@ struct HomeView: View {
             .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.standard)),
                        value: statusText)
 
-            // Feature chips (desktop §4.4 pattern — under the pill, brand
-            // tone). Kill Switch reflects the standing setting (iOS has no
-            // reliable "blocking now" signal); Quantum is the HONEST indicator
-            // — lit only when a bilateral ML-KEM PSK was derived.
-            if settingsVM.killSwitchEnabled || vpnVM.quantumActive {
+            // Feature chips (desktop §4.4 pattern — under the pill). The kill
+            // switch chip only shows while it is ACTUALLY blocking (§3.4 item
+            // 3, killSwitchActive) — i.e. armed AND the tunnel is down, so all
+            // traffic is being blackholed — never merely because the setting is
+            // on while Protected. Quantum is the HONEST indicator — lit only
+            // when a bilateral ML-KEM PSK was derived.
+            if killSwitchActive || vpnVM.quantumActive {
                 HStack(spacing: 8) {
-                    if settingsVM.killSwitchEnabled {
-                        StatusBadgePill("Kill Switch",
-                                        tone: .brand,
-                                        icon: "checkmark.shield.fill")
-                            .accessibilityLabel("Kill switch enabled")
+                    if killSwitchActive {
+                        StatusBadgePill("Kill Switch — All traffic blocked",
+                                        tone: .danger,
+                                        icon: "shield.slash.fill")
+                            .accessibilityLabel("Kill switch — all traffic blocked")
                     }
                     if vpnVM.quantumActive {
                         StatusBadgePill("Quantum",
@@ -213,7 +330,15 @@ struct HomeView: View {
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
                    value: vpnVM.quantumActive)
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
-                   value: settingsVM.killSwitchEnabled)
+                   value: killSwitchActive)
+    }
+
+    /// The kill switch is BLOCKING (not merely enabled) when it is armed and no
+    /// tunnel is up: on-demand + includeAllNetworks then blackholes every
+    /// packet. While Protected, traffic flows normally, so no "blocked" chip.
+    /// (Reconnecting/switching keep the tunnel down, so blocking stays true.)
+    private var killSwitchActive: Bool {
+        settingsVM.killSwitchEnabled && !vpnVM.isConnected
     }
 
     // MARK: - Bottom Action Panel (Android §3.4)
@@ -407,12 +532,16 @@ struct HomeView: View {
     private enum ConnectCTA: Equatable { case idle, busy, connected }
 
     private var cta: ConnectCTA {
+        // A live switch is a busy state — the button must not offer
+        // "Disconnect" over a half-torn-down tunnel mid-switch.
+        if vpnVM.isSwitching { return .busy }
         if vpnVM.isConnected { return .connected }
         if vpnVM.isConnecting { return .busy }
         return .idle
     }
 
     private var ctaLabel: String {
+        if vpnVM.isSwitching { return "Switching…" }
         switch cta {
         case .connected: return "Disconnect"
         case .busy:      return "Connecting…"

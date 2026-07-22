@@ -100,10 +100,20 @@ struct ConsentView: View {
         VStack(alignment: .leading, spacing: 16) {
             consentItem(
                 title: "No Activity Logs",
-                description: "Birdo VPN operates a strict zero-logs policy on RAM-only volatile infrastructure. No browsing activity, DNS queries, traffic content, connection timestamps, or IP addresses are logged.")
+                // Scoped to the VPN traffic plane, where the claim is literally
+                // true: the WireGuard nodes run RAM-only with no persistent
+                // storage (backend abuse.service.ts / no-logs-enforcement).
+                // The earlier copy also said "IP addresses are logged" in
+                // absolute terms, which the account DB contradicts (see next
+                // item) — App Review / regulators penalise false absolutes.
+                description: "On our VPN servers, Birdo operates a strict zero-logs policy on RAM-only volatile infrastructure. Your browsing activity, DNS queries, traffic content, and the IP addresses you visit are never monitored, logged, or stored.")
             consentItem(
                 title: "Account Data Only",
-                description: "Only your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on VPN servers.")
+                // Truthful disclosure: the separate account database keeps
+                // login/session timestamps and a non-reversible hash of your
+                // IP for security and abuse prevention — it is not stored in
+                // the clear and never lives on the VPN servers.
+                description: "Your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on the VPN servers. For security and abuse prevention that database also keeps sign-in timestamps and a non-reversible hash of your IP address, not your raw IP.")
             consentItem(
                 title: "Crash Reports",
                 description: "Anonymous crash reports help fix bugs faster. No personal data is included.")

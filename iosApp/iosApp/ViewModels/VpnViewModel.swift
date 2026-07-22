@@ -46,6 +46,14 @@ final class VpnViewModel: ObservableObject {
     /// timer only republishes byte counters, and identical IPC values must
     /// not be what keeps the clock ticking.
     @Published var connectedSince: Date?
+    /// Id of the node the tunnel is ACTUALLY on (captured at .connected), so the
+    /// UI never paints the Connected dot on a server the user merely tapped. nil
+    /// unless a live session exists. (Review #3 — the live-switch truth fix.)
+    @Published private(set) var connectedServerId: String?
+    /// True from the start of a live server switch until the new node reaches
+    /// .connected (or the switch fails), so Home shows "Switching…" instead of a
+    /// premature "Protected" over the new name.
+    @Published private(set) var isSwitching = false
 
     // MARK: - Features
     /// Honest indicator: lit only when a true bilateral ML-KEM PSK was
@@ -244,6 +252,8 @@ final class VpnViewModel: ObservableObject {
                 reportUnauthorized(error)
                 isConnecting = false
                 isReapplyingSettings = false
+                // A failed (re)connect must not leave the UI stuck on "Switching…".
+                isSwitching = false
             }
         }
     }
@@ -303,6 +313,8 @@ final class VpnViewModel: ObservableObject {
                 reportUnauthorized(error)
                 isConnecting = false
                 isReapplyingSettings = false
+                // A failed (re)connect must not leave the UI stuck on "Switching…".
+                isSwitching = false
             }
         }
     }
@@ -447,6 +459,21 @@ final class VpnViewModel: ObservableObject {
             // paths left the duration pinned at 00:00 with the byte counters
             // frozen at zero, because only connect() ever started the timer.
             if connectedSince == nil { connectedSince = Date() }
+            // The tunnel is up on the server we just dialled — record which node
+            // it actually is and clear any in-flight live-switch flag, so the UI
+            // stops lying about egress the instant the new peer is real.
+            connectedServerId = selectedServer?.id
+            isSwitching = false
+            // finding #5: on-demand (the kill-switch re-dial rule) is armed
+            // ONLY now that the tunnel is actually up — never before
+            // startVPNTunnel, where a failure could leave iOS auto-dialing a
+            // server-side peer the failure path already deleted. connect()
+            // saved the config with on-demand disabled; applyKillSwitchFlag
+            // arms it session-gated (it only arms while the session is live).
+            // Read the raw stored value so a fresh install (absent key)
+            // defaults ON, matching VPNManager.connect().
+            let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
+            vpnManager.applyKillSwitchFlag(killSwitch)
             startStatsTimer()
             startHeartbeat()
         case .connecting, .reasserting:
@@ -479,10 +506,51 @@ final class VpnViewModel: ObservableObject {
         isConnecting = false
         quantumActive = false
         connectedSince = nil
+        connectedServerId = nil
+        isSwitching = false
         bytesReceived = 0
         bytesSent = 0
         stopStatsTimer()
         stopHeartbeat()
+    }
+
+    /// Live server switch (Review #3). Tapping a different node while connected
+    /// must reconnect the tunnel — not just relabel the UI. Same-node taps and
+    /// taps while disconnected fall back to a plain selection.
+    func selectServerLive(_ server: ServerInfo) {
+        guard server.accessible else { return }
+        guard isConnected || isConnecting else {
+            selectServer(server)
+            return
+        }
+        if server.id == connectedServerId { return }
+        selectedServer = server
+        error = nil
+        isSwitching = true
+        // Reuse the settings-blip sequencing: stop, let the teardown land, then
+        // reconnect. evictForConnect reclaims the device slot atomically, so no
+        // DELETE round-trip is needed and the free-tier slot is never doubled.
+        vpnManager.disconnect()
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard let self, self.isSwitching else { return }
+            self.connect()
+        }
+    }
+
+    /// Clears cross-account cached state on sign-out (Review #490). The shell
+    /// wires this to AuthViewModel.onLogout so the next user never inherits the
+    /// previous account's plan/servers.
+    func resetForLogout() {
+        disconnect()
+        servers = []
+        selectedServer = nil
+        serversError = nil
+        subscription = nil
+        subscriptionError = nil
+        subscriptionFetchedAt = nil
+        portForwards = []
+        portForwardError = nil
     }
 
     // MARK: - Connection Slot (keyId) Bookkeeping

@@ -22,6 +22,13 @@ final class APIClient: @unchecked Sendable {
     /// instead of racing each other or retrying with the stale token.
     private let refreshActor = RefreshCoordinator()
 
+    /// Monotonic session generation. `invalidateSession()` (called by
+    /// AuthViewModel.completeLocalLogout) bumps it; an in-flight refresh
+    /// captures it before the network call and refuses to persist rotated
+    /// tokens if it changed — fencing ALL post-logout writes so a refresh that
+    /// lands AFTER sign-out can never resurrect the wiped session (finding #1).
+    private let sessionGeneration = SessionGeneration()
+
     /// Memoised device identity — see `deviceContext()`. Idempotent, so a
     /// concurrent double-read simply recomputes the same value.
     private var cachedDeviceContext: DeviceIdentity?
@@ -204,12 +211,22 @@ final class APIClient: @unchecked Sendable {
         // that Caddy site block), so the `api/v1/gdpr` in the controller path is
         // real and must be sent — this is NOT a double prefix.
         //
-        // The body carries an optional password. gdpr.controller.ts answers 401
-        // ("Password confirmation is required" / "Incorrect password") for a
-        // password account, which is a BUSINESS refusal, not an expired token —
-        // hence `refreshOn401: false`. Letting the generic handler run would burn
-        // a refresh-token rotation and then report "Session expired. Please log
-        // in again.", making erasure impossible for every email-signup account.
+        // 401s on this route come from TWO distinct layers (gdpr.controller.ts):
+        //   1. JwtAuthGuard rejects an EXPIRED access token BEFORE the handler
+        //      runs — recoverable, needs a refresh-then-retry.
+        //   2. The handler itself throws 401 ("Password confirmation is
+        //      required" / "Incorrect password") for a password account — a
+        //      BUSINESS refusal.
+        // Finding #217: the old `refreshOn401: false` treated BOTH as terminal,
+        // so an expired token dead-ended — erasure was impossible for anyone
+        // whose access token had aged out (the common case). We now let the
+        // generic refresh-then-retry run (`refreshOn401: true`): case 1 refreshes
+        // and the retry reaches the real password check; case 2 refreshes once,
+        // the retry hits the SAME password 401, and performRequest surfaces it as
+        // .unauthorized — which mapDeleteError renders as "Incorrect password",
+        // the correct message. The only cost is one wasted rotation on a wrong
+        // password (the backend's rotation grace window keeps that safe), which
+        // is far better than a permanently un-deletable account.
         let trimmed = password?.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = try encoder.encode(
             DeleteAccountBody(password: (trimmed?.isEmpty ?? true) ? nil : trimmed)
@@ -219,7 +236,7 @@ final class APIClient: @unchecked Sendable {
             path: "/api/v1/gdpr/delete",
             body: body,
             authenticated: true,
-            refreshOn401: false
+            refreshOn401: true
         )
     }
 
@@ -414,24 +431,96 @@ final class APIClient: @unchecked Sendable {
         return bits / elapsed / 1_000_000
     }
 
+    // MARK: - Session Invalidation
+
+    /// Fence every in-flight/late token write against a sign-out that already
+    /// happened. AuthViewModel.completeLocalLogout() calls this AFTER
+    /// keychain.clear(): it bumps the session generation so a refresh whose
+    /// network call was already in flight drops its rotated pair instead of
+    /// re-persisting valid tokens over the wiped keychain (finding #1).
+    func invalidateSession() async {
+        await sessionGeneration.bump()
+    }
+
     // MARK: - Token Refresh
 
     private func refreshTokens() async throws {
         guard let refresh = keychain.refreshToken else {
             throw APIError.unauthorized
         }
+        // Capture the session generation BEFORE the network call so we can tell
+        // whether a logout landed while the refresh was in flight.
+        let generationAtStart = await sessionGeneration.current
         // AUDIT-M-DRIFT: the backend reads `refresh_token` (snake_case) from the
         // body for X-Desktop-Client callers and answers
         // `{ ok, access_token, refresh_token, expires_in }` — not the camelCase
         // pair this used to send and expect. Mirrors Android `RefreshRequest`.
         let body = try encoder.encode(RefreshBody(refresh_token: refresh))
-        let data = try await post(path: "/auth/refresh", body: body, authenticated: false)
+        // Perform the refresh WITHOUT the generic error mapping so we can read
+        // the raw HTTP status. Classification is load-bearing (finding #1b):
+        // only a definitive 401/403 from /auth/refresh may become .unauthorized
+        // (→ sign-out, keychain wipe); URLError / 5xx / pin-cancel are TRANSIENT
+        // and must propagate unchanged so a valid 30-day refresh token is KEPT
+        // and retried on the next cold start. (The backend's rotation grace
+        // window `refresh:rotated:{jti}` makes a retry after a lost response
+        // safe.)
+        let (data, http) = try await rawRefreshRequest(body: body)
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw APIError.unauthorized
+            }
+            // 5xx / other non-2xx during a deploy window etc. — transient.
+            throw APIError.httpError(http.statusCode)
+        }
         let tokens = try decoder.decode(RefreshTokensResponse.self, from: data)
-        keychain.save(accessToken: tokens.accessToken,
-                      // The rotated refresh token replaces the old one; if the
-                      // server omits it, the presented token remains current.
-                      refreshToken: tokens.refreshToken ?? refresh,
-                      email: keychain.userEmail)
+
+        // Compare-and-swap fence (finding #1): only persist if the session the
+        // refresh belongs to still exists. Two things must hold —
+        // (1) no logout invalidated the session while we were in flight
+        //     (generation unchanged), and
+        // (2) the refresh token still on file is the SAME one we presented
+        //     (a concurrent clear() nils it; a concurrent successful refresh
+        //     would have rotated it).
+        // If either fails, drop the rotated pair silently — the caller's retry
+        // will use whatever token is now current (or fail as .unauthorized).
+        let generationNow = await sessionGeneration.current
+        guard generationNow == generationAtStart,
+              keychain.refreshToken == refresh else {
+            return
+        }
+        // The rotated refresh token replaces the old one; if the server omits
+        // it, the presented token remains current. A failed keychain write is a
+        // HARD failure (findings #433/#60): the server has already rotated the
+        // token, so proceeding on a half-written/unwritten pair would strand the
+        // client on a token it can never replay. Surface it so the retry does
+        // NOT run against a stale/blank Authorization header.
+        guard keychain.save(accessToken: tokens.accessToken,
+                            refreshToken: tokens.refreshToken ?? refresh,
+                            email: keychain.userEmail) else {
+            throw APIError.invalidResponse
+        }
+    }
+
+    /// Fire `POST /auth/refresh` and return the raw body + response WITHOUT the
+    /// generic status→APIError mapping, so `refreshTokens()` can classify the
+    /// HTTP status precisely (definitive 401/403 vs transient 5xx). No auth
+    /// header (the refresh token travels in the body) and no 401-refresh
+    /// recursion. A thrown error here is a transport failure (URLError,
+    /// pin-cancel) and propagates unchanged — a TRANSIENT signal.
+    private func rawRefreshRequest(body: Data) async throws -> (Data, HTTPURLResponse) {
+        guard let url = URL(string: "/auth/refresh", relativeTo: baseURL),
+              url.scheme?.lowercased() == "https" else {
+            throw APIError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        return (data, http)
     }
 
     // MARK: - Device Identity
@@ -543,7 +632,15 @@ final class APIClient: @unchecked Sendable {
                     try await self?.refreshTokens()
                 }
             } catch {
-                throw APIError.unauthorized
+                // Rethrow instead of collapsing every failure to "session
+                // expired" (finding #1b, spec §0: network errors / 5xx /
+                // timeouts KEEP the user logged in). refreshTokens() already
+                // maps the DEFINITIVE cases to .unauthorized (no stored token,
+                // or /auth/refresh returned 401/403); everything else (URLError,
+                // 5xx via .httpError, pin-cancel, CancellationError) stays its
+                // original TRANSIENT type so logoutIfUnauthorized ignores it and
+                // keeps the still-valid 30-day refresh token.
+                throw error
             }
             var retry = URLRequest(url: url)
             retry.httpMethod = method
@@ -574,6 +671,11 @@ final class APIClient: @unchecked Sendable {
     /// code. Nest error bodies carry `message` as either a string or an array of
     /// validation strings.
     private static func error(status: Int, body: Data) -> APIError {
+        // 426 Upgrade Required = the backend's minimum-supported-version floor.
+        // Surface a fixed, actionable string rather than the raw body (Review #219).
+        if status == 426 {
+            return .serverMessage("This app version is no longer supported. Update Birdo VPN to reconnect.")
+        }
         if let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body),
            let message = parsed.message?.text, !message.isEmpty {
             return .serverMessage(message)
@@ -599,6 +701,23 @@ private actor RefreshCoordinator {
         inFlight = task
         defer { inFlight = nil }
         try await task.value
+    }
+}
+
+// MARK: - Session Generation
+
+/// Monotonic counter that fences post-logout token writes. `refreshTokens()`
+/// reads `current` before and after its network call; `invalidateSession()`
+/// (sign-out) bumps it, so a refresh that finishes AFTER logout sees a changed
+/// generation and drops its rotated pair instead of resurrecting the wiped
+/// session (finding #1).
+private actor SessionGeneration {
+    private var value: UInt64 = 0
+
+    var current: UInt64 { value }
+
+    func bump() {
+        value &+= 1
     }
 }
 

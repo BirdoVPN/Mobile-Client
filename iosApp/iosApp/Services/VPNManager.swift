@@ -38,7 +38,21 @@ final class VPNManager: @unchecked Sendable {
     /// shared-secret wipe on logout still covers these accounts.
     private static let sharedKeychainService = "app.birdo.vpn.shared"
 
-    var onStatusChange: ((NEVPNStatus) -> Void)?
+    /// Fired on every NEVPNStatus transition AND replayed with the settled
+    /// status whenever a manager finishes loading (finding #4/#7). The `didSet`
+    /// covers the race where `loadManager()`'s async completion assigns
+    /// `manager` (and calls this) BEFORE `VpnViewModel.init` gets to set the
+    /// callback: on assignment we immediately replay the already-loaded
+    /// manager's current status so a relaunch under a live tunnel doesn't show
+    /// "Not Connected" forever. `handleStatusChange` is idempotent for a
+    /// repeated `.connected`, so the belt-and-braces double fire is safe.
+    var onStatusChange: ((NEVPNStatus) -> Void)? {
+        didSet {
+            guard let mgr = manager, let cb = onStatusChange else { return }
+            let status = mgr.connection.status
+            DispatchQueue.main.async { cb(status) }
+        }
+    }
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -107,11 +121,29 @@ final class VPNManager: @unchecked Sendable {
         let proto = NETunnelProviderProtocol()
         proto.providerBundleIdentifier = "app.birdo.vpn.tunnel"
         proto.serverAddress = config.serverAddress
-        proto.providerConfiguration = [
+        // CRITICAL (finding #2): the liveness heartbeat must run in the
+        // extension (it outlives the app; the host app is suspended on lock).
+        // Pass the connection handle + a FRESH access token so the extension
+        // can POST /vpn/heartbeat/{keyId} on its own. The token lives under the
+        // app-only keychain service the extension cannot read, so it has to
+        // ride providerConfiguration — which is readable ONLY by this app's own
+        // appex (same app group), acceptable per the security review. NEVER log
+        // it. A short-lived/stale token failing heartbeat must NOT tear the
+        // tunnel down; only an explicit {valid:false} does.
+        var providerConfig: [String: Any] = [
             "wg-config": wgConfig,
             "wg-private-key-ref": "wg_private_key",
             "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
         ]
+        if let keyId = config.keyId, !keyId.isEmpty {
+            providerConfig["hb-key-id"] = keyId
+        }
+        if let token = KeychainService.shared.accessToken, !token.isEmpty {
+            providerConfig["hb-access-token"] = token
+        }
+        let clientVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+        providerConfig["hb-client-version"] = clientVersion
+        proto.providerConfiguration = providerConfig
         // SEC: kill switch — when ON, block all traffic while the tunnel is not
         // up. User-toggleable, default ON: read the raw stored value so a fresh
         // install (absent key) defaults true even before the settings view model
@@ -134,33 +166,44 @@ final class VPNManager: @unchecked Sendable {
         mgr.isEnabled = true
         mgr.localizedDescription = "Birdo VPN"
 
-        // On-demand: with the kill switch ON, keep the tunnel up automatically
-        // across reachability changes. With it OFF, disable on-demand so a tunnel
-        // drop lets traffic fall back to the open network instead of reconnecting.
-        if killSwitch {
-            let connectRule = NEOnDemandRuleConnect()
-            connectRule.interfaceTypeMatch = .any
-            mgr.onDemandRules = [connectRule]
-            mgr.isOnDemandEnabled = true
-        } else {
+        // On-demand: NEVER arm it before the tunnel is actually up (finding #5).
+        // Arming persists a NEOnDemandRuleConnect that survives even if the
+        // failure path below deletes the server-side peer — iOS would then
+        // auto-dial a dead peer, report .connected without a handshake, and the
+        // kill switch (includeAllNetworks) would blackhole every packet under a
+        // "Protected" UI. So we always save with on-demand DISABLED here; the
+        // rule is armed only once the connection reaches .connected, via
+        // applyKillSwitchFlag() called from VpnViewModel's .connected handler.
+        mgr.onDemandRules = nil
+        mgr.isOnDemandEnabled = false
+
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                mgr.saveToPreferences { error in
+                    if let error { cont.resume(throwing: error) }
+                    else { cont.resume() }
+                }
+            }
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                mgr.loadFromPreferences { error in
+                    if let error { cont.resume(throwing: error) }
+                    else { cont.resume() }
+                }
+            }
+
+            try mgr.connection.startVPNTunnel()
+        } catch {
+            // Tunnel start failed. On-demand was never armed above, so there is
+            // no live rule to disarm — but defensively clear it and wipe the
+            // shared secrets so a half-built local state can never outlive the
+            // server-side peer VpnViewModel is about to release.
             mgr.onDemandRules = nil
             mgr.isOnDemandEnabled = false
+            mgr.saveToPreferences { _ in }
+            deleteSharedSecret(account: "wg_private_key")
+            deleteSharedSecret(account: "wg_preshared_key")
+            throw error
         }
-
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            mgr.saveToPreferences { error in
-                if let error { cont.resume(throwing: error) }
-                else { cont.resume() }
-            }
-        }
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            mgr.loadFromPreferences { error in
-                if let error { cont.resume(throwing: error) }
-                else { cont.resume() }
-            }
-        }
-
-        try mgr.connection.startVPNTunnel()
     }
 
     func disconnect() {
@@ -306,6 +349,14 @@ final class VPNManager: @unchecked Sendable {
             if let existing = managers?.first {
                 self.manager = existing
                 self.observeStatus(existing)
+                // finding #4/#7: NEVPNStatusDidChange is NOT replayed for an
+                // already-settled session, so a relaunch under a live tunnel
+                // would otherwise never seed isConnected. Push the current
+                // status through the pipeline now. (The `onStatusChange` didSet
+                // covers the reverse race where the callback is assigned after
+                // this completion already ran.)
+                let status = existing.connection.status
+                DispatchQueue.main.async { self.onStatusChange?(status) }
             }
         }
     }
@@ -327,6 +378,14 @@ final class VPNManager: @unchecked Sendable {
                 let mgr = managers?.first ?? NETunnelProviderManager()
                 self?.manager = mgr
                 self?.observeStatus(mgr)
+                // finding #4/#7: replay the settled status for an existing
+                // (already-connected) session the same way loadManager() does.
+                // A freshly-constructed manager reports .invalid, which
+                // handleStatusChange treats as "not connected" — harmless.
+                if let self {
+                    let status = mgr.connection.status
+                    DispatchQueue.main.async { self.onStatusChange?(status) }
+                }
                 cont.resume()
             }
         }

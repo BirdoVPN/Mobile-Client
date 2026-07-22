@@ -82,6 +82,14 @@ final class AuthViewModel: ObservableObject {
     @Published private(set) var isDeleting = false
     @Published var deleteError: String?
 
+    /// App-shell reset hook, fired at the END of every local sign-out
+    /// (`completeLocalLogout`). The shell wires this to reset sibling
+    /// view-models (notably VpnViewModel: plan/servers/subscription caches) so a
+    /// second user on the device never inherits the previous account's state
+    /// (finding #490 — the VpnViewModel reset itself is owned there; this is the
+    /// signal that drives it). Idempotent; may be nil before the shell wires it.
+    var onLogout: (() -> Void)?
+
     // MARK: - Derived State
 
     /// True for anonymous accounts (profile-derived; falls back to the stored
@@ -491,6 +499,13 @@ final class AuthViewModel: ObservableObject {
         // Keychain keeps `device_id` (stable device identity) and
         // `anonymous_id` (sole recovery credential) — everything else goes.
         keychain.clear()
+        // Fence the API session (finding #1): bump the generation AFTER the
+        // keychain wipe so any refresh still in flight drops its rotated pair
+        // instead of resurrecting the signed-out session. Ordering matters —
+        // clear() nils the refresh token (the CAS check) and this bump is the
+        // belt-and-braces generation guard for writes that already read it.
+        let api = self.api
+        Task { await api.invalidateSession() }
         // AUDIT-C1: drop the persisted ML-KEM-1024 client identity so the
         // next user gets a fresh PQ keypair instead of inheriting this one.
         BirdoPQManager.shared.resetPersistedKeypair()
@@ -511,6 +526,10 @@ final class AuthViewModel: ObservableObject {
         isDeleting = false
         selectedTab = .email
         failedEmailAttempts.removeAll()
+        // Signal the shell to reset sibling state (VpnViewModel plan/servers/
+        // subscription caches) so the next user can't inherit this account's
+        // state (finding #490). Fired last, after our own state is clean.
+        onLogout?()
     }
 
     // MARK: - Account Deletion (GDPR Art. 17)

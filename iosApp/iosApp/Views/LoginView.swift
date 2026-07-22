@@ -12,7 +12,6 @@ import UIKit
 /// save-your-ID step until `acknowledgeAnonymousId()` proceeds to Home.
 struct LoginView: View {
     @EnvironmentObject var authVM: AuthViewModel
-    @Environment(\.openURL) private var openURL
 
     @StateObject private var pixelModel = PixelGridModel()
 
@@ -365,7 +364,12 @@ struct LoginView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(BirdoTheme.white40)
             Button {
-                if let url = URL(string: "https://birdo.app/login") { openURL(url) }
+                // In-app account creation only — no external-purchase steering
+                // (guideline 3.1.1). Switching to the Anonymous tab surfaces the
+                // one-tap "Create a new anonymous account" path; that tab also
+                // hides this row (see content: selectedTab != .anonymous).
+                authVM.error = nil
+                authVM.selectedTab = .anonymous
             } label: {
                 Text("Sign up")
                     .font(.system(size: 13, weight: .medium))

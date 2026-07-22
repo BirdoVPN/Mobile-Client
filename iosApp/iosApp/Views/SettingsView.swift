@@ -1,13 +1,19 @@
 import SwiftUI
+import UIKit
 
 /// Settings tab root — Android SettingsScreen parity (spec-secondary-screens
-/// §1) minus what cannot exist on iOS:
-///   - Appearance/Theme picker: the iOS design system is dark-only
-///     (BirdoTheme carries no light palette), so a theme control would be a
-///     dead toggle — omitted until iOS theming ships.
-///   - Notifications (+ Show IP / Show Server Location / system-settings
-///     link): iOS has no connection notifications; the flag was removed from
-///     SettingsViewModel.
+/// §1). iOS-specific notes:
+///   - Appearance/Theme: the shipped design system is dark-only (BirdoTheme
+///     carries no light palette yet), but the spec'd segmented control is
+///     present and its choice is PERSISTED (`app_theme` AppStorage) so the
+///     preference survives the eventual light-palette work — until then only
+///     "Dark" has a visible effect (owner decision, spec §1.2).
+///   - Notifications: iOS has no in-app connection-notification delivery yet,
+///     but the spec'd Notifications group is present — the master toggle is
+///     persisted (`notifications_enabled` AppStorage) and "Notification
+///     Settings" deep-links to the OS notification page for the app. The
+///     per-detail Show-IP / Show-Server sub-toggles are deferred with the
+///     delivery code (reported as a gap), not faked here.
 ///   - Split Tunneling: per-app VPN is MDM-only on iOS, so the section is
 ///     OMITTED entirely (platform-constraints §1.4) — not shown locked.
 ///
@@ -22,6 +28,29 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
 
+    /// Theme preference (spec §1.2). "dark" | "light" | "system", default
+    /// "system". Persisted view-local so it survives without ViewModel churn;
+    /// re-theming the running UI is deferred until the light palette ships.
+    @AppStorage("app_theme") private var appTheme = "system"
+
+    /// Master connection-notifications preference (spec §1.7), default ON.
+    @AppStorage("notifications_enabled") private var notificationsEnabled = true
+
+    private let themeOptions = ["dark", "light", "system"]
+
+    private var themeIndexBinding: Binding<Int> {
+        Binding(
+            get: { themeOptions.firstIndex(of: appTheme) ?? 2 },
+            set: { newIndex in
+                let value = themeOptions.indices.contains(newIndex) ? themeOptions[newIndex] : "system"
+                if value != appTheme {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    appTheme = value
+                }
+            }
+        )
+    }
+
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
@@ -32,6 +61,9 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    SectionHeader("Appearance")
+                    themeCard
+
                     SectionHeader("Security")
                     SettingsToggleRow(icon: "faceid", iconColor: BirdoTheme.green,
                                       title: "Biometric Lock",
@@ -45,6 +77,20 @@ struct SettingsView: View {
                                       title: "Auto-Connect",
                                       description: "Connect to VPN on app startup",
                                       isOn: $settingsVM.autoConnect)
+
+                    SectionHeader("Notifications")
+                    SettingsToggleRow(icon: "bell", iconColor: BirdoTheme.yellow,
+                                      title: "Notifications",
+                                      description: "Show connection notifications",
+                                      isOn: $notificationsEnabled)
+                    SettingsLinkButton(icon: "bell.badge", iconColor: BirdoTheme.white60,
+                                       title: "Notification Settings",
+                                       description: "Open system notification settings",
+                                       trailing: "arrow.up.forward.square") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
 
                     SectionHeader("VPN")
                     NavigationLink {
@@ -93,6 +139,28 @@ struct SettingsView: View {
                 .frame(height: 1)
         }
         .background(BirdoTheme.glassStrong.ignoresSafeArea(edges: .top))
+    }
+
+    // MARK: - Theme (spec §1.2)
+
+    /// Theme row + segmented control. The segmented choice is persisted; only
+    /// "Dark" currently re-themes (light palette deferred, owner decision).
+    private var themeCard: some View {
+        BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    SettingsIconChip(icon: "paintpalette", color: BirdoTheme.accent)
+                    SettingsRowText(title: "Theme",
+                                    description: "Dark, light, or follow system")
+                    Spacer(minLength: 8)
+                }
+                SegmentedTabs(
+                    items: ["Dark", "Light", "System"],
+                    selection: themeIndexBinding,
+                    style: .accent
+                )
+            }
+        }
     }
 
     // MARK: - About (not tappable)
@@ -175,6 +243,37 @@ private struct SettingsLinkRow: View {
                     .accessibilityHidden(true)
             }
         }
+    }
+}
+
+/// Tappable link row: icon chip + title/desc + trailing icon (e.g. an
+/// "open in new" glyph for external/system destinations). Whole row is the
+/// button target.
+private struct SettingsLinkButton: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let description: String
+    let trailing: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
+                HStack(spacing: 12) {
+                    SettingsIconChip(icon: icon, color: iconColor)
+                    SettingsRowText(title: title, description: description)
+                    Spacer(minLength: 8)
+                    Image(systemName: trailing)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
     }
 }
 

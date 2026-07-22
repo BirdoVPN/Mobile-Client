@@ -59,6 +59,9 @@ struct PortForwardView: View {
         }
         .navigationTitle("Port Forwarding")
         .navigationBarTitleDisplayMode(.inline)
+        // Pushed sub-screen: hide the bottom tab bar (parity with VPN Settings —
+        // Review #54).
+        .toolbar(.hidden, for: .tabBar)
         .onAppear {
             vpnVM.loadPortForwards()
             // Keeps the defensive plan gate honest; 30 s cache makes it cheap.

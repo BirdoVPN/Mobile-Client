@@ -50,20 +50,38 @@ final class KeychainService: @unchecked Sendable {
 
     // MARK: - Save / Clear (host app only)
 
-    /// Persist the auth credentials. Returns `false` if any required item
-    /// (access or refresh token) failed to write to the keychain, so callers
-    /// can surface a real error instead of hitting a silent auth failure on
-    /// the next launch.
+    /// Persist the auth credentials atomically. Returns `false` if either
+    /// required item (access or refresh token) failed to write, so callers can
+    /// surface a real error instead of hitting a silent auth failure on the
+    /// next launch.
+    ///
+    /// A HALF-written pair is the dangerous case (finding #60): if the access
+    /// token wrote but the refresh token failed, a later cold start would route
+    /// to Home on a session whose refresh token is stale/missing — a token
+    /// rotation the client can never complete (finding #433). So on a refresh
+    /// write failure we roll the access token back to its PREVIOUS value (or
+    /// delete it if there was none) and report failure — the keychain is left
+    /// in the same consistent state it had before the call.
     @discardableResult
     func save(accessToken: String, refreshToken: String, email: String?) -> Bool {
-        let accessOK = write(key: "access_token", value: accessToken)
-        let refreshOK = write(key: "refresh_token", value: refreshToken)
+        let priorAccess = read(key: "access_token")
+        guard write(key: "access_token", value: accessToken) else { return false }
+        guard write(key: "refresh_token", value: refreshToken) else {
+            // Refresh write failed — undo the access write so no half-session
+            // survives. Restore the prior access token if there was one.
+            if let priorAccess {
+                write(key: "access_token", value: priorAccess)
+            } else {
+                delete(key: "access_token")
+            }
+            return false
+        }
         if let email {
             write(key: "user_email", value: email)
         } else {
             delete(key: "user_email")
         }
-        return accessOK && refreshOK
+        return true
     }
 
     @discardableResult

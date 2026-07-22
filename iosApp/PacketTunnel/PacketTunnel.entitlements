@@ -6,8 +6,14 @@
     <array>
         <string>packet-tunnel-provider</string>
     </array>
-    <key>com.apple.security.personal-vpn</key>
-    <true/>
+    <!-- iOS Personal VPN capability. NETunnelProviderManager requires
+         com.apple.developer.networking.vpn.api = [allow-vpn]; the previous
+         com.apple.security.personal-vpn is the macOS-sandbox namespace and is
+         not a valid iOS entitlement. -->
+    <key>com.apple.developer.networking.vpn.api</key>
+    <array>
+        <string>allow-vpn</string>
+    </array>
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>

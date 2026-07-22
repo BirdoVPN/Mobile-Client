@@ -316,9 +316,19 @@ struct ServerListView: View {
                         ServerRow(
                             server: server,
                             isSelected: server.id == vpnVM.selectedServer?.id,
-                            isConnected: vpnVM.isConnected && server.id == vpnVM.selectedServer?.id,
+                            // Connected / Switching bind to the node the tunnel
+                            // is ACTUALLY on (captured at connect), never to
+                            // selectedServer — otherwise tapping a new server
+                            // moved the mint dot before the tunnel switched.
+                            isConnected: vpnVM.isConnected
+                                && server.id == vpnVM.connectedServerId,
+                            isSwitching: vpnVM.isSwitching
+                                && server.id == vpnVM.selectedServer?.id,
                             isFavorite: vpnVM.favoriteIds.contains(server.id),
-                            onSelect: { vpnVM.selectServer(server) },
+                            // Live switch: tapping a different node while
+                            // connected reconnects the tunnel to it rather than
+                            // just relabelling the UI.
+                            onSelect: { vpnVM.selectServerLive(server) },
                             onToggleFavorite: { vpnVM.toggleFavorite(server.id) },
                             onLockedTap: { showUpsell(for: server) }
                         )
@@ -405,6 +415,9 @@ private struct ServerRow: View {
     let isSelected: Bool
     /// Tunnel is up AND this is the active node — small mint dot by the name.
     let isConnected: Bool
+    /// A live switch to this node is in flight — shows "Switching…" instead of
+    /// the connected dot, so the row never claims Protected mid-switch.
+    let isSwitching: Bool
     let isFavorite: Bool
     let onSelect: () -> Void
     let onToggleFavorite: () -> Void
@@ -438,7 +451,12 @@ private struct ServerRow: View {
                         .foregroundStyle(isSelectable ? Color.white : BirdoTheme.onSurfaceFaint)
                         .lineLimit(1)
 
-                    if isConnected {
+                    if isSwitching {
+                        Text("Switching…")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(BirdoTheme.accentSoft)
+                            .accessibilityLabel("Switching to this server")
+                    } else if isConnected {
                         Circle()
                             .fill(BirdoTheme.green)
                             .frame(width: 6, height: 6)

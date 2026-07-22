@@ -1,4 +1,35 @@
 import SwiftUI
+import Network
+
+/// App-wide reachability probe backing the offline banner (spec §0.4).
+///
+/// `NWPathMonitor` delivers updates on a private background queue; the update
+/// handler hops to the main actor before touching `@Published isOffline`, so
+/// the flag is only ever mutated on the main thread (no publish-during-render,
+/// no data race under Swift 6 strict concurrency). Monitoring stops in
+/// `deinit`.
+@MainActor
+final class NetworkMonitor: ObservableObject {
+    @Published private(set) var isOffline = false
+
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "app.birdo.networkmonitor")
+
+    init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            let offline = path.status != .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                if self.isOffline != offline { self.isOffline = offline }
+            }
+        }
+        monitor.start(queue: queue)
+    }
+
+    deinit {
+        monitor.cancel()
+    }
+}
 
 /// Root router + logged-in tab shell.
 ///
@@ -32,23 +63,44 @@ struct ContentView: View {
     }
 
     @State private var selectedTab: Tab = .home
+    @StateObject private var network = NetworkMonitor()
+
+    /// Offline banner shows only when the device is truly offline AND the
+    /// tunnel is not up/coming up (spec §0.4) — a live/connecting tunnel means
+    /// traffic still flows, so "No internet connection" would be a lie.
+    private var showOfflineBanner: Bool {
+        network.isOffline && !vpnVM.isConnected && !vpnVM.isConnecting
+    }
 
     var body: some View {
         ZStack {
             // Base coat so route swaps never flash the system background.
             BirdoTheme.black.ignoresSafeArea()
 
-            if !authVM.hasConsented {
-                // Consent is shown ONCE, before Login ever appears. The screen
-                // itself drives authVM.acceptConsent()/declineConsent();
-                // decline keeps the user here (iOS cannot self-exit).
-                ConsentView()
-            } else if authVM.isLoggedIn {
-                mainShell
-            } else {
-                LoginView()
+            VStack(spacing: 0) {
+                if showOfflineBanner {
+                    offlineBanner
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                ZStack {
+                    if !authVM.hasConsented {
+                        // Consent is shown ONCE, before Login ever appears. The
+                        // screen itself drives authVM.acceptConsent()/
+                        // declineConsent(); decline keeps the user here (iOS
+                        // cannot self-exit).
+                        ConsentView()
+                    } else if authVM.isLoggedIn {
+                        mainShell
+                    } else {
+                        LoginView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.standard),
+                   value: showOfflineBanner)
         .onAppear {
             // Root view-model wiring — assignments are idempotent, so a
             // repeated onAppear is harmless.
@@ -65,6 +117,11 @@ struct ContentView: View {
             vpnVM.onUnauthorized = { [weak vpnVM, weak authVM] in
                 vpnVM?.disconnect()
                 authVM?.logout()
+            }
+            // Review #490: clear cross-account cached plan/servers on sign-out so
+            // the next user never inherits the previous account's state.
+            authVM.onLogout = { [weak vpnVM] in
+                vpnVM?.resetForLogout()
             }
         }
         // S1 FIX: loadServers() was previously reachable ONLY from the manual
@@ -98,6 +155,26 @@ struct ContentView: View {
             default: break
             }
         }
+    }
+
+    // MARK: - Offline banner (spec §0.4)
+
+    /// Full-width red bar above the shell: wifi.slash icon + "No internet
+    /// connection" (white 13sp). Sits above the safe-area inset so it reads as
+    /// a system-level notice, and is announced to VoiceOver.
+    private var offlineBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 15, weight: .semibold))
+            Text("No internet connection")
+                .font(.system(size: 13, weight: .medium))
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(BirdoTheme.red.opacity(0.95).ignoresSafeArea(edges: .top))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("No internet connection")
     }
 
     // MARK: - Logged-in shell
