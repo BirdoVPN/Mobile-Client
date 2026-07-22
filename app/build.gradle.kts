@@ -350,15 +350,15 @@ dependencies {
     // Requests a device/app integrity verdict the backend verifies so only the
     // genuine, unmodified Play build can obtain a WireGuard peer. Only produces a
     // valid token on Play-distributed builds; gated by BuildConfig.IS_PLAY_BUILD.
-    implementation("com.google.android.play:integrity:1.6.0")
+    implementation("com.google.android.play:integrity:1.4.0")
 
     // ── Core Android ─────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
 
@@ -379,7 +379,7 @@ dependencies {
     // fails with "rootComponentPackage has not been initialized".
     implementation("com.google.dagger:hilt-android:2.57.2")
     ksp("com.google.dagger:hilt-compiler:2.57.2")
-    implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
+    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
 
     // ── Networking ───────────────────────────────────────────────
     implementation("com.squareup.retrofit2:retrofit:2.12.0")
@@ -401,7 +401,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.49.0")
+    implementation("io.sentry:sentry-android:8.47.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
