@@ -330,6 +330,25 @@ final class VPNManager: @unchecked Sendable {
         return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
 
+    /// DIAG (temporary): read the tunnel extension's last-outcome breadcrumb so
+    /// the UI can show WHY a connect looped/failed on-device. See
+    /// PacketTunnelProvider.recordDiag. Remove once the tunnel is proven.
+    func readLastTunnelDiag() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.sharedKeychainService,
+            kSecAttrAccount as String: "diag_last_error",
+            kSecAttrAccessGroup as String: Self.sharedKeychainAccessGroup,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     private func deleteSharedSecret(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

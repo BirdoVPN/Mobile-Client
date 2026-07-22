@@ -85,10 +85,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         completionHandler: @escaping (Error?) -> Void
     ) {
         os_log("Starting Birdo VPN tunnel", log: log, type: .info)
+        // DIAG: on-device the loop hides the failure reason; leave a breadcrumb
+        // in the shared keychain the host app surfaces on the Home error banner.
+        recordDiag("startTunnel: began")
 
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol,
               let configString = proto.providerConfiguration?["wg-config"] as? String else {
             os_log("Missing WireGuard config", log: log, type: .error)
+            recordDiag("startTunnel: missing wg-config in providerConfiguration")
             completionHandler(TunnelError.missingConfig)
             return
         }
@@ -111,6 +115,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
         guard let privateKey = readSharedKeychain(account: privateKeyRef), !privateKey.isEmpty else {
             os_log("WireGuard private key missing from shared keychain", log: log, type: .error)
+            recordDiag("startTunnel: private key missing from shared keychain (group/entitlement mismatch on device)")
             completionHandler(TunnelError.missingConfig)
             return
         }
@@ -126,6 +131,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             guard let psk = readSharedKeychain(account: presharedKeyRef), !psk.isEmpty else {
                 os_log("Expected preshared key missing from shared keychain — refusing to build a downgraded tunnel",
                        log: log, type: .error)
+                recordDiag("startTunnel: preshared key (PQ PSK) missing from shared keychain")
                 completionHandler(TunnelError.missingConfig)
                 return
             }
@@ -157,6 +163,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         } catch {
             os_log("Failed to parse tunnel config: %{public}@",
                    log: log, type: .error, error.localizedDescription)
+            recordDiag("startTunnel: wg-quick parse failed: \(error.localizedDescription)")
             completionHandler(TunnelError.invalidConfig)
             return
         }
@@ -175,6 +182,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 os_log("Adapter start failed: %{private}@",
                        log: self?.log ?? .default, type: .error,
                        String(describing: adapterError))
+                self?.recordDiag("adapter.start failed: \(String(describing: adapterError))")
                 completionHandler(TunnelError.adapterFailed(String(describing: adapterError)))
                 return
             }
@@ -185,6 +193,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 return
             }
             os_log("Tunnel up", log: self.log, type: .info)
+            self.recordDiag("tunnel up (adapter started OK)")
             // finding #2: start the in-extension liveness heartbeat now that
             // the tunnel is up. Only when the host passed a keyId + token.
             if let keyId = heartbeatKeyId, !keyId.isEmpty,
@@ -414,6 +423,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// DIAG (temporary): the extension can't be attached to a debugger on this
+    /// device, and the connect loop hides the failure reason. Persist the last
+    /// tunnel outcome to the shared keychain (`diag_last_error`) so the host app
+    /// can render it on the Home error banner. Remove once the tunnel is proven.
+    private func recordDiag(_ reason: String) {
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        guard let data = "\(stamp)  \(reason)".data(using: .utf8) else { return }
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "app.birdo.vpn.shared",
+            kSecAttrAccount as String: "diag_last_error",
+            kSecAttrAccessGroup as String: Self.sharedAccessGroup,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        SecItemDelete(base as CFDictionary)
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(add as CFDictionary, nil)
     }
 }
 

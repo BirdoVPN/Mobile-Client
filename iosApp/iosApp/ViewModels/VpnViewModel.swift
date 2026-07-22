@@ -479,6 +479,13 @@ final class VpnViewModel: ObservableObject {
         case .connecting, .reasserting:
             isConnecting = true
         case .disconnected, .invalid:
+            // DIAG (temporary): surface the extension's last-outcome breadcrumb
+            // so an on-device connect loop shows its actual cause. If the tunnel
+            // failed to start, this reads e.g. "private key missing…" / "adapter
+            // failed: dnsResolution…". Only overwrite when we were mid-connect.
+            if isConnecting || isConnected, let diag = vpnManager.readLastTunnelDiag() {
+                error = "Tunnel: \(diag)"
+            }
             isConnected = false
             isConnecting = false
             quantumActive = false
