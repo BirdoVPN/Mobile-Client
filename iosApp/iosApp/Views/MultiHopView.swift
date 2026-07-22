@@ -85,9 +85,6 @@ struct MultiHopView: View {
                     Text("Double VPN")
                         .font(BirdoTheme.Fonts.titleMedium)
                         .foregroundColor(BirdoTheme.onSurface)
-                    Text("Route traffic through two servers for extra privacy")
-                        .font(BirdoTheme.Fonts.bodySmall)
-                        .foregroundColor(BirdoTheme.onSurfaceMuted)
                 }
                 Spacer(minLength: 0)
             }

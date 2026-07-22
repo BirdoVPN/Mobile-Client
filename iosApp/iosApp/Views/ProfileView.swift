@@ -71,7 +71,6 @@ struct ProfileView: View {
                 ProfileActionRow(
                     icon: "trash",
                     title: "Delete Account",
-                    subtitle: "Permanently delete your account and data",
                     destructive: true
                 ) {
                     showDeleteDialog = true
@@ -523,7 +522,7 @@ private struct ProfileActionRow: View {
 
     init(icon: String,
          title: String,
-         subtitle: String?,
+         subtitle: String? = nil,
          destructive: Bool = false,
          action: @escaping () -> Void) {
         self.icon = icon

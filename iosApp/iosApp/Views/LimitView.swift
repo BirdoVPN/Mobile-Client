@@ -134,10 +134,6 @@ struct LimitView: View {
             Text("Unlimited data")
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(BirdoTheme.onSurface)
-            Text("Your plan has no data cap — use as much as you like.")
-                .font(.system(size: 13))
-                .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .multilineTextAlignment(.center)
         }
         .padding(.vertical, 20)
     }
@@ -199,13 +195,6 @@ struct LimitView: View {
                          Self.formatResetDate(stats?.bandwidthPeriodEnd) ?? "Monthly",
                          BirdoTheme.onSurface)
             }
-
-            Text("Counts uploads and downloads · Updates about every minute")
-                .font(.system(size: 11))
-                .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 14)
         }
     }
 

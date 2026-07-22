@@ -67,25 +67,19 @@ struct SettingsView: View {
                     SectionHeader("Security")
                     SettingsToggleRow(icon: "faceid", iconColor: BirdoTheme.green,
                                       title: "Biometric Lock",
-                                      // Android: "Require fingerprint or PIN to open app"
-                                      // — reworded for iOS hardware (owner review).
-                                      description: "Require Face ID or passcode to open app",
                                       isOn: $settingsVM.biometricLockEnabled)
 
                     SectionHeader("Connection")
                     SettingsToggleRow(icon: "wifi", iconColor: BirdoTheme.blue,
                                       title: "Auto-Connect",
-                                      description: "Connect to VPN on app startup",
                                       isOn: $settingsVM.autoConnect)
 
                     SectionHeader("Notifications")
                     SettingsToggleRow(icon: "bell", iconColor: BirdoTheme.yellow,
                                       title: "Notifications",
-                                      description: "Show connection notifications",
                                       isOn: $notificationsEnabled)
                     SettingsLinkButton(icon: "bell.badge", iconColor: BirdoTheme.white60,
                                        title: "Notification Settings",
-                                       description: "Open system notification settings",
                                        trailing: "arrow.up.forward.square") {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
                             UIApplication.shared.open(url)
@@ -97,8 +91,7 @@ struct SettingsView: View {
                         VpnSettingsView()
                     } label: {
                         SettingsLinkRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
-                                        title: "VPN Settings",
-                                        description: "Protocol, DNS, port, and MTU")
+                                        title: "VPN Settings")
                     }
                     .buttonStyle(PressScaleButtonStyle())
 
@@ -150,8 +143,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
                     SettingsIconChip(icon: "paintpalette", color: BirdoTheme.accent)
-                    SettingsRowText(title: "Theme",
-                                    description: "Dark, light, or follow system")
+                    SettingsRowText(title: "Theme")
                     Spacer(minLength: 8)
                 }
                 SegmentedTabs(
@@ -196,7 +188,7 @@ private struct SettingsToggleRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    var description: String? = nil
     @Binding var isOn: Bool
 
     var body: some View {
@@ -229,7 +221,7 @@ private struct SettingsLinkRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    var description: String? = nil
 
     var body: some View {
         BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
@@ -253,7 +245,7 @@ private struct SettingsLinkButton: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    var description: String? = nil
     let trailing: String
     let action: () -> Void
 
@@ -302,17 +294,19 @@ private struct SettingsIconChip: View {
 
 private struct SettingsRowText: View {
     let title: String
-    let description: String
+    var description: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(BirdoTheme.Fonts.labelLarge)
                 .foregroundStyle(BirdoTheme.onBackground)
-            Text(description)
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .lineLimit(2)
+            if let description, !description.isEmpty {
+                Text(description)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .lineLimit(2)
+            }
         }
         .multilineTextAlignment(.leading)
     }

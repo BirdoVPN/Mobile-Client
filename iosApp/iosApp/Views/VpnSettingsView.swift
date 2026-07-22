@@ -51,17 +51,14 @@ struct VpnSettingsView: View {
                         SectionHeader("Security")
                         VpnToggleRow(icon: "checkmark.shield.fill", iconColor: BirdoTheme.green,
                                      title: "Kill Switch",
-                                     description: "Block all traffic if VPN disconnects",
                                      isOn: settingsVM.killSwitchToggleBinding)
                         VpnToggleRow(icon: "lock.fill", iconColor: BirdoTheme.accent,
                                      title: "Quantum Protection",
-                                     description: "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
                                      isOn: $settingsVM.quantumProtectionEnabled)
 
                         SectionHeader("Network")
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",
-                                     description: "Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN",
                                      isOn: $settingsVM.localNetworkSharing)
 
                         SectionHeader("DNS")
@@ -156,12 +153,10 @@ struct VpnSettingsView: View {
         if vpnVM.isSovereign {
             VpnToggleRow(icon: "server.rack", iconColor: BirdoTheme.accent,
                          title: "Custom DNS Servers",
-                         description: "Use your own DNS servers instead of the VPN defaults",
                          isOn: $settingsVM.customDnsEnabled)
         } else {
             VpnLockedRow(icon: "server.rack",
                          title: "Custom DNS Servers",
-                         description: "Use your own DNS servers instead of the VPN defaults",
                          action: routeToUpgrade)
         }
     }
@@ -291,21 +286,15 @@ struct VpnSettingsView: View {
     private var mtuCard: some View {
         BirdoCard(cornerRadius: 14) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 14) {
+                HStack(spacing: 14) {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 20))
                         .foregroundStyle(BirdoTheme.yellow)
                         .frame(width: 24)
                         .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("WireGuard MTU")
-                            .font(BirdoTheme.Fonts.titleSmall)
-                            .foregroundStyle(BirdoTheme.onSurface)
-                        Text("Packet size — lower values improve reliability on unstable networks")
-                            .font(BirdoTheme.Fonts.bodySmall)
-                            .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Text("WireGuard MTU")
+                        .font(BirdoTheme.Fonts.titleSmall)
+                        .foregroundStyle(BirdoTheme.onSurface)
                 }
 
                 mtuAutoRow
@@ -406,14 +395,12 @@ struct VpnSettingsView: View {
                 PortForwardView()
             } label: {
                 VpnLinkRow(icon: "arrow.left.arrow.right", iconColor: BirdoTheme.blue,
-                           title: "Port Forwarding",
-                           description: "Expose ports through your VPN tunnel")
+                           title: "Port Forwarding")
             }
             .buttonStyle(PressScaleButtonStyle())
         } else {
             VpnLockedRow(icon: "arrow.left.arrow.right",
                          title: "Port Forwarding",
-                         description: "Expose ports through your VPN tunnel",
                          action: routeToUpgrade)
         }
     }
@@ -490,7 +477,7 @@ private struct VpnToggleRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    var description: String? = nil
     @Binding var isOn: Bool
 
     var body: some View {
@@ -526,7 +513,7 @@ private struct VpnToggleRow: View {
 private struct VpnLockedRow: View {
     let icon: String
     let title: String
-    let description: String
+    var description: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -557,7 +544,7 @@ private struct VpnLinkRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    var description: String? = nil
 
     var body: some View {
         BirdoCard(cornerRadius: 14, horizontalPadding: 16, verticalPadding: 14) {
@@ -580,17 +567,19 @@ private struct VpnLinkRow: View {
 
 private struct VpnRowText: View {
     let title: String
-    let description: String
+    var description: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(BirdoTheme.Fonts.titleSmall)
                 .foregroundStyle(BirdoTheme.onSurface)
-            Text(description)
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .lineLimit(3)
+            if let description, !description.isEmpty {
+                Text(description)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .lineLimit(3)
+            }
         }
         .multilineTextAlignment(.leading)
     }

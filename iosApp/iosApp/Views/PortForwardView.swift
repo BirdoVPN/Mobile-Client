@@ -32,8 +32,6 @@ struct PortForwardView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    infoNote
-
                     if let err = vpnVM.portForwardError {
                         ErrorBanner(err)
                             .padding(.top, 8)
@@ -121,27 +119,6 @@ struct PortForwardView: View {
         .accessibilityLabel("Premium feature — upgrade to unlock")
     }
 
-    // MARK: - Info note
-
-    private var infoNote: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "info.circle")
-                .font(.system(size: 18))
-                .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                .accessibilityHidden(true)
-            Text("Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.")
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.white60)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
-                .fill(BirdoTheme.surfaceRaised)
-        )
-    }
-
     // MARK: - New rule
 
     private var portIsValid: Bool {
@@ -225,7 +202,7 @@ struct PortForwardView: View {
             .padding(.vertical, 24)
         } else if vpnVM.portForwards.isEmpty {
             BirdoCard(cornerRadius: BirdoTheme.Radius.md) {
-                Text("No port forwarding rules yet. Add one above to get started.")
+                Text("No port forwarding rules yet.")
                     .font(BirdoTheme.Fonts.bodyMedium)
                     .foregroundStyle(BirdoTheme.white60)
                     .frame(maxWidth: .infinity, alignment: .leading)

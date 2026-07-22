@@ -247,7 +247,6 @@ struct LoginView: View {
             BirdoTextField("Account ID",
                            placeholder: "XXXX XXXX XXXX XXXX XXXX XXXX",
                            text: $anonymousId,
-                           supportingText: "Enter the 24-digit ID from your anonymous account",
                            keyboardType: .numberPad,
                            monospaced: true)
                 .focused($focusedField, equals: .anonymousId)
@@ -310,27 +309,18 @@ struct LoginView: View {
 
     private var ssoTab: some View {
         VStack(spacing: 0) {
-            Text("Sign in with your Google or GitHub account")
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.white40)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
-                .loginEntrance(entered, delay: 0.25)
-
             ssoButton("Continue with Google") {
                 authVM.loginWithSSO(provider: .google)
             }
-            .padding(.top, 12)
             .accessibilityIdentifier("login_sso_google")
-            .loginEntrance(entered, delay: 0.28)
+            .loginEntrance(entered, delay: 0.25)
 
             ssoButton("Continue with GitHub") {
                 authVM.loginWithSSO(provider: .github)
             }
             .padding(.top, 10)
             .accessibilityIdentifier("login_sso_github")
-            .loginEntrance(entered, delay: 0.30)
+            .loginEntrance(entered, delay: 0.28)
         }
     }
 
@@ -405,13 +395,6 @@ struct LoginView: View {
                 .padding(.bottom, 6)
 
             twoFactorCodeField
-
-            Text("Enter the 6-digit code from your authenticator, or a backup code")
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.white40)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 8)
 
             // Failure keeps the 2FA form + challenge — the user may retry the
             // same challengeToken until it expires (spec §5).
