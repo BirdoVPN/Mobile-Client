@@ -129,3 +129,8 @@ commit_msg.txt
 /_pr_body.md
 /_prnum*
 __pycache__/
+
+# iOS build artifacts produced by setup-ios.sh / CI (NOT the vendored
+# iosApp/Vendor/wireguard-apple sources, which ARE tracked).
+iosApp/Vendor/BirdoPQNative.xcframework/
+iosApp/.build-wg/

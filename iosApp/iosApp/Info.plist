@@ -19,11 +19,19 @@
     <key>CFBundleShortVersionString</key>
     <string>1.0.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>3</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    <key>UILaunchStoryboardName</key>
-    <string>LaunchScreen</string>
+    <!-- UILaunchScreen (iOS 14+) instead of UILaunchStoryboardName: the old key
+         named a "LaunchScreen" storyboard that does not exist in the bundle,
+         which App Store validation rejects ("you need to include the LaunchScreen
+         launch storyboard file"). An empty dict gives a plain launch surface. -->
+    <key>UILaunchScreen</key>
+    <dict/>
+    <!-- Set by the asset catalog build; App Store validation requires the key to
+         be present ("A value for the Info.plist key 'CFBundleIconName' is missing"). -->
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>UIRequiredDeviceCapabilities</key>
     <array>
         <string>arm64</string>
@@ -34,16 +42,24 @@
     <array>
         <string>UIInterfaceOrientationPortrait</string>
     </array>
+    <!-- iPad multitasking requires ALL FOUR orientations; omitting
+         PortraitUpsideDown fails App Store validation. (The iPhone list above is
+         deliberately portrait-only — that restriction is allowed on iPhone.) -->
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>network-authentication</string>
-    </array>
+    <!-- NO UIBackgroundModes. 'network-authentication' was declared here, but that
+         mode is for captive-portal/Hotspot Helper apps and Apple rejects it unless
+         the app carries com.apple.developer.networking.HotspotHelper or
+         com.apple.developer.CaptiveNetworkPlugin (both require a separate Apple
+         entitlement request). A packet-tunnel VPN does not need it: the
+         NEPacketTunnelProvider extension is scheduled by the system independently
+         of the container app. -->
+
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
@@ -53,5 +69,23 @@
     <string>Birdo VPN uses Face ID to protect your account.</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+    <!-- Custom URL scheme `birdo` (spec-auth-flow §4): the SSO broker 302s its
+         PKCE handoff to birdo://auth (ASWebAuthenticationSession matches on
+         this scheme — without the registration a plain-browser fallback never
+         returns to the app), and Android-parity deep links
+         (birdo://connect|servers|settings) ride the same scheme. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>app.birdo.vpn</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>birdo</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

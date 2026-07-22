@@ -1,6 +1,11 @@
 import SwiftUI
 
 /// Speed test screen — latency, jitter, download, upload.
+///
+/// No Android counterpart exists (the feature is iOS/desktop-only), so this
+/// screen just follows the shared visual language: pushed sub-screen =
+/// opaque black base + own PixelCanvas, cards on `surface` with the glass
+/// stroke, emerald accent.
 struct SpeedTestView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
 
@@ -11,154 +16,98 @@ struct SpeedTestView: View {
     @State private var phase: TestPhase = .idle
     @State private var progress: Double = 0
 
+    private var isTesting: Bool { phase != .idle && phase != .complete }
+
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                // Progress ring
-                ZStack {
-                    Circle()
-                        .stroke(BirdoTheme.white10, lineWidth: 8)
-                        .frame(width: 140, height: 140)
+        ZStack {
+            // Pushed sub-screen contract: opaque black base + own canvas.
+            BirdoTheme.black.ignoresSafeArea()
+            PixelCanvasView()
 
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(phaseColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .frame(width: 140, height: 140)
-                        .rotationEffect(.degrees(-90))
-                        .animation(.easeInOut(duration: 0.3), value: progress)
+            ScrollView {
+                VStack(spacing: BirdoTheme.Spacing.xxl) {
+                    progressRing
 
-                    VStack(spacing: 4) {
-                        if phase == .idle {
-                            Image(systemName: "speedometer")
-                                .font(.title)
-                                .foregroundColor(BirdoTheme.white40)
-                        } else if phase == .complete {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.title)
-                                .foregroundColor(BirdoTheme.green)
-                        } else {
-                            Text(phaseLabel)
-                                .font(.caption2)
-                                .foregroundColor(BirdoTheme.white40)
-                            Text("\(Int(progress * 100))%")
-                                .font(.title3.weight(.bold))
-                                .foregroundColor(.white)
-                        }
+                    // Results grid
+                    LazyVGrid(columns: [
+                        GridItem(.flexible(), spacing: BirdoTheme.Spacing.md),
+                        GridItem(.flexible(), spacing: BirdoTheme.Spacing.md),
+                    ], spacing: BirdoTheme.Spacing.md) {
+                        resultCard(
+                            icon: "waveform.path",
+                            label: "Latency",
+                            value: latencyMs.map { "\($0) ms" } ?? "—",
+                            color: BirdoTheme.blue
+                        )
+                        resultCard(
+                            icon: "waveform",
+                            label: "Jitter",
+                            value: jitterMs.map { "\($0) ms" } ?? "—",
+                            color: BirdoTheme.accent
+                        )
+                        resultCard(
+                            icon: "arrow.down.circle.fill",
+                            label: "Download",
+                            value: downloadMbps.map { String(format: "%.1f Mbps", $0) } ?? "—",
+                            color: BirdoTheme.green
+                        )
+                        resultCard(
+                            icon: "arrow.up.circle.fill",
+                            label: "Upload",
+                            value: uploadMbps.map { String(format: "%.1f Mbps", $0) } ?? "—",
+                            color: BirdoTheme.yellow
+                        )
                     }
-                }
-                .padding(.top, 8)
 
-                // Results grid
-                LazyVGrid(columns: [
-                    GridItem(.flexible(), spacing: 12),
-                    GridItem(.flexible(), spacing: 12),
-                ], spacing: 12) {
-                    resultCard(
-                        icon: "waveform.path",
-                        label: "Latency",
-                        value: latencyMs.map { "\($0) ms" } ?? "—",
-                        color: BirdoTheme.blue
-                    )
-                    resultCard(
-                        icon: "waveform",
-                        label: "Jitter",
-                        value: jitterMs.map { "\($0) ms" } ?? "—",
-                        color: BirdoTheme.purple
-                    )
-                    resultCard(
-                        icon: "arrow.down.circle.fill",
-                        label: "Download",
-                        value: downloadMbps.map { String(format: "%.1f Mbps", $0) } ?? "—",
-                        color: BirdoTheme.green
-                    )
-                    resultCard(
-                        icon: "arrow.up.circle.fill",
-                        label: "Upload",
-                        value: uploadMbps.map { String(format: "%.1f Mbps", $0) } ?? "—",
-                        color: BirdoTheme.yellow
-                    )
-                }
-
-                // Action button
-                Button {
-                    if phase == .idle || phase == .complete {
+                    PrimaryButton(
+                        phase == .complete ? "Run Again" : "Start Speed Test",
+                        loadingTitle: "Testing…",
+                        variant: .brand,
+                        isLoading: isTesting
+                    ) {
                         startTest()
                     }
-                } label: {
-                    HStack {
-                        if phase != .idle && phase != .complete {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .tint(.white)
-                                .scaleEffect(0.8)
+
+                    // Error banner — surfaced when runSpeedTest() fails so the
+                    // UI doesn't appear hung mid-phase with a disabled button.
+                    if let error = vpnVM.error {
+                        ErrorBanner(error, icon: "exclamationmark.circle")
+                    }
+
+                    // Server info
+                    if vpnVM.isConnected, let server = vpnVM.selectedServer {
+                        HStack(spacing: BirdoTheme.Spacing.sm) {
+                            Image(systemName: "info.circle")
+                                .foregroundColor(BirdoTheme.white40)
+                                .font(.caption)
+                            Text("Testing through \(server.flag) \(server.name)")
+                                .font(BirdoTheme.Fonts.bodySmall)
+                                .foregroundColor(BirdoTheme.onSurfaceMuted)
                         }
-                        Text(phase == .idle ? "Start Speed Test" :
-                                phase == .complete ? "Run Again" : "Testing…")
-                            .font(.headline)
-                    }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(
-                        (phase == .idle || phase == .complete)
-                            ? BirdoTheme.purple
-                            : BirdoTheme.white10
-                    )
-                    .cornerRadius(14)
-                }
-                .disabled(phase != .idle && phase != .complete)
-
-                // Error banner — surfaced when runSpeedTest() fails so the
-                // UI doesn't appear hung mid-phase with a disabled button.
-                if let error = vpnVM.error {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.octagon.fill")
-                            .foregroundColor(BirdoTheme.red)
-                            .font(.caption)
-                        Text(error)
-                            .font(.caption)
-                            .foregroundColor(BirdoTheme.white80)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-                    .background(BirdoTheme.redBg)
-                    .cornerRadius(12)
-                }
-
-                // Server info
-                if vpnVM.isConnected, let server = vpnVM.selectedServer {
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle")
-                            .foregroundColor(BirdoTheme.white40)
-                            .font(.caption)
-                        Text("Testing through \(server.flag) \(server.name)")
-                            .font(.caption)
-                            .foregroundColor(BirdoTheme.white60)
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundColor(BirdoTheme.yellow)
-                            .font(.caption)
-                        Text("Connect to a VPN server first for accurate results.")
-                            .font(.caption)
-                            .foregroundColor(BirdoTheme.white60)
+                    } else {
+                        HStack(spacing: BirdoTheme.Spacing.sm) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundColor(BirdoTheme.yellow)
+                                .font(.caption)
+                            Text("Connect to a VPN server first for accurate results.")
+                                .font(BirdoTheme.Fonts.bodySmall)
+                                .foregroundColor(BirdoTheme.onSurfaceMuted)
+                        }
                     }
                 }
+                .padding(.horizontal, BirdoTheme.Spacing.screenH)
+                .padding(.vertical, BirdoTheme.Spacing.screenV)
             }
-            .padding()
         }
-        .background(BirdoTheme.black.ignoresSafeArea())
         .navigationTitle("Speed Test")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: vpnVM.error) { _, newError in
             // runSpeedTest() reports failures via vpnVM.error without invoking
             // the completion/progress callbacks. Without this, the view would
-            // stay frozen on a mid-test phase with the Start button disabled.
+            // stay frozen on a mid-test phase with the button disabled.
             // Reset to idle so the user can read the error and retry.
-            if newError != nil, phase != .idle, phase != .complete {
-                withAnimation {
+            if newError != nil, isTesting {
+                withAnimation(BirdoTheme.Motion.easeStandard()) {
                     phase = .idle
                     progress = 0
                 }
@@ -166,26 +115,65 @@ struct SpeedTestView: View {
         }
     }
 
+    // MARK: - Progress Ring
+
+    private var progressRing: some View {
+        ZStack {
+            Circle()
+                .stroke(BirdoTheme.white10, lineWidth: 8)
+                .frame(width: 140, height: 140)
+
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(phaseColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .frame(width: 140, height: 140)
+                .rotationEffect(.degrees(-90))
+                .animation(BirdoTheme.Motion.easeStandard(), value: progress)
+
+            VStack(spacing: 4) {
+                if phase == .idle {
+                    Image(systemName: "speedometer")
+                        .font(.title)
+                        .foregroundColor(BirdoTheme.white40)
+                } else if phase == .complete {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title)
+                        .foregroundColor(BirdoTheme.green)
+                } else {
+                    Text(phaseLabel)
+                        .font(.caption2)
+                        .foregroundColor(BirdoTheme.white55)
+                    Text("\(Int(progress * 100))%")
+                        .font(.title3.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundColor(BirdoTheme.onSurface)
+                }
+            }
+        }
+        .padding(.top, BirdoTheme.Spacing.sm)
+    }
+
     // MARK: - Result Card
 
     private func resultCard(icon: String, label: String, value: String, color: Color) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundColor(color)
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(BirdoTheme.white40)
-            Text(value)
-                .font(.title3.weight(.bold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+        BirdoCard {
+            VStack(spacing: BirdoTheme.Spacing.sm) {
+                Image(systemName: icon)
+                    .font(.title3)
+                    .foregroundColor(color)
+                    .accessibilityHidden(true)
+                Text(label)
+                    .font(BirdoTheme.Fonts.labelMedium)
+                    .foregroundColor(BirdoTheme.white55)
+                Text(value)
+                    .font(.title3.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundColor(BirdoTheme.onSurface)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
-        .padding()
-        .background(BirdoTheme.surface)
-        .cornerRadius(16)
     }
 
     // MARK: - Test Logic
@@ -239,12 +227,14 @@ struct SpeedTestView: View {
 }
 
 // MARK: - Types
+// Referenced by VpnViewModel.runSpeedTest — keep the definitions here in sync
+// with its callback signatures.
 
-enum TestPhase {
+enum TestPhase: Sendable {
     case idle, latency, download, upload, complete
 }
 
-struct SpeedTestResult {
+struct SpeedTestResult: Sendable {
     let latencyMs: Int
     let jitterMs: Int
     let downloadMbps: Double

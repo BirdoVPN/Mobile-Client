@@ -10,15 +10,44 @@ settings:
     SWIFT_VERSION: "6.0"
     ENABLE_USER_SCRIPT_SANDBOXING: false
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    # "1" = iPhone only. An iPhone-only app still INSTALLS and runs on iPad in
+    # scaled compatibility mode, which is enough to test the packet tunnel on
+    # real hardware. Set to "1,2" only if you intend to ship native iPad layouts
+    # (App Review will then expect proper iPad UI).
     TARGETED_DEVICE_FAMILY: "1"
+    # Team is KPUFGR98A5 (Phillip Bird), taken from BirdoVPN_App_Store_Profile.
+    # Declared here so Xcode's automatic signing survives `xcodegen generate` —
+    # setting it only in Xcode's UI is wiped on the next regeneration.
+    DEVELOPMENT_TEAM: KPUFGR98A5
+    # MANUAL signing for release/archive. Automatic signing cannot be used
+    # headlessly for an App Store archive: xcodebuild resolves it to an
+    # "iOS App Development" profile, which Apple refuses to issue unless the
+    # team has at least one REGISTERED DEVICE ("Your team has no devices from
+    # which to generate a provisioning profile"). App Store distribution
+    # profiles need no devices, so we pin them explicitly per target below.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Distribution"
 
 # WireGuardKit ships the Go tunnel runtime + WireGuardAdapter used by both
 # the host app (for type-safe TunnelConfiguration) and the PacketTunnel
 # extension (to actually carry packets).
 packages:
   WireGuardKit:
-    url: https://git.zx2c4.com/wireguard-apple
-    branch: master
+    # VENDORED at iosApp/Vendor/wireguard-apple (tag 1.0.15-26 + 3 local patches).
+    # Upstream git.zx2c4.com/wireguard-apple is DORMANT (last commit 2023-02-15) and
+    # its master (= tag 1.0.16-27) has an INVALID manifest: swift-tools-version:5.3
+    # while using .macOS(.v12)/.iOS(.v15), which require 5.5 — SwiftPM under Xcode 16
+    # refuses to resolve it at all, so `branch: master` could never build.
+    # Local patches (all required to compile under Xcode 16 / Go 1.23+):
+    #   1. WireGuardKitC.h  +=  #include <sys/types.h>   (explicit modules reject
+    #      the implicit u_int32_t/u_char/u_int16_t declarations)
+    #   2. TunnelConfiguration+WgQuickConfig.swift and String+ArrayConversion.swift
+    #      moved into Sources/WireGuardKit and made public — upstream keeps the
+    #      wg-quick parser in the APP sources, so the library never exported the
+    #      TunnelConfiguration(fromWgQuickConfig:called:) init we call.
+    #   3. Sources/WireGuardKitGo/Makefile -> go build -ldflags='-w -checklinkname=0'
+    #      (Go 1.23+ rejects x/net's old //go:linkname into syscall.recvmsg).
+    path: Vendor/wireguard-apple
 
 targets:
   BirdoVPN:
@@ -28,15 +57,30 @@ targets:
       - path: iosApp
         excludes:
           - Info.plist
-    info:
-      path: iosApp/Info.plist
-    entitlements:
-      path: iosApp/BirdoVPN.entitlements
+    # NOTE: deliberately NO `info:` / `entitlements:` blocks. XcodeGen *generates*
+    # (i.e. overwrites) whatever file those keys name — which silently wiped the
+    # hand-written Info.plist and emptied BirdoVPN.entitlements to `<dict/>` on
+    # every `xcodegen generate`. The real files are referenced via INFOPLIST_FILE
+    # and CODE_SIGN_ENTITLEMENTS below, which leaves them untouched.
+    # For the same reason the `birdo` custom URL scheme (SSO PKCE callback +
+    # deep links) is registered directly in iosApp/Info.plist (CFBundleURLTypes)
+    # — never add it here via an `info:` block.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn
         INFOPLIST_FILE: iosApp/Info.plist
         CODE_SIGN_ENTITLEMENTS: iosApp/BirdoVPN.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Birdo VPN AppStore v2"
+        # Compiles iosApp/Assets.xcassets and emits CFBundleIconName, without
+        # which App Store validation fails. The source PNG must be 1024x1024
+        # with NO alpha channel — Apple rejects icons that have one.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # MUST be repeated at target level: XcodeGen's built-in settings preset
+        # for `type: application` injects CODE_SIGN_IDENTITY = "iPhone Developer",
+        # which outranks the project-level value and breaks the archive with
+        # "No signing certificate 'iOS Development' found". (The app-extension
+        # preset has no such default, which is why only this target broke.)
+        CODE_SIGN_IDENTITY: "Apple Distribution"
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework"
@@ -65,15 +109,19 @@ targets:
       - path: PacketTunnel
         excludes:
           - Info.plist
-    info:
-      path: PacketTunnel/Info.plist
-    entitlements:
-      path: PacketTunnel/PacketTunnel.entitlements
+    # NOTE: deliberately NO `info:` / `entitlements:` blocks — see the BirdoVPN
+    # target above. Regenerating these stripped the NSExtension dict (so the
+    # packet-tunnel provider could never load) and emptied the
+    # packet-tunnel-provider entitlement.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tunnel
         INFOPLIST_FILE: PacketTunnel/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnel/PacketTunnel.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: "Birdo VPN Tunnel AppStore"
+        # Pinned explicitly here too, so this target does not silently inherit a
+        # different identity if XcodeGen's extension preset ever gains one.
+        CODE_SIGN_IDENTITY: "Apple Distribution"
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework"

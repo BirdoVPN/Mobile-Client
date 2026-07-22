@@ -99,6 +99,31 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # BirdoPQNative.xcframework is a gitignored build artifact that
+      # project.yml links against — without it the build fails with
+      # "There is no XCFramework found at Vendor/BirdoPQNative.xcframework".
+      # The script adds its own rustup targets; runners ship Rust already.
+      - name: Build BirdoPQNative.xcframework
+        run: |
+          rustc --version
+          ./scripts/build-birdo-pq-xcframework.sh
+
+      # WireGuardKit declares .linkedLibrary("wg-go") but SwiftPM cannot run
+      # the Makefile that produces it, so the PacketTunnel extension fails to
+      # link with: ld: library 'wg-go' not found. Runners ship Go already.
+      - name: Build libwg-go.a (device)
+        run: |
+          set -euo pipefail
+          go version
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphoneos"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS=arm64 PLATFORM_NAME=iphoneos \
+            SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
@@ -111,6 +136,8 @@ jobs:
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
+            ARCHS=arm64 \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -161,18 +188,42 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Build BirdoPQNative.xcframework
+        run: ./scripts/build-birdo-pq-xcframework.sh
+
+      # Simulator slice. The upstream Makefile maps GOOS only for
+      # macosx/iphoneos, so iphonesimulator must be passed explicitly.
+      - name: Build libwg-go.a (simulator)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphonesimulator"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS=arm64 PLATFORM_NAME=iphonesimulator GOOS_iphonesimulator=ios \
+            SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-sim"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
 
+      # Destination is NOT pinned to a specific OS version: the runner's
+      # installed simulator runtime moves (it is currently iOS 18.6), and a
+      # hard-coded OS=18.0 fails with "Unable to find a destination".
+      # ARCHS/EXCLUDED_ARCHS: the KMP framework is iosSimulatorArm64 only.
       - name: Run iOS tests
         working-directory: iosApp
         run: |
           xcodebuild test \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.0' \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
             -configuration Debug \
+            ARCHS=arm64 \
+            EXCLUDED_ARCHS=x86_64 \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -234,6 +285,21 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Build BirdoPQNative.xcframework
+        run: ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Build libwg-go.a (device)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphoneos"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS=arm64 PLATFORM_NAME=iphoneos \
+            SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
 
       - name: Generate Xcode project
         working-directory: iosApp
@@ -297,6 +363,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
+            ARCHS=arm64 \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
             PRODUCT_BUNDLE_IDENTIFIER="$APPLE_BUNDLE_ID" \

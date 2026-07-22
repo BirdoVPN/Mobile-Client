@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Privacy manifest for the PacketTunnel (NEPacketTunnelProvider) extension.
+         The bundled WireGuardKitGo runtime measures elapsed time with the
+         boot-time family API (mach_continuous_time — see
+         goruntime-boottime-over-monotonic.diff), so the extension binary must
+         declare the SystemBootTime required-reason category or App Store Connect
+         rejects the upload (ITMS-91053). XcodeGen's `sources: [path: PacketTunnel]`
+         glob bundles this file into the .appex automatically. The extension does
+         not itself collect user data, so no NSPrivacyCollectedDataTypes. -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

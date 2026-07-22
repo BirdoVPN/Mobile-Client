@@ -1,206 +1,331 @@
 import SwiftUI
 
-/// Port forwarding management screen.
+/// Port forwarding management (spec-secondary-screens.md §6). Pushed from
+/// VPN Settings → Features; the entry row there carries the SOVEREIGN lock,
+/// and this screen keeps its own defensive gate for the downgrade/deep-link
+/// path. Enforcement is server-side — backend refusals ("Port forwarding
+/// requires a Sovereign subscription", "No active VPN connection. Connect to
+/// a server first.", …) render verbatim in the error surface.
 struct PortForwardView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
-    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var authVM: AuthViewModel
 
-    @State private var showCreateSheet = false
     @State private var portText = ""
-    @State private var selectedProtocol = "TCP"
-    @State private var deleteTarget: PortForwardEntry?
+    /// 0 = TCP, 1 = UDP (default tcp — Android parity).
+    @State private var protocolIndex = 0
+    /// Local in-flight flag for POST /vpn/port-forwards — the view drives the
+    /// create call itself so the "Add rule" button can spin and stay
+    /// single-flight (VpnViewModel exposes no isCreating state).
+    @State private var isCreating = false
+    @State private var pendingDelete: PortForwardEntry?
+    @State private var showDeleteConfirm = false
 
-    private let protocols = ["TCP", "UDP", "Both"]
+    // The backend's `createPortForwardSchema` accepts only `tcp` or `udp`
+    // (a strict zod enum) — there is no combined option, so offering "Both"
+    // produced a rule the API always rejected. Sent lower-cased on the wire.
+    private let protocols = ["TCP", "UDP"]
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Active forwards list
-            if vpnVM.portForwards.isEmpty {
-                emptyState
-            } else {
-                List {
-                    ForEach(vpnVM.portForwards) { entry in
-                        portRow(entry)
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    deleteTarget = entry
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
+        ZStack {
+            BirdoTheme.black.ignoresSafeArea()
+            PixelCanvasView()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    infoNote
+
+                    if let err = vpnVM.portForwardError {
+                        ErrorBanner(err)
+                            .padding(.top, 8)
                     }
+
+                    if isLockedOut {
+                        lockedCard
+                            .padding(.top, 8)
+                    } else {
+                        SectionHeader("New rule")
+                        newRuleCard
+                    }
+
+                    SectionHeader("Active rules")
+                    rulesList
                 }
-                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .padding(.bottom, 32)
+                .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick),
+                           value: vpnVM.portForwardError)
             }
         }
-        .background(BirdoTheme.black.ignoresSafeArea())
         .navigationTitle("Port Forwarding")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showCreateSheet = true
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundColor(BirdoTheme.purple)
-                }
-            }
+        // Pushed sub-screen: hide the bottom tab bar (parity with VPN Settings —
+        // Review #54).
+        .toolbar(.hidden, for: .tabBar)
+        .onAppear {
+            vpnVM.loadPortForwards()
+            // Keeps the defensive plan gate honest; 30 s cache makes it cheap.
+            vpnVM.refreshSubscription()
         }
-        .sheet(isPresented: $showCreateSheet) {
-            createSheet
-        }
-        .alert("Delete Port Forward?", isPresented: .init(
-            get: { deleteTarget != nil },
-            set: { if !$0 { deleteTarget = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { deleteTarget = nil }
-            Button("Delete", role: .destructive) {
-                if let target = deleteTarget {
-                    vpnVM.deletePortForward(id: target.id)
-                    deleteTarget = nil
-                }
-            }
-        } message: {
-            if let target = deleteTarget {
-                Text("Remove port \(target.internalPort) (\(target.proto)) forwarding?")
-            }
-        }
+        .birdoConfirmDialog(
+            isPresented: $showDeleteConfirm,
+            title: "Delete this rule?",
+            message: deleteMessage,
+            iconColor: BirdoTheme.red,
+            confirmLabel: "Delete",
+            onConfirm: confirmDelete,
+            onCancel: { pendingDelete = nil }
+        )
     }
 
-    // MARK: - Empty State
+    // MARK: - Plan gate
 
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "network")
-                .font(.system(size: 48))
-                .foregroundColor(BirdoTheme.white20)
-            Text("No Port Forwards")
-                .font(.headline)
-                .foregroundColor(BirdoTheme.white60)
-            Text("Create a port forward to allow inbound connections through the VPN.")
-                .font(.caption)
-                .foregroundColor(BirdoTheme.white40)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
-            Button {
-                showCreateSheet = true
-            } label: {
-                Label("Create Port Forward", systemImage: "plus")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
-                    .background(BirdoTheme.purple)
-                    .cornerRadius(12)
-            }
-            Spacer()
-        }
+    /// Locked only when the server snapshot POSITIVELY says the plan is below
+    /// SOVEREIGN — an unloaded snapshot shows the form and lets the backend
+    /// refuse (the entry-point lock in VPN Settings is the primary surface).
+    private var isLockedOut: Bool {
+        guard let sub = vpnVM.subscription else { return false }
+        return !sub.isSovereign
     }
 
-    // MARK: - Port Row
-
-    private func portRow(_ entry: PortForwardEntry) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: "arrow.right.circle.fill")
-                .font(.title3)
-                .foregroundColor(BirdoTheme.blue)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Port \(entry.internalPort)")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundColor(.white)
-                if let ext = entry.externalPort {
-                    Text("External: \(ext)")
-                        .font(.caption)
-                        .foregroundColor(BirdoTheme.white60)
+    private var lockedCard: some View {
+        NavigationLink {
+            SubscriptionView()
+        } label: {
+            BirdoCard(cornerRadius: BirdoTheme.Radius.md) {
+                HStack(spacing: 12) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Sovereign feature")
+                            .font(BirdoTheme.Fonts.titleSmall)
+                            .foregroundStyle(BirdoTheme.onSurface)
+                        // The backend's own refusal string, so the copy can
+                        // never drift from what a rejected POST would say.
+                        Text("Port forwarding requires a Sovereign subscription")
+                            .font(BirdoTheme.Fonts.bodySmall)
+                            .foregroundStyle(BirdoTheme.white60)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Spacer()
-
-            Text(entry.proto)
-                .font(.caption2.weight(.semibold))
-                .foregroundColor(BirdoTheme.blue)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(BirdoTheme.blue.opacity(0.15))
-                .cornerRadius(6)
         }
-        .padding(.vertical, 4)
-        .listRowBackground(BirdoTheme.surface)
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityLabel("Premium feature — upgrade to unlock")
     }
 
-    // MARK: - Create Sheet
+    // MARK: - Info note
 
-    private var createSheet: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Internal Port")
-                        .font(.caption)
-                        .foregroundColor(BirdoTheme.white40)
-                    TextField("e.g. 8080", text: $portText)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(BirdoTextFieldStyle())
-                        .onChange(of: portText) { newValue in
-                            portText = String(newValue.filter(\.isNumber).prefix(5))
-                        }
+    private var infoNote: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 18))
+                .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                .accessibilityHidden(true)
+            Text("Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.white60)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                .fill(BirdoTheme.surfaceRaised)
+        )
+    }
+
+    // MARK: - New rule
+
+    private var portIsValid: Bool {
+        guard let port = Int(portText) else { return false }
+        return (1...65535).contains(port)
+    }
+
+    /// Error only when non-empty and invalid — an empty field is neutral.
+    private var portFieldError: String? {
+        (!portText.isEmpty && !portIsValid) ? "Port must be 1-65535" : nil
+    }
+
+    private var newRuleCard: some View {
+        BirdoCard(cornerRadius: BirdoTheme.Radius.md) {
+            VStack(alignment: .leading, spacing: 14) {
+                BirdoTextField(
+                    "Internal port",
+                    placeholder: "e.g. 8080",
+                    text: $portText,
+                    error: portFieldError,
+                    keyboardType: .numberPad
+                )
+                .onChange(of: portText) { _, newValue in
+                    let filtered = String(newValue.filter(\.isNumber).prefix(5))
+                    if filtered != newValue { portText = filtered }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Protocol")
-                        .font(.caption)
-                        .foregroundColor(BirdoTheme.white40)
-                    Picker("Protocol", selection: $selectedProtocol) {
-                        ForEach(protocols, id: \.self) { proto in
-                            Text(proto)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                        .font(BirdoTheme.Fonts.bodyMedium)
+                        .foregroundStyle(BirdoTheme.white60)
+                    SegmentedTabs(items: protocols,
+                                  selection: $protocolIndex,
+                                  style: .accent)
                 }
 
-                Button {
-                    guard let port = Int(portText), (1...65535).contains(port) else { return }
-                    vpnVM.createPortForward(internalPort: port, proto: selectedProtocol)
-                    portText = ""
-                    showCreateSheet = false
-                } label: {
-                    Text("Create")
-                        .font(.headline)
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(
-                            Int(portText).map { (1...65535).contains($0) } == true
-                                ? BirdoTheme.purple
-                                : BirdoTheme.white10
-                        )
-                        .cornerRadius(14)
+                PrimaryButton(
+                    "Add rule",
+                    variant: .brand,
+                    icon: "plus",
+                    isLoading: isCreating,
+                    isEnabled: portIsValid
+                ) {
+                    addRule()
                 }
-                .disabled(Int(portText).map { (1...65535).contains($0) } != true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
+    private func addRule() {
+        guard portIsValid, let port = Int(portText), !isCreating else { return }
+        let proto = protocols[protocolIndex].lowercased()
+        isCreating = true
+        Task {
+            do {
+                let entry = try await APIClient.shared.createPortForward(port: port, proto: proto)
+                vpnVM.portForwards.append(entry)
+                vpnVM.portForwardError = nil
+                portText = ""
+            } catch {
+                // Backend refusals shown verbatim on this screen (S2).
+                vpnVM.portForwardError = error.localizedDescription
+                _ = authVM.logoutIfUnauthorized(error)
+            }
+            isCreating = false
+        }
+    }
+
+    // MARK: - Active rules
+
+    @ViewBuilder
+    private var rulesList: some View {
+        if vpnVM.isLoadingPortForwards && vpnVM.portForwards.isEmpty {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .tint(BirdoTheme.accent)
                 Spacer()
             }
-            .padding()
-            .background(BirdoTheme.black.ignoresSafeArea())
-            .navigationTitle("New Port Forward")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { showCreateSheet = false }
-                        .foregroundColor(BirdoTheme.white60)
+            .padding(.vertical, 24)
+        } else if vpnVM.portForwards.isEmpty {
+            BirdoCard(cornerRadius: BirdoTheme.Radius.md) {
+                Text("No port forwarding rules yet. Add one above to get started.")
+                    .font(BirdoTheme.Fonts.bodyMedium)
+                    .foregroundStyle(BirdoTheme.white60)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            VStack(spacing: 4) {
+                ForEach(vpnVM.portForwards) { entry in
+                    ruleRow(entry)
                 }
             }
         }
+    }
+
+    private func ruleRow(_ entry: PortForwardEntry) -> some View {
+        BirdoCard(cornerRadius: BirdoTheme.Radius.md, verticalPadding: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 20))
+                    .foregroundStyle(BirdoTheme.green)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 0) {
+                        Text(entry.externalPort.map(String.init) ?? "—")
+                            .font(BirdoTheme.Fonts.titleSmall)
+                            .monospacedDigit()
+                            .foregroundStyle(BirdoTheme.onSurface)
+                        Text(" → ")
+                            .font(BirdoTheme.Fonts.titleSmall)
+                            .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                        Text(String(entry.internalPort))
+                            .font(BirdoTheme.Fonts.titleSmall)
+                            .monospacedDigit()
+                            .foregroundStyle(BirdoTheme.onSurface)
+                    }
+                    Text(entry.proto.uppercased())
+                        .font(BirdoTheme.Fonts.labelSmall)
+                        .foregroundStyle(BirdoTheme.white60)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(BirdoTheme.surfaceRaised)
+                        )
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    "Port \(entry.externalPort.map(String.init) ?? "unassigned") to \(entry.internalPort), \(entry.proto.uppercased())"
+                )
+
+                Spacer(minLength: 8)
+
+                Button {
+                    pendingDelete = entry
+                    showDeleteConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 18))
+                        .foregroundStyle(BirdoTheme.red)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Delete rule")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Delete confirmation
+
+    /// Deleting tears down a live DNAT mapping — spell out the consequence.
+    private var deleteMessage: String {
+        guard let target = pendingDelete else { return "" }
+        let external = target.externalPort.map(String.init) ?? String(target.internalPort)
+        return "Port \(external) → \(target.internalPort) will stop being forwarded. Any service relying on it becomes unreachable."
+    }
+
+    private func confirmDelete() {
+        // `pendingDelete` is read here, not in the dialog modifier, because
+        // the modifier clears `isPresented` before invoking the callback.
+        if let target = pendingDelete {
+            vpnVM.deletePortForward(id: target.id)
+        }
+        pendingDelete = nil
     }
 }
 
 // MARK: - Model
 
-struct PortForwardEntry: Identifiable {
+/// One row of `GET /vpn/port-forwards`. The wire field is `protocol` — a
+/// Swift keyword — so it maps to `proto`; the wire's extra `enabled` flag is
+/// deliberately not decoded (the UI has no disabled-rule state).
+/// Referenced by APIClient (decode) and VpnViewModel (published list).
+struct PortForwardEntry: Identifiable, Decodable, Equatable, Sendable {
     let id: String
     let internalPort: Int
     let externalPort: Int?
     let proto: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, internalPort, externalPort
+        case proto = "protocol"
+    }
 }
