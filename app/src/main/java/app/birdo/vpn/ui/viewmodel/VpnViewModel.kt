@@ -392,7 +392,7 @@ class VpnViewModel @Inject constructor(
                 }
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
-                        error = result.message,
+                        error = connectErrorMessage(result),
                     )
                 }
             }
@@ -413,7 +413,7 @@ class VpnViewModel @Inject constructor(
             when (val result = vpnManager.quickConnect()) {
                 is ApiResult.Success -> {}
                 is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(error = result.message)
+                    _uiState.value = _uiState.value.copy(error = connectErrorMessage(result))
                 }
             }
         }
@@ -446,11 +446,25 @@ class VpnViewModel @Inject constructor(
                     }
                 }
                 is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(error = result.message)
+                    _uiState.value = _uiState.value.copy(error = connectErrorMessage(result))
                 }
             }
         }
     }
+
+
+    /**
+     * Map a connect failure to a user-facing message. HTTP 426 is the backend's
+     * version support floor: the raw error body is structured JSON (too long for
+     * the sanitizer, which would degrade it to a generic "Connection failed"),
+     * so translate it into the one actionable sentence.
+     */
+    private fun connectErrorMessage(result: ApiResult.Error): String =
+        if (result.code == 426) {
+            "This app version is no longer supported. Update Birdo VPN to reconnect."
+        } else {
+            result.message
+        }
 
     fun onVpnPermissionGranted() {
         _uiState.value = _uiState.value.copy(needsVpnPermission = false)

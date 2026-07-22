@@ -128,6 +128,14 @@
     <string name="settings_section_about">About</string>
     <string name="cd_about">About</string>
 
+    <!-- App update nudge -->
+    <string name="update_available_title">Update available</string>
+    <string name="update_available_body">Birdo VPN %1$s is ready to install.</string>
+    <string name="update_required_title">Update required</string>
+    <string name="update_required_body">This version is no longer supported. Update to keep connecting.</string>
+    <string name="update_action">Update</string>
+    <string name="cd_dismiss_update">Dismiss update notice</string>
+
     <!-- Delete Account Dialog -->
     <string name="delete_dialog_title">Delete Account</string>
     <string name="delete_dialog_message">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted. Enter your password to confirm.</string>

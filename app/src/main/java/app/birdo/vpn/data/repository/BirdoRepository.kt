@@ -321,6 +321,18 @@ class BirdoRepository @Inject constructor(
         }
     }
 
+    // ── App updates ──────────────────────────────────────────────
+
+    /**
+     * Ask the backend whether a newer app exists and whether this version is
+     * still above the support floor. Callers must treat Error as "no update
+     * info" — an unreachable update check must never produce UI noise.
+     */
+    suspend fun checkAppUpdate(): ApiResult<AppUpdateInfo> =
+        withAutoRefresh("Update check failed") {
+            api.checkAppUpdate(app.birdo.vpn.BuildConfig.APP_VERSION)
+        }
+
     // ── User ─────────────────────────────────────────────────────
 
     suspend fun getProfile(): ApiResult<UserProfile> =

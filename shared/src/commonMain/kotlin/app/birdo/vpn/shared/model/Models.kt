@@ -209,6 +209,30 @@ data class RedeemVoucherResponse(
     val error: String? = null,
 )
 
+// ─── App Update ──────────────────────────────────────────────────────────────
+
+/**
+ * Server-driven update policy from GET /updates/android/{version}.
+ *
+ * latestVersion derives from the newest published GitHub release;
+ * minSupportedVersion is the owner-set support floor (null = no floor).
+ * updateRequired means the backend will refuse VPN connects (HTTP 426) until
+ * the app is updated — account access keeps working. All fields default so a
+ * newer backend adding fields never breaks an older client.
+ */
+@Serializable
+data class AppUpdateInfo(
+    val currentVersion: String = "",
+    val latestVersion: String? = null,
+    val updateAvailable: Boolean = false,
+    val updateRequired: Boolean = false,
+    val minSupportedVersion: String? = null,
+    val downloadUrl: String? = null,
+    val releaseUrl: String? = null,
+    val notes: String? = null,
+    val publishedAt: String? = null,
+)
+
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────
 
 @Serializable

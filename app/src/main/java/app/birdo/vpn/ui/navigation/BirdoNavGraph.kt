@@ -42,6 +42,7 @@ import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.AuthViewModel
 import app.birdo.vpn.ui.viewmodel.SettingsViewModel
+import app.birdo.vpn.ui.viewmodel.UpdateViewModel
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 
 /**
@@ -111,12 +112,14 @@ fun BirdoNavGraph(
     val authViewModel: AuthViewModel = hiltViewModel()
     val vpnViewModel: VpnViewModel = hiltViewModel()
     val settingsViewModel: SettingsViewModel = hiltViewModel()
+    val updateViewModel: UpdateViewModel = hiltViewModel()
     var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedPrivacyPolicy) }
     val isOnline by networkMonitor.isOnline.collectAsState(initial = true)
 
     val authState by authViewModel.uiState.collectAsState()
     val vpnState by vpnViewModel.uiState.collectAsState()
     val settingsState by settingsViewModel.uiState.collectAsState()
+    val updateState by updateViewModel.state.collectAsState()
 
     // Handle VPN permission requests
     LaunchedEffect(vpnState.needsVpnPermission) {
@@ -380,6 +383,7 @@ fun BirdoNavGraph(
                 enterTransition = tabEnter,
                 exitTransition = tabExit,
             ) {
+                val context = LocalContext.current
                 AdaptiveContainer {
                     HomeScreen(
                         state = vpnState,
@@ -410,6 +414,18 @@ fun BirdoNavGraph(
                             vpnViewModel.disconnect()
                             authViewModel.logout()
                         },
+                        updateInfo = updateState.info,
+                        showUpdateBanner = updateState.showBanner,
+                        onUpdateApp = {
+                            // Play installs go to the store listing; direct and
+                            // F-Droid installs to the release APK.
+                            val intent = android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(updateViewModel.updateTargetUrl()),
+                            )
+                            runCatching { context.startActivity(intent) }
+                        },
+                        onDismissUpdate = { updateViewModel.dismiss() },
                     )
                 }
             }
