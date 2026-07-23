@@ -1,5 +1,16 @@
 # birdo-pq-server
 
+> **⚠️ NOT SHIPPED — design-reference scaffolding only (F-026).** Production
+> server-side BirdoPQ v1 encapsulation runs **in-process in the web backend as
+> pure JS** (`@noble/post-quantum`) — see
+> `birdo-web/backend/src/vpn/birdo-pq.service.ts` (wired into `vpn.service.ts`).
+> This crate is **never built by CI, never deployed, and never invoked** (no
+> subprocess is spawned per `/connect`). The "shells out to `birdo-pq-server
+> encap`" flow described below is the ORIGINAL design and is **not** how
+> production works. Do not chase this binary during a PQ-handshake incident;
+> read `birdo-pq.service.ts` instead. Kept only as a reference implementation
+> of the wire contract.
+
 Server-side helper binary for **BirdoPQ v1** post-quantum WireGuard PSK
 derivation, the protocol shipped by the Birdo Android client in
 `../rosenpass-jni/`.
