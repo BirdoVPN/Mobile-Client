@@ -115,7 +115,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Shield,
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
-                    description = stringResource(R.string.settings_kill_switch_desc),
                     checked = state.killSwitchEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled) {
@@ -139,7 +138,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_stealth_title),
-                    description = stringResource(R.string.vpn_settings_stealth_desc),
                     checked = state.stealthModeEnabled && stealthUnlocked,
                     onCheckedChange = onStealthModeChange,
                     locked = !stealthUnlocked,
@@ -152,7 +150,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Lock,
                     iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_quantum_title),
-                    description = stringResource(R.string.vpn_settings_quantum_desc),
                     checked = state.quantumProtectionEnabled && quantumUnlocked,
                     onCheckedChange = onQuantumProtectionChange,
                     locked = !quantumUnlocked,
@@ -168,7 +165,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Lan,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_local_network),
-                    description = stringResource(R.string.vpn_settings_local_network_desc),
                     checked = state.localNetworkSharing,
                     onCheckedChange = onLocalNetworkSharingChange,
                 )
@@ -182,7 +178,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Dns,
                     iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_custom_dns),
-                    description = stringResource(R.string.vpn_settings_custom_dns_desc),
                     checked = state.customDnsEnabled && customDnsUnlocked,
                     onCheckedChange = onCustomDnsEnabledChange,
                     locked = !customDnsUnlocked,
@@ -334,19 +329,12 @@ fun VpnSettingsScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Tune, stringResource(R.string.vpn_settings_mtu), tint = BirdoYellow, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.width(14.dp))
-                            Column {
-                                Text(
-                                    stringResource(R.string.vpn_settings_mtu),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.onSurface,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Text(
-                                    stringResource(R.string.vpn_settings_mtu_desc),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = palette.onSurfaceMuted,
-                                )
-                            }
+                            Text(
+                                stringResource(R.string.vpn_settings_mtu),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = palette.onSurface,
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
                         Spacer(Modifier.height(12.dp))
 
@@ -440,7 +428,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.SwapHoriz,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_port_forward),
-                    description = stringResource(R.string.settings_port_forward_desc),
                     onClick = if (portForwardUnlocked) onOpenPortForward
                         else { { onUpgradeRequired("Port Forwarding") } },
                     locked = !portForwardUnlocked,
@@ -495,7 +482,8 @@ private fun VpnToggle(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    description: String,
+    // Optional explanatory subtitle. Rendered only when present.
+    description: String? = null,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true,
@@ -530,7 +518,9 @@ private fun VpnToggle(
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, color = palette.onSurface, fontWeight = FontWeight.Medium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                if (description != null) {
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
             }
             Spacer(Modifier.width(8.dp))
             if (locked) {
@@ -567,7 +557,8 @@ private fun VpnLink(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    description: String,
+    // Optional subtitle — rendered only when present.
+    description: String? = null,
     onClick: () -> Unit,
     locked: Boolean = false,
 ) {
@@ -589,7 +580,9 @@ private fun VpnLink(
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, color = palette.onSurface, fontWeight = FontWeight.Medium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (description != null) {
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
             Spacer(Modifier.width(8.dp))
             Icon(

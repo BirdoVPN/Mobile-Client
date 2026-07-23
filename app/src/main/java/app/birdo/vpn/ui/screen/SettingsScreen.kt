@@ -95,7 +95,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Fingerprint,
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_biometric),
-                    description = stringResource(R.string.settings_biometric_desc),
                     checked = state.biometricLockEnabled,
                     onCheckedChange = onBiometricLockChange,
                 )
@@ -109,7 +108,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Wifi,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_auto_connect),
-                    description = stringResource(R.string.settings_auto_connect_desc),
                     checked = state.autoConnect,
                     onCheckedChange = onAutoConnectChange,
                     testTag = TestTags.AUTO_CONNECT_TOGGLE,
@@ -121,7 +119,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Notifications,
                     iconColor = BirdoYellow,
                     title = stringResource(R.string.settings_notifications),
-                    description = stringResource(R.string.settings_notifications_desc),
                     checked = state.notificationsEnabled,
                     onCheckedChange = onNotificationsChange,
                     testTag = TestTags.NOTIFICATIONS_TOGGLE,
@@ -134,7 +131,6 @@ fun SettingsScreen(
                         icon = Icons.Default.Language,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_notif_show_ip),
-                        description = stringResource(R.string.settings_notif_show_ip_desc),
                         checked = state.showIpInNotification,
                         onCheckedChange = onShowIpInNotificationChange,
                     )
@@ -145,7 +141,6 @@ fun SettingsScreen(
                         icon = Icons.Default.LocationOn,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_notif_show_location),
-                        description = stringResource(R.string.settings_notif_show_location_desc),
                         checked = state.showLocationInNotification,
                         onCheckedChange = onShowLocationInNotificationChange,
                     )
@@ -157,7 +152,6 @@ fun SettingsScreen(
                     icon = Icons.Default.NotificationsActive,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_notif_system),
-                    description = stringResource(R.string.settings_notif_system_desc),
                     onClick = onOpenNotificationSettings,
                     trailing = Icons.AutoMirrored.Filled.OpenInNew,
                 )
@@ -172,7 +166,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Tune,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_vpn_settings),
-                    description = stringResource(R.string.settings_vpn_settings_desc),
                     onClick = onOpenVpnSettings,
                 )
             }
@@ -183,7 +176,6 @@ fun SettingsScreen(
                     icon = Icons.AutoMirrored.Filled.CallSplit,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_split_tunnel),
-                    description = stringResource(R.string.settings_split_tunnel_desc),
                     checked = state.splitTunnelingEnabled,
                     onCheckedChange = onSplitTunnelingChange,
                 )
@@ -256,7 +248,9 @@ private fun SettingsToggle(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    description: String,
+    // Optional explanatory subtitle. Rendered only when present — most rows
+    // carry a self-explanatory title and no description.
+    description: String? = null,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     testTag: String? = null,
@@ -290,7 +284,9 @@ private fun SettingsToggle(
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                if (description != null) {
+                    Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                }
             }
             Spacer(Modifier.width(8.dp))
             if (locked) {
@@ -327,7 +323,8 @@ private fun SettingsLink(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    description: String,
+    // Optional subtitle — rendered only when present (e.g. a dynamic count).
+    description: String? = null,
     onClick: () -> Unit,
     trailing: ImageVector = Icons.Default.ChevronRight,
 ) {
@@ -348,7 +345,9 @@ private fun SettingsLink(
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                if (description != null) {
+                    Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                }
             }
             Spacer(Modifier.width(8.dp))
             Icon(trailing, stringResource(R.string.cd_open), tint = palette.onSurfaceFaint, modifier = Modifier.size(18.dp))
@@ -374,7 +373,6 @@ private fun ThemeModeSelector(
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text(stringResource(R.string.settings_theme), color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(stringResource(R.string.settings_theme_desc), color = palette.onSurfaceMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
                 }
             }
             Spacer(Modifier.height(12.dp))
