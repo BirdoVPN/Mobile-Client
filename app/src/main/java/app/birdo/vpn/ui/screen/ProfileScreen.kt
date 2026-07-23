@@ -134,14 +134,14 @@ fun ProfileScreen(
         ProfileActionRow(
             icon = Icons.Outlined.CardGiftcard,
             title = "Redeem voucher",
-            subtitle = "Activate a 30 / 90-day code",
+            subtitle = null,
             onClick = { showVoucherDialog = true },
         )
         if (!isPlayBuild) {
             ProfileActionRow(
                 icon = Icons.AutoMirrored.Outlined.OpenInNew,
                 title = "Manage on web",
-                subtitle = "Open birdo.app in browser",
+                subtitle = null,
                 onClick = onManageOnWeb,
             )
         }
@@ -176,7 +176,7 @@ fun ProfileScreen(
         ProfileActionRow(
             icon = Icons.Default.DeleteForever,
             title = stringResource(R.string.settings_delete_account),
-            subtitle = stringResource(R.string.settings_delete_account_desc),
+            subtitle = null,
             onClick = { showDeleteDialog = true },
             destructive = true,
         )

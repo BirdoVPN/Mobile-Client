@@ -95,36 +95,27 @@
     <string name="limit">Limit</string>
     <string name="settings_section_connection">Connection</string>
     <string name="settings_kill_switch">Kill Switch</string>
-    <string name="settings_kill_switch_desc">Block all traffic if VPN disconnects</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
     <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on — and for a system-guaranteed block, enable Android\'s \"Always-on VPN\" with \"Block connections without VPN\" in system VPN settings.</string>
     <string name="settings_kill_switch_disable_confirm">Turn off anyway</string>
     <string name="settings_auto_connect">Auto-Connect</string>
-    <string name="settings_auto_connect_desc">Connect to VPN on app startup</string>
     <string name="settings_notifications">Notifications</string>
-    <string name="settings_notifications_desc">Show connection notifications</string>
     <string name="settings_notif_show_ip">Show IP Address</string>
-    <string name="settings_notif_show_ip_desc">Display your VPN IP in the notification</string>
     <string name="settings_notif_show_location">Show Server Location</string>
-    <string name="settings_notif_show_location_desc">Display the server name in the notification</string>
     <string name="settings_notif_system">Notification Settings</string>
-    <string name="settings_notif_system_desc">Open system notification settings</string>
     <string name="settings_section_split_tunnel">Split Tunneling</string>
     <string name="settings_split_tunnel">Split Tunneling</string>
-    <string name="settings_split_tunnel_desc">Choose which apps bypass VPN</string>
     <string name="settings_manage_apps">Manage Apps</string>
     <string name="settings_apps_bypassing">%d apps bypassing VPN</string>
     <string name="settings_section_advanced">Advanced</string>
     <string name="settings_multi_hop">Multi-Hop (Double VPN)</string>
     <string name="settings_multi_hop_desc">Route traffic through two servers for extra privacy</string>
     <string name="settings_port_forward">Port Forwarding</string>
-    <string name="settings_port_forward_desc">Expose ports through your VPN tunnel</string>
     <string name="settings_section_account">Account</string>
     <string name="settings_manage_subscription">Manage Subscription</string>
     <string name="settings_privacy_policy">Privacy Policy</string>
     <string name="settings_terms_of_service">Terms of Service</string>
     <string name="settings_delete_account">Delete Account</string>
-    <string name="settings_delete_account_desc">Permanently delete your account and data</string>
     <string name="settings_section_about">About</string>
     <string name="cd_about">About</string>
 
@@ -150,14 +141,11 @@
     <!-- VPN Settings Screen -->
     <string name="settings_section_vpn">VPN</string>
     <string name="settings_vpn_settings">VPN Settings</string>
-    <string name="settings_vpn_settings_desc">Protocol, DNS, port, and MTU</string>
     <string name="vpn_settings_title">VPN Settings</string>
     <string name="vpn_settings_section_network">Network</string>
     <string name="vpn_settings_local_network">Local Network Sharing</string>
-    <string name="vpn_settings_local_network_desc">Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN</string>
     <string name="vpn_settings_section_dns">DNS</string>
     <string name="vpn_settings_custom_dns">Custom DNS Servers</string>
-    <string name="vpn_settings_custom_dns_desc">Use your own DNS servers instead of the VPN defaults</string>
     <string name="vpn_settings_dns_primary">Primary DNS</string>
     <string name="vpn_settings_dns_primary_hint">e.g. 1.1.1.1</string>
     <string name="vpn_settings_dns_secondary">Secondary DNS (optional)</string>
@@ -169,7 +157,6 @@
     <string name="vpn_settings_port_custom_hint">Port number</string>
     <string name="vpn_settings_port_range">Enter a port between 1 and 65535</string>
     <string name="vpn_settings_mtu">WireGuard MTU</string>
-    <string name="vpn_settings_mtu_desc">Packet size — lower values improve reliability on unstable networks</string>
     <string name="vpn_settings_mtu_auto">Automatic (server default)</string>
     <string name="vpn_settings_mtu_hint">e.g. 1420</string>
     <string name="vpn_settings_mtu_range">Valid range: 1280-1500</string>
@@ -177,9 +164,7 @@
     <string name="vpn_settings_section_security">Security</string>
     <string name="vpn_settings_section_features">Features</string>
     <string name="vpn_settings_stealth_title">Stealth Mode · Premium</string>
-    <string name="vpn_settings_stealth_desc">Premium feature — available on the Operative and Sovereign plans. Routes through Xray Reality to bypass deep packet inspection, making VPN traffic look like normal HTTPS. Free (Recon) accounts can enable it here, but it only activates with a paid subscription.</string>
     <string name="vpn_settings_quantum_title">Quantum Protection</string>
-    <string name="vpn_settings_quantum_desc">Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.</string>
     <string name="cd_locked_feature">Premium feature — upgrade to unlock</string>
     <!-- Home / Connect -->
     <string name="home_multihop_upsell">Multi-Hop is a SOVEREIGN feature. Upgrade to enable.</string>
@@ -203,9 +188,7 @@
     <string name="settings_section_appearance">Appearance</string>
     <string name="settings_section_security">Security</string>
     <string name="settings_biometric">Biometric Lock</string>
-    <string name="settings_biometric_desc">Require fingerprint or PIN to open app</string>
     <string name="settings_theme">Theme</string>
-    <string name="settings_theme_desc">Dark, light, or follow system</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_system">System</string>
