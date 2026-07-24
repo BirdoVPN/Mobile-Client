@@ -106,7 +106,7 @@ jobs:
       - name: Build BirdoPQNative.xcframework
         run: |
           rustc --version
-          ./scripts/build-birdo-pq-xcframework.sh
+          bash ./scripts/build-birdo-pq-xcframework.sh
 
       # WireGuardKit declares .linkedLibrary("wg-go") but SwiftPM cannot run
       # the Makefile that produces it, so the PacketTunnel extension fails to
@@ -293,7 +293,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Build BirdoPQNative.xcframework
-        run: ./scripts/build-birdo-pq-xcframework.sh
+        run: bash ./scripts/build-birdo-pq-xcframework.sh
 
       # Simulator slice. The upstream Makefile maps GOOS only for
       # macosx/iphoneos, so iphonesimulator must be passed explicitly.
@@ -391,7 +391,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Build BirdoPQNative.xcframework
-        run: ./scripts/build-birdo-pq-xcframework.sh
+        run: bash ./scripts/build-birdo-pq-xcframework.sh
 
       - name: Build libwg-go.a (device)
         run: |
