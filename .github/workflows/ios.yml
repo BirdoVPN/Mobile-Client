@@ -1,34 +1,34 @@
-name: iOS CI & Build (PAUSED)
+name: iOS CI & Build
 
 # ============================================================================
-# DEVELOPMENT PAUSED -- 2026-04-27
+# iOS ships on the android-v* release train, UNSIGNED.
 # ----------------------------------------------------------------------------
-# Active development on the iOS client is paused while we focus on shipping
-# the Windows and Android clients. The iOS app is publicly listed as
-# "currently awaiting release".
+# Every mobile release tag (android-v*) builds the iOS app on a macOS runner
+# and attaches an UNSIGNED .ipa to that same GitHub Release, alongside the
+# Android .apk/.aab. The build carries NO Apple code signature — it is a
+# public, verifiable build artifact, not an installable App Store product.
+# App Store / TestFlight distribution stays gated behind the `release-ios`
+# job (still `if: false`) until Apple Developer Program organisation
+# verification unlocks code signing.
 #
-# This workflow is intentionally restricted to manual `workflow_dispatch`
-# only -- no push, tag, or pull_request triggers -- so that:
-#   * we don't burn macOS runner minutes on builds we won't ship
-#   * a stale tag doesn't accidentally publish to TestFlight
-#   * the YAML and signing wiring is preserved for the day we resume
-#
-# To resume: restore the original `on:` block (push/tags/pull_request) and
-# remove this banner. Original triggers (kept for reference):
-#   push.branches:        [main, develop]
-#   push.tags:            ['ios-v*']
-#   pull_request.branches:[main]
+# Triggers:
+#   * push of an android-v* tag  -> build + attach unsigned .ipa to that release
+#   * manual workflow_dispatch    -> same, targeting inputs.release_tag
+#                                     (used to backfill an existing release)
 # ============================================================================
 
 on:
+  push:
+    tags:
+      - 'android-v*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g., 1.0.0) -- iOS dev is paused; manual runs only'
+      release_tag:
+        description: 'Existing android-v* release tag to attach the unsigned iOS .ipa to (e.g. android-v1.4.8).'
         required: false
         type: string
 
-# Minimum permissions - each job declares its own
+# Minimum permissions - each job declares its own (publish-ios needs write).
 permissions:
   contents: read
 
@@ -150,6 +150,110 @@ jobs:
           name: birdo-vpn-ios-unsigned
           path: iosApp/build/Release-iphoneos/
           retention-days: 30
+
+  # -- Package + attach the UNSIGNED .ipa to the android-v* release ------
+  # Runs on ubuntu (packaging + upload only — no macOS minutes). Takes the
+  # unsigned BirdoVPN.app built above, wraps it in a Payload/ .ipa, checksums
+  # + Sigstore-signs it (parity with the Android assets), and appends it to
+  # the SAME release the Android build publishes. `gh release upload
+  # --clobber` ONLY adds/overwrites these iOS assets; it never touches the
+  # release's draft/published state, notes, or the Android assets.
+  publish-ios:
+    name: Attach unsigned iOS .ipa to release
+    runs-on: ubuntu-latest
+    needs: build-ios
+    if: startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write   # upload release assets
+      id-token: write    # Sigstore keyless signing
+    steps:
+      - name: Download unsigned iOS build
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: birdo-vpn-ios-unsigned
+          path: ios-build/
+
+      - name: Determine release tag
+        id: tag
+        # PFA-CI: user input reaches the shell only via env, never direct
+        # ${{ }} interpolation in the run body, and is allowlist-validated
+        # before touching any tool (same pattern as android.yml draft-release).
+        env:
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -z "$INPUT_TAG" ]; then
+              echo "::error::workflow_dispatch requires the release_tag input (an existing android-v* tag)."
+              exit 1
+            fi
+            if ! printf '%s' "$INPUT_TAG" | grep -Eq '^android-v[0-9A-Za-z._-]{1,56}$'; then
+              echo "::error::release_tag failed validation: $INPUT_TAG (must match ^android-v...)"
+              exit 1
+            fi
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF##*/}"
+          fi
+          VER="$(printf '%s' "$TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          [ -z "$VER" ] && VER="$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG (version $VER)"
+
+      - name: Package unsigned .ipa
+        id: pkg
+        env:
+          VER: ${{ steps.tag.outputs.ver }}
+        run: |
+          set -euo pipefail
+          APP="$(find ios-build -maxdepth 3 -type d -name '*.app' | head -1)"
+          if [ -z "$APP" ]; then
+            echo "::error::No .app found in the iOS build artifact."
+            find ios-build -maxdepth 3 | head -50
+            exit 1
+          fi
+          echo "Found app bundle: $APP"
+          OUT="$GITHUB_WORKSPACE/ios-dist"
+          mkdir -p "$OUT/Payload"
+          cp -R "$APP" "$OUT/Payload/"
+          IPA="$OUT/BirdoVPN-${VER}-ios-unsigned.ipa"
+          ( cd "$OUT" && zip -qr "$IPA" Payload )
+          rm -rf "$OUT/Payload"
+          ( cd "$OUT" && sha256sum "$(basename "$IPA")" > SHA256SUMS-ios.txt )
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+          echo "outdir=$OUT" >> "$GITHUB_OUTPUT"
+          ls -la "$OUT"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sigstore-sign the .ipa (keyless)
+        working-directory: ios-dist
+        run: |
+          set -euo pipefail
+          IPA="$(basename "${{ steps.pkg.outputs.ipa }}")"
+          cosign sign-blob --yes --bundle "${IPA}.sigstore" "$IPA"
+          cosign sign-blob --yes --bundle "SHA256SUMS-ios.txt.sigstore" "SHA256SUMS-ios.txt"
+
+      - name: Attach iOS assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        working-directory: ios-dist
+        # --clobber only adds/replaces these named iOS assets on an EXISTING
+        # release; it does not create, publish, or alter release metadata. If
+        # the tag has no release yet (e.g. iOS finished before the Android
+        # draft was cut) the command fails loudly rather than inventing one.
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            BirdoVPN-*-ios-unsigned.ipa \
+            BirdoVPN-*-ios-unsigned.ipa.sigstore \
+            SHA256SUMS-ios.txt \
+            SHA256SUMS-ios.txt.sigstore \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Attached unsigned iOS .ipa to release $TAG"
 
   # -- iOS Simulator Tests ---------------------------------------------
   test-ios:
