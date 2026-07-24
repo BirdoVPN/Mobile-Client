@@ -140,12 +140,19 @@ jobs:
 
       - name: Build iOS app (no signing)
         working-directory: iosApp
+        # SYMROOT pins the built products to iosApp/build/ so the upload step
+        # below can find BirdoVPN.app. Without it, `xcodebuild build` writes to
+        # Xcode's DerivedData (a hashed path), leaving iosApp/build/Release-
+        # iphoneos/ empty — the upload then silently produced no artifact.
+        # `set -o pipefail` so a build failure isn't masked by the xcpretty pipe.
         run: |
+          set -o pipefail
           xcodebuild build \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
+            SYMROOT="$PWD/build" \
             ARCHS=arm64 \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_IDENTITY="-" \
@@ -153,6 +160,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
             | xcpretty
+          echo "== built products =="; ls -la "$PWD/build/Release-iphoneos" || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -160,6 +168,9 @@ jobs:
           name: birdo-vpn-ios-unsigned
           path: iosApp/build/Release-iphoneos/
           retention-days: 30
+          # Fail loudly if the build produced nothing (instead of a silent
+          # empty artifact that only breaks the downstream publish job).
+          if-no-files-found: error
 
   # -- Package + attach the UNSIGNED .ipa to the android-v* release ------
   # Runs on ubuntu (packaging + upload only — no macOS minutes). Takes the
