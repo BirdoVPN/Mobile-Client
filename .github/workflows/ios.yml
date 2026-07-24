@@ -110,7 +110,17 @@ jobs:
 
       # WireGuardKit declares .linkedLibrary("wg-go") but SwiftPM cannot run
       # the Makefile that produces it, so the PacketTunnel extension fails to
-      # link with: ld: library 'wg-go' not found. Runners ship Go already.
+      # link with: ld: library 'wg-go' not found.
+      #
+      # The WireGuardKitGo Makefile requires a system Go toolchain: its
+      # `$(GOROOT)/.prepared` target asserts `go env GOROOT` is non-empty and
+      # rsyncs it. The macos-14 image no longer ships Go on PATH, so install
+      # it explicitly (was `go: command not found`).
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
       - name: Build libwg-go.a (device)
         run: |
           set -euo pipefail
@@ -297,6 +307,12 @@ jobs:
 
       # Simulator slice. The upstream Makefile maps GOOS only for
       # macosx/iphoneos, so iphonesimulator must be passed explicitly.
+      # macos-14 no longer ships Go on PATH; the Makefile needs it.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
       - name: Build libwg-go.a (simulator)
         run: |
           set -euo pipefail
@@ -393,6 +409,11 @@ jobs:
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
       - name: Build libwg-go.a (device)
         run: |
           set -euo pipefail
