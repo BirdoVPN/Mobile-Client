@@ -110,7 +110,17 @@ jobs:
 
       # WireGuardKit declares .linkedLibrary("wg-go") but SwiftPM cannot run
       # the Makefile that produces it, so the PacketTunnel extension fails to
-      # link with: ld: library 'wg-go' not found. Runners ship Go already.
+      # link with: ld: library 'wg-go' not found.
+      #
+      # The WireGuardKitGo Makefile requires a system Go toolchain: its
+      # `$(GOROOT)/.prepared` target asserts `go env GOROOT` is non-empty and
+      # rsyncs it. The macos-14 image no longer ships Go on PATH, so install
+      # it explicitly (was `go: command not found`).
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
       - name: Build libwg-go.a (device)
         run: |
           set -euo pipefail
@@ -130,12 +140,19 @@ jobs:
 
       - name: Build iOS app (no signing)
         working-directory: iosApp
+        # SYMROOT pins the built products to iosApp/build/ so the upload step
+        # below can find BirdoVPN.app. Without it, `xcodebuild build` writes to
+        # Xcode's DerivedData (a hashed path), leaving iosApp/build/Release-
+        # iphoneos/ empty — the upload then silently produced no artifact.
+        # `set -o pipefail` so a build failure isn't masked by the xcpretty pipe.
         run: |
+          set -o pipefail
           xcodebuild build \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
+            SYMROOT="$PWD/build" \
             ARCHS=arm64 \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_IDENTITY="-" \
@@ -143,6 +160,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO \
             | xcpretty
+          echo "== built products =="; ls -la "$PWD/build/Release-iphoneos" || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -150,6 +168,9 @@ jobs:
           name: birdo-vpn-ios-unsigned
           path: iosApp/build/Release-iphoneos/
           retention-days: 30
+          # Fail loudly if the build produced nothing (instead of a silent
+          # empty artifact that only breaks the downstream publish job).
+          if-no-files-found: error
 
   # -- Package + attach the UNSIGNED .ipa to the android-v* release ------
   # Runs on ubuntu (packaging + upload only — no macOS minutes). Takes the
@@ -297,6 +318,12 @@ jobs:
 
       # Simulator slice. The upstream Makefile maps GOOS only for
       # macosx/iphoneos, so iphonesimulator must be passed explicitly.
+      # macos-14 no longer ships Go on PATH; the Makefile needs it.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
       - name: Build libwg-go.a (simulator)
         run: |
           set -euo pipefail
@@ -393,6 +420,11 @@ jobs:
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
 
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
       - name: Build libwg-go.a (device)
         run: |
           set -euo pipefail
