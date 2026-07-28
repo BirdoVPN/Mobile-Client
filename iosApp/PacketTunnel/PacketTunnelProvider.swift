@@ -53,6 +53,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private let heartbeatLock = NSLock()
     private var heartbeatTask: Task<Void, Never>?
 
+    /// When the tunnel came up, so liveness checks can allow a grace period for
+    /// the first handshake instead of tearing down a tunnel that is still
+    /// establishing on a slow network.
+    private var tunnelStartedAt: Date?
+
     /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
     /// header or body is ever written to disk, matching the host APIClient.
     private lazy var heartbeatSession: URLSession = {
@@ -187,6 +192,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             os_log("Tunnel up", log: self.log, type: .info)
             // finding #2: start the in-extension liveness heartbeat now that
             // the tunnel is up. Only when the host passed a keyId + token.
+            // Stamp the start time before the heartbeat begins, so the liveness
+            // grace window is measured from when the tunnel actually came up.
+            self.tunnelStartedAt = Date()
             if let keyId = heartbeatKeyId, !keyId.isEmpty,
                let token = heartbeatToken, !token.isEmpty {
                 self.startHeartbeat(keyId: keyId, token: token, clientVersion: heartbeatClientVersion)
@@ -208,6 +216,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // finding #2: tear the heartbeat down first so no request outlives the
         // tunnel (and so a cancelTunnelWithError re-entry can't double-start).
         stopHeartbeat()
+        tunnelStartedAt = nil
         adapter.stop { [weak self] error in
             if let error {
                 os_log("Adapter stop failed: %{public}@",
@@ -284,6 +293,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { return }
                 guard let self else { return }
+                // Data-plane liveness FIRST, and independently of the network
+                // heartbeat below. The heartbeat cannot detect a dead tunnel: its
+                // URLSession rides the live tunnel, so the one condition worth
+                // detecting is exactly the condition that disables the detector.
+                await self.checkDataPlaneLiveness()
                 await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
             }
         }
@@ -354,6 +368,66 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private func encodeStats(rx: Int64, tx: Int64) -> Data {
         let json = #"{"rx":\#(rx),"tx":\#(tx)}"#
         return json.data(using: .utf8) ?? Data()
+    }
+
+    /// How stale a WireGuard handshake may get before we call the tunnel dead.
+    ///
+    /// WireGuard rekeys well inside two minutes on any live session, so a
+    /// handshake older than this means the peer is unreachable — not idle.
+    /// Matches Android's TunnelMonitor threshold so the platforms agree.
+    private static let maxHandshakeAge: TimeInterval = 180
+
+    /// Grace period after connecting before liveness is enforced, so the very
+    /// first handshake has time to complete on a slow network.
+    private static let livenessGrace: TimeInterval = 60
+
+    /// Detect a tunnel that is up but carrying nothing, and tear it down so the
+    /// on-demand rule can re-dial.
+    ///
+    /// On a server crash, a NAT rebind or blocked UDP, WireGuardKit keeps the
+    /// utun interface up and `NEVPNStatus` stays `.connected`. With
+    /// `AllowedIPs 0.0.0.0/0` the tunnel swallows every packet, so the device has
+    /// no connectivity at all — and because the tunnel never disconnects, the
+    /// on-demand rule never fires. The user sees "Connected" and a dead network,
+    /// indefinitely, with no path to recovery except toggling the VPN by hand.
+    ///
+    /// Windows requires two independent death signals and Android watches
+    /// handshake age; iOS had neither. Handshake age is the signal available here
+    /// without new API, entitlements or background modes.
+    private func checkDataPlaneLiveness() async {
+        guard let connectedAt = tunnelStartedAt,
+              Date().timeIntervalSince(connectedAt) > Self.livenessGrace else { return }
+
+        let uapi: String? = await withCheckedContinuation { continuation in
+            adapter.getRuntimeConfiguration { config in
+                continuation.resume(returning: config)
+            }
+        }
+        guard let uapi else { return }
+
+        // `last_handshake_time_sec` is absolute unix seconds, per peer. Take the
+        // most recent across peers: any live peer means the data plane works.
+        var newest: Int64 = 0
+        for line in uapi.split(separator: "\n") where line.hasPrefix("last_handshake_time_sec=") {
+            let value = Int64(line.dropFirst("last_handshake_time_sec=".count)) ?? 0
+            newest = max(newest, value)
+        }
+
+        // Zero means "never handshaked". Past the grace window that is itself a
+        // failure — the tunnel came up and never established.
+        let age = newest == 0
+            ? Date().timeIntervalSince(connectedAt)
+            : Date().timeIntervalSince1970 - Double(newest)
+
+        if age > Self.maxHandshakeAge {
+            os_log("Data plane dead: last handshake %{public}.0fs ago — cancelling tunnel so it can re-dial",
+                   log: .default, type: .error, age)
+            cancelTunnelWithError(NSError(
+                domain: "app.birdo.vpn.tunnel",
+                code: -1001,
+                userInfo: [NSLocalizedDescriptionKey: "The VPN connection stopped responding."]
+            ))
+        }
     }
 
     /// Sum `rx_bytes=` / `tx_bytes=` lines from the wg-go UAPI dump.
