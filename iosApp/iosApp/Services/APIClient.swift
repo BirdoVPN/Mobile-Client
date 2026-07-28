@@ -263,6 +263,14 @@ final class APIClient: @unchecked Sendable {
         // (fresh install) defaults true regardless of view-model init order.
         let quantumEnabled = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
         let pqPk = quantumEnabled ? BirdoPQManager.shared.clientPublicKeyBase64() : nil
+        // Distinguish "user turned PQ off" from "PQ is on but we could not produce
+        // a key". Both used to yield nil and therefore silently STOP requesting
+        // post-quantum protection, so a keypair failure downgraded the session
+        // while the UI still showed Quantum Protection enabled. Android hard-errors
+        // here; iOS was the outlier.
+        if quantumEnabled && pqPk == nil {
+            throw APIError.quantumKeyUnavailable
+        }
         // AUDIT-M-DRIFT: the field is `serverNodeId` (ConnectDto), not `serverId`.
         // The global ValidationPipe is configured `forbidNonWhitelisted: true`
         // (backend/src/main.ts:167), so an unknown `serverId` did NOT get
@@ -287,6 +295,14 @@ final class APIClient: @unchecked Sendable {
         // on the unknown keys even at the right path.
         let quantumEnabled = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
         let pqPk = quantumEnabled ? BirdoPQManager.shared.clientPublicKeyBase64() : nil
+        // Distinguish "user turned PQ off" from "PQ is on but we could not produce
+        // a key". Both used to yield nil and therefore silently STOP requesting
+        // post-quantum protection, so a keypair failure downgraded the session
+        // while the UI still showed Quantum Protection enabled. Android hard-errors
+        // here; iOS was the outlier.
+        if quantumEnabled && pqPk == nil {
+            throw APIError.quantumKeyUnavailable
+        }
         let body = try encoder.encode(
             MultiHopBody(
                 entryNodeId: entryId,
@@ -843,6 +859,9 @@ enum APIError: Error, LocalizedError {
     case httpError(Int)
     /// A refusal the backend explained in its own words — show it verbatim.
     case serverMessage(String)
+    /// Post-quantum protection is enabled but the ML-KEM keypair could not be
+    /// produced. Surfaced rather than silently connecting without PQ.
+    case quantumKeyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -851,6 +870,10 @@ enum APIError: Error, LocalizedError {
         case .unauthorized: return "Session expired. Please log in again."
         case .httpError(let code): return "Server error (\(code))"
         case .serverMessage(let message): return message
+        case .quantumKeyUnavailable:
+            return "Could not prepare quantum-protected encryption. Not connecting, because "
+                + "continuing would use weaker encryption. Try again, or turn off Quantum "
+                + "Protection in Settings."
         }
     }
 }

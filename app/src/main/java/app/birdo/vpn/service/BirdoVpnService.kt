@@ -664,6 +664,45 @@ class BirdoVpnService : VpnService() {
         // traffic fail-closed seamlessly.
         cleanupTunnelDataPlane()
 
+        // REQUESTED-VS-GRANTED GUARD.
+        //
+        // Compare what the user asked for against what the server actually
+        // granted, and refuse rather than connect with less protection than the
+        // UI is showing. Desktop treats this as load-bearing at four connect
+        // paths; Android had no equivalent.
+        //
+        // Today the backend refuses rather than downgrades, so this is
+        // defence-in-depth — but it is precisely the guard that catches a backend
+        // regression, a partial rollout, or a MitM stripping the fields on the
+        // way back. Silently connecting with weaker protection than advertised is
+        // the one outcome that must not happen.
+        if (appPrefs.quantumProtectionEnabled && !config.quantumEnabled) {
+            Log.e(TAG, "Quantum protection requested but not granted by the server — refusing to connect")
+            cleanupStealthAndQuantum()
+            if (isKillSwitchEnabled) activateKillSwitch()
+            updateState(
+                VpnState.Error(
+                    "Quantum protection was requested but the server did not enable it. " +
+                        "Not connecting, because that would use weaker encryption than shown. " +
+                        "Try again, or turn off Quantum Protection in Settings."
+                )
+            )
+            return
+        }
+        if (appPrefs.stealthModeEnabled && !config.stealthEnabled) {
+            Log.e(TAG, "Stealth mode requested but not granted by the server — refusing to connect")
+            cleanupStealthAndQuantum()
+            if (isKillSwitchEnabled) activateKillSwitch()
+            updateState(
+                VpnState.Error(
+                    "Stealth mode was requested but the server did not enable it. " +
+                        "Not connecting, because traffic would not be disguised as shown. " +
+                        "Try again, or turn off Stealth Mode in Settings."
+                )
+            )
+            return
+        }
+
         try {
             // ── Phase 1: Stealth Tunnel (Xray Reality) ──────────────
             // When stealth mode is enabled and the server provides Xray config,

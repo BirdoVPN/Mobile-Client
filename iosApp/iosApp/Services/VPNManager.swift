@@ -88,6 +88,20 @@ final class VPNManager: @unchecked Sendable {
         let effectivePsk: String?
         if let pqPsk {
             effectivePsk = pqPsk
+        } else if config.quantumEnabled == true {
+            // FAIL CLOSED. The server said this session IS post-quantum, and we
+            // could not complete the decapsulation — so the bilateral PQ PSK does
+            // not exist. Falling through to `config.presharedKey` here would
+            // silently substitute the TLS-delivered CLASSICAL key while the app
+            // still reports quantum protection, which is exactly the
+            // harvest-now-decrypt-later property the feature exists to defeat.
+            //
+            // `tryDecapsulate` collapses three distinct failures to nil (malformed
+            // ciphertext, missing keypair, rc != BIRDO_PQ_OK) and all three landed
+            // here. Desktop (commands/vpn.rs) and Android (BirdoVpnService.kt)
+            // both abort; iOS was the only platform that downgraded in silence.
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed
         } else if let serverPsk = config.presharedKey, !serverPsk.isEmpty {
             BirdoPQManager.shared.recordServerProvided()
             effectivePsk = serverPsk
@@ -515,6 +529,9 @@ final class VPNManager: @unchecked Sendable {
 enum VPNManagerError: Error, LocalizedError {
     case keychainUnavailable
     case managerUnavailable
+    /// The server negotiated a post-quantum session but ML-KEM decapsulation did
+    /// not yield a key. Surfaced rather than downgraded — see `connect`.
+    case quantumHandshakeFailed
 
     var errorDescription: String? {
         switch self {
@@ -522,6 +539,10 @@ enum VPNManagerError: Error, LocalizedError {
             return "Secure storage unavailable. Restart the app and try again."
         case .managerUnavailable:
             return "VPN configuration unavailable. Restart the app and try again."
+        case .quantumHandshakeFailed:
+            return "Quantum-protected handshake failed. Not connecting, because continuing "
+                + "would fall back to weaker encryption. Try again, or turn off Quantum "
+                + "Protection in Settings to connect without it."
         }
     }
 }
