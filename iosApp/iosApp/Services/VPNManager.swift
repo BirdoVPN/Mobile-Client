@@ -75,6 +75,23 @@ final class VPNManager: @unchecked Sendable {
         // the system VPN configuration store.
         try config.validate()
 
+        // REQUESTED-VS-GRANTED PQ GUARD (parity with Android
+        // BirdoVpnService requested-vs-granted guard + desktop
+        // enforce_requested_protection). If the user enabled Quantum Protection
+        // but the server response is NOT post-quantum (quantumEnabled != true —
+        // a backend regression, partial fleet rollout, or a response stripped by
+        // a MitM), refuse the connection rather than silently establishing a
+        // classical tunnel while the UI still shows PQ enabled. The
+        // `config.quantumEnabled == true` branch below only covers the
+        // server-SAID-PQ-but-decapsulation-failed case; this covers the
+        // server-SAID-NOT-PQ case that iOS previously let fall through to the
+        // classical PSK.
+        let userRequestedPQ = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
+        if userRequestedPQ && config.quantumEnabled != true {
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed
+        }
+
         let mgr = try await ensureManager()
 
         // AUDIT-C1: prefer a true bilateral PQ PSK over the server-provided

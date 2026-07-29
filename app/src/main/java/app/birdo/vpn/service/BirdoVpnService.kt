@@ -261,7 +261,20 @@ class BirdoVpnService : VpnService() {
         if (currentState is VpnState.Connecting) {
             Log.e(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
             updateState(VpnState.Error("Connection timed out"))
-            cleanupTunnel()
+            // Fail closed on timeout, matching every startTunnel failure path.
+            // The old cleanupTunnel() closed the blocking vpnInterface with NO
+            // re-arm, so a >30s stall during a reconnect (e.g. PQ key exchange
+            // wedged in a dead zone) dropped the kill-switch block and leaked
+            // cleartext + DNS until the next reconnect re-armed it. Tear down the
+            // stalled wg-go setup but keep traffic blocked: activateKillSwitch()
+            // supersedes any stale/held interface with a fresh block. Only fully
+            // release (fail open) when the user has the kill switch OFF.
+            if (isKillSwitchEnabled) {
+                cleanupTunnelDataPlane()
+                activateKillSwitch()
+            } else {
+                cleanupTunnel()
+            }
             updateNotification("Connection timed out")
         }
     }
