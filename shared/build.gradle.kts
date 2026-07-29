@@ -34,7 +34,14 @@ kotlin {
                 // The JVM/Android path tolerates the skew, which is why this only
                 // ever broke the iOS build. Bump this ONLY together with Kotlin
                 // (and KSP/Hilt/Compose, which are version-locked to it).
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+                // Pinned to 1.9.0: 1.11.0's iOS Kotlin/Native klib is built
+                // against a newer Kotlin/Native ABI than the project's 2.2.21,
+                // so `compileKotlinIosArm64` fails "KLIB resolver: could not find
+                // …serialization-json-iosArm64…1.11.0.klib". (This is a KMP
+                // module; the Android-only app module can and does use 1.11.0.)
+                // Bumping this needs the same Kotlin/AGP-9 toolchain move the
+                // other deferred dependency upgrades need.
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
                 implementation("io.ktor:ktor-client-core:3.3.3")
                 implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
