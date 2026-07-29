@@ -34,7 +34,7 @@ kotlin {
                 // The JVM/Android path tolerates the skew, which is why this only
                 // ever broke the iOS build. Bump this ONLY together with Kotlin
                 // (and KSP/Hilt/Compose, which are version-locked to it).
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
                 implementation("io.ktor:ktor-client-core:3.3.3")
                 implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
