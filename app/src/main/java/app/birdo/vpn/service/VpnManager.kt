@@ -890,6 +890,30 @@ class VpnManager @Inject constructor(
                     }
                     is ApiResult.Error -> {
                         android.util.Log.w("VpnManager", "Heartbeat failed: ${result.message}")
+                        // A 401 here means the session is definitively gone — the
+                        // refresh token was rejected and has now been discarded, so
+                        // no future heartbeat can succeed.
+                        //
+                        // Previously this only logged and kept looping every 30s.
+                        // The `!resp.valid` teardown above is unreachable in this
+                        // situation, because a dead session yields an Error, never a
+                        // successful body — so the tunnel was never torn down. That
+                        // is the dangerous part: the server had already deleted the
+                        // WireGuard peer, so the user sat behind a BLACKHOLED tunnel
+                        // believing they were protected, while the loop burned a
+                        // request every 30s.
+                        //
+                        // Restricted to 401 on purpose. Transient failures (5xx,
+                        // timeouts, a lost mobile signal) must NOT drop a working
+                        // tunnel — those keep looping exactly as before.
+                        if (result.code == 401) {
+                            android.util.Log.w("VpnManager", "Heartbeat: session dead, tearing down tunnel")
+                            withContext(Dispatchers.Main) {
+                                disconnect()
+                                _state.value = VpnState.Error("Session expired — please sign in again")
+                            }
+                            break
+                        }
                     }
                 }
 
