@@ -80,7 +80,7 @@ class BirdoRepositoryTest {
     // ── Refresh Token ───────────────────────────────────────────
 
     @Test
-    fun `refreshToken success returns true and stores new token`() = runTest {
+    fun `refreshToken success stores new token`() = runTest {
         coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
         coEvery { api.refreshToken(any()) } returns Response.success(
             RefreshResponse(accessToken = "new_access", expiresIn = 3600)
@@ -88,28 +88,42 @@ class BirdoRepositoryTest {
 
         val result = repository.refreshToken()
 
-        assertTrue(result)
+        assertEquals(RefreshOutcome.SUCCESS, result)
         verify { tokenManager.setAccessToken("new_access") }
     }
 
     @Test
-    fun `refreshToken with no refresh token returns false`() = runTest {
+    fun `refreshToken with no refresh token is unauthorized`() = runTest {
         coEvery { tokenManager.getRefreshToken() } returns null
 
         val result = repository.refreshToken()
 
-        assertFalse(result)
+        assertEquals(RefreshOutcome.UNAUTHORIZED, result)
     }
 
     @Test
-    fun `refreshToken failure returns false`() = runTest {
+    fun `refreshToken 401 is a definitive unauthorized`() = runTest {
         coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
         val errorBody = "Invalid token".toResponseBody("text/plain".toMediaType())
         coEvery { api.refreshToken(any()) } returns Response.error(401, errorBody)
 
         val result = repository.refreshToken()
 
-        assertFalse(result)
+        assertEquals(RefreshOutcome.UNAUTHORIZED, result)
+    }
+
+    @Test
+    fun `refreshToken 5xx is transient (keeps the session)`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
+        val errorBody = "boom".toResponseBody("text/plain".toMediaType())
+        coEvery { api.refreshToken(any()) } returns Response.error(503, errorBody)
+
+        val result = repository.refreshToken()
+
+        // Not UNAUTHORIZED — a definitive 401/403 would force re-login, a 5xx
+        // must not (finding #7). The stored tokens are left untouched.
+        assertEquals(RefreshOutcome.TRANSIENT, result)
+        verify(exactly = 0) { tokenManager.setAccessToken(any()) }
     }
 
     // ── Logout ──────────────────────────────────────────────────

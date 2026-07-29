@@ -237,7 +237,15 @@ data class AppUpdateInfo(
 
 @Serializable
 data class DeleteAccountRequest(
-    val password: String,
+    /**
+     * Nullable: SSO (Google/GitHub) and password-less anonymous accounts have no
+     * password, so they must be able to request erasure without one (the backend
+     * confirms deletion by the authenticated session, and only enforces a
+     * password where the account actually has one). Requiring a non-null
+     * password here previously stranded that entire cohort's GDPR Art. 17 right
+     * to erasure on Android, while iOS already sent nil.
+     */
+    val password: String? = null,
 )
 
 @Serializable

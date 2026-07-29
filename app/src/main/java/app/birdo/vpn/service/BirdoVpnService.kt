@@ -283,6 +283,10 @@ class BirdoVpnService : VpnService() {
         // and don't ask to be restarted again.
         if (intent?.action == null) {
             Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
+            // The tunnel is down (the OS killed and is restarting us). The widget
+            // pref survives process death, so without this the home-screen widget
+            // keeps showing a green "Protected" for a VPN that is no longer up.
+            updateWidgetState(false, null)
             startForeground(
                 VpnNotificationManager.NOTIFICATION_ID,
                 notifManager.buildForegroundNotification("Disconnected"),
@@ -1134,6 +1138,12 @@ class BirdoVpnService : VpnService() {
                 // clears it on a successful connect), matching the desktop
                 // client's behaviour on the same drop.
                 if (isKillSwitchEnabled) activateKillSwitch()
+                // The tunnel is no longer carrying traffic — clear the widget's
+                // "Protected" so it doesn't keep asserting a connection through
+                // the whole reconnect window (or indefinitely on a permanent
+                // stall). Unconditional: even with the kill switch OFF the tunnel
+                // is down, so a green widget would be a false safety signal.
+                updateWidgetState(false, null)
                 updateState(VpnState.Error("Connection lost — reconnecting…"))
             },
         ).also { it.start() }

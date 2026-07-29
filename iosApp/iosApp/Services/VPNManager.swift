@@ -454,7 +454,17 @@ final class VPNManager: @unchecked Sendable {
         // the full-tunnel pair; if it sent none, fall back to it rather than
         // building a tunnel that silently carries nothing (matches Android's
         // `?: listOf("0.0.0.0/0", "::/0")` plus its allowed-IP count check).
-        let allowedIPs = config.allowedIPs.isEmpty ? ["0.0.0.0/0", "::/0"] : config.allowedIPs
+        var allowedIPs = config.allowedIPs.isEmpty ? ["0.0.0.0/0", "::/0"] : config.allowedIPs
+        // Force an IPv6 default even when the server list is a non-empty IPv4-only
+        // set (our exit nodes are IPv4-only, so the backend often sends just
+        // ["0.0.0.0/0"]). Without ::/0 in AllowedIPs, WireGuardKit installs no
+        // IPv6 route, so with the kill switch OFF all IPv6 traffic + AAAA lookups
+        // egress outside the tunnel — the real-IPv6 leak Android already blocks
+        // by unconditionally adding `::/0` (BirdoVpnService.buildVpnInterface).
+        // ::/0 with no tunnel v6 address blackholes IPv6 (leak-safe).
+        if !allowedIPs.contains(where: { Self.isIPv6DefaultRoute($0) }) {
+            allowedIPs.append("::/0")
+        }
         for ip in allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
@@ -502,6 +512,19 @@ final class VPNManager: @unchecked Sendable {
             return true
         }
         return false
+    }
+
+    /// True if an AllowedIPs entry is the IPv6 default route (`::/0`), tolerating
+    /// surrounding whitespace and the `0::/0` spelling. Used to decide whether the
+    /// server already captures IPv6 before we append our own blackhole route.
+    static func isIPv6DefaultRoute(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard let slash = trimmed.firstIndex(of: "/"),
+              Int(trimmed[trimmed.index(after: slash)...]) == 0 else { return false }
+        var v6 = in6_addr()
+        let addr = String(trimmed[..<slash])
+        guard addr.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 else { return false }
+        return withUnsafeBytes(of: &v6) { $0.allSatisfy { $0 == 0 } } // :: with prefix /0
     }
 
     /// Apply the user's WireGuard port override. "auto", "custom" (the picker's
