@@ -9,6 +9,7 @@ import app.birdo.vpn.utils.InputValidator
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import retrofit2.Response
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,6 +19,15 @@ sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
     data class Error(val message: String, val code: Int = 0) : ApiResult<Nothing>()
 }
+
+/**
+ * Outcome of a token refresh. Distinguishing these is load-bearing (parity with
+ * the iOS APIClient): only a DEFINITIVE 401/403 should force the user to
+ * re-login; a transient failure (5xx, timeout, network) must keep the session,
+ * and an ABORTED refresh (a logout/delete landed while the refresh was in
+ * flight) must neither resurrect the session nor trigger a second logout.
+ */
+internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT }
 
 // ── Repository ──────────────────────────────────────────────────
 
@@ -32,6 +42,14 @@ class BirdoRepository @Inject constructor(
      * parallel refreshes that would invalidate each other's tokens.
      */
     private val refreshMutex = Mutex()
+
+    /**
+     * Monotonic session generation. Bumped on logout()/deleteAccount() so an
+     * in-flight refreshToken() that started before the sign-out can detect it
+     * completed too late and drop its rotated tokens instead of resurrecting a
+     * signed-out session on disk (parity with iOS APIClient's SessionGeneration).
+     */
+    private val sessionGeneration = AtomicLong(0)
 
     // ── Server cache ─────────────────────────────────────────────
 
@@ -171,22 +189,46 @@ class BirdoRepository @Inject constructor(
         }
     }
 
-    /** FIX C-1: Persist rotated refresh token from refresh response */
-    suspend fun refreshToken(): Boolean = refreshMutex.withLock {
-        val refreshToken = tokenManager.getRefreshToken() ?: return@withLock false
+    /**
+     * FIX C-1: Persist rotated refresh token from refresh response.
+     * Fences against a concurrent logout/delete (finding #6) and separates a
+     * definitive 401/403 from a transient failure (finding #7).
+     */
+    internal suspend fun refreshToken(): RefreshOutcome = refreshMutex.withLock {
+        val presented = tokenManager.getRefreshToken() ?: return@withLock RefreshOutcome.UNAUTHORIZED
+        // Captured BEFORE the network round-trip; compared after, so a sign-out
+        // that lands mid-flight is detected.
+        val genAtStart = sessionGeneration.get()
         return@withLock try {
-            val response = api.refreshToken(RefreshRequest(refreshToken))
+            val response = api.refreshToken(RefreshRequest(presented))
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
-                tokenManager.setAccessToken(body.accessToken)
-                // FIX C-1: Store rotated refresh token if returned by backend
-                body.refreshToken?.let { tokenManager.setRefreshToken(it) }
-                true
+                // Logout fence + CAS: if a logout/delete bumped the generation,
+                // or the stored refresh token no longer matches the one we
+                // presented, a sign-out (or a competing refresh) landed while we
+                // were in flight — drop the rotated pair rather than re-persist
+                // a signed-out session. Treated as TRANSIENT so it neither forces
+                // a second logout nor resurrects the session.
+                if (sessionGeneration.get() != genAtStart ||
+                    tokenManager.getRefreshToken() != presented
+                ) {
+                    RefreshOutcome.TRANSIENT
+                } else {
+                    tokenManager.setAccessToken(body.accessToken)
+                    // FIX C-1: Store rotated refresh token if returned by backend
+                    body.refreshToken?.let { tokenManager.setRefreshToken(it) }
+                    RefreshOutcome.SUCCESS
+                }
+            } else if (response.code() == 401 || response.code() == 403) {
+                // Definitive: the refresh token itself is rejected/revoked.
+                RefreshOutcome.UNAUTHORIZED
             } else {
-                false
+                // 5xx / unexpected status — the credentials may still be valid.
+                RefreshOutcome.TRANSIENT
             }
         } catch (_: Exception) {
-            false
+            // Network error / timeout — transient, keep the session.
+            RefreshOutcome.TRANSIENT
         }
     }
 
@@ -258,6 +300,9 @@ class BirdoRepository @Inject constructor(
     }
 
     suspend fun logout() {
+        // Bump BEFORE clearing so an in-flight refresh that completes after this
+        // point sees the new generation and drops its rotated tokens (finding #6).
+        sessionGeneration.incrementAndGet()
         try { api.logout() } catch (_: Exception) { /* best effort */ }
         tokenManager.clearAll()
         invalidateServerCache()
@@ -269,14 +314,20 @@ class BirdoRepository @Inject constructor(
      * Requires password re-confirmation to prevent deletion via stolen JWT.
      * On success, clears all local tokens and cached data.
      */
-    suspend fun deleteAccount(password: String): ApiResult<DeleteAccountResponse> {
+    suspend fun deleteAccount(password: String?): ApiResult<DeleteAccountResponse> {
         val result = withAutoRefresh("Account deletion failed") {
             api.deleteAccount(DeleteAccountRequest(password))
         }
         if (result is ApiResult.Success) {
-            // Clear local state — account no longer exists on the server
+            // Clear local state — account no longer exists on the server.
+            // Bump the generation to fence any in-flight refresh (finding #6),
+            // and invalidate BOTH caches so the next account on this device can
+            // never briefly read the deleted account's plan (finding #15) — the
+            // server cache was already cleared, the subscription cache was not.
+            sessionGeneration.incrementAndGet()
             tokenManager.clearAll()
             invalidateServerCache()
+            invalidateSubscriptionCache()
         }
         return result
     }
@@ -298,15 +349,22 @@ class BirdoRepository @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 ApiResult.Success(response.body()!!)
             } else if (response.code() == 401) {
-                if (refreshToken()) {
-                    val retry = call()
-                    if (retry.isSuccessful && retry.body() != null) {
-                        ApiResult.Success(retry.body()!!)
-                    } else {
-                        ApiResult.Error("Session expired", 401)
+                when (refreshToken()) {
+                    RefreshOutcome.SUCCESS -> {
+                        val retry = call()
+                        if (retry.isSuccessful && retry.body() != null) {
+                            ApiResult.Success(retry.body()!!)
+                        } else {
+                            ApiResult.Error("Session expired", 401)
+                        }
                     }
-                } else {
-                    ApiResult.Error("Session expired", 401)
+                    // Definitive: the refresh token is dead → force re-login.
+                    RefreshOutcome.UNAUTHORIZED -> ApiResult.Error("Session expired", 401)
+                    // Transient (5xx/timeout/network) or a logout landed mid-flight:
+                    // keep the session. A non-401 code means checkSession() will
+                    // NOT sign the user out (finding #7).
+                    RefreshOutcome.TRANSIENT ->
+                        ApiResult.Error("Service temporarily unavailable", 503)
                 }
             } else {
                 ApiResult.Error(
@@ -594,12 +652,15 @@ class BirdoRepository @Inject constructor(
             if (response.isSuccessful) {
                 ApiResult.Success(Unit)
             } else if (response.code() == 401) {
-                if (refreshToken()) {
-                    val retry = api.deletePortForward(id)
-                    if (retry.isSuccessful) ApiResult.Success(Unit)
-                    else ApiResult.Error("Session expired", 401)
-                } else {
-                    ApiResult.Error("Session expired", 401)
+                when (refreshToken()) {
+                    RefreshOutcome.SUCCESS -> {
+                        val retry = api.deletePortForward(id)
+                        if (retry.isSuccessful) ApiResult.Success(Unit)
+                        else ApiResult.Error("Session expired", 401)
+                    }
+                    RefreshOutcome.UNAUTHORIZED -> ApiResult.Error("Session expired", 401)
+                    RefreshOutcome.TRANSIENT ->
+                        ApiResult.Error("Service temporarily unavailable", 503)
                 }
             } else {
                 ApiResult.Error("Failed to delete port forward", response.code())

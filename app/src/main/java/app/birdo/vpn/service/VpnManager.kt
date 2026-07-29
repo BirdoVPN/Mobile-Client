@@ -441,6 +441,11 @@ class VpnManager @Inject constructor(
             publicKey = config.publicKey,
             presharedKey = config.presharedKey,
             assignedIp = config.assignedIp,
+            // Preserve the tunnel IPv6 address on multi-hop too — omitting it
+            // left ConnectResponse.clientIpv6 null, so buildVpnInterface never
+            // added a v6 address and IPv6 was blackholed for the whole session
+            // even through an IPv6-enabled exit (single-hop already carries it).
+            clientIpv6 = config.clientIpv6,
             serverPublicKey = config.serverPublicKey,
             endpoint = config.endpoint,
             dns = config.dns,

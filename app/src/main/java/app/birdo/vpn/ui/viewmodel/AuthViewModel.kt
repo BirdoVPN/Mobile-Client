@@ -370,17 +370,27 @@ class AuthViewModel @Inject constructor(
 
     /**
      * GDPR Art. 17: Delete the user's account permanently.
-     * Requires password re-confirmation for security.
+     *
+     * Password re-confirmation is required ONLY for accounts that actually have
+     * a password. SSO (Google/GitHub) and password-less anonymous accounts have
+     * none, so demanding one here previously made erasure impossible for that
+     * entire cohort (the dialog shows no password field yet the ViewModel
+     * rejected the blank value). Gate on `hasPassword`, matching the UI
+     * (ProfileScreen `requiresPassword = user?.hasPassword ?: true`) and iOS.
      */
     fun deleteAccount(password: String) {
-        if (!InputValidator.isValidPassword(password)) {
+        val requiresPassword = _uiState.value.user?.hasPassword ?: true
+        if (requiresPassword && !InputValidator.isValidPassword(password)) {
             _uiState.value = _uiState.value.copy(deleteAccountError = "Please enter your password")
             return
         }
+        // Send null for password-less accounts so the backend takes the
+        // session-authenticated path rather than a blank-password comparison.
+        val submitted: String? = if (requiresPassword) password else password.ifBlank { null }
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null)
-            when (val result = repository.deleteAccount(password)) {
+            when (val result = repository.deleteAccount(submitted)) {
                 is ApiResult.Success -> {
                     _uiState.value = AuthUiState(
                         isLoggedIn = false,
