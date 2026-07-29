@@ -219,8 +219,38 @@ class BirdoRepository @Inject constructor(
                     body.refreshToken?.let { tokenManager.setRefreshToken(it) }
                     RefreshOutcome.SUCCESS
                 }
-            } else if (response.code() == 401 || response.code() == 403) {
-                // Definitive: the refresh token itself is rejected/revoked.
+            } else if (response.code() == 401) {
+                // Definitive: the server rejected this refresh token — so DISCARD it.
+                //
+                // Not clearing it is what turned one dead token into a storm. The
+                // VPN heartbeat runs every 30s and, on 401, called refreshToken()
+                // with the SAME stored token, forever: nothing here cleared it and
+                // the loop only logs the failure. Server-side, every replay of a
+                // consumed jti re-ran reuse detection and revoked the account's
+                // sessions AND every WireGuard peer — four revocations in one
+                // minute in production on 2026-07-28, for one anonymous session,
+                // while the user sat behind a tunnel whose peer was already gone.
+                //
+                // The server is now idempotent about this, but the client must not
+                // replay either: already-shipped app versions cannot be fixed by a
+                // release, so both halves need to hold on their own.
+                //
+                // Bump BEFORE clearing, matching logout()/deleteAccount(): an
+                // in-flight refresh completing after this point then sees the new
+                // generation and drops its rotated tokens instead of resurrecting
+                // a dead session.
+                sessionGeneration.incrementAndGet()
+                tokenManager.clearAll()
+                RefreshOutcome.UNAUTHORIZED
+            } else if (response.code() == 403) {
+                // Also non-retryable, but deliberately does NOT destroy the tokens.
+                // A 403 on this path is not always the token's fault: an
+                // infrastructure-level block returns it too — the Caddy client-ip
+                // regression put every user into one rate-limit bucket and the API
+                // answered 403 across the board. Wiping credentials on that would
+                // have irrecoverably signed out the entire userbase during an
+                // outage that had nothing to do with their tokens. Sign out, but
+                // leave the tokens alone so recovery is possible.
                 RefreshOutcome.UNAUTHORIZED
             } else {
                 // 5xx / unexpected status — the credentials may still be valid.
@@ -355,7 +385,20 @@ class BirdoRepository @Inject constructor(
                         if (retry.isSuccessful && retry.body() != null) {
                             ApiResult.Success(retry.body()!!)
                         } else {
-                            ApiResult.Error("Session expired", 401)
+                            // Do NOT hard-code 401 here. The refresh SUCCEEDED, so
+                            // the session is demonstrably valid — the retry failed
+                            // for some other reason. Reporting 401 made
+                            // checkSession() sign the user out of a perfectly good
+                            // session over a transient 5xx or a timeout on the
+                            // retry, which is the same false-logout class the
+                            // TRANSIENT outcome below exists to prevent.
+                            // Propagate the retry's real status instead.
+                            ApiResult.Error(
+                                InputValidator.sanitizeErrorMessage(
+                                    retry.errorBody()?.string(), errorFallback
+                                ),
+                                retry.code(),
+                            )
                         }
                     }
                     // Definitive: the refresh token is dead → force re-login.
