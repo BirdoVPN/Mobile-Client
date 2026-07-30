@@ -49,6 +49,10 @@ class AuthViewModelTest {
         tokenManager = mockk(relaxed = true)
         oauthStore = mockk(relaxed = true)
         io.mockk.every { tokenManager.isLoggedIn() } returns true
+        // Default: no anonymous ID awaiting acknowledgement. Stubbed explicitly
+        // because a non-null value here deliberately holds sign-in back, which
+        // would silently change the meaning of every login test below.
+        io.mockk.every { tokenManager.getPendingAnonymousId() } returns null
         // Default: no existing session
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
     }
@@ -983,5 +987,165 @@ class AuthViewModelTest {
         assertNull(default.user)
         assertFalse(default.requiresTwoFactor)
         assertNull(default.challengeToken)
+        assertNull(default.pendingAnonymousId)
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  11. ANONYMOUS ACCOUNT CREATION — the minted ID must be SHOWN
+    //
+    //  Regression guard for: registerAnonymous() read only `ok` and went
+    //  straight to fetchProfileAfterLogin(), throwing away the 24-digit ID in
+    //  the response. That ID is the account's ONLY credential (no email, no
+    //  password, no reset) and the server returns it exactly once, so the user
+    //  landed on the connected Home screen having never seen it — and the
+    //  account died permanently with the app's tokens.
+    // ═════════════════════════════════════════════════════════════
+
+    private val mintedAnonId = "123456789012345678901234"
+
+    private fun anonRegisterSuccess(id: String? = mintedAnonId) =
+        ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = true, anonymousId = id, tokens = tokens)
+        )
+
+    @Test
+    fun `registerAnonymous surfaces the minted ID and does NOT sign in until acknowledged`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        // The user must be able to read the ID before anything navigates away.
+        assertEquals(mintedAnonId, state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        assertFalse(state.isLoading)
+        assertNull(state.error)
+        // Post-login flow held back: getProfile ran once, during init's
+        // checkSession, and NOT again for this registration.
+        coVerify(exactly = 1) { repository.getProfile() }
+    }
+
+    @Test
+    fun `registerAnonymous persists the minted ID so process death mid-dialog cannot swallow it`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+
+        viewModel.registerAnonymous()
+
+        // Written to encrypted storage BEFORE it is shown: the register call has
+        // already stored tokens, so an app kill here would otherwise resume into
+        // Home with the ID gone forever.
+        io.mockk.verify { tokenManager.setPendingAnonymousId(mintedAnonId) }
+        io.mockk.verify(exactly = 0) { tokenManager.clearPendingAnonymousId() }
+    }
+
+    @Test
+    fun `acknowledgeAnonymousId clears the pending ID and completes sign-in`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+        viewModel.registerAnonymous()
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.acknowledgeAnonymousId()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertTrue(state.isLoggedIn)
+        assertFalse(state.isLoading)
+        io.mockk.verify { tokenManager.clearPendingAnonymousId() }
+    }
+
+    @Test
+    fun `acknowledgeAnonymousId twice does not fetch the profile twice`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+        viewModel.registerAnonymous()
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.acknowledgeAnonymousId()
+        viewModel.acknowledgeAnonymousId() // double-tap on "I've saved it"
+
+        // 1 from init's checkSession + exactly 1 from the acknowledged sign-in.
+        coVerify(exactly = 2) { repository.getProfile() }
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+    }
+
+    @Test
+    fun `acknowledgeAnonymousId with nothing pending is a safe no-op`() = runTest {
+        viewModel = createLoggedOutViewModel()
+
+        viewModel.acknowledgeAnonymousId()
+
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+        // Only init's checkSession — no stray post-login flow for other auth paths.
+        coVerify(exactly = 1) { repository.getProfile() }
+    }
+
+    @Test
+    fun `an unacknowledged ID from a previous process is re-shown instead of resuming into Home`() = runTest {
+        // Process death while the save-your-ID dialog was up. The tokens from
+        // that registration are valid, so the fast cold start would have routed
+        // straight to Home and the ID would never have been shown again.
+        io.mockk.every { tokenManager.isLoggedIn() } returns true
+        io.mockk.every { tokenManager.getPendingAnonymousId() } returns mintedAnonId
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel = createViewModel()
+
+        val state = viewModel.uiState.value
+        assertEquals(mintedAnonId, state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        // checkSession must not run: a successful profile fetch would flip
+        // isLoggedIn and navigate away from the dialog.
+        coVerify(exactly = 0) { repository.getProfile() }
+    }
+
+    @Test
+    fun `registerAnonymous with no ID in the response signs in rather than stranding the user`() = runTest {
+        // Should never happen, but tokens are already stored at this point, so
+        // blocking on an ID we don't have would leave the user stuck on Login.
+        // The Profile tab still derives the number from the synthetic
+        // anon_<id>@anonymous.local email.
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess(id = null)
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertTrue(state.isLoggedIn)
+        io.mockk.verify(exactly = 0) { tokenManager.setPendingAnonymousId(any()) }
+    }
+
+    @Test
+    fun `registerAnonymous failure surfaces an error and leaves nothing pending`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns ApiResult.Error("Network error")
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        assertEquals("Unable to reach server. Check your connection.", state.error)
+        io.mockk.verify(exactly = 0) { tokenManager.setPendingAnonymousId(any()) }
+    }
+
+    @Test
+    fun `registerAnonymous rejected by the server surfaces an error and leaves nothing pending`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = false)
+        )
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        assertEquals("Could not create an anonymous account. Please try again.", state.error)
     }
 }

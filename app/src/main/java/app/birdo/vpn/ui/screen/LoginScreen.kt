@@ -1,5 +1,6 @@
 package app.birdo.vpn.ui.screen
 
+import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -12,9 +13,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.*
@@ -24,8 +28,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -35,9 +43,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
+import app.birdo.vpn.utils.formatAnonymousId
 import app.birdo.vpn.utils.is2faCodeComplete
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -72,6 +82,10 @@ fun LoginScreen(
     onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
     onSsoLogin: (provider: String) -> Unit = {},
     onCreateAnonymous: () -> Unit = {},
+    /** Non-null right after an in-app anonymous account was created: the minted
+     *  24-digit ID, shown once and blocking until acknowledged. */
+    pendingAnonymousId: String? = null,
+    onAcknowledgeAnonymousId: () -> Unit = {},
 ) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -86,6 +100,16 @@ fun LoginScreen(
     // Stagger animation
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
+
+    // The account already exists at this point and its 24-digit ID is the only
+    // way back into it, so this is rendered over whatever form is showing and
+    // has no dismiss path — the ViewModel holds sign-in until it is confirmed.
+    if (pendingAnonymousId != null) {
+        AnonymousIdSavedDialog(
+            anonymousId = pendingAnonymousId,
+            onAcknowledge = onAcknowledgeAnonymousId,
+        )
+    }
 
     // Scrollable + centered: centers the form when it fits, and scrolls instead
     // of CLIPPING when the content is taller than the viewport (small screens, or
@@ -806,6 +830,136 @@ fun LoginScreen(
             }
             } // end else (standard login form)
     }
+}
+
+/**
+ * "Save your account ID" step shown once, immediately after an anonymous
+ * account is created in-app.
+ *
+ * The server returns the minted 24-digit ID exactly once and it is the account's
+ * only credential — there is no email, no password and no reset. Android used to
+ * discard it and drop the user straight into the connected Home screen, so the
+ * account died with the app's tokens. Hence: no dismiss button, no tap-outside,
+ * no back-press escape, and a single explicit confirm — a toast or a snackbar is
+ * not enough, because the cost of missing it is a permanently lost account.
+ */
+@Composable
+private fun AnonymousIdSavedDialog(
+    anonymousId: String,
+    onAcknowledge: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val grouped = formatAnonymousId(anonymousId)
+
+    AlertDialog(
+        // Empty: dismissing by tapping outside or pressing back would lose the
+        // ID with the account already created. Acknowledge is the only exit.
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+        ),
+        containerColor = BirdoSurface,
+        titleContentColor = Color.White,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Key,
+                    contentDescription = null,
+                    tint = BirdoGreen,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    stringResource(R.string.anon_created_title),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                )
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    stringResource(R.string.anon_created_body),
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    color = BirdoWhite60,
+                )
+                Spacer(Modifier.height(14.dp))
+                // Tapping the block copies the RAW digits, not the grouped
+                // rendering: the login field strips non-digits anyway, but a
+                // pasted value with spaces reads as damaged to a worried user.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(BirdoWhite05)
+                        .clickable(role = Role.Button) {
+                            clipboard.setText(AnnotatedString(anonymousId))
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.anon_created_copied),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                        .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 10.dp)
+                        .testTag(TestTags.LOGIN_ANONYMOUS_CREATED_ID),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = grouped,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        lineHeight = 22.sp,
+                        fontFamily = FontFamily.Monospace,
+                        // NO maxLines/ellipsis: all 24 digits must be readable.
+                        // Wrapping onto a second line is correct here; truncating
+                        // would hide part of the only credential the user has.
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = stringResource(R.string.anon_created_copy_cd),
+                        tint = BirdoAccentSoft,
+                        modifier = Modifier.padding(8.dp).size(18.dp),
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = BirdoYellowLight,
+                        modifier = Modifier.size(16.dp).padding(top = 1.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        stringResource(R.string.anon_created_warning),
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        color = BirdoWhite40,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onAcknowledge,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                ),
+                modifier = Modifier.testTag(TestTags.LOGIN_ANONYMOUS_ACK),
+            ) {
+                Text(
+                    stringResource(R.string.anon_created_ack),
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                )
+            }
+        },
+    )
 }
 
 /** Segmented tab button for the Email | Anonymous switcher. */
