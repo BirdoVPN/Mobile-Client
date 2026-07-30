@@ -418,6 +418,138 @@ class AuthViewModelTest {
         assertEquals("Invalid email or password", viewModel.uiState.value.error)
     }
 
+    // ── 401 is not one situation ─────────────────────────────────
+    // The backend answers 401 with three different meanings, and the error
+    // BODY is what distinguishes them: Nest sends {"message":"…",
+    // "statusCode":401}, so the substring "401" is present on all of them.
+    // parseLoginError used to match "401" first and report every one of them as
+    // a wrong password, which told a locked-out user to keep retyping — the
+    // single worst instruction available — and sent a banned user hunting for a
+    // password problem that does not exist. These cases pin the real wording
+    // the server sends (auth.controller validateLoginAttempt / lockout.service).
+    //
+    // They assert the EXACT rendered sentence, not just "contains 'locked'".
+    // A contains-check would still pass if the arm degraded to something
+    // useless like "Login failed: {"message":"Account locked...","statusCode":401}"
+    // — which is precisely the raw-JSON leak the 403 case below exists to
+    // forbid — so the weaker assertion would let the fix rot into a regression
+    // while staying green.
+    private val lockedMessage =
+        "Account locked after too many failed sign-in attempts. " +
+            "Wait a few minutes before trying again, or reset your password."
+
+    @Test
+    fun `login on a locked account says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Too many failed login attempts","error":"Unauthorized","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
+    }
+
+    @Test
+    fun `login on a freshly locked account says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account locked due to multiple failed login attempts","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
+    }
+
+    /** validateUser's timed variant, which arrives as a 403 and used to fall all
+     *  the way through to "Login failed: {raw json}". */
+    @Test
+    fun `login on a timed lockout does not leak the raw error body`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account locked. Try again in 12 minutes.","statusCode":403}""",
+            403,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertFalse("raw JSON must never reach the user: $error", error!!.contains("statusCode"))
+        assertEquals(lockedMessage, error)
+    }
+
+    /** lockout.service's untimed fallback, thrown by validateUser as
+     *  'Account is locked' — a different sentence from every other lockout
+     *  wording, and the one most likely to be missed by a matcher tuned only to
+     *  "account locked". */
+    @Test
+    fun `login on an untimed lockout says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account is locked","error":"Forbidden","statusCode":403}""",
+            403,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
+    }
+
+    @Test
+    fun `login on a banned or suspended account points at support, not the password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Unable to sign in. Please contact support.","error":"Unauthorized","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals("Unable to sign in. Please contact support.", error)
+    }
+
+    /** The wrong-password case must keep working through the real body shape,
+     *  not just the bare string the older test uses. */
+    @Test
+    fun `login with a wrong password still says invalid email or password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Invalid credentials","error":"Unauthorized","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "wrongpass")
+
+        assertEquals("Invalid email or password", viewModel.uiState.value.error)
+    }
+
+    /** The IP rate limiter ("Too many login attempts, please try later") is a
+     *  DIFFERENT condition from the account lockout ("Too many FAILED login
+     *  attempts") with a different remedy. One must not be reported as the other. */
+    @Test
+    fun `login rate limited by IP is not reported as an account lockout`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Too many login attempts, please try later","statusCode":429}""",
+            429,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        assertEquals("Too many attempts. Please wait a moment.", viewModel.uiState.value.error)
+    }
+
     @Test
     fun `login network timeout shows connection error`() = runTest {
         viewModel = createLoggedOutViewModel()
