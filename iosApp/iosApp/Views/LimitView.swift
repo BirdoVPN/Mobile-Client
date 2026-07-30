@@ -253,7 +253,9 @@ struct LimitView: View {
                     .font(.system(size: 13))
                     .lineSpacing(5)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                PrimaryButton("Upgrade for unlimited", height: 48) {
+                // Destination is the informational plans screen, so the label says
+                // what it does rather than promising an upgrade it can't perform.
+                PrimaryButton("See plans with unlimited data", height: 48) {
                     showSubscription = true
                 }
             }

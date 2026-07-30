@@ -12,7 +12,7 @@
     <key>CFBundleIdentifier</key>
     <string>app.birdo.vpn.tunnel</string>
     <key>CFBundleVersion</key>
-    <string>5</string>
+    <string>16</string>
     <key>CFBundleShortVersionString</key>
     <string>1.0.0</string>
     <key>CFBundlePackageType</key>

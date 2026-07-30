@@ -38,9 +38,16 @@ struct HomeView: View {
             statusArea
                 .padding(.top, 12)
 
-            // The globe hero was not ported (no iOS WorldGlobe); the root
-            // PixelCanvas twinkles through this gap instead.
-            Spacer(minLength: 0)
+            // Globe hero — Mullvad-style rotating orthographic globe with every
+            // server pinned and the live connection arc (green when connected).
+            // Ported from the Android WorldGlobe; fills the gap between the
+            // status area and the bottom panel.
+            WorldGlobe(
+                servers: vpnVM.servers,
+                selectedServerId: vpnVM.selectedServer?.id,
+                isConnected: vpnVM.isConnected
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             bottomPanel
         }
@@ -263,6 +270,9 @@ struct HomeView: View {
         // A live server switch tears the tunnel down and rebuilds it on the new
         // node — never show "Protected" over the new name until it lands.
         if vpnVM.isSwitching { return "Switching server…" }
+        // Teardown is its own state: previously iOS kept saying "Protected" (with a
+        // live Disconnect button) for the whole duration of the drop.
+        if vpnVM.isDisconnecting { return "Disconnecting…" }
         if vpnVM.isConnected { return "Protected" }
         if vpnVM.isConnecting { return "Connecting…" }
         if vpnVM.error != nil { return "Connection Error" }
@@ -271,6 +281,7 @@ struct HomeView: View {
 
     private var statusTone: StatusBadgePill.Tone {
         if vpnVM.isSwitching { return .warning }
+        if vpnVM.isDisconnecting { return .warning }
         if vpnVM.isConnected { return .success }
         if vpnVM.isConnecting { return .warning }
         if vpnVM.error != nil { return .danger }
@@ -279,6 +290,7 @@ struct HomeView: View {
 
     private var statusIcon: String? {
         if vpnVM.isSwitching { return "arrow.triangle.2.circlepath" }
+        if vpnVM.isDisconnecting { return "arrow.triangle.2.circlepath" }
         if vpnVM.isConnected { return nil } // pulse dot instead
         if vpnVM.isConnecting { return "arrow.triangle.2.circlepath" }
         if vpnVM.error != nil { return "exclamationmark.circle" }
@@ -303,19 +315,28 @@ struct HomeView: View {
             .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.standard)),
                        value: statusText)
 
-            // Feature chips (desktop §4.4 pattern — under the pill). The kill
-            // switch chip only shows while it is ACTUALLY blocking (§3.4 item
-            // 3, killSwitchActive) — i.e. armed AND the tunnel is down, so all
-            // traffic is being blackholed — never merely because the setting is
-            // on while Protected. Quantum is the HONEST indicator — lit only
-            // when a bilateral ML-KEM PSK was derived.
-            if killSwitchActive || vpnVM.quantumActive {
+            // Feature chips (desktop §4.4 pattern — under the pill). Every chip
+            // here is an HONEST indicator: it appears only when the thing it names
+            // is actually true. Quantum lights only when a bilateral ML-KEM PSK was
+            // derived; the kill-switch chip only while a live session's re-dial rule
+            // is armed and the tunnel is momentarily down.
+            if killSwitchReconnecting || vpnVM.quantumActive || (vpnVM.isMultiHop && vpnVM.isConnected) {
                 HStack(spacing: 8) {
-                    if killSwitchActive {
-                        StatusBadgePill("Kill Switch — All traffic blocked",
-                                        tone: .danger,
-                                        icon: "shield.slash.fill")
-                            .accessibilityLabel("Kill switch — all traffic blocked")
+                    if vpnVM.isMultiHop && vpnVM.isConnected {
+                        StatusBadgePill("Double VPN",
+                                        tone: .brand,
+                                        icon: "arrow.triangle.branch")
+                            .accessibilityLabel("Multi-hop double VPN active")
+                    }
+                    if killSwitchReconnecting {
+                        // Wording matches what actually happens: on-demand re-dials
+                        // the tunnel. It does NOT blackhole traffic (that needed
+                        // includeAllNetworks, which deadlocks the tunnel on-device),
+                        // so claiming "all traffic blocked" was simply untrue.
+                        StatusBadgePill("Kill Switch — reconnecting",
+                                        tone: .warning,
+                                        icon: "shield.lefthalf.filled")
+                            .accessibilityLabel("Kill switch active — reconnecting the tunnel")
                     }
                     if vpnVM.quantumActive {
                         StatusBadgePill("Quantum",
@@ -330,15 +351,23 @@ struct HomeView: View {
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
                    value: vpnVM.quantumActive)
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
-                   value: killSwitchActive)
+                   value: killSwitchReconnecting)
+        .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
+                   value: vpnVM.isMultiHop)
     }
 
-    /// The kill switch is BLOCKING (not merely enabled) when it is armed and no
-    /// tunnel is up: on-demand + includeAllNetworks then blackholes every
-    /// packet. While Protected, traffic flows normally, so no "blocked" chip.
-    /// (Reconnecting/switching keep the tunnel down, so blocking stays true.)
-    private var killSwitchActive: Bool {
-        settingsVM.killSwitchEnabled && !vpnVM.isConnected
+    /// The kill switch is only DOING anything while a live session's on-demand
+    /// re-dial rule is armed and the tunnel is currently down — i.e. an
+    /// involuntary drop that iOS is recovering from.
+    ///
+    /// This used to read `settingsVM.killSwitchEnabled && !vpnVM.isConnected`.
+    /// The setting defaults ON, so every fresh install painted a red
+    /// "All traffic blocked" warning on Home before the user had ever connected —
+    /// when nothing was armed and nothing was blocked. `killSwitchArmed` is set
+    /// only at .connected and cleared on a user disconnect, so the chip now
+    /// appears exactly when it is true.
+    private var killSwitchReconnecting: Bool {
+        vpnVM.killSwitchArmed && !vpnVM.isConnected
     }
 
     // MARK: - Bottom Action Panel (Android §3.4)
@@ -361,6 +390,11 @@ struct HomeView: View {
                 // heartbeat revocation) — render the server's own words,
                 // never rephrase. ErrorBanner announces assertively.
                 ErrorBanner(message, icon: "exclamationmark.circle")
+            } else if let serversErr = vpnVM.serversError, vpnVM.servers.isEmpty {
+                // A failed node fetch was previously routed ONLY to the Servers
+                // screen, so Home just showed "Select Server" over an empty list
+                // with no message and no way to recover.
+                ErrorBanner(serversErr, icon: "exclamationmark.circle")
             }
 
             serverSelector
@@ -522,8 +556,8 @@ struct HomeView: View {
         .buttonStyle(PressScaleButtonStyle())
         // Android disables the selector only while connecting/disconnecting;
         // browsing while CONNECTED stays allowed (live server switch).
-        .disabled(vpnVM.isConnecting)
-        .opacity(vpnVM.isConnecting ? 0.5 : 1)
+        .disabled(vpnVM.isConnecting || vpnVM.isDisconnecting || vpnVM.isSwitching)
+        .opacity((vpnVM.isConnecting || vpnVM.isDisconnecting || vpnVM.isSwitching) ? 0.5 : 1)
         .accessibilityHint("Select server")
     }
 
@@ -535,6 +569,9 @@ struct HomeView: View {
         // A live switch is a busy state — the button must not offer
         // "Disconnect" over a half-torn-down tunnel mid-switch.
         if vpnVM.isSwitching { return .busy }
+        // Teardown is busy too: the old code kept an ENABLED "Disconnect" button
+        // through the whole drop, so a second tap re-ran disconnect().
+        if vpnVM.isDisconnecting { return .busy }
         if vpnVM.isConnected { return .connected }
         if vpnVM.isConnecting { return .busy }
         return .idle
@@ -542,6 +579,7 @@ struct HomeView: View {
 
     private var ctaLabel: String {
         if vpnVM.isSwitching { return "Switching…" }
+        if vpnVM.isDisconnecting { return "Disconnecting…" }
         switch cta {
         case .connected: return "Disconnect"
         case .busy:      return "Connecting…"

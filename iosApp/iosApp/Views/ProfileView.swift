@@ -39,6 +39,12 @@ struct ProfileView: View {
         ScrollView {
             VStack(spacing: 12) {
                 identityCard
+                // Per-screen error contract (S2): a failed plan refresh was silent
+                // here, leaving a stale (or "Free tier") card with no hint that the
+                // data never arrived. Limit and Subscription already do this.
+                if let err = vpnVM.subscriptionError {
+                    ErrorBanner(err, icon: "exclamationmark.circle")
+                }
                 subscriptionCard
 
                 sectionLabel("Account")
@@ -267,7 +273,10 @@ struct ProfileView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "creditcard")
                             .font(.system(size: 18))
-                        Text(isActive ? "Manage subscription" : "Upgrade plan")
+                        // Honest label: the destination is the INFORMATIONAL plans
+                        // screen (no purchase CTA — App Store rules forbid steering
+                        // to external payment), so promising "Upgrade" dead-ended.
+                        Text(isActive ? "View your plan" : "View plans")
                             .font(.system(size: 14, weight: .semibold))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Image(systemName: "chevron.right")

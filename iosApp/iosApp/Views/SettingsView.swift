@@ -28,28 +28,11 @@ import UIKit
 struct SettingsView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
 
-    /// Theme preference (spec §1.2). "dark" | "light" | "system", default
-    /// "system". Persisted view-local so it survives without ViewModel churn;
-    /// re-theming the running UI is deferred until the light palette ships.
-    @AppStorage("app_theme") private var appTheme = "system"
-
-    /// Master connection-notifications preference (spec §1.7), default ON.
-    @AppStorage("notifications_enabled") private var notificationsEnabled = true
-
-    private let themeOptions = ["dark", "light", "system"]
-
-    private var themeIndexBinding: Binding<Int> {
-        Binding(
-            get: { themeOptions.firstIndex(of: appTheme) ?? 2 },
-            set: { newIndex in
-                let value = themeOptions.indices.contains(newIndex) ? themeOptions[newIndex] : "system"
-                if value != appTheme {
-                    UISelectionFeedbackGenerator().selectionChanged()
-                    appTheme = value
-                }
-            }
-        )
-    }
+    // REMOVED: the Appearance/theme control and the "Notifications" master toggle.
+    // Both were dead. The app is pinned to dark (`BirdoVPNApp.preferredColorScheme(.dark)`)
+    // and no light palette exists, so "Light" and "System" silently did nothing;
+    // and no notification code ships on iOS, so that switch persisted a value
+    // nothing read. They return when the feature behind them does.
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -61,9 +44,6 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionHeader("Appearance")
-                    themeCard
-
                     SectionHeader("Security")
                     SettingsToggleRow(icon: "faceid", iconColor: BirdoTheme.green,
                                       title: "Biometric Lock",
@@ -75,13 +55,22 @@ struct SettingsView: View {
                                       isOn: $settingsVM.autoConnect)
 
                     SectionHeader("Notifications")
-                    SettingsToggleRow(icon: "bell", iconColor: BirdoTheme.yellow,
-                                      title: "Notifications",
-                                      isOn: $notificationsEnabled)
+                    // The in-app "Notifications" master toggle was REMOVED: iOS
+                    // ships no notification code, so the switch persisted a value
+                    // nothing ever read — a control that silently does nothing is
+                    // worse than no control (the same rule SettingsViewModel already
+                    // applied when it dropped the dead stealth toggle). The system
+                    // link below is the real, working affordance.
                     SettingsLinkButton(icon: "bell.badge", iconColor: BirdoTheme.white60,
                                        title: "Notification Settings",
                                        trailing: "arrow.up.forward.square") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                        // Deep-link to THIS app's notification page (iOS 16+), which
+                        // is what the row claims to do; the generic Settings root is
+                        // only the fallback.
+                        let target = UIApplication.openNotificationSettingsURLString
+                        if let url = URL(string: target), UIApplication.shared.canOpenURL(url) {
+                            UIApplication.shared.open(url)
+                        } else if let url = URL(string: UIApplication.openSettingsURLString) {
                             UIApplication.shared.open(url)
                         }
                     }
@@ -132,27 +121,6 @@ struct SettingsView: View {
                 .frame(height: 1)
         }
         .background(BirdoTheme.glassStrong.ignoresSafeArea(edges: .top))
-    }
-
-    // MARK: - Theme (spec §1.2)
-
-    /// Theme row + segmented control. The segmented choice is persisted; only
-    /// "Dark" currently re-themes (light palette deferred, owner decision).
-    private var themeCard: some View {
-        BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    SettingsIconChip(icon: "paintpalette", color: BirdoTheme.accent)
-                    SettingsRowText(title: "Theme")
-                    Spacer(minLength: 8)
-                }
-                SegmentedTabs(
-                    items: ["Dark", "Light", "System"],
-                    selection: themeIndexBinding,
-                    style: .accent
-                )
-            }
-        }
     }
 
     // MARK: - About (not tappable)

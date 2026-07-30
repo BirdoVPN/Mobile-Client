@@ -50,6 +50,26 @@ final class VpnViewModel: ObservableObject {
     /// UI never paints the Connected dot on a server the user merely tapped. nil
     /// unless a live session exists. (Review #3 — the live-switch truth fix.)
     @Published private(set) var connectedServerId: String?
+    /// True when the live session is a Multi-Hop (double VPN) route. Drives the
+    /// "Double VPN" indicator and, crucially, makes a settings-reapply rebuild
+    /// the double tunnel instead of silently collapsing it to single-hop.
+    @Published private(set) var isMultiHop = false
+    /// True only while a LIVE session's on-demand re-dial rule is actually armed
+    /// (armed at .connected, cleared on a user disconnect). The Home chip must key
+    /// off this, never off the raw kill-switch SETTING: the setting defaults ON, so
+    /// keying off it painted a red "kill switch" warning on every fresh install
+    /// before the user had ever connected — when nothing was armed and nothing was
+    /// being blocked.
+    @Published private(set) var killSwitchArmed = false
+    /// True while the tunnel is tearing down. iOS otherwise keeps reporting
+    /// "Protected" with an enabled Disconnect button through the whole teardown.
+    @Published private(set) var isDisconnecting = false
+    /// The entry/exit node ids of the Multi-Hop route. Published + persisted so
+    /// the picker can bind to them (the armed route survives dismissing the sheet
+    /// AND a process restart, matching Android's persisted MultiHopSelection) and
+    /// so reapplySettings() can reconnect the SAME double tunnel.
+    @Published private(set) var multiHopEntryId: String?
+    @Published private(set) var multiHopExitId: String?
     /// True from the start of a live server switch until the new node reaches
     /// .connected (or the switch fails), so Home shows "Switching…" instead of a
     /// premature "Protected" over the new name.
@@ -101,6 +121,10 @@ final class VpnViewModel: ObservableObject {
         if let ids = UserDefaults.standard.stringArray(forKey: "favorite_servers") {
             favoriteIds = Set(ids)
         }
+        // Load the armed Multi-Hop route so the picker still shows it after the
+        // sheet is dismissed or the app is relaunched (Android parity).
+        multiHopEntryId = UserDefaults.standard.string(forKey: "multi_hop_entry_node")
+        multiHopExitId = UserDefaults.standard.string(forKey: "multi_hop_exit_node")
 
         // Reclaim the connection handle across a process restart: the tunnel
         // extension outlives the app, so the session this handle names may
@@ -213,8 +237,18 @@ final class VpnViewModel: ObservableObject {
     // MARK: - Connection
 
     func connect() {
+        // Quick-connect (Android parity): tapping Connect with nothing selected
+        // should pick the best usable node, not refuse. Only a genuinely empty
+        // list is an error — and then kick a refresh so the user has a way out
+        // instead of a dead end.
+        if selectedServer == nil {
+            selectedServer = servers.first { $0.isOnline && $0.accessible }
+        }
         guard let server = selectedServer else {
-            error = "Select a server first"
+            error = servers.isEmpty
+                ? "Couldn't load servers. Retrying…"
+                : "No available servers right now. Please try again shortly."
+            if servers.isEmpty { loadServers(forceRefresh: true) }
             return
         }
         // Re-entrancy guard, matching the Android VpnViewModel: a second tap
@@ -223,6 +257,10 @@ final class VpnViewModel: ObservableObject {
         guard !isConnecting else { return }
         isConnecting = true
         error = nil
+        // Single-hop session: a reapply/switch must treat this as a normal
+        // connection. The armed route ids persist (Android parity) so the Multi-Hop
+        // picker still remembers the pair — only isMultiHop describes THIS session.
+        isMultiHop = false
 
         Task {
             do {
@@ -289,14 +327,39 @@ final class VpnViewModel: ObservableObject {
         }
     }
 
+    /// Arm (and persist) a Multi-Hop route without connecting. The picker calls
+    /// this so the pair survives dismissing the sheet and a relaunch.
+    func setMultiHopRoute(entryId: String?, exitId: String?) {
+        multiHopEntryId = entryId
+        multiHopExitId = exitId
+        let d = UserDefaults.standard
+        if let entryId { d.set(entryId, forKey: "multi_hop_entry_node") } else { d.removeObject(forKey: "multi_hop_entry_node") }
+        if let exitId { d.set(exitId, forKey: "multi_hop_exit_node") } else { d.removeObject(forKey: "multi_hop_exit_node") }
+    }
+
     func connectMultiHop(entryId: String, exitId: String) {
         // Same re-entrancy guard as connect(): the multi-hop sheet dismisses on
         // tap but does not disable its button on `isConnecting`.
         guard !isConnecting else { return }
         isConnecting = true
         error = nil
+        // Track the route + reflect the EXIT node as the "selected" server so the
+        // whole connected UI (Home status, globe arc + pin, connectedServerId)
+        // shows where the user actually egresses. The entry is an internal hop.
+        isMultiHop = true
+        setMultiHopRoute(entryId: entryId, exitId: exitId)
+        if let exit = servers.first(where: { $0.id == exitId }) { selectedServer = exit }
 
         Task {
+            // Switching INTO multi-hop from a live single-hop tunnel must tear the
+            // old one down first, exactly as selectServerLive() does — otherwise the
+            // new session races the old one and the old server slot leaks.
+            if isConnected {
+                let stale = activeKeyId
+                vpnManager.disconnect()
+                if let stale { Task.detached { try? await APIClient.shared.disconnect(keyId: stale) } }
+                try? await Task.sleep(for: .milliseconds(600))
+            }
             do {
                 let config = try await api.getMultiHopConfig(entryId: entryId, exitId: exitId)
                 setActiveKeyId(config.keyId)
@@ -341,7 +404,13 @@ final class VpnViewModel: ObservableObject {
             // kill the rebuilt tunnel.
             try? await Task.sleep(for: .milliseconds(600))
             guard let self, self.isReapplyingSettings else { return }
-            self.connect()
+            // Rebuild the SAME shape: a Multi-Hop session must not collapse into a
+            // single-hop one just because the user toggled a tunnel setting.
+            if self.isMultiHop, let entry = self.multiHopEntryId, let exit = self.multiHopExitId {
+                self.connectMultiHop(entryId: entry, exitId: exit)
+            } else {
+                self.connect()
+            }
         }
     }
 
@@ -474,20 +543,22 @@ final class VpnViewModel: ObservableObject {
             // defaults ON, matching VPNManager.connect().
             let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
             vpnManager.applyKillSwitchFlag(killSwitch)
+            // The re-dial rule is live from here until a user disconnect, so this
+            // is the ONLY window in which the kill switch is doing anything.
+            killSwitchArmed = killSwitch
+            isDisconnecting = false
+            // A successful connect retires any stale failure text — otherwise the
+            // status pill stayed red on "Connection Error" indefinitely.
+            error = nil
             startStatsTimer()
             startHeartbeat()
         case .connecting, .reasserting:
             isConnecting = true
+            isDisconnecting = false
         case .disconnected, .invalid:
-            // DIAG (temporary): surface the extension's last-outcome breadcrumb
-            // so an on-device connect loop shows its actual cause. If the tunnel
-            // failed to start, this reads e.g. "private key missing…" / "adapter
-            // failed: dnsResolution…". Only overwrite when we were mid-connect.
-            if isConnecting || isConnected, let diag = vpnManager.readLastTunnelDiag() {
-                error = "Tunnel: \(diag)"
-            }
             isConnected = false
             isConnecting = false
+            isDisconnecting = false
             quantumActive = false
             connectedSince = nil
             // Match disconnect(): an OS-initiated drop must not leave the last
@@ -503,6 +574,7 @@ final class VpnViewModel: ObservableObject {
             // server-side revocation clears the handle.
         case .disconnecting:
             isConnecting = false
+            isDisconnecting = true
         @unknown default:
             break
         }
@@ -511,9 +583,17 @@ final class VpnViewModel: ObservableObject {
     private func resetSessionState() {
         isConnected = false
         isConnecting = false
+        isDisconnecting = false
+        // A user disconnect disarms the on-demand rule (VPNManager.disconnect), so
+        // the kill switch is no longer doing anything — the Home chip must go.
+        killSwitchArmed = false
         quantumActive = false
         connectedSince = nil
         connectedServerId = nil
+        isMultiHop = false
+        // NOTE: multiHopEntryId/ExitId deliberately SURVIVE a disconnect (and are
+        // persisted) so the picker still shows the last armed route, matching
+        // Android. Only an explicit re-pick changes them.
         isSwitching = false
         bytesReceived = 0
         bytesSent = 0

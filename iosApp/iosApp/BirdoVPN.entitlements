@@ -8,6 +8,13 @@
     </array>
     <key>com.apple.security.personal-vpn</key>
     <true/>
+    <!-- Sign in with Apple. The App ID capability and the "Birdo VPN AppStore v2"
+         provisioning profile both carry this; adding the entitlement without them
+         breaks code signing outright, so the three must move together. -->
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>

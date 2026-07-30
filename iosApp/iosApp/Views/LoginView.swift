@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AuthenticationServices
 
 /// The auth screen — Email | Anonymous | SSO tabs, the shared 2FA step and the
 /// minted-anonymous-ID acknowledgment. Rebuilt to the Android reference flow
@@ -206,6 +207,10 @@ struct LoginView: View {
                            onSubmit: { focusedField = .password })
                 .focused($focusedField, equals: .email)
                 .accessibilityIdentifier("login_email_field")
+                .onChange(of: email) { _, _ in
+                    // Clear the stale failure as soon as the user starts fixing it.
+                    if authVM.error != nil { authVM.error = nil }
+                }
                 .loginEntrance(entered, delay: 0.25)
 
             BirdoTextField("Password",
@@ -218,6 +223,9 @@ struct LoginView: View {
                 .focused($focusedField, equals: .password)
                 .padding(.top, 14)
                 .accessibilityIdentifier("login_password_field")
+                .onChange(of: password) { _, _ in
+                    if authVM.error != nil { authVM.error = nil }
+                }
                 .loginEntrance(entered, delay: 0.28)
 
             PrimaryButton("Initialize Uplink",
@@ -255,6 +263,21 @@ struct LoginView: View {
                     // Digits only, hard cap 24 (spec §3a).
                     let filtered = String(newValue.filter(\.isNumber).prefix(24))
                     if filtered != newValue { anonymousId = filtered }
+                    // Retyping retires the previous failure — otherwise the red
+                    // banner stayed pinned above an already-corrected form.
+                    if authVM.error != nil { authVM.error = nil }
+                }
+                // `.numberPad` has NO return key, so there was no way to leave this
+                // field but a blind tap outside. Give the keypad an explicit Next.
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        if focusedField == .anonymousId {
+                            Spacer()
+                            Button("Next") { focusedField = .anonymousPassword }
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(BirdoTheme.accent)
+                        }
+                    }
                 }
                 .loginEntrance(entered, delay: 0.25)
 
@@ -262,8 +285,12 @@ struct LoginView: View {
                            placeholder: "••••••••",
                            text: $anonymousPassword,
                            isSecure: true,
+                           textContentType: .password,   // enables Keychain AutoFill
                            submitLabel: .done,
                            onSubmit: submitAnonymousLogin)
+                .onChange(of: anonymousPassword) { _, _ in
+                    if authVM.error != nil { authVM.error = nil }
+                }
                 .focused($focusedField, equals: .anonymousPassword)
                 .padding(.top, 14)
                 .accessibilityIdentifier("login_anonymous_password_field")
@@ -309,6 +336,24 @@ struct LoginView: View {
 
     private var ssoTab: some View {
         VStack(spacing: 0) {
+            // Sign in with Apple, first: App Store guideline 4.8 expects an
+            // equivalent privacy-focused option wherever third-party SSO is
+            // offered. Apple's own control is used because their HIG requires
+            // that exact styling — a custom-drawn lookalike is a rejection risk.
+            SignInWithAppleButton(.continue) { request in
+                // Apple returns these only on the FIRST authorization; the
+                // backend therefore keys accounts on the stable `sub`.
+                request.requestedScopes = [.email, .fullName]
+            } onCompletion: { result in
+                authVM.handleAppleAuthorization(result)
+            }
+            .signInWithAppleButtonStyle(.white)
+            .frame(height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: BirdoTheme.Radius.md))
+            .accessibilityIdentifier("login_sso_apple")
+            .loginEntrance(entered, delay: 0.22)
+            .padding(.bottom, 10)
+
             ssoButton("Continue with Google") {
                 authVM.loginWithSSO(provider: .google)
             }

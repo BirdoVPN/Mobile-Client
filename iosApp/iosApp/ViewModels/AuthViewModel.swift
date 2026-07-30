@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AuthenticationServices
 
 /// Auth-method tabs on the Login screen. Labels (exact): `Email` |
 /// `Anonymous` | `SSO`. Hidden while the 2FA step is active.
@@ -435,6 +436,67 @@ final class AuthViewModel: ObservableObject {
                 self.error = mapAuthError(error, fallback: "Sign-in failed")
             }
             self.isLoading = false
+        }
+    }
+
+    /// Sign in with Apple. Apple authenticates on-device and hands back an
+    /// identity token it signed; the backend verifies it (RS256 + iss + aud +
+    /// exp) at `POST /auth/apple/native`. There is no browser round-trip and no
+    /// secret on this side — the token IS the assertion.
+    ///
+    /// A cancelled sheet is silent: it is a choice, not a failure.
+    func handleAppleAuthorization(_ result: Result<ASAuthorization, Error>) {
+        guard !isLoading else { return }
+
+        switch result {
+        case .failure(let err):
+            // User dismissal must not paint a red banner.
+            if let asError = err as? ASAuthorizationError,
+               asError.code == .canceled || asError.code == .unknown {
+                return
+            }
+            error = mapAuthError(err, fallback: "Apple sign-in failed")
+            return
+
+        case .success(let authorization):
+            guard
+                let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                let tokenData = credential.identityToken,
+                let identityToken = String(data: tokenData, encoding: .utf8),
+                !identityToken.isEmpty
+            else {
+                error = "Apple didn't return a sign-in token. Please try again."
+                return
+            }
+
+            isLoading = true
+            error = nil
+            pendingEmail = nil
+            pendingAnonymousId = nil
+            pendingContext = .sso
+
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    switch try await api.signInWithApple(identityToken: identityToken) {
+                    case .success(let tokens):
+                        if await completeAuthentication(tokens: tokens,
+                                                        knownEmail: nil,
+                                                        knownAnonymousId: nil,
+                                                        context: .sso) {
+                            isLoggedIn = true
+                            refreshStatsInBackground()
+                        }
+                    case .twoFactorRequired(let challenge):
+                        // Apple sign-in does NOT bypass a user's 2FA.
+                        challengeToken = challenge
+                        requiresTwoFactor = true
+                    }
+                } catch {
+                    self.error = mapAuthError(error, fallback: "Sign-in failed")
+                }
+                self.isLoading = false
+            }
         }
     }
 

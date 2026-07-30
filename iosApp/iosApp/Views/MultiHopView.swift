@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit   // UISelectionFeedbackGenerator for hop-pick feedback
 
 /// Multi-hop (double VPN) — entry and exit server selection.
 ///
@@ -15,14 +16,26 @@ struct MultiHopView: View {
 
     @State private var entryExpanded = false
     @State private var exitExpanded = false
-    @State private var selectedEntry: ServerInfo?
-    @State private var selectedExit: ServerInfo?
     @State private var showSubscription = false
 
     /// Only nodes the user can actually use — locked (`!accessible`) and
     /// offline nodes must never be selectable as hops.
     private var selectableServers: [ServerInfo] {
         vpnVM.servers.filter { $0.isOnline && $0.accessible }
+    }
+
+    // The armed route lives in the ViewModel (published + persisted), so it
+    // survives dismissing this screen and a relaunch. These are RE-RESOLVED
+    // against the live list every render: a node that goes offline, loses plan
+    // access or disappears from a refresh drops out of the pick automatically,
+    // which also disables Connect instead of dialling a node that can't serve.
+    private var selectedEntry: ServerInfo? {
+        guard let id = vpnVM.multiHopEntryId else { return nil }
+        return selectableServers.first { $0.id == id }
+    }
+    private var selectedExit: ServerInfo? {
+        guard let id = vpnVM.multiHopExitId else { return nil }
+        return selectableServers.first { $0.id == id }
     }
 
     private var sameServerWarning: Bool {
@@ -67,6 +80,10 @@ struct MultiHopView: View {
         .task {
             // Re-validate the gate on entry; the 30s cache keeps this cheap.
             vpnVM.refreshSubscription()
+            // Load the node list too. Reaching Multi-Hop directly (deep link, or
+            // before Home finished loading) previously showed a bare "No servers
+            // available" with no spinner, no error and no way to retry.
+            vpnVM.loadServers()
         }
     }
 
@@ -91,12 +108,23 @@ struct MultiHopView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
 
+        // A failed node fetch must never look like "there are no servers" — surface
+        // it with a way out, matching the Servers screen's contract.
+        if let err = vpnVM.serversError, vpnVM.servers.isEmpty {
+            VStack(spacing: BirdoTheme.Spacing.md) {
+                ErrorBanner(err, icon: "exclamationmark.circle")
+                PrimaryButton("Retry", variant: .brand, icon: "arrow.clockwise") {
+                    vpnVM.loadServers(forceRefresh: true)
+                }
+            }
+        }
+
         serverSelector(
             label: "Entry Server",
             icon: "1.circle.fill",
             server: selectedEntry,
             expanded: $entryExpanded,
-            onSelect: { selectedEntry = $0 }
+            onSelect: { vpnVM.setMultiHopRoute(entryId: $0.id, exitId: vpnVM.multiHopExitId) }
         )
 
         Image(systemName: "arrow.down")
@@ -109,7 +137,7 @@ struct MultiHopView: View {
             icon: "2.circle.fill",
             server: selectedExit,
             expanded: $exitExpanded,
-            onSelect: { selectedExit = $0 }
+            onSelect: { vpnVM.setMultiHopRoute(entryId: vpnVM.multiHopEntryId, exitId: $0.id) }
         )
 
         if sameServerWarning {
@@ -223,11 +251,14 @@ struct MultiHopView: View {
             .accessibilityLabel(label)
             .accessibilityValue(server.map { $0.name } ?? "Not chosen")
 
-            // Expandable list — usable nodes only.
+            // Expandable list — usable nodes only. LazyVStack: the plain VStack
+            // built every row eagerly inside the outer ScrollView.
             if expanded.wrappedValue {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     ForEach(selectableServers) { srv in
                         Button {
+                            // Match the Servers screen's selection feedback.
+                            UISelectionFeedbackGenerator().selectionChanged()
                             onSelect(srv)
                             withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
                                 expanded.wrappedValue = false
@@ -236,15 +267,24 @@ struct MultiHopView: View {
                             HStack(spacing: BirdoTheme.Spacing.sm) {
                                 Text(srv.flag)
                                     .font(.title3)
-                                Text(srv.name)
-                                    .font(BirdoTheme.Fonts.bodyMedium)
-                                    .foregroundColor(BirdoTheme.onSurface)
-                                    .lineLimit(1)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(srv.name)
+                                        .font(BirdoTheme.Fonts.bodyMedium)
+                                        .foregroundColor(BirdoTheme.onSurface)
+                                        .lineLimit(1)
+                                    // Same "city · N% load" subtitle the Home
+                                    // selector and the Servers rows already show.
+                                    Text(srv.city.isEmpty ? srv.country : srv.city)
+                                        .font(BirdoTheme.Fonts.bodySmall)
+                                        .foregroundColor(BirdoTheme.onSurfaceMuted)
+                                        .lineLimit(1)
+                                }
                                 Spacer()
                                 Text("\(srv.load)%")
                                     .font(BirdoTheme.Fonts.mono)
                                     .monospacedDigit()
                                     .foregroundColor(LoadBar.color(for: Int(srv.load)))
+                                    .accessibilityLabel("\(srv.load) percent load")
                                 if server?.id == srv.id {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(BirdoTheme.green)
@@ -253,6 +293,8 @@ struct MultiHopView: View {
                             }
                             .padding(.horizontal, BirdoTheme.Spacing.lg)
                             .padding(.vertical, 10)
+                            .frame(minHeight: 44)   // iOS minimum tap target
+                            .accessibilityElement(children: .combine)
                             .contentShape(Rectangle())
                         }
                         Divider().overlay(BirdoTheme.hairlineSoft)
