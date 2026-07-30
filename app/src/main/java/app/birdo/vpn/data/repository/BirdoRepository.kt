@@ -68,13 +68,21 @@ class BirdoRepository @Inject constructor(
         private const val SUBSCRIPTION_CACHE_TTL_MS = 30_000L
 
         /**
-         * Whole budget for logout's best-effort server-side revocation. The
-         * call now runs through withAutoRefresh, which on an expired access
-         * token costs three round trips at OkHttp's 30 s-per-call ceiling —
-         * a 90 s spinner on a button whose local half has already succeeded.
-         * Cap it; the local clear runs either way.
+         * Whole budget for logout's best-effort server-side revocation.
+         *
+         * The call now runs through withAutoRefresh, which on an expired access
+         * token costs three round trips (401 → refresh → retry). NetworkModule
+         * sets connect/read/write to 30 s each and sets NO `callTimeout`, so
+         * OkHttp does not bound a whole call at all — one round trip that
+         * connects slowly and then stalls mid-body can burn 60 s on its own,
+         * and three of them are minutes of spinner on a button whose local half
+         * has already succeeded. That is why the bound lives here, at the
+         * coroutine level, rather than being left to the HTTP client.
+         *
+         * `internal` so the regression test can assert against the real budget
+         * instead of restating 15_000 and quietly drifting from it.
          */
-        private const val LOGOUT_SERVER_CALL_TIMEOUT_MS = 15_000L
+        internal const val LOGOUT_SERVER_CALL_TIMEOUT_MS = 15_000L
     }
 
     fun invalidateServerCache() {

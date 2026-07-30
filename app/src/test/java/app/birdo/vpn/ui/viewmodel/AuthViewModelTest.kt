@@ -427,6 +427,16 @@ class AuthViewModelTest {
     // single worst instruction available — and sent a banned user hunting for a
     // password problem that does not exist. These cases pin the real wording
     // the server sends (auth.controller validateLoginAttempt / lockout.service).
+    //
+    // They assert the EXACT rendered sentence, not just "contains 'locked'".
+    // A contains-check would still pass if the arm degraded to something
+    // useless like "Login failed: {"message":"Account locked...","statusCode":401}"
+    // — which is precisely the raw-JSON leak the 403 case below exists to
+    // forbid — so the weaker assertion would let the fix rot into a regression
+    // while staying green.
+    private val lockedMessage =
+        "Account locked after too many failed sign-in attempts. " +
+            "Wait a few minutes before trying again, or reset your password."
 
     @Test
     fun `login on a locked account says locked, not wrong password`() = runTest {
@@ -440,7 +450,7 @@ class AuthViewModelTest {
 
         val error = viewModel.uiState.value.error
         assertNotEquals("Invalid email or password", error)
-        assertTrue("expected a lockout message, got: $error", error!!.contains("locked", ignoreCase = true))
+        assertEquals(lockedMessage, error)
     }
 
     @Test
@@ -455,7 +465,7 @@ class AuthViewModelTest {
 
         val error = viewModel.uiState.value.error
         assertNotEquals("Invalid email or password", error)
-        assertTrue("expected a lockout message, got: $error", error!!.contains("locked", ignoreCase = true))
+        assertEquals(lockedMessage, error)
     }
 
     /** validateUser's timed variant, which arrives as a 403 and used to fall all
@@ -472,7 +482,26 @@ class AuthViewModelTest {
 
         val error = viewModel.uiState.value.error
         assertFalse("raw JSON must never reach the user: $error", error!!.contains("statusCode"))
-        assertTrue(error.contains("locked", ignoreCase = true))
+        assertEquals(lockedMessage, error)
+    }
+
+    /** lockout.service's untimed fallback, thrown by validateUser as
+     *  'Account is locked' — a different sentence from every other lockout
+     *  wording, and the one most likely to be missed by a matcher tuned only to
+     *  "account locked". */
+    @Test
+    fun `login on an untimed lockout says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account is locked","error":"Forbidden","statusCode":403}""",
+            403,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
     }
 
     @Test
