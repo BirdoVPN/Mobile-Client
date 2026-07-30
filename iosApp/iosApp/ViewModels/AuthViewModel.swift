@@ -243,7 +243,21 @@ final class AuthViewModel: ObservableObject {
                     requiresTwoFactor = true
                 }
             } catch {
-                recordFailedEmailLogin()
+                // Count the attempt ONLY if the server actually weighed these
+                // credentials and said no. This used to be a blanket
+                // recordFailedEmailLogin() on every thrown error, so five taps
+                // in a tunnel, on hotel wifi, during a backend deploy, or on a
+                // TLS-pinning failure locked the user out of their OWN login
+                // button for 60 s — punishment for a network they don't control,
+                // on credentials that were never tested. Worse, the lockout
+                // banner says "Too many login attempts", which reads as "I'm
+                // typing my password wrong" and sends people to password reset.
+                // Transport failures now leave the counter untouched; the user
+                // reads the real reason ("No internet connection.") and can
+                // retry the instant they have signal.
+                if Self.isCredentialRejection(error) {
+                    recordFailedEmailLogin()
+                }
                 self.error = mapAuthError(error, fallback: "Login failed")
             }
             self.isLoading = false
@@ -645,6 +659,43 @@ final class AuthViewModel: ObservableObject {
         failedEmailAttempts.append(Date())
     }
 
+    /// Did the SERVER receive these credentials, evaluate them, and refuse?
+    ///
+    /// Only that may feed the local lockout counter. The counter's whole purpose
+    /// is to stop someone guessing a password at the login form; an attempt that
+    /// never reached the backend guessed nothing, so counting it just penalises
+    /// a user with bad signal.
+    ///
+    /// TRUE only for a definitive 401. Everything else is deliberately excluded:
+    ///   * URLError (offline, DNS, timeout, pin-cancel) — never reached the server.
+    ///   * `.invalidURL` / `.invalidResponse` — our own request/parse gave out.
+    ///   * `.httpError(5xx)` and a 5xx `.serverMessage` — the backend fell over
+    ///     mid-deploy; the password may well be correct.
+    ///   * 429 — the SERVER's own brute-force limiter already refused, so it
+    ///     never checked the password either, and it is the authoritative limit
+    ///     regardless. Double-counting it here would stack a second, invisible
+    ///     60 s lockout on top of the one the user is already serving.
+    ///   * `.quantumKeyUnavailable` — connect-path only, never login.
+    ///
+    /// Note the check is on the HTTP STATUS, not on the message text. The backend
+    /// answers a wrong password as 401 *with* a JSON body, so it arrives as
+    /// `.serverMessage`, not `.httpError(401)` — classifying on `.httpError` alone
+    /// would silently stop counting real guesses and leave the limiter dead. The
+    /// message string is backend copy and must never be load-bearing.
+    private static func isCredentialRejection(_ error: Error) -> Bool {
+        guard let api = error as? APIError else { return false }
+        switch api {
+        case .unauthorized:
+            return true
+        case .httpError(let code):
+            return code == 401
+        case .serverMessage(_, let status):
+            return status == 401
+        case .invalidURL, .invalidResponse, .quantumKeyUnavailable:
+            return false
+        }
+    }
+
     // MARK: - Validation
 
     private static func isValidEmail(_ email: String) -> Bool {
@@ -696,7 +747,7 @@ final class AuthViewModel: ObservableObject {
         }
         if let api = error as? APIError {
             switch api {
-            case .serverMessage(let raw):
+            case .serverMessage(let raw, _):
                 let msg = Self.sanitizedServerMessage(raw, fallback: fallback)
                 if msg == fallback { return fallback }
                 // Client-minted sentinel (blank tokens in an ok response) —
@@ -770,7 +821,7 @@ final class AuthViewModel: ObservableObject {
     private static func mapDeleteError(_ error: Error) -> String {
         if let api = error as? APIError {
             switch api {
-            case .serverMessage(let msg):
+            case .serverMessage(let msg, _):
                 if msg.lowercased().contains("password") { return "Incorrect password" }
                 if msg.contains("429") || msg.lowercased().contains("too many") {
                     return "Too many attempts. Please wait a moment."

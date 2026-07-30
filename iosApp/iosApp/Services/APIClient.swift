@@ -151,7 +151,8 @@ final class APIClient: @unchecked Sendable {
         let data = try await post(path: "/auth/register/anonymous", body: body, authenticated: false)
         let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
         guard parsed.ok != false, let tokens = parsed.tokens, !tokens.accessToken.isEmpty else {
-            throw APIError.serverMessage("Could not create an anonymous account. Please try again.")
+            // Client-minted: the response WAS 2xx, we just could not use it.
+            throw APIError.serverMessage("Could not create an anonymous account. Please try again.", status: nil)
         }
         return AnonymousRegistration(
             anonymousId: parsed.anonymousId,
@@ -215,7 +216,8 @@ final class APIClient: @unchecked Sendable {
         guard parsed.ok != false,
               let tokens = parsed.tokens,
               !tokens.accessToken.isEmpty, !tokens.refreshToken.isEmpty else {
-            throw APIError.serverMessage("Unexpected server response (no tokens)")
+            // Client-minted sentinel on a 2xx body — NOT a credential rejection.
+            throw APIError.serverMessage("Unexpected server response (no tokens)", status: nil)
         }
         return .success(TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken))
     }
@@ -365,7 +367,8 @@ final class APIClient: @unchecked Sendable {
     private func decodeConnectResult(_ data: Data) throws -> VPNConnectionConfig {
         if let envelope = try? decoder.decode(ConnectEnvelope.self, from: data),
            envelope.success == false {
-            throw APIError.serverMessage(envelope.message ?? "Could not connect. Please try again.")
+            // Carried on a 2xx, so there is no error status to attribute.
+            throw APIError.serverMessage(envelope.message ?? "Could not connect. Please try again.", status: nil)
         }
         return try decoder.decode(VPNConnectionConfig.self, from: data)
     }
@@ -721,11 +724,16 @@ final class APIClient: @unchecked Sendable {
         // 426 Upgrade Required = the backend's minimum-supported-version floor.
         // Surface a fixed, actionable string rather than the raw body (Review #219).
         if status == 426 {
-            return .serverMessage("This app version is no longer supported. Update Birdo VPN to reconnect.")
+            return .serverMessage("This app version is no longer supported. Update Birdo VPN to reconnect.",
+                                  status: status)
         }
         if let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body),
            let message = parsed.message?.text, !message.isEmpty {
-            return .serverMessage(message)
+            // The status travels WITH the message. Without it, a 401 "Invalid
+            // credentials" and a 500 "Internal server error" were indistinguishable
+            // to callers, which is how a server outage came to look like a bad
+            // password (see AuthViewModel.isCredentialRejection).
+            return .serverMessage(message, status: status)
         }
         return .httpError(status)
     }
@@ -889,7 +897,16 @@ enum APIError: Error, LocalizedError {
     case unauthorized
     case httpError(Int)
     /// A refusal the backend explained in its own words — show it verbatim.
-    case serverMessage(String)
+    ///
+    /// `status` is the HTTP status the message arrived on, or nil when the
+    /// message is CLIENT-minted (a 2xx `{success:false}` envelope, or a
+    /// locally-authored fallback). It exists because "the server explained
+    /// itself" and "the server rejected your credentials" are different facts,
+    /// and callers were previously unable to tell them apart: a 401 with a
+    /// message body and a 500 with a message body both arrived here as a bare
+    /// string. Only classify on this field — never by matching the message text,
+    /// which is backend copy and changes without notice.
+    case serverMessage(String, status: Int?)
     /// Post-quantum protection is enabled but the ML-KEM keypair could not be
     /// produced. Surfaced rather than silently connecting without PQ.
     case quantumKeyUnavailable
@@ -900,7 +917,7 @@ enum APIError: Error, LocalizedError {
         case .invalidResponse: return "Invalid server response"
         case .unauthorized: return "Session expired. Please log in again."
         case .httpError(let code): return "Server error (\(code))"
-        case .serverMessage(let message): return message
+        case .serverMessage(let message, _): return message
         case .quantumKeyUnavailable:
             return "Could not prepare quantum-protected encryption. Not connecting, because "
                 + "continuing would use weaker encryption. Try again, or turn off Quantum "
