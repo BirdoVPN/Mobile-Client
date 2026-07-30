@@ -36,6 +36,18 @@ data class AuthUiState(
     val isDeletingAccount: Boolean = false,
     val deleteAccountError: String? = null,
     val accountDeleted: Boolean = false,
+    /**
+     * A freshly-minted 24-digit anonymous ID, shown EXACTLY ONCE.
+     *
+     * While this is non-null the router must HOLD before Home: it is the
+     * account's ONLY credential and the server never reveals it again. It used
+     * to be dropped on the floor here (the response was checked for `ok` and
+     * nothing else) while the user was sent straight to Home — so every
+     * anonymous account created on Android was permanently unrecoverable the
+     * moment the app forgot its tokens. iOS and desktop both show it once and
+     * gate on acknowledgement; this is that gate.
+     */
+    val createdAnonymousId: String? = null,
 )
 
 @HiltViewModel
@@ -283,6 +295,16 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The user confirmed they saved the freshly-minted anonymous ID — release the
+     * gate and proceed to Home. Mirrors iOS `acknowledgeAnonymousId()`.
+     */
+    fun acknowledgeAnonymousId() {
+        val state = _uiState.value
+        if (state.createdAnonymousId == null) return
+        _uiState.value = state.copy(createdAnonymousId = null, isLoggedIn = true)
+    }
+
     fun logout() {
         viewModelScope.launch {
             repository.logout()
@@ -350,7 +372,27 @@ class AuthViewModel @Inject constructor(
             when (val result = repository.registerAnonymous()) {
                 is ApiResult.Success -> {
                     if (result.data.ok) {
-                        fetchProfileAfterLogin()
+                        val minted = result.data.anonymousId?.takeIf { it.isNotBlank() }
+                        if (minted != null) {
+                            // HOLD before Home until the user acknowledges it.
+                            // `isLoggedIn` deliberately stays false: the nav graph
+                            // routes on it, so the account-number screen cannot be
+                            // swiped past. Tokens are already stored, so
+                            // acknowledging is instant and cannot fail.
+                            val profile =
+                                (repository.getProfile() as? ApiResult.Success)?.data
+                            _uiState.value = _uiState.value.copy(
+                                isLoading = false,
+                                isLoggedIn = false,
+                                user = profile,
+                                createdAnonymousId = minted,
+                            )
+                        } else {
+                            // The server did not surface an ID (should never
+                            // happen). Nothing to save, so do not trap the user
+                            // behind a gate with no content — proceed as before.
+                            fetchProfileAfterLogin()
+                        }
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,

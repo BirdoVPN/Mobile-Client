@@ -353,6 +353,18 @@ fun BirdoNavGraph(
             ) {
                 AdaptiveContainer {
                     val context = androidx.compose.ui.platform.LocalContext.current
+                    // A freshly-minted anonymous account holds HERE until the user
+                    // confirms they saved its 24-digit number — it is the only
+                    // credential and is never shown again. `isLoggedIn` stays false
+                    // until acknowledgement, so this cannot be navigated past.
+                    val mintedAnonId = authState.createdAnonymousId
+                    if (mintedAnonId != null) {
+                        AnonymousIdScreen(
+                            anonymousId = mintedAnonId,
+                            onAcknowledge = { authViewModel.acknowledgeAnonymousId() },
+                        )
+                        return@AdaptiveContainer
+                    }
                     LoginScreen(
                         isLoading = authState.isLoading,
                         error = authState.error,
