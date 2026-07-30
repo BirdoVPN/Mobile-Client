@@ -26,6 +26,12 @@ object TestTags {
     const val LOGIN_ANONYMOUS_PASSWORD_FIELD = "login_anonymous_password_field"
     const val LOGIN_ANONYMOUS_SUBMIT = "login_anonymous_submit"
 
+    // Save-your-ID step after creating an anonymous account in-app. Same tag
+    // name as the iOS accessibility identifier (`login_anonymous_ack`) so the
+    // two platforms' UI suites talk about this gate in the same terms.
+    const val LOGIN_ANONYMOUS_CREATED_ID = "login_anonymous_created_id"
+    const val LOGIN_ANONYMOUS_ACK = "login_anonymous_ack"
+
     // Home screen
     const val CONNECT_BUTTON = "connect_button"
     const val VPN_STATUS = "vpn_status"

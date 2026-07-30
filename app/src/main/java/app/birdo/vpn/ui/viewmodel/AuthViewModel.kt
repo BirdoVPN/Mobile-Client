@@ -36,6 +36,13 @@ data class AuthUiState(
     val isDeletingAccount: Boolean = false,
     val deleteAccountError: String? = null,
     val accountDeleted: Boolean = false,
+    /**
+     * A just-minted 24-digit anonymous ID the user has NOT yet confirmed saving.
+     * Non-null means sign-in is deliberately parked: `isLoggedIn` stays false so
+     * the nav graph holds on Login and shows the save-your-ID dialog. See
+     * [AuthViewModel.registerAnonymous].
+     */
+    val pendingAnonymousId: String? = null,
 )
 
 @HiltViewModel
@@ -67,15 +74,32 @@ class AuthViewModel @Inject constructor(
      */
     private var authJob: Job? = null
 
+    /**
+     * An anonymous ID minted on a previous run that the user never acknowledged
+     * (process died / app was killed while the save-your-ID dialog was up).
+     *
+     * Re-surfacing it takes priority over the fast cold start below: the tokens
+     * from that registration ARE valid, so without this the app would resume
+     * straight into Home and the ID — the account's only credential — would never
+     * be shown again.
+     */
+    private val unacknowledgedAnonymousId: String? =
+        // Blank guard: an empty stored value would otherwise pin the app on a
+        // dialog displaying nothing, with isLoggedIn held false, and no way for
+        // the user to understand why.
+        tokenManager.getPendingAnonymousId()?.takeIf { it.isNotBlank() }
+
     // FAST COLD START: Decide isLoggedIn synchronously from the locally
     // stored token so the NavHost can route straight to Home. The profile
     // fetch then runs in the background and only updates `user` (or, on a
     // 401, kicks the user back to Login).
-    private val initiallyLoggedIn: Boolean = tokenManager.isLoggedIn()
+    private val initiallyLoggedIn: Boolean =
+        tokenManager.isLoggedIn() && unacknowledgedAnonymousId == null
     private val _uiState = MutableStateFlow(
         AuthUiState(
             isLoading = false,
             isLoggedIn = initiallyLoggedIn,
+            pendingAnonymousId = unacknowledgedAnonymousId,
         )
     )
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
@@ -86,6 +110,9 @@ class AuthViewModel @Inject constructor(
 
     private fun checkSession() {
         // Don't even hit the network if we have no token — UI is already on Login.
+        // Also skipped while an unacknowledged anonymous ID is pending: a
+        // successful profile fetch would flip isLoggedIn and navigate away from
+        // the dialog that is the user's last chance to read the ID.
         if (!initiallyLoggedIn) return
         viewModelScope.launch {
             // Background refresh — UI is already showing Home.
@@ -339,8 +366,23 @@ class AuthViewModel @Inject constructor(
 
     /**
      * Create a NEW anonymous account in-app and sign in. For users who don't
-     * want email/SSO. The 24-digit ID is the only credential; on success the
-     * user should be told to save it (surfaced via the profile screen).
+     * want email/SSO.
+     *
+     * The register response carries the minted 24-digit ID exactly once, and
+     * that ID is the account's ONLY credential — no email, no password, no reset
+     * path. This used to read nothing but `ok` and go straight to
+     * fetchProfileAfterLogin(), which dropped the caller into the connected
+     * Home screen with the ID discarded; any later token loss (reinstall,
+     * storage wipe, Keystore corruption) then destroyed the account permanently
+     * and irrecoverably.
+     *
+     * So on success we do NOT complete sign-in. The ID is persisted (so a
+     * config change or process death cannot swallow it — see
+     * TokenManager.setPendingAnonymousId) and parked in `pendingAnonymousId`
+     * with `isLoggedIn` still false, which holds the nav graph on Login and
+     * shows the save-your-ID dialog. [acknowledgeAnonymousId] finishes the
+     * sign-in. This matches iOS (`createdAnonymousId` +
+     * `acknowledgeAnonymousId()`) and the desktop client.
      */
     fun registerAnonymous() {
         // Single-flight: ignore a double-submit while a request is already running.
@@ -349,7 +391,23 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             when (val result = repository.registerAnonymous()) {
                 is ApiResult.Success -> {
-                    if (result.data.ok) {
+                    val body = result.data
+                    val minted = body.anonymousId?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
+                    if (body.ok && minted != null) {
+                        // Persist BEFORE surfacing: the write has to survive the
+                        // user killing the app the instant they see the dialog.
+                        tokenManager.setPendingAnonymousId(minted)
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            error = null,
+                            pendingAnonymousId = minted,
+                        )
+                    } else if (body.ok) {
+                        // Account exists but the server surfaced no ID (should never
+                        // happen). There is nothing to acknowledge, so proceed —
+                        // the Profile tab still derives the number from the synthetic
+                        // anon_<id>@anonymous.local email. Blocking here would strand
+                        // the user on Login holding valid tokens.
                         fetchProfileAfterLogin()
                     } else {
                         _uiState.value = _uiState.value.copy(
@@ -366,6 +424,22 @@ class AuthViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * The user confirmed they have saved the freshly minted anonymous ID: drop
+     * the pending copy and complete the sign-in that [registerAnonymous]
+     * deliberately withheld.
+     *
+     * Guarded on a non-null pending ID so a double-tap on "I've saved it"
+     * cannot fire a second profile fetch, and so it is a no-op for every other
+     * auth path.
+     */
+    fun acknowledgeAnonymousId() {
+        if (_uiState.value.pendingAnonymousId == null) return
+        tokenManager.clearPendingAnonymousId()
+        _uiState.value = _uiState.value.copy(pendingAnonymousId = null, isLoading = true)
+        viewModelScope.launch { fetchProfileAfterLogin() }
     }
 
     /**

@@ -34,6 +34,7 @@ class TokenManager @Inject constructor(
         private const val KEY_WG_PRIVATE_KEY = "wireguard_private_key"
         private const val KEY_LAST_SERVER = "last_server"
         private const val KEY_LAST_KEY_ID = "last_key_id"
+        private const val KEY_PENDING_ANON_ID = "pending_anonymous_id"
         private const val MASTER_KEY_ALIAS = "_birdo_master_key_"
         /** Maximum sane token length — prevents storage of garbage data */
         private const val MAX_TOKEN_LENGTH = 4096
@@ -196,6 +197,41 @@ class TokenManager @Inject constructor(
 
     fun setLastKeyId(keyId: String) {
         prefs.edit().putString(KEY_LAST_KEY_ID, keyId).apply()
+    }
+
+    // ── Pending anonymous ID (created, not yet acknowledged) ─────
+    //
+    // A freshly minted anonymous account's 24-digit ID is the account's ONLY
+    // credential — there is no email and no reset path — and the server returns
+    // it exactly once, in the POST /auth/anonymous/register response. The
+    // register call also stores tokens, so a process death between "account
+    // created" and "user has written the ID down" used to leave the app silently
+    // logged in to an account whose ID nobody had ever seen: the next token
+    // clear (reinstall, storage wipe, Keystore corruption) destroyed the account
+    // permanently.
+    //
+    // Parking the ID here — same EncryptedSharedPreferences as the tokens it was
+    // issued alongside, mirroring the iOS Keychain — means a config change or a
+    // process kill mid-dialog re-surfaces the "save your ID" step on next launch
+    // instead of swallowing it. It is deliberately NOT plaintext prefs: this
+    // string authenticates the account, exactly like the refresh token.
+
+    /** The minted ID the user has not yet confirmed saving, or null. */
+    fun getPendingAnonymousId(): String? = prefs.getString(KEY_PENDING_ANON_ID, null)
+
+    /**
+     * Park a freshly minted ID until the user acknowledges it. commit() rather
+     * than apply(): the very next thing that happens is the ID being shown to a
+     * user who may kill the app a moment later, so the write has to already be
+     * on disk — an async apply() could still be in flight.
+     */
+    fun setPendingAnonymousId(anonymousId: String) {
+        prefs.edit().putString(KEY_PENDING_ANON_ID, anonymousId).commit()
+    }
+
+    /** Called once the user has confirmed they saved the ID. */
+    fun clearPendingAnonymousId() {
+        prefs.edit().remove(KEY_PENDING_ANON_ID).commit()
     }
 
     // ── Clear All ────────────────────────────────────────────────
