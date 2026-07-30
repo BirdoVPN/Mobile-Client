@@ -507,10 +507,59 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Turn a sign-in failure into something the user can act on.
+     *
+     * `raw` is the SERVER'S ERROR BODY, not a bare status line: the repository
+     * passes `InputValidator.sanitizeErrorMessage(response.errorBody())`
+     * through, and Nest's body is `{"message":"…","statusCode":401}`. So the
+     * substring "401" is present on EVERY 401, whatever it actually says.
+     *
+     * That is what broke this: the first arm used to be
+     * `"Invalid credentials" in raw || "401" in raw -> "Invalid email or
+     * password"`, and the backend answers 401 for three completely different
+     * situations — wrong password ("Invalid credentials"), account lockout
+     * ("Too many failed login attempts" / "Account locked due to multiple
+     * failed login attempts") and a banned or suspended account ("Unable to
+     * sign in. Please contact support."). All three were reported as a wrong
+     * password. The locked-out user was handed the one instruction guaranteed
+     * to make things worse — retype your password — and every retry on a locked
+     * account extends nothing but their own frustration, while a banned user
+     * hunted for a password problem that does not exist.
+     *
+     * The specific sentences are therefore matched BEFORE the generic 401, and
+     * the generic 401 stays only as the last resort for a body we do not
+     * recognise. Matching is on `lower` so a wording change in case cannot
+     * silently drop an arm back into the catch-all.
+     */
     private fun parseLoginError(raw: String): String {
         val lower = raw.lowercase()
         return when {
-            "Invalid credentials" in raw || "401" in raw -> "Invalid email or password"
+            // Banned / suspended. The backend deliberately returns ONE uniform
+            // sentence for both (telling a prober which would be an account
+            // oracle), so the honest thing for the app to do is repeat it —
+            // there is no self-service step, only support.
+            "unable to sign in" in lower -> "Unable to sign in. Please contact support."
+
+            // Locked out after repeated failed attempts. Three server wordings
+            // reach here: the lockout reason "Too many failed login attempts",
+            // the controller's "Account locked due to multiple failed login
+            // attempts", and validateUser's "Account locked. Try again in N
+            // minutes." / "Account is locked".
+            //
+            // NOTE the "failed" in the first matcher: the 429 rate-limit body
+            // says "Too many login attempts, please try later" — a different
+            // condition (the IP bucket, not the account) with a different
+            // remedy, and it must keep falling through to the 429 arm below.
+            "account locked" in lower ||
+                "account is locked" in lower ||
+                "too many failed login attempts" in lower ->
+                "Account locked after too many failed sign-in attempts. " +
+                    "Wait a few minutes before trying again, or reset your password."
+
+            // The password really was wrong.
+            "invalid credentials" in lower -> "Invalid email or password"
+
             "429" in raw -> "Too many attempts. Please wait a moment."
             "Certificate" in raw || "SSL" in raw || "pinning" in lower ->
                 "Secure connection failed. Please update the app."
@@ -523,6 +572,13 @@ class AuthViewModel @Inject constructor(
                 "No internet connection."
             "Network" in raw || "timeout" in lower || "failed to connect" in lower ->
                 "Unable to reach server. Check your connection."
+
+            // Last resort for an UNRECOGNISED 401 body. Kept because a login
+            // form that cannot explain itself should still point at the most
+            // likely cause — but it is now genuinely last, so it can no longer
+            // hide a lockout, a ban or a suspension.
+            "401" in raw -> "Invalid email or password"
+
             else -> "Login failed: $raw"
         }
     }

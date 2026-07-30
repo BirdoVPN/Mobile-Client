@@ -146,6 +146,69 @@ class BirdoRepositoryTest {
         verify { tokenManager.clearAll() }
     }
 
+    /**
+     * The one that mattered: logout ran OUTSIDE withAutoRefresh, so an expired
+     * access token (the normal case — access tokens live 1h, refresh tokens 30
+     * days) made /auth/logout answer 401 with nothing retrying. Local tokens
+     * were still wiped, so the user saw a clean sign-out while the refresh
+     * lineage stayed alive server-side for up to another 30 days.
+     *
+     * Asserting TWO calls to api.logout is the whole point: one call means the
+     * 401 was accepted and the session outlived the logout.
+     */
+    @Test
+    fun `logout with an expired access token refreshes and retries so the session dies server-side`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "new_access", expiresIn = 3600)
+        )
+        val unauthorized = "Unauthorized".toResponseBody("text/plain".toMediaType())
+        coEvery { api.logout() } returnsMany listOf(
+            Response.error(401, unauthorized),
+            Response.success(Unit),
+        )
+
+        repository.logout()
+
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        coVerify(exactly = 2) { api.logout() }
+        verify { tokenManager.clearAll() }
+    }
+
+    /**
+     * A logout that succeeds first time must NOT spend a refresh — rotating the
+     * refresh token for no reason is exactly the kind of extra replay that made
+     * reuse detection fire in production.
+     */
+    @Test
+    fun `logout on a live access token does not burn a refresh`() = runTest {
+        coEvery { api.logout() } returns Response.success(Unit)
+
+        repository.logout()
+
+        coVerify(exactly = 1) { api.logout() }
+        coVerify(exactly = 0) { api.refreshToken(any()) }
+        verify { tokenManager.clearAll() }
+    }
+
+    /**
+     * If the refresh token is dead too, there is nothing left to revoke — but
+     * the local sign-out is unconditional, so the handset must still end up
+     * signed out rather than stuck on a session it cannot use.
+     */
+    @Test
+    fun `logout still clears tokens when the refresh token is also dead`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "dead_refresh"
+        val unauthorized = "Unauthorized".toResponseBody("text/plain".toMediaType())
+        coEvery { api.logout() } returns Response.error(401, unauthorized)
+        coEvery { api.refreshToken(any()) } returns Response.error(401, unauthorized)
+
+        repository.logout()
+
+        coVerify(exactly = 1) { api.logout() }
+        verify { tokenManager.clearAll() }
+    }
+
     // ── Get Profile ─────────────────────────────────────────────
 
     @Test
