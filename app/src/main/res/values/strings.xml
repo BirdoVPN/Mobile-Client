@@ -46,6 +46,18 @@
     <string name="login_anonymous_cancel">Cancel</string>
     <string name="login_anonymous_no_account_link">Don\'t have an Anonymous ID? Create one on the website.</string>
 
+    <!-- Shown ONCE, right after an anonymous account is created in-app. The
+         24-digit ID is the account's only credential: no email, no password,
+         no reset. Wording mirrors iOS/desktop, which show the same gate. -->
+    <string name="anon_created_title">Save your account ID</string>
+    <!-- Plain text, no <b> markup: stringResource() drops HTML styling, so a
+         bold tag here would silently render as nothing. -->
+    <string name="anon_created_body">Your anonymous account is ready. This 24-digit ID is the only way to sign in again — there is no email or password on this account.</string>
+    <string name="anon_created_warning">Write it down or store it in a password manager. We cannot recover or reset it — losing it means losing the account.</string>
+    <string name="anon_created_ack">I\'ve saved it — continue</string>
+    <string name="anon_created_copy_cd">Copy account ID</string>
+    <string name="anon_created_copied">Account ID copied</string>
+
     <!-- Home Screen -->
     <string name="logout">Logout</string>
     <string name="stats_duration">Duration</string>
