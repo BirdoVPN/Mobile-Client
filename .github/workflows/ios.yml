@@ -251,7 +251,19 @@ jobs:
     name: Attach unsigned iOS .ipa to release
     runs-on: ubuntu-latest
     needs: build-ios
-    if: startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch'
+    # A workflow_dispatch WITHOUT release_tag is a verification run — someone
+    # checking that a branch still builds for iOS, which PR CI never does. There
+    # is no release to attach to, so this job used to run anyway and fail at
+    # "Determine release tag", painting the whole run red for a build that was
+    # completely fine.
+    #
+    # That matters beyond tidiness: the branch-verification dispatch is the ONLY
+    # signal that a shared-module or Vendor change compiles for iOS, and a run
+    # that always ends red trains you to ignore exactly the check you dispatched
+    # it for. Skip cleanly instead, so red means red.
+    if: >-
+      startsWith(github.ref, 'refs/tags/android-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     permissions:
       contents: write   # upload release assets
       id-token: write    # Sigstore keyless signing
