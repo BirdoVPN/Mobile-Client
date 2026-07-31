@@ -160,6 +160,36 @@ class VpnViewModel @Inject constructor(
             delay(1500)
             if (vpnManager.state.value != VpnState.Disconnected) return@launch
 
+            // MULTI-HOP FIRST. Auto-connect used to go straight to connect()/
+            // quickConnect(), both of which build a SINGLE-HOP tunnel, while
+            // HomeScreen kept rendering the entry -> exit route from prefs. The
+            // app therefore told the user their traffic left from the exit
+            // country when it left from the entry — undetectable by them, and
+            // the client is the only thing that could have said otherwise. For a
+            // feature bought for jurisdictional separation, silently serving the
+            // other thing is the worst available failure.
+            val entry = prefs.multiHopEntryNodeId
+            val exit = prefs.multiHopExitNodeId
+            if (prefs.multiHopEnabled) {
+                if (!entry.isNullOrBlank() && !exit.isNullOrBlank()) {
+                    tracing("Auto-connect: multi-hop armed, connecting $entry -> $exit")
+                    when (val result = vpnManager.connectMultiHop(entry, exit)) {
+                        is ApiResult.Success -> { /* state syncs via startStateSync */ }
+                        is ApiResult.Error ->
+                            // Do NOT fall back to a single hop. That is the exact
+                            // silent downgrade this branch exists to prevent, and
+                            // it would look identical to success to the user.
+                            tracing("Auto-connect multi-hop failed: ${result.message}")
+                    }
+                } else {
+                    // Armed but incomplete — a node was destroyed, or prefs were
+                    // half-written. Stay disconnected rather than quietly
+                    // substituting a single hop.
+                    tracing("Auto-connect: multi-hop enabled but entry/exit incomplete; not connecting")
+                }
+                return@launch
+            }
+
             if (lastServerId != null) {
                 tracing("Auto-connecting to last server: $lastServerId")
                 when (val result = vpnManager.connect(lastServerId)) {
@@ -410,6 +440,35 @@ class VpnViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(error = null)
+
+            // Same contract as autoConnectIfEnabled: quick connect is also
+            // reached from the home-screen widget and the quick-settings tile,
+            // neither of which has UI to gate on. Without this they build a
+            // single hop while the app keeps displaying the chosen route.
+            val entry = prefs.multiHopEntryNodeId
+            val exit = prefs.multiHopExitNodeId
+            if (prefs.multiHopEnabled) {
+                if (entry.isNullOrBlank() || exit.isNullOrBlank()) {
+                    // Refuse rather than silently downgrade — see below.
+                    _uiState.value = _uiState.value.copy(
+                        error = "Multi-Hop is on but no entry/exit pair is selected. " +
+                            "Choose both in Settings, or turn Multi-Hop off.",
+                    )
+                    return@launch
+                }
+                when (val result = vpnManager.connectMultiHop(entry, exit)) {
+                    is ApiResult.Success -> {}
+                    is ApiResult.Error ->
+                        // NOT falling back to vpnManager.quickConnect(): a
+                        // single-hop tunnel presented as the user's chosen
+                        // multi-hop route is indistinguishable from success to
+                        // them, and leaks the jurisdiction they paid to hide.
+                        _uiState.value =
+                            _uiState.value.copy(error = connectErrorMessage(result))
+                }
+                return@launch
+            }
+
             when (val result = vpnManager.quickConnect()) {
                 is ApiResult.Success -> {}
                 is ApiResult.Error -> {
