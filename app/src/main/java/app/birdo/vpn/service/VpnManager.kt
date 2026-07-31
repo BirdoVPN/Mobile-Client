@@ -551,6 +551,40 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(config.message ?: "Invalid multi-hop config")
                 }
 
+                // VERIFY THE ROUTE WE ASKED FOR IS THE ROUTE WE GOT.
+                //
+                // `success: true` only means the request was handled. The
+                // response carries a `multiHop` block describing what was
+                // ACTUALLY installed, and it was never checked — the UI rendered
+                // the route from our own request instead. So any failure mode
+                // that still yields a working single-hop tunnel (forwarding
+                // install skipped, a fallback path, a response for a different
+                // pair) was shown to the user as their chosen multi-hop route.
+                //
+                // The user cannot observe their own egress country. This client
+                // is the only thing that can tell them, and it was reporting its
+                // own intent rather than what happened. Refuse instead: no
+                // tunnel is recoverable, a single hop believed to be two is a
+                // silent, indefinite jurisdiction leak.
+                val mh = config.multiHop
+                if (mh == null) {
+                    val msg = "The server did not confirm the Multi-Hop route. Not connecting."
+                    android.util.Log.e("VpnManager", "multi-hop: success but no route block; refusing")
+                    _state.value = VpnState.Error(msg)
+                    return ApiResult.Error(msg)
+                }
+                if (mh.entryNode.id != entryNodeId || mh.exitNode.id != exitNodeId) {
+                    val msg = "The server established a different Multi-Hop route (${mh.route}) " +
+                        "than the one selected. Not connecting."
+                    android.util.Log.e(
+                        "VpnManager",
+                        "multi-hop route mismatch: asked ${entryNodeId}->${exitNodeId}, " +
+                            "got ${mh.entryNode.id}->${mh.exitNode.id}",
+                    )
+                    _state.value = VpnState.Error(msg)
+                    return ApiResult.Error(msg)
+                }
+
                 // Record the route from the REQUEST (the response's multiHop block
                 // is nullable) so a reapply/auto-reconnect rebuilds multi-hop, not
                 // a silent single-hop downgrade — but ONLY on success, mirroring
