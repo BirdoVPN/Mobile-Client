@@ -11,10 +11,13 @@
     <string>PacketTunnel</string>
     <key>CFBundleIdentifier</key>
     <string>app.birdo.vpn.tunnel</string>
+    <!-- MUST resolve to the same values as the host app's Info.plist: App Store
+         validation rejects a bundle whose appex version differs from its host.
+         Both now read the same build settings, so they cannot drift. -->
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$(MARKETING_VERSION)</string>
     <key>CFBundlePackageType</key>
     <string>XPC!</string>
     <key>CFBundleExecutable</key>
