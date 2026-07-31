@@ -261,6 +261,29 @@ fun HomeScreen(
                         )
                     }
 
+                    // ADAPTIVE TRANSPORT: the connection is running over the
+                    // stealth transport. Passive by design — the user is TOLD,
+                    // never asked to decide, because the whole point of the
+                    // feature is that it adapts without exposing the plumbing.
+                    //
+                    // But it must not be silent either. Stealth wraps WireGuard
+                    // in XTLS-Reality, which costs throughput, and an
+                    // unexplained slowdown reads as "this VPN is bad" rather
+                    // than "this network is hostile and we routed around it".
+                    // It also keeps faith with the rule the backend already
+                    // follows for the inverse case (stealthUnavailableReason):
+                    // never let a user be wrong about what is carrying their
+                    // traffic.
+                    //
+                    // Gated on isConnected so it cannot linger over a torn-down
+                    // tunnel — stealthActive is only meaningful for a live one.
+                    AnimatedVisibility(visible = isConnected && state.stealthActive) {
+                        HomeBanner(
+                            icon = Icons.Default.VisibilityOff,
+                            message = stringResource(R.string.stealth_fallback_active),
+                        )
+                    }
+
                     if (isError) {
                         HomeBanner(
                             icon = Icons.Default.ErrorOutline,
