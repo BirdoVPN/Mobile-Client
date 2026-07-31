@@ -37,12 +37,32 @@ updates:
       # Need coordinated bump of Kotlin to 2.3 (currently 2.2.20) - hold all
       - dependency-name: "org.jetbrains.kotlin:*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # GRADLE PLUGIN IDS are a SEPARATE namespace from Maven coordinates.
+      #
+      # The rule above uses "group:artifact" form, which matches the Kotlin
+      # LIBRARIES. It does NOT match the plugin declarations in
+      # build.gradle.kts, which are plain ids:
+      #   org.jetbrains.kotlin.android / .multiplatform / .plugin.compose
+      #   / .plugin.serialization
+      # so Dependabot kept raising the very bumps the rule above exists to hold
+      # (and which were already closed once as blocked on the AGP 9 wall).
+      #
+      # com.android.application / com.android.library below were already
+      # correctly declared in plugin-id form; Kotlin and Hilt were not.
+      - dependency-name: "org.jetbrains.kotlin.*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "org.jetbrains.kotlinx:*"
         update-types: ["version-update:semver-major"]
       - dependency-name: "com.google.devtools.ksp"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      # Hilt minor+ needs newer Kotlin/AGP
+      # Hilt minor+ needs newer Kotlin/AGP. Hilt 2.60.1 specifically requires
+      # AGP 9.1 + compileSdk 37, which this project cannot take yet.
       - dependency-name: "com.google.dagger:*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # The Hilt GRADLE PLUGIN id — see the plugin-id note above. The
+      # "com.google.dagger:*" rule does not match it, which is why Hilt 2.60.1
+      # reappeared as a fresh PR after being closed as blocked.
+      - dependency-name: "com.google.dagger.hilt.android"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # AndroidX group bumps frequently require AGP minor+
       - dependency-name: "androidx.core:*"
