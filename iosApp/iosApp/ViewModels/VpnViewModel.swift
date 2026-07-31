@@ -336,13 +336,46 @@ final class VpnViewModel: ObservableObject {
         error = nil
         vpnManager.disconnect()
         Task { [weak self] in
-            // Let the teardown's save→stop sequence land first, so its
-            // stopVPNTunnel cannot arrive after the new session's start and
-            // kill the rebuilt tunnel.
-            try? await Task.sleep(for: .milliseconds(600))
+            await self?.awaitTeardown()
             guard let self, self.isReapplyingSettings else { return }
             self.connect()
+            await self.clearRebuildFlagsIfStalled()
         }
+    }
+
+    /// Wait for the teardown we just requested to ACTUALLY land.
+    ///
+    /// Both rebuild paths (settings reapply, live server switch) used to sleep a
+    /// fixed 600 ms and hope the teardown had finished. On a slower device it had
+    /// not: the old session's `stopVPNTunnel()` arrived AFTER the new
+    /// `startVPNTunnel()` and killed the rebuilt tunnel. The tunnel stayed down,
+    /// and because the in-flight flag is only cleared on `.connected`, it LATCHED
+    /// — `reapplySettings()`'s own re-entrancy guard then silently swallowed
+    /// every later settings change, and the switch path pinned the UI on
+    /// "Switching…", until the user reconnected by hand.
+    ///
+    /// `isConnected` is cleared by `handleStatusChange(.disconnected)`, so it is
+    /// the real signal that the teardown landed. Bounded: after the cap we
+    /// rebuild anyway rather than strand the user on a wedged NE state.
+    private func awaitTeardown() async {
+        for _ in 0..<50 {                                   // up to ~5 s
+            if !isConnected { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        // Let the teardown's preference save settle before connect() writes the
+        // new configuration over it.
+        try? await Task.sleep(for: .milliseconds(150))
+    }
+
+    /// Watchdog: a rebuild that never reaches `.connected` must not leave the
+    /// in-flight flags set. `isReapplyingSettings` gates the reapply re-entrancy
+    /// guard, so a latched flag makes the app silently ignore every subsequent
+    /// settings change — the symptom this pairs with `awaitTeardown()` to kill.
+    private func clearRebuildFlagsIfStalled() async {
+        try? await Task.sleep(for: .seconds(40))
+        guard !isConnected else { return }
+        isReapplyingSettings = false
+        isSwitching = false
     }
 
     /// Android parity ("Auto-Connect — connect to VPN on app startup", 1.5 s
@@ -527,14 +560,16 @@ final class VpnViewModel: ObservableObject {
         selectedServer = server
         error = nil
         isSwitching = true
-        // Reuse the settings-blip sequencing: stop, let the teardown land, then
+        // Reuse the settings-blip sequencing: stop, WAIT for the teardown to
+        // actually land (not a fixed sleep — see `awaitTeardown()`), then
         // reconnect. evictForConnect reclaims the device slot atomically, so no
         // DELETE round-trip is needed and the free-tier slot is never doubled.
         vpnManager.disconnect()
         Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
+            await self?.awaitTeardown()
             guard let self, self.isSwitching else { return }
             self.connect()
+            await self.clearRebuildFlagsIfStalled()
         }
     }
 

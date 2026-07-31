@@ -122,14 +122,34 @@ targets:
         # Pinned explicitly here too, so this target does not silently inherit a
         # different identity if XcodeGen's extension preset ever gains one.
         CODE_SIGN_IDENTITY: "Apple Distribution"
-        FRAMEWORK_SEARCH_PATHS:
-          - "$(inherited)"
-          - "$(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework"
-          - "$(SRCROOT)/../shared/build/bin/iosArm64/releaseFramework"
+        # DO NOT link BirdoShared (the KMP Kotlin/Native framework) here. The
+        # extension sources import only NetworkExtension / Security / WireGuardKit
+        # / os.log — none of the Kotlin code. Linking it made dyld load the entire
+        # Kotlin/Native runtime into the packet-tunnel extension at startup, and
+        # that runtime's memory footprint, on top of the Go WireGuard runtime that
+        # spins up in adapter.start(), blew the NEProvider ~50 MB memory ceiling —
+        # the extension was jetsam-killed the instant it called adapter.start
+        # (breadcrumb stuck at "calling adapter.start", no callback, no crash from
+        # our code). The simulator has no such memory cap, which is why it only
+        # ever died on hardware. Keep this target lean: WireGuardKit + system only.
         OTHER_LDFLAGS:
           - "$(inherited)"
-          - "-framework"
-          - "BirdoShared"
+          # FORCE-LOAD libwg-go.a. WireGuardKit links it as a plain `-lwg-go`
+          # (.linkedLibrary), but the Go c-archive registers its runtime-init
+          # constructor in __DATA,__mod_init_func — and Xcode 26's default linker
+          # (ld_prime) drops that section from a plainly-linked static archive
+          # under Release optimisation. With the constructor stripped the Go
+          # runtime never initialises, so the FIRST cgo call (wgSetLogger, made by
+          # WireGuardAdapter.start) hits the `_cgo_wait_runtime_init_done` guard
+          # and dies with EXC_BAD_INSTRUCTION/SIGILL — the exact on-device crash
+          # (thread on com.apple.NSXPCConnection.user.endpoint, frames
+          # _cgo_wait_runtime_init_done <- wgSetLogger). force_load pulls every
+          # object (constructor included) so the runtime inits. The Debug
+          # simulator build keeps the section, which is why it only died on
+          # hardware. $(PLATFORM_NAME) resolves to iphoneos / iphonesimulator,
+          # matching the .build-wg/<platform>/ layout ios.yml and setup-ios.sh
+          # produce, and $(SRCROOT) is iosApp/ for this project.
+          - "-Wl,-force_load,$(SRCROOT)/.build-wg/$(PLATFORM_NAME)/libwg-go.a"
     dependencies:
       - package: WireGuardKit
         product: WireGuardKit

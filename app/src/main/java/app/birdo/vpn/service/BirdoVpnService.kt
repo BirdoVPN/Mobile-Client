@@ -22,8 +22,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
@@ -146,6 +149,24 @@ class BirdoVpnService : VpnService() {
         /** Whether the current connection is using Rosenpass PQ-PSK */
         val quantumActive: Boolean get() = _quantumActiveFlow.value
 
+        /**
+         * ADAPTIVE TRANSPORT: emits when a freshly-established tunnel failed to
+         * complete a WireGuard handshake inside [TransportProbe.WINDOW_MS] — i.e.
+         * the interface is up but the network is eating our packets.
+         *
+         * [VpnManager] collects this and automatically retries the connection over
+         * the stealth transport. It is a SharedFlow, not a StateFlow, because it
+         * reports an EVENT ("this attempt was blocked") rather than a state: a
+         * StateFlow would replay a stale `true` to the next collector and trigger
+         * a spurious fallback on an unrelated, working connection.
+         *
+         * replay = 0 for the same reason. extraBufferCapacity keeps the emitting
+         * probe thread from blocking if the collector is momentarily busy.
+         */
+        private val _transportBlockedFlow =
+            MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
+        val transportBlockedFlow: SharedFlow<Unit> = _transportBlockedFlow.asSharedFlow()
+
         // FIX-2-12: Reactive state flow replaces 1-second polling.
         // VpnManager collects this flow to receive state changes immediately.
         private val _stateFlow = MutableStateFlow<VpnState>(VpnState.Disconnected)
@@ -261,7 +282,20 @@ class BirdoVpnService : VpnService() {
         if (currentState is VpnState.Connecting) {
             Log.e(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
             updateState(VpnState.Error("Connection timed out"))
-            cleanupTunnel()
+            // Fail closed on timeout, matching every startTunnel failure path.
+            // The old cleanupTunnel() closed the blocking vpnInterface with NO
+            // re-arm, so a >30s stall during a reconnect (e.g. PQ key exchange
+            // wedged in a dead zone) dropped the kill-switch block and leaked
+            // cleartext + DNS until the next reconnect re-armed it. Tear down the
+            // stalled wg-go setup but keep traffic blocked: activateKillSwitch()
+            // supersedes any stale/held interface with a fresh block. Only fully
+            // release (fail open) when the user has the kill switch OFF.
+            if (isKillSwitchEnabled) {
+                cleanupTunnelDataPlane()
+                activateKillSwitch()
+            } else {
+                cleanupTunnel()
+            }
             updateNotification("Connection timed out")
         }
     }
@@ -283,6 +317,10 @@ class BirdoVpnService : VpnService() {
         // and don't ask to be restarted again.
         if (intent?.action == null) {
             Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
+            // The tunnel is down (the OS killed and is restarting us). The widget
+            // pref survives process death, so without this the home-screen widget
+            // keeps showing a green "Protected" for a VPN that is no longer up.
+            updateWidgetState(false, null)
             startForeground(
                 VpnNotificationManager.NOTIFICATION_ID,
                 notifManager.buildForegroundNotification("Disconnected"),
@@ -664,6 +702,45 @@ class BirdoVpnService : VpnService() {
         // traffic fail-closed seamlessly.
         cleanupTunnelDataPlane()
 
+        // REQUESTED-VS-GRANTED GUARD.
+        //
+        // Compare what the user asked for against what the server actually
+        // granted, and refuse rather than connect with less protection than the
+        // UI is showing. Desktop treats this as load-bearing at four connect
+        // paths; Android had no equivalent.
+        //
+        // Today the backend refuses rather than downgrades, so this is
+        // defence-in-depth — but it is precisely the guard that catches a backend
+        // regression, a partial rollout, or a MitM stripping the fields on the
+        // way back. Silently connecting with weaker protection than advertised is
+        // the one outcome that must not happen.
+        if (appPrefs.quantumProtectionEnabled && !config.quantumEnabled) {
+            Log.e(TAG, "Quantum protection requested but not granted by the server — refusing to connect")
+            cleanupStealthAndQuantum()
+            if (isKillSwitchEnabled) activateKillSwitch()
+            updateState(
+                VpnState.Error(
+                    "Quantum protection was requested but the server did not enable it. " +
+                        "Not connecting, because that would use weaker encryption than shown. " +
+                        "Try again, or turn off Quantum Protection in Settings."
+                )
+            )
+            return
+        }
+        if (appPrefs.stealthModeEnabled && !config.stealthEnabled) {
+            Log.e(TAG, "Stealth mode requested but not granted by the server — refusing to connect")
+            cleanupStealthAndQuantum()
+            if (isKillSwitchEnabled) activateKillSwitch()
+            updateState(
+                VpnState.Error(
+                    "Stealth mode was requested but the server did not enable it. " +
+                        "Not connecting, because traffic would not be disguised as shown. " +
+                        "Try again, or turn off Stealth Mode in Settings."
+                )
+            )
+            return
+        }
+
         try {
             // ── Phase 1: Stealth Tunnel (Xray Reality) ──────────────
             // When stealth mode is enabled and the server provides Xray config,
@@ -862,6 +939,11 @@ class BirdoVpnService : VpnService() {
 
             updateWidgetState(true, connectedServer)
             extractServerIp()
+            // ADAPTIVE TRANSPORT: we have just told the UI "Connected" on the
+            // strength of the interface being up, which on a filtered network is
+            // a lie — no handshake will ever land. Verify it, and if nothing
+            // arrives, signal VpnManager to retry over stealth.
+            startTransportProbe(handle, config.stealthEnabled == true)
             mainHandler.removeCallbacks(connectTimeoutRunnable)
             mainHandler.post {
                 updateNotification(buildConnectedText())
@@ -1095,9 +1177,50 @@ class BirdoVpnService : VpnService() {
                 // clears it on a successful connect), matching the desktop
                 // client's behaviour on the same drop.
                 if (isKillSwitchEnabled) activateKillSwitch()
+                // The tunnel is no longer carrying traffic — clear the widget's
+                // "Protected" so it doesn't keep asserting a connection through
+                // the whole reconnect window (or indefinitely on a permanent
+                // stall). Unconditional: even with the kill switch OFF the tunnel
+                // is down, so a green widget would be a false safety signal.
+                updateWidgetState(false, null)
                 updateState(VpnState.Error("Connection lost — reconnecting…"))
             },
         ).also { it.start() }
+    }
+
+    /**
+     * ADAPTIVE TRANSPORT: confirm the tunnel we just reported as Connected is
+     * actually carrying traffic, and signal a fallback if it is not.
+     *
+     * Runs on its own short-lived daemon thread — [TransportProbe.await] blocks
+     * for up to [TransportProbe.WINDOW_MS], and doing that on the caller would
+     * stall tunnel setup and risk an ANR.
+     *
+     * `alreadyStealth` short-circuits the probe when this connection IS the
+     * stealth attempt. Without it a stealth tunnel that also fails to handshake
+     * (genuinely offline, server down, or a network that blocks TLS too) would
+     * emit "blocked" and drive VpnManager into a fallback it has already made —
+     * a reconnect loop. Stealth is the last transport we have, so a failure
+     * there is handled by the normal TunnelMonitor/auto-reconnect path instead.
+     */
+    private fun startTransportProbe(handle: Int, alreadyStealth: Boolean) {
+        if (alreadyStealth) {
+            Log.i(TAG, "Skipping transport probe — already on the stealth transport")
+            return
+        }
+        Thread({
+            val verdict = TransportProbe(
+                handle = handle,
+                isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
+            ).await()
+            if (verdict == TransportProbe.Result.BLOCKED) {
+                Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
+                // tryEmit, not emit: this is a non-suspending context and the
+                // buffer is sized for it. A dropped emission would only mean a
+                // missed fallback, never a blocked tunnel thread.
+                _transportBlockedFlow.tryEmit(Unit)
+            }
+        }, "birdo-transport-probe").apply { isDaemon = true }.start()
     }
 
     private fun buildWireGuardConfig(response: ConnectResponse): Config {

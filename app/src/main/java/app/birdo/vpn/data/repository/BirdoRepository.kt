@@ -8,7 +8,9 @@ import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.utils.InputValidator
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import retrofit2.Response
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -18,6 +20,15 @@ sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
     data class Error(val message: String, val code: Int = 0) : ApiResult<Nothing>()
 }
+
+/**
+ * Outcome of a token refresh. Distinguishing these is load-bearing (parity with
+ * the iOS APIClient): only a DEFINITIVE 401/403 should force the user to
+ * re-login; a transient failure (5xx, timeout, network) must keep the session,
+ * and an ABORTED refresh (a logout/delete landed while the refresh was in
+ * flight) must neither resurrect the session nor trigger a second logout.
+ */
+internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT }
 
 // ── Repository ──────────────────────────────────────────────────
 
@@ -33,6 +44,14 @@ class BirdoRepository @Inject constructor(
      */
     private val refreshMutex = Mutex()
 
+    /**
+     * Monotonic session generation. Bumped on logout()/deleteAccount() so an
+     * in-flight refreshToken() that started before the sign-out can detect it
+     * completed too late and drop its rotated tokens instead of resurrecting a
+     * signed-out session on disk (parity with iOS APIClient's SessionGeneration).
+     */
+    private val sessionGeneration = AtomicLong(0)
+
     // ── Server cache ─────────────────────────────────────────────
 
     @Volatile private var cachedServers: List<VpnServer>? = null
@@ -47,6 +66,23 @@ class BirdoRepository @Inject constructor(
         private const val SERVER_CACHE_TTL_MS = 60_000L
         /** Subscription is considered fresh for 30 seconds. */
         private const val SUBSCRIPTION_CACHE_TTL_MS = 30_000L
+
+        /**
+         * Whole budget for logout's best-effort server-side revocation.
+         *
+         * The call now runs through withAutoRefresh, which on an expired access
+         * token costs three round trips (401 → refresh → retry). NetworkModule
+         * sets connect/read/write to 30 s each and sets NO `callTimeout`, so
+         * OkHttp does not bound a whole call at all — one round trip that
+         * connects slowly and then stalls mid-body can burn 60 s on its own,
+         * and three of them are minutes of spinner on a button whose local half
+         * has already succeeded. That is why the bound lives here, at the
+         * coroutine level, rather than being left to the HTTP client.
+         *
+         * `internal` so the regression test can assert against the real budget
+         * instead of restating 15_000 and quietly drifting from it.
+         */
+        internal const val LOGOUT_SERVER_CALL_TIMEOUT_MS = 15_000L
     }
 
     fun invalidateServerCache() {
@@ -171,22 +207,76 @@ class BirdoRepository @Inject constructor(
         }
     }
 
-    /** FIX C-1: Persist rotated refresh token from refresh response */
-    suspend fun refreshToken(): Boolean = refreshMutex.withLock {
-        val refreshToken = tokenManager.getRefreshToken() ?: return@withLock false
+    /**
+     * FIX C-1: Persist rotated refresh token from refresh response.
+     * Fences against a concurrent logout/delete (finding #6) and separates a
+     * definitive 401/403 from a transient failure (finding #7).
+     */
+    internal suspend fun refreshToken(): RefreshOutcome = refreshMutex.withLock {
+        val presented = tokenManager.getRefreshToken() ?: return@withLock RefreshOutcome.UNAUTHORIZED
+        // Captured BEFORE the network round-trip; compared after, so a sign-out
+        // that lands mid-flight is detected.
+        val genAtStart = sessionGeneration.get()
         return@withLock try {
-            val response = api.refreshToken(RefreshRequest(refreshToken))
+            val response = api.refreshToken(RefreshRequest(presented))
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
-                tokenManager.setAccessToken(body.accessToken)
-                // FIX C-1: Store rotated refresh token if returned by backend
-                body.refreshToken?.let { tokenManager.setRefreshToken(it) }
-                true
+                // Logout fence + CAS: if a logout/delete bumped the generation,
+                // or the stored refresh token no longer matches the one we
+                // presented, a sign-out (or a competing refresh) landed while we
+                // were in flight — drop the rotated pair rather than re-persist
+                // a signed-out session. Treated as TRANSIENT so it neither forces
+                // a second logout nor resurrects the session.
+                if (sessionGeneration.get() != genAtStart ||
+                    tokenManager.getRefreshToken() != presented
+                ) {
+                    RefreshOutcome.TRANSIENT
+                } else {
+                    tokenManager.setAccessToken(body.accessToken)
+                    // FIX C-1: Store rotated refresh token if returned by backend
+                    body.refreshToken?.let { tokenManager.setRefreshToken(it) }
+                    RefreshOutcome.SUCCESS
+                }
+            } else if (response.code() == 401) {
+                // Definitive: the server rejected this refresh token — so DISCARD it.
+                //
+                // Not clearing it is what turned one dead token into a storm. The
+                // VPN heartbeat runs every 30s and, on 401, called refreshToken()
+                // with the SAME stored token, forever: nothing here cleared it and
+                // the loop only logs the failure. Server-side, every replay of a
+                // consumed jti re-ran reuse detection and revoked the account's
+                // sessions AND every WireGuard peer — four revocations in one
+                // minute in production on 2026-07-28, for one anonymous session,
+                // while the user sat behind a tunnel whose peer was already gone.
+                //
+                // The server is now idempotent about this, but the client must not
+                // replay either: already-shipped app versions cannot be fixed by a
+                // release, so both halves need to hold on their own.
+                //
+                // Bump BEFORE clearing, matching logout()/deleteAccount(): an
+                // in-flight refresh completing after this point then sees the new
+                // generation and drops its rotated tokens instead of resurrecting
+                // a dead session.
+                sessionGeneration.incrementAndGet()
+                tokenManager.clearAll()
+                RefreshOutcome.UNAUTHORIZED
+            } else if (response.code() == 403) {
+                // Also non-retryable, but deliberately does NOT destroy the tokens.
+                // A 403 on this path is not always the token's fault: an
+                // infrastructure-level block returns it too — the Caddy client-ip
+                // regression put every user into one rate-limit bucket and the API
+                // answered 403 across the board. Wiping credentials on that would
+                // have irrecoverably signed out the entire userbase during an
+                // outage that had nothing to do with their tokens. Sign out, but
+                // leave the tokens alone so recovery is possible.
+                RefreshOutcome.UNAUTHORIZED
             } else {
-                false
+                // 5xx / unexpected status — the credentials may still be valid.
+                RefreshOutcome.TRANSIENT
             }
         } catch (_: Exception) {
-            false
+            // Network error / timeout — transient, keep the session.
+            RefreshOutcome.TRANSIENT
         }
     }
 
@@ -257,8 +347,41 @@ class BirdoRepository @Inject constructor(
         }
     }
 
+    /**
+     * Sign out: kill the session SERVER-side, then clear local state.
+     *
+     * The server call used to be a bare `api.logout()` — the only authenticated
+     * call in this repository that did NOT go through [withAutoRefresh]. Access
+     * tokens live one hour and refresh tokens thirty days, so the ordinary case
+     * (open the app, use it, come back later, tap "Log out") presented an
+     * EXPIRED access token: /auth/logout answered 401, nothing retried, and the
+     * server never ran `revokeDeviceSessionLineage`. Local tokens were wiped, so
+     * the user was shown a clean logout while the refresh lineage stayed alive
+     * on the server for up to another thirty days — anyone holding a copy of
+     * that refresh token (the exact thing "log out" is supposed to defeat) could
+     * still mint sessions. Routing through withAutoRefresh spends one refresh to
+     * obtain a live jti and retries, so the lineage actually dies.
+     *
+     * Everything after the call stays UNCONDITIONAL. Local sign-out must happen
+     * even when the device is offline, the server is down, or the refresh token
+     * is itself dead — "Log out" can never leave the user signed in on the
+     * handset. The server half is best-effort and time-boxed: it can now cost up
+     * to three round trips (401 → refresh → retry) and OkHttp allows 30 s each,
+     * which is far longer than anyone will watch a spinner for a button whose
+     * local work is already done. On timeout the local clear still runs.
+     */
     suspend fun logout() {
-        try { api.logout() } catch (_: Exception) { /* best effort */ }
+        // Bump BEFORE clearing so an in-flight refresh that completes after this
+        // point sees the new generation and drops its rotated tokens (finding #6).
+        // Safe to bump before the refresh below: refreshToken() captures the
+        // generation when IT starts, so its fence sees a stable value and the
+        // logout's own refresh is not mistaken for a raced one.
+        sessionGeneration.incrementAndGet()
+        try {
+            withTimeout(LOGOUT_SERVER_CALL_TIMEOUT_MS) {
+                withAutoRefresh("Logout failed") { api.logout() }
+            }
+        } catch (_: Exception) { /* best effort — local sign-out proceeds regardless */ }
         tokenManager.clearAll()
         invalidateServerCache()
         invalidateSubscriptionCache()
@@ -269,14 +392,20 @@ class BirdoRepository @Inject constructor(
      * Requires password re-confirmation to prevent deletion via stolen JWT.
      * On success, clears all local tokens and cached data.
      */
-    suspend fun deleteAccount(password: String): ApiResult<DeleteAccountResponse> {
+    suspend fun deleteAccount(password: String?): ApiResult<DeleteAccountResponse> {
         val result = withAutoRefresh("Account deletion failed") {
             api.deleteAccount(DeleteAccountRequest(password))
         }
         if (result is ApiResult.Success) {
-            // Clear local state — account no longer exists on the server
+            // Clear local state — account no longer exists on the server.
+            // Bump the generation to fence any in-flight refresh (finding #6),
+            // and invalidate BOTH caches so the next account on this device can
+            // never briefly read the deleted account's plan (finding #15) — the
+            // server cache was already cleared, the subscription cache was not.
+            sessionGeneration.incrementAndGet()
             tokenManager.clearAll()
             invalidateServerCache()
+            invalidateSubscriptionCache()
         }
         return result
     }
@@ -298,15 +427,35 @@ class BirdoRepository @Inject constructor(
             if (response.isSuccessful && response.body() != null) {
                 ApiResult.Success(response.body()!!)
             } else if (response.code() == 401) {
-                if (refreshToken()) {
-                    val retry = call()
-                    if (retry.isSuccessful && retry.body() != null) {
-                        ApiResult.Success(retry.body()!!)
-                    } else {
-                        ApiResult.Error("Session expired", 401)
+                when (refreshToken()) {
+                    RefreshOutcome.SUCCESS -> {
+                        val retry = call()
+                        if (retry.isSuccessful && retry.body() != null) {
+                            ApiResult.Success(retry.body()!!)
+                        } else {
+                            // Do NOT hard-code 401 here. The refresh SUCCEEDED, so
+                            // the session is demonstrably valid — the retry failed
+                            // for some other reason. Reporting 401 made
+                            // checkSession() sign the user out of a perfectly good
+                            // session over a transient 5xx or a timeout on the
+                            // retry, which is the same false-logout class the
+                            // TRANSIENT outcome below exists to prevent.
+                            // Propagate the retry's real status instead.
+                            ApiResult.Error(
+                                InputValidator.sanitizeErrorMessage(
+                                    retry.errorBody()?.string(), errorFallback
+                                ),
+                                retry.code(),
+                            )
+                        }
                     }
-                } else {
-                    ApiResult.Error("Session expired", 401)
+                    // Definitive: the refresh token is dead → force re-login.
+                    RefreshOutcome.UNAUTHORIZED -> ApiResult.Error("Session expired", 401)
+                    // Transient (5xx/timeout/network) or a logout landed mid-flight:
+                    // keep the session. A non-401 code means checkSession() will
+                    // NOT sign the user out (finding #7).
+                    RefreshOutcome.TRANSIENT ->
+                        ApiResult.Error("Service temporarily unavailable", 503)
                 }
             } else {
                 ApiResult.Error(
@@ -427,6 +576,12 @@ class BirdoRepository @Inject constructor(
         serverNodeId: String,
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
+        /**
+         * ADAPTIVE TRANSPORT: non-null marks this connect as a retry after a
+         * failed WireGuard handshake, and asks the server for the stealth
+         * transport regardless of plan. See TransportFallbackReason.
+         */
+        fallbackReason: String? = null,
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
@@ -450,6 +605,7 @@ class BirdoRepository @Inject constructor(
                     deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
+                    fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
                     integrityToken = integrityToken,
@@ -594,12 +750,15 @@ class BirdoRepository @Inject constructor(
             if (response.isSuccessful) {
                 ApiResult.Success(Unit)
             } else if (response.code() == 401) {
-                if (refreshToken()) {
-                    val retry = api.deletePortForward(id)
-                    if (retry.isSuccessful) ApiResult.Success(Unit)
-                    else ApiResult.Error("Session expired", 401)
-                } else {
-                    ApiResult.Error("Session expired", 401)
+                when (refreshToken()) {
+                    RefreshOutcome.SUCCESS -> {
+                        val retry = api.deletePortForward(id)
+                        if (retry.isSuccessful) ApiResult.Success(Unit)
+                        else ApiResult.Error("Session expired", 401)
+                    }
+                    RefreshOutcome.UNAUTHORIZED -> ApiResult.Error("Session expired", 401)
+                    RefreshOutcome.TRANSIENT ->
+                        ApiResult.Error("Service temporarily unavailable", 503)
                 }
             } else {
                 ApiResult.Error("Failed to delete port forward", response.code())

@@ -75,6 +75,23 @@ final class VPNManager: @unchecked Sendable {
         // the system VPN configuration store.
         try config.validate()
 
+        // REQUESTED-VS-GRANTED PQ GUARD (parity with Android
+        // BirdoVpnService requested-vs-granted guard + desktop
+        // enforce_requested_protection). If the user enabled Quantum Protection
+        // but the server response is NOT post-quantum (quantumEnabled != true —
+        // a backend regression, partial fleet rollout, or a response stripped by
+        // a MitM), refuse the connection rather than silently establishing a
+        // classical tunnel while the UI still shows PQ enabled. The
+        // `config.quantumEnabled == true` branch below only covers the
+        // server-SAID-PQ-but-decapsulation-failed case; this covers the
+        // server-SAID-NOT-PQ case that iOS previously let fall through to the
+        // classical PSK.
+        let userRequestedPQ = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
+        if userRequestedPQ && config.quantumEnabled != true {
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed
+        }
+
         let mgr = try await ensureManager()
 
         // AUDIT-C1: prefer a true bilateral PQ PSK over the server-provided
@@ -88,6 +105,20 @@ final class VPNManager: @unchecked Sendable {
         let effectivePsk: String?
         if let pqPsk {
             effectivePsk = pqPsk
+        } else if config.quantumEnabled == true {
+            // FAIL CLOSED. The server said this session IS post-quantum, and we
+            // could not complete the decapsulation — so the bilateral PQ PSK does
+            // not exist. Falling through to `config.presharedKey` here would
+            // silently substitute the TLS-delivered CLASSICAL key while the app
+            // still reports quantum protection, which is exactly the
+            // harvest-now-decrypt-later property the feature exists to defeat.
+            //
+            // `tryDecapsulate` collapses three distinct failures to nil (malformed
+            // ciphertext, missing keypair, rc != BIRDO_PQ_OK) and all three landed
+            // here. Desktop (commands/vpn.rs) and Android (BirdoVpnService.kt)
+            // both abort; iOS was the only platform that downgraded in silence.
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed
         } else if let serverPsk = config.presharedKey, !serverPsk.isEmpty {
             BirdoPQManager.shared.recordServerProvided()
             effectivePsk = serverPsk
@@ -440,7 +471,17 @@ final class VPNManager: @unchecked Sendable {
         // the full-tunnel pair; if it sent none, fall back to it rather than
         // building a tunnel that silently carries nothing (matches Android's
         // `?: listOf("0.0.0.0/0", "::/0")` plus its allowed-IP count check).
-        let allowedIPs = config.allowedIPs.isEmpty ? ["0.0.0.0/0", "::/0"] : config.allowedIPs
+        var allowedIPs = config.allowedIPs.isEmpty ? ["0.0.0.0/0", "::/0"] : config.allowedIPs
+        // Force an IPv6 default even when the server list is a non-empty IPv4-only
+        // set (our exit nodes are IPv4-only, so the backend often sends just
+        // ["0.0.0.0/0"]). Without ::/0 in AllowedIPs, WireGuardKit installs no
+        // IPv6 route, so with the kill switch OFF all IPv6 traffic + AAAA lookups
+        // egress outside the tunnel — the real-IPv6 leak Android already blocks
+        // by unconditionally adding `::/0` (BirdoVpnService.buildVpnInterface).
+        // ::/0 with no tunnel v6 address blackholes IPv6 (leak-safe).
+        if !allowedIPs.contains(where: { Self.isIPv6DefaultRoute($0) }) {
+            allowedIPs.append("::/0")
+        }
         for ip in allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
@@ -490,6 +531,19 @@ final class VPNManager: @unchecked Sendable {
         return false
     }
 
+    /// True if an AllowedIPs entry is the IPv6 default route (`::/0`), tolerating
+    /// surrounding whitespace and the `0::/0` spelling. Used to decide whether the
+    /// server already captures IPv6 before we append our own blackhole route.
+    static func isIPv6DefaultRoute(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard let slash = trimmed.firstIndex(of: "/"),
+              Int(trimmed[trimmed.index(after: slash)...]) == 0 else { return false }
+        var v6 = in6_addr()
+        let addr = String(trimmed[..<slash])
+        guard addr.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 else { return false }
+        return withUnsafeBytes(of: &v6) { $0.allSatisfy { $0 == 0 } } // :: with prefix /0
+    }
+
     /// Apply the user's WireGuard port override. "auto", "custom" (the picker's
     /// placeholder tag) and any out-of-range value keep the server-provided
     /// port — same contract as Android's `applyPortOverride`.
@@ -515,6 +569,9 @@ final class VPNManager: @unchecked Sendable {
 enum VPNManagerError: Error, LocalizedError {
     case keychainUnavailable
     case managerUnavailable
+    /// The server negotiated a post-quantum session but ML-KEM decapsulation did
+    /// not yield a key. Surfaced rather than downgraded — see `connect`.
+    case quantumHandshakeFailed
 
     var errorDescription: String? {
         switch self {
@@ -522,6 +579,10 @@ enum VPNManagerError: Error, LocalizedError {
             return "Secure storage unavailable. Restart the app and try again."
         case .managerUnavailable:
             return "VPN configuration unavailable. Restart the app and try again."
+        case .quantumHandshakeFailed:
+            return "Quantum-protected handshake failed. Not connecting, because continuing "
+                + "would fall back to weaker encryption. Try again, or turn off Quantum "
+                + "Protection in Settings to connect without it."
         }
     }
 }

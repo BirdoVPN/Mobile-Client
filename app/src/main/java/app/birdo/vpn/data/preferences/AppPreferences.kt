@@ -76,6 +76,51 @@ class AppPreferences @Inject constructor(
         // before its async flush, silently reverting to the unsafe default.
         set(value) { prefs.edit().putBoolean(KEY_STEALTH_MODE, value).commit(); signSettings() }
 
+    // ── Adaptive Transport (automatic stealth fallback) ──────────
+    /**
+     * When the last automatic fallback succeeded, the epoch-millis at which it
+     * happened; 0 when we have no reason to expect interference.
+     *
+     * Purpose is purely SPEED. Once we know this user's network eats WireGuard,
+     * starting the next connect on plain WireGuard just to watch it fail costs
+     * them another [TransportProbe.WINDOW_MS] of staring at a dead screen. This
+     * lets VpnManager skip straight to the transport that works.
+     *
+     * DELIBERATELY NOT part of signSettings(): the HMAC covers security-relevant
+     * settings, and adding a field there invalidates every existing signature
+     * and resets users (see the settings-migration note in AppSettings). This is
+     * a performance hint — worst case it is wrong and we pay one probe window.
+     *
+     * DELIBERATELY NOT keyed by SSID or network identifier: reading the SSID
+     * needs location permission on modern Android, and asking a censored user
+     * for their location to make their VPN faster is a trade we should not
+     * offer. The timestamp decays instead (see PREFERENCE_TTL_MS), so a user who
+     * travels re-tests the fast path within a day rather than being pinned to
+     * the slow one forever.
+     */
+    var stealthPreferredSince: Long
+        get() = prefs.getLong(KEY_STEALTH_PREFERRED_SINCE, 0L)
+        set(value) = prefs.edit().putLong(KEY_STEALTH_PREFERRED_SINCE, value).apply()
+
+    /**
+     * True when a recent fallback tells us to start on the stealth transport.
+     *
+     * Expires after [PREFERENCE_TTL_MS] so the fast path is re-tested regularly:
+     * networks stop being filtered, users travel, and permanently pinning
+     * someone to the slower transport because of one bad hotel WiFi would be a
+     * silent, unexplained performance regression.
+     */
+    val shouldStartOnStealth: Boolean
+        get() {
+            val since = stealthPreferredSince
+            if (since <= 0L) return false
+            val age = System.currentTimeMillis() - since
+            // A clock that moved backwards (timezone change, NTP correction,
+            // manual set) would otherwise leave a negative age looking "fresh"
+            // forever. Treat any negative age as expired and re-probe.
+            return age in 0..PREFERENCE_TTL_MS
+        }
+
     // ── Quantum Protection (BirdoPQ v1 — ML-KEM-1024 PQ-PSK) ─────
     /** When enabled, adds post-quantum pre-shared key exchange via BirdoPQ v1
      *  (ML-KEM-1024, FIPS 203) layered on top of WireGuard's Curve25519
@@ -204,6 +249,19 @@ class AppPreferences @Inject constructor(
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
         private const val KEY_LOCAL_NETWORK_SHARING = "local_network_sharing"
         private const val KEY_STEALTH_MODE = "stealth_mode_enabled"
+        private const val KEY_STEALTH_PREFERRED_SINCE = "stealth_preferred_since"
+
+        /**
+         * How long a successful automatic fallback keeps steering new connects
+         * onto the stealth transport before the fast path is re-tested.
+         *
+         * 24h is a deliberate compromise. Shorter and a user on a permanently
+         * filtered network pays the probe window daily for nothing; longer and
+         * someone who has left that network stays on the slower transport well
+         * past the point it was needed. One re-probe per day costs at most
+         * TransportProbe.WINDOW_MS and is invisible against a day of use.
+         */
+        const val PREFERENCE_TTL_MS = 24L * 60 * 60 * 1000
         private const val KEY_QUANTUM_PROTECTION = "quantum_protection_enabled"
         private const val KEY_CUSTOM_DNS_ENABLED = "custom_dns_enabled"
         private const val KEY_CUSTOM_DNS_PRIMARY = "custom_dns_primary"
