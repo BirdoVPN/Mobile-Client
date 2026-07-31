@@ -670,12 +670,30 @@ jobs:
           CERT_PATH="$RUNNER_TEMP/dist.p12"
           echo "$CERT_B64" | base64 --decode > "$CERT_PATH"
 
+          # Diagnostic only — never fatal, `security import` stays the authority.
+          # errSecParam from the import is ambiguous: it means either the flags
+          # are wrong or the secret didn't decode to a usable .p12. This says
+          # which, so the next failure doesn't need a guess. Kept non-fatal
+          # because an openssl that can't read a modern PKCS#12 would otherwise
+          # fail a perfectly good certificate.
+          if openssl pkcs12 -in "$CERT_PATH" -passin pass:"$CERT_PASSWORD" -noout 2>/dev/null; then
+            echo "PKCS#12 parsed OK ($(wc -c < "$CERT_PATH") bytes)"
+          else
+            echo "::warning::Decoded file did not parse as PKCS#12 with the supplied password. If the import below fails, suspect APPLE_DIST_CERT_BASE64/APPLE_DIST_CERT_PASSWORD rather than the import flags."
+          fi
+
           security create-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          # -t agg, NOT -t cert: a distribution .p12 is an AGGREGATE holding the
+          # private key alongside the certificate. Pairing -f pkcs12 with
+          # -t cert asserts the file is a bare certificate, and that
+          # contradiction is what SecKeychainItemImport rejects as errSecParam
+          # ("One or more parameters passed to a function were not valid") —
+          # which reads like a bad secret but is purely a flag mismatch.
           security import "$CERT_PATH" \
             -P "$CERT_PASSWORD" \
-            -A -t cert -f pkcs12 \
+            -A -t agg -f pkcs12 \
             -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
