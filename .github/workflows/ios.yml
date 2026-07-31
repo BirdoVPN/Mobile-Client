@@ -17,8 +17,9 @@ name: iOS CI & Build
 #                                     and upload a signed build to TestFlight
 #   * manual workflow_dispatch    -> same, targeting inputs.release_tag
 #                                     (used to backfill an existing release).
-#                                     Dispatch with `--ref android-v<x.y.z>` to
-#                                     satisfy the tag gate on release-ios.
+#                                     Pass upload_testflight=true to also cut a
+#                                     signed TestFlight build without pushing a
+#                                     tag (a tag would release Android to Play).
 # ============================================================================
 
 on:
@@ -31,6 +32,11 @@ on:
         description: 'Existing android-v* release tag to attach the unsigned iOS .ipa to (e.g. android-v1.4.8).'
         required: false
         type: string
+      upload_testflight:
+        description: 'Codesign this build and upload it to TestFlight. Off by default — an android-v* tag does this automatically, so this is for cutting a test build WITHOUT a public Android release.'
+        required: false
+        default: false
+        type: boolean
 
 # Minimum permissions - each job declares its own (publish-ios needs write).
 permissions:
@@ -551,7 +557,21 @@ jobs:
     name: Codesign & Upload to TestFlight
     runs-on: macos-14
     needs: [shared-framework, build-ios, test-ios]
-    if: ${{ startsWith(github.ref, 'refs/tags/android-v') }}
+    # A release tag, or a dispatch that explicitly asked for a TestFlight build.
+    #
+    # The dispatch arm exists because an android-v* tag also fires android.yml,
+    # which uploads straight to production Play — so without it, getting a build
+    # onto a test device would mean shipping a public Android release first.
+    #
+    # This deliberately keys off its OWN input rather than reusing release_tag:
+    # release_tag drives publish-ios, so borrowing it would re-attach a freshly
+    # built .ipa to an already-published release, replacing that release's asset
+    # with one built from newer code than the tag it claims to be. A bare
+    # dispatch still skips both — uploading must stay a deliberate act, never a
+    # side effect of a branch verification run.
+    if: >-
+      startsWith(github.ref, 'refs/tags/android-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.upload_testflight)
     permissions:
       contents: read
       id-token: write   # for Sigstore Fulcio
