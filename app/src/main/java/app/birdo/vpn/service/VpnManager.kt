@@ -288,7 +288,22 @@ class VpnManager @Inject constructor(
             // the new tunnel's establish() atomically supersedes it.
             // reapplyInProgress forces the block up even with the kill switch
             // off, so the settings-apply blip can't leak (see reapplySettingsNow).
-            switchTeardown(forceBlock = reapplyInProgress)
+            //
+            // fallbackInFlight forces it for the same reason, and the case is
+            // stronger. A settings reapply and a server switch are things the
+            // USER asked for; an Adaptive Transport fallback is not. The app
+            // decided on its own to tear down a tunnel the user was told was
+            // "Connected", and at that moment their traffic is stalled inside a
+            // tunnel that never handshook — so every app on the device has
+            // requests queued and waiting. Dropping the interface without the
+            // block would release that backlog onto the physical interface in
+            // cleartext, in one burst, for a user who believes they are
+            // protected and did not ask for any of it.
+            //
+            // This is precisely the population that cannot afford it: the
+            // fallback only fires on networks that are already interfering with
+            // our traffic, i.e. networks that are watching.
+            switchTeardown(forceBlock = reapplyInProgress || fallbackInFlight)
             // Wait (bounded) for the service to confirm the old tunnel is down so
             // the old keyId is unregistered and wg-go is torn down before we
             // register + bring up the new one. The blocking interface stays up
