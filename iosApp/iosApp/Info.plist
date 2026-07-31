@@ -16,10 +16,17 @@
     <string>Birdo VPN</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- Driven from version.properties by the CI build, NOT hardcoded. These
+         used to be literal 1.0.0/3, so every shipped iOS build reported itself
+         as 1.0.0 in the User-Agent and in the device payload: the backend could
+         not tell a current client from a nine-month-old one, the version floor
+         (ANDROID_MIN_SUPPORTED_VERSION's iOS equivalent) could never be applied,
+         and the admin fleet view showed a version that had never existed.
+         See the "Derive iOS version" step in .github/workflows/ios.yml. -->
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
-    <string>3</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <!-- UILaunchScreen (iOS 14+) instead of UILaunchStoryboardName: the old key

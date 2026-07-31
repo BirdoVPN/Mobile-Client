@@ -10,6 +10,18 @@ settings:
     SWIFT_VERSION: "6.0"
     ENABLE_USER_SCRIPT_SANDBOXING: false
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    # ── App version ──────────────────────────────────────────────
+    # Both Info.plists read $(MARKETING_VERSION)/$(CURRENT_PROJECT_VERSION), and
+    # CI overrides these on the xcodebuild command line from version.properties
+    # — the single source of truth shared with Android.
+    #
+    # These values are a DELIBERATE SENTINEL, not a version to keep in sync. A
+    # real-looking default here is exactly how the old hardcoded 1.0.0 shipped
+    # unnoticed for months: it was indistinguishable from a genuine release. A
+    # build reporting 0.0.0-dev is obviously a local one and can never be
+    # mistaken for, or silently ship as, a release.
+    MARKETING_VERSION: "0.0.0-dev"
+    CURRENT_PROJECT_VERSION: "0"
     # "1" = iPhone only. An iPhone-only app still INSTALLS and runs on iPad in
     # scaled compatibility mode, which is enough to test the packet tunnel on
     # real hardware. Set to "1,2" only if you intend to ship native iPad layouts
