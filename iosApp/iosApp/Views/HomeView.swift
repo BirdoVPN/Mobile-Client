@@ -6,8 +6,9 @@ import UIKit
 /// spec-pixelcanvas-design.md §4.
 ///
 /// Structure, top to bottom: HomeTopBar (brand lockup + identity + logout) →
-/// StatusPill hero (+ kill-switch / quantum chips) → breathing space (the
-/// app-root PixelCanvas shows through — tab roots stay transparent, per the
+/// StatusPill hero (+ kill-switch / quantum chips) → breathing space over the
+/// full-bleed `WorldGlobeView` (which is itself transparent, so the app-root
+/// PixelCanvas still shows through — tab roots stay transparent, per the
 /// placement contract) → bottom action panel (connected stats, banners,
 /// server selector, connect CTA).
 ///
@@ -32,17 +33,27 @@ struct HomeView: View {
     @State private var disconnectHapticTick = 0
 
     var body: some View {
-        VStack(spacing: 0) {
-            topBar
+        ZStack {
+            // Full-bleed globe hero (Android §3.1) — the top bar and the bottom
+            // action panel are already semi-opaque precisely so they float over
+            // a live background. It draws on a CLEAR canvas, so the app-root
+            // PixelCanvas still twinkles behind it as the star field; only the
+            // planet itself is opaque.
+            WorldGlobeView(servers: vpnVM.servers,
+                           selectedServerId: vpnVM.selectedServer?.id,
+                           isConnected: vpnVM.isConnected)
+                .ignoresSafeArea()
 
-            statusArea
-                .padding(.top, 12)
+            VStack(spacing: 0) {
+                topBar
 
-            // The globe hero was not ported (no iOS WorldGlobe); the root
-            // PixelCanvas twinkles through this gap instead.
-            Spacer(minLength: 0)
+                statusArea
+                    .padding(.top, 12)
 
-            bottomPanel
+                Spacer(minLength: 0)
+
+                bottomPanel
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Tab-root screens are transparent over the ONE app-root PixelCanvas.
