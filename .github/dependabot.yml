@@ -53,6 +53,23 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "org.jetbrains.kotlinx:*"
         update-types: ["version-update:semver-major"]
+      # kotlinx-serialization-json >=1.10 ships Kotlin/Native klibs built by the
+      # 2.3.x compiler (ABI 2.3.0), which this project's Kotlin 2.2.21 cannot
+      # read: `compileKotlinIosArm64` fails with "KLIB resolver: could not find
+      # ...serialization-json-iosArm64...klib". The JVM/Android path tolerates
+      # the skew, so it breaks ONLY the iOS build — which PR CI never runs.
+      #
+      # This exact bump already shipped once and had to be reverted. It came
+      # straight back because the rule above only holds semver-MAJOR, and
+      # 1.9.0 -> 1.11.0 is a minor. A version bound is the honest expression of
+      # the constraint (same shape as the io.ktor hold above), since the ceiling
+      # is about ABI compatibility, not semver distance.
+      #
+      # Lift ONLY together with the Kotlin toolchain move.
+      # NOTE: shared/build.gradle.kts pins 1.9.0; the Android-only app module
+      # is on 1.11.0 and is unaffected.
+      - dependency-name: "org.jetbrains.kotlinx:kotlinx-serialization-json"
+        versions: [">=1.10.0"]
       - dependency-name: "com.google.devtools.ksp"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # Hilt minor+ needs newer Kotlin/AGP. Hilt 2.60.1 specifically requires
