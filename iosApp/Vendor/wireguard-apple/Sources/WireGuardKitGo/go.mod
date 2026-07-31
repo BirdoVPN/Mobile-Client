@@ -1,10 +1,16 @@
 module golang.zx2c4.com/wireguard/apple
 
-go 1.17
+go 1.23.1
+
+toolchain go1.23.2
 
 require (
-	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519 // indirect
-	golang.org/x/net v0.0.0-20210917221730-978cfadd31cf // indirect
-	golang.org/x/sys v0.0.0-20210921065528-437939a70204
-	golang.zx2c4.com/wireguard v0.0.0-20210905140043-2ef39d47540c
+	golang.org/x/sys v0.32.0
+	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
+)
+
+require (
+	golang.org/x/crypto v0.37.0 // indirect
+	golang.org/x/net v0.39.0 // indirect
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
