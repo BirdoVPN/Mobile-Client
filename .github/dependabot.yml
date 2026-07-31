@@ -68,3 +68,17 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    groups:
+      # codeql-action/init and codeql-action/analyze MUST run at the same
+      # version: analyze refuses to consume a config written by a different
+      # init, failing with "Loaded a configuration file for version 'X', but
+      # running version 'Y'".
+      #
+      # Ungrouped, Dependabot raises one PR per sub-action, so each PR bumps
+      # half of the pair and mismatches the other. NEITHER can go green, and no
+      # amount of rebasing helps — that is exactly how #232 and #234 sat broken
+      # and unmergeable while the advisory they carried stayed open. Grouping
+      # them means one PR moves the whole pair atomically.
+      codeql:
+        patterns:
+          - "github/codeql-action*"
