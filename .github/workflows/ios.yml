@@ -134,6 +134,32 @@ jobs:
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
           echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
 
+      - name: Derive iOS version from version.properties
+        # SINGLE SOURCE OF TRUTH, shared with Android, so one bump versions both
+        # platforms and they cannot drift.
+        #
+        # This exists because both Info.plists hardcoded 1.0.0 and nothing ever
+        # overrode them: every shipped iOS build reported itself as 1.0.0 in its
+        # User-Agent and device payload. The backend could not distinguish a
+        # current client from a months-old one, no iOS version floor could be
+        # enforced, and the admin fleet view showed a version never released.
+        #
+        # The build number matches Android's derivation (major*10000 +
+        # minor*100 + patch) so CFBundleVersion rises monotonically across
+        # releases, which App Store Connect requires.
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties — refusing to build an unversioned IPA"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+          echo "iOS version ${MAJOR}.${MINOR}.${PATCH} (build $(( MAJOR * 10000 + MINOR * 100 + PATCH )))"
+
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
@@ -153,6 +179,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             -configuration Release \
             SYMROOT="$PWD/build" \
+            MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
             ARCHS=arm64 \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_IDENTITY="-" \
@@ -161,6 +189,46 @@ jobs:
             ONLY_ACTIVE_ARCH=NO \
             | xcpretty
           echo "== built products =="; ls -la "$PWD/build/Release-iphoneos" || true
+
+      - name: Verify the built app reports the real version
+        working-directory: iosApp
+        # REGRESSION GUARD. The plists hardcoded 1.0.0 for months and nothing
+        # caught it, because a wrong-but-plausible version breaks nothing at
+        # build time — it only shows up later as unusable telemetry and an
+        # unenforceable version floor. This asserts the shipped binary actually
+        # carries version.properties' value, and checks the appex matches the
+        # host app (App Store validation rejects a mismatch, and finding that
+        # out during an upload is far more expensive than finding it here).
+        run: |
+          set -euo pipefail
+          APP_PLIST="build/Release-iphoneos/BirdoVPN.app/Info.plist"
+          EXT_PLIST="build/Release-iphoneos/BirdoVPN.app/PlugIns/PacketTunnel.appex/Info.plist"
+
+          app_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
+          app_build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_PLIST")
+          echo "app: $app_version ($app_build)"
+
+          if [ "$app_version" != "$BIRDO_MARKETING_VERSION" ]; then
+            echo "::error::App reports '$app_version' but version.properties says '$BIRDO_MARKETING_VERSION'"
+            exit 1
+          fi
+          if [ "$app_build" != "$BIRDO_PROJECT_VERSION" ]; then
+            echo "::error::App build number '$app_build' != expected '$BIRDO_PROJECT_VERSION'"
+            exit 1
+          fi
+
+          if [ -f "$EXT_PLIST" ]; then
+            ext_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$EXT_PLIST")
+            ext_build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$EXT_PLIST")
+            echo "appex: $ext_version ($ext_build)"
+            if [ "$ext_version" != "$app_version" ] || [ "$ext_build" != "$app_build" ]; then
+              echo "::error::PacketTunnel appex version ($ext_version/$ext_build) != host app ($app_version/$app_build) — App Store validation rejects this"
+              exit 1
+            fi
+          else
+            echo "::error::PacketTunnel.appex missing from the built app — the tunnel cannot load without it"
+            exit 1
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -336,6 +404,32 @@ jobs:
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-sim"
           echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
 
+      - name: Derive iOS version from version.properties
+        # SINGLE SOURCE OF TRUTH, shared with Android, so one bump versions both
+        # platforms and they cannot drift.
+        #
+        # This exists because both Info.plists hardcoded 1.0.0 and nothing ever
+        # overrode them: every shipped iOS build reported itself as 1.0.0 in its
+        # User-Agent and device payload. The backend could not distinguish a
+        # current client from a months-old one, no iOS version floor could be
+        # enforced, and the admin fleet view showed a version never released.
+        #
+        # The build number matches Android's derivation (major*10000 +
+        # minor*100 + patch) so CFBundleVersion rises monotonically across
+        # releases, which App Store Connect requires.
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties — refusing to build an unversioned IPA"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+          echo "iOS version ${MAJOR}.${MINOR}.${PATCH} (build $(( MAJOR * 10000 + MINOR * 100 + PATCH )))"
+
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
@@ -437,6 +531,32 @@ jobs:
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
           echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
 
+      - name: Derive iOS version from version.properties
+        # SINGLE SOURCE OF TRUTH, shared with Android, so one bump versions both
+        # platforms and they cannot drift.
+        #
+        # This exists because both Info.plists hardcoded 1.0.0 and nothing ever
+        # overrode them: every shipped iOS build reported itself as 1.0.0 in its
+        # User-Agent and device payload. The backend could not distinguish a
+        # current client from a months-old one, no iOS version floor could be
+        # enforced, and the admin fleet view showed a version never released.
+        #
+        # The build number matches Android's derivation (major*10000 +
+        # minor*100 + patch) so CFBundleVersion rises monotonically across
+        # releases, which App Store Connect requires.
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties — refusing to build an unversioned IPA"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+          echo "iOS version ${MAJOR}.${MINOR}.${PATCH} (build $(( MAJOR * 10000 + MINOR * 100 + PATCH )))"
+
       - name: Generate Xcode project
         working-directory: iosApp
         run: xcodegen generate
@@ -492,13 +612,20 @@ jobs:
 
       - name: Archive (xcodebuild)
         working-directory: iosApp
+        # `set -o pipefail` so a failed archive isn't swallowed by the xcpretty
+        # pipe — without it the step exits 0 on xcpretty's success and the job
+        # marches on to export/upload an archive that was never produced. The
+        # unsigned build step below already does this; this one did not.
         run: |
+          set -o pipefail
           xcodebuild archive \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
+            MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
             ARCHS=arm64 \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
@@ -508,6 +635,7 @@ jobs:
 
       - name: Export IPA
         run: |
+          set -o pipefail
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
             -exportPath  "$RUNNER_TEMP/export" \
