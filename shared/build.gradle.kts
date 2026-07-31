@@ -41,7 +41,7 @@ kotlin {
                 // module; the Android-only app module can and does use 1.11.0.)
                 // Bumping this needs the same Kotlin/AGP-9 toolchain move the
                 // other deferred dependency upgrades need.
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
                 implementation("io.ktor:ktor-client-core:3.3.3")
                 implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
