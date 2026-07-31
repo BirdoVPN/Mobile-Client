@@ -7,14 +7,18 @@ name: iOS CI & Build
 # and attaches an UNSIGNED .ipa to that same GitHub Release, alongside the
 # Android .apk/.aab. The build carries NO Apple code signature — it is a
 # public, verifiable build artifact, not an installable App Store product.
-# App Store / TestFlight distribution stays gated behind the `release-ios`
-# job (still `if: false`) until Apple Developer Program organisation
-# verification unlocks code signing.
+# App Store / TestFlight distribution is LIVE as of 2026-07-31: the same tag
+# additionally produces a SIGNED build that `release-ios` uploads to TestFlight.
+# That job is gated on the tag ref, so branch pushes never reach App Store
+# Connect — see the note above the job.
 #
 # Triggers:
-#   * push of an android-v* tag  -> build + attach unsigned .ipa to that release
+#   * push of an android-v* tag  -> build + attach unsigned .ipa to that release,
+#                                     and upload a signed build to TestFlight
 #   * manual workflow_dispatch    -> same, targeting inputs.release_tag
-#                                     (used to backfill an existing release)
+#                                     (used to backfill an existing release).
+#                                     Dispatch with `--ref android-v<x.y.z>` to
+#                                     satisfy the tag gate on release-ios.
 # ============================================================================
 
 on:
@@ -342,18 +346,73 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
         working-directory: ios-dist
-        # --clobber only adds/replaces these named iOS assets on an EXISTING
-        # release; it does not create, publish, or alter release metadata. If
-        # the tag has no release yet (e.g. iOS finished before the Android
-        # draft was cut) the command fails loudly rather than inventing one.
+        # Attaches ONLY these named iOS assets to the release for $TAG. It never
+        # creates a release, and never changes draft/prerelease state, notes, or
+        # the Android assets — publishing stays a deliberate human action.
+        #
+        # WHY NOT `gh release upload "$TAG"`
+        # ----------------------------------
+        # That is what this step used to do, and it failed on EVERY release with
+        # "release not found" while the Android .apk/.aab sat happily on the very
+        # release it could not find.
+        #
+        # The Android job cuts the release as a DRAFT. `gh release upload`
+        # resolves a tag via GET /repos/{o}/{r}/releases/tags/{tag}, and that
+        # endpoint does not return drafts — a draft has no published tag ref to
+        # match. So the lookup 404s no matter how long you wait. It was never a
+        # race; waiting longer could not have fixed it.
+        #
+        # GET /repos/{o}/{r}/releases (the list endpoint) DOES include drafts, so
+        # resolve the id there and upload against the id instead.
+        #
+        # The retry loop is for the genuine, separate race: iOS can finish before
+        # the Android job has cut the draft at all.
         run: |
           set -euo pipefail
-          gh release upload "$TAG" \
-            BirdoVPN-*-ios-unsigned.ipa \
-            BirdoVPN-*-ios-unsigned.ipa.sigstore \
-            SHA256SUMS-ios.txt \
-            SHA256SUMS-ios.txt.sigstore \
-            --repo "$GITHUB_REPOSITORY" --clobber
+          REPO="$GITHUB_REPOSITORY"
+
+          REL_ID=""
+          for attempt in $(seq 1 30); do
+            REL_ID="$(gh api --paginate "repos/$REPO/releases" \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -1 || true)"
+            [ -n "$REL_ID" ] && break
+            echo "No release for $TAG yet (attempt $attempt/30) — waiting for the Android job to cut it…"
+            sleep 10
+          done
+
+          if [ -z "$REL_ID" ]; then
+            echo "::error::No release (draft or published) found for tag $TAG after 5 minutes."
+            exit 1
+          fi
+          echo "Resolved release id $REL_ID for $TAG"
+
+          shopt -s nullglob
+          FILES=(BirdoVPN-*-ios-unsigned.ipa BirdoVPN-*-ios-unsigned.ipa.sigstore \
+                 SHA256SUMS-ios.txt SHA256SUMS-ios.txt.sigstore)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::No iOS assets to attach — packaging produced nothing."
+            exit 1
+          fi
+
+          for f in "${FILES[@]}"; do
+            name="$(basename "$f")"
+            # Replaces an existing asset of the same name (what --clobber did);
+            # the upload endpoint 422s on a duplicate name otherwise, which would
+            # make a re-run of this job fail instead of being idempotent.
+            old="$(gh api "repos/$REPO/releases/$REL_ID/assets" \
+              --jq ".[] | select(.name == \"$name\") | .id" 2>/dev/null | head -1 || true)"
+            if [ -n "$old" ]; then
+              gh api --method DELETE "repos/$REPO/releases/assets/$old" >/dev/null
+              echo "  replaced existing $name"
+            fi
+            # Asset uploads go to uploads.github.com, not api.github.com.
+            gh api --method POST \
+              "https://uploads.github.com/repos/$REPO/releases/$REL_ID/assets?name=$name" \
+              -H "Content-Type: application/octet-stream" \
+              --input "$f" >/dev/null
+            echo "  attached $name"
+          done
+          echo "Attached ${#FILES[@]} iOS asset(s) to release $TAG (id $REL_ID)"
           echo "Attached unsigned iOS .ipa to release $TAG"
 
   # -- iOS Simulator Tests ---------------------------------------------
@@ -467,8 +526,14 @@ jobs:
             | xcpretty
 
   # -- Signed Release & TestFlight Upload ---------------------------
-  # DISABLED while iOS is paused. Kept in source so release wiring is preserved,
-  # but it must not upload to TestFlight until the pause is deliberately lifted.
+  # ENABLED 2026-07-31: the pause is deliberately lifted — code signing is
+  # unlocked and every required secret/variable is configured, so an android-v*
+  # tag now ships a signed build to TestFlight alongside the unsigned .ipa.
+  #
+  # Gated on the tag ref rather than left unconditional: a branch push or PR
+  # must never reach App Store Connect, and a CFBundleVersion is single-use —
+  # ASC rejects a re-upload of a build number it has already seen, so a non-tag
+  # run would burn the version it collided with.
   #
   # Required GitHub repository SECRETS:
   #   APPLE_DIST_CERT_BASE64        - base64 of the .p12 distribution certificate
@@ -486,7 +551,7 @@ jobs:
     name: Codesign & Upload to TestFlight
     runs-on: macos-14
     needs: [shared-framework, build-ios, test-ios]
-    if: ${{ false }}
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') }}
     permissions:
       contents: read
       id-token: write   # for Sigstore Fulcio
