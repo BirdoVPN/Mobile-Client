@@ -46,7 +46,7 @@ jobs:
     name: Build Shared Framework (iOS)
     runs-on: macos-14  # Apple Silicon for arm64 builds
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up JDK
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
@@ -81,7 +81,7 @@ jobs:
     runs-on: macos-14
     needs: shared-framework
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download shared framework
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -361,7 +361,7 @@ jobs:
     name: iOS Simulator Tests
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up JDK
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
@@ -494,7 +494,7 @@ jobs:
       APPLE_TEAM_ID:    ${{ vars.APPLE_TEAM_ID }}
       APPLE_BUNDLE_ID:  ${{ vars.APPLE_BUNDLE_ID }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # KEYCHAIN_PATH must be set in a step (the `runner` context is not
       # available at job-level `env:`). Persist via $GITHUB_ENV so all later
