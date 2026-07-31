@@ -49,6 +49,10 @@ class AuthViewModelTest {
         tokenManager = mockk(relaxed = true)
         oauthStore = mockk(relaxed = true)
         io.mockk.every { tokenManager.isLoggedIn() } returns true
+        // Default: no anonymous ID awaiting acknowledgement. Stubbed explicitly
+        // because a non-null value here deliberately holds sign-in back, which
+        // would silently change the meaning of every login test below.
+        io.mockk.every { tokenManager.getPendingAnonymousId() } returns null
         // Default: no existing session
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
     }
@@ -412,6 +416,138 @@ class AuthViewModelTest {
         viewModel.login("user@birdo.app", "wrongpass")
 
         assertEquals("Invalid email or password", viewModel.uiState.value.error)
+    }
+
+    // ── 401 is not one situation ─────────────────────────────────
+    // The backend answers 401 with three different meanings, and the error
+    // BODY is what distinguishes them: Nest sends {"message":"…",
+    // "statusCode":401}, so the substring "401" is present on all of them.
+    // parseLoginError used to match "401" first and report every one of them as
+    // a wrong password, which told a locked-out user to keep retyping — the
+    // single worst instruction available — and sent a banned user hunting for a
+    // password problem that does not exist. These cases pin the real wording
+    // the server sends (auth.controller validateLoginAttempt / lockout.service).
+    //
+    // They assert the EXACT rendered sentence, not just "contains 'locked'".
+    // A contains-check would still pass if the arm degraded to something
+    // useless like "Login failed: {"message":"Account locked...","statusCode":401}"
+    // — which is precisely the raw-JSON leak the 403 case below exists to
+    // forbid — so the weaker assertion would let the fix rot into a regression
+    // while staying green.
+    private val lockedMessage =
+        "Account locked after too many failed sign-in attempts. " +
+            "Wait a few minutes before trying again, or reset your password."
+
+    @Test
+    fun `login on a locked account says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Too many failed login attempts","error":"Unauthorized","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
+    }
+
+    @Test
+    fun `login on a freshly locked account says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account locked due to multiple failed login attempts","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
+    }
+
+    /** validateUser's timed variant, which arrives as a 403 and used to fall all
+     *  the way through to "Login failed: {raw json}". */
+    @Test
+    fun `login on a timed lockout does not leak the raw error body`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account locked. Try again in 12 minutes.","statusCode":403}""",
+            403,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertFalse("raw JSON must never reach the user: $error", error!!.contains("statusCode"))
+        assertEquals(lockedMessage, error)
+    }
+
+    /** lockout.service's untimed fallback, thrown by validateUser as
+     *  'Account is locked' — a different sentence from every other lockout
+     *  wording, and the one most likely to be missed by a matcher tuned only to
+     *  "account locked". */
+    @Test
+    fun `login on an untimed lockout says locked, not wrong password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Account is locked","error":"Forbidden","statusCode":403}""",
+            403,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals(lockedMessage, error)
+    }
+
+    @Test
+    fun `login on a banned or suspended account points at support, not the password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Unable to sign in. Please contact support.","error":"Unauthorized","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        val error = viewModel.uiState.value.error
+        assertNotEquals("Invalid email or password", error)
+        assertEquals("Unable to sign in. Please contact support.", error)
+    }
+
+    /** The wrong-password case must keep working through the real body shape,
+     *  not just the bare string the older test uses. */
+    @Test
+    fun `login with a wrong password still says invalid email or password`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Invalid credentials","error":"Unauthorized","statusCode":401}""",
+            401,
+        )
+
+        viewModel.login("user@birdo.app", "wrongpass")
+
+        assertEquals("Invalid email or password", viewModel.uiState.value.error)
+    }
+
+    /** The IP rate limiter ("Too many login attempts, please try later") is a
+     *  DIFFERENT condition from the account lockout ("Too many FAILED login
+     *  attempts") with a different remedy. One must not be reported as the other. */
+    @Test
+    fun `login rate limited by IP is not reported as an account lockout`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
+            """{"message":"Too many login attempts, please try later","statusCode":429}""",
+            429,
+        )
+
+        viewModel.login("user@birdo.app", "password")
+
+        assertEquals("Too many attempts. Please wait a moment.", viewModel.uiState.value.error)
     }
 
     @Test
@@ -983,5 +1119,165 @@ class AuthViewModelTest {
         assertNull(default.user)
         assertFalse(default.requiresTwoFactor)
         assertNull(default.challengeToken)
+        assertNull(default.pendingAnonymousId)
+    }
+
+    // ═════════════════════════════════════════════════════════════
+    //  11. ANONYMOUS ACCOUNT CREATION — the minted ID must be SHOWN
+    //
+    //  Regression guard for: registerAnonymous() read only `ok` and went
+    //  straight to fetchProfileAfterLogin(), throwing away the 24-digit ID in
+    //  the response. That ID is the account's ONLY credential (no email, no
+    //  password, no reset) and the server returns it exactly once, so the user
+    //  landed on the connected Home screen having never seen it — and the
+    //  account died permanently with the app's tokens.
+    // ═════════════════════════════════════════════════════════════
+
+    private val mintedAnonId = "123456789012345678901234"
+
+    private fun anonRegisterSuccess(id: String? = mintedAnonId) =
+        ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = true, anonymousId = id, tokens = tokens)
+        )
+
+    @Test
+    fun `registerAnonymous surfaces the minted ID and does NOT sign in until acknowledged`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        // The user must be able to read the ID before anything navigates away.
+        assertEquals(mintedAnonId, state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        assertFalse(state.isLoading)
+        assertNull(state.error)
+        // Post-login flow held back: getProfile ran once, during init's
+        // checkSession, and NOT again for this registration.
+        coVerify(exactly = 1) { repository.getProfile() }
+    }
+
+    @Test
+    fun `registerAnonymous persists the minted ID so process death mid-dialog cannot swallow it`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+
+        viewModel.registerAnonymous()
+
+        // Written to encrypted storage BEFORE it is shown: the register call has
+        // already stored tokens, so an app kill here would otherwise resume into
+        // Home with the ID gone forever.
+        io.mockk.verify { tokenManager.setPendingAnonymousId(mintedAnonId) }
+        io.mockk.verify(exactly = 0) { tokenManager.clearPendingAnonymousId() }
+    }
+
+    @Test
+    fun `acknowledgeAnonymousId clears the pending ID and completes sign-in`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+        viewModel.registerAnonymous()
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.acknowledgeAnonymousId()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertTrue(state.isLoggedIn)
+        assertFalse(state.isLoading)
+        io.mockk.verify { tokenManager.clearPendingAnonymousId() }
+    }
+
+    @Test
+    fun `acknowledgeAnonymousId twice does not fetch the profile twice`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess()
+        viewModel.registerAnonymous()
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.acknowledgeAnonymousId()
+        viewModel.acknowledgeAnonymousId() // double-tap on "I've saved it"
+
+        // 1 from init's checkSession + exactly 1 from the acknowledged sign-in.
+        coVerify(exactly = 2) { repository.getProfile() }
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+    }
+
+    @Test
+    fun `acknowledgeAnonymousId with nothing pending is a safe no-op`() = runTest {
+        viewModel = createLoggedOutViewModel()
+
+        viewModel.acknowledgeAnonymousId()
+
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+        // Only init's checkSession — no stray post-login flow for other auth paths.
+        coVerify(exactly = 1) { repository.getProfile() }
+    }
+
+    @Test
+    fun `an unacknowledged ID from a previous process is re-shown instead of resuming into Home`() = runTest {
+        // Process death while the save-your-ID dialog was up. The tokens from
+        // that registration are valid, so the fast cold start would have routed
+        // straight to Home and the ID would never have been shown again.
+        io.mockk.every { tokenManager.isLoggedIn() } returns true
+        io.mockk.every { tokenManager.getPendingAnonymousId() } returns mintedAnonId
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel = createViewModel()
+
+        val state = viewModel.uiState.value
+        assertEquals(mintedAnonId, state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        // checkSession must not run: a successful profile fetch would flip
+        // isLoggedIn and navigate away from the dialog.
+        coVerify(exactly = 0) { repository.getProfile() }
+    }
+
+    @Test
+    fun `registerAnonymous with no ID in the response signs in rather than stranding the user`() = runTest {
+        // Should never happen, but tokens are already stored at this point, so
+        // blocking on an ID we don't have would leave the user stuck on Login.
+        // The Profile tab still derives the number from the synthetic
+        // anon_<id>@anonymous.local email.
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns anonRegisterSuccess(id = null)
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertTrue(state.isLoggedIn)
+        io.mockk.verify(exactly = 0) { tokenManager.setPendingAnonymousId(any()) }
+    }
+
+    @Test
+    fun `registerAnonymous failure surfaces an error and leaves nothing pending`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns ApiResult.Error("Network error")
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        assertEquals("Unable to reach server. Check your connection.", state.error)
+        io.mockk.verify(exactly = 0) { tokenManager.setPendingAnonymousId(any()) }
+    }
+
+    @Test
+    fun `registerAnonymous rejected by the server surfaces an error and leaves nothing pending`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = false)
+        )
+
+        viewModel.registerAnonymous()
+
+        val state = viewModel.uiState.value
+        assertNull(state.pendingAnonymousId)
+        assertFalse(state.isLoggedIn)
+        assertEquals("Could not create an anonymous account. Please try again.", state.error)
     }
 }

@@ -12,6 +12,7 @@ import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.shared.model.TransportFallbackReason
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
@@ -80,6 +81,16 @@ class VpnManager @Inject constructor(
     private val _reconnectAttemptFlow = MutableStateFlow(0)
     val reconnectAttemptFlow: StateFlow<Int> = _reconnectAttemptFlow.asStateFlow()
 
+    /**
+     * ADAPTIVE TRANSPORT: true while a stealth fallback rebuild is running.
+     * Single-threaded by the Main.immediate dispatcher this scope uses, so a
+     * plain Boolean is sufficient — see [onTransportBlocked].
+     */
+    private var fallbackInFlight = false
+
+    /** Epoch ms of the last stealth fallback, for the retrigger cooldown. */
+    private var lastFallbackAt = 0L
+
     companion object {
         /** Max time (ms) to guard transitional states before letting service state through */
         private const val TRANSITION_GUARD_MS = 15_000L
@@ -103,6 +114,19 @@ class VpnManager @Inject constructor(
         private const val SETTINGS_REAPPLY_DEBOUNCE_MS = 1_200L
         /** Key rotation interval: rotate WireGuard keys every ~45 min for forward secrecy */
         private const val KEY_ROTATION_HEARTBEATS = 90 // 90 × 30s = 45 minutes
+
+        /**
+         * Minimum gap between automatic stealth fallbacks.
+         *
+         * Guards the case where BOTH transports fail — genuinely offline, the
+         * node is down, or a network that blocks TLS as well as UDP. Without it
+         * the probe would fail, trigger a fallback, fail again and cycle,
+         * burning battery and connect-rate budget on a network that was never
+         * going to work. 60s is comfortably longer than one full
+         * connect + probe cycle, so a legitimate second fallback (e.g. the user
+         * changed networks) is still allowed promptly.
+         */
+        private const val FALLBACK_COOLDOWN_MS = 60_000L
     }
 
     // FIX-2-12: Singleton scope for reactive state collection from the service.
@@ -177,6 +201,27 @@ class VpnManager @Inject constructor(
                 }
         }
 
+        // ── ADAPTIVE TRANSPORT ──
+        // The tunnel came up but no WireGuard handshake landed inside the probe
+        // window, which means the network is silently dropping our packets
+        // (DPI filtering, UDP blocking, a hostile captive portal). Rebuild the
+        // SAME connection over the stealth transport, automatically.
+        //
+        // The user is told what happened but never asked to decide: they cannot
+        // be expected to know what a handshake is, and the whole point of this
+        // feature is that the product adapts instead of exposing the plumbing.
+        scope.launch {
+            BirdoVpnService.transportBlockedFlow.collect {
+                try {
+                    onTransportBlocked()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.e("VpnManager", "Transport fallback failed", e)
+                }
+            }
+        }
+
         // Network-aware reconnect: when connectivity returns after going offline
         // and we have a pending reconnect, trigger immediate attempt.
         scope.launch {
@@ -206,7 +251,18 @@ class VpnManager @Inject constructor(
      * Connect to a VPN server.
      * Passes kill switch + split tunneling preferences to the service.
      */
-    suspend fun connect(serverId: String): ApiResult<ConnectResponse> {
+    /**
+     * @param fallbackReason ADAPTIVE TRANSPORT. Non-null asks the server for the
+     *   stealth transport regardless of plan, because plain WireGuard has been
+     *   observed failing on this network. Set by [onTransportBlocked] on a
+     *   retry, and on a first attempt when [AppPreferences.shouldStartOnStealth]
+     *   says a recent fallback already proved this network filters us. Null on
+     *   an ordinary connect, which always tries the fast path first.
+     */
+    suspend fun connect(
+        serverId: String,
+        fallbackReason: String? = null,
+    ): ApiResult<ConnectResponse> {
         // ── Server switch / reconnect: fully tear down the existing tunnel +
         // server-side peer BEFORE establishing the new one. Without this, picking
         // a new server (Germany → Amsterdam) leaves the old peer registered and
@@ -265,10 +321,19 @@ class VpnManager @Inject constructor(
 
         val integrityToken = requestAttestationToken()
 
+        // ADAPTIVE TRANSPORT: an explicit retry reason wins; otherwise, if a
+        // recent fallback proved this network filters WireGuard, skip straight
+        // to the transport that works instead of making the user watch another
+        // probe window fail. The preference expires (see shouldStartOnStealth),
+        // so the fast path is re-tested rather than abandoned.
+        val effectiveFallbackReason = fallbackReason
+            ?: TransportFallbackReason.TRANSPORT_BLOCKED.takeIf { prefs.shouldStartOnStealth }
+
         val result = repository.connectVpn(
             serverNodeId = serverId,
             deviceName = deviceName,
             stealthMode = prefs.stealthModeEnabled,
+            fallbackReason = effectiveFallbackReason,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
             integrityToken = integrityToken,
@@ -332,6 +397,77 @@ class VpnManager @Inject constructor(
                 _state.value = VpnState.Error(result.message)
                 return result
             }
+        }
+    }
+
+    /**
+     * ADAPTIVE TRANSPORT: the tunnel established but no WireGuard handshake
+     * arrived, so this network is dropping our packets. Rebuild the same
+     * connection over the stealth transport.
+     *
+     * LOOP SAFETY, which is the whole risk here — a fallback that can retrigger
+     * itself is a battery-draining reconnect storm on exactly the flaky networks
+     * this feature targets. Four independent brakes:
+     *
+     *  1. [fallbackInFlight] — one fallback at a time. The probe fires from a
+     *     background thread and the flow has buffer capacity, so two emissions
+     *     can arrive close together; without this they would both reconnect.
+     *  2. The service skips the probe entirely when the connection is ALREADY
+     *     stealth, so the retry cannot re-emit and recurse.
+     *  3. [lastFallbackAt] — a cooldown, so a network that fails both transports
+     *     cannot cycle. Beyond it we stop and let normal auto-reconnect own the
+     *     failure.
+     *  4. The server enforces its own per-device hourly grant ceiling, so even a
+     *     client bug cannot turn into fleet load.
+     *
+     * Multi-hop sessions are deliberately excluded: rebuilding one from here
+     * would race [connectMultiHop]'s own two-node setup, and the multi-hop path
+     * requests stealth up front through the same server-side grant.
+     */
+    private suspend fun onTransportBlocked() {
+        val serverId = prefs.lastServerId
+        if (serverId == null || activeMultiHop != null) {
+            android.util.Log.i(
+                "VpnManager",
+                "Transport blocked but no single-hop session to rebuild — leaving it to auto-reconnect",
+            )
+            return
+        }
+        if (fallbackInFlight) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastFallbackAt < FALLBACK_COOLDOWN_MS) {
+            android.util.Log.w(
+                "VpnManager",
+                "Transport blocked again inside the cooldown — not retrying. " +
+                    "Both transports appear to be failing; auto-reconnect owns this now.",
+            )
+            return
+        }
+
+        fallbackInFlight = true
+        lastFallbackAt = now
+        try {
+            android.util.Log.w("VpnManager", "Falling back to the stealth transport")
+            _state.value = VpnState.Connecting
+            val result = connect(
+                serverId = serverId,
+                fallbackReason = TransportFallbackReason.HANDSHAKE_TIMEOUT,
+            )
+            // Only remember the preference when the fallback actually produced a
+            // stealth connection. Recording it on a failed retry would steer
+            // every future connect onto a transport we have no evidence works,
+            // and would do so for a full TTL.
+            val gotStealth = (result as? ApiResult.Success)?.data?.stealthEnabled == true
+            if (gotStealth) {
+                prefs.stealthPreferredSince = System.currentTimeMillis()
+                android.util.Log.i(
+                    "VpnManager",
+                    "Stealth fallback succeeded — preferring it on this device for the next 24h",
+                )
+            }
+        } finally {
+            fallbackInFlight = false
         }
     }
 

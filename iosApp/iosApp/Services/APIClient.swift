@@ -23,9 +23,20 @@ enum WireGuardKeypair {
 
 /// Client version reported in the User-Agent and every device payload. Read
 /// from the bundle so a release bump propagates automatically — backend
-/// telemetry keys off this value. Fallback covers unit-test bundles only.
-private let kBirdoClientVersion: String =
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+/// telemetry keys off this value, and any future iOS version floor enforces
+/// against it.
+///
+/// The fallback is deliberately NOT a plausible version. It used to be "1.0.0",
+/// which was also the value both Info.plists hardcoded, so a genuine release and
+/// a completely unversioned build were indistinguishable on the wire — and were,
+/// for months. "0.0.0-unknown" can never be mistaken for a shipped version, so
+/// if it ever appears in telemetry it names its own bug.
+private let kBirdoClientVersion: String = {
+    guard let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+          !v.isEmpty
+    else { return "0.0.0-unknown" }
+    return v
+}()
 
 /// HTTP client for the Birdo VPN API.
 final class APIClient: @unchecked Sendable {

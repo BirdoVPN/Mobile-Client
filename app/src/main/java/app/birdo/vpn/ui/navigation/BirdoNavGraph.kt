@@ -373,6 +373,12 @@ fun BirdoNavGraph(
                         },
                         onSsoLogin = { provider -> authViewModel.startSso(provider, context) },
                         onCreateAnonymous = { authViewModel.registerAnonymous() },
+                        // Creating an anonymous account deliberately does NOT flip
+                        // isLoggedIn, so this route stays put and shows the minted
+                        // 24-digit ID until the user confirms saving it. It is the
+                        // account's only credential and the server returns it once.
+                        pendingAnonymousId = authState.pendingAnonymousId,
+                        onAcknowledgeAnonymousId = { authViewModel.acknowledgeAnonymousId() },
                     )
                 }
             }

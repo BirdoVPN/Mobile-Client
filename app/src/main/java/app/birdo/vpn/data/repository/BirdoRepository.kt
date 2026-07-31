@@ -8,6 +8,7 @@ import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.utils.InputValidator
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import retrofit2.Response
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -65,6 +66,23 @@ class BirdoRepository @Inject constructor(
         private const val SERVER_CACHE_TTL_MS = 60_000L
         /** Subscription is considered fresh for 30 seconds. */
         private const val SUBSCRIPTION_CACHE_TTL_MS = 30_000L
+
+        /**
+         * Whole budget for logout's best-effort server-side revocation.
+         *
+         * The call now runs through withAutoRefresh, which on an expired access
+         * token costs three round trips (401 → refresh → retry). NetworkModule
+         * sets connect/read/write to 30 s each and sets NO `callTimeout`, so
+         * OkHttp does not bound a whole call at all — one round trip that
+         * connects slowly and then stalls mid-body can burn 60 s on its own,
+         * and three of them are minutes of spinner on a button whose local half
+         * has already succeeded. That is why the bound lives here, at the
+         * coroutine level, rather than being left to the HTTP client.
+         *
+         * `internal` so the regression test can assert against the real budget
+         * instead of restating 15_000 and quietly drifting from it.
+         */
+        internal const val LOGOUT_SERVER_CALL_TIMEOUT_MS = 15_000L
     }
 
     fun invalidateServerCache() {
@@ -329,11 +347,41 @@ class BirdoRepository @Inject constructor(
         }
     }
 
+    /**
+     * Sign out: kill the session SERVER-side, then clear local state.
+     *
+     * The server call used to be a bare `api.logout()` — the only authenticated
+     * call in this repository that did NOT go through [withAutoRefresh]. Access
+     * tokens live one hour and refresh tokens thirty days, so the ordinary case
+     * (open the app, use it, come back later, tap "Log out") presented an
+     * EXPIRED access token: /auth/logout answered 401, nothing retried, and the
+     * server never ran `revokeDeviceSessionLineage`. Local tokens were wiped, so
+     * the user was shown a clean logout while the refresh lineage stayed alive
+     * on the server for up to another thirty days — anyone holding a copy of
+     * that refresh token (the exact thing "log out" is supposed to defeat) could
+     * still mint sessions. Routing through withAutoRefresh spends one refresh to
+     * obtain a live jti and retries, so the lineage actually dies.
+     *
+     * Everything after the call stays UNCONDITIONAL. Local sign-out must happen
+     * even when the device is offline, the server is down, or the refresh token
+     * is itself dead — "Log out" can never leave the user signed in on the
+     * handset. The server half is best-effort and time-boxed: it can now cost up
+     * to three round trips (401 → refresh → retry) and OkHttp allows 30 s each,
+     * which is far longer than anyone will watch a spinner for a button whose
+     * local work is already done. On timeout the local clear still runs.
+     */
     suspend fun logout() {
         // Bump BEFORE clearing so an in-flight refresh that completes after this
         // point sees the new generation and drops its rotated tokens (finding #6).
+        // Safe to bump before the refresh below: refreshToken() captures the
+        // generation when IT starts, so its fence sees a stable value and the
+        // logout's own refresh is not mistaken for a raced one.
         sessionGeneration.incrementAndGet()
-        try { api.logout() } catch (_: Exception) { /* best effort */ }
+        try {
+            withTimeout(LOGOUT_SERVER_CALL_TIMEOUT_MS) {
+                withAutoRefresh("Logout failed") { api.logout() }
+            }
+        } catch (_: Exception) { /* best effort — local sign-out proceeds regardless */ }
         tokenManager.clearAll()
         invalidateServerCache()
         invalidateSubscriptionCache()
@@ -528,6 +576,12 @@ class BirdoRepository @Inject constructor(
         serverNodeId: String,
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
+        /**
+         * ADAPTIVE TRANSPORT: non-null marks this connect as a retry after a
+         * failed WireGuard handshake, and asks the server for the stealth
+         * transport regardless of plan. See TransportFallbackReason.
+         */
+        fallbackReason: String? = null,
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
@@ -551,6 +605,7 @@ class BirdoRepository @Inject constructor(
                     deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
+                    fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
                     integrityToken = integrityToken,
