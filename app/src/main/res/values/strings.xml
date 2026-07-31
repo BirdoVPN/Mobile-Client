@@ -65,6 +65,12 @@
     <string name="stats_upload">⬆ Upload</string>
     <string name="kill_switch_active">Kill Switch Active</string>
     <string name="kill_switch_blocking">Kill Switch — All traffic blocked</string>
+    <!-- Shown when Adaptive Transport has switched the live connection to the
+         stealth transport. Deliberately states the CAUSE ("this network blocks
+         VPN traffic"), not the mechanism: the user does not need to know what a
+         WireGuard handshake is, but they do need to know why their connection
+         is slower than usual, or it just reads as a bad VPN. -->
+    <string name="stealth_fallback_active">Stealth active — this network blocks standard VPN traffic</string>
     <string name="cd_kill_switch">Kill Switch</string>
     <string name="select_server">Select Server</string>
     <string name="server_load">%d%% load</string>
