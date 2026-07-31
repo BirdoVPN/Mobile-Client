@@ -6,6 +6,8 @@ import android.net.VpnService
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.model.ServerNodeInfo
+import app.birdo.vpn.shared.model.MultiHopInfo
+import app.birdo.vpn.shared.model.MultiHopNodeInfo
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -297,20 +299,38 @@ class VpnManagerTest {
 
     // ── connectMultiHop() ───────────────────────────────────────
 
+    /**
+     * A multi-hop response the client will accept. The `multiHop` block is
+     * REQUIRED, not decoration: `connectMultiHop` refuses any response whose
+     * route block is missing or names a different pair, because a single hop
+     * believed to be two is a silent, indefinite jurisdiction leak. Build mock
+     * responses through here so a future field addition fails in one place.
+     */
+    private fun makeMultiHopResponse(
+        multiHop: MultiHopInfo? = makeRoute(),
+    ) = MultiHopConnectResponse(
+        success = true,
+        keyId = "mh-key",
+        privateKey = "priv-key-base64=",
+        serverPublicKey = "srv-pub-base64=",
+        endpoint = "de-1.birdo.app:51820",
+        assignedIp = "10.100.0.3",
+        multiHop = multiHop,
+    )
+
+    private fun makeRoute(entryId: String = "de-1", exitId: String = "nl-1") = MultiHopInfo(
+        entryNode = MultiHopNodeInfo(id = entryId, name = "Frankfurt", country = "DE"),
+        exitNode = MultiHopNodeInfo(id = exitId, name = "Amsterdam", country = "NL"),
+        route = "DE -> NL",
+    )
+
     @Test
     fun `connectMultiHop forwards stealth quantum and PQ public key when enabled`() = runTest {
         every { prefs.stealthModeEnabled } returns true
         every { prefs.quantumProtectionEnabled } returns true
         mockkObject(RosenpassManager)
         coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns "pq-public-key"
-        val response = MultiHopConnectResponse(
-            success = true,
-            keyId = "mh-key",
-            privateKey = "priv-key-base64=",
-            serverPublicKey = "srv-pub-base64=",
-            endpoint = "de-1.birdo.app:51820",
-            assignedIp = "10.100.0.3",
-        )
+        val response = makeMultiHopResponse()
         coEvery {
             repository.connectMultiHop(
                 entryNodeId = "de-1",
@@ -335,6 +355,37 @@ class VpnManagerTest {
                 pqClientPublicKey = "pq-public-key",
             )
         }
+    }
+
+    @Test
+    fun `connectMultiHop refuses a response with no route block`() = runTest {
+        // `success: true` only means the request was handled. Without the route
+        // block we cannot tell a real two-hop install from a single hop, and the
+        // user cannot observe their own egress country — so refuse.
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse(multiHop = null))
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Error)
+        assertTrue(vpnManager.state.value is VpnState.Error)
+    }
+
+    @Test
+    fun `connectMultiHop refuses a route naming a different pair`() = runTest {
+        // The backend confirmed a DIFFERENT exit. Connecting anyway would render
+        // the user's chosen route while egressing somewhere else indefinitely.
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(
+            makeMultiHopResponse(multiHop = makeRoute(entryId = "de-1", exitId = "us-9")),
+        )
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Error)
+        assertTrue(vpnManager.state.value is VpnState.Error)
     }
 
     @Test
