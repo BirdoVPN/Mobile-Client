@@ -42,11 +42,9 @@ final class BirdoPQManager: @unchecked Sendable {
         case bilateral
     }
 
-    /// Default per-connect nonce when the server omits one. Same bytes as
-    /// Android `RosenpassManager.DEFAULT_NONCE_BYTES` and desktop
-    /// `birdo_pq::DEFAULT_NONCE_BYTES` — change in lockstep or sessions
-    /// fail to derive matching PSKs.
-    private static let defaultNonceBytes: [UInt8] = Array("BirdoPQ-v1-default-nonce".utf8)
+    // PFA-M5: the legacy constant `defaultNonceBytes` fallback was removed —
+    // `tryDecapsulate` now refuses to derive a PSK against a missing/malformed
+    // per-connect nonce (parity with Android RosenpassManager).
 
     /// Keychain account name used to persist the keypair blob (pk||sk).
     private static let keypairAccount = "birdo_pq_v1_keypair"
@@ -89,13 +87,18 @@ final class BirdoPQManager: @unchecked Sendable {
             NSLog("BirdoPQ: malformed/missing ciphertext")
             return nil
         }
-        let nonce: Data = {
-            if let n = rosenpassEndpointBase64, !n.isEmpty,
-               let decoded = Data(base64Encoded: n) {
-                return decoded
-            }
-            return Data(Self.defaultNonceBytes)
-        }()
+        // PFA-M5 parity with Android RosenpassManager: refuse to derive a PSK
+        // against a missing/malformed per-connect nonce instead of falling back
+        // to a constant. ML-KEM gives a fresh shared secret per encapsulation so
+        // the old constant caused no cryptographic nonce reuse, but it dropped
+        // per-connect domain separation and let a misconfigured/tampered server
+        // silently weaken PQ. Returning nil fails closed — VPNManager.connect
+        // throws quantumHandshakeFailed when quantum protection is enabled.
+        guard let nonceB64 = rosenpassEndpointBase64, !nonceB64.isEmpty,
+              let nonce = Data(base64Encoded: nonceB64) else {
+            NSLog("BirdoPQ: server omitted/malformed per-connect nonce — bilateral PQ aborted (PFA-M5)")
+            return nil
+        }
         guard let kp = loadOrGenerateKeypair() else {
             NSLog("BirdoPQ: no client keypair available")
             return nil

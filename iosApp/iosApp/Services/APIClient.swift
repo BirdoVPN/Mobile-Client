@@ -1,6 +1,25 @@
 import Foundation
 import CommonCrypto
+import CryptoKit
 import UIKit
+
+/// On-device WireGuard (Curve25519) keypair as WireGuard-format Base64 strings.
+///
+/// Generating the keypair locally keeps the tunnel PRIVATE key on the device:
+/// we send only the public key, the backend registers it as this connection's
+/// peer key and omits `privateKey` from the response. This is parity with
+/// Android's FIX-1-1 (`BirdoRepository.connectVpn` → `com.wireguard.crypto.KeyPair`).
+/// Previously iOS sent no client public key, so the operator's control plane
+/// minted and transmitted every iOS user's WireGuard private key over the wire.
+enum WireGuardKeypair {
+    static func generate() -> (privateKey: String, publicKey: String) {
+        let priv = Curve25519.KeyAgreement.PrivateKey()
+        return (
+            priv.rawRepresentation.base64EncodedString(),
+            priv.publicKey.rawRepresentation.base64EncodedString()
+        )
+    }
+}
 
 /// Client version reported in the User-Agent and every device payload. Read
 /// from the bundle so a release bump propagates automatically — backend
@@ -263,6 +282,16 @@ final class APIClient: @unchecked Sendable {
         // (fresh install) defaults true regardless of view-model init order.
         let quantumEnabled = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
         let pqPk = quantumEnabled ? BirdoPQManager.shared.clientPublicKeyBase64() : nil
+        // Distinguish "user turned PQ off" from "PQ is on but we could not produce
+        // a key". Both used to yield nil and therefore silently STOP requesting
+        // post-quantum protection, so a keypair failure downgraded the session
+        // while the UI still showed Quantum Protection enabled. Android hard-errors
+        // here; iOS was the outlier.
+        if quantumEnabled && pqPk == nil {
+            throw APIError.quantumKeyUnavailable
+        }
+        // Generate the WireGuard keypair on-device; send only the public key.
+        let wg = WireGuardKeypair.generate()
         // AUDIT-M-DRIFT: the field is `serverNodeId` (ConnectDto), not `serverId`.
         // The global ValidationPipe is configured `forbidNonWhitelisted: true`
         // (backend/src/main.ts:167), so an unknown `serverId` did NOT get
@@ -272,12 +301,16 @@ final class APIClient: @unchecked Sendable {
             ConnectBody(
                 serverNodeId: serverId,
                 deviceId: await deviceContext().id,
+                clientPublicKey: wg.publicKey,
                 quantumProtection: pqPk == nil ? nil : true,
                 pqClientPublicKey: pqPk
             )
         )
         let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
-        return try decodeConnectResult(data)
+        var config = try decodeConnectResult(data)
+        // The private key never came from the server — use the on-device one.
+        config.privateKey = wg.privateKey
+        return config
     }
 
     func getMultiHopConfig(entryId: String, exitId: String) async throws -> VPNConnectionConfig {
@@ -287,17 +320,31 @@ final class APIClient: @unchecked Sendable {
         // on the unknown keys even at the right path.
         let quantumEnabled = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
         let pqPk = quantumEnabled ? BirdoPQManager.shared.clientPublicKeyBase64() : nil
+        // Distinguish "user turned PQ off" from "PQ is on but we could not produce
+        // a key". Both used to yield nil and therefore silently STOP requesting
+        // post-quantum protection, so a keypair failure downgraded the session
+        // while the UI still showed Quantum Protection enabled. Android hard-errors
+        // here; iOS was the outlier.
+        if quantumEnabled && pqPk == nil {
+            throw APIError.quantumKeyUnavailable
+        }
+        // Generate the WireGuard keypair on-device; send only the public key.
+        let wg = WireGuardKeypair.generate()
         let body = try encoder.encode(
             MultiHopBody(
                 entryNodeId: entryId,
                 exitNodeId: exitId,
                 deviceId: await deviceContext().id,
+                clientPublicKey: wg.publicKey,
                 quantumProtection: pqPk == nil ? nil : true,
                 pqClientPublicKey: pqPk
             )
         )
         let data = try await post(path: "/vpn/multi-hop/connect", body: body, authenticated: true)
-        return try decodeConnectResult(data)
+        var config = try decodeConnectResult(data)
+        // The private key never came from the server — use the on-device one.
+        config.privateKey = wg.privateKey
+        return config
     }
 
     /// Release the server-side WireGuard peer for a connection. The backend keeps
@@ -843,6 +890,9 @@ enum APIError: Error, LocalizedError {
     case httpError(Int)
     /// A refusal the backend explained in its own words — show it verbatim.
     case serverMessage(String)
+    /// Post-quantum protection is enabled but the ML-KEM keypair could not be
+    /// produced. Surfaced rather than silently connecting without PQ.
+    case quantumKeyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -851,6 +901,10 @@ enum APIError: Error, LocalizedError {
         case .unauthorized: return "Session expired. Please log in again."
         case .httpError(let code): return "Server error (\(code))"
         case .serverMessage(let message): return message
+        case .quantumKeyUnavailable:
+            return "Could not prepare quantum-protected encryption. Not connecting, because "
+                + "continuing would use weaker encryption. Try again, or turn off Quantum "
+                + "Protection in Settings."
         }
     }
 }
@@ -1112,6 +1166,10 @@ private struct ConnectBody: Encodable {
     let serverNodeId: String
     /// SSOT stable device identity — reclaims this device's own slot.
     let deviceId: String?
+    /// On-device WireGuard (Curve25519) public key. Sending it makes the backend
+    /// use it as the peer key and omit `privateKey` from the response, so the
+    /// tunnel private key never leaves the device (parity with Android).
+    let clientPublicKey: String?
     /// AUDIT-C1: opt the user into bilateral PQ when we have a client pk to
     /// send. Server interprets this together with `pqClientPublicKey`.
     let quantumProtection: Bool?
@@ -1123,6 +1181,8 @@ private struct MultiHopBody: Encodable {
     let entryNodeId: String
     let exitNodeId: String
     let deviceId: String?
+    /// On-device WireGuard (Curve25519) public key — see ConnectBody.
+    let clientPublicKey: String?
     let quantumProtection: Bool?
     let pqClientPublicKey: String?
 }
@@ -1202,7 +1262,12 @@ private struct ConnectEnvelope: Decodable {
 struct VPNConnectionConfig: Decodable {
     let serverAddress: String
     let serverPort: Int
-    let privateKey: String
+    /// The WireGuard tunnel private key. `var` because it is now GENERATED
+    /// ON-DEVICE and injected by `getConnectConfig`/`getMultiHopConfig` after
+    /// decoding — the backend omits it from the response once we send a
+    /// `clientPublicKey`. Decoded optionally only to tolerate a transitional
+    /// backend that still echoes one; the injected local key always wins.
+    var privateKey: String
     let publicKey: String
     let presharedKey: String?
     let addresses: [String]
@@ -1241,7 +1306,10 @@ struct VPNConnectionConfig: Decodable {
         serverAddress = String(endpoint[..<separator])
         serverPort = port
 
-        privateKey = try c.decode(String.self, forKey: .privateKey)
+        // Optional: the backend omits privateKey when we send a clientPublicKey.
+        // The on-device key is injected by the API layer after decode; this "" is
+        // a placeholder that is always overwritten before validate()/connect().
+        privateKey = try c.decodeIfPresent(String.self, forKey: .privateKey) ?? ""
         publicKey = try c.decode(String.self, forKey: .serverPublicKey)
         presharedKey = try c.decodeIfPresent(String.self, forKey: .presharedKey)
 

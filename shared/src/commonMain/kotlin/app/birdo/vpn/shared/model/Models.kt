@@ -237,7 +237,15 @@ data class AppUpdateInfo(
 
 @Serializable
 data class DeleteAccountRequest(
-    val password: String,
+    /**
+     * Nullable: SSO (Google/GitHub) and password-less anonymous accounts have no
+     * password, so they must be able to request erasure without one (the backend
+     * confirms deletion by the authenticated session, and only enforces a
+     * password where the account actually has one). Requiring a non-null
+     * password here previously stranded that entire cohort's GDPR Art. 17 right
+     * to erasure on Android, while iOS already sent nil.
+     */
+    val password: String? = null,
 )
 
 @Serializable
@@ -306,6 +314,26 @@ data class AttestationNonceResponse(
     val nonce: String,
 )
 
+/**
+ * Wire values for [ConnectRequest.fallbackReason].
+ *
+ * These MUST match the backend's ConnectDto `fallbackReason` @IsIn list exactly
+ * — it rejects anything else with a 400, and a 400 on the fallback retry means a
+ * censored user is left with no working transport at all. Kept as constants
+ * rather than an enum so the field stays a plain nullable String on the wire and
+ * an older backend that doesn't know the field simply ignores it.
+ */
+object TransportFallbackReason {
+    /** No WireGuard handshake inside the probe window — the common DPI case. */
+    const val HANDSHAKE_TIMEOUT = "handshake-timeout"
+
+    /** The transport was actively refused (ICMP unreachable, RST, port block). */
+    const val TRANSPORT_BLOCKED = "transport-blocked"
+
+    /** DNS resolution for the endpoint failed or was poisoned. */
+    const val DNS_BLOCKED = "dns-blocked"
+}
+
 @Serializable
 data class ConnectRequest(
     val serverNodeId: String? = null,
@@ -320,6 +348,21 @@ data class ConnectRequest(
     val preferredRegion: String? = null,
     val clientPublicKey: String? = null,
     val stealthMode: Boolean = false,
+    /**
+     * ADAPTIVE TRANSPORT: set when this connect is a RETRY after plain
+     * WireGuard failed to complete a handshake (see TransportProbe). The server
+     * grants the stealth transport on any plan in response — on a filtered
+     * network stealth is not a premium feature, it is the only transport that
+     * carries packets.
+     *
+     * Distinct from [stealthMode], which is a deliberate user preference and
+     * stays plan-gated. Null on a normal first attempt.
+     *
+     * Wire values are pinned by the backend's ConnectDto enum; an unrecognised
+     * string is rejected with a 400, so build this from
+     * [app.birdo.vpn.shared.model.TransportFallbackReason] rather than a literal.
+     */
+    val fallbackReason: String? = null,
     val quantumProtection: Boolean = false,
     /**
      * Base64 ML-KEM-1024 public key for BirdoPQ v1 PSK derivation.
@@ -430,6 +473,21 @@ data class MultiHopConnectRequest(
     val deviceId: String? = null,
     val clientPublicKey: String? = null,
     val stealthMode: Boolean = false,
+    /**
+     * ADAPTIVE TRANSPORT: set when this connect is a RETRY after plain
+     * WireGuard failed to complete a handshake (see TransportProbe). The server
+     * grants the stealth transport on any plan in response — on a filtered
+     * network stealth is not a premium feature, it is the only transport that
+     * carries packets.
+     *
+     * Distinct from [stealthMode], which is a deliberate user preference and
+     * stays plan-gated. Null on a normal first attempt.
+     *
+     * Wire values are pinned by the backend's ConnectDto enum; an unrecognised
+     * string is rejected with a 400, so build this from
+     * [app.birdo.vpn.shared.model.TransportFallbackReason] rather than a literal.
+     */
+    val fallbackReason: String? = null,
     val quantumProtection: Boolean = false,
     val pqClientPublicKey: String? = null,
     /**
