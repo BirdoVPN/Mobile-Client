@@ -576,6 +576,12 @@ class BirdoRepository @Inject constructor(
         serverNodeId: String,
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
+        /**
+         * ADAPTIVE TRANSPORT: non-null marks this connect as a retry after a
+         * failed WireGuard handshake, and asks the server for the stealth
+         * transport regardless of plan. See TransportFallbackReason.
+         */
+        fallbackReason: String? = null,
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
@@ -599,6 +605,7 @@ class BirdoRepository @Inject constructor(
                     deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
+                    fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
                     integrityToken = integrityToken,

@@ -22,8 +22,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
@@ -145,6 +148,24 @@ class BirdoVpnService : VpnService() {
         private val _quantumActiveFlow = MutableStateFlow(false)
         /** Whether the current connection is using Rosenpass PQ-PSK */
         val quantumActive: Boolean get() = _quantumActiveFlow.value
+
+        /**
+         * ADAPTIVE TRANSPORT: emits when a freshly-established tunnel failed to
+         * complete a WireGuard handshake inside [TransportProbe.WINDOW_MS] — i.e.
+         * the interface is up but the network is eating our packets.
+         *
+         * [VpnManager] collects this and automatically retries the connection over
+         * the stealth transport. It is a SharedFlow, not a StateFlow, because it
+         * reports an EVENT ("this attempt was blocked") rather than a state: a
+         * StateFlow would replay a stale `true` to the next collector and trigger
+         * a spurious fallback on an unrelated, working connection.
+         *
+         * replay = 0 for the same reason. extraBufferCapacity keeps the emitting
+         * probe thread from blocking if the collector is momentarily busy.
+         */
+        private val _transportBlockedFlow =
+            MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
+        val transportBlockedFlow: SharedFlow<Unit> = _transportBlockedFlow.asSharedFlow()
 
         // FIX-2-12: Reactive state flow replaces 1-second polling.
         // VpnManager collects this flow to receive state changes immediately.
@@ -918,6 +939,11 @@ class BirdoVpnService : VpnService() {
 
             updateWidgetState(true, connectedServer)
             extractServerIp()
+            // ADAPTIVE TRANSPORT: we have just told the UI "Connected" on the
+            // strength of the interface being up, which on a filtered network is
+            // a lie — no handshake will ever land. Verify it, and if nothing
+            // arrives, signal VpnManager to retry over stealth.
+            startTransportProbe(handle, config.stealthEnabled == true)
             mainHandler.removeCallbacks(connectTimeoutRunnable)
             mainHandler.post {
                 updateNotification(buildConnectedText())
@@ -1160,6 +1186,41 @@ class BirdoVpnService : VpnService() {
                 updateState(VpnState.Error("Connection lost — reconnecting…"))
             },
         ).also { it.start() }
+    }
+
+    /**
+     * ADAPTIVE TRANSPORT: confirm the tunnel we just reported as Connected is
+     * actually carrying traffic, and signal a fallback if it is not.
+     *
+     * Runs on its own short-lived daemon thread — [TransportProbe.await] blocks
+     * for up to [TransportProbe.WINDOW_MS], and doing that on the caller would
+     * stall tunnel setup and risk an ANR.
+     *
+     * `alreadyStealth` short-circuits the probe when this connection IS the
+     * stealth attempt. Without it a stealth tunnel that also fails to handshake
+     * (genuinely offline, server down, or a network that blocks TLS too) would
+     * emit "blocked" and drive VpnManager into a fallback it has already made —
+     * a reconnect loop. Stealth is the last transport we have, so a failure
+     * there is handled by the normal TunnelMonitor/auto-reconnect path instead.
+     */
+    private fun startTransportProbe(handle: Int, alreadyStealth: Boolean) {
+        if (alreadyStealth) {
+            Log.i(TAG, "Skipping transport probe — already on the stealth transport")
+            return
+        }
+        Thread({
+            val verdict = TransportProbe(
+                handle = handle,
+                isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
+            ).await()
+            if (verdict == TransportProbe.Result.BLOCKED) {
+                Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
+                // tryEmit, not emit: this is a non-suspending context and the
+                // buffer is sized for it. A dropped emission would only mean a
+                // missed fallback, never a blocked tunnel thread.
+                _transportBlockedFlow.tryEmit(Unit)
+            }
+        }, "birdo-transport-probe").apply { isDaemon = true }.start()
     }
 
     private fun buildWireGuardConfig(response: ConnectResponse): Config {
