@@ -172,17 +172,24 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_BIOMETRIC_LOCK, false)
         set(value) { prefs.edit().putBoolean(KEY_BIOMETRIC_LOCK, value).commit(); signSettings() }
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
+    // HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS) — .commit() synchronously and
+    // re-sign, exactly like the DNS/port/MTU setters above. These were `.apply()`
+    // with no signature, which made the route the ONE security-critical setting a
+    // rooted-device attacker could rewrite freely: changing the exit node
+    // redirects where the user's traffic leaves the network, which is the whole
+    // property they bought Multi-Hop for, and they cannot observe their own
+    // egress country to notice.
     var multiHopEnabled: Boolean
         get() = prefs.getBoolean(KEY_MULTI_HOP, false)
-        set(value) = prefs.edit().putBoolean(KEY_MULTI_HOP, value).apply()
+        set(value) { prefs.edit().putBoolean(KEY_MULTI_HOP, value).commit(); signSettings() }
 
     var multiHopEntryNodeId: String?
         get() = prefs.getString(KEY_MULTI_HOP_ENTRY, null)
-        set(value) = prefs.edit().putString(KEY_MULTI_HOP_ENTRY, value).apply()
+        set(value) { prefs.edit().putString(KEY_MULTI_HOP_ENTRY, value).commit(); signSettings() }
 
     var multiHopExitNodeId: String?
         get() = prefs.getString(KEY_MULTI_HOP_EXIT, null)
-        set(value) = prefs.edit().putString(KEY_MULTI_HOP_EXIT, value).apply()
+        set(value) { prefs.edit().putString(KEY_MULTI_HOP_EXIT, value).commit(); signSettings() }
 
     /** Package names excluded from VPN (bypass VPN). HMAC-protected — must re-sign. */
     var splitTunnelApps: Set<String>
