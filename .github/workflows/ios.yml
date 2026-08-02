@@ -851,11 +851,20 @@ jobs:
       - name: Sign IPA with Sigstore
         run: |
           IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
-          if [ -n "$IPA" ]; then
-            cosign sign-blob --yes --bundle "${IPA}.sigstore" "$IPA"
-            sha256sum "$IPA" > "${IPA}.sha256"
-            cosign sign-blob --yes --bundle "${IPA}.sha256.sigstore" "${IPA}.sha256"
+          if [ -z "$IPA" ]; then
+            # Not merely "nothing to sign": Export IPA is a required step, so a
+            # missing .ipa means it produced nothing and the upload below would
+            # fail more confusingly. The old `if [ -n ]` skipped silently.
+            echo "::error::No .ipa found in $RUNNER_TEMP/export after a successful export"
+            exit 1
           fi
+          cosign sign-blob --yes --bundle "${IPA}.sigstore" "$IPA"
+          # shasum, NOT sha256sum: the latter is GNU coreutils and does not
+          # exist on a macOS runner, so this step exited 127 *after* cosign had
+          # already signed successfully — taking the TestFlight upload with it.
+          # Emitted in sha256sum's format so existing verification still works.
+          ( cd "$(dirname "$IPA")" && shasum -a 256 "$(basename "$IPA")" ) > "${IPA}.sha256"
+          cosign sign-blob --yes --bundle "${IPA}.sha256.sigstore" "${IPA}.sha256"
 
       # -- Upload to App Store Connect / TestFlight via API key ----------
       - name: Install API key for altool
