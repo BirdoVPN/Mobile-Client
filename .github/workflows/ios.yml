@@ -699,13 +699,45 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           rm -f "$CERT_PATH"
 
-      - name: Install provisioning profile
+      # BOTH profiles, because this is a two-target app: the host app
+      # (app.birdo.vpn) and the PacketTunnel network extension
+      # (app.birdo.vpn.tunnel). An App Store profile covers exactly ONE bundle
+      # ID, so the app's profile cannot sign the extension. project.yml pins each
+      # target to a profile BY NAME — "Birdo VPN AppStore v2" and "Birdo VPN
+      # Tunnel AppStore" — and under manual signing xcodebuild resolves those
+      # names against installed profiles. Installing only one made the archive
+      # die in ~12s with no compile output, because xcpretty swallows the
+      # resolution error and the exit code alone says nothing.
+      #
+      # Xcode locates profiles by the UUID INSIDE the file, not the filename, so
+      # these can be named anything as long as both are present.
+      - name: Install provisioning profiles
         env:
-          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          PROFILE_B64:        ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+          PROFILE_TUNNEL_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE_TUNNEL }}
         run: |
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          PROFILE_PATH="$HOME/Library/MobileDevice/Provisioning Profiles/birdo.mobileprovision"
-          echo "$PROFILE_B64" | base64 --decode > "$PROFILE_PATH"
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+
+          install_profile() {
+            local b64="$1" dest="$2" label="$3"
+            if [ -z "$b64" ]; then
+              echo "::error::$label profile secret is empty — the archive would fail with an unexplained exit 65"
+              exit 1
+            fi
+            echo "$b64" | base64 --decode > "$dest"
+            # A profile is CMS-signed DER; if the secret was mangled, the UUID
+            # key is absent and Xcode reports only "Failed to load profile".
+            # Catch it here, where the message names the culprit.
+            if ! grep -aq "<key>UUID</key>" "$dest"; then
+              echo "::error::$label profile did not decode to a valid .mobileprovision (no UUID key)"
+              exit 1
+            fi
+            echo "$label: $(wc -c < "$dest") bytes"
+          }
+
+          install_profile "$PROFILE_B64"        "$PROFILE_DIR/birdo-app.mobileprovision"    "app"
+          install_profile "$PROFILE_TUNNEL_B64" "$PROFILE_DIR/birdo-tunnel.mobileprovision" "tunnel"
 
       - name: Write ExportOptions.plist
         run: |
@@ -733,6 +765,19 @@ jobs:
         # unsigned build step below already does this; this one did not.
         run: |
           set -o pipefail
+          # Raw output is tee'd before xcpretty. xcpretty summarises, and on a
+          # signing failure it prints nothing useful at all — an archive that
+          # died on profile resolution showed only "** ARCHIVE FAILED **" and
+          # exit 65, with the actual cause discarded. The raw log is dumped in
+          # the failure handler below so the next break is readable.
+          #
+          # NOTE: no PRODUCT_BUNDLE_IDENTIFIER here. A bundle ID passed on the
+          # xcodebuild command line is a GLOBAL build setting — it overrides
+          # EVERY target, so it renamed the PacketTunnel extension from
+          # app.birdo.vpn.tunnel to app.birdo.vpn. That breaks signing (the
+          # tunnel profile no longer matches) and is rejected by App Store
+          # validation anyway, since an extension may not share its host's
+          # bundle ID. project.yml already sets the correct ID per target.
           xcodebuild archive \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
@@ -745,8 +790,16 @@ jobs:
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
-            PRODUCT_BUNDLE_IDENTIFIER="$APPLE_BUNDLE_ID" \
-            | xcpretty
+            2>&1 | tee "$RUNNER_TEMP/archive.log" | xcpretty
+
+      - name: Archive diagnostics (on failure)
+        if: failure()
+        run: |
+          echo "--- signing-related lines from the raw archive log ---"
+          grep -iE "error|provisioning|profile|signing|entitlement|bundle identifier" \
+            "$RUNNER_TEMP/archive.log" | tail -40 || echo "(no matches)"
+          echo "--- profiles that were installed ---"
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" || true
 
       - name: Export IPA
         run: |
