@@ -752,7 +752,24 @@ jobs:
             <key>stripSwiftSymbols</key> <true/>
             <key>uploadBitcode</key>     <false/>
             <key>uploadSymbols</key>     <true/>
-            <key>destination</key>       <string>upload</string>
+            <!-- export, NOT upload. destination=upload makes exportArchive
+                 itself publish to App Store Connect, which needs a signed-in
+                 Apple account and fails on a runner with "Failed to Use
+                 Accounts". It is also redundant: the altool step below already
+                 uploads, authenticated by API key. Export writes the .ipa
+                 locally and leaves publishing to that step. -->
+            <key>destination</key>       <string>export</string>
+            <!-- Required under manual signing: exportArchive re-signs each
+                 target and needs to be told which profile belongs to which
+                 bundle ID. Without this map it falls back to querying the
+                 developer portal for an account, which is the other half of
+                 the same failure. Values are profile NAMES, matching
+                 project.yml. -->
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${APPLE_BUNDLE_ID}</key>        <string>Birdo VPN AppStore v2</string>
+              <key>${APPLE_BUNDLE_ID}.tunnel</key> <string>Birdo VPN Tunnel AppStore</string>
+            </dict>
           </dict>
           </plist>
           EOF
@@ -804,12 +821,28 @@ jobs:
       - name: Export IPA
         run: |
           set -o pipefail
+          # No -allowProvisioningUpdates. It authorises xcodebuild to fetch or
+          # regenerate profiles from the developer portal, which requires a
+          # signed-in Apple account — on a runner there is none, so it reports
+          # "Failed to Use Accounts". Signing here is fully manual: both
+          # profiles are installed and mapped in ExportOptions.plist, so there
+          # is nothing to fetch.
+          #
+          # Raw output is kept for the same reason as the archive step: xcpretty
+          # drops the export's signing diagnostics.
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/BirdoVPN.xcarchive" \
             -exportPath  "$RUNNER_TEMP/export" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -allowProvisioningUpdates \
-            | xcpretty
+            2>&1 | tee "$RUNNER_TEMP/export.log" | xcpretty
+
+      - name: Export diagnostics (on failure)
+        if: failure()
+        run: |
+          echo "--- ExportOptions.plist as written ---"
+          cat "$RUNNER_TEMP/ExportOptions.plist" || true
+          echo "--- error lines from the raw export log ---"
+          grep -iE "error|profile|signing|account|entitlement" "$RUNNER_TEMP/export.log" | tail -40 || echo "(no matches)"
 
       # -- Sigstore keyless signing of the .ipa for public verifiability --
       - name: Install Cosign
