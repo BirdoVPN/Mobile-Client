@@ -54,7 +54,7 @@ jobs:
   # -- Build KMP Shared Framework --------------------------------------
   shared-framework:
     name: Build Shared Framework (iOS)
-    runs-on: macos-14  # Apple Silicon for arm64 builds
+    runs-on: macos-26  # Apple Silicon for arm64 builds
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -88,7 +88,7 @@ jobs:
   # -- Build iOS App (no signing) --------------------------------------
   build-ios:
     name: Build iOS App
-    runs-on: macos-14
+    runs-on: macos-26
     needs: shared-framework
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -99,12 +99,28 @@ jobs:
           name: shared-framework-ios
           path: shared/build/bin/iosArm64/releaseFramework/
 
-      - name: Select Xcode 16
+      # Xcode 26+ is MANDATORY, not a preference. App Store Connect rejects an
+      # upload built against an older SDK outright:
+      #   "This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps
+      #    must be built with the iOS 26 SDK or later" (409, STATE_ERROR)
+      # Xcode 16 built and signed perfectly and was refused at the very last
+      # step, so this fails loudly here rather than 20 minutes later.
+      #
+      # sort -V, not sort -r: lexically "Xcode_26.6" sorts above "Xcode_26.10",
+      # so a plain reverse sort silently picks the older toolchain once a .10
+      # release lands.
+      - name: Select Xcode 26+
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
-          [ -z "$XCODE_PATH" ] && XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No Xcode 26+ on this runner. App Store Connect requires the iOS 26 SDK; available:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
           echo "Using $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -424,7 +440,7 @@ jobs:
   # -- iOS Simulator Tests ---------------------------------------------
   test-ios:
     name: iOS Simulator Tests
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -448,12 +464,28 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
 
-      - name: Select Xcode 16
+      # Xcode 26+ is MANDATORY, not a preference. App Store Connect rejects an
+      # upload built against an older SDK outright:
+      #   "This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps
+      #    must be built with the iOS 26 SDK or later" (409, STATE_ERROR)
+      # Xcode 16 built and signed perfectly and was refused at the very last
+      # step, so this fails loudly here rather than 20 minutes later.
+      #
+      # sort -V, not sort -r: lexically "Xcode_26.6" sorts above "Xcode_26.10",
+      # so a plain reverse sort silently picks the older toolchain once a .10
+      # release lands.
+      - name: Select Xcode 26+
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
-          [ -z "$XCODE_PATH" ] && XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No Xcode 26+ on this runner. App Store Connect requires the iOS 26 SDK; available:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
           echo "Using $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -555,7 +587,7 @@ jobs:
   #   APPLE_BUNDLE_ID               - e.g. app.birdo.vpn
   release-ios:
     name: Codesign & Upload to TestFlight
-    runs-on: macos-14
+    runs-on: macos-26
     needs: [shared-framework, build-ios, test-ios]
     # A release tag, or a dispatch that explicitly asked for a TestFlight build.
     #
@@ -598,12 +630,28 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :shared:linkReleaseFrameworkIosArm64
 
-      - name: Select Xcode 16
+      # Xcode 26+ is MANDATORY, not a preference. App Store Connect rejects an
+      # upload built against an older SDK outright:
+      #   "This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps
+      #    must be built with the iOS 26 SDK or later" (409, STATE_ERROR)
+      # Xcode 16 built and signed perfectly and was refused at the very last
+      # step, so this fails loudly here rather than 20 minutes later.
+      #
+      # sort -V, not sort -r: lexically "Xcode_26.6" sorts above "Xcode_26.10",
+      # so a plain reverse sort silently picks the older toolchain once a .10
+      # release lands.
+      - name: Select Xcode 26+
         run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r | head -1)
-          [ -z "$XCODE_PATH" ] && XCODE_PATH=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -r | head -1)
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No Xcode 26+ on this runner. App Store Connect requires the iOS 26 SDK; available:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
           echo "Using $XCODE_PATH"
           sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       - name: Install XcodeGen
         run: brew install xcodegen
