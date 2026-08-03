@@ -76,6 +76,13 @@ final class VpnViewModel: ObservableObject {
     // MARK: - Private
     private let api: APIClient
     private let vpnManager: VPNManager
+
+    /// How long to wait for the first inbound byte before declaring the tunnel
+    /// dead. 15 s (30 × 500 ms) covers a slow mobile handshake — WireGuard
+    /// retries its handshake every 5 s — without leaving the user staring at a
+    /// tunnel that is never coming up.
+    private let HANDSHAKE_POLLS = 30
+    private let HANDSHAKE_POLL_MS = 500
     // `nonisolated(unsafe)` so the nonisolated `deinit` below can still invalidate
     // the Timers (Swift 6 forbids touching MainActor-isolated non-Sendable state
     // from deinit). Every read/write outside deinit is on the main actor.
@@ -367,6 +374,46 @@ final class VpnViewModel: ObservableObject {
         try? await Task.sleep(for: .milliseconds(150))
     }
 
+    /// Arm the kill switch's on-demand rule only once traffic has actually
+    /// flowed through the tunnel.
+    ///
+    /// `NEVPNStatus.connected` means the packet-tunnel extension STARTED. It says
+    /// nothing about whether WireGuard completed a handshake — a tunnel pointed at
+    /// a peer that never answers reports `.connected` just the same. Arming
+    /// `NEOnDemandRuleConnect` at that moment created a trap: the dead tunnel
+    /// drops, on-demand instantly re-dials it, it dies again, forever. With
+    /// `includeAllNetworks` also set, every packet is blackholed throughout, and
+    /// the user cannot break the cycle from inside the app — only by deleting the
+    /// VPN profile in iOS Settings.
+    ///
+    /// `rx > 0` is the proof: WireGuard cannot deliver received bytes without a
+    /// completed handshake, so any inbound traffic means the peer answered.
+    ///
+    /// On failure this tears the tunnel down and releases the server-side peer
+    /// rather than leaving it to hold the user's connection slot — the free tier
+    /// has exactly one, and a stranded peer makes the next attempt read as
+    /// "device limit reached".
+    private func armKillSwitchAfterHandshake() async {
+        for _ in 0..<HANDSHAKE_POLLS {
+            try? await Task.sleep(for: .milliseconds(HANDSHAKE_POLL_MS))
+            // The user (or a settings blip) tore it down while we waited.
+            guard isConnected else { return }
+            let stats = await vpnManager.currentStats()
+            if stats.rx > 0 {
+                let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
+                vpnManager.applyKillSwitchFlag(killSwitch)
+                return
+            }
+        }
+        guard isConnected else { return }
+        // Never handshook. Do NOT arm on-demand — that is the trap this exists to
+        // avoid. Tear down explicitly so iOS has nothing to re-dial.
+        error = "Couldn't establish a secure tunnel to this server. Try another location."
+        vpnManager.disconnect()
+        releaseServerSlot()
+        resetSessionState()
+    }
+
     /// Watchdog: a rebuild that never reaches `.connected` must not leave the
     /// in-flight flags set. `isReapplyingSettings` gates the reapply re-entrancy
     /// guard, so a latched flag makes the app silently ignore every subsequent
@@ -497,16 +544,13 @@ final class VpnViewModel: ObservableObject {
             // stops lying about egress the instant the new peer is real.
             connectedServerId = selectedServer?.id
             isSwitching = false
-            // finding #5: on-demand (the kill-switch re-dial rule) is armed
-            // ONLY now that the tunnel is actually up — never before
-            // startVPNTunnel, where a failure could leave iOS auto-dialing a
-            // server-side peer the failure path already deleted. connect()
-            // saved the config with on-demand disabled; applyKillSwitchFlag
-            // arms it session-gated (it only arms while the session is live).
-            // Read the raw stored value so a fresh install (absent key)
-            // defaults ON, matching VPNManager.connect().
-            let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
-            vpnManager.applyKillSwitchFlag(killSwitch)
+            // On-demand is armed only after a REAL handshake — see
+            // armKillSwitchAfterHandshake(). NEVPNStatus.connected means the
+            // extension started, NOT that WireGuard completed a handshake, and
+            // arming on that alone is what turns a tunnel that can never
+            // handshake into an endless re-dial the user cannot escape without
+            // disabling the VPN in iOS Settings.
+            Task { [weak self] in await self?.armKillSwitchAfterHandshake() }
             startStatsTimer()
             startHeartbeat()
         case .connecting, .reasserting:
