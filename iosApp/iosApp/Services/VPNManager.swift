@@ -370,6 +370,30 @@ final class VPNManager: @unchecked Sendable {
         return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
 
+    /// Read (and clear) the failure the tunnel extension recorded.
+    ///
+    /// The appex cannot talk to the app directly and its `os_log` output is
+    /// invisible to a TestFlight user, so it leaves the reason in the shared
+    /// keychain. Consumed on read: a stale reason attributed to a later,
+    /// unrelated attempt would be worse than none.
+    func takeExtensionFailure() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.sharedKeychainService,
+            kSecAttrAccount as String: "last_tunnel_error",
+            kSecAttrAccessGroup as String: Self.sharedKeychainAccessGroup,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let reason = String(data: data, encoding: .utf8) else { return nil }
+        deleteSharedSecret(account: "last_tunnel_error")
+        return reason
+    }
+
     private func deleteSharedSecret(account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

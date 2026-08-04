@@ -93,7 +93,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol,
               let configString = proto.providerConfiguration?["wg-config"] as? String else {
-            os_log("Missing WireGuard config", log: log, type: .error)
+            recordFailure("missing wg-config in providerConfiguration")
             completionHandler(TunnelError.missingConfig)
             return
         }
@@ -115,7 +115,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let presharedKeyRef = (proto.providerConfiguration?["wg-preshared-key-ref"] as? String) ?? ""
 
         guard let privateKey = readSharedKeychain(account: privateKeyRef), !privateKey.isEmpty else {
-            os_log("WireGuard private key missing from shared keychain", log: log, type: .error)
+            recordFailure("private key missing from shared keychain")
             completionHandler(TunnelError.missingConfig)
             return
         }
@@ -129,8 +129,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         var presharedKey: String?
         if !presharedKeyRef.isEmpty {
             guard let psk = readSharedKeychain(account: presharedKeyRef), !psk.isEmpty else {
-                os_log("Expected preshared key missing from shared keychain — refusing to build a downgraded tunnel",
-                       log: log, type: .error)
+                recordFailure("preshared key missing from shared keychain")
                 completionHandler(TunnelError.missingConfig)
                 return
             }
@@ -160,8 +159,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 )
             }()
         } catch {
-            os_log("Failed to parse tunnel config: %{public}@",
-                   log: log, type: .error, error.localizedDescription)
+            recordFailure("config parse failed: \(error.localizedDescription)")
             completionHandler(TunnelError.invalidConfig)
             return
         }
@@ -180,6 +178,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 os_log("Adapter start failed: %{private}@",
                        log: self?.log ?? .default, type: .error,
                        String(describing: adapterError))
+                self?.recordFailure("adapter start failed: \(adapterError)")
                 completionHandler(TunnelError.adapterFailed(String(describing: adapterError)))
                 return
             }
@@ -474,6 +473,37 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     /// Read a shared-keychain string by account, scoped to the
     /// `app.birdo.vpn.shared` service that the host app writes to.
+    /// Record why the tunnel refused to start, where the host app can read it.
+    ///
+    /// The extension is a separate process with no UI. Its `os_log` output is
+    /// invisible to a TestFlight user, and `completionHandler(error)` reaches
+    /// NetworkExtension rather than the app — iOS does not reliably forward the
+    /// reason to `lastDisconnectError`. So a provider that fails at startup
+    /// presents in the app as a tunnel that simply never comes up, with nothing
+    /// to act on.
+    ///
+    /// The shared keychain is reused as the channel deliberately: it is already
+    /// entitled on both sides and already works, whereas an App Group would mean
+    /// a new entitlement and regenerating both provisioning profiles.
+    ///
+    /// Diagnostic strings only — never key material, never the endpoint.
+    private func recordFailure(_ reason: String) {
+        os_log("Tunnel start failed: %{public}@", log: log, type: .error, reason)
+        guard let data = reason.data(using: .utf8) else { return }
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "app.birdo.vpn.shared",
+            kSecAttrAccount as String: "last_tunnel_error",
+            kSecAttrAccessGroup as String: Self.sharedAccessGroup,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        SecItemDelete(base as CFDictionary)
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(add as CFDictionary, nil)
+    }
+
     private func readSharedKeychain(account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

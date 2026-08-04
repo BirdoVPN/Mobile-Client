@@ -569,8 +569,15 @@ final class VpnViewModel: ObservableObject {
             // it: a tunnel torn down by iOS because the provider failed to start
             // otherwise looks identical to a user disconnect, which is precisely
             // why a start-up failure could masquerade as an unexplained loop.
-            if isConnected || isConnecting, let reason = vpnManager.lastDisconnectReason {
-                error = "Tunnel failed: \(reason)"
+            // Prefer the extension's own account of what went wrong: it names
+            // the exact failure (a keychain read, a config parse) where iOS's
+            // lastDisconnectError is often nil or generic.
+            if isConnected || isConnecting {
+                if let appexReason = vpnManager.takeExtensionFailure() {
+                    error = "Tunnel failed: \(appexReason)"
+                } else if let reason = vpnManager.lastDisconnectReason {
+                    error = "Tunnel failed: \(reason)"
+                }
             }
             isConnected = false
             isConnecting = false
