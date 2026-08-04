@@ -392,6 +392,33 @@ final class VPNManager: @unchecked Sendable {
         }
     }
 
+    /// Clear an on-demand rule left behind by a previous run.
+    ///
+    /// On-demand lives in the SYSTEM VPN profile, not in the app: it survives
+    /// app restarts, reinstalls and updates. A rule armed by an older build --
+    /// which armed on `NEVPNStatus.connected`, before any handshake -- therefore
+    /// keeps re-dialling a tunnel that can never come up, and shipping the fix
+    /// does not rescue anyone who already has one, because the app never looks
+    /// at it on launch.
+    ///
+    /// Only disarms while no session is live. A genuinely connected tunnel keeps
+    /// its rule; the kill switch is only meaningful for the duration of a
+    /// session anyway, which is the invariant `applyKillSwitchFlag` already
+    /// enforces when arming.
+    private func disarmStaleOnDemand(_ mgr: NETunnelProviderManager) {
+        let status = mgr.connection.status
+        let sessionLive = status == .connected || status == .connecting || status == .reasserting
+        guard !sessionLive, mgr.isOnDemandEnabled else { return }
+        NSLog("[VPNManager] clearing a stale on-demand rule from a previous session")
+        mgr.isOnDemandEnabled = false
+        mgr.onDemandRules = nil
+        mgr.saveToPreferences { error in
+            if let error {
+                NSLog("[VPNManager] failed clearing stale on-demand: %@", error.localizedDescription)
+            }
+        }
+    }
+
     private func ensureManager() async throws -> NETunnelProviderManager {
         if let mgr = manager { return mgr }
 
@@ -409,6 +436,7 @@ final class VPNManager: @unchecked Sendable {
                 let mgr = managers?.first ?? NETunnelProviderManager()
                 self?.manager = mgr
                 self?.observeStatus(mgr)
+                self?.disarmStaleOnDemand(mgr)
                 // finding #4/#7: replay the settled status for an existing
                 // (already-connected) session the same way loadManager() does.
                 // A freshly-constructed manager reports .invalid, which
