@@ -699,7 +699,10 @@ private struct GlobeGeometry {
     /// the dense grid never pays to tabulate it, and a low-power device that
     /// only ever picks the coarse one never allocates the other two.
     private static let lods: [Int] = [2, 3, 4]
-    private static var cache: [Int: GlobeLOD] = [:]
+    // `nonisolated(unsafe)` because every access is serialised by `cacheLock`
+    // below — the same pattern the timers in VpnViewModel use. Swift 6 cannot
+    // see the lock, so it has to be told the invariant is held manually.
+    nonisolated(unsafe) private static var cache: [Int: GlobeLOD] = [:]
     private static let cacheLock = NSLock()
 
     /// Pick a level of detail so cells land near two points on screen.
