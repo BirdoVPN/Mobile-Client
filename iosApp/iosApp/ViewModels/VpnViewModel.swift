@@ -408,7 +408,16 @@ final class VpnViewModel: ObservableObject {
         guard isConnected else { return }
         // Never handshook. Do NOT arm on-demand — that is the trap this exists to
         // avoid. Tear down explicitly so iOS has nothing to re-dial.
-        error = "Couldn't establish a secure tunnel to this server. Try another location."
+        //
+        // Include the extension's own failure reason when iOS gave us one: the
+        // appex is a separate process, so without this the user (and anyone
+        // reading a bug report) sees only "it didn't work" for causes as
+        // different as a rejected config and a crashed provider.
+        if let reason = vpnManager.lastDisconnectReason {
+            error = "Tunnel failed: \(reason)"
+        } else {
+            error = "Couldn't establish a secure tunnel to this server. Try another location."
+        }
         vpnManager.disconnect()
         releaseServerSlot()
         resetSessionState()
@@ -556,6 +565,13 @@ final class VpnViewModel: ObservableObject {
         case .connecting, .reasserting:
             isConnecting = true
         case .disconnected, .invalid:
+            // An OS-initiated drop carries the extension's failure reason. Show
+            // it: a tunnel torn down by iOS because the provider failed to start
+            // otherwise looks identical to a user disconnect, which is precisely
+            // why a start-up failure could masquerade as an unexplained loop.
+            if isConnected || isConnecting, let reason = vpnManager.lastDisconnectReason {
+                error = "Tunnel failed: \(reason)"
+            }
             isConnected = false
             isConnecting = false
             quantumActive = false

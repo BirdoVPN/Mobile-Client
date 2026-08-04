@@ -57,6 +57,15 @@ final class VPNManager: @unchecked Sendable {
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
+    /// Why the tunnel last went down, straight from NetworkExtension.
+    ///
+    /// The packet-tunnel extension runs in its own process: when it fails to
+    /// start, the host app sees only `.disconnected` and has no idea whether the
+    /// config was rejected, the keychain read failed, or the provider crashed.
+    /// iOS records the reason on the connection, so surfacing it turns "the VPN
+    /// just loops" into an actual diagnosis.
+    private(set) var lastDisconnectReason: String?
+
     init() {
         loadManager()
     }
@@ -466,6 +475,22 @@ final class VPNManager: @unchecked Sendable {
             // registered for) rather than capturing `manager` strongly, which
             // would keep the NETunnelProviderManager alive via self.statusObserver.
             guard let connection = note.object as? NEVPNConnection else { return }
+            // Capture WHY the tunnel went down while the reason is still
+            // available. iOS reports the extension's own failure here --
+            // a missing config, a keychain read the appex could not perform, a
+            // crashed provider -- and nothing was reading it, so a tunnel that
+            // died on startup was indistinguishable from one that simply never
+            // came up. That is the difference between a diagnosable failure and
+            // a silent re-dial loop.
+            if connection.status == .disconnected {
+                if let err = connection.value(forKey: "lastDisconnectError") as? NSError {
+                    NSLog("[VPNManager] tunnel disconnected: %@ (domain=%@ code=%ld)",
+                          err.localizedDescription, err.domain, err.code)
+                    self?.lastDisconnectReason = err.localizedDescription
+                } else {
+                    self?.lastDisconnectReason = nil
+                }
+            }
             self?.onStatusChange?(connection.status)
         }
     }
