@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// Mullvad-style 3D rotating orthographic globe — the Connect-screen hero.
@@ -64,8 +65,18 @@ struct WorldGlobeView: View {
         reduceMotion || scenePhase != .active || !onScreen
     }
 
+    /// Halve the clock in Low Power Mode.
+    ///
+    /// The globe is decoration — it must never be the reason a device on 10%
+    /// battery gets warm. iOS also throttles the GPU in this state, so insisting
+    /// on 30 fps buys dropped frames rather than smoothness. Read per frame
+    /// rather than cached: the user can toggle it while the view is on screen.
+    private var frameInterval: Double {
+        ProcessInfo.processInfo.isLowPowerModeEnabled ? 1.0 / 15.0 : 1.0 / 30.0
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: isPaused)) { _ in
+        TimelineView(.animation(minimumInterval: frameInterval, paused: isPaused)) { _ in
             Canvas { ctx, size in
                 // Mutating the model inside the draw closure is the same
                 // deliberate pattern `PixelCanvasView` uses: redraws come from
@@ -196,25 +207,33 @@ struct WorldGlobeView: View {
         var pathDim = Path()
         var pathMid = Path()
         var pathLit = Path()
-        let geometry = GlobeGeometry.shared
+        let geometry = GlobeGeometry.forRadius(radius)
         let cellPx = radius * geometry.cellSizeRad
         // Directional light in camera space (upper-left, towards the camera).
         let lx = -0.42, ly = -0.55, lz = 0.72
+        // Frame constants for the angle-difference identities below — computed
+        // ONCE per frame instead of sin/cos per cell.
+        let sinLonRad = sin(lonRad)
+        let cosLonRad = cos(lonRad)
         geometry.samples.withUnsafeBufferPointer { data in
             var i = 0
             let limit = data.count
             while i < limit {
                 let sinPhi = data[i]
                 let cosPhi = data[i + 1]
-                let lon = data[i + 2]
-                i += 3
-                let lam = lon - lonRad
-                let sx = cosPhi * sin(lam)
-                let sy = sinPhi
-                let sz = cosPhi * cos(lam)
-                let ty = sy * cosLat - sz * sinLat
-                let tz = sy * sinLat + sz * cosLat
+                let sinLon = data[i + 2]
+                let cosLon = data[i + 3]
+                i += 4
+                // cos(lon - lonRad), needed for the depth test. Computed first so
+                // the whole back hemisphere — roughly half the buffer — is
+                // rejected before any of the projection work below.
+                let cosLam = cosLon * cosLonRad + sinLon * sinLonRad
+                let sz = cosPhi * cosLam
+                let tz = sinPhi * sinLat + sz * cosLat
                 if tz <= 0.02 { continue }
+                let sinLam = sinLon * cosLonRad - cosLon * sinLonRad
+                let sx = cosPhi * sinLam
+                let ty = sinPhi * cosLat - sz * sinLat
                 let px = cx + sx * radius
                 let py = cy - ty * radius
                 let dot = sx * lx + ty * ly + tz * lz
@@ -623,24 +642,33 @@ private struct Tween {
 /// `[sinPhi, cosPhi, lonRad]` triples. Rebuilding this per frame — or walking the
 /// 259200-cell mask and allocating a tuple per cell — is exactly what makes a
 /// globe like this stutter; the render loop just strides the buffer.
-private struct GlobeGeometry {
+/// Pre-tabulated land cells for one level of detail.
+///
+/// Packs FOUR values per cell — `sinPhi, cosPhi, sinLon, cosLon` — rather than
+/// storing the longitude itself. That is the whole point: the renderer needs
+/// `sin(lon - lonRad)` and `cos(lon - lonRad)` every frame, and the angle
+/// difference identities
+///
+///     sin(a - b) = sin a · cos b - cos a · sin b
+///     cos(a - b) = cos a · cos b + sin a · sin b
+///
+/// turn those into four multiplies against two frame-constant terms. Storing
+/// the raw longitude instead forced `sin()` and `cos()` per cell per frame:
+/// with ~18k land cells at 30 fps that was over a million transcendental calls
+/// a second, which is what made the globe stutter on iPad.
+private struct GlobeLOD {
     let samples: [Double]
     /// Angular extent of one cell at the equator, in radians.
     let cellSizeRad: Double
 
-    private static let strideRow = 2
-    private static let strideCol = 2
-
-    static let shared = GlobeGeometry()
-
-    private init() {
+    init(stride: Int) {
         let rows = WorldLandmask.rowCount()
         let cols = WorldLandmask.colCount()
         let cellLat = Double.pi / Double(rows)
         let cellLon = (2 * Double.pi) / Double(cols)
 
         var packed: [Double] = []
-        packed.reserveCapacity(20_000 * 3)
+        packed.reserveCapacity(20_000 * 4)
         var r = 0
         while r < rows {
             let phi = (Double.pi / 2) - (Double(r) + 0.5) * cellLat
@@ -649,15 +677,54 @@ private struct GlobeGeometry {
             var c = 0
             while c < cols {
                 if WorldLandmask.isLandCell(r, c) {
+                    let lon = -Double.pi + (Double(c) + 0.5) * cellLon
                     packed.append(sinPhi)
                     packed.append(cosPhi)
-                    packed.append(-Double.pi + (Double(c) + 0.5) * cellLon)
+                    packed.append(sin(lon))
+                    packed.append(cos(lon))
                 }
-                c += Self.strideCol
+                c += stride
             }
-            r += Self.strideRow
+            r += stride
         }
         samples = packed
-        cellSizeRad = cellLat * Double(Self.strideRow) * 1.55
+        cellSizeRad = cellLat * Double(stride) * 1.55
+    }
+}
+
+private struct GlobeGeometry {
+    /// Coarse-to-fine. Index 0 is the densest.
+    ///
+    /// Built lazily: an iPhone that never renders the globe large enough to need
+    /// the dense grid never pays to tabulate it, and a low-power device that
+    /// only ever picks the coarse one never allocates the other two.
+    private static let lods: [Int] = [2, 3, 4]
+    // `nonisolated(unsafe)` because every access is serialised by `cacheLock`
+    // below — the same pattern the timers in VpnViewModel use. Swift 6 cannot
+    // see the lock, so it has to be told the invariant is held manually.
+    nonisolated(unsafe) private static var cache: [Int: GlobeLOD] = [:]
+    private static let cacheLock = NSLock()
+
+    /// Pick a level of detail so cells land near two points on screen.
+    ///
+    /// The old code always walked the densest grid, even on a globe a couple of
+    /// hundred points across, where cells overlap so heavily that most of the
+    /// work is overdraw nobody can see. Selecting on rendered radius means a
+    /// small globe costs proportionally less instead of a flat ~18k cells.
+    static func forRadius(_ radius: Double) -> GlobeLOD {
+        let rows = Double(WorldLandmask.rowCount())
+        let cellLat = Double.pi / rows
+        // Solve for the stride whose on-screen cell is closest to 2 pt.
+        var chosen = lods[lods.count - 1]
+        for stride in lods {
+            let px = radius * cellLat * Double(stride) * 1.55
+            if px >= 2.0 { chosen = stride; break }
+        }
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let hit = cache[chosen] { return hit }
+        let built = GlobeLOD(stride: chosen)
+        cache[chosen] = built
+        return built
     }
 }
