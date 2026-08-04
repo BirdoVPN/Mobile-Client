@@ -207,7 +207,7 @@ struct WorldGlobeView: View {
         var pathDim = Path()
         var pathMid = Path()
         var pathLit = Path()
-        let geometry = GlobeGeometry.forRadius(radius)
+        let geometry = GlobeGeometry.current()
         let cellPx = radius * geometry.cellSizeRad
         // Directional light in camera space (upper-left, towards the camera).
         let lx = -0.42, ly = -0.55, lz = 0.72
@@ -693,33 +693,31 @@ private struct GlobeLOD {
 }
 
 private struct GlobeGeometry {
-    /// Coarse-to-fine. Index 0 is the densest.
-    ///
-    /// Built lazily: an iPhone that never renders the globe large enough to need
-    /// the dense grid never pays to tabulate it, and a low-power device that
-    /// only ever picks the coarse one never allocates the other two.
-    private static let lods: [Int] = [2, 3, 4]
     // `nonisolated(unsafe)` because every access is serialised by `cacheLock`
     // below — the same pattern the timers in VpnViewModel use. Swift 6 cannot
     // see the lock, so it has to be told the invariant is held manually.
     nonisolated(unsafe) private static var cache: [Int: GlobeLOD] = [:]
     private static let cacheLock = NSLock()
 
-    /// Pick a level of detail so cells land near two points on screen.
+    /// Cell density is a COST decision, not a size one.
     ///
-    /// The old code always walked the densest grid, even on a globe a couple of
-    /// hundred points across, where cells overlap so heavily that most of the
-    /// work is overdraw nobody can see. Selecting on rendered radius means a
-    /// small globe costs proportionally less instead of a flat ~18k cells.
-    static func forRadius(_ radius: Double) -> GlobeLOD {
-        let rows = Double(WorldLandmask.rowCount())
-        let cellLat = Double.pi / rows
-        // Solve for the stride whose on-screen cell is closest to 2 pt.
-        var chosen = lods[lods.count - 1]
-        for stride in lods {
-            let px = radius * cellLat * Double(stride) * 1.55
-            if px >= 2.0 { chosen = stride; break }
-        }
+    /// A previous attempt picked the stride from the rendered radius, aiming for
+    /// roughly 2 pt cells. That was backwards: a large globe satisfies the
+    /// threshold at the densest stride, so the bigger the display the more cells
+    /// were drawn — which is exactly why iPad was the worst case rather than the
+    /// best.
+    ///
+    /// Cell size already scales with radius (`cellPx = radius * cellSizeRad`), so
+    /// a coarser grid still covers the sphere completely; cells simply become
+    /// chunkier, which suits a deliberately pixelated globe. Stride 6 draws about
+    /// 2k cells against roughly 18k at stride 2 — an order of magnitude less path
+    /// building and filling per frame, which is the real remaining cost now that
+    /// the trig is gone.
+    private static let normalStride = 6
+    private static let lowPowerStride = 8
+
+    static func current() -> GlobeLOD {
+        let chosen = ProcessInfo.processInfo.isLowPowerModeEnabled ? lowPowerStride : normalStride
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if let hit = cache[chosen] { return hit }
