@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Entitlements for the SCREENSHOT build only. Never shipped: the Mac App Store
+  artifact uses BirdoVPN-macOS.entitlements.
+
+  Why this file exists. The screenshot run signs ad-hoc, because the real
+  entitlements demand a provisioning profile and a distribution-signed app
+  cannot be driven by XCUITest (distribution profiles set get-task-allow=false,
+  which blocks the test runner from attaching). But stripping the entitlements
+  entirely broke sign-in: KeychainService writes with kSecAttrAccessGroup and
+  kSecUseDataProtectionKeychain, and the data-protection keychain refuses an app
+  that carries no application-identifier — the run stopped on "Could not
+  securely store your session. Please try again."
+
+  So this carries the two keys the keychain actually checks, and nothing else.
+  Ad-hoc signing applies entitlements without validating them against a profile,
+  which is what makes this possible at all.
+
+  Deliberately ABSENT, and it matters:
+    * com.apple.security.app-sandbox — a sandboxed ad-hoc build gets a
+      different container and would not see the session it just wrote.
+    * com.apple.developer.networking.networkextension — needs a real profile;
+      the packet tunnel cannot load in a screenshot build regardless.
+
+  The team prefix is written out rather than using $(AppIdentifierPrefix),
+  which resolves from the provisioning profile that this build does not have.
+-->
+<dict>
+    <key>com.apple.application-identifier</key>
+    <string>KPUFGR98A5.app.birdo.vpn</string>
+
+    <key>keychain-access-groups</key>
+    <array>
+        <string>KPUFGR98A5.app.birdo.vpn</string>
+    </array>
+</dict>
+</plist>
