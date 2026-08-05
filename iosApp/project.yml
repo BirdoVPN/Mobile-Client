@@ -112,6 +112,12 @@ targets:
         # Distribution" signs the .app, but the installer package must be signed
         # with "3rd Party Mac Developer Installer" at export time.
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        # Mac App Store signs with a DIFFERENT identity from iOS. "Apple
+        # Distribution" is the iOS certificate and is NOT in the Mac provisioning
+        # profiles, so leaving it inherited fails with "profile doesn't include
+        # signing certificate". The .pkg is signed separately at export time with
+        # "3rd Party Mac Developer Installer" — hence two Mac certificates.
+        CODE_SIGN_IDENTITY[sdk=macosx*]: "3rd Party Mac Developer Application"
         # Compiles iosApp/Assets.xcassets and emits CFBundleIconName, without
         # which App Store validation fails. The source PNG must be 1024x1024
         # with NO alpha channel — Apple rejects icons that have one.
@@ -192,6 +198,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "Birdo VPN Tunnel AppStore"
         PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]: "Birdo VPN Tunnel Mac AppStore"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_IDENTITY[sdk=macosx*]: "3rd Party Mac Developer Application"
         # Pinned explicitly here too, so this target does not silently inherit a
         # different identity if XcodeGen's extension preset ever gains one.
         CODE_SIGN_IDENTITY: "Apple Distribution"
