@@ -39,9 +39,5 @@
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>
     </array>
 
-    <key>com.apple.security.application-groups</key>
-    <array>
-        <string>$(TeamIdentifierPrefix)group.app.birdo.vpn</string>
-    </array>
 </dict>
 </plist>

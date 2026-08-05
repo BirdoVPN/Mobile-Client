@@ -42,14 +42,5 @@
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>
     </array>
 
-    <!--
-      App groups: the macOS appex and host communicate through the keychain
-      like iOS, but NEProvider on macOS additionally requires a shared group
-      container to be declared for the extension to be loadable at all.
-    -->
-    <key>com.apple.security.application-groups</key>
-    <array>
-        <string>$(TeamIdentifierPrefix)group.app.birdo.vpn</string>
-    </array>
 </dict>
 </plist>
