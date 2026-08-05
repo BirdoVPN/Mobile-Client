@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- macOS Info.plist. SEPARATE from iosApp/Info.plist because the two platforms
+     disagree on keys that are not merely cosmetic:
+
+       * LSRequiresIPhoneOS / UILaunchScreen / UISupportedInterfaceOrientations /
+         UIApplicationSceneManifest are iOS-only and meaningless on a Mac.
+       * UIRequiredDeviceCapabilities = arm64 would be actively HARMFUL here:
+         the Mac App Store build ships a universal binary and must run on Intel
+         Macs too.
+       * LSApplicationCategoryType is REQUIRED on macOS and has no iOS
+         equivalent. Omitting it is what failed the first Mac upload:
+         altool error 90242, "The product archive is invalid. The Info.plist
+         must contain a LSApplicationCategoryType key".
+
+     Wired up via INFOPLIST_FILE[sdk=macosx*] in project.yml, the same per-SDK
+     mechanism already used for the entitlements and provisioning profiles. -->
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Birdo VPN</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>app.birdo.vpn</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Birdo VPN</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <!-- Driven from version.properties by CI, exactly as on iOS: the host app
+         and the appex must report identical versions or App Store validation
+         rejects the bundle. -->
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+    <!-- REQUIRED by the Mac App Store (error 90242 without it). A VPN is a
+         Utilities app; this must stay consistent with the primary category set
+         on the App Store Connect version record. -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <!-- Tracks MACOSX_DEPLOYMENT_TARGET (14.0) rather than hardcoding it, so the
+         floor cannot drift from the one the compiler actually built against. -->
+    <key>LSMinimumSystemVersion</key>
+    <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+    <!-- Standard AppKit entry point. Present in every Xcode macOS template; the
+         hand-written plist has to supply it because nothing generates it. -->
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <!-- Shown in the About panel and on the App Store listing. -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Birdo Networks LTD. All rights reserved.</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <!-- Touch ID on the Mac is gated by the same key as Face ID on iOS —
+         LocalAuthentication reads NSFaceIDUsageDescription on both platforms. -->
+    <key>NSFaceIDUsageDescription</key>
+    <string>Birdo VPN uses Touch ID to protect your account.</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+    <!-- Same custom scheme as iOS: the SSO broker 302s its PKCE handoff to
+         birdo://auth, and the deep links (birdo://connect|servers|settings)
+         ride the same scheme. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>app.birdo.vpn</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>birdo</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
