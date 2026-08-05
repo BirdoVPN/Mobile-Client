@@ -154,7 +154,21 @@ jobs:
           WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphoneos"
           mkdir -p "$WG_LIB_DIR"
           cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          # DEPLOYMENT_TARGET_* are what make WireGuardKitGo's Makefile emit
+          # -mios-version-min. Xcode sets them when the Makefile runs as a build
+          # phase; CI invokes `make` directly, so without them the flag is
+          # omitted entirely and Go compiles against the SDK's own minimum —
+          # iOS 26 under Xcode 26.
+          #
+          # The resulting binary ran on nothing older. The extension died with
+          # EXC_BAD_INSTRUCTION (SIGILL) inside _cgo_wait_runtime_init_done, on
+          # the first wg-go call, before any of its own code executed: no logs,
+          # no packets, no error — just a tunnel that never came up on an iPad
+          # running iOS 17.7. Must track project.yml's deploymentTarget.
           make ARCHS=arm64 PLATFORM_NAME=iphoneos \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mios-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=IPHONEOS_DEPLOYMENT_TARGET \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
             CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
@@ -507,7 +521,15 @@ jobs:
           WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphonesimulator"
           mkdir -p "$WG_LIB_DIR"
           cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          # Same deployment-target fix as the device builds; the simulator uses
+          # a different clang flag name. This is also where the symptom was
+          # first visible — "object file was built for newer 'iOS-simulator'
+          # version (26.5) than being linked (17.0)" — which I wrongly read as
+          # noise rather than the same defect the device hits fatally.
           make ARCHS=arm64 PLATFORM_NAME=iphonesimulator GOOS_iphonesimulator=ios \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mios-simulator-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=IPHONEOS_DEPLOYMENT_TARGET \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)" \
             CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-sim"
@@ -670,7 +692,21 @@ jobs:
           WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphoneos"
           mkdir -p "$WG_LIB_DIR"
           cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          # DEPLOYMENT_TARGET_* are what make WireGuardKitGo's Makefile emit
+          # -mios-version-min. Xcode sets them when the Makefile runs as a build
+          # phase; CI invokes `make` directly, so without them the flag is
+          # omitted entirely and Go compiles against the SDK's own minimum —
+          # iOS 26 under Xcode 26.
+          #
+          # The resulting binary ran on nothing older. The extension died with
+          # EXC_BAD_INSTRUCTION (SIGILL) inside _cgo_wait_runtime_init_done, on
+          # the first wg-go call, before any of its own code executed: no logs,
+          # no packets, no error — just a tunnel that never came up on an iPad
+          # running iOS 17.7. Must track project.yml's deploymentTarget.
           make ARCHS=arm64 PLATFORM_NAME=iphoneos \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mios-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=IPHONEOS_DEPLOYMENT_TARGET \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
             SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
             CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
