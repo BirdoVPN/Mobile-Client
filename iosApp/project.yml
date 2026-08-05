@@ -86,7 +86,15 @@ targets:
     sources:
       - path: iosApp
         excludes:
+          # BOTH plists must be excluded. They are referenced by INFOPLIST_FILE,
+          # not compiled as sources — and anything left in `sources` is copied
+          # into the bundle as a RESOURCE. Info-macOS.plist landing in
+          # Contents/Resources/ meant the app carried two Info.plists, so App
+          # Store validation saw two bundles rooted at the same path and
+          # rejected the upload with 90280 ("The CFBundleExecutable of two
+          # bundles may not point to the same file"), 90261 and 90354.
           - Info.plist
+          - Info-macOS.plist
     # NOTE: deliberately NO `info:` / `entitlements:` blocks. XcodeGen *generates*
     # (i.e. overwrites) whatever file those keys name — which silently wiped the
     # hand-written Info.plist and emptied BirdoVPN.entitlements to `<dict/>` on
@@ -169,7 +177,13 @@ targets:
   # fastlane snapshot works this way.
   BirdoVPNUITests:
     type: bundle.ui-testing
-    platform: iOS
+    # Runs on macOS too, because Mac App Store screenshots have to show a Mac
+    # app and there is no other way to produce them: `screencapture` over SSH
+    # cannot reach the window server, and installing the signed .pkg locally
+    # needs root. XCUITest drives the real app in a real GUI session, so the
+    # same harness that captures the iOS screenshots captures the Mac ones —
+    # and running it is also the first proof the macOS build actually launches.
+    supportedDestinations: [iOS, macOS]
     sources:
       - path: BirdoVPNUITests
     dependencies:

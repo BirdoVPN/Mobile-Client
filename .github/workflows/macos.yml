@@ -418,6 +418,12 @@ jobs:
             --output-format xml
 
       - name: Upload signed .pkg artifact
+        # always(): a REJECTED upload is exactly when the .pkg is most worth
+        # having. App Store validation reports bundle-structure faults by path,
+        # and the only way to check them is to open the package — but this step
+        # ran after the upload, so the two rejections so far both discarded the
+        # artifact and the structure had to be reconstructed from a local build.
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: birdo-vpn-macos-signed
