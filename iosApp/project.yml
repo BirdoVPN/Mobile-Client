@@ -99,6 +99,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn
         INFOPLIST_FILE: iosApp/Info.plist
+        # macOS gets its OWN Info.plist. Not cosmetic: the Mac App Store REQUIRES
+        # LSApplicationCategoryType (the first Mac upload was rejected with
+        # altool error 90242 for its absence, and that key has no iOS
+        # equivalent), while the iOS plist carries keys that are wrong on a Mac —
+        # UIRequiredDeviceCapabilities=arm64 would break the Intel half of the
+        # universal binary, and LSRequiresIPhoneOS/UILaunchScreen/orientations
+        # are meaningless there.
+        INFOPLIST_FILE[sdk=macosx*]: iosApp/Info-macOS.plist
         # Per-SDK entitlements and profile. macOS needs its OWN file: the Mac
         # App Store mandates App Sandbox (absent from the iOS entitlements) and
         # an application-group container, without which NEProvider extensions
