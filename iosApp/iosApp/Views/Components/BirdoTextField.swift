@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// The outlined Birdo text field: label above (13pt medium 60%-white), field
 /// radius 12 on a 4%-white container, focus border emerald-300 @60%, secure
@@ -70,10 +72,18 @@ struct BirdoTextField: View {
                     .font(monospaced ? BirdoTheme.Fonts.mono : BirdoTheme.Fonts.bodyMedium)
                     .foregroundStyle(focused ? BirdoTheme.white : BirdoTheme.white80)
                     .tint(BirdoTheme.accentSoft)
+                    // Software-keyboard configuration is iOS-only: a Mac has a
+                    // hardware keyboard, so there is no keyboard type,
+                    // autocapitalisation mode or return-key label to set. The
+                    // properties still exist on both platforms (see
+                    // PlatformCompat) so callers stay identical — only the
+                    // modifiers are skipped.
+                    #if os(iOS)
                     .keyboardType(keyboardType)
                     .textContentType(textContentType)
                     .submitLabel(submitLabel)
                     .textInputAutocapitalization(autocapitalization)
+                    #endif
                     .autocorrectionDisabled(true)
                     .onSubmit { self.onSubmit?() }
 

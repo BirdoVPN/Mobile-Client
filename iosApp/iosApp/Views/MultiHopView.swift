@@ -60,7 +60,7 @@ struct MultiHopView: View {
             }
         }
         .navigationTitle("Multi-Hop")
-        .navigationBarTitleDisplayMode(.inline)
+        .modifier(InlineNavigationTitle())
         .navigationDestination(isPresented: $showSubscription) {
             SubscriptionView()
         }

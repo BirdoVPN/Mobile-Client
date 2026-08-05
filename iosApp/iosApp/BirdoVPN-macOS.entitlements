@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      macOS host app entitlements for MAC APP STORE distribution.
+
+      App Sandbox is MANDATORY on the Mac App Store, and it is the reason this
+      app cannot simply be the existing Tauri desktop client: that one creates a
+      utun device via AF_SYSTEM sockets and edits pf firewall rules, both of
+      which require root and are forbidden outright under the sandbox. A
+      sandboxed VPN must go through NetworkExtension, which is what this target
+      does — reusing the same PacketTunnelProvider the iOS app ships.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- Outbound network for the API (api.birdo.app) and the tunnel itself. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!--
+      Packet-tunnel provider. On macOS this entitlement additionally requires
+      the app to be distributed by the Mac App Store or signed with a
+      Developer ID and a matching provisioning profile; a self-signed build
+      silently fails to start the tunnel.
+    -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider</string>
+    </array>
+
+    <!--
+      Shared keychain with the appex, exactly as on iOS. MUST stay in lockstep
+      with VPNManager.sharedKeychainAccessGroup and the value hardcoded in
+      PacketTunnelProvider — the two targets do not share source, so the group
+      is declared once per side and a drift means the extension cannot read the
+      private key and the tunnel dies with missingConfig.
+    -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)app.birdo.vpn</string>
+    </array>
+
+    <!--
+      App groups: the macOS appex and host communicate through the keychain
+      like iOS, but NEProvider on macOS additionally requires a shared group
+      container to be declared for the extension to be loadable at all.
+    -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>$(TeamIdentifierPrefix)group.app.birdo.vpn</string>
+    </array>
+</dict>
+</plist>

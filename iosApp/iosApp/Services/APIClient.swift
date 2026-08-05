@@ -1,7 +1,9 @@
 import Foundation
 import CommonCrypto
 import CryptoKit
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// On-device WireGuard (Curve25519) keypair as WireGuard-format Base64 strings.
 ///
@@ -598,7 +600,7 @@ final class APIClient: @unchecked Sendable {
     private func deviceContext() async -> DeviceIdentity {
         if let cached = cachedDeviceContext { return cached }
         let (idfv, osVersion) = await MainActor.run {
-            (UIDevice.current.identifierForVendor?.uuidString, UIDevice.current.systemVersion)
+            (PlatformDevice.vendorId, PlatformDevice.systemVersion)
         }
         let deviceId: String
         if let stored = keychain.deviceId {

@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// GDPR consent gate — shown once, on first launch, BEFORE Login (routing:
 /// `!authVM.hasConsented`). Copy is exact per spec-auth-flow.md §0 /
@@ -163,7 +165,7 @@ struct ConsentView: View {
     /// footnote so declining reads as "blocked", not broken.
     private func decline() {
         authVM.declineConsent()
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        Haptics.notify(.warning)
         emphasisResetTask?.cancel()
         withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.standard)) {
             declineEmphasis = true

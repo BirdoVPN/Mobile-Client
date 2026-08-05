@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Home (Connect) screen — Android HomeScreen parity per
 /// spec-home-servers-consent.md §3, emerald visual identity per
@@ -60,7 +62,7 @@ struct HomeView: View {
         .background(Color.clear)
         // The screen draws its own top bar; an empty system bar would push
         // everything down and paint over the canvas.
-        .toolbar(.hidden, for: .navigationBar)
+        .modifier(HideNavigationBar())
         .onAppear {
             // Defensive kick — cheap thanks to the 60 s TTL + in-flight guard.
             // The app root owns the real login-flip / cold-start load.
@@ -233,7 +235,7 @@ struct HomeView: View {
         if vpnVM.isSovereign {
             showMultiHop = true
         } else {
-            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            Haptics.notify(.error)
             let message = "Multi-Hop is a SOVEREIGN feature. Upgrade to enable."
             withAnimation(BirdoTheme.Motion.decel()) { multiHopUpsell = message }
             AccessibilityNotification.Announcement(message).post()

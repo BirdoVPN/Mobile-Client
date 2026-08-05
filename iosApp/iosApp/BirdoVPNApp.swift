@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 @main
 struct BirdoVPNApp: App {
@@ -30,6 +32,12 @@ struct BirdoVPNApp: App {
     /// configured once at launch.
     @MainActor
     private static func styleTabBar() {
+        // iOS only: UITabBarAppearance does not exist on macOS, where
+        // SwiftUI renders TabView as a native segmented/sidebar control
+        // that takes its chrome from the system rather than from an
+        // appearance proxy. There is nothing to configure, so this is a
+        // no-op there rather than an approximation.
+        #if os(iOS)
         let appearance = UITabBarAppearance()
         appearance.configureWithOpaqueBackground()
         // BirdoTheme.surface #0B0B10
@@ -58,5 +66,6 @@ struct BirdoVPNApp: App {
 
         UITabBar.appearance().standardAppearance = appearance
         UITabBar.appearance().scrollEdgeAppearance = appearance
+        #endif
     }
 }

@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Server browser — pushed from Home (Android route "servers").
 ///
@@ -122,7 +124,7 @@ struct ServerListView: View {
             .animation(BirdoTheme.Motion.easeStandard(), value: vpnVM.serversError)
             .animation(BirdoTheme.Motion.easeStandard(), value: vpnVM.isLoadingServers)
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .modifier(HideNavigationBar())
         .overlay(alignment: .bottom) {
             if let notice = upsellNotice {
                 upsellSnackbar(notice)
@@ -214,9 +216,8 @@ struct ServerListView: View {
             .font(.system(size: 14))
             .foregroundStyle(.white)
             .tint(BirdoTheme.accentSoft)
-            .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .submitLabel(.search)
+            .modifier(SearchFieldInput())
             .focused($searchFocused)
 
             if !searchQuery.isEmpty {
@@ -257,7 +258,7 @@ struct ServerListView: View {
                 ForEach(ServerFilter.allCases, id: \.self) { filter in
                     let isActive = filter == activeFilter
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selectionChanged()
                         withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
                             activeFilter = filter
                         }
@@ -377,7 +378,7 @@ struct ServerListView: View {
     // MARK: - Locked-node upsell
 
     private func showUpsell(for server: ServerInfo) {
-        UINotificationFeedbackGenerator().notificationOccurred(.error)
+        Haptics.notify(.error)
         let message = "This server requires the \(server.minPlan.uppercased()) plan. Upgrade to unlock."
         withAnimation(BirdoTheme.Motion.decel()) { upsellNotice = message }
         AccessibilityNotification.Announcement(message).post()
@@ -514,7 +515,7 @@ private struct ServerRow: View {
 
             // Favorite star (48pt hit target, 36pt visual)
             Button {
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
                 onToggleFavorite()
             } label: {
                 Image(systemName: isFavorite ? "star.fill" : "star")
@@ -547,7 +548,7 @@ private struct ServerRow: View {
         .contentShape(RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous))
         .onTapGesture {
             if isSelectable {
-                UISelectionFeedbackGenerator().selectionChanged()
+                Haptics.selectionChanged()
                 onSelect()
             } else if isLocked {
                 onLockedTap()

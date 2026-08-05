@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// The auth screen — Email | Anonymous | SSO tabs, the shared 2FA step and the
 /// minted-anonymous-ID acknowledgment. Rebuilt to the Android reference flow
@@ -451,11 +453,8 @@ struct LoginView: View {
             .multilineTextAlignment(.center)
             .foregroundStyle(.white)
             .tint(BirdoTheme.accentSoft)
-            .keyboardType(.asciiCapable)
-            .textContentType(.oneTimeCode)
             .autocorrectionDisabled(true)
-            .textInputAutocapitalization(.never)
-            .submitLabel(.done)
+            .modifier(OneTimeCodeInput())
             .onSubmit {
                 if authVM.isTwoFactorCodeComplete && !authVM.isLoading {
                     authVM.verifyTwoFactor()
@@ -561,8 +560,8 @@ struct LoginView: View {
     }
 
     private func copyCreatedId(_ id: String) {
-        UIPasteboard.general.string = id
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        Clipboard.copy(id)
+        Haptics.notify(.success)
         AccessibilityNotification.Announcement("Account ID copied").post()
         copyResetTask?.cancel()
         withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {

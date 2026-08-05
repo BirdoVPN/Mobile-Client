@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Profile tab — Android `ProfileScreen` parity (spec-secondary-screens.md §3).
 ///
@@ -83,7 +85,7 @@ struct ProfileView: View {
             .padding(.vertical, 24)
         }
         .scrollIndicators(.hidden)
-        .toolbar(.hidden, for: .navigationBar)
+        .modifier(HideNavigationBar())
         .navigationDestination(isPresented: $showSubscription) {
             SubscriptionView()
         }
@@ -405,8 +407,8 @@ struct ProfileView: View {
     }
 
     private func copyAccountNumber(_ number: String) {
-        UIPasteboard.general.string = number
-        UIAccessibility.post(notification: .announcement, argument: "Account number copied")
+        Clipboard.copy(number)
+        Announce.message("Account number copied")
         withAnimation(BirdoTheme.Motion.decel()) {
             showCopiedToast = true
         }
