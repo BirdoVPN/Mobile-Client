@@ -39,6 +39,11 @@ on:
         required: false
         default: false
         type: boolean
+      capture_screenshots:
+        description: 'Run the XCUITest harness and capture Mac App Store screenshots.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -170,6 +175,160 @@ jobs:
         if: failure()
         run: |
           grep -iE "error|warning: .*deprecated" "$RUNNER_TEMP/build.log" | tail -40 || echo "(none)"
+
+  # ==========================================================================
+  # Mac App Store screenshots.
+  #
+  # Runs here rather than on the Mac build host because macOS UI testing needs
+  # Accessibility ("automation mode") permission, which only a human at the
+  # console or an MDM profile can grant — over SSH the run dies with "Timed out
+  # while enabling automation mode". A CI runner has it already.
+  #
+  # It doubles as the first proof the macOS app actually LAUNCHES: everything
+  # before this verified only that it compiles, signs and packages.
+  # ==========================================================================
+  screenshots-macos:
+    name: Capture Mac App Store Screenshots
+    runs-on: macos-26
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_screenshots
+    env:
+      # A throwaway anonymous account supplied for exactly this purpose. Held as
+      # a secret rather than inlined so the suite carries no credential.
+      BIRDO_ANON_ID: ${{ secrets.BIRDO_SCREENSHOT_ANON_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-macos-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-macos-${{ runner.os }}-
+
+      - name: Select Xcode 26+
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No Xcode 26+ on this runner"; exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build shared framework (macOS)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkDebugFrameworkMacosArm64
+
+      - name: Build BirdoPQNative.xcframework
+        run: bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build libwg-go.a (macOS)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/macosx"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS="arm64" PLATFORM_NAME=macosx \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
+            MACOSX_DEPLOYMENT_TARGET="${{ env.MAC_DEPLOYMENT_TARGET }}" \
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
+      - name: Strip signing, then generate the project
+        run: |
+          set -euo pipefail
+          python3 scripts/strip-signing-for-screenshots.py iosApp/project.yml
+          cd iosApp && xcodegen generate
+
+      - name: Run the screenshot UI test
+        working-directory: iosApp
+        env:
+          # Xcode forwards only TEST_RUNNER_-prefixed variables into the test
+          # process; the bare name arrives empty and the test asserts on it.
+          TEST_RUNNER_BIRDO_ANON_ID: ${{ secrets.BIRDO_SCREENSHOT_ANON_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -resultBundlePath "$RUNNER_TEMP/mac.xcresult" \
+            -only-testing:BirdoVPNUITests \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_STYLE=Manual \
+            GENERATE_INFOPLIST_FILE=YES \
+            2>&1 | tee "$RUNNER_TEMP/uitest.log" | xcpretty || true
+
+      - name: Extract screenshots
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/screenshots"
+          mkdir -p "$OUT"
+          # Must start from a clean directory: xcresulttool refuses with
+          # "Failed to generate manifest.json: file already exists".
+          rm -rf "$RUNNER_TEMP/att"
+          xcrun xcresulttool export attachments \
+            --path "$RUNNER_TEMP/mac.xcresult" \
+            --output-path "$RUNNER_TEMP/att" || true
+          python3 - "$RUNNER_TEMP/att" "$OUT" <<'PYEOF'
+          import json, os, shutil, sys
+          att, out = sys.argv[1], sys.argv[2]
+          man = os.path.join(att, "manifest.json")
+          if not os.path.exists(man):
+              print("::warning::no manifest.json — the test attached nothing")
+              raise SystemExit
+          n = 0
+          for entry in json.load(open(man)):
+              for a in entry.get("attachments", []):
+                  # XCUITest also attaches UI hierarchies, synthesized events and
+                  # a screen recording; keep only our named captures.
+                  human = a.get("suggestedHumanReadableName", "")
+                  if not human.startswith(("00-", "01-", "02-", "03-", "99-")):
+                      continue
+                  src = os.path.join(att, a["exportedFileName"])
+                  if os.path.exists(src):
+                      shutil.copy(src, os.path.join(out, "mac-%s.png" % human.split("_")[0]))
+                      n += 1
+          print("extracted %d screenshots" % n)
+          PYEOF
+          ls -la "$OUT" || true
+
+      - name: UI test diagnostics
+        if: always()
+        run: |
+          grep -iE "error:|Testing failed|XCTAssert|Never reached|failed to launch|automation mode|signal kill" \
+            "$RUNNER_TEMP/uitest.log" | grep -viE "warning:" | sort -u | tail -20 || echo "(none)"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: birdo-vpn-macos-screenshots
+          path: ${{ runner.temp }}/screenshots/*.png
+          retention-days: 30
+          if-no-files-found: warn
 
   release-macos:
     name: Codesign & Upload to App Store Connect
