@@ -3,6 +3,11 @@ options:
   bundleIdPrefix: app.birdo
   deploymentTarget:
     iOS: "17.0"
+    # macOS 14 (not 12): NavigationStack needs 13, and onChange(of:initial:) —
+    # used across ContentView and BiometricGate — needs 14. Matching the iOS 17
+    # floor also keeps both platforms on 2023-era APIs rather than forcing
+    # availability guards through shared view code.
+    macOS: "14.0"
   xcodeVersion: "16.0"
 
 settings:
@@ -64,7 +69,20 @@ packages:
 targets:
   BirdoVPN:
     type: application
-    platform: iOS
+    # NATIVE macOS, not Mac Catalyst. Go has no ios-macabi target, so
+    # libwg-go.a — which the whole tunnel is built on — cannot be produced for
+    # Catalyst at all. A native macOS build uses GOOS=darwin, which
+    # WireGuardKitGo's Makefile already supports and which is verified building
+    # universal (arm64 + x86_64).
+    supportedDestinations: [iOS, macOS]
+    # Attaches the UI tests to this target's scheme so `xcodebuild test -scheme
+    # BirdoVPN` finds them. Without it the scheme has no test action at all —
+    # the same "Scheme BirdoVPN is not currently configured for the test action"
+    # error the simulator job has been logging.
+    scheme:
+      testTargets:
+        - BirdoVPNUITests
+      gatherCoverageData: false
     sources:
       - path: iosApp
         excludes:
@@ -81,8 +99,19 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn
         INFOPLIST_FILE: iosApp/Info.plist
+        # Per-SDK entitlements and profile. macOS needs its OWN file: the Mac
+        # App Store mandates App Sandbox (absent from the iOS entitlements) and
+        # an application-group container, without which NEProvider extensions
+        # will not load at all. `[sdk=…]` is how Xcode scopes a setting per
+        # platform on a multi-destination target.
         CODE_SIGN_ENTITLEMENTS: iosApp/BirdoVPN.entitlements
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: iosApp/BirdoVPN-macOS.entitlements
         PROVISIONING_PROFILE_SPECIFIER: "Birdo VPN AppStore v2"
+        PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]: "Birdo VPN Mac AppStore"
+        # Mac App Store signing uses a DIFFERENT identity from iOS: "Apple
+        # Distribution" signs the .app, but the installer package must be signed
+        # with "3rd Party Mac Developer Installer" at export time.
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
         # Compiles iosApp/Assets.xcassets and emits CFBundleIconName, without
         # which App Store validation fails. The source PNG must be 1024x1024
         # with NO alpha channel — Apple rejects icons that have one.
@@ -97,6 +126,8 @@ targets:
           - "$(inherited)"
           - "$(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework"
           - "$(SRCROOT)/../shared/build/bin/iosArm64/releaseFramework"
+          - "$(SRCROOT)/../shared/build/bin/macosArm64/debugFramework"
+          - "$(SRCROOT)/../shared/build/bin/macosArm64/releaseFramework"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-framework"
@@ -114,9 +145,36 @@ targets:
       - framework: Vendor/BirdoPQNative.xcframework
         embed: false
 
+  # UI tests, whose only job today is capturing App Store screenshots.
+  #
+  # This exists because screenshots cannot be automated any other way: `simctl`
+  # cannot tap or type, the app gates on a consent modal and then on a session
+  # held in the keychain, and the simulator keychain is isolated from the host —
+  # so nothing outside the app can seed a login. XCUITest runs INSIDE the app's
+  # process space and can drive the real UI, which is the same reason
+  # fastlane snapshot works this way.
+  BirdoVPNUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: BirdoVPNUITests
+    dependencies:
+      - target: BirdoVPN
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.uitests
+        # Never signed for distribution: this target must not acquire the app's
+        # provisioning profile or it would be pulled into the release archive.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: "NO"
+
   PacketTunnel:
     type: app-extension
-    platform: iOS
+    # The extension ships on both platforms: NEPacketTunnelProvider is the ONLY
+    # way a sandboxed Mac App Store app can run a VPN, so the macOS build reuses
+    # this provider rather than the desktop client's privileged utun approach
+    # (which the sandbox forbids outright).
+    supportedDestinations: [iOS, macOS]
     sources:
       - path: PacketTunnel
         excludes:
@@ -130,7 +188,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tunnel
         INFOPLIST_FILE: PacketTunnel/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnel/PacketTunnel.entitlements
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: PacketTunnel/PacketTunnel-macOS.entitlements
         PROVISIONING_PROFILE_SPECIFIER: "Birdo VPN Tunnel AppStore"
+        PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]: "Birdo VPN Tunnel Mac AppStore"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
         # Pinned explicitly here too, so this target does not silently inherit a
         # different identity if XcodeGen's extension preset ever gains one.
         CODE_SIGN_IDENTITY: "Apple Distribution"
