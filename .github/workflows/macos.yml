@@ -1,0 +1,434 @@
+name: macOS CI & Release
+
+# ============================================================================
+# Mac App Store pipeline.
+#
+# The macOS app is built from the SAME source as iOS — SwiftUI views, view
+# models, API client and the WireGuard packet-tunnel provider are shared, with
+# platform differences confined to iosApp/iosApp/Platform/PlatformCompat.swift.
+#
+# WHY THIS EXISTS RATHER THAN SHIPPING THE TAURI DESKTOP CLIENT
+# That client creates a utun device via AF_SYSTEM sockets and edits pf firewall
+# rules, both of which require root. The Mac App Store mandates App Sandbox,
+# where both are forbidden, so it can never be the store artifact. A sandboxed
+# VPN must use NetworkExtension — which this app already has, working, on iOS.
+#
+# WHY NOT MAC CATALYST
+# Go has no ios-macabi target, so libwg-go.a cannot be produced for Catalyst at
+# all. A native macOS build uses GOOS=darwin, which WireGuardKitGo supports.
+#
+# Triggers:
+#   * push of a mac-v* tag        -> build, sign, upload to App Store Connect
+#   * manual workflow_dispatch    -> build only, unless upload_appstore is set
+# ============================================================================
+
+on:
+  push:
+    tags:
+      - 'mac-v*'
+  pull_request:
+    paths:
+      - 'iosApp/**'
+      - 'shared/**'
+      - 'native/**'
+      - '.github/workflows/macos.yml'
+  workflow_dispatch:
+    inputs:
+      upload_appstore:
+        description: 'Codesign and upload this build to App Store Connect.'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+  # Must track project.yml's deploymentTarget. Building the Go library against
+  # the SDK's own minimum instead is what shipped an iOS 26 binary to a 17.7
+  # device and killed the tunnel with SIGILL inside _cgo_wait_runtime_init_done.
+  MAC_DEPLOYMENT_TARGET: '14.0'
+
+jobs:
+  build-macos:
+    name: Build macOS App
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-macos-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-macos-${{ runner.os }}-
+
+      # Xcode 26+ is mandatory: App Store Connect rejects anything built against
+      # an older SDK ("must be built with the iOS 26 SDK or later"). sort -V, not
+      # sort -r — lexically "Xcode_26.6" sorts above "Xcode_26.10".
+      - name: Select Xcode 26+
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No Xcode 26+ on this runner; available:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          echo "macOS SDK: $(xcrun --sdk macosx --show-sdk-version)"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build shared framework (macOS)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkReleaseFrameworkMacosArm64
+
+      - name: Build BirdoPQNative.xcframework
+        run: |
+          rustc --version
+          bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build libwg-go.a (macOS, universal)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/macosx"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          # Universal: the Mac App Store serves ONE binary to Apple Silicon and
+          # Intel Macs alike, so an arm64-only build would exclude every Intel Mac.
+          #
+          # DEPLOYMENT_TARGET_* are what make the Makefile emit
+          # -mmacosx-version-min. Xcode sets them when this runs as a build phase;
+          # CI invokes make directly, so without them Go compiles against the
+          # SDK's own minimum and the binary runs on nothing older.
+          make ARCHS="arm64 x86_64" PLATFORM_NAME=macosx \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
+            MACOSX_DEPLOYMENT_TARGET="${{ env.MAC_DEPLOYMENT_TARGET }}" \
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+          lipo -info "$WG_LIB_DIR/libwg-go.a"
+
+      - name: Derive version from version.properties
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build (unsigned) — verifies the source compiles for macOS
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/build.log" | xcpretty
+
+      - name: Build diagnostics (on failure)
+        if: failure()
+        run: |
+          grep -iE "error|warning: .*deprecated" "$RUNNER_TEMP/build.log" | tail -40 || echo "(none)"
+
+  release-macos:
+    name: Codesign & Upload to App Store Connect
+    runs-on: macos-26
+    needs: [build-macos]
+    # A mac-v* tag, or a dispatch that explicitly asked to upload. A bare
+    # dispatch builds only: uploading must stay a deliberate act, and a Mac App
+    # Store build number is single-use, so an accidental upload burns one.
+    if: >-
+      startsWith(github.ref, 'refs/tags/mac-v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.upload_appstore)
+    permissions:
+      contents: read
+    env:
+      APPLE_TEAM_ID:   ${{ vars.APPLE_TEAM_ID }}
+      APPLE_BUNDLE_ID: ${{ vars.APPLE_BUNDLE_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set keychain path
+        run: echo "KEYCHAIN_PATH=$RUNNER_TEMP/birdo-mac.keychain-db" >> "$GITHUB_ENV"
+
+      - name: Set up JDK
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Select Xcode 26+
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          [ -z "$XCODE_PATH" ] && { echo "::error::No Xcode 26+"; exit 1; }
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build shared framework (macOS)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkReleaseFrameworkMacosArm64
+
+      - name: Build BirdoPQNative.xcframework
+        run: bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build libwg-go.a (macOS, universal)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/macosx"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS="arm64 x86_64" PLATFORM_NAME=macosx \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
+            MACOSX_DEPLOYMENT_TARGET="${{ env.MAC_DEPLOYMENT_TARGET }}" \
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
+      - name: Derive version from version.properties
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      # -- Import BOTH Mac certificates ----------------------------------------
+      # The Mac App Store needs two: "3rd Party Mac Developer Application" signs
+      # the .app, "3rd Party Mac Developer Installer" signs the .pkg. iOS needs
+      # only one, which is why this differs from release-ios.
+      - name: Import Mac signing certificates
+        env:
+          DIST_B64:      ${{ secrets.APPLE_MAC_DIST_CERT_BASE64 }}
+          INSTALLER_B64: ${{ secrets.APPLE_MAC_INSTALLER_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_MAC_CERT_PASSWORD }}
+          KC_PASSWORD:   ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          security create-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+
+          import_cert() {
+            local b64="$1" label="$2" path="$RUNNER_TEMP/$2.p12"
+            if [ -z "$b64" ]; then
+              echo "::error::$label certificate secret is empty"
+              exit 1
+            fi
+            echo "$b64" | base64 --decode > "$path"
+            # Diagnostic only, never fatal: errSecParam from the import below
+            # cannot distinguish wrong flags from an unusable secret.
+            if openssl pkcs12 -in "$path" -passin pass:"$CERT_PASSWORD" -noout 2>/dev/null; then
+              echo "$label: PKCS#12 parsed OK ($(wc -c < "$path") bytes)"
+            else
+              echo "::warning::$label did not parse as PKCS#12 with the supplied password"
+            fi
+            # -t agg, NOT -t cert: a .p12 is an AGGREGATE holding the private key
+            # alongside the certificate. Pairing -f pkcs12 with -t cert is the
+            # contradiction that returns errSecParam.
+            security import "$path" -P "$CERT_PASSWORD" -A -t agg -f pkcs12 -k "$KEYCHAIN_PATH"
+            rm -f "$path"
+          }
+          import_cert "$DIST_B64" "mac-dist"
+          import_cert "$INSTALLER_B64" "mac-installer"
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          echo "--- identities ---"
+          security find-identity -v "$KEYCHAIN_PATH"
+
+      - name: Install provisioning profiles
+        env:
+          PROFILE_B64:        ${{ secrets.APPLE_MAC_PROVISIONING_PROFILE }}
+          PROFILE_TUNNEL_B64: ${{ secrets.APPLE_MAC_PROVISIONING_PROFILE_TUNNEL }}
+        run: |
+          set -euo pipefail
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          install_profile() {
+            local b64="$1" dest="$2" label="$3"
+            [ -z "$b64" ] && { echo "::error::$label profile secret is empty"; exit 1; }
+            echo "$b64" | base64 --decode > "$dest"
+            grep -aq "<key>UUID</key>" "$dest" || {
+              echo "::error::$label profile did not decode to a valid .provisionprofile"; exit 1; }
+            echo "$label: $(wc -c < "$dest") bytes"
+          }
+          # BOTH profiles: this is a two-target app, and a Mac App Store profile
+          # covers exactly one bundle id, so the app's cannot sign the extension.
+          install_profile "$PROFILE_B64"        "$PROFILE_DIR/birdo-mac-app.provisionprofile"    "app"
+          install_profile "$PROFILE_TUNNEL_B64" "$PROFILE_DIR/birdo-mac-tunnel.provisionprofile" "tunnel"
+
+      - name: Archive
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          # No PRODUCT_BUNDLE_IDENTIFIER here: passed on the command line it is a
+          # GLOBAL build setting and renames EVERY target, including the tunnel
+          # extension — which breaks signing and is rejected by App Store
+          # validation. project.yml sets the correct id per target.
+          xcodebuild archive \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -destination 'generic/platform=macOS' \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/BirdoVPN-mac.xcarchive" \
+            MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGN_STYLE=Manual \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
+            2>&1 | tee "$RUNNER_TEMP/archive.log" | xcpretty
+
+      - name: Archive diagnostics (on failure)
+        if: failure()
+        run: |
+          grep -iE "error|provisioning|profile|signing|entitlement" "$RUNNER_TEMP/archive.log" | tail -40 || echo "(none)"
+          ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" || true
+          security find-identity -v "$KEYCHAIN_PATH" || true
+
+      - name: Write ExportOptions.plist
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>            <string>app-store-connect</string>
+            <key>teamID</key>            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>      <string>manual</string>
+            <key>uploadSymbols</key>     <true/>
+            <!-- export, NOT upload: destination=upload makes exportArchive publish
+                 itself, which needs a signed-in Apple account and fails on a
+                 runner with "Failed to Use Accounts". altool below uploads with
+                 an API key instead. -->
+            <key>destination</key>       <string>export</string>
+            <!-- The .pkg is signed with the INSTALLER certificate, which is a
+                 different identity from the one signing the .app. -->
+            <key>installerSigningCertificate</key>
+            <string>3rd Party Mac Developer Installer</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${APPLE_BUNDLE_ID}</key>        <string>Birdo VPN Mac AppStore</string>
+              <key>${APPLE_BUNDLE_ID}.tunnel</key> <string>Birdo VPN Tunnel Mac AppStore</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Export .pkg
+        run: |
+          set -o pipefail
+          # No -allowProvisioningUpdates: it authorises xcodebuild to fetch
+          # profiles from the developer portal, which is an account operation and
+          # fails on a runner. Signing here is fully manual.
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/BirdoVPN-mac.xcarchive" \
+            -exportPath  "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            2>&1 | tee "$RUNNER_TEMP/export.log" | xcpretty
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Export diagnostics (on failure)
+        if: failure()
+        run: |
+          cat "$RUNNER_TEMP/ExportOptions.plist" || true
+          grep -iE "error|profile|signing|account|entitlement" "$RUNNER_TEMP/export.log" | tail -40 || echo "(none)"
+
+      - name: Install API key for altool
+        env:
+          API_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          API_KEY_ID:  ${{ secrets.APPSTORE_API_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$API_KEY_B64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
+
+      - name: Upload to App Store Connect
+        env:
+          API_KEY_ID:    ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          PKG=$(find "$RUNNER_TEMP/export" -name '*.pkg' | head -1)
+          if [ -z "$PKG" ]; then
+            echo "::error::No .pkg produced — the Mac App Store requires a package, not an app bundle"
+            exit 1
+          fi
+          echo "uploading $(basename "$PKG")"
+          # --type macos, not ios.
+          xcrun altool --upload-app \
+            --type macos \
+            --file "$PKG" \
+            --apiKey "$API_KEY_ID" \
+            --apiIssuer "$API_ISSUER_ID" \
+            --output-format xml
+
+      - name: Upload signed .pkg artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: birdo-vpn-macos-signed
+          path: ${{ runner.temp }}/export/*.pkg
+          retention-days: 30
+
+      - name: Cleanup keychain & API keys
+        if: always()
+        env:
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+        run: |
+          security delete-keychain "$KEYCHAIN_PATH" || true
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/birdo-mac-"*.provisionprofile
+          rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"

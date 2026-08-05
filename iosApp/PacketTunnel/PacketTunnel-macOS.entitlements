@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      macOS packet-tunnel extension entitlements for Mac App Store.
+
+      The extension is sandboxed too — on macOS an appex inherits the host's
+      sandbox requirement, and NEProvider extensions are refused entirely if
+      the sandbox entitlement is absent.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+
+    <!-- The tunnel's own traffic. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!--
+      Server, not just client: a WireGuard peer receives unsolicited inbound UDP
+      from the endpoint after the handshake. Without this the sandbox drops the
+      response and the tunnel reports connected while carrying nothing.
+    -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider</string>
+    </array>
+
+    <!--
+      Same shared keychain group as the host app. The extension reads the
+      WireGuard private key and preshared key from here; a mismatch fails with
+      errSecMissingEntitlement (-34018) and the tunnel dies at startTunnel with
+      missingConfig — the exact failure already documented on the iOS side.
+    -->
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)app.birdo.vpn</string>
+    </array>
+
+</dict>
+</plist>

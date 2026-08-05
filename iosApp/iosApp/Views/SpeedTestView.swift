@@ -100,7 +100,7 @@ struct SpeedTestView: View {
             }
         }
         .navigationTitle("Speed Test")
-        .navigationBarTitleDisplayMode(.inline)
+        .modifier(InlineNavigationTitle())
         .onChange(of: vpnVM.error) { _, newError in
             // runSpeedTest() reports failures via vpnVM.error without invoking
             // the completion/progress callbacks. Without this, the view would

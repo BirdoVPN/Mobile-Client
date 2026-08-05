@@ -50,7 +50,7 @@ struct LimitView: View {
             .padding(.vertical, 24)
         }
         .scrollIndicators(.hidden)
-        .toolbar(.hidden, for: .navigationBar)
+        .modifier(HideNavigationBar())
         .navigationDestination(isPresented: $showSubscription) {
             SubscriptionView()
         }

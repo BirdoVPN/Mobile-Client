@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
 import AuthenticationServices
 import CommonCrypto
 import Security
@@ -222,10 +224,20 @@ extension SSOService: ASWebAuthenticationPresentationContextProviding {
     /// nonisolated, so hop back onto the main actor explicitly.
     nonisolated func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         MainActor.assumeIsolated {
-            UIApplication.shared.connectedScenes
+            #if os(iOS)
+            return UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
                 .flatMap(\.windows)
                 .first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+            #elseif os(macOS)
+            // ASPresentationAnchor is NSWindow on macOS. Falling back to a bare
+            // anchor rather than force-unwrapping: the SSO sheet must never be
+            // the thing that crashes the app if no window is key yet (during
+            // launch, or when the app is reopened from the dock with no window).
+            return NSApplication.shared.keyWindow
+                ?? NSApplication.shared.windows.first
+                ?? ASPresentationAnchor()
+            #endif
         }
     }
 }

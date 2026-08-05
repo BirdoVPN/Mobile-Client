@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Settings tab root — Android SettingsScreen parity (spec-secondary-screens
 /// §1). iOS-specific notes:
@@ -44,7 +46,7 @@ struct SettingsView: View {
             set: { newIndex in
                 let value = themeOptions.indices.contains(newIndex) ? themeOptions[newIndex] : "system"
                 if value != appTheme {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selectionChanged()
                     appTheme = value
                 }
             }
@@ -87,9 +89,7 @@ struct SettingsView: View {
                                        title: "Notification Settings",
                                        description: "Open system notification settings",
                                        trailing: "arrow.up.forward.square") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
-                        }
+                        SystemOpen.appSettings()
                     }
 
                     SectionHeader("VPN")
@@ -111,7 +111,7 @@ struct SettingsView: View {
                 .padding(.vertical, BirdoTheme.Spacing.screenV)
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .modifier(HideNavigationBar())
     }
 
     // MARK: - Top bar (Android BirdoTopBar — no back button on a tab root)

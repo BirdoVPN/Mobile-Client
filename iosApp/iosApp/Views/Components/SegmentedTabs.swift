@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Segmented pill control. `.neutral` is the Login `Email | Anonymous | SSO`
 /// tab row (spec-auth-flow.md §1 item 5); `.accent` is Android's
@@ -43,7 +45,7 @@ struct SegmentedTabs: View {
         let selected = index == selection
         return Button {
             guard selection != index else { return }
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selectionChanged()
             selection = index
         } label: {
             Text(items[index])

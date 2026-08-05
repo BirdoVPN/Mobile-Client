@@ -52,10 +52,10 @@ struct SubscriptionView: View {
             }
         }
         .navigationTitle("Manage Subscription")
-        .navigationBarTitleDisplayMode(.inline)
+        .modifier(InlineNavigationTitle())
         // Pushed sub-screen: hide the bottom tab bar (spec-home §2 — parity
         // with VpnSettingsView), so it never peeks under a pushed screen.
-        .toolbar(.hidden, for: .tabBar)
+        .modifier(HideTabBar())
         .onAppear {
             // Cheap thanks to the 30 s cache; keeps the hero + CURRENT
             // badge honest after a voucher/plan change elsewhere.

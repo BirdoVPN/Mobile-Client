@@ -12,13 +12,21 @@ kotlin {
         }
     }
 
-    // ── iOS targets ──────────────────────────────────────────────
+    // ── Apple targets ────────────────────────────────────────────
+    // macOS is here because the Mac App Store build is a NATIVE macOS app, not
+    // Mac Catalyst: Go has no ios-macabi target, so libwg-go.a cannot be built
+    // for Catalyst and the whole tunnel would be impossible there. A native
+    // macOS app needs its own Kotlin/Native slices, and both arches ship
+    // because the Mac App Store serves one universal binary to Apple Silicon
+    // and Intel alike.
     listOf(
-        iosX64(),      // Intel simulator
-        iosArm64(),    // Device (arm64)
-        iosSimulatorArm64() // Apple Silicon simulator
-    ).forEach { iosTarget ->
-        iosTarget.binaries.framework {
+        iosX64(),           // Intel simulator
+        iosArm64(),         // Device (arm64)
+        iosSimulatorArm64(),// Apple Silicon simulator
+        macosArm64(),       // Apple Silicon Macs
+        macosX64()          // Intel Macs
+    ).forEach { appleTarget ->
+        appleTarget.binaries.framework {
             baseName = "BirdoShared"
             isStatic = true
         }
@@ -65,11 +73,19 @@ kotlin {
         val iosX64Main by getting
         val iosArm64Main by getting
         val iosSimulatorArm64Main by getting
-        val iosMain by creating {
+        val macosArm64Main by getting
+        val macosX64Main by getting
+        // Named appleMain, not iosMain: it now feeds macOS too. The Darwin ktor
+        // engine is correct for every Apple platform, so the macOS targets share
+        // this source set rather than duplicating it — which also means the
+        // shared Kotlin cannot drift between iOS and macOS.
+        val appleMain by creating {
             dependsOn(commonMain)
             iosX64Main.dependsOn(this)
             iosArm64Main.dependsOn(this)
             iosSimulatorArm64Main.dependsOn(this)
+            macosArm64Main.dependsOn(this)
+            macosX64Main.dependsOn(this)
             dependencies {
                 implementation("io.ktor:ktor-client-darwin:3.3.3")
             }

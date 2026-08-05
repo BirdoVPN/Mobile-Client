@@ -90,7 +90,7 @@ struct VpnSettingsView: View {
         .overlay(alignment: .bottom) { reapplyToast }
         .navigationBarBackButtonHidden(true)
         // Android parity: sub-screens hide the bottom tab bar too.
-        .toolbar(.hidden, for: .navigationBar, .tabBar)
+        .modifier(HideNavigationAndTabBar())
         .navigationDestination(isPresented: $showSubscription) { SubscriptionView() }
         .birdoConfirmDialog(
             isPresented: $settingsVM.showKillSwitchDisableConfirm,

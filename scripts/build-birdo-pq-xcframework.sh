@@ -35,7 +35,13 @@ if [[ ! -d "${CRATE_DIR}" ]]; then
 fi
 
 # Make sure the rustup targets are present. (Idempotent.)
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+#
+# The two darwin targets are for the macOS app. NOT Mac Catalyst
+# (*-apple-ios-macabi): Go has no Catalyst target, so libwg-go.a cannot be built
+# for it, which rules Catalyst out for this app entirely. A native macOS build
+# uses GOOS=darwin, which the WireGuardKitGo Makefile already supports.
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+                  aarch64-apple-darwin x86_64-apple-darwin
 
 cd "${CRATE_DIR}"
 
@@ -43,6 +49,8 @@ cd "${CRATE_DIR}"
 cargo build --release --target aarch64-apple-ios       --lib
 cargo build --release --target aarch64-apple-ios-sim   --lib
 cargo build --release --target x86_64-apple-ios        --lib
+cargo build --release --target aarch64-apple-darwin    --lib
+cargo build --release --target x86_64-apple-darwin     --lib
 
 # Lipo the simulator slices into a single fat archive (xcframework wants
 # one archive per platform-variant).
@@ -52,6 +60,17 @@ lipo -create \
     "target/aarch64-apple-ios-sim/release/libbirdo_pq_ios.a" \
     "target/x86_64-apple-ios/release/libbirdo_pq_ios.a" \
     -output "${SIM_FAT}"
+
+# macOS ships universal: Apple Silicon and Intel Macs both run the Mac App Store
+# build, and an xcframework takes ONE archive per platform-variant — so the two
+# darwin arches are lipo'd together rather than declared as separate slices,
+# exactly as the simulator pair above.
+MAC_FAT_DIR="$(mktemp -d)"
+MAC_FAT="${MAC_FAT_DIR}/libbirdo_pq_ios.a"
+lipo -create \
+    "target/aarch64-apple-darwin/release/libbirdo_pq_ios.a" \
+    "target/x86_64-apple-darwin/release/libbirdo_pq_ios.a" \
+    -output "${MAC_FAT}"
 
 # Stage headers per slice.
 HEADERS_DIR="$(mktemp -d)"
@@ -67,8 +86,10 @@ xcodebuild -create-xcframework \
     -headers "${HEADERS_DIR}/Headers" \
     -library "${SIM_FAT}" \
     -headers "${HEADERS_DIR}/Headers" \
+    -library "${MAC_FAT}" \
+    -headers "${HEADERS_DIR}/Headers" \
     -output "${OUT_DIR}"
 
 echo "[OK] Built: ${OUT_DIR}"
-echo "   Slices: arm64-iOS, arm64+x86_64-iOS-sim"
+echo "   Slices: arm64-iOS, arm64+x86_64-iOS-sim, arm64+x86_64-macOS"
 echo "   Add the .xcframework to the iosApp Xcode target ('Embed & Sign')."
