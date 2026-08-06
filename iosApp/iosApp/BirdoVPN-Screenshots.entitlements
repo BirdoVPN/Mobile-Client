@@ -2,50 +2,55 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!--
-  Entitlements for the macOS SCREENSHOT / LAUNCH-SMOKE build. Never shipped:
-  the Mac App Store artifact uses BirdoVPN-macOS.entitlements.
+  Entitlements for the macOS SCREENSHOT / UI-TEST build. Never shipped: the Mac
+  App Store artifact uses BirdoVPN-macOS.entitlements.
 
-  EMPTY, and that is the conclusion of a measured dead end rather than an
-  oversight. Read this before adding a key back.
+  Exactly one key, and the reason is worth keeping.
 
-  An ad-hoc signature carries no team, so launchd cannot validate ANY
-  team-prefixed entitlement and refuses to spawn the binary outright:
+  Sign-in cannot work without it. KeychainService writes with
+  kSecAttrAccessGroup and kSecUseDataProtectionKeychain, and the
+  data-protection keychain refuses an app that has no access group —
+  "Could not securely store your session. Please try again."
+
+  But carrying it under an AD-HOC signature made the app unlaunchable:
 
       Could not launch "BirdoVPN". Runningboard has returned error 5.
       Launchd job spawn failed.
 
-  Measured, one key at a time:
+  Measured, one key at a time, under ad-hoc signing:
 
       (no entitlements)                    app LAUNCHES, sign-in fails
       application-identifier + keychain    app will NOT launch
       keychain-access-groups alone         app will NOT launch
 
-  And sign-in cannot work without one: KeychainService writes with
-  kSecAttrAccessGroup and kSecUseDataProtectionKeychain, and the
-  data-protection keychain refuses an app that has no access group —
-  "Could not securely store your session. Please try again."
+  The cause is the SIGNATURE, not the entitlement: an ad-hoc signature carries
+  no team, so launchd cannot validate a team-prefixed entitlement and refuses
+  the spawn. The build is therefore signed with a real Apple DEVELOPMENT
+  certificate (team KPUFGR98A5), which has one. That also gets the runner
+  attached: Xcode injects get-task-allow=true into development-signed Debug
+  builds, and XCUITest cannot attach without it.
 
-  So the build can LAUNCH or it can reach the KEYCHAIN, never both. The way
-  out is not another entitlement; it is a real signature, and that is blocked
-  further up:
+  No provisioning profile is used, deliberately. keychain-access-groups is not
+  a restricted entitlement on macOS — it is validated against the signing
+  identity's team, not authorised by a profile. Avoiding one matters because
+  macOS DEVELOPMENT profiles must name registered devices
+  ("ENTITY_ERROR.RELATIONSHIP.REQUIRED: The relationship 'devices' is
+  required"), and an ephemeral CI runner is not one.
 
-      keychain -> team entitlement -> real signature -> provisioning profile
-      -> XCUITest needs get-task-allow=true -> DEVELOPMENT profile
-      -> macOS development profiles are bound to REGISTERED DEVICES
-      -> an ephemeral CI runner is not one
+  The team prefix is written out rather than using $(AppIdentifierPrefix),
+  which resolves from a provisioning profile this build does not have.
 
-  (A distribution profile is not a way around it: those set
-  get-task-allow=false, so the test runner cannot attach at all.)
-
-  What the job is therefore good for, and it is not nothing: it launches the
-  real macOS app in a real GUI session and drives its UI. It is the only
-  automated check that the Mac build RUNS rather than merely compiles and
-  signs, and it caught nothing less than the app rendering correctly on macOS
-  for the first time. Treat it as a launch smoke test.
-
-  Store screenshots need a Mac that is a registered device — where a
-  development profile can be issued, and where the one-time Accessibility
-  ("automation mode") permission has been granted at the console.
+  Deliberately ABSENT:
+    * com.apple.security.app-sandbox — a sandboxed build gets a different
+      container and would not see the session it just wrote.
+    * com.apple.developer.networking.networkextension — genuinely restricted,
+      so it DOES need a profile. The packet tunnel cannot load here, which is
+      why this job can never verify the tunnel itself.
 -->
-<dict/>
+<dict>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>KPUFGR98A5.app.birdo.vpn</string>
+    </array>
+</dict>
 </plist>

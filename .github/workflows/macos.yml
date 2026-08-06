@@ -188,7 +188,7 @@ jobs:
   # before this verified only that it compiles, signs and packages.
   # ==========================================================================
   screenshots-macos:
-    name: macOS Launch Smoke Test & Screenshots
+    name: Capture Mac App Store Screenshots
     runs-on: macos-26
     if: github.event_name == 'workflow_dispatch' && inputs.capture_screenshots
     env:
@@ -254,6 +254,40 @@ jobs:
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
           echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
 
+      # A real Apple DEVELOPMENT certificate, not ad-hoc. An ad-hoc signature
+      # carries no team, so launchd refuses to spawn a binary with the
+      # team-prefixed keychain-access-groups entitlement the app needs to store
+      # a session ("Runningboard has returned error 5"). A development identity
+      # also gets get-task-allow=true injected into Debug builds, without which
+      # the XCUITest runner cannot attach at all.
+      - name: Import the Mac development certificate
+        env:
+          DEV_B64:       ${{ secrets.APPLE_MAC_DEV_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_MAC_DEV_CERT_PASSWORD }}
+          KC_PASSWORD:   ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/screenshots.keychain-db"
+          if [ -z "$DEV_B64" ]; then
+            echo "::error::APPLE_MAC_DEV_CERT_BASE64 is empty"; exit 1
+          fi
+          security create-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KC_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$DEV_B64" | base64 --decode > "$RUNNER_TEMP/mac-dev.p12"
+          # -t agg, NOT -t cert: a .p12 is an AGGREGATE holding the private key
+          # alongside the certificate; -f pkcs12 with -t cert returns errSecParam.
+          security import "$RUNNER_TEMP/mac-dev.p12" -P "$CERT_PASSWORD" \
+            -A -t agg -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm -f "$RUNNER_TEMP/mac-dev.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -k "$KC_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "--- identities ---"
+          security find-identity -v "$KEYCHAIN_PATH"
+
       - name: Strip signing, then generate the project
         run: |
           set -euo pipefail
@@ -276,8 +310,10 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/mac.xcresult" \
             -only-testing:BirdoVPNUITests \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
-            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_IDENTITY="Apple Development" \
             CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=KPUFGR98A5 \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             GENERATE_INFOPLIST_FILE=YES \
             2>&1 | tee "$RUNNER_TEMP/uitest.log" | xcpretty || true
           # NOTE: CODE_SIGN_ENTITLEMENTS is deliberately NOT passed here.
