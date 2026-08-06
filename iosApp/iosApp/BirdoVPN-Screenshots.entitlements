@@ -18,9 +18,19 @@
   Ad-hoc signing applies entitlements without validating them against a profile,
   which is what makes this possible at all.
 
-  Deliberately ABSENT, and it matters:
+  Deliberately ABSENT, and each one matters:
+
+    * com.apple.application-identifier — carrying it made the app UNLAUNCHABLE:
+      "Could not launch BirdoVPN. Runningboard has returned error 5 ... Launchd
+      job spawn failed". launchd cannot validate a team-prefixed identifier
+      against an ad-hoc signature, which has no team. It is not needed either:
+      the keychain derives an app's access groups from keychain-access-groups
+      when that is present, and only falls back to application-identifier when
+      it is not.
+
     * com.apple.security.app-sandbox — a sandboxed ad-hoc build gets a
       different container and would not see the session it just wrote.
+
     * com.apple.developer.networking.networkextension — needs a real profile;
       the packet tunnel cannot load in a screenshot build regardless.
 
@@ -28,9 +38,6 @@
   which resolves from the provisioning profile that this build does not have.
 -->
 <dict>
-    <key>com.apple.application-identifier</key>
-    <string>KPUFGR98A5.app.birdo.vpn</string>
-
     <key>keychain-access-groups</key>
     <array>
         <string>KPUFGR98A5.app.birdo.vpn</string>
