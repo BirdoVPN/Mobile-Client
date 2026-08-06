@@ -314,6 +314,27 @@ jobs:
           test -s "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
           echo "API key installed"
 
+      # -allowProvisioningUpdates mints profiles but will NOT self-register a
+      # Mac, so it stops at "Device ... isn't registered in your developer
+      # account". macOS development profiles must name registered devices, and a
+      # CI runner is a fresh machine every time, so it registers itself here.
+      - name: Register this runner as a development device
+        env:
+          ASC_KEY_PATH:  ${{ runner.temp }}/private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8
+          ASC_KEY_ID:    ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          UDID=$(system_profiler SPHardwareDataType \
+            | awk -F': ' '/Provisioning UDID/ {print $2}' | tr -d ' ')
+          if [ -z "$UDID" ]; then
+            echo "::error::Could not read this runner's Provisioning UDID"
+            system_profiler SPHardwareDataType | head -20
+            exit 1
+          fi
+          echo "runner UDID: $UDID"
+          node scripts/register-ci-device.js "$UDID" "birdo-ci-$(date +%Y%m%d-%H%M%S)"
+
       - name: Run the screenshot UI test
         working-directory: iosApp
         env:
