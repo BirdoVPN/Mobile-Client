@@ -188,7 +188,7 @@ jobs:
   # before this verified only that it compiles, signs and packages.
   # ==========================================================================
   screenshots-macos:
-    name: Capture Mac App Store Screenshots
+    name: macOS Launch Smoke Test & Screenshots
     runs-on: macos-26
     if: github.event_name == 'workflow_dispatch' && inputs.capture_screenshots
     env:

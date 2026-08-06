@@ -2,45 +2,50 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!--
-  Entitlements for the SCREENSHOT build only. Never shipped: the Mac App Store
-  artifact uses BirdoVPN-macOS.entitlements.
+  Entitlements for the macOS SCREENSHOT / LAUNCH-SMOKE build. Never shipped:
+  the Mac App Store artifact uses BirdoVPN-macOS.entitlements.
 
-  Why this file exists. The screenshot run signs ad-hoc, because the real
-  entitlements demand a provisioning profile and a distribution-signed app
-  cannot be driven by XCUITest (distribution profiles set get-task-allow=false,
-  which blocks the test runner from attaching). But stripping the entitlements
-  entirely broke sign-in: KeychainService writes with kSecAttrAccessGroup and
-  kSecUseDataProtectionKeychain, and the data-protection keychain refuses an app
-  that carries no application-identifier — the run stopped on "Could not
-  securely store your session. Please try again."
+  EMPTY, and that is the conclusion of a measured dead end rather than an
+  oversight. Read this before adding a key back.
 
-  So this carries the two keys the keychain actually checks, and nothing else.
-  Ad-hoc signing applies entitlements without validating them against a profile,
-  which is what makes this possible at all.
+  An ad-hoc signature carries no team, so launchd cannot validate ANY
+  team-prefixed entitlement and refuses to spawn the binary outright:
 
-  Deliberately ABSENT, and each one matters:
+      Could not launch "BirdoVPN". Runningboard has returned error 5.
+      Launchd job spawn failed.
 
-    * com.apple.application-identifier — carrying it made the app UNLAUNCHABLE:
-      "Could not launch BirdoVPN. Runningboard has returned error 5 ... Launchd
-      job spawn failed". launchd cannot validate a team-prefixed identifier
-      against an ad-hoc signature, which has no team. It is not needed either:
-      the keychain derives an app's access groups from keychain-access-groups
-      when that is present, and only falls back to application-identifier when
-      it is not.
+  Measured, one key at a time:
 
-    * com.apple.security.app-sandbox — a sandboxed ad-hoc build gets a
-      different container and would not see the session it just wrote.
+      (no entitlements)                    app LAUNCHES, sign-in fails
+      application-identifier + keychain    app will NOT launch
+      keychain-access-groups alone         app will NOT launch
 
-    * com.apple.developer.networking.networkextension — needs a real profile;
-      the packet tunnel cannot load in a screenshot build regardless.
+  And sign-in cannot work without one: KeychainService writes with
+  kSecAttrAccessGroup and kSecUseDataProtectionKeychain, and the
+  data-protection keychain refuses an app that has no access group —
+  "Could not securely store your session. Please try again."
 
-  The team prefix is written out rather than using $(AppIdentifierPrefix),
-  which resolves from the provisioning profile that this build does not have.
+  So the build can LAUNCH or it can reach the KEYCHAIN, never both. The way
+  out is not another entitlement; it is a real signature, and that is blocked
+  further up:
+
+      keychain -> team entitlement -> real signature -> provisioning profile
+      -> XCUITest needs get-task-allow=true -> DEVELOPMENT profile
+      -> macOS development profiles are bound to REGISTERED DEVICES
+      -> an ephemeral CI runner is not one
+
+  (A distribution profile is not a way around it: those set
+  get-task-allow=false, so the test runner cannot attach at all.)
+
+  What the job is therefore good for, and it is not nothing: it launches the
+  real macOS app in a real GUI session and drives its UI. It is the only
+  automated check that the Mac build RUNS rather than merely compiles and
+  signs, and it caught nothing less than the app rendering correctly on macOS
+  for the first time. Treat it as a launch smoke test.
+
+  Store screenshots need a Mac that is a registered device — where a
+  development profile can be issued, and where the one-time Accessibility
+  ("automation mode") permission has been granted at the console.
 -->
-<dict>
-    <key>keychain-access-groups</key>
-    <array>
-        <string>KPUFGR98A5.app.birdo.vpn</string>
-    </array>
-</dict>
+<dict/>
 </plist>
