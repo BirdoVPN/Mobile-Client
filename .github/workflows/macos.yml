@@ -278,15 +278,14 @@ jobs:
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_ENTITLEMENTS="$GITHUB_WORKSPACE/iosApp/iosApp/BirdoVPN-Screenshots.entitlements" \
             GENERATE_INFOPLIST_FILE=YES \
             2>&1 | tee "$RUNNER_TEMP/uitest.log" | xcpretty || true
-          # CODE_SIGN_ENTITLEMENTS is passed here and not left to project.yml
-          # because the strip script comments the project's own value out —
-          # which is the only reason a command-line value can win at all. The
-          # first run without it reached the login screen and stopped on "Could
-          # not securely store your session": the data-protection keychain
-          # rejects an app with no application-identifier.
+          # NOTE: CODE_SIGN_ENTITLEMENTS is deliberately NOT passed here.
+          # Command-line build settings apply to EVERY target, so doing that
+          # handed the app's entitlements to the UI-test runner too — giving it
+          # an application-identifier that did not match its own bundle id, and
+          # launchd refused to spawn it ("Runningboard has returned error 5").
+          # The prepare script assigns entitlements per target instead.
 
       - name: Extract screenshots
         run: |
