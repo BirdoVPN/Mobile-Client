@@ -12,15 +12,20 @@
     <key>com.apple.security.app-sandbox</key>
     <true/>
 
-    <!-- The tunnel's own traffic. -->
-    <key>com.apple.security.network.client</key>
-    <true/>
     <!--
-      Server, not just client: a WireGuard peer receives unsolicited inbound UDP
-      from the endpoint after the handshake. Without this the sandbox drops the
-      response and the tunnel reports connected while carrying nothing.
+      The tunnel's own traffic. Deliberately network.client ONLY — no
+      network.server. App Review's automated scan rejected build 10420 for
+      carrying network.server without listener functionality (guideline 2.4.5),
+      and it was never needed: WireGuard is outbound-initiated. The client
+      sends the handshake first, and every inbound datagram — handshake
+      response and all subsequent transport packets — arrives as a reply on
+      that same established UDP flow, which network.client covers. Nothing in
+      the app or the extension calls bind/listen/NWListener (verified), and the
+      official WireGuard Mac App Store client ships its extension without
+      network.server. Port forwarding does not need it either: forwarded
+      traffic arrives THROUGH the tunnel via utun, not on a listening socket.
     -->
-    <key>com.apple.security.network.server</key>
+    <key>com.apple.security.network.client</key>
     <true/>
 
     <key>com.apple.developer.networking.networkextension</key>
