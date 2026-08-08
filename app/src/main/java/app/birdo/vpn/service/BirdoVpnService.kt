@@ -281,7 +281,6 @@ class BirdoVpnService : VpnService() {
     private val connectTimeoutRunnable = Runnable {
         if (currentState is VpnState.Connecting) {
             Log.e(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
-            updateState(VpnState.Error("Connection timed out"))
             // Fail closed on timeout, matching every startTunnel failure path.
             // The old cleanupTunnel() closed the blocking vpnInterface with NO
             // re-arm, so a >30s stall during a reconnect (e.g. PQ key exchange
@@ -290,12 +289,16 @@ class BirdoVpnService : VpnService() {
             // stalled wg-go setup but keep traffic blocked: activateKillSwitch()
             // supersedes any stale/held interface with a fresh block. Only fully
             // release (fail open) when the user has the kill switch OFF.
+            //
+            // BLOCK FIRST, THEN PUBLISH Error — see the ordering contract on
+            // [activateKillSwitch].
             if (isKillSwitchEnabled) {
                 cleanupTunnelDataPlane()
                 activateKillSwitch()
             } else {
                 cleanupTunnel()
             }
+            updateState(VpnState.Error("Connection timed out"))
             updateNotification("Connection timed out")
         }
     }
@@ -388,6 +391,13 @@ class BirdoVpnService : VpnService() {
                 startTunnel()
             } catch (t: Throwable) {
                 Log.e(TAG, "Unhandled error in tunnel setup", t)
+                // startTunnel's own catch only covers Exception; a Throwable that
+                // escapes it left the tunnel half-built and the user unprotected
+                // with no block. Fail closed here too, before publishing Error.
+                if (isKillSwitchEnabled) {
+                    cleanupTunnelDataPlane()
+                    activateKillSwitch()
+                }
                 updateState(VpnState.Error(t.message ?: "Tunnel crashed"))
                 mainHandler.post { updateNotification("Connection failed") }
             } finally {
@@ -611,6 +621,21 @@ class BirdoVpnService : VpnService() {
 
     // ── Kill Switch ──────────────────────────────────────────────
 
+    /**
+     * Arm the fail-closed blocking interface.
+     *
+     * ORDERING CONTRACT — callers on a FAILURE path must call this BEFORE
+     * publishing [VpnState.Error], never after.
+     *
+     * On success this publishes [VpnState.KillSwitchActive]. VpnManager's
+     * auto-reconnect only fires on Error (and its backoff loop aborts when the
+     * state is neither Error nor Reconnecting), so a failure path that set Error
+     * and THEN called this overwrote the trigger with a state nothing reacts to:
+     * the device sat with every packet blocked, "Kill Switch Active — Traffic
+     * blocked" in the notification, and no retry, indefinitely, until the user
+     * intervened by hand. Arming first makes Error the terminal state, so the
+     * block is held AND auto-reconnect runs — fail-closed and self-healing.
+     */
     private fun activateKillSwitch() {
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
         try {
@@ -755,11 +780,11 @@ class BirdoVpnService : VpnService() {
 
                 if (!XrayManager.isAvailable(applicationContext)) {
                     Log.e(TAG, "Stealth mode requested but Xray runtime is unavailable")
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Stealth engine unavailable"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Stealth engine unavailable") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
 
@@ -776,11 +801,11 @@ class BirdoVpnService : VpnService() {
                 } else {
                     Log.e(TAG, "Xray failed to start — refusing direct fallback because stealth was requested")
                     _stealthActiveFlow.value = false
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Stealth tunnel failed"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Stealth tunnel failed") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
             } else {
@@ -798,11 +823,11 @@ class BirdoVpnService : VpnService() {
                 if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) {
                     Log.e(TAG, "Quantum protection was enabled by server but PQ payload is missing")
                     _quantumActiveFlow.value = false
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Quantum key exchange unavailable"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Quantum unavailable") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
 
@@ -819,11 +844,11 @@ class BirdoVpnService : VpnService() {
                 } else {
                     _quantumActiveFlow.value = false
                     Log.e(TAG, "PQ key exchange failed — refusing non-PQ fallback")
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Quantum key exchange failed"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Quantum failed") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
             } else {
@@ -834,21 +859,21 @@ class BirdoVpnService : VpnService() {
             // Verify JNI library integrity before loading (mirrors Windows wintun.dll check)
             if (!app.birdo.vpn.utils.NativeLibraryVerifier.verifyLibrary(this, "wg-go")) {
                 Log.e(TAG, "wg-go native library integrity check failed")
+                cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("Security: library integrity check failed"))
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: Security check failed") }
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
             if (!WgNative.init()) {
                 Log.e(TAG, "WireGuard native library failed to initialize")
+                cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("WireGuard engine unavailable"))
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: WireGuard engine unavailable") }
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
@@ -864,12 +889,12 @@ class BirdoVpnService : VpnService() {
 
             val wgConfig = buildWireGuardConfig(effectiveConfig)
             val vpnFd = buildVpnInterface(effectiveConfig) ?: run {
-                updateState(VpnState.Error("VPN permission denied"))
                 Log.e(TAG, "Failed to establish VPN interface")
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                mainHandler.post { updateNotification("Error: VPN permission denied") }
                 cleanupStealthAndQuantum()
                 if (isKillSwitchEnabled) activateKillSwitch()
+                updateState(VpnState.Error("VPN permission denied"))
+                mainHandler.removeCallbacks(connectTimeoutRunnable)
+                mainHandler.post { updateNotification("Error: VPN permission denied") }
                 return
             }
 
@@ -888,11 +913,11 @@ class BirdoVpnService : VpnService() {
             if (handle < 0) {
                 Log.e(TAG, "wgTurnOn failed with code: $handle")
                 try { ParcelFileDescriptor.adoptFd(tunFd).close() } catch (_: Exception) {}
+                cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("WireGuard tunnel failed to start"))
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: WireGuard tunnel failed") }
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
@@ -952,12 +977,22 @@ class BirdoVpnService : VpnService() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start tunnel", e)
+            // Match the connect-watchdog idiom: keep the blocking interface up
+            // across the re-arm for a fail-closed user (cleanupTunnel() closed it
+            // first, leaving a cleartext window until activateKillSwitch()
+            // re-established one), and only fully release when the kill switch is
+            // OFF. Block first, publish Error last.
+            if (isKillSwitchEnabled) {
+                cleanupTunnelDataPlane()
+                cleanupStealthAndQuantum()
+                activateKillSwitch()
+            } else {
+                cleanupTunnel()
+                cleanupStealthAndQuantum()
+            }
             updateState(VpnState.Error(e.message ?: "Tunnel failed"))
-            cleanupTunnel()
-            cleanupStealthAndQuantum()
             mainHandler.removeCallbacks(connectTimeoutRunnable)
             mainHandler.post { updateNotification("Connection failed: ${e.message ?: "Unknown error"}") }
-            if (isKillSwitchEnabled) activateKillSwitch()
         }
     }
 
