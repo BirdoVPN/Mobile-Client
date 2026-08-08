@@ -204,12 +204,31 @@ class BirdoVpnService : VpnService() {
 
     // ── Tunnel state ─────────────────────────────────────────────
 
+    // @Volatile on all three: this is tunnel-lifecycle state mutated from at
+    // least four threads — the tunnel executor (startTunnel, the drop handler),
+    // the main thread (onStartCommand's STOP / SWITCH_TEARDOWN /
+    // KILL_SWITCH_BLOCK dispatch and onDestroy), the TunnelMonitor thread (via
+    // onUnexpectedExit) — and read from four more: statsExecutor,
+    // birdo-socket-protect, birdo-transport-probe and the ConnectivityManager
+    // callback. Without it the JIT is free to hoist these reads out of a loop,
+    // so the socket-protect daemon's `tunnelHandle != handle` exit condition and
+    // both isAlive predicates could run on a stale value: protect() applied to a
+    // recycled descriptor (excluding an unrelated app's socket from the tunnel),
+    // a leaked fd, or a monitor still watching a dead handle. The neighbouring
+    // isKillSwitchEnabled is already @Volatile for exactly this reason.
+    //
+    // Visibility only. These reads and writes are still not ATOMIC with respect
+    // to each other — serialising every lifecycle transition onto tunnelExecutor
+    // is the real fix and is deliberately left for a change that can be tested
+    // on a device (queueing a user's Disconnect behind an in-flight 30s PQ
+    // establish is its own hazard).
+
     /** VPN interface — only held during kill switch. */
-    private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile private var vpnInterface: ParcelFileDescriptor? = null
     /** wg-go tunnel handle (>= 0 when tunnel is active). */
-    private var tunnelHandle: Int = -1
+    @Volatile private var tunnelHandle: Int = -1
     /** Monitors the tunnel and re-protects sockets. */
-    private var tunnelMonitor: TunnelMonitor? = null
+    @Volatile private var tunnelMonitor: TunnelMonitor? = null
 
     /**
      * Default-network callback — fires when the OS swaps the underlying
@@ -319,17 +338,55 @@ class BirdoVpnService : VpnService() {
         // cleanly instead of parking in a fake "Connecting…" foreground state,
         // and don't ask to be restarted again.
         if (intent?.action == null) {
-            Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
             // The tunnel is down (the OS killed and is restarting us). The widget
             // pref survives process death, so without this the home-screen widget
             // keeps showing a green "Protected" for a VPN that is no longer up.
             updateWidgetState(false, null)
+
+            // RE-ARM THE KILL SWITCH. It is process-local — the blocking
+            // interface died with the process — and the OS-level always-on
+            // lockdown that would have covered this is deliberately disabled
+            // (AndroidManifest SUPPORTS_ALWAYS_ON=false: there is no headless
+            // re-auth path yet). So this branch used to stopSelf(), which also
+            // removed the persistent notification, and a user who had asked for
+            // fail-closed protection was left with traffic flowing unprotected,
+            // no VPN interface, no blocking interface, and no signal at all.
+            //
+            // We cannot re-establish the tunnel (the START intent's config and
+            // consent are gone), but activateKillSwitch() needs neither — it
+            // uses only hard-coded addresses. Honour the preference: block, stay
+            // foreground, and say why.
+            val rearm = try {
+                appPrefs.killSwitchEnabled
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not read kill-switch preference on restart", e)
+                false
+            }
             startForeground(
                 VpnNotificationManager.NOTIFICATION_ID,
-                notifManager.buildForegroundNotification("Disconnected"),
+                notifManager.buildForegroundNotification(
+                    if (rearm) "Kill Switch Active — reconnect required" else "Disconnected",
+                ),
             )
-            stopSelf()
-            return START_NOT_STICKY
+            if (!rearm) {
+                Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            Log.i(TAG, "System restart with kill switch enabled — re-arming the block")
+            isKillSwitchEnabled = true
+            activateKillSwitch()
+            if (!killSwitchActive) {
+                // Silent failure of a security control is worse than a loud one:
+                // the user believes they are fail-closed and they are not.
+                Log.e(TAG, "Kill switch could not be re-armed after restart — traffic is NOT blocked")
+                updateState(VpnState.Error("Kill switch could not be armed — traffic is NOT protected"))
+                updateNotification("Kill switch could not be armed — traffic is NOT protected")
+            }
+            // START_STICKY: if the OS kills us again we want to come back and
+            // re-arm again rather than leave the block down for good.
+            return START_STICKY
         }
 
         // Android 12+ requires startForeground() within ~5s of EVERY
@@ -471,7 +528,16 @@ class BirdoVpnService : VpnService() {
             return
         }
 
-        if (currentState is VpnState.Disconnected && !killSwitchActive) {
+        // `!tunnelSetupInProgress` matches the guard on the kill-switch release
+        // branch above, and for the same reason: switchTeardown publishes
+        // Disconnected before the incoming ACTION_START's establish lands, so a
+        // settings push arriving in that window would stopSelf() a service with
+        // a tunnel setup in flight on the executor — onDestroy then runs
+        // cleanupTunnel + shutdownNow underneath it, orphaning a wg-go tunnel
+        // and a VPN interface with no owner.
+        if (currentState is VpnState.Disconnected && !killSwitchActive &&
+            !tunnelSetupInProgress
+        ) {
             // Nothing is running — a stale push started us; don't park in a
             // fake foreground state.
             stopForeground(STOP_FOREGROUND_REMOVE)
