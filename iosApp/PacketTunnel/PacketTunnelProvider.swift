@@ -73,15 +73,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private lazy var adapter: WireGuardAdapter = {
         WireGuardAdapter(with: self) { [weak self] level, message in
             guard let self else { return }
-            // Map WireGuardKit log levels onto os_log; NEVER include the
-            // raw message at .info/.error in production builds because it
-            // can include endpoints. Mark private.
             let type: OSLogType
             switch level {
             case .verbose: type = .debug
             case .error:   type = .error
             }
-            os_log("wg: %{private}@", log: self.log, type: type, message)
+            // ERRORS are logged PUBLICLY; verbose stays private.
+            //
+            // These messages were entirely %{private}@, which cost hours on the
+            // macOS bring-up: the tunnel failed with a single redacted line
+            // reading `wg: <private>`, and recovering it needed a logging
+            // configuration profile installed by hand on the test Mac. In the
+            // field that is simply undiagnosable.
+            //
+            // Errors are safe to publish. wireguard-go's error strings describe
+            // socket and interface state ("Unable to update bind: listen udp4
+            // :0: bind: operation not permitted"), and peer references are
+            // already abbreviated to a public-key prefix — a PUBLIC key, by
+            // definition. No private key, preshared key or token can reach this
+            // closure. Verbose output, which does carry endpoints and per-packet
+            // detail, stays redacted.
+            if type == .error {
+                os_log("wg: %{public}@", log: self.log, type: type, message)
+            } else {
+                os_log("wg: %{private}@", log: self.log, type: type, message)
+            }
         }
     }()
 
