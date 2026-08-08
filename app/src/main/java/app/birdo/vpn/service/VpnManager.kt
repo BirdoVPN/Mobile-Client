@@ -1193,13 +1193,38 @@ class VpnManager @Inject constructor(
                 _state.value = VpnState.Reconnecting(reconnectAttempt)
                 transitionStartTime = System.currentTimeMillis()
 
-                val result = if (mh != null) connectMultiHop(mh.first, mh.second)
-                    else connect(lastServer!!)
-                if (result is ApiResult.Success) {
-                    cancelAutoReconnect()
-                    return@launch
+                if (mh != null) connectMultiHop(mh.first, mh.second) else connect(lastServer!!)
+
+                // ApiResult.Success only means /connect REPLIED and the START
+                // intent did not throw — the tunnel is still establishing, and
+                // on a network where the tunnel always fails to come up it never
+                // will. Treating that as a successful reconnect called
+                // cancelAutoReconnect(), which nulls reconnectJob and zeroes the
+                // counter; the Error the service published moments later then
+                // re-entered this function past its own re-entry guard with a
+                // fresh 5-attempt budget. MAX_RECONNECT_ATTEMPTS never bound: an
+                // API-success + tunnel-failure network reconnected forever at
+                // ~2s intervals, minting and unregistering a WireGuard peer
+                // every cycle against the backend's IPAM and connect-rate
+                // budget, and holding the radio awake on the device.
+                //
+                // Wait for the REAL outcome instead. The counter is now
+                // monotonic: only an observed Connected resets it (via the state
+                // collector's cancelAutoReconnect), so five failed attempts end
+                // in Error for a manual retry, as documented.
+                waitUntil(CONNECT_STUCK_TIMEOUT_MS) {
+                    val s = _state.value
+                    s is VpnState.Connected || s is VpnState.Error || s is VpnState.Disconnected
                 }
-                // connect()/connectMultiHop() already sets VpnState.Error — loop continues
+                when (_state.value) {
+                    // Belt and braces: the Connected collector has already
+                    // cancelled this job by now.
+                    is VpnState.Connected -> { cancelAutoReconnect(); return@launch }
+                    // The user disconnected, or the service settled down for
+                    // good — do not reconnect against that.
+                    is VpnState.Disconnected -> return@launch
+                    else -> Unit // Error / still transitioning — try again
+                }
             }
             // Exhausted all attempts — stay in Error for manual retry
             _reconnectAttemptFlow.value = 0
