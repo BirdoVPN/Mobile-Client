@@ -28,6 +28,17 @@ class BirdoTileService : TileService() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+    /**
+     * Collects [BirdoVpnService.stateFlow] only while the tile is bound.
+     * Without it the tile rendered a static snapshot taken at bind time, so it
+     * went stale during the entire connect/disconnect sequence the user is
+     * watching, and after a drop or an Adaptive Transport fallback it could
+     * read "Disconnected" over a live tunnel — and [onClick] acts on the LIVE
+     * state, so tapping a tile that reads Disconnected disconnected the VPN,
+     * the opposite of the user's intent.
+     */
+    private var stateJob: Job? = null
+
     companion object {
         private const val TAG = "BirdoTile"
     }
@@ -35,6 +46,18 @@ class BirdoTileService : TileService() {
     override fun onStartListening() {
         super.onStartListening()
         updateTile()
+        stateJob?.cancel()
+        stateJob = scope.launch {
+            BirdoVpnService.stateFlow.collect {
+                withContext(Dispatchers.Main) { updateTile() }
+            }
+        }
+    }
+
+    override fun onStopListening() {
+        stateJob?.cancel()
+        stateJob = null
+        super.onStopListening()
     }
 
     override fun onClick() {
@@ -44,7 +67,12 @@ class BirdoTileService : TileService() {
         Log.i(TAG, "Tile clicked — current state: $currentState")
 
         when (currentState) {
-            is VpnState.Connected -> {
+            // KillSwitchActive is a tappable state: all traffic is blocked and
+            // disconnect() is what releases the block. It used to fall into the
+            // else branch, which rendered an ACTIVE tile that silently ignored
+            // every tap — a device with all traffic blocked and no way out of it
+            // from the shade.
+            is VpnState.Connected, is VpnState.KillSwitchActive -> {
                 scope.launch {
                     try {
                         vpnManager.disconnect()
@@ -118,8 +146,17 @@ class BirdoTileService : TileService() {
                 tile.subtitle = "Disconnected"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
+            // The kill switch is not a connection. It rendered as an ACTIVE tile
+            // reading "Working\u2026", which claims a working VPN while every packet
+            // on the device is being dropped. INACTIVE + the truth.
+            is VpnState.KillSwitchActive -> {
+                tile.state = Tile.STATE_INACTIVE
+                tile.label = "Birdo VPN"
+                tile.subtitle = "Traffic blocked"
+                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
+            }
             else -> {
-                // Authenticating, StealthConnecting, Reconnecting, KillSwitchActive
+                // Authenticating, StealthConnecting, Reconnecting
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "Birdo VPN"
                 tile.subtitle = "Working\u2026"

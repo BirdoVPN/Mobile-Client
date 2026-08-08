@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,6 +12,7 @@ import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.service.quicksettings.TileService
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
@@ -173,6 +175,13 @@ class BirdoVpnService : VpnService() {
         val stateFlow: StateFlow<VpnState> = _stateFlow.asStateFlow()
 
         /**
+         * Application context, captured in [onCreate], so [updateState] can ask
+         * the platform to re-bind the Quick Settings tile. Application context
+         * only — process-scoped, so holding it cannot leak the service.
+         */
+        @Volatile private var appContext: Context? = null
+
+        /**
          * FIX-2-12: Update VPN state atomically — sets both the volatile field
          * (for backward compat / quick reads) and the StateFlow (for reactive
          * collection in VpnManager).
@@ -180,6 +189,32 @@ class BirdoVpnService : VpnService() {
         private fun updateState(newState: VpnState) {
             currentState = newState
             _stateFlow.value = newState
+            requestTileRefresh()
+        }
+
+        /**
+         * Ask the platform to bind [BirdoTileService] so it can re-render.
+         *
+         * The tile declares ACTIVE_TILE, which means the platform binds it ONLY
+         * on a tap or on this request — NOT when the shade opens. Nothing ever
+         * made the request, so the tile showed whatever state was current the
+         * last time the user tapped it: it could read "Disconnected" over a live
+         * tunnel, or active over a dead one. Since onClick acts on the LIVE
+         * state, a user tapping a tile that read "Disconnected" disconnected
+         * their VPN — the exact opposite of their intent.
+         */
+        private fun requestTileRefresh() {
+            val ctx = appContext ?: return
+            try {
+                TileService.requestListeningState(
+                    ctx,
+                    ComponentName(ctx, BirdoTileService::class.java),
+                )
+            } catch (e: Exception) {
+                // Tile not added to the shade, or the platform refused — never
+                // let a cosmetic refresh break a tunnel state transition.
+                Log.w(TAG, "Quick Settings tile refresh request failed", e)
+            }
         }
 
         @Volatile private var activeConfig: ConnectResponse? = null
@@ -326,6 +361,7 @@ class BirdoVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        appContext = applicationContext
         notifManager.createChannel()
     }
 
