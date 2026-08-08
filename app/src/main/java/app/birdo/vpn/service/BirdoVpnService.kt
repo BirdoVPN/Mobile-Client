@@ -497,6 +497,11 @@ class BirdoVpnService : VpnService() {
     override fun onDestroy() {
         stopNotificationTicker()
         mainHandler.removeCallbacks(connectTimeoutRunnable)
+        // The tunnel dies with the service, so the widget's "Protected" must
+        // too. onDestroy is reached on paths that never go through stopTunnel
+        // (handleUpdateSettings' stale-push stopSelf, an OOM kill, a force-stop
+        // that runs it), and none of those reset the flag.
+        updateWidgetState(false, null)
         cleanupTunnel()
         activeConfig = null
         tunnelExecutor.shutdownNow()
@@ -957,23 +962,40 @@ class BirdoVpnService : VpnService() {
             // whether the user's traffic was flowing. Observed on-device.
             _killSwitchActiveFlow.value = false
 
-            updateState(VpnState.Connected)
             _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
-            _connectedSinceFlow.value = System.currentTimeMillis()
             _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
-
-            updateWidgetState(true, connectedServer)
             extractServerIp()
-            // ADAPTIVE TRANSPORT: we have just told the UI "Connected" on the
-            // strength of the interface being up, which on a filtered network is
-            // a lie — no handshake will ever land. Verify it, and if nothing
-            // arrives, signal VpnManager to retry over stealth.
-            startTransportProbe(handle, config.stealthEnabled == true)
+
+            // DO NOT publish Connected here. The interface being up and wg-go
+            // having accepted the config says nothing about whether a WireGuard
+            // handshake will ever complete — on a DPI-filtered network it never
+            // does, and the UI, the notification and the home-screen widget all
+            // asserted "Protected" over a tunnel carrying zero packets. A green
+            // shield is a safety claim; it must be backed by evidence.
+            //
+            // Stay in Connecting (the honest state: we are still establishing)
+            // and let [startTransportProbe] publish Connected once it OBSERVES a
+            // non-zero last_handshake_time_sec. Republishing Connecting also
+            // normalises the StealthConnecting path back onto the state the
+            // connect watchdog below guards on.
+            updateState(VpnState.Connecting)
+            // Backstop only: the probe is self-bounded at TransportProbe.WINDOW_MS
+            // and always produces a verdict, so this fires solely if a wg-go JNI
+            // read wedges. Deliberately generous — it must not race the ~10s
+            // verdict or the stealth rebuild that a BLOCKED verdict kicks off.
             mainHandler.removeCallbacks(connectTimeoutRunnable)
-            mainHandler.post {
-                updateNotification(buildConnectedText())
-                startNotificationTicker()
-            }
+            mainHandler.postDelayed(
+                connectTimeoutRunnable,
+                TransportProbe.WINDOW_MS + CONNECT_TIMEOUT_MS,
+            )
+            // Whether we are ON the stealth transport is what the fallback
+            // decision turns on, and that is `stealthEndpointOverride != null` —
+            // the endpoint we actually dialled. The old `config.stealthEnabled`
+            // was the server's CLAIM, so a granted-but-unusable response
+            // (stealthEnabled with no xrayEndpoint) skipped the probe on a plain
+            // WireGuard tunnel and disabled the fallback for exactly the
+            // filtered-network users Adaptive Transport exists for.
+            startTransportProbe(handle, onStealthTransport = stealthEndpointOverride != null)
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start tunnel", e)
@@ -1198,7 +1220,17 @@ class BirdoVpnService : VpnService() {
         tunnelMonitor = TunnelMonitor(
             handle = handle,
             service = this,
-            isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
+            // Same predicate as the transport probe, and for the same reason:
+            // the monitor starts BEFORE Connected is published (now up to
+            // TransportProbe.WINDOW_MS before it), so gating on Connected made
+            // the monitor thread exit on its very first check and left the
+            // session with no stall detection at all.
+            isAlive = {
+                tunnelHandle == handle &&
+                    currentState !is VpnState.Disconnected &&
+                    currentState !is VpnState.Disconnecting &&
+                    currentState !is VpnState.Error
+            },
             onUnexpectedExit = {
                 // Fail closed FIRST (block all traffic), THEN hand off to
                 // auto-reconnect. Activating the kill switch alone tears wg-go
@@ -1224,38 +1256,103 @@ class BirdoVpnService : VpnService() {
     }
 
     /**
-     * ADAPTIVE TRANSPORT: confirm the tunnel we just reported as Connected is
-     * actually carrying traffic, and signal a fallback if it is not.
+     * ADAPTIVE TRANSPORT + HANDSHAKE GATE: confirm the freshly-established
+     * tunnel is actually carrying traffic, and publish the user-visible
+     * "Protected" state only once it is.
+     *
+     * This is the SOLE publisher of [VpnState.Connected] on the connect path.
+     * Until it runs the service stays in Connecting, so no surface — UI,
+     * notification or widget — ever claims protection that is not in force.
      *
      * Runs on its own short-lived daemon thread — [TransportProbe.await] blocks
      * for up to [TransportProbe.WINDOW_MS], and doing that on the caller would
      * stall tunnel setup and risk an ANR.
      *
-     * `alreadyStealth` short-circuits the probe when this connection IS the
-     * stealth attempt. Without it a stealth tunnel that also fails to handshake
-     * (genuinely offline, server down, or a network that blocks TLS too) would
-     * emit "blocked" and drive VpnManager into a fallback it has already made —
-     * a reconnect loop. Stealth is the last transport we have, so a failure
-     * there is handled by the normal TunnelMonitor/auto-reconnect path instead.
+     * The probe now runs for stealth connections too, because the gate applies
+     * to every transport. `onStealthTransport` no longer skips it; it selects
+     * what a BLOCKED verdict MEANS:
+     *  - direct: stealth is still untried → signal VpnManager to retry over it.
+     *  - stealth: this is the last transport we have, so a failure here is a
+     *    genuine connection failure. Fail closed and publish Error, which drives
+     *    the ordinary backoff reconnect. Emitting "blocked" instead would ask
+     *    VpnManager for a fallback it has already made — a reconnect loop.
      */
-    private fun startTransportProbe(handle: Int, alreadyStealth: Boolean) {
-        if (alreadyStealth) {
-            Log.i(TAG, "Skipping transport probe — already on the stealth transport")
-            return
-        }
+    private fun startTransportProbe(handle: Int, onStealthTransport: Boolean) {
         Thread({
-            val verdict = TransportProbe(
-                handle = handle,
-                isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
-            ).await()
-            if (verdict == TransportProbe.Result.BLOCKED) {
-                Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
-                // tryEmit, not emit: this is a non-suspending context and the
-                // buffer is sized for it. A dropped emission would only mean a
-                // missed fallback, never a blocked tunnel thread.
-                _transportBlockedFlow.tryEmit(Unit)
+            val verdict = try {
+                TransportProbe(
+                    handle = handle,
+                    // True while THIS tunnel is the live one and nothing has
+                    // torn it down. Deliberately not `is Connected`: during the
+                    // verify window the state is Connecting by design, and
+                    // gating on Connected would abort the probe instantly and
+                    // strand the connect. A kill-switch arm clears tunnelHandle,
+                    // so it is covered by the handle check.
+                    isAlive = {
+                        tunnelHandle == handle &&
+                            currentState !is VpnState.Disconnected &&
+                            currentState !is VpnState.Disconnecting &&
+                            currentState !is VpnState.Error
+                    },
+                ).await()
+            } catch (t: Throwable) {
+                // Never strand the connect on an unexpected probe failure: with
+                // no evidence either way, fall back to the pre-gate behaviour
+                // and let TunnelMonitor's stall detection own the tunnel.
+                Log.e(TAG, "Transport probe failed — publishing Connected unverified", t)
+                TransportProbe.Result.HANDSHAKE_OK
+            }
+            when (verdict) {
+                TransportProbe.Result.HANDSHAKE_OK -> publishConnected(handle)
+
+                TransportProbe.Result.BLOCKED -> if (!onStealthTransport) {
+                    Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
+                    // tryEmit, not emit: this is a non-suspending context and the
+                    // buffer is sized for it. A dropped emission would only mean a
+                    // missed fallback, never a blocked tunnel thread. If VpnManager
+                    // declines the fallback (cooldown, multi-hop, no server) the
+                    // connect watchdog re-armed by startTunnel resolves the state.
+                    _transportBlockedFlow.tryEmit(Unit)
+                } else {
+                    Log.w(TAG, "Transport probe: no handshake over stealth — failing the connect")
+                    // Fail closed first, then publish Error — see the ordering
+                    // contract on [activateKillSwitch].
+                    if (isKillSwitchEnabled) {
+                        cleanupTunnelDataPlane()
+                        activateKillSwitch()
+                    } else {
+                        cleanupTunnel()
+                    }
+                    cleanupStealthAndQuantum()
+                    updateState(VpnState.Error("No handshake — this network is blocking the VPN"))
+                    mainHandler.removeCallbacks(connectTimeoutRunnable)
+                    mainHandler.post { updateNotification("Error: no handshake") }
+                }
+
+                // The tunnel went away while probing (disconnect, switch, kill
+                // switch). Whoever tore it down owns the state.
+                TransportProbe.Result.ABORTED -> Unit
             }
         }, "birdo-transport-probe").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Publish the verified-connected state. Called only after a WireGuard
+     * handshake has been observed on [handle] (or on a build that cannot be
+     * probed at all), so every "Protected" surface it lights up is backed by a
+     * tunnel that has demonstrably passed a packet.
+     */
+    private fun publishConnected(handle: Int) {
+        // A switch/reconnect may have superseded this tunnel while we probed.
+        if (tunnelHandle != handle) return
+        _connectedSinceFlow.value = System.currentTimeMillis()
+        updateState(VpnState.Connected)
+        updateWidgetState(true, connectedServer)
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        mainHandler.post {
+            updateNotification(buildConnectedText())
+            startNotificationTicker()
+        }
     }
 
     private fun buildWireGuardConfig(response: ConnectResponse): Config {

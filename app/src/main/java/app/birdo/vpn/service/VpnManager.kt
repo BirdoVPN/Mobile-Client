@@ -94,8 +94,16 @@ class VpnManager @Inject constructor(
     companion object {
         /** Max time (ms) to guard transitional states before letting service state through */
         private const val TRANSITION_GUARD_MS = 15_000L
-        /** Max time (ms) before we force Connecting → Error if service is stuck */
-        private const val CONNECT_STUCK_TIMEOUT_MS = 35_000L
+        /**
+         * Max time (ms) before we force Connecting → Error if service is stuck.
+         *
+         * The service now stays in Connecting until a WireGuard handshake is
+         * observed, which adds up to [BirdoVpnService]'s probe window
+         * (TransportProbe.WINDOW_MS, 10s) to every connect. At 35s a slow but
+         * perfectly good establish would have been condemned as stuck right as
+         * its handshake landed, so the budget carries that window.
+         */
+        private const val CONNECT_STUCK_TIMEOUT_MS = 45_000L
         /** Max time (ms) before we force Disconnecting → Disconnected if service is stuck */
         private const val DISCONNECT_STUCK_TIMEOUT_MS = 15_000L
         /** Maximum number of automatic reconnection attempts */
