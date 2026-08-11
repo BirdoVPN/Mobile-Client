@@ -528,6 +528,39 @@ class BirdoRepositoryTest {
         assertEquals("pq-public-key", request.captured.pqClientPublicKey)
     }
 
+    @Test
+    fun `connectMultiHop forwards the adaptive-transport fallback reason`() = runTest {
+        // Without this field on the wire, a multi-hop user on a DPI-filtered
+        // network can never obtain the stealth rebuild single-hop already gets.
+        val request = slot<MultiHopConnectRequest>()
+        coEvery { api.connectMultiHop(capture(request)) } returns Response.success(
+            MultiHopConnectResponse(success = true, keyId = "mh-key")
+        )
+
+        repository.connectMultiHop(
+            entryNodeId = "de-1",
+            exitNodeId = "nl-1",
+            fallbackReason = app.birdo.vpn.shared.model.TransportFallbackReason.HANDSHAKE_TIMEOUT,
+        )
+
+        assertEquals(
+            app.birdo.vpn.shared.model.TransportFallbackReason.HANDSHAKE_TIMEOUT,
+            request.captured.fallbackReason,
+        )
+    }
+
+    @Test
+    fun `connectMultiHop omits fallbackReason on a normal first attempt`() = runTest {
+        val request = slot<MultiHopConnectRequest>()
+        coEvery { api.connectMultiHop(capture(request)) } returns Response.success(
+            MultiHopConnectResponse(success = true, keyId = "mh-key")
+        )
+
+        repository.connectMultiHop(entryNodeId = "de-1", exitNodeId = "nl-1")
+
+        assertNull(request.captured.fallbackReason)
+    }
+
     // ── Port Forwarding ─────────────────────────────────────────
 
     @Test

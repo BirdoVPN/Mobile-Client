@@ -698,6 +698,14 @@ class BirdoRepository @Inject constructor(
         exitNodeId: String,
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
+        /**
+         * ADAPTIVE TRANSPORT — same contract as [connectVpn]'s fallbackReason:
+         * non-null marks this connect as a RETRY after plain WireGuard failed
+         * to handshake, asking for the stealth transport. The wire model
+         * (MultiHopConnectRequest.fallbackReason) and the backend schema both
+         * already accept the field on the multi-hop route.
+         */
+        fallbackReason: String? = null,
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
@@ -715,6 +723,7 @@ class BirdoRepository @Inject constructor(
                     deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
+                    fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
                     integrityToken = integrityToken,

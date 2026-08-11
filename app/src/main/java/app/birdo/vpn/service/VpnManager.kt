@@ -443,16 +443,20 @@ class VpnManager @Inject constructor(
      *  4. The server enforces its own per-device hourly grant ceiling, so even a
      *     client bug cannot turn into fleet load.
      *
-     * Multi-hop sessions are deliberately excluded: rebuilding one from here
-     * would race [connectMultiHop]'s own two-node setup, and the multi-hop path
-     * requests stealth up front through the same server-side grant.
+     * Multi-hop sessions now rebuild too. The old exclusion predates
+     * [connectMultiHop] carrying a fallbackReason at all — the probe fires only
+     * AFTER connectMultiHop's two-node setup completed (the tunnel is up, just
+     * not handshaking), so there is no setup to race, and all four brakes
+     * above apply identically. Without this, a multi-hop user on a DPI-filtered
+     * network got a tunnel that never handshakes, no fallback, no explanation.
      */
     private suspend fun onTransportBlocked() {
         val serverId = prefs.lastServerId
-        if (serverId == null || activeMultiHop != null) {
+        val multiHop = activeMultiHop
+        if (serverId == null && multiHop == null) {
             android.util.Log.i(
                 "VpnManager",
-                "Transport blocked but no single-hop session to rebuild — leaving it to auto-reconnect",
+                "Transport blocked but no session to rebuild — leaving it to auto-reconnect",
             )
             return
         }
@@ -473,15 +477,27 @@ class VpnManager @Inject constructor(
         try {
             android.util.Log.w("VpnManager", "Falling back to the stealth transport")
             _state.value = VpnState.Connecting
-            val result = connect(
-                serverId = serverId,
-                fallbackReason = TransportFallbackReason.HANDSHAKE_TIMEOUT,
-            )
+            // The multi-hop route describes the CURRENT session when set
+            // (connect() clears it, connectMultiHop() records it on success),
+            // so it wins over the last single-hop server id.
+            val gotStealth = if (multiHop != null) {
+                val result = connectMultiHop(
+                    entryNodeId = multiHop.first,
+                    exitNodeId = multiHop.second,
+                    fallbackReason = TransportFallbackReason.HANDSHAKE_TIMEOUT,
+                )
+                (result as? ApiResult.Success)?.data?.stealthEnabled == true
+            } else {
+                val result = connect(
+                    serverId = serverId!!,
+                    fallbackReason = TransportFallbackReason.HANDSHAKE_TIMEOUT,
+                )
+                (result as? ApiResult.Success)?.data?.stealthEnabled == true
+            }
             // Only remember the preference when the fallback actually produced a
             // stealth connection. Recording it on a failed retry would steer
             // every future connect onto a transport we have no evidence works,
             // and would do so for a full TTL.
-            val gotStealth = (result as? ApiResult.Success)?.data?.stealthEnabled == true
             if (gotStealth) {
                 prefs.stealthPreferredSince = System.currentTimeMillis()
                 android.util.Log.i(
@@ -520,11 +536,36 @@ class VpnManager @Inject constructor(
      * contract as single-hop: Stealth and BirdoPQ are requested up front and
      * the service fails closed if the server enables them but the local engine
      * cannot complete setup.
+     *
+     * @param fallbackReason ADAPTIVE TRANSPORT — see [connect]. Non-null on the
+     *   stealth rebuild [onTransportBlocked] issues after the WireGuard
+     *   handshake probe failed on a multi-hop tunnel.
      */
     suspend fun connectMultiHop(
         entryNodeId: String,
         exitNodeId: String,
+        fallbackReason: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
+        // Mirror connect()'s fail-closed teardown: the Adaptive Transport
+        // rebuild arrives over a LIVE (non-handshaking) session, so the old
+        // tunnel + server-side peers must come down behind the blocking
+        // interface before the new two-node setup registers fresh peers.
+        // User-initiated multi-hop connects are gated on a settled state by
+        // the ViewModel, so this block is a no-op for them.
+        val priorState = _state.value
+        if (priorState is VpnState.Connected ||
+            priorState is VpnState.Connecting ||
+            priorState is VpnState.Reconnecting
+        ) {
+            if (priorState !is VpnState.Reconnecting) cancelAutoReconnect()
+            switchTeardown(forceBlock = reapplyInProgress || fallbackInFlight)
+            var waited = 0
+            while (_state.value !is VpnState.Disconnected && waited < 5000) {
+                delay(150)
+                waited += 150
+            }
+        }
+
         _state.value = VpnState.Connecting
         transitionStartTime = System.currentTimeMillis()
 
@@ -537,12 +578,18 @@ class VpnManager @Inject constructor(
 
         val integrityToken = requestAttestationToken()
 
+        // Same skip-the-doomed-probe logic as connect(): a recent fallback
+        // proved this network filters WireGuard, so ask for stealth up front.
+        val effectiveFallbackReason = fallbackReason
+            ?: TransportFallbackReason.TRANSPORT_BLOCKED.takeIf { prefs.shouldStartOnStealth }
+
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
         val result = repository.connectMultiHop(
             entryNodeId = entryNodeId,
             exitNodeId = exitNodeId,
             deviceName = deviceName,
             stealthMode = prefs.stealthModeEnabled,
+            fallbackReason = effectiveFallbackReason,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
             integrityToken = integrityToken,
