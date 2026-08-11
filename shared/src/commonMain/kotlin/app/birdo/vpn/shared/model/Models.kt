@@ -373,6 +373,18 @@ data class ConnectRequest(
      */
     val pqClientPublicKey: String? = null,
     /**
+     * BirdoPQ v1 HNDL opt-in: true asserts this client will ML-KEM-decapsulate
+     * the returned ciphertext and derive the WireGuard PSK ITSELF, so the
+     * server WITHHOLDS the PSK from the response — it never crosses the wire.
+     * That is the actual harvest-now-decrypt-later property the feature is
+     * sold on: without it the PSK travels under classical TLS and a recorded
+     * session plus a future CRQC recovers it. Only ever set true alongside a
+     * non-null [pqClientPublicKey] (RosenpassManager produced the keypair, so
+     * the native engine is present); if decapsulation still fails at tunnel
+     * time the client fails closed rather than downgrading.
+     */
+    val pqClientCanDecapsulate: Boolean = false,
+    /**
      * Google Play Integrity token (official Android Play build only), bound to a
      * server-issued nonce (GET vpn/attestation/nonce). The backend verifies it
      * and enforces ATTESTATION_POLICY so only the genuine, unmodified Play app
@@ -490,6 +502,14 @@ data class MultiHopConnectRequest(
     val fallbackReason: String? = null,
     val quantumProtection: Boolean = false,
     val pqClientPublicKey: String? = null,
+    /**
+     * BirdoPQ v1 HNDL opt-in — see [ConnectRequest.pqClientCanDecapsulate].
+     * Declared on BOTH request types (this pair is the classic duplicated
+     * wire-model twin): the double-hop route is the MOST privacy-sensitive
+     * path, and the backend forwards the flag there too so the PSK is
+     * withheld from the wire exactly as on single-hop.
+     */
+    val pqClientCanDecapsulate: Boolean = false,
     /**
      * Google Play Integrity token — see [ConnectRequest.integrityToken].
      *

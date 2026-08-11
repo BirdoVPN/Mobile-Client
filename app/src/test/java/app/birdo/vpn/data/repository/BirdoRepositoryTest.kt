@@ -433,6 +433,21 @@ class BirdoRepositoryTest {
         assertEquals(true, request.captured.stealthMode)
         assertEquals(true, request.captured.quantumProtection)
         assertEquals("pq-public-key", request.captured.pqClientPublicKey)
+        // A client that uploaded an ML-KEM key MUST assert it can decapsulate,
+        // or the server ships the PSK over TLS and the HNDL property is lost.
+        assertEquals(true, request.captured.pqClientCanDecapsulate)
+    }
+
+    @Test
+    fun `connectVpn does not claim decapsulation without an ML-KEM key`() = runTest {
+        val request = slot<ConnectRequest>()
+        coEvery { api.connect(capture(request)) } returns Response.success(
+            ConnectResponse(success = true, keyId = "key123")
+        )
+
+        repository.connectVpn(serverNodeId = "server_1")
+
+        assertEquals(false, request.captured.pqClientCanDecapsulate)
     }
 
     // ── Disconnect VPN ──────────────────────────────────────────
@@ -526,6 +541,8 @@ class BirdoRepositoryTest {
         assertEquals(true, request.captured.stealthMode)
         assertEquals(true, request.captured.quantumProtection)
         assertEquals("pq-public-key", request.captured.pqClientPublicKey)
+        // The multi-hop twin must carry the HNDL opt-in exactly like single-hop.
+        assertEquals(true, request.captured.pqClientCanDecapsulate)
     }
 
     @Test

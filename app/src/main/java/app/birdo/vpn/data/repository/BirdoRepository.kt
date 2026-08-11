@@ -608,6 +608,13 @@ class BirdoRepository @Inject constructor(
                     fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
+                    // A non-null key proves RosenpassManager loaded the native
+                    // engine and minted the ML-KEM keypair, so this client WILL
+                    // decapsulate — tell the server to withhold the PSK from
+                    // the response (the HNDL-safe path). BirdoVpnService fails
+                    // closed if decapsulation later fails, so this can never
+                    // silently downgrade.
+                    pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                 ))
             }
@@ -726,6 +733,9 @@ class BirdoRepository @Inject constructor(
                     fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
+                    // Same HNDL opt-in as the single-hop site — the twin pair
+                    // must always change together. See ConnectRequest above.
+                    pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                 ))
             }
