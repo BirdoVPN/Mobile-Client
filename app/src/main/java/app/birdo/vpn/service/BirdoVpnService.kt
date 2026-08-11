@@ -339,15 +339,17 @@ class BirdoVpnService : VpnService() {
             // The old cleanupTunnel() closed the blocking vpnInterface with NO
             // re-arm, so a >30s stall during a reconnect (e.g. PQ key exchange
             // wedged in a dead zone) dropped the kill-switch block and leaked
-            // cleartext + DNS until the next reconnect re-armed it. Tear down the
-            // stalled wg-go setup but keep traffic blocked: activateKillSwitch()
-            // supersedes any stale/held interface with a fresh block. Only fully
-            // release (fail open) when the user has the kill switch OFF.
+            // cleartext + DNS until the next reconnect re-armed it. Keep traffic
+            // blocked: activateKillSwitch() establishes a fresh block that
+            // supersedes any stale/held interface OR a still-live wg-go tunnel,
+            // and only then tears the stalled wg-go setup down — no teardown here
+            // first, or the tun fd closes and routing reverts to the physical
+            // network before the block is up. Only fully release (fail open) when
+            // the user has the kill switch OFF.
             //
             // BLOCK FIRST, THEN PUBLISH Error — see the ordering contract on
             // [activateKillSwitch].
             if (isKillSwitchEnabled) {
-                cleanupTunnelDataPlane()
                 activateKillSwitch()
             } else {
                 cleanupTunnel()
@@ -487,8 +489,9 @@ class BirdoVpnService : VpnService() {
                 // startTunnel's own catch only covers Exception; a Throwable that
                 // escapes it left the tunnel half-built and the user unprotected
                 // with no block. Fail closed here too, before publishing Error.
+                // activateKillSwitch() does its own ordered teardown (establish
+                // the block first, then turn wg-go off) — no teardown here first.
                 if (isKillSwitchEnabled) {
-                    cleanupTunnelDataPlane()
                     activateKillSwitch()
                 }
                 updateState(VpnState.Error(t.message ?: "Tunnel crashed"))
@@ -746,12 +749,19 @@ class BirdoVpnService : VpnService() {
     private fun activateKillSwitch() {
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
         try {
-            // Tear down wg-go / monitor / callbacks but KEEP the current interface
-            // (if any) up: establish() below atomically supersedes it, so there is
-            // no cleartext gap when re-arming over an existing blocking interface
-            // (e.g. a failed reconnect attempt re-arming for the next backoff).
+            // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
+            // (server switch, connect timeout, KILL_SWITCH_BLOCK, stall) the sole
+            // tun fd lives inside wg-go — startTunnel detachFd()s it and nulls
+            // vpnInterface — so running cleanupTunnelDataPlane() first had
+            // WgNative.turnOff close that fd and destroy the interface, reverting
+            // routing to the physical network for the whole wg-go-shutdown +
+            // establish() window: a cleartext leak at the exact moment the user
+            // asked to be blocked. establish() below atomically supersedes
+            // whatever interface is up — the live tunnel's OR a previous blocking
+            // one (the same semantic startTunnel relies on when its new tunnel
+            // supersedes this block) — so tearing wg-go down AFTER it can never
+            // expose traffic. Callers therefore must NOT tear down first either.
             val stale = vpnInterface
-            cleanupTunnelDataPlane()
             val builder = Builder()
                 .setSession("BirdoVPN Kill Switch")
                 .setMtu(1420)
@@ -769,6 +779,9 @@ class BirdoVpnService : VpnService() {
                 .addDisallowedApplication(packageName)
 
             val established = builder.establish()
+            // The routing decision is made (block up, or establish() refused) —
+            // only now tear down wg-go / monitor / callbacks.
+            cleanupTunnelDataPlane()
             if (established != null) {
                 vpnInterface = established
                 // Release the stale interface — the OS atomically replaced its
@@ -789,6 +802,10 @@ class BirdoVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to activate kill switch", e)
             _killSwitchActiveFlow.value = false
+            // Preserve the contract that this call always tears down the data
+            // plane, even when Builder setup / establish() threw before the
+            // ordered teardown above ran. Idempotent if it already did.
+            cleanupTunnelDataPlane()
         }
     }
 
@@ -1101,15 +1118,15 @@ class BirdoVpnService : VpnService() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start tunnel", e)
-            // Match the connect-watchdog idiom: keep the blocking interface up
-            // across the re-arm for a fail-closed user (cleanupTunnel() closed it
-            // first, leaving a cleartext window until activateKillSwitch()
-            // re-established one), and only fully release when the kill switch is
-            // OFF. Block first, publish Error last.
+            // Match the connect-watchdog idiom: for a fail-closed user, arm the
+            // block BEFORE any teardown — activateKillSwitch() establishes the
+            // blocking interface first (superseding a live wg-go tun or a held
+            // blocking fd) and only then turns wg-go off, so there is no window
+            // where routing reverts to the physical network. Only fully release
+            // when the kill switch is OFF. Block first, publish Error last.
             if (isKillSwitchEnabled) {
-                cleanupTunnelDataPlane()
-                cleanupStealthAndQuantum()
                 activateKillSwitch()
+                cleanupStealthAndQuantum()
             } else {
                 cleanupTunnel()
                 cleanupStealthAndQuantum()
@@ -1385,9 +1402,12 @@ class BirdoVpnService : VpnService() {
                 } else {
                     Log.w(TAG, "Transport probe: no handshake over stealth — failing the connect")
                     // Fail closed first, then publish Error — see the ordering
-                    // contract on [activateKillSwitch].
+                    // contract on [activateKillSwitch]. The tunnel here is LIVE
+                    // (established, just no handshake) and wg-go holds the sole
+                    // tun fd, so activateKillSwitch() must do its own ordered
+                    // establish-then-teardown — a teardown here first would
+                    // revert routing to the physical network before the block.
                     if (isKillSwitchEnabled) {
-                        cleanupTunnelDataPlane()
                         activateKillSwitch()
                     } else {
                         cleanupTunnel()
@@ -1462,6 +1482,13 @@ class BirdoVpnService : VpnService() {
      * but leave [vpnInterface] alone. Callers that must keep traffic fail-closed
      * across a transition (kill switch, reconnect/switch) use this so the blocking
      * interface stays up until a replacement interface atomically supersedes it.
+     *
+     * ORDERING: never call this immediately BEFORE [activateKillSwitch]. When the
+     * live tunnel's tun fd is inside wg-go (the normal connected state —
+     * [vpnInterface] is null after detachFd), [WgNative.turnOff] closes that fd
+     * and destroys the interface, reverting routing to the physical network until
+     * the block's establish() lands. [activateKillSwitch] performs this teardown
+     * itself, AFTER its blocking interface is established.
      */
     private fun cleanupTunnelDataPlane() {
         unregisterDefaultNetworkCallback()
