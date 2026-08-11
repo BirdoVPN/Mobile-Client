@@ -1,3 +1,4 @@
+import CommonCrypto
 import NetworkExtension
 import Security
 import WireGuardKit
@@ -59,7 +60,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private var tunnelStartedAt: Date?
 
     /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
-    /// header or body is ever written to disk, matching the host APIClient.
+    /// header or body is ever written to disk, matching the host APIClient —
+    /// and SPKI-PINNED like the host APIClient. This session carries the
+    /// account's bearer token every 30 s for the tunnel's whole life, a
+    /// strictly higher-volume exposure than the host app's occasional calls,
+    /// so an unpinned session here was a hole in the app's pinning guarantee.
     private lazy var heartbeatSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
@@ -67,7 +72,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         config.httpCookieStorage = nil
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config)
+        return URLSession(configuration: config,
+                          delegate: HeartbeatPinningDelegate(),
+                          delegateQueue: nil)
     }()
 
     private lazy var adapter: WireGuardAdapter = {
@@ -539,5 +546,117 @@ enum TunnelError: Error, LocalizedError {
         case .adapterFailed(let msg): return "Tunnel adapter failed: \(msg)"
         case .connectionRevoked: return "Connection has been revoked. Please reconnect."
         }
+    }
+}
+
+// MARK: - Certificate Pinning (extension copy)
+
+/// SPKI-pinning URLSession delegate for the heartbeat session.
+///
+/// The appex and the host app do not share source files, so — exactly like
+/// `sharedAccessGroup` above — this is a deliberate per-target copy of the
+/// host's `APIClient.PinningDelegate`, and the PIN SET below MUST stay in
+/// lockstep with it (and with Android's `NetworkModule.kt` /
+/// `network_security_config.xml`). Pin-set expiration: 2027-06-01.
+///
+/// Fails CLOSED on every uncertain path: standard CA validation first, then at
+/// least one certificate in the chain must match a pinned SPKI hash; an
+/// unreadable chain or key cancels the challenge rather than falling through.
+private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
+    /// Base64-encoded SHA-256 hashes of the SubjectPublicKeyInfo (SPKI) of
+    /// every certificate we accept, anywhere in the chain.
+    private static let pins: Set<String> = [
+        // WE1 — Google Trust Services intermediate (verified 2026-02-22)
+        "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
+        // GlobalSign ECC Root CA - R4 (verified 2026-02-22)
+        "CLOmM1/OXvSPjw5UOYbAf9GKOxImEp9hhku9W90fHMk=",
+        // ISRG Root X1 — Let's Encrypt root (cross-CA diversity backup)
+        "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=",
+    ]
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        var trustError: CFError?
+        guard SecTrustEvaluateWithError(trust, &trustError) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        for cert in chain {
+            guard let pubKey = SecCertificateCopyKey(cert),
+                  let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
+                continue
+            }
+            let spkiHeader = Self.spkiHeader(for: pubKey)
+            var hashable = spkiHeader
+            hashable.append(pubKeyData)
+            let hash = Self.sha256(hashable).base64EncodedString()
+            if Self.pins.contains(hash) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+        }
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+
+    /// ASN.1 SubjectPublicKeyInfo header bytes that prefix the raw key data
+    /// produced by `SecKeyCopyExternalRepresentation`. RSA 2048/4096 +
+    /// EC P-256 / P-384 cover every CA in the pin set.
+    private static func spkiHeader(for key: SecKey) -> Data {
+        let attrs = SecKeyCopyAttributes(key) as? [CFString: Any] ?? [:]
+        let type = (attrs[kSecAttrKeyType] as? String) ?? ""
+        let size = (attrs[kSecAttrKeySizeInBits] as? Int) ?? 0
+        let rsaType = kSecAttrKeyTypeRSA as String
+        let ecType = kSecAttrKeyTypeECSECPrimeRandom as String
+        switch (type, size) {
+        case (rsaType, 2048):
+            return Data([
+                0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
+            ])
+        case (rsaType, 4096):
+            return Data([
+                0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09,
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
+            ])
+        case (ecType, 256):
+            return Data([
+                0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
+                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+                0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+                0x42, 0x00,
+            ])
+        case (ecType, 384):
+            return Data([
+                0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86,
+                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
+                0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
+            ])
+        default:
+            return Data() // Unknown key type — hash will not match any pin.
+        }
+    }
+
+    private static func sha256(_ data: Data) -> Data {
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes {
+            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return Data(hash)
     }
 }
