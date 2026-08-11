@@ -57,6 +57,21 @@ final class VPNManager: @unchecked Sendable {
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
+    /// REAL kill-switch blocking state, read from the system profile — NOT the
+    /// user preference. True only when the persisted on-demand rule is armed
+    /// AND the protocol has includeAllNetworks: that combination is what
+    /// actually blackholes traffic while the tunnel is down. The preference
+    /// alone proves nothing — connect() saves with on-demand disabled,
+    /// disconnect() disarms before stopping, and applyKillSwitchFlag() arms
+    /// only while a session is live, so in the steady disconnected state
+    /// nothing is blocked no matter what the Settings toggle reads.
+    /// VpnViewModel snapshots this on every status transition.
+    var killSwitchArmed: Bool {
+        guard let mgr = manager, mgr.isOnDemandEnabled else { return false }
+        let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol
+        return proto?.includeAllNetworks ?? false
+    }
+
     /// Why the tunnel last went down, straight from NetworkExtension.
     ///
     /// The packet-tunnel extension runs in its own process: when it fails to
