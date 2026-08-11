@@ -406,6 +406,11 @@ class BirdoRepository @Inject constructor(
             tokenManager.clearAll()
             invalidateServerCache()
             invalidateSubscriptionCache()
+            // PRIVACY: the SSAID-derived deviceId would otherwise survive the
+            // deletion and link the NEXT account registered on this handset to
+            // the one just erased. Mint a fresh random identity so the erased
+            // account's device fingerprint dies with it.
+            deviceInfoProvider.resetDeviceIdentity()
         }
         return result
     }

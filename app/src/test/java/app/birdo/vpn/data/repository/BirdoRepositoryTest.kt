@@ -341,6 +341,36 @@ class BirdoRepositoryTest {
         verify(exactly = 1) { tokenManager.clearAll() }
     }
 
+    // ── Delete Account ──────────────────────────────────────────
+
+    @Test
+    fun `deleteAccount success resets the device identity`() = runTest {
+        coEvery { api.deleteAccount(any()) } returns Response.success(
+            DeleteAccountResponse(success = true)
+        )
+
+        val result = repository.deleteAccount("pass123")
+
+        assertTrue(result is ApiResult.Success)
+        verify { tokenManager.clearAll() }
+        // The SSAID-derived deviceId must not outlive the account it
+        // identified — kept, it joins the erased account to the next one
+        // registered on this handset.
+        verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
+    }
+
+    @Test
+    fun `failed deleteAccount keeps the device identity`() = runTest {
+        val err = "nope".toResponseBody("text/plain".toMediaType())
+        coEvery { api.deleteAccount(any()) } returns Response.error(400, err)
+
+        repository.deleteAccount("wrong-pass")
+
+        // The account still exists — its slot reclamation depends on the id
+        // staying stable, so a refused deletion must not rotate it.
+        verify(exactly = 0) { deviceInfoProvider.resetDeviceIdentity() }
+    }
+
     // ── Get Profile ─────────────────────────────────────────────
 
     @Test
