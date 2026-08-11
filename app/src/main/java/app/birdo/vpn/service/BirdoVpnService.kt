@@ -1156,8 +1156,12 @@ class BirdoVpnService : VpnService() {
             }
         }
 
-        // DNS
-        for (dns in resolveDnsServers(config)) {
+        // DNS — resolved by the SAME code that bakes DNS into the wg-go config
+        // (WireGuardConfigBuilder), so the two can never diverge. The resolver
+        // also filters out addresses unreachable through the tunnel's routes
+        // (RFC1918/link-local/ULA): depending on localNetworkSharing those
+        // either leak queries onto the LAN or blackhole all name resolution.
+        for (dns in WireGuardConfigBuilder.resolveDnsServers(config, appPrefs)) {
             try { builder.addDnsServer(InetAddress.getByName(dns)) }
             catch (e: Exception) { Log.w(TAG, "Invalid DNS: $dns") }
         }
@@ -1263,43 +1267,6 @@ class BirdoVpnService : VpnService() {
         }
 
         return builder.establish()
-    }
-
-    /** Resolve the DNS server list, preferring user overrides when enabled. */
-    private fun resolveDnsServers(config: ConnectResponse): List<String> {
-        val fallback = listOf("1.1.1.1", "1.0.0.1")
-        if (!appPrefs.customDnsEnabled) {
-            val serverDns = config.dns?.filter { isValidDnsAddress(it) } ?: emptyList()
-            if (serverDns.isEmpty()) {
-                Log.w(TAG, "Server provided no valid DNS servers — falling back to defaults (1.1.1.1)")
-            }
-            return serverDns.ifEmpty { fallback }
-        }
-        val custom = buildList {
-            val p = appPrefs.customDnsPrimary.trim()
-            if (p.isNotBlank() && isValidDnsAddress(p)) add(p)
-            val s = appPrefs.customDnsSecondary.trim()
-            if (s.isNotBlank() && isValidDnsAddress(s)) add(s)
-        }
-        if (custom.isEmpty()) {
-            Log.w(TAG, "Custom DNS addresses invalid or empty — falling back to defaults")
-        }
-        return custom.ifEmpty { fallback }
-    }
-
-    /**
-     * Validate a DNS address string at tunnel-start time.
-     * Accepts IPv4 (dotted-quad) and IPv6 (colon-hex). Rejects hostnames,
-     * blank strings, and obviously-invalid addresses.
-     */
-    private fun isValidDnsAddress(address: String): Boolean {
-        return try {
-            val addr = InetAddress.getByName(address)
-            // Reject loopback (127.x.x.x, ::1) — would bypass VPN
-            !addr.isLoopbackAddress && !addr.isAnyLocalAddress
-        } catch (_: Exception) {
-            false
-        }
     }
 
     private fun protectTunnelSockets(handle: Int) {

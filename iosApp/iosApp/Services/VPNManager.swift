@@ -597,12 +597,24 @@ final class VPNManager: @unchecked Sendable {
         var v6 = in6_addr()
         if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
             let host = UInt32(bigEndian: v4.s_addr)
-            return host != 0 && (host >> 24) != 127   // reject 0.0.0.0 and 127/8
+            if host == 0 || (host >> 24) == 127 { return false }   // 0.0.0.0, 127/8
+            // Tunnel-reachability (Android WireGuardConfigBuilder parity): a
+            // private or link-scoped resolver either leaks DNS onto the LAN
+            // (excludeLocalNetworks on) or blackholes all resolution inside a
+            // public-egress tunnel (off). Never usable either way.
+            if (host >> 24) == 10 { return false }                 // 10/8
+            if (host >> 20) == 0xAC1 { return false }              // 172.16/12
+            if (host >> 16) == 0xC0A8 { return false }             // 192.168/16
+            if (host >> 16) == 0xA9FE { return false }             // 169.254/16
+            return true
         }
         if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
             let bytes = withUnsafeBytes(of: &v6) { Array($0) }
             if bytes.allSatisfy({ $0 == 0 }) { return false }                        // ::
             if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return false } // ::1
+            if (bytes[0] & 0xFE) == 0xFC { return false }          // ULA fc00::/7
+            if bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80 { return false } // fe80::/10
+            if bytes[0] == 0xFF { return false }                   // multicast ff00::/8
             return true
         }
         return false

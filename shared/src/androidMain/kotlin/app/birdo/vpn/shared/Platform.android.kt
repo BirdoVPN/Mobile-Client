@@ -20,7 +20,15 @@ actual fun isValidDnsAddress(address: String): Boolean {
             !addr.isLoopbackAddress &&
             !addr.isLinkLocalAddress &&
             !addr.isMulticastAddress &&
-            !addr.isAnyLocalAddress
+            !addr.isAnyLocalAddress &&
+            // Private/link-scoped resolvers (RFC1918, IPv6 ULA) are never
+            // reachable through the tunnel: depending on local network sharing
+            // they either leak DNS onto the LAN or blackhole all resolution,
+            // so the tunnel-time filter (WireGuardConfigBuilder) drops them.
+            // Reject them here too so the settings UI can't accept an address
+            // that connect time will silently discard.
+            !addr.isSiteLocalAddress &&
+            !(addr is Inet6Address && (addr.address[0].toInt() and 0xfe) == 0xfc)
     } catch (_: Exception) {
         false
     }
