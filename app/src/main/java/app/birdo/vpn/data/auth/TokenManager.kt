@@ -145,7 +145,9 @@ class TokenManager @Inject constructor(
 
     fun setRefreshToken(token: String) {
         require(token.length <= MAX_TOKEN_LENGTH) { "Refresh token exceeds max length" }
-        prefs.edit().putString(KEY_REFRESH_TOKEN, token).apply()
+        // commit(): a refresh token is single-use server-side — losing this write
+        // to a process kill replays the consumed token and trips theft detection.
+        prefs.edit().putString(KEY_REFRESH_TOKEN, token).commit()
     }
 
     // ── Token Pair ───────────────────────────────────────────────

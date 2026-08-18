@@ -232,9 +232,19 @@ class BirdoRepository @Inject constructor(
                 ) {
                     RefreshOutcome.TRANSIENT
                 } else {
-                    tokenManager.setAccessToken(body.accessToken)
-                    // FIX C-1: Store rotated refresh token if returned by backend
-                    body.refreshToken?.let { tokenManager.setRefreshToken(it) }
+                    // DURABILITY: the server has CONSUMED the presented refresh
+                    // token by the time this response arrives. Persist the rotated
+                    // pair through ONE synchronous commit (setTokens) — the old
+                    // setAccessToken/setRefreshToken pair used apply(), so an
+                    // Android process kill before the async flush replayed the
+                    // consumed token on next launch and tripped server-side theft
+                    // detection (account-wide revocation incl. WG peers).
+                    val rotated = body.refreshToken
+                    if (rotated != null) {
+                        tokenManager.setTokens(body.accessToken, rotated)
+                    } else {
+                        tokenManager.setAccessToken(body.accessToken)
+                    }
                     RefreshOutcome.SUCCESS
                 }
             } else if (response.code() == 401) {
