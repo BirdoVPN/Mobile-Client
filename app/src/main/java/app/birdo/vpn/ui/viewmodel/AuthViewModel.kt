@@ -59,8 +59,31 @@ class AuthViewModel @Inject constructor(
         private const val LOGIN_WINDOW_SECS = 60L
     }
 
-    /** Sliding window of recent failed login attempt timestamps. */
+    /** Sliding window of recent failed login attempt timestamps.
+     *  SHARED across every credential path (email, 24-digit anonymous ID, 2FA
+     *  submission): the credential with the weakest shape must not be the one
+     *  the client leaves unthrottled, and duplicate 2FA submits can consume a
+     *  backup code twice server-side. */
     private val loginAttempts = mutableListOf<Instant>()
+
+    /**
+     * Client-side sliding-window throttle: max [MAX_LOGIN_ATTEMPTS] FAILED
+     * attempts per [LOGIN_WINDOW_SECS]. Sets the UI error and returns true when
+     * the caller must bail. Defence-in-depth only — the server bucket remains
+     * the real limit.
+     */
+    private fun isRateLimited(): Boolean {
+        val now = Instant.now()
+        val cutoff = now.minusSeconds(LOGIN_WINDOW_SECS)
+        loginAttempts.removeAll { it.isBefore(cutoff) }
+        if (loginAttempts.size >= MAX_LOGIN_ATTEMPTS) {
+            val oldestInWindow = loginAttempts.first()
+            val waitSecs = LOGIN_WINDOW_SECS - java.time.Duration.between(oldestInWindow, now).seconds
+            _uiState.value = _uiState.value.copy(error = "Too many login attempts. Please wait ${waitSecs}s.")
+            return true
+        }
+        return false
+    }
 
     /**
      * The in-flight auth request (email login / anon login / anon register).
@@ -148,16 +171,7 @@ class AuthViewModel @Inject constructor(
             return
         }
 
-        // Rate limit: max 5 failed attempts per 60-second window
-        val now = Instant.now()
-        val cutoff = now.minusSeconds(LOGIN_WINDOW_SECS)
-        loginAttempts.removeAll { it.isBefore(cutoff) }
-        if (loginAttempts.size >= MAX_LOGIN_ATTEMPTS) {
-            val oldestInWindow = loginAttempts.first()
-            val waitSecs = LOGIN_WINDOW_SECS - java.time.Duration.between(oldestInWindow, now).seconds
-            _uiState.value = _uiState.value.copy(error = "Too many login attempts. Please wait ${waitSecs}s.")
-            return
-        }
+        if (isRateLimited()) return
 
         // Single-flight: ignore a double-submit while a login is already running.
         if (authJob?.isActive == true) return
@@ -277,14 +291,19 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(error = "Enter a 6-digit code or a backup code")
             return
         }
+        // Same throttle as the other credential paths, and single-flight so a
+        // double-tap cannot submit (and consume) the same backup code twice.
+        if (isRateLimited()) return
+        if (authJob?.isActive == true) return
 
-        viewModelScope.launch {
+        authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             when (val result = repository.verifyTwoFactor(token, code)) {
                 is ApiResult.Success -> {
                     fetchProfileAfterLogin()
                 }
                 is ApiResult.Error -> {
+                    loginAttempts.add(Instant.now())
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         error = "Invalid verification code. Please try again.",
@@ -323,6 +342,9 @@ class AuthViewModel @Inject constructor(
      * this client never creates new accounts.
      */
     fun loginAnonymous(anonymousId: String, password: String? = null) {
+        // Same sliding-window throttle as email login — the 24-digit ID is the
+        // weakest-shaped credential and must not be the unthrottled one.
+        if (isRateLimited()) return
         // Single-flight: ignore a double-submit while a login is already running.
         if (authJob?.isActive == true) return
         authJob = viewModelScope.launch {
@@ -355,6 +377,7 @@ class AuthViewModel @Inject constructor(
                     }
                 }
                 is ApiResult.Error -> {
+                    loginAttempts.add(Instant.now())
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         error = parseLoginError(result.message),
