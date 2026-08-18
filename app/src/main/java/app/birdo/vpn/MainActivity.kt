@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -379,7 +380,7 @@ class MainActivity : FragmentActivity() {
         // hops back to Main. The settings-HMAC verification deliberately STAYS
         // synchronous: moving it async would let one frame of UI read tampered
         // settings before the reset lands.
-        androidx.lifecycle.lifecycleScope.launch {
+        lifecycleScope.launch {
             val result = try {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     RootDetector.check(this@MainActivity)
@@ -395,7 +396,7 @@ class MainActivity : FragmentActivity() {
                 val prefs = getSharedPreferences("birdo_security", MODE_PRIVATE)
                 val dismissed = prefs.getBoolean("root_warning_dismissed", false)
                 if (!dismissed) {
-                    rootWarningDialog = android.app.AlertDialog.Builder(this)
+                    rootWarningDialog = android.app.AlertDialog.Builder(this@MainActivity)
                         .setTitle("Security Warning")
                         .setMessage(
                             "This device appears to be rooted. Running a VPN on a rooted device " +
