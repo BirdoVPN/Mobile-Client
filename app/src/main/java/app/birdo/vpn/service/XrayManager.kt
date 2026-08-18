@@ -11,10 +11,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.io.RandomAccessFile
 import java.net.DatagramSocket
-import java.net.InetSocketAddress
-import java.net.Socket
 
 /**
  * Manages the Xray Reality stealth tunnel lifecycle on Android.
@@ -55,12 +52,11 @@ object XrayManager {
     @Volatile
     private var localPort = 0
 
-    /** TCP socket fd used by Xray to connect to the server — must be protected */
-    @Volatile
-    private var xraySocketFd: Int = -1
-
     /** Process handle when running xray as external binary */
     private var xrayProcess: Process? = null
+
+    /** Config file written for the binary-fallback path; deleted in [stop]. */
+    private var xrayConfigFile: File? = null
 
     /** Reference to VpnService for socket protection */
     private var vpnService: VpnService? = null
@@ -105,7 +101,6 @@ object XrayManager {
         val xrayPublicKey = config.xrayPublicKey
         val xrayShortId = config.xrayShortId
         val xraySni = config.xraySni ?: "www.microsoft.com"
-        val xrayFlow = config.xrayFlow ?: "xtls-rprx-vision"
 
         if (xrayEndpoint == null || xrayUuid == null || xrayPublicKey == null || xrayShortId == null) {
             Log.e(TAG, "Missing Xray configuration parameters")
@@ -127,6 +122,17 @@ object XrayManager {
         }
         if (!shortIdRegex.matches(xrayShortId)) {
             Log.e(TAG, "Invalid Xray shortId format (expected ≤16 hex chars) — rejecting")
+            return@withContext false
+        }
+        // SNI was the one server-supplied Xray field with no validation: a
+        // coerced backend could tag individual stealth users with a unique SNI
+        // any on-path observer can correlate. Require a plausible public
+        // hostname: LDH labels, at least one dot, no IP literal, bounded length.
+        val hostnameRegex = Regex(
+            "^(?=.{4,253}\$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,63}\$",
+        )
+        if (!hostnameRegex.matches(xraySni)) {
+            Log.e(TAG, "Invalid Xray SNI (not a plausible public hostname) — rejecting")
             return@withContext false
         }
 
@@ -152,7 +158,6 @@ object XrayManager {
                 publicKey = xrayPublicKey,
                 shortId = xrayShortId,
                 sni = xraySni,
-                flow = xrayFlow,
             )
 
             // Try libXray first (gomobile binding), then fall back to binary
@@ -162,10 +167,6 @@ object XrayManager {
             if (started) {
                 isRunning = true
                 Log.i(TAG, "Xray Reality tunnel started — listening on 127.0.0.1:$localPort")
-
-                // Protect the outbound TCP socket so it bypasses the VPN
-                protectXraySocket(serverHost, serverPort)
-
                 return@withContext true
             } else {
                 Log.e(TAG, "Failed to start Xray — both libXray and binary methods failed")
@@ -201,75 +202,27 @@ object XrayManager {
         } catch (e: Exception) {
             Log.w(TAG, "Error stopping Xray", e)
         } finally {
+            // The binary-fallback config carries the VLESS UUID (a stealth
+            // credential) — never leave it on disk past the session.
+            try {
+                xrayConfigFile?.delete()
+            } catch (_: Exception) { /* best effort */ }
+            xrayConfigFile = null
             isRunning = false
             localPort = 0
-            xraySocketFd = -1
             vpnService = null
             Log.i(TAG, "Xray stopped")
         }
     }
 
-    /**
-     * Connectivity probe / best-effort socket protect for Xray's outbound path.
-     *
-     * NOTE: the *actual* guarantee that Xray's traffic bypasses the tunnel is the
-     * VpnService.Builder.addDisallowedApplication(packageName) call in
-     * BirdoVpnService — that excludes the whole app process (and its children,
-     * incl. the in-process/subprocess Xray) from the tunnel by UID, so Xray's
-     * real outbound socket never loops back regardless of this method. This probe
-     * cannot reach Xray's internal fd (it protects a throwaway socket that it then
-     * closes); it remains only as a reachability check and a defensive extra
-     * protect(). Do NOT treat it as the primary off-tunnel mechanism.
-     */
-    private fun protectXraySocket(serverHost: String, serverPort: Int) {
-        val service = vpnService ?: return
-        Thread({
-            try {
-                // Give Xray a moment to establish its TCP connection
-                Thread.sleep(500)
-
-                // Create a test socket to check connectivity and get the fd
-                // The actual protection happens on Xray's internal socket
-                repeat(10) { attempt ->
-                    try {
-                        // Use DatagramSocket/Socket to verify and protect
-                        val socket = Socket()
-                        socket.connect(InetSocketAddress(serverHost, serverPort), 3000)
-                        val fd = getSocketFd(socket)
-                        if (fd >= 0) {
-                            service.protect(fd)
-                            Log.i(TAG, "Protected Xray outbound socket (attempt ${attempt + 1})")
-                        }
-                        socket.close()
-                        return@Thread
-                    } catch (e: Exception) {
-                        if (attempt < 9) Thread.sleep(500)
-                    }
-                }
-                Log.w(TAG, "Could not protect Xray socket after all attempts")
-            } catch (_: InterruptedException) { /* shutting down */ }
-        }, "xray-socket-protect").apply { isDaemon = true; start() }
-    }
-
-    /**
-     * Get the file descriptor from a Socket via reflection.
-     */
-    private fun getSocketFd(socket: Socket): Int {
-        return try {
-            val implField = Socket::class.java.getDeclaredField("impl")
-            implField.isAccessible = true
-            val impl = implField.get(socket)
-            val fdField = impl.javaClass.getDeclaredField("fd")
-            fdField.isAccessible = true
-            val fd = fdField.get(impl) as java.io.FileDescriptor
-            val fdIntField = java.io.FileDescriptor::class.java.getDeclaredField("fd")
-            fdIntField.isAccessible = true
-            fdIntField.getInt(fd)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to get socket fd", e)
-            -1
-        }
-    }
+    // NOTE: an earlier protectXraySocket() "probe" opened and closed up to ten
+    // real TCP connections to the Reality port after the tunnel was up — a
+    // distinguishable on-wire pattern on exactly the networks stealth targets,
+    // while by its own documentation protecting nothing (it could never reach
+    // Xray's internal fd). The *actual* off-tunnel guarantee is
+    // VpnService.Builder.addDisallowedApplication(packageName) in
+    // BirdoVpnService, which excludes the whole app process (incl. the
+    // in-process/subprocess Xray) from the tunnel by UID. The probe was removed.
 
     // ── Xray Startup Methods ────────────────────────────────────
 
@@ -340,9 +293,12 @@ object XrayManager {
                 return false
             }
 
-            // Write config to a temp file
+            // Write config to a temp file (deleted in stop(); delete any stale
+            // copy from a previous crashed session before writing anew)
             val configFile = File(context.cacheDir, "xray_config.json")
+            configFile.delete()
             configFile.writeText(configJson)
+            xrayConfigFile = configFile
 
             // Make binary executable
             xrayBinary.setExecutable(true)
@@ -377,6 +333,8 @@ object XrayManager {
             } else {
                 Log.e(TAG, "Xray process exited immediately with code: ${process.exitValue()}")
                 xrayProcess = null
+                configFile.delete()
+                xrayConfigFile = null
                 false
             }
         } catch (e: Exception) {
@@ -401,7 +359,6 @@ object XrayManager {
         publicKey: String,
         shortId: String,
         sni: String,
-        flow: String,
     ): String {
         return JSONObject().apply {
             // Log configuration
