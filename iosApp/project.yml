@@ -175,7 +175,13 @@ targets:
   # TEST_HOST). Keep the extra sources to files that import only Foundation.
   # First occupant: the Multi-Hop route validation.
   BirdoVPNTests:
-    type: bundle.unit-testing
+    # XcodeGen's product type is `bundle.unit-test` (singular, no -ing).
+    # `bundle.unit-testing` fails the WHOLE spec parse with
+    # "Unknown Target type", which kills xcodegen generate and therefore every
+    # job in ios.yml before a single Swift file is compiled — the UI-testing
+    # sibling below is `bundle.ui-testing`, which is where the wrong guess came
+    # from.
+    type: bundle.unit-test
     supportedDestinations: [iOS, macOS]
     sources:
       - path: BirdoVPNTests
