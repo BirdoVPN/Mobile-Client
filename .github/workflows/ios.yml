@@ -290,7 +290,10 @@ jobs:
   publish-ios:
     name: Attach unsigned iOS .ipa to release
     runs-on: ubuntu-latest
-    needs: build-ios
+    # P5-CICD-20: the publicly-downloadable unsigned .ipa must carry the same
+    # test gate as the TestFlight build (release-ios) from the same commit —
+    # previously it attached even when the simulator suite failed.
+    needs: [build-ios, test-ios]
     # A workflow_dispatch WITHOUT release_tag is a verification run — someone
     # checking that a branch still builds for iOS, which PR CI never does. There
     # is no release to attach to, so this job used to run anyway and fail at
