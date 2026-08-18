@@ -51,6 +51,7 @@ import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.RootDetector
 import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -372,8 +373,22 @@ class MainActivity : FragmentActivity() {
      * have legitimate reasons for rooting.
      */
     private fun checkRootStatus() {
-        try {
-            val result = RootDetector.check(this)
+        // PERF: the root sweep spawns a process, probes ~25 filesystem paths
+        // and does ~18 PackageManager lookups — run it on IO, never on the
+        // main thread during onCreate (cold-start jank / ANR path). The dialog
+        // hops back to Main. The settings-HMAC verification deliberately STAYS
+        // synchronous: moving it async would let one frame of UI read tampered
+        // settings before the reset lands.
+        androidx.lifecycle.lifecycleScope.launch {
+            val result = try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    RootDetector.check(this@MainActivity)
+                }
+            } catch (e: Exception) {
+                Log.w("BirdoSecurity", "Root detection check failed", e)
+                return@launch
+            }
+            if (isFinishing || isDestroyed) return@launch
             if (result.isRooted) {
                 Log.w("BirdoSecurity", "Root detected: ${result.indicators.joinToString()}")
                 // Show warning dialog on first detection per install
@@ -399,8 +414,6 @@ class MainActivity : FragmentActivity() {
                         .show()
                 }
             }
-        } catch (e: Exception) {
-            Log.w("BirdoSecurity", "Root detection check failed", e)
         }
     }
 
