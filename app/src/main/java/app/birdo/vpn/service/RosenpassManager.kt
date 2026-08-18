@@ -60,6 +60,9 @@ object RosenpassManager {
     /** WireGuard PresharedKey is exactly 32 bytes. */
     private const val PSK_LENGTH_BYTES = 32
 
+    /** Upper bound for the server-supplied per-connect nonce (server mints 32 B). */
+    private const val MAX_NONCE_BYTES = 64
+
     enum class Mode { DISABLED, SERVER_PROVIDED, BILATERAL }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -224,6 +227,13 @@ object RosenpassManager {
             Log.e(TAG, "malformed PQ nonce — bilateral PQ aborted", e)
             return null
         }
+        // Bound the server-supplied nonce before it crosses the JNI boundary —
+        // an empty or arbitrarily large buffer must not rely on Rust-side
+        // validation alone.
+        if (nonce.isEmpty() || nonce.size > MAX_NONCE_BYTES) {
+            Log.e(TAG, "PQ nonce out of bounds (${nonce.size} B) — bilateral PQ aborted")
+            return null
+        }
         val ciphertext = try {
             Base64.decode(ctB64, Base64.NO_WRAP)
         } catch (e: Exception) {
@@ -236,23 +246,39 @@ object RosenpassManager {
         }
 
         val keypair = loadOrGenerateKeypair(context) ?: return null
+        try {
+            // The generate path validates sizes via StaticKeypair.fromRaw; the
+            // LOAD path reads raw bytes from disk with no length check, so a
+            // truncated/corrupted file would reach the JNI boundary unvalidated.
+            // Enforce the same invariant on both paths.
+            if (keypair.secretKey.size != RosenpassNative.SECRET_KEY_BYTES) {
+                Log.e(TAG, "persisted ML-KEM secret key has wrong size (${keypair.secretKey.size} B) — bilateral PQ aborted")
+                return null
+            }
 
-        val psk = try {
-            RosenpassNative.deriveSharedPsk(keypair.secretKey, ciphertext, nonce)
-        } catch (e: Throwable) {
-            Log.e(TAG, "native deriveSharedPsk threw", e)
-            return null
+            val psk = try {
+                RosenpassNative.deriveSharedPsk(keypair.secretKey, ciphertext, nonce)
+            } catch (e: Throwable) {
+                Log.e(TAG, "native deriveSharedPsk threw", e)
+                return null
+            }
+            if (psk == null) {
+                Log.w(TAG, "deriveSharedPsk returned null — falling back")
+                return null
+            }
+            if (psk.size != PSK_LENGTH_BYTES) {
+                Log.e(TAG, "deriveSharedPsk returned wrong-sized PSK (${psk.size} != $PSK_LENGTH_BYTES)")
+                psk.fill(0)
+                return null
+            }
+            return psk
+        } finally {
+            // Zero the in-memory copy of the long-lived PQ secret key once the
+            // derivation is done — the canonical copy lives Keystore-encrypted
+            // on disk (RosenpassKeyStore) and is re-read per connect, so this
+            // only shortens the window key material sits in process memory.
+            keypair.secretKey.fill(0)
         }
-        if (psk == null) {
-            Log.w(TAG, "deriveSharedPsk returned null — falling back")
-            return null
-        }
-        if (psk.size != PSK_LENGTH_BYTES) {
-            Log.e(TAG, "deriveSharedPsk returned wrong-sized PSK (${psk.size} != $PSK_LENGTH_BYTES)")
-            psk.fill(0)
-            return null
-        }
-        return psk
     }
 
     private fun loadOrGenerateKeypair(context: Context): RosenpassNative.StaticKeypair? {
