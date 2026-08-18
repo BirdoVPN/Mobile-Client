@@ -39,7 +39,13 @@ internal class VpnNotificationManager(private val context: Context) {
         ).apply {
             description = "Persistent notification while VPN is active"
             setShowBadge(false)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            // PRIVATE: the lock screen shows only the redacted public version
+            // (see buildForegroundNotification.setPublicVersion) — the exit-node
+            // name / server IP must not be readable from a locked handset at a
+            // border check or over a shoulder. NOTE: channel settings are
+            // immutable after creation, so existing installs keep PUBLIC at the
+            // channel level; the per-notification visibility below still applies.
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
         notificationManager.createNotificationChannel(channel)
     }
@@ -118,7 +124,23 @@ internal class VpnNotificationManager(private val context: Context) {
             .setOngoing(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            // PRIVATE + a bland public version: on the lock screen the OS shows
+            // only the title-level state, never the server name / IP / duration
+            // that the status line can carry. Full detail stays in the
+            // post-unlock shade.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setContentTitle(title)
+                    .setSmallIcon(iconRes)
+                    .setContentIntent(pendingOpen)
+                    .setOngoing(true)
+                    .setSilent(true)
+                    .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                    .setShowWhen(false)
+                    .setColor(accentColor)
+                    .build()
+            )
             .setShowWhen(false)
             .setOnlyAlertOnce(true)
             .setColor(accentColor)

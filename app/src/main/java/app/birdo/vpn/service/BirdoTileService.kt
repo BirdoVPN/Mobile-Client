@@ -25,6 +25,7 @@ class BirdoTileService : TileService() {
 
     @Inject lateinit var vpnManager: VpnManager
     @Inject lateinit var tokenManager: TokenManager
+    @Inject lateinit var appPreferences: app.birdo.vpn.data.preferences.AppPreferences
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -131,7 +132,15 @@ class BirdoTileService : TileService() {
             is VpnState.Connected -> {
                 tile.state = Tile.STATE_ACTIVE
                 tile.label = "Birdo VPN"
-                tile.subtitle = BirdoVpnService.connectedServer ?: "Connected"
+                // The shade is readable from a LOCKED device and had no opt-out:
+                // gate the exit-node name on the same preference that governs
+                // the notification's location line.
+                tile.subtitle =
+                    if (appPreferences.showLocationInNotification) {
+                        BirdoVpnService.connectedServer ?: "Connected"
+                    } else {
+                        "Connected"
+                    }
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
             is VpnState.Connecting, is VpnState.Disconnecting -> {
