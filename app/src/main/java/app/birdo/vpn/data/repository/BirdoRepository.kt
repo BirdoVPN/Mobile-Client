@@ -606,8 +606,13 @@ class BirdoRepository @Inject constructor(
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
 
-        // H-11 FIX: Use CharArray for private key to enable zeroing after use.
-        // JVM Strings are immutable and cannot be reliably scrubbed from heap.
+        // H-11 (honest scope): the CharArray below is zeroed in the finally,
+        // but the key ALSO exists as immutable Strings — toBase64() here, the
+        // String(privateKeyChars) handed to TokenManager and copied into the
+        // returned ConnectResponse — none of which can be scrubbed from the
+        // heap. The zeroing shortens exposure of these two buffers only; the
+        // session key remains recoverable from a heap dump until GC. A real
+        // fix routes byte[] end-to-end into a JNI entry point (design work).
         val privateKeyChars = keyPair.privateKey.toBase64().toCharArray()
 
         // Zero the Key object's internal byte[] via the raw bytes
@@ -743,6 +748,9 @@ class BirdoRepository @Inject constructor(
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
+        // Same honest-scope caveat as connectVpn's H-11 note: the zeroing below
+        // covers these two buffers only; immutable String copies of the key
+        // survive until GC.
         val privateKeyChars = keyPair.privateKey.toBase64().toCharArray()
         val privateKeyBytes = keyPair.privateKey.bytes
         try {

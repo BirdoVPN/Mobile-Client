@@ -1063,9 +1063,14 @@ class BirdoVpnService : VpnService() {
             startTunnelMonitor(handle)
             registerDefaultNetworkCallback(handle)
 
-            // SEC: wg-go has consumed the private key from configString; wipe it
-            // from the in-memory ConnectResponse so a heap dump or later code
-            // path can't recover it. The kernel/wg-go now owns the key.
+            // SEC (honest scope): drop OUR references to the key from the
+            // retained ConnectResponse. This does NOT scrub the key from process
+            // memory — the key crossed this function as immutable Strings
+            // (configString included), and those copies live until the GC
+            // reclaims them; a heap dump taken in that window can still recover
+            // them. A real fix needs a byte[]-accepting JNI entry point on wg-go
+            // (design work, tracked). What this line buys: later code paths and
+            // long-lived state no longer hold the key.
             activeConfig = activeConfig?.copy(privateKey = "", presharedKey = null)
 
             // The tunnel is up, so we are no longer in the blocking state — clear
