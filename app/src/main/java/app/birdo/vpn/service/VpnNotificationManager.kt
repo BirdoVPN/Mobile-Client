@@ -171,13 +171,23 @@ internal class VpnNotificationManager(private val context: Context) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(status))
         }
 
-        // Action buttons
+        // Action buttons. The two destructive actions (drop the tunnel /
+        // clear the fail-closed kill switch) require device unlock before
+        // firing (API 31+; a no-op on older releases): anyone briefly holding
+        // a locked handset must not be able to strip its VPN protection from
+        // the lock screen.
+        val disconnectAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_notif_disconnected, "Disconnect", stopPendingIntent,
+        ).setAuthenticationRequired(true).build()
+        val disableKillSwitchAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_notif_disconnected, "Disable Kill Switch", stopPendingIntent,
+        ).setAuthenticationRequired(true).build()
         when {
             state is VpnState.Connected || state is VpnState.Connecting -> {
-                builder.addAction(R.drawable.ic_notif_disconnected, "Disconnect", stopPendingIntent)
+                builder.addAction(disconnectAction)
             }
             killSwitchActive -> {
-                builder.addAction(R.drawable.ic_notif_disconnected, "Disable Kill Switch", stopPendingIntent)
+                builder.addAction(disableKillSwitchAction)
             }
             state is VpnState.Disconnected || state is VpnState.Error -> {
                 builder.addAction(R.drawable.ic_notif_connected, "Connect", connectPendingIntent)

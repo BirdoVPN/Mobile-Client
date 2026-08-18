@@ -74,13 +74,13 @@ class BirdoTileService : TileService() {
             // every tap — a device with all traffic blocked and no way out of it
             // from the shade.
             is VpnState.Connected, is VpnState.KillSwitchActive -> {
-                scope.launch {
-                    try {
-                        vpnManager.disconnect()
-                        withContext(Dispatchers.Main) { updateTile() }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to disconnect via tile", e)
-                    }
+                // Destructive action (drops the tunnel / clears the fail-closed
+                // kill switch): from a LOCKED device, demand unlock first —
+                // mirrors setAuthenticationRequired on the notification action.
+                if (isLocked) {
+                    unlockAndRun { performTileDisconnect() }
+                } else {
+                    performTileDisconnect()
                 }
             }
             is VpnState.Disconnected, is VpnState.Error -> {
@@ -120,6 +120,17 @@ class BirdoTileService : TileService() {
             else -> {
                 // Connecting/Disconnecting — do nothing
                 Log.d(TAG, "Tile clicked during transition, ignoring")
+            }
+        }
+    }
+
+    private fun performTileDisconnect() {
+        scope.launch {
+            try {
+                vpnManager.disconnect()
+                withContext(Dispatchers.Main) { updateTile() }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to disconnect via tile", e)
             }
         }
     }
