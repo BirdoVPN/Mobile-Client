@@ -656,13 +656,23 @@ class BirdoRepository @Inject constructor(
 
     suspend fun disconnectVpn(): ApiResult<Unit> {
         val keyId = tokenManager.getLastKeyId()
+        var serverResult: ApiResult<Unit> = ApiResult.Success(Unit)
         if (keyId != null) {
-            try { api.disconnect(keyId) } catch (_: Exception) { /* best effort */ }
+            // Through withAutoRefresh, NOT a bare api.disconnect(): access tokens
+            // live one hour, so the ordinary end-of-session disconnect presented
+            // an expired token, got a silent 401, and left the WireGuard peer
+            // provisioned server-side — consuming a plan connection slot while
+            // the UI reported a clean disconnect. Same class as the logout() fix.
+            serverResult = withAutoRefresh("Disconnect failed") { api.disconnect(keyId) }
         }
+        // Local teardown is authoritative: clear the key id unconditionally so
+        // heartbeats stop carrying a stale keyId even if the server call failed
+        // (the server reaps orphaned peers on missed heartbeats).
+        tokenManager.clearLastKeyId()
         // FIX-1-8: Clear WG private key from storage after disconnect.
         // Fresh keys are generated on each new connection.
         tokenManager.clearWireGuardPrivateKey()
-        return ApiResult.Success(Unit)
+        return serverResult
     }
 
     /**

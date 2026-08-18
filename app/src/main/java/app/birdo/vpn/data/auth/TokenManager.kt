@@ -201,6 +201,11 @@ class TokenManager @Inject constructor(
         prefs.edit().putString(KEY_LAST_KEY_ID, keyId).apply()
     }
 
+    /** Clear after disconnect so heartbeats stop carrying a stale key id. */
+    fun clearLastKeyId() {
+        prefs.edit().remove(KEY_LAST_KEY_ID).apply()
+    }
+
     // ── Pending anonymous ID (created, not yet acknowledged) ─────
     //
     // A freshly minted anonymous account's 24-digit ID is the account's ONLY
