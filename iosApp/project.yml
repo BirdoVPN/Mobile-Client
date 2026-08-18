@@ -81,6 +81,7 @@ targets:
     # error the simulator job has been logging.
     scheme:
       testTargets:
+        - BirdoVPNTests
         - BirdoVPNUITests
       gatherCoverageData: false
     sources:
@@ -166,6 +167,25 @@ targets:
       # talks to it via the C ABI declared in `birdo_pq_ios.h`.
       - framework: Vendor/BirdoPQNative.xcframework
         embed: false
+
+  # Unit tests — logic-only and UN-HOSTED on purpose: the sources listed here
+  # are compiled straight into the bundle, so the tests need neither the app
+  # as a test host nor the KMP framework / WireGuardKit / BirdoPQNative links
+  # (deliberately NO `dependencies:` — XcodeGen would otherwise wire a
+  # TEST_HOST). Keep the extra sources to files that import only Foundation.
+  # First occupant: the Multi-Hop route validation.
+  BirdoVPNTests:
+    type: bundle.unit-testing
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: BirdoVPNTests
+      - path: iosApp/Services/MultiHopRoute.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tests
+        # Never signed for distribution — same rationale as BirdoVPNUITests.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGNING_ALLOWED: "NO"
 
   # UI tests, whose only job today is capturing App Store screenshots.
   #
