@@ -438,7 +438,6 @@ class BirdoRepositoryTest {
         // Private key is generated locally (not from the server), so verify it's stored but don't
         // check the exact value — it's a random X25519 key from wireguard-android.
         verify { tokenManager.setWireGuardPrivateKey(any()) }
-        verify { tokenManager.setLastServer("server_1") }
     }
 
     @Test

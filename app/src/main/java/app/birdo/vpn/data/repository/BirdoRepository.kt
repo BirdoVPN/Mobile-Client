@@ -640,7 +640,6 @@ class BirdoRepository @Inject constructor(
                 // The server no longer returns privateKey when clientPublicKey was sent.
                 val localPrivateKey = String(privateKeyChars)
                 tokenManager.setWireGuardPrivateKey(localPrivateKey)
-                tokenManager.setLastServer(serverNodeId)
                 // Inject the locally-generated private key into the response so
                 // VpnManager and BirdoVpnService can build the WireGuard config.
                 // The server intentionally omits privateKey when clientPublicKey was sent.
