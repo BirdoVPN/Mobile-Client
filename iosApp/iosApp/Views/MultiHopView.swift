@@ -18,6 +18,14 @@ struct MultiHopView: View {
     @State private var selectedEntry: ServerInfo?
     @State private var selectedExit: ServerInfo?
     @State private var showSubscription = false
+    /// True while our own connect is in flight — holds this screen open on a
+    /// progress state until the result arrives (dismiss on success, error
+    /// in-place on failure). `vpnVM.isConnecting` alone can't drive this: it
+    /// is also set by unrelated connects.
+    @State private var isSubmitting = false
+    /// Failure surfaced HERE, where the user still has both pickers — before,
+    /// the screen dismissed on tap and the error landed on Home.
+    @State private var connectError: String?
 
     /// Only nodes the user can actually use — locked (`!accessible`) and
     /// offline nodes must never be selectable as hops.
@@ -32,7 +40,7 @@ struct MultiHopView: View {
 
     private var canConnect: Bool {
         vpnVM.isSovereign && selectedEntry != nil && selectedExit != nil
-            && !sameServerWarning && !vpnVM.isConnecting
+            && !sameServerWarning && !vpnVM.isConnecting && !isSubmitting
     }
 
     var body: some View {
@@ -126,15 +134,37 @@ struct MultiHopView: View {
 
         PrimaryButton(
             "Connect Multi-Hop",
+            loadingTitle: "Connecting…",
             variant: .brand,
             icon: "power",
+            isLoading: isSubmitting,
             isEnabled: canConnect
         ) {
             guard let entry = selectedEntry, let exit = selectedExit else { return }
-            vpnVM.connectMultiHop(entryId: entry.id, exitId: exit.id)
-            dismiss()
+            // Hold this screen open until the connect RESULT arrives.
+            // Dismissing on tap left the user staring at Home with no idea
+            // whether the pair took, and any refusal surfaced later on the
+            // wrong screen. Dismiss only on success; failures render below,
+            // where entry/exit can still be changed and retried.
+            connectError = nil
+            isSubmitting = true
+            Task { @MainActor in
+                let ok = await vpnVM.connectMultiHop(entry: entry, exit: exit)
+                isSubmitting = false
+                if ok {
+                    dismiss()
+                } else {
+                    connectError = vpnVM.error ?? "Could not connect. Please try again."
+                }
+            }
         }
         .padding(.top, BirdoTheme.Spacing.sm)
+
+        if let message = connectError {
+            // Backend refusals and the route-mismatch check arrive verbatim —
+            // render the exact words, never rephrase (error-surface contract).
+            ErrorBanner(message, icon: "exclamationmark.circle")
+        }
     }
 
     // MARK: - Locked content (plan < SOVEREIGN)

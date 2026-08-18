@@ -2,6 +2,18 @@ import Foundation
 import SwiftUI
 import NetworkExtension
 
+/// A live Multi-Hop session: the entry/exit pair the SERVER CONFIRMED it
+/// installed (never merely the pair we asked for — `MultiHopRouteCheck`
+/// enforces that before this is constructed), captured at connect time so
+/// every rebuild path redials the same pair and the UI renders the route that
+/// actually exists rather than the unrelated single-hop `selectedServer`.
+struct MultiHopSession: Equatable, Sendable {
+    let entry: ServerInfo
+    let exit: ServerInfo
+    /// Server-confirmed route string, e.g. "DE -> NL".
+    let route: String
+}
+
 /// Manages VPN connection state, server list, subscription/plan state,
 /// the 30 s heartbeat, speed tests and port forwarding.
 ///
@@ -50,6 +62,15 @@ final class VpnViewModel: ObservableObject {
     /// UI never paints the Connected dot on a server the user merely tapped. nil
     /// unless a live session exists. (Review #3 — the live-switch truth fix.)
     @Published private(set) var connectedServerId: String?
+    /// The live Multi-Hop session, if any — nil for single-hop sessions.
+    /// Drives Home's "Protected · Multi-Hop" surfaces (status pill, server
+    /// card, globe focus) and forces the rebuild paths to preserve — or
+    /// explicitly refuse to break — the pair instead of silently downgrading
+    /// to single-hop. Like `activeKeyId`, it deliberately survives a transient
+    /// OS `.disconnected` (the same session may resume); it is cleared by
+    /// `resetSessionState()` (user disconnect / sign-out / dead tunnel), on
+    /// any fresh single-hop `connect()`, and on a failed multi-hop dial.
+    @Published private(set) var activeMultiHop: MultiHopSession?
     /// True from the start of a live server switch until the new node reaches
     /// .connected (or the switch fails), so Home shows "Switching…" instead of a
     /// premature "Protected" over the new name.
@@ -230,6 +251,13 @@ final class VpnViewModel: ObservableObject {
         guard !isConnecting else { return }
         isConnecting = true
         error = nil
+        // A fresh single-hop dial replaces any multi-hop session state. This is
+        // only reachable with the tunnel down (Home CTA, auto-connect, or a
+        // single-hop rebuild — reapplySettings and selectServerLive branch to
+        // the multi-hop redial / refusal before ever calling here), so a pair
+        // left over from a transient OS drop must not relabel the new
+        // single-hop session as Multi-Hop.
+        activeMultiHop = nil
 
         Task {
             do {
@@ -296,33 +324,60 @@ final class VpnViewModel: ObservableObject {
         }
     }
 
-    func connectMultiHop(entryId: String, exitId: String) {
-        // Same re-entrancy guard as connect(): the multi-hop sheet dismisses on
-        // tap but does not disable its button on `isConnecting`.
-        guard !isConnecting else { return }
+    /// Dial a Multi-Hop pair. Async (unlike `connect()`) so MultiHopView can
+    /// hold its screen open on a progress state and only leave once the result
+    /// is in: `true` means the server CONFIRMED the requested route and the
+    /// tunnel start was accepted (the Connected state itself still lands via
+    /// `handleStatusChange`, exactly as for single-hop).
+    @discardableResult
+    func connectMultiHop(entry: ServerInfo, exit: ServerInfo) async -> Bool {
+        // Same re-entrancy guard as connect().
+        guard !isConnecting else { return false }
         isConnecting = true
         error = nil
 
-        Task {
+        do {
+            let config = try await api.getMultiHopConfig(entryId: entry.id, exitId: exit.id)
+            // The server-side peer now EXISTS — remember its handle so every
+            // failure below (route refusal included) can release the slot.
+            setActiveKeyId(config.keyId)
             do {
-                let config = try await api.getMultiHopConfig(entryId: entryId, exitId: exitId)
-                setActiveKeyId(config.keyId)
-                do {
-                    try await vpnManager.connect(config: config)
-                } catch {
-                    releaseServerSlot()
-                    throw error
-                }
-                quantumActive = BirdoPQManager.shared.currentMode == .bilateral
-                // Connected-state ownership: see connect().
+                // Refuse a route the server did not confirm (ports desktop
+                // vpn_multi_hop.rs / Android VpnManager #268 — rationale in
+                // MultiHopRoute.swift): `success: true` only means the request
+                // was handled; without checking the response's `multiHop`
+                // block, a working single-hop tunnel would be rendered as the
+                // user's chosen two-hop route indefinitely.
+                let confirmed = try MultiHopRouteCheck.validate(
+                    config.multiHop,
+                    requestedEntryId: entry.id,
+                    requestedExitId: exit.id
+                )
+                try await vpnManager.connect(config: config)
+                // Record the CONFIRMED pair as session state so reapply /
+                // switch rebuild multi-hop (never a silent single-hop
+                // downgrade) and Home renders the route that actually exists.
+                activeMultiHop = MultiHopSession(entry: entry, exit: exit,
+                                                 route: confirmed.route)
             } catch {
-                self.error = error.localizedDescription
-                reportUnauthorized(error)
-                isConnecting = false
-                isReapplyingSettings = false
-                // A failed (re)connect must not leave the UI stuck on "Switching…".
-                isSwitching = false
+                // The peer exists but is unusable (unconfirmed/mismatched
+                // route, or local tunnel setup failed): release it or it holds
+                // the user's connection slot until eviction.
+                releaseServerSlot()
+                throw error
             }
+            quantumActive = BirdoPQManager.shared.currentMode == .bilateral
+            // Connected-state ownership: see connect().
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            reportUnauthorized(error)
+            isConnecting = false
+            isReapplyingSettings = false
+            // A failed (re)connect must not leave the UI stuck on "Switching…".
+            isSwitching = false
+            activeMultiHop = nil
+            return false
         }
     }
 
@@ -337,7 +392,8 @@ final class VpnViewModel: ObservableObject {
     /// `disconnect()` clears `isReapplyingSettings`, which gates the deferred
     /// reconnect below.
     func reapplySettings() {
-        guard isConnected, !isConnecting, selectedServer != nil else { return }
+        guard isConnected, !isConnecting else { return }
+        guard activeMultiHop != nil || selectedServer != nil else { return }
         guard !isReapplyingSettings else { return }
         isReapplyingSettings = true
         error = nil
@@ -345,7 +401,16 @@ final class VpnViewModel: ObservableObject {
         Task { [weak self] in
             await self?.awaitTeardown()
             guard let self, self.isReapplyingSettings else { return }
-            self.connect()
+            if let mh = self.activeMultiHop {
+                // A live Multi-Hop session rebuilds as the SAME confirmed pair.
+                // The unconditional single-hop connect() here used to pass its
+                // guard (fetchServers auto-picks selectedServer) and silently
+                // rebuild any settings change as single-hop — the user kept
+                // seeing the multi-hop UI over a one-hop tunnel.
+                await self.connectMultiHop(entry: mh.entry, exit: mh.exit)
+            } else {
+                self.connect()
+            }
             await self.clearRebuildFlagsIfStalled()
         }
     }
@@ -550,8 +615,10 @@ final class VpnViewModel: ObservableObject {
             if connectedSince == nil { connectedSince = Date() }
             // The tunnel is up on the server we just dialled — record which node
             // it actually is and clear any in-flight live-switch flag, so the UI
-            // stops lying about egress the instant the new peer is real.
-            connectedServerId = selectedServer?.id
+            // stops lying about egress the instant the new peer is real. For a
+            // Multi-Hop session the node this device talks to is the ENTRY node,
+            // never the unrelated `selectedServer` the user last browsed to.
+            connectedServerId = activeMultiHop?.entry.id ?? selectedServer?.id
             isSwitching = false
             // On-demand is armed only after a REAL handshake — see
             // armKillSwitchAfterHandshake(). NEVPNStatus.connected means the
@@ -607,6 +674,7 @@ final class VpnViewModel: ObservableObject {
         quantumActive = false
         connectedSince = nil
         connectedServerId = nil
+        activeMultiHop = nil
         isSwitching = false
         bytesReceived = 0
         bytesSent = 0
@@ -621,6 +689,15 @@ final class VpnViewModel: ObservableObject {
         guard server.accessible else { return }
         guard isConnected || isConnecting else {
             selectServer(server)
+            return
+        }
+        // REFUSE to downgrade a live Multi-Hop session (desktop S-5 semantics,
+        // Dashboard.tsx): a single server cannot express the pair, so a switch
+        // here would silently drop the second hop while the user kept paying
+        // for — and believing in — a separation that no longer existed.
+        if activeMultiHop != nil {
+            error = "Switching servers would replace your Multi-Hop route with "
+                + "a single hop. Disconnect first if you meant to switch."
             return
         }
         if server.id == connectedServerId { return }
