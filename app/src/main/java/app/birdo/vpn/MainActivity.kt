@@ -182,6 +182,12 @@ class MainActivity : FragmentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Replace the activity's stored intent: without setIntent(), an
+        // activity recreation (process restore, config change) re-reads the
+        // ORIGINAL launch intent via getIntent() and replays an already-consumed
+        // deep link / OAuth callback — retrying the code exchange with a dead
+        // code and surfacing a spurious sign-in failure.
+        setIntent(intent)
         parseDeepLink(intent)?.let { route ->
             deepLinkRoute.value = route
         }
