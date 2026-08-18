@@ -18,7 +18,8 @@ import os.log
 /// - Implements live transfer-stats IPC for the host app (`stats` message).
 /// `@unchecked Sendable` (finding #2): the liveness heartbeat runs in a
 /// `Task`, whose closure is `@Sendable` and therefore requires a Sendable
-/// `self`. The only cross-context mutable state is `heartbeatTask`, guarded by
+/// `self`. The cross-context mutable state is `heartbeatTask` and
+/// `tunnelStartedAt` (via its locked accessor), both guarded by
 /// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatSession` are set
 /// once and treated as effectively immutable thereafter (the existing stats /
 /// wake callbacks already read them off-thread). Mirrors the codebase's
@@ -56,8 +57,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     /// When the tunnel came up, so liveness checks can allow a grace period for
     /// the first handshake instead of tearing down a tunnel that is still
-    /// establishing on a slow network.
-    private var tunnelStartedAt: Date?
+    /// establishing on a slow network. Written on the NetworkExtension callback
+    /// context and read from the heartbeat Task — access ONLY via
+    /// `tunnelStartedAt` (guarded by `heartbeatLock`, same as `heartbeatTask`).
+    private var _tunnelStartedAt: Date?
+    private var tunnelStartedAt: Date? {
+        get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _tunnelStartedAt }
+        set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _tunnelStartedAt = newValue }
+    }
 
     /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
     /// header or body is ever written to disk, matching the host APIClient —
@@ -114,7 +121,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let heartbeatToken = (proto.providerConfiguration?["hb-access-token"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let heartbeatClientVersion = (proto.providerConfiguration?["hb-client-version"] as? String) ?? "1.0.0"
+        // "0.0.0-unknown", never "1.0.0": a fabricated plausible version
+        // defeats any server-side version floor and corrupts attribution (the
+        // exact regression the codebase eliminated once). MUST stay in
+        // lockstep with VPNManager's fallback.
+        let rawHbVersion = proto.providerConfiguration?["hb-client-version"] as? String
+        let heartbeatClientVersion = (rawHbVersion?.isEmpty == false) ? rawHbVersion! : "0.0.0-unknown"
 
         // Read secrets out of the shared keychain. The IDs are passed via
         // providerConfiguration; the actual material never appears there.
@@ -166,7 +178,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 )
             }()
         } catch {
-            recordFailure("config parse failed: \(error.localizedDescription)")
+            // Type/case discriminant only — TunnelConfiguration parse errors can
+            // carry the offending config LINE, i.e. the private key or PSK.
+            recordFailure("config parse failed: \(Self.errorDiscriminant(error))")
             completionHandler(TunnelError.invalidConfig)
             return
         }
@@ -185,7 +199,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 os_log("Adapter start failed: %{private}@",
                        log: self?.log ?? .default, type: .error,
                        String(describing: adapterError))
-                self?.recordFailure("adapter start failed: \(adapterError)")
+                // Case name only — `.dnsResolution` carries the server endpoint.
+                self?.recordFailure("adapter start failed: \(Self.errorDiscriminant(adapterError))")
                 completionHandler(TunnelError.adapterFailed(String(describing: adapterError)))
                 return
             }
@@ -225,7 +240,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         tunnelStartedAt = nil
         adapter.stop { [weak self] error in
             if let error {
-                os_log("Adapter stop failed: %{public}@",
+                // %{private}@ — same WireGuardAdapterError family as the start
+                // path; its cases can carry the endpoint.
+                os_log("Adapter stop failed: %{private}@",
                        log: self?.log ?? .default, type: .error,
                        String(describing: error))
             }
@@ -427,7 +444,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
         if age > Self.maxHandshakeAge {
             os_log("Data plane dead: last handshake %{public}.0fs ago — cancelling tunnel so it can re-dial",
-                   log: .default, type: .error, age)
+                   log: log, type: .error, age)
             cancelTunnelWithError(NSError(
                 domain: "app.birdo.vpn.tunnel",
                 code: -1001,
@@ -493,9 +510,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// entitled on both sides and already works, whereas an App Group would mean
     /// a new entitlement and regenerating both provisioning profiles.
     ///
+    /// Stable, payload-free discriminant for an error: the enum case name (or
+    /// type name) WITHOUT associated values — so `.dnsResolution(endpoint)`
+    /// logs as "dnsResolution", never the endpoint, and a parse error never
+    /// logs the config line (which can be the private key).
+    private static func errorDiscriminant(_ error: Error) -> String {
+        let mirror = Mirror(reflecting: error)
+        if mirror.displayStyle == .enum, let caseName = mirror.children.first?.label {
+            return "\(type(of: error)).\(caseName)"
+        }
+        return String(describing: type(of: error))
+    }
+
     /// Diagnostic strings only — never key material, never the endpoint.
+    /// Callers must pass pre-sanitised discriminants (see `errorDiscriminant`);
+    /// the os_log below stays %{private}@ as defence in depth so a future call
+    /// site that slips an interpolated error in cannot reach sysdiagnose.
     private func recordFailure(_ reason: String) {
-        os_log("Tunnel start failed: %{public}@", log: log, type: .error, reason)
+        os_log("Tunnel start failed: %{private}@", log: log, type: .error, reason)
         guard let data = reason.data(using: .utf8) else { return }
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

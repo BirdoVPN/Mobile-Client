@@ -196,7 +196,13 @@ final class VPNManager: @unchecked Sendable {
         if let token = KeychainService.shared.accessToken, !token.isEmpty {
             providerConfig["hb-access-token"] = token
         }
-        let clientVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+        // Never fabricate a plausible version: a "1.0.0" fallback is exactly
+        // the hardcoded value that defeated the iOS version floor once already
+        // (adaptive-transport rollout). An impossible sentinel is filterable
+        // server-side; a real-looking one corrupts version attribution.
+        // MUST stay in lockstep with PacketTunnelProvider's fallback.
+        let rawVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let clientVersion = (rawVersion?.isEmpty == false) ? rawVersion! : "0.0.0-unknown"
         providerConfig["hb-client-version"] = clientVersion
         proto.providerConfiguration = providerConfig
         // SEC: kill switch — when ON, block all traffic while the tunnel is not
@@ -574,6 +580,15 @@ final class VPNManager: @unchecked Sendable {
         if !allowedIPs.contains(where: { Self.isIPv6DefaultRoute($0) }) {
             allowedIPs.append("::/0")
         }
+        // Same floor for IPv4: a partial server response (backend bug, or a
+        // shaped connect response) that lists only specific prefixes would
+        // otherwise yield a silent split tunnel — most traffic egressing in
+        // cleartext while the UI says Protected and the handshake liveness
+        // check passes. There is no split-tunnel feature on iOS, so the v4
+        // default route is always wanted.
+        if !allowedIPs.contains(where: { Self.isIPv4DefaultRoute($0) }) {
+            allowedIPs.append("0.0.0.0/0")
+        }
         for ip in allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
@@ -646,6 +661,19 @@ final class VPNManager: @unchecked Sendable {
         let addr = String(trimmed[..<slash])
         guard addr.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 else { return false }
         return withUnsafeBytes(of: &v6) { $0.allSatisfy { $0 == 0 } } // :: with prefix /0
+    }
+
+    /// True if an AllowedIPs entry is the IPv4 default route (`0.0.0.0/0`),
+    /// tolerating whitespace and equivalent spellings (`0/0` is not accepted —
+    /// inet_pton requires dotted quad). Mirror of `isIPv6DefaultRoute`.
+    static func isIPv4DefaultRoute(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard let slash = trimmed.firstIndex(of: "/"),
+              Int(trimmed[trimmed.index(after: slash)...]) == 0 else { return false }
+        var v4 = in_addr()
+        let addr = String(trimmed[..<slash])
+        guard addr.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 else { return false }
+        return v4.s_addr == 0 // 0.0.0.0 with prefix /0
     }
 
     /// Apply the user's WireGuard port override. "auto", "custom" (the picker's

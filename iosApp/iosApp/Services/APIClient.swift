@@ -62,8 +62,16 @@ final class APIClient: @unchecked Sendable {
     private let sessionGeneration = SessionGeneration()
 
     /// Memoised device identity — see `deviceContext()`. Idempotent, so a
-    /// concurrent double-read simply recomputes the same value.
-    private var cachedDeviceContext: DeviceIdentity?
+    /// concurrent double-COMPUTE simply recomputes the same value — but the
+    /// read/write themselves cross concurrency domains, so they go through
+    /// `deviceContextLock` (an unsynchronised var in an `@unchecked Sendable`
+    /// class is a data race, and a hard error under Swift 6 strict checking).
+    private let deviceContextLock = NSLock()
+    private var _cachedDeviceContext: DeviceIdentity?
+    private var cachedDeviceContext: DeviceIdentity? {
+        get { deviceContextLock.lock(); defer { deviceContextLock.unlock() }; return _cachedDeviceContext }
+        set { deviceContextLock.lock(); defer { deviceContextLock.unlock() }; _cachedDeviceContext = newValue }
+    }
 
     init(
         baseURL: URL = URL(string: "https://api.birdo.app")!,
