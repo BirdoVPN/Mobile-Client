@@ -218,6 +218,29 @@ enum Clipboard {
         pb.setString(string, forType: .string)
         #endif
     }
+
+    /// Copy a CREDENTIAL (the anonymous account number is the account's sole
+    /// credential). Unlike `copy`, this never syncs off-device via Universal
+    /// Clipboard / iCloud and self-clears after [ttl] seconds, so the secret
+    /// does not sit on the shared pasteboard indefinitely for other apps to
+    /// read.
+    static func copySensitive(_ string: String, ttl: TimeInterval = 60) {
+        #if os(iOS)
+        UIPasteboard.general.setItems(
+            [["public.utf8-plain-text": string]],
+            options: [
+                .localOnly: true,
+                .expirationDate: Date().addingTimeInterval(ttl),
+            ])
+        #elseif os(macOS)
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        // org.nspasteboard.ConcealedType: the de-facto marker password managers
+        // set so clipboard tools skip/expire the entry; macOS has no localOnly.
+        pb.setString(string, forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        pb.setString(string, forType: .string)
+        #endif
+    }
 }
 
 // MARK: - Device identity
