@@ -4,9 +4,16 @@
         <exclude domain="sharedpref" path="." />
         <exclude domain="database" path="." />
         <exclude domain="file" path="." />
+        <exclude domain="external" path="." />
     </cloud-backup>
+    <!-- Device-to-device transfer must exclude the SAME domains as cloud
+         backup: the file domain carries the identity-linking Rosenpass public
+         key and Xray assets today, and any file-domain secret added later
+         would otherwise be copied to a new handset during setup transfer. -->
     <device-transfer>
         <exclude domain="sharedpref" path="." />
         <exclude domain="database" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>
