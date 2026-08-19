@@ -168,11 +168,23 @@ object WireGuardConfigBuilder {
             host.startsWith("127.")
     }
 
-    /** Resolve DNS servers, preferring user overrides when enabled. */
-    private fun resolveDnsServers(config: ConnectResponse, prefs: AppPreferences): List<String> {
+    /**
+     * Resolve DNS servers, preferring user overrides when enabled.
+     *
+     * SINGLE SOURCE OF TRUTH for tunnel-time DNS selection: [BirdoVpnService]
+     * (the Android `Builder.addDnsServer` path) calls this too, so the servers
+     * the OS resolver uses and the servers baked into the wg-go config can
+     * never diverge. A private near-copy used to live in the service, which is
+     * exactly how a validation fix lands in one of the two paths and not the
+     * other.
+     */
+    fun resolveDnsServers(config: ConnectResponse, prefs: AppPreferences): List<String> {
         val fallback = listOf("1.1.1.1", "1.0.0.1")
         if (!prefs.customDnsEnabled) {
             val serverDns = config.dns?.filter { isValidDnsAddress(it) } ?: emptyList()
+            if (serverDns.isEmpty()) {
+                Log.w(TAG, "Server provided no valid DNS servers — falling back to defaults (1.1.1.1)")
+            }
             return serverDns.ifEmpty { fallback }
         }
         val custom = buildList {
@@ -182,19 +194,42 @@ object WireGuardConfigBuilder {
             if (s.isNotBlank() && isValidDnsAddress(s)) add(s)
         }
         if (custom.isEmpty()) {
-            Log.w(TAG, "Custom DNS addresses invalid or empty — falling back to defaults")
+            Log.w(TAG, "Custom DNS addresses invalid or unreachable through the tunnel — falling back to defaults")
         }
         return custom.ifEmpty { fallback }
     }
 
+    /**
+     * A DNS server is only usable if it is reachable THROUGH the tunnel.
+     *
+     * Beyond loopback/wildcard, this rejects the private and link-scoped
+     * ranges (RFC1918 via [InetAddress.isSiteLocalAddress], 169.254.0.0/16,
+     * IPv6 ULA fc00::/7 and fe80::/10):
+     *  - with local network sharing ON those ranges are excluded from the VPN
+     *    routes, so queries to such a resolver would egress on the LAN in
+     *    cleartext while the UI says Protected — a DNS leak;
+     *  - with it OFF the 0.0.0.0/0 route captures them into the tunnel, whose
+     *    egress is the public internet — the resolver is unreachable and the
+     *    whole device silently loses name resolution.
+     * Either way the address cannot serve DNS for this tunnel. Callers fall
+     * back to 1.1.1.1/1.0.0.1 when nothing survives.
+     */
     private fun isValidDnsAddress(address: String): Boolean {
         return try {
             val addr = InetAddress.getByName(address)
-            !addr.isLoopbackAddress && !addr.isAnyLocalAddress
+            !addr.isLoopbackAddress &&
+                !addr.isAnyLocalAddress &&
+                !addr.isLinkLocalAddress &&
+                !addr.isSiteLocalAddress &&
+                !isUniqueLocalV6(addr)
         } catch (_: Exception) {
             false
         }
     }
+
+    /** IPv6 ULA fc00::/7 — NOT covered by isSiteLocalAddress (fec0::/10 only). */
+    private fun isUniqueLocalV6(addr: InetAddress): Boolean =
+        addr is java.net.Inet6Address && (addr.address[0].toInt() and 0xfe) == 0xfc
 
     // ---------- SEC: Server-Response Validators ----------
 

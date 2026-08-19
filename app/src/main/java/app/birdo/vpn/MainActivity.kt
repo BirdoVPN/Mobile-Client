@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.hilt.navigation.compose.hiltViewModel
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -51,6 +52,7 @@ import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.RootDetector
 import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -182,6 +184,12 @@ class MainActivity : FragmentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Replace the activity's stored intent: without setIntent(), an
+        // activity recreation (process restore, config change) re-reads the
+        // ORIGINAL launch intent via getIntent() and replays an already-consumed
+        // deep link / OAuth callback — retrying the code exchange with a dead
+        // code and surfacing a spurious sign-in failure.
+        setIntent(intent)
         parseDeepLink(intent)?.let { route ->
             deepLinkRoute.value = route
         }
@@ -366,15 +374,29 @@ class MainActivity : FragmentActivity() {
      * have legitimate reasons for rooting.
      */
     private fun checkRootStatus() {
-        try {
-            val result = RootDetector.check(this)
+        // PERF: the root sweep spawns a process, probes ~25 filesystem paths
+        // and does ~18 PackageManager lookups — run it on IO, never on the
+        // main thread during onCreate (cold-start jank / ANR path). The dialog
+        // hops back to Main. The settings-HMAC verification deliberately STAYS
+        // synchronous: moving it async would let one frame of UI read tampered
+        // settings before the reset lands.
+        lifecycleScope.launch {
+            val result = try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    RootDetector.check(this@MainActivity)
+                }
+            } catch (e: Exception) {
+                Log.w("BirdoSecurity", "Root detection check failed", e)
+                return@launch
+            }
+            if (isFinishing || isDestroyed) return@launch
             if (result.isRooted) {
                 Log.w("BirdoSecurity", "Root detected: ${result.indicators.joinToString()}")
                 // Show warning dialog on first detection per install
                 val prefs = getSharedPreferences("birdo_security", MODE_PRIVATE)
                 val dismissed = prefs.getBoolean("root_warning_dismissed", false)
                 if (!dismissed) {
-                    rootWarningDialog = android.app.AlertDialog.Builder(this)
+                    rootWarningDialog = android.app.AlertDialog.Builder(this@MainActivity)
                         .setTitle("Security Warning")
                         .setMessage(
                             "This device appears to be rooted. Running a VPN on a rooted device " +
@@ -393,8 +415,6 @@ class MainActivity : FragmentActivity() {
                         .show()
                 }
             }
-        } catch (e: Exception) {
-            Log.w("BirdoSecurity", "Root detection check failed", e)
         }
     }
 

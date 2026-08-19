@@ -311,6 +311,10 @@ struct LimitView: View {
     private static func formatResetDate(_ iso: String?) -> String? {
         guard let date = parseInstant(iso) else { return nil }
         let formatter = DateFormatter()
+        // Fixed-format string ⇒ fixed locale + Gregorian calendar, or users on
+        // non-Gregorian device calendars (Buddhist, Japanese…) see a wrong date.
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "MMM d"
         return formatter.string(from: date)
     }

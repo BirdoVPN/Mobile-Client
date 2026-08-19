@@ -232,9 +232,19 @@ class BirdoRepository @Inject constructor(
                 ) {
                     RefreshOutcome.TRANSIENT
                 } else {
-                    tokenManager.setAccessToken(body.accessToken)
-                    // FIX C-1: Store rotated refresh token if returned by backend
-                    body.refreshToken?.let { tokenManager.setRefreshToken(it) }
+                    // DURABILITY: the server has CONSUMED the presented refresh
+                    // token by the time this response arrives. Persist the rotated
+                    // pair through ONE synchronous commit (setTokens) — the old
+                    // setAccessToken/setRefreshToken pair used apply(), so an
+                    // Android process kill before the async flush replayed the
+                    // consumed token on next launch and tripped server-side theft
+                    // detection (account-wide revocation incl. WG peers).
+                    val rotated = body.refreshToken
+                    if (rotated != null) {
+                        tokenManager.setTokens(body.accessToken, rotated)
+                    } else {
+                        tokenManager.setAccessToken(body.accessToken)
+                    }
                     RefreshOutcome.SUCCESS
                 }
             } else if (response.code() == 401) {
@@ -406,6 +416,11 @@ class BirdoRepository @Inject constructor(
             tokenManager.clearAll()
             invalidateServerCache()
             invalidateSubscriptionCache()
+            // PRIVACY: the SSAID-derived deviceId would otherwise survive the
+            // deletion and link the NEXT account registered on this handset to
+            // the one just erased. Mint a fresh random identity so the erased
+            // account's device fingerprint dies with it.
+            deviceInfoProvider.resetDeviceIdentity()
         }
         return result
     }
@@ -591,8 +606,13 @@ class BirdoRepository @Inject constructor(
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
 
-        // H-11 FIX: Use CharArray for private key to enable zeroing after use.
-        // JVM Strings are immutable and cannot be reliably scrubbed from heap.
+        // H-11 (honest scope): the CharArray below is zeroed in the finally,
+        // but the key ALSO exists as immutable Strings — toBase64() here, the
+        // String(privateKeyChars) handed to TokenManager and copied into the
+        // returned ConnectResponse — none of which can be scrubbed from the
+        // heap. The zeroing shortens exposure of these two buffers only; the
+        // session key remains recoverable from a heap dump until GC. A real
+        // fix routes byte[] end-to-end into a JNI entry point (design work).
         val privateKeyChars = keyPair.privateKey.toBase64().toCharArray()
 
         // Zero the Key object's internal byte[] via the raw bytes
@@ -608,6 +628,13 @@ class BirdoRepository @Inject constructor(
                     fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
+                    // A non-null key proves RosenpassManager loaded the native
+                    // engine and minted the ML-KEM keypair, so this client WILL
+                    // decapsulate — tell the server to withhold the PSK from
+                    // the response (the HNDL-safe path). BirdoVpnService fails
+                    // closed if decapsulation later fails, so this can never
+                    // silently downgrade.
+                    pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                 ))
             }
@@ -618,7 +645,6 @@ class BirdoRepository @Inject constructor(
                 // The server no longer returns privateKey when clientPublicKey was sent.
                 val localPrivateKey = String(privateKeyChars)
                 tokenManager.setWireGuardPrivateKey(localPrivateKey)
-                tokenManager.setLastServer(serverNodeId)
                 // Inject the locally-generated private key into the response so
                 // VpnManager and BirdoVpnService can build the WireGuard config.
                 // The server intentionally omits privateKey when clientPublicKey was sent.
@@ -634,13 +660,23 @@ class BirdoRepository @Inject constructor(
 
     suspend fun disconnectVpn(): ApiResult<Unit> {
         val keyId = tokenManager.getLastKeyId()
+        var serverResult: ApiResult<Unit> = ApiResult.Success(Unit)
         if (keyId != null) {
-            try { api.disconnect(keyId) } catch (_: Exception) { /* best effort */ }
+            // Through withAutoRefresh, NOT a bare api.disconnect(): access tokens
+            // live one hour, so the ordinary end-of-session disconnect presented
+            // an expired token, got a silent 401, and left the WireGuard peer
+            // provisioned server-side — consuming a plan connection slot while
+            // the UI reported a clean disconnect. Same class as the logout() fix.
+            serverResult = withAutoRefresh("Disconnect failed") { api.disconnect(keyId) }
         }
+        // Local teardown is authoritative: clear the key id unconditionally so
+        // heartbeats stop carrying a stale keyId even if the server call failed
+        // (the server reaps orphaned peers on missed heartbeats).
+        tokenManager.clearLastKeyId()
         // FIX-1-8: Clear WG private key from storage after disconnect.
         // Fresh keys are generated on each new connection.
         tokenManager.clearWireGuardPrivateKey()
-        return ApiResult.Success(Unit)
+        return serverResult
     }
 
     /**
@@ -698,12 +734,23 @@ class BirdoRepository @Inject constructor(
         exitNodeId: String,
         deviceName: String = "Birdo-Android",
         stealthMode: Boolean = false,
+        /**
+         * ADAPTIVE TRANSPORT — same contract as [connectVpn]'s fallbackReason:
+         * non-null marks this connect as a RETRY after plain WireGuard failed
+         * to handshake, asking for the stealth transport. The wire model
+         * (MultiHopConnectRequest.fallbackReason) and the backend schema both
+         * already accept the field on the multi-hop route.
+         */
+        fallbackReason: String? = null,
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
+        // Same honest-scope caveat as connectVpn's H-11 note: the zeroing below
+        // covers these two buffers only; immutable String copies of the key
+        // survive until GC.
         val privateKeyChars = keyPair.privateKey.toBase64().toCharArray()
         val privateKeyBytes = keyPair.privateKey.bytes
         try {
@@ -715,8 +762,12 @@ class BirdoRepository @Inject constructor(
                     deviceId = deviceInfoProvider.current().deviceId,
                     clientPublicKey = clientPublicKey,
                     stealthMode = stealthMode,
+                    fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
+                    // Same HNDL opt-in as the single-hop site — the twin pair
+                    // must always change together. See ConnectRequest above.
+                    pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                 ))
             }

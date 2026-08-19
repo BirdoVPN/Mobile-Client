@@ -8,14 +8,32 @@
          goruntime-boottime-over-monotonic.diff), so the extension binary must
          declare the SystemBootTime required-reason category or App Store Connect
          rejects the upload (ITMS-91053). XcodeGen's `sources: [path: PacketTunnel]`
-         glob bundles this file into the .appex automatically. The extension does
-         not itself collect user data, so no NSPrivacyCollectedDataTypes. -->
+         glob bundles this file into the .appex automatically. -->
     <key>NSPrivacyTracking</key>
     <false/>
     <key>NSPrivacyTrackingDomains</key>
     <array/>
     <key>NSPrivacyCollectedDataTypes</key>
-    <array/>
+    <array>
+        <!-- The extension's 30s heartbeat POSTs the account-scoped key id
+             (with the bearer token as auth) and client version to
+             api.birdo.app (PacketTunnelProvider.sendHeartbeat) — an
+             account-linked identifier collected by this binary, so it must be
+             declared here: Apple aggregates every target's manifest into the
+             app's nutrition label. Linked, not tracking. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeUserID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+    </array>
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
         <dict>

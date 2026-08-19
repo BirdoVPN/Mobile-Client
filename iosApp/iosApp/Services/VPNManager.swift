@@ -57,6 +57,21 @@ final class VPNManager: @unchecked Sendable {
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
+    /// REAL kill-switch blocking state, read from the system profile — NOT the
+    /// user preference. True only when the persisted on-demand rule is armed
+    /// AND the protocol has includeAllNetworks: that combination is what
+    /// actually blackholes traffic while the tunnel is down. The preference
+    /// alone proves nothing — connect() saves with on-demand disabled,
+    /// disconnect() disarms before stopping, and applyKillSwitchFlag() arms
+    /// only while a session is live, so in the steady disconnected state
+    /// nothing is blocked no matter what the Settings toggle reads.
+    /// VpnViewModel snapshots this on every status transition.
+    var killSwitchArmed: Bool {
+        guard let mgr = manager, mgr.isOnDemandEnabled else { return false }
+        let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol
+        return proto?.includeAllNetworks ?? false
+    }
+
     /// Why the tunnel last went down, straight from NetworkExtension.
     ///
     /// The packet-tunnel extension runs in its own process: when it fails to
@@ -181,7 +196,13 @@ final class VPNManager: @unchecked Sendable {
         if let token = KeychainService.shared.accessToken, !token.isEmpty {
             providerConfig["hb-access-token"] = token
         }
-        let clientVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "1.0.0"
+        // Never fabricate a plausible version: a "1.0.0" fallback is exactly
+        // the hardcoded value that defeated the iOS version floor once already
+        // (adaptive-transport rollout). An impossible sentinel is filterable
+        // server-side; a real-looking one corrupts version attribution.
+        // MUST stay in lockstep with PacketTunnelProvider's fallback.
+        let rawVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let clientVersion = (rawVersion?.isEmpty == false) ? rawVersion! : "0.0.0-unknown"
         providerConfig["hb-client-version"] = clientVersion
         proto.providerConfiguration = providerConfig
         // SEC: kill switch — when ON, block all traffic while the tunnel is not
@@ -559,6 +580,15 @@ final class VPNManager: @unchecked Sendable {
         if !allowedIPs.contains(where: { Self.isIPv6DefaultRoute($0) }) {
             allowedIPs.append("::/0")
         }
+        // Same floor for IPv4: a partial server response (backend bug, or a
+        // shaped connect response) that lists only specific prefixes would
+        // otherwise yield a silent split tunnel — most traffic egressing in
+        // cleartext while the UI says Protected and the handshake liveness
+        // check passes. There is no split-tunnel feature on iOS, so the v4
+        // default route is always wanted.
+        if !allowedIPs.contains(where: { Self.isIPv4DefaultRoute($0) }) {
+            allowedIPs.append("0.0.0.0/0")
+        }
         for ip in allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
@@ -597,12 +627,24 @@ final class VPNManager: @unchecked Sendable {
         var v6 = in6_addr()
         if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
             let host = UInt32(bigEndian: v4.s_addr)
-            return host != 0 && (host >> 24) != 127   // reject 0.0.0.0 and 127/8
+            if host == 0 || (host >> 24) == 127 { return false }   // 0.0.0.0, 127/8
+            // Tunnel-reachability (Android WireGuardConfigBuilder parity): a
+            // private or link-scoped resolver either leaks DNS onto the LAN
+            // (excludeLocalNetworks on) or blackholes all resolution inside a
+            // public-egress tunnel (off). Never usable either way.
+            if (host >> 24) == 10 { return false }                 // 10/8
+            if (host >> 20) == 0xAC1 { return false }              // 172.16/12
+            if (host >> 16) == 0xC0A8 { return false }             // 192.168/16
+            if (host >> 16) == 0xA9FE { return false }             // 169.254/16
+            return true
         }
         if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
             let bytes = withUnsafeBytes(of: &v6) { Array($0) }
             if bytes.allSatisfy({ $0 == 0 }) { return false }                        // ::
             if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return false } // ::1
+            if (bytes[0] & 0xFE) == 0xFC { return false }          // ULA fc00::/7
+            if bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80 { return false } // fe80::/10
+            if bytes[0] == 0xFF { return false }                   // multicast ff00::/8
             return true
         }
         return false
@@ -619,6 +661,19 @@ final class VPNManager: @unchecked Sendable {
         let addr = String(trimmed[..<slash])
         guard addr.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 else { return false }
         return withUnsafeBytes(of: &v6) { $0.allSatisfy { $0 == 0 } } // :: with prefix /0
+    }
+
+    /// True if an AllowedIPs entry is the IPv4 default route (`0.0.0.0/0`),
+    /// tolerating whitespace and equivalent spellings (`0/0` is not accepted —
+    /// inet_pton requires dotted quad). Mirror of `isIPv6DefaultRoute`.
+    static func isIPv4DefaultRoute(_ s: String) -> Bool {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard let slash = trimmed.firstIndex(of: "/"),
+              Int(trimmed[trimmed.index(after: slash)...]) == 0 else { return false }
+        var v4 = in_addr()
+        let addr = String(trimmed[..<slash])
+        guard addr.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 else { return false }
+        return v4.s_addr == 0 // 0.0.0.0 with prefix /0
     }
 
     /// Apply the user's WireGuard port override. "auto", "custom" (the picker's

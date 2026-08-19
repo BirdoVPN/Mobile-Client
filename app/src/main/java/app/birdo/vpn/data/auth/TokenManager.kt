@@ -32,7 +32,6 @@ class TokenManager @Inject constructor(
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_WG_PRIVATE_KEY = "wireguard_private_key"
-        private const val KEY_LAST_SERVER = "last_server"
         private const val KEY_LAST_KEY_ID = "last_key_id"
         private const val KEY_PENDING_ANON_ID = "pending_anonymous_id"
         private const val MASTER_KEY_ALIAS = "_birdo_master_key_"
@@ -145,7 +144,9 @@ class TokenManager @Inject constructor(
 
     fun setRefreshToken(token: String) {
         require(token.length <= MAX_TOKEN_LENGTH) { "Refresh token exceeds max length" }
-        prefs.edit().putString(KEY_REFRESH_TOKEN, token).apply()
+        // commit(): a refresh token is single-use server-side — losing this write
+        // to a process kill replays the consumed token and trips theft detection.
+        prefs.edit().putString(KEY_REFRESH_TOKEN, token).commit()
     }
 
     // ── Token Pair ───────────────────────────────────────────────
@@ -183,13 +184,10 @@ class TokenManager @Inject constructor(
         prefs.edit().remove(KEY_WG_PRIVATE_KEY).apply()
     }
 
-    // ── Last Server ──────────────────────────────────────────────
-
-    fun getLastServer(): String? = prefs.getString(KEY_LAST_SERVER, null)
-
-    fun setLastServer(serverId: String) {
-        prefs.edit().putString(KEY_LAST_SERVER, serverId).apply()
-    }
+    // NOTE: the "last server" concept lives in AppPreferences.lastServerId
+    // (key "last_server_id") — the getLastServer/setLastServer pair that used
+    // to sit here was a second, never-read store of the same idea (multi-hop
+    // connects never wrote it), removed as a single-source-of-truth trap.
 
     // ── Last Key ID (for disconnect) ─────────────────────────────
 
@@ -197,6 +195,11 @@ class TokenManager @Inject constructor(
 
     fun setLastKeyId(keyId: String) {
         prefs.edit().putString(KEY_LAST_KEY_ID, keyId).apply()
+    }
+
+    /** Clear after disconnect so heartbeats stop carrying a stale key id. */
+    fun clearLastKeyId() {
+        prefs.edit().remove(KEY_LAST_KEY_ID).apply()
     }
 
     // ── Pending anonymous ID (created, not yet acknowledged) ─────

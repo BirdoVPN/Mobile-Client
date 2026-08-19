@@ -148,9 +148,15 @@ object RootDetector {
             // Use absolute path to /system/bin/getprop to avoid PATH-based hijacking
             // on rooted devices that may have placed a shim earlier in PATH.
             val process = Runtime.getRuntime().exec(arrayOf("/system/bin/getprop", "ro.debuggable"))
-            val result = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor()
-            result == "1"
+            try {
+                // use{} closes the stream (was leaked per call), and the bounded
+                // waitFor prevents a blocked/slow getprop from hanging the sweep.
+                val result = process.inputStream.bufferedReader().use { it.readText() }.trim()
+                process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+                result == "1"
+            } finally {
+                process.destroy()
+            }
         } catch (_: Exception) {
             false
         }

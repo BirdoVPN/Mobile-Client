@@ -39,7 +39,13 @@ internal class VpnNotificationManager(private val context: Context) {
         ).apply {
             description = "Persistent notification while VPN is active"
             setShowBadge(false)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            // PRIVATE: the lock screen shows only the redacted public version
+            // (see buildForegroundNotification.setPublicVersion) — the exit-node
+            // name / server IP must not be readable from a locked handset at a
+            // border check or over a shoulder. NOTE: channel settings are
+            // immutable after creation, so existing installs keep PUBLIC at the
+            // channel level; the per-notification visibility below still applies.
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
         notificationManager.createNotificationChannel(channel)
     }
@@ -118,7 +124,23 @@ internal class VpnNotificationManager(private val context: Context) {
             .setOngoing(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            // PRIVATE + a bland public version: on the lock screen the OS shows
+            // only the title-level state, never the server name / IP / duration
+            // that the status line can carry. Full detail stays in the
+            // post-unlock shade.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setContentTitle(title)
+                    .setSmallIcon(iconRes)
+                    .setContentIntent(pendingOpen)
+                    .setOngoing(true)
+                    .setSilent(true)
+                    .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                    .setShowWhen(false)
+                    .setColor(accentColor)
+                    .build()
+            )
             .setShowWhen(false)
             .setOnlyAlertOnce(true)
             .setColor(accentColor)
@@ -149,13 +171,23 @@ internal class VpnNotificationManager(private val context: Context) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(status))
         }
 
-        // Action buttons
+        // Action buttons. The two destructive actions (drop the tunnel /
+        // clear the fail-closed kill switch) require device unlock before
+        // firing (API 31+; a no-op on older releases): anyone briefly holding
+        // a locked handset must not be able to strip its VPN protection from
+        // the lock screen.
+        val disconnectAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_notif_disconnected, "Disconnect", stopPendingIntent,
+        ).setAuthenticationRequired(true).build()
+        val disableKillSwitchAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_notif_disconnected, "Disable Kill Switch", stopPendingIntent,
+        ).setAuthenticationRequired(true).build()
         when {
             state is VpnState.Connected || state is VpnState.Connecting -> {
-                builder.addAction(R.drawable.ic_notif_disconnected, "Disconnect", stopPendingIntent)
+                builder.addAction(disconnectAction)
             }
             killSwitchActive -> {
-                builder.addAction(R.drawable.ic_notif_disconnected, "Disable Kill Switch", stopPendingIntent)
+                builder.addAction(disableKillSwitchAction)
             }
             state is VpnState.Disconnected || state is VpnState.Error -> {
                 builder.addAction(R.drawable.ic_notif_connected, "Connect", connectPendingIntent)

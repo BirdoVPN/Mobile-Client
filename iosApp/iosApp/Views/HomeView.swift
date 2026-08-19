@@ -41,8 +41,14 @@ struct HomeView: View {
             // a live background. It draws on a CLEAR canvas, so the app-root
             // PixelCanvas still twinkles behind it as the star field; only the
             // planet itself is opaque.
+            // During a Multi-Hop session the globe focuses the ENTRY node — the
+            // hop this device actually talks to — never the unrelated
+            // single-hop `selectedServer` (which drew a wrong single-hop arc
+            // for the whole session). The component takes one focus id, so the
+            // exit leg is rendered by the server card below, not the globe.
             WorldGlobeView(servers: vpnVM.servers,
-                           selectedServerId: vpnVM.selectedServer?.id,
+                           selectedServerId: vpnVM.activeMultiHop?.entry.id
+                               ?? vpnVM.selectedServer?.id,
                            isConnected: vpnVM.isConnected)
                 .ignoresSafeArea()
 
@@ -276,7 +282,9 @@ struct HomeView: View {
         // A live server switch tears the tunnel down and rebuilds it on the new
         // node — never show "Protected" over the new name until it lands.
         if vpnVM.isSwitching { return "Switching server…" }
-        if vpnVM.isConnected { return "Protected" }
+        if vpnVM.isConnected {
+            return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
+        }
         if vpnVM.isConnecting { return "Connecting…" }
         if vpnVM.error != nil { return "Connection Error" }
         return "Not Connected"
@@ -317,18 +325,26 @@ struct HomeView: View {
                        value: statusText)
 
             // Feature chips (desktop §4.4 pattern — under the pill). The kill
-            // switch chip only shows while it is ACTUALLY blocking (§3.4 item
-            // 3, killSwitchActive) — i.e. armed AND the tunnel is down, so all
-            // traffic is being blackholed — never merely because the setting is
-            // on while Protected. Quantum is the HONEST indicator — lit only
+            // switch chip only claims "blocked" while the system is ACTUALLY
+            // blocking (killSwitchBlocking: on-demand rule armed +
+            // includeAllNetworks, tunnel down) — never merely because the
+            // preference is on. When the switch is enabled but the rule is not
+            // armed (the steady disconnected state: connect() saves disarmed,
+            // disconnect() disarms first), nothing is blocked, so say the
+            // honest thing instead. Quantum is the HONEST indicator — lit only
             // when a bilateral ML-KEM PSK was derived.
-            if killSwitchActive || vpnVM.quantumActive {
+            if killSwitchBlocking || killSwitchPending || vpnVM.quantumActive {
                 HStack(spacing: 8) {
-                    if killSwitchActive {
+                    if killSwitchBlocking {
                         StatusBadgePill("Kill Switch — All traffic blocked",
                                         tone: .danger,
                                         icon: "shield.slash.fill")
                             .accessibilityLabel("Kill switch — all traffic blocked")
+                    } else if killSwitchPending {
+                        StatusBadgePill("Kill switch arms once connected",
+                                        tone: .neutral,
+                                        icon: "shield")
+                            .accessibilityLabel("Kill switch will arm once connected")
                     }
                     if vpnVM.quantumActive {
                         StatusBadgePill("Quantum",
@@ -343,15 +359,25 @@ struct HomeView: View {
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
                    value: vpnVM.quantumActive)
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
-                   value: killSwitchActive)
+                   value: killSwitchBlocking)
     }
 
-    /// The kill switch is BLOCKING (not merely enabled) when it is armed and no
-    /// tunnel is up: on-demand + includeAllNetworks then blackholes every
-    /// packet. While Protected, traffic flows normally, so no "blocked" chip.
-    /// (Reconnecting/switching keep the tunnel down, so blocking stays true.)
-    private var killSwitchActive: Bool {
-        settingsVM.killSwitchEnabled && !vpnVM.isConnected
+    /// The kill switch is BLOCKING only when the on-demand rule is really
+    /// armed in the system profile (vpnVM.killSwitchArmed — live state, not
+    /// the preference) and no tunnel is up: on-demand + includeAllNetworks
+    /// then blackholes every packet. While Protected, traffic flows normally,
+    /// so no "blocked" chip. ANDed with the preference so confirming the
+    /// Settings disable hides the chip instantly, without waiting for the
+    /// async profile save to round-trip.
+    private var killSwitchBlocking: Bool {
+        vpnVM.killSwitchArmed && settingsVM.killSwitchEnabled && !vpnVM.isConnected
+    }
+
+    /// Enabled but NOT armed while disconnected: nothing is blocked right now
+    /// (that is exactly the state the old chip lied about). Shown as an
+    /// honest, non-alarming hint that protection begins with the session.
+    private var killSwitchPending: Bool {
+        settingsVM.killSwitchEnabled && !vpnVM.killSwitchArmed && !vpnVM.isConnected
     }
 
     // MARK: - Bottom Action Panel (Android §3.4)
@@ -503,23 +529,38 @@ struct HomeView: View {
                         RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub,
                                          style: .continuous)
                             .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
-                        Text(vpnVM.selectedServer?.flag ?? "🌐")
+                        Text(vpnVM.activeMultiHop?.entry.flag
+                            ?? vpnVM.selectedServer?.flag ?? "🌐")
                             .font(.system(size: 22))
                     }
                     .frame(width: 44, height: 44)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(vpnVM.selectedServer?.name ?? "Select Server")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(BirdoTheme.onSurface)
-                            .lineLimit(1)
-                        if let server = vpnVM.selectedServer {
-                            // Two spaces around the middle dot — Android
-                            // renders "%s  ·  %d%% load" exactly.
-                            Text("\(server.city.isEmpty ? server.country : server.city)  ·  \(server.load)% load")
+                        if let mh = vpnVM.activeMultiHop {
+                            // A live Multi-Hop session shows the SERVER-CONFIRMED
+                            // route — `selectedServer` is whatever single node the
+                            // user last browsed to and can be entirely unrelated.
+                            Text("\(mh.entry.flag) \(mh.entry.name) → \(mh.exit.flag) \(mh.exit.name)")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(BirdoTheme.onSurface)
+                                .lineLimit(1)
+                            Text("Multi-Hop  ·  \(mh.route)")
                                 .font(BirdoTheme.Fonts.bodySmall)
                                 .foregroundStyle(BirdoTheme.white60)
                                 .lineLimit(1)
+                        } else {
+                            Text(vpnVM.selectedServer?.name ?? "Select Server")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(BirdoTheme.onSurface)
+                                .lineLimit(1)
+                            if let server = vpnVM.selectedServer {
+                                // Two spaces around the middle dot — Android
+                                // renders "%s  ·  %d%% load" exactly.
+                                Text("\(server.city.isEmpty ? server.country : server.city)  ·  \(server.load)% load")
+                                    .font(BirdoTheme.Fonts.bodySmall)
+                                    .foregroundStyle(BirdoTheme.white60)
+                                    .lineLimit(1)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -63,8 +63,16 @@ class DeviceInfoProvider @Inject constructor(
      * SSAID quirk can't flip identity mid-life. Falls back to a persisted random
      * id only when the SSAID is missing or the known-buggy constant — in that
      * case connect-time eviction still caps the account to one active connection.
+     *
+     * After [resetDeviceIdentity] the SSAID branch is bypassed entirely: the
+     * persisted random id wins, so successive accounts on this handset are no
+     * longer joinable through a shared deviceId.
      */
     private fun stableDeviceId(): String {
+        if (prefs.getBoolean(KEY_DEVICE_ID_RESET, false)) {
+            return prefs.getString(KEY_DEVICE_ID, null) ?: createFallbackDeviceId()
+        }
+
         val ssaid = try {
             Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
         } catch (_: Throwable) {
@@ -84,6 +92,29 @@ class DeviceInfoProvider @Inject constructor(
         return prefs.getString(KEY_DEVICE_ID, null) ?: createFallbackDeviceId()
     }
 
+    /**
+     * PRIVACY: mint a fresh random device identity and stop deriving it from
+     * the SSAID from now on.
+     *
+     * The SSAID hash is deterministic and reinstall-stable, which is exactly
+     * what device-slot reclamation wants for a LIVE account — but it also
+     * means an account deleted under GDPR Art. 17 and a fresh one registered
+     * on the same handset presented the identical deviceId, making the two
+     * "unlinkable" identities trivially joinable server-side. Called on
+     * successful account deletion (a user-invoked action), so the identity
+     * dies with the account it identified. Deliberately NOT called anywhere a
+     * live account still exists — the backend's (userId, deviceId) SSOT and
+     * slot reclamation depend on stability there.
+     */
+    fun resetDeviceIdentity(): String {
+        val id = "android_${UUID.randomUUID().toString().replace("-", "")}"
+        prefs.edit()
+            .putString(KEY_DEVICE_ID, id)
+            .putBoolean(KEY_DEVICE_ID_RESET, true)
+            .commit()
+        return id
+    }
+
     private fun createFallbackDeviceId(): String {
         val id = "android_${UUID.randomUUID().toString().replace("-", "")}"
         prefs.edit().putString(KEY_DEVICE_ID, id).commit()
@@ -97,6 +128,10 @@ class DeviceInfoProvider @Inject constructor(
 
     private companion object {
         private const val KEY_DEVICE_ID = "device_id"
+
+        // Set once by resetDeviceIdentity(): from then on the persisted random
+        // id is authoritative and the SSAID derivation is never consulted.
+        private const val KEY_DEVICE_ID_RESET = "device_id_reset"
 
         // Static per-app salt. Not a secret — it only keeps the raw SSAID from
         // ever leaving the device; the hash is what identifies the install.

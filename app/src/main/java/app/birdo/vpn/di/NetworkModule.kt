@@ -36,6 +36,17 @@ object NetworkModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            // The three phase timeouts above bound the connect, read and write
+            // PHASES individually — they do not bound the call. DNS resolution
+            // runs before the connect phase, and .dns() is a serial three-
+            // provider DoH chain (each with three bootstrap addresses) that ends
+            // in the system resolver, so on a filtered or captive network a
+            // single request could sit in lookup far past the nominal 30s with
+            // the UI on a spinner and no error. withAutoRefresh can then run
+            // call → token refresh → retry on top of that. callTimeout is the
+            // only setting that covers the whole thing, including redirects and
+            // retries.
+            .callTimeout(45, TimeUnit.SECONDS)
             .addInterceptor(authInterceptor)
 
         // ── Certificate Pinning ──────────────────────────────────────

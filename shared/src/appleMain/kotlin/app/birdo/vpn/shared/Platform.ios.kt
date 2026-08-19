@@ -77,12 +77,22 @@ private fun isLoopbackOrSpecialV4(address: String): Boolean {
     val parts = address.split('.')
     if (parts.size != 4) return false
     val first = parts[0].toIntOrNull() ?: return false
+    val second = parts[1].toIntOrNull() ?: 0
     return first == 127 || first == 0 ||
-        (first == 169 && (parts[1].toIntOrNull() ?: 0) == 254) ||
-        first >= 224
+        (first == 169 && second == 254) ||
+        first >= 224 ||
+        // RFC1918 — mirrors Android's isSiteLocalAddress reject: a private
+        // resolver is never reachable through the tunnel (leak or blackhole
+        // depending on local network sharing), so the settings UI must not
+        // accept an address connect time will silently discard.
+        first == 10 ||
+        (first == 172 && second in 16..31) ||
+        (first == 192 && second == 168)
 }
 
 private fun isLoopbackOrSpecialV6(address: String): Boolean {
     val lower = address.substringBefore('%').lowercase()
-    return lower == "::1" || lower == "::" || lower.startsWith("fe80") || lower.startsWith("ff")
+    return lower == "::1" || lower == "::" || lower.startsWith("fe80") || lower.startsWith("ff") ||
+        // IPv6 ULA fc00::/7 — same tunnel-reachability reject as RFC1918 above.
+        lower.startsWith("fc") || lower.startsWith("fd")
 }
