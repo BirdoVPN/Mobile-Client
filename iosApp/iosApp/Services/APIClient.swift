@@ -1336,10 +1336,17 @@ struct VPNConnectionConfig: Decodable {
     let rosenpassPublicKey: String?
     let rosenpassEndpoint: String?
 
+    /// `/vpn/multi-hop/connect` only: the route the backend says it ACTUALLY
+    /// installed. `VpnViewModel.connectMultiHop` refuses to bring the tunnel
+    /// up unless this names the requested pair (`MultiHopRouteCheck`) — see
+    /// MultiHopRoute.swift. Absent on single-hop responses.
+    let multiHop: MultiHopRouteInfo?
+
     private enum CodingKeys: String, CodingKey {
         case endpoint, privateKey, serverPublicKey, presharedKey
         case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId
         case quantumEnabled, rosenpassPublicKey, rosenpassEndpoint
+        case multiHop
     }
 
     init(from decoder: Decoder) throws {
@@ -1379,6 +1386,8 @@ struct VPNConnectionConfig: Decodable {
         quantumEnabled = try c.decodeIfPresent(Bool.self, forKey: .quantumEnabled)
         rosenpassPublicKey = try c.decodeIfPresent(String.self, forKey: .rosenpassPublicKey)
         rosenpassEndpoint = try c.decodeIfPresent(String.self, forKey: .rosenpassEndpoint)
+
+        multiHop = try c.decodeIfPresent(MultiHopRouteInfo.self, forKey: .multiHop)
     }
 
     /// Hardening: every field is treated as untrusted server input.

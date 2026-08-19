@@ -41,8 +41,14 @@ struct HomeView: View {
             // a live background. It draws on a CLEAR canvas, so the app-root
             // PixelCanvas still twinkles behind it as the star field; only the
             // planet itself is opaque.
+            // During a Multi-Hop session the globe focuses the ENTRY node — the
+            // hop this device actually talks to — never the unrelated
+            // single-hop `selectedServer` (which drew a wrong single-hop arc
+            // for the whole session). The component takes one focus id, so the
+            // exit leg is rendered by the server card below, not the globe.
             WorldGlobeView(servers: vpnVM.servers,
-                           selectedServerId: vpnVM.selectedServer?.id,
+                           selectedServerId: vpnVM.activeMultiHop?.entry.id
+                               ?? vpnVM.selectedServer?.id,
                            isConnected: vpnVM.isConnected)
                 .ignoresSafeArea()
 
@@ -276,7 +282,9 @@ struct HomeView: View {
         // A live server switch tears the tunnel down and rebuilds it on the new
         // node — never show "Protected" over the new name until it lands.
         if vpnVM.isSwitching { return "Switching server…" }
-        if vpnVM.isConnected { return "Protected" }
+        if vpnVM.isConnected {
+            return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
+        }
         if vpnVM.isConnecting { return "Connecting…" }
         if vpnVM.error != nil { return "Connection Error" }
         return "Not Connected"
@@ -521,23 +529,38 @@ struct HomeView: View {
                         RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub,
                                          style: .continuous)
                             .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
-                        Text(vpnVM.selectedServer?.flag ?? "🌐")
+                        Text(vpnVM.activeMultiHop?.entry.flag
+                            ?? vpnVM.selectedServer?.flag ?? "🌐")
                             .font(.system(size: 22))
                     }
                     .frame(width: 44, height: 44)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(vpnVM.selectedServer?.name ?? "Select Server")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(BirdoTheme.onSurface)
-                            .lineLimit(1)
-                        if let server = vpnVM.selectedServer {
-                            // Two spaces around the middle dot — Android
-                            // renders "%s  ·  %d%% load" exactly.
-                            Text("\(server.city.isEmpty ? server.country : server.city)  ·  \(server.load)% load")
+                        if let mh = vpnVM.activeMultiHop {
+                            // A live Multi-Hop session shows the SERVER-CONFIRMED
+                            // route — `selectedServer` is whatever single node the
+                            // user last browsed to and can be entirely unrelated.
+                            Text("\(mh.entry.flag) \(mh.entry.name) → \(mh.exit.flag) \(mh.exit.name)")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(BirdoTheme.onSurface)
+                                .lineLimit(1)
+                            Text("Multi-Hop  ·  \(mh.route)")
                                 .font(BirdoTheme.Fonts.bodySmall)
                                 .foregroundStyle(BirdoTheme.white60)
                                 .lineLimit(1)
+                        } else {
+                            Text(vpnVM.selectedServer?.name ?? "Select Server")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(BirdoTheme.onSurface)
+                                .lineLimit(1)
+                            if let server = vpnVM.selectedServer {
+                                // Two spaces around the middle dot — Android
+                                // renders "%s  ·  %d%% load" exactly.
+                                Text("\(server.city.isEmpty ? server.country : server.city)  ·  \(server.load)% load")
+                                    .font(BirdoTheme.Fonts.bodySmall)
+                                    .foregroundStyle(BirdoTheme.white60)
+                                    .lineLimit(1)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
