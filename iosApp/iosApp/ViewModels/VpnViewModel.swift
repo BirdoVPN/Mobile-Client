@@ -59,6 +59,11 @@ final class VpnViewModel: ObservableObject {
     /// Honest indicator: lit only when a true bilateral ML-KEM PSK was
     /// actually derived for this connection (BirdoPQManager mode).
     @Published var quantumActive = false
+    /// REAL kill-switch arming state (VPNManager.killSwitchArmed: on-demand
+    /// rule armed + includeAllNetworks in the persisted profile). Snapshotted
+    /// on every status transition. This — not the Settings preference — is
+    /// what decides whether the UI may claim traffic is being blocked.
+    @Published private(set) var killSwitchArmed = false
 
     // MARK: - Port Forwarding
     @Published var portForwards: [PortForwardEntry] = []
@@ -402,6 +407,10 @@ final class VpnViewModel: ObservableObject {
             if stats.rx > 0 {
                 let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
                 vpnManager.applyKillSwitchFlag(killSwitch)
+                // applyKillSwitchFlag mutates the in-memory profile
+                // synchronously; refresh the published snapshot so the UI
+                // reflects the arm without waiting for a status transition.
+                killSwitchArmed = vpnManager.killSwitchArmed
                 return
             }
         }
@@ -537,6 +546,11 @@ final class VpnViewModel: ObservableObject {
     // MARK: - Private
 
     private func handleStatusChange(_ status: NEVPNStatus) {
+        // Every arm/disarm path either is, or coincides with, a status
+        // transition (arming happens post-handshake, disarming in
+        // disconnect()/stale-rule cleanup), so snapshotting here keeps the
+        // published value honest without polling the system profile.
+        killSwitchArmed = vpnManager.killSwitchArmed
         switch status {
         case .connected:
             isConnected = true

@@ -330,11 +330,41 @@ afterEvaluate {
                     // PQ JNI .so could silently downgrade BirdoPQ v1 by
                     // returning an attacker-known PSK from deriveSharedPsk().
                     val rosenpassJniHash = hashSo("rosenpass_jni")
+                    // FAIL LOUDLY on a blank hash. A release that bakes "" here
+                    // makes NativeLibraryVerifier take its no-registered-hash
+                    // branch, silently reducing the engine-integrity control to
+                    // the installer/signature check — with no build-time or
+                    // runtime signal that it happened.
+                    check(wgHash.isNotBlank()) {
+                        "NATIVE_HASH_WG_GO is blank — libwg-go.so was not found in " +
+                            "${mergeTask.name} outputs; refusing to ship a release " +
+                            "with the native integrity check disarmed."
+                    }
+                    check(xrayHash.isNotBlank()) {
+                        "NATIVE_HASH_XRAY is blank — libxray.so was not found in " +
+                            "${mergeTask.name} outputs; refusing to ship a release " +
+                            "with the native integrity check disarmed."
+                    }
+                    check(rosenpassJniHash.isNotBlank()) {
+                        "NATIVE_HASH_ROSENPASS_JNI is blank — librosenpass_jni.so was not " +
+                            "found in ${mergeTask.name} outputs; refusing to ship a release " +
+                            "with the native integrity check disarmed."
+                    }
                     android.defaultConfig.buildConfigField("String", "NATIVE_HASH_WG_GO", "\"$wgHash\"")
                     android.defaultConfig.buildConfigField("String", "NATIVE_HASH_XRAY", "\"$xrayHash\"")
                     android.defaultConfig.buildConfigField("String", "NATIVE_HASH_ROSENPASS_JNI", "\"$rosenpassJniHash\"")
                 }
-                generateBuildConfig.mustRunAfter(mergeTask)
+                // dependsOn, not mustRunAfter: mustRunAfter is ORDERING-only, so
+                // in a graph where the merge task was not scheduled (or in a warm
+                // build dir where generateBuildConfig would otherwise be skipped
+                // as UP-TO-DATE with stale/blank hashes) the doFirst above hashed
+                // nothing. Declaring the merged native libs as a real task input
+                // also makes generateBuildConfig re-run whenever any shipped .so
+                // changes — the hashes are now derived from a declared input, not
+                // from whatever happened to be on disk.
+                generateBuildConfig.dependsOn(mergeTask)
+                generateBuildConfig.inputs.files(mergeTask.outputs.files)
+                    .withPropertyName("nativeLibsForIntegrityHash")
             }
         }
     }

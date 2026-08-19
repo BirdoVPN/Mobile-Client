@@ -131,6 +131,28 @@ class InputValidatorTest {
     }
 
     @Test
+    fun `private RFC1918 addresses rejected for DNS - unreachable through the tunnel`() {
+        // Leak (local network sharing on) or blackhole (off) — never usable.
+        assertFalse(InputValidator.isValidDnsAddress("192.168.1.1"))
+        assertFalse(InputValidator.isValidDnsAddress("10.0.0.1"))
+        assertFalse(InputValidator.isValidDnsAddress("172.16.0.1"))
+        assertFalse(InputValidator.isValidDnsAddress("172.31.255.254"))
+    }
+
+    @Test
+    fun `IPv6 unique-local addresses rejected for DNS`() {
+        assertFalse(InputValidator.isValidDnsAddress("fd00::1"))
+        assertFalse(InputValidator.isValidDnsAddress("fc00::53"))
+    }
+
+    @Test
+    fun `public addresses adjacent to private ranges still accepted for DNS`() {
+        assertTrue(InputValidator.isValidDnsAddress("172.32.0.1"))
+        assertTrue(InputValidator.isValidDnsAddress("11.0.0.1"))
+        assertTrue(InputValidator.isValidDnsAddress("192.169.0.1"))
+    }
+
+    @Test
     fun `blank and empty DNS addresses rejected`() {
         assertFalse(InputValidator.isValidDnsAddress(""))
         assertFalse(InputValidator.isValidDnsAddress("   "))

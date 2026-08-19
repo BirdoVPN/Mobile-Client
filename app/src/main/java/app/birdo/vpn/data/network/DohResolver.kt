@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
 import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 
 /**
  * DNS-over-HTTPS resolver with Cloudflare primary, Google fallback, and Quad9 final fallback.
@@ -15,10 +16,31 @@ import java.net.UnknownHostException
  */
 object DohResolver {
 
+    /** Per-phase budget for one DoH provider attempt (see [bootstrapClient]). */
+    private const val BOOTSTRAP_TIMEOUT_SEC = 3L
+
+    /**
+     * Whole-call budget for one DoH provider attempt. Caps the worst case across
+     * the chain: three providers x this ~= 15s before the system resolver, which
+     * fits inside the API client's 45s callTimeout with room for the request
+     * itself.
+     */
+    private const val BOOTSTRAP_CALL_TIMEOUT_SEC = 5L
+
     // Bootstrap client is used for the first DoH connection (before DoH is ready).
     // Cert-pin the three DoH providers to prevent MITM during bootstrap.
     private val bootstrapClient: OkHttpClient = run {
         val builder = OkHttpClient.Builder()
+            // Short and explicit, not OkHttp's 10s defaults. This client is used
+            // SERIALLY by all three providers (and each tries three bootstrap
+            // addresses), so every second spent here is multiplied before the
+            // chain degrades to the system resolver — and it is spent inside a
+            // Dns.lookup that the API client's phase timeouts do not bound. A
+            // DoH provider that has not answered in ~3s on a network that is
+            // eating our packets is not going to.
+            .connectTimeout(BOOTSTRAP_TIMEOUT_SEC, TimeUnit.SECONDS)
+            .readTimeout(BOOTSTRAP_TIMEOUT_SEC, TimeUnit.SECONDS)
+            .callTimeout(BOOTSTRAP_CALL_TIMEOUT_SEC, TimeUnit.SECONDS)
         if (!BuildConfig.DEBUG) {
             // SPKI pins for Cloudflare (1.1.1.1), Google (8.8.8.8), and Quad9 (9.9.9.9)
             // Verified 2026-04-15. Rotate when intermediates are renewed.

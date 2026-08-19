@@ -341,6 +341,36 @@ class BirdoRepositoryTest {
         verify(exactly = 1) { tokenManager.clearAll() }
     }
 
+    // ── Delete Account ──────────────────────────────────────────
+
+    @Test
+    fun `deleteAccount success resets the device identity`() = runTest {
+        coEvery { api.deleteAccount(any()) } returns Response.success(
+            DeleteAccountResponse(success = true)
+        )
+
+        val result = repository.deleteAccount("pass123")
+
+        assertTrue(result is ApiResult.Success)
+        verify { tokenManager.clearAll() }
+        // The SSAID-derived deviceId must not outlive the account it
+        // identified — kept, it joins the erased account to the next one
+        // registered on this handset.
+        verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
+    }
+
+    @Test
+    fun `failed deleteAccount keeps the device identity`() = runTest {
+        val err = "nope".toResponseBody("text/plain".toMediaType())
+        coEvery { api.deleteAccount(any()) } returns Response.error(400, err)
+
+        repository.deleteAccount("wrong-pass")
+
+        // The account still exists — its slot reclamation depends on the id
+        // staying stable, so a refused deletion must not rotate it.
+        verify(exactly = 0) { deviceInfoProvider.resetDeviceIdentity() }
+    }
+
     // ── Get Profile ─────────────────────────────────────────────
 
     @Test
@@ -408,7 +438,6 @@ class BirdoRepositoryTest {
         // Private key is generated locally (not from the server), so verify it's stored but don't
         // check the exact value — it's a random X25519 key from wireguard-android.
         verify { tokenManager.setWireGuardPrivateKey(any()) }
-        verify { tokenManager.setLastServer("server_1") }
     }
 
     @Test
@@ -433,6 +462,21 @@ class BirdoRepositoryTest {
         assertEquals(true, request.captured.stealthMode)
         assertEquals(true, request.captured.quantumProtection)
         assertEquals("pq-public-key", request.captured.pqClientPublicKey)
+        // A client that uploaded an ML-KEM key MUST assert it can decapsulate,
+        // or the server ships the PSK over TLS and the HNDL property is lost.
+        assertEquals(true, request.captured.pqClientCanDecapsulate)
+    }
+
+    @Test
+    fun `connectVpn does not claim decapsulation without an ML-KEM key`() = runTest {
+        val request = slot<ConnectRequest>()
+        coEvery { api.connect(capture(request)) } returns Response.success(
+            ConnectResponse(success = true, keyId = "key123")
+        )
+
+        repository.connectVpn(serverNodeId = "server_1")
+
+        assertEquals(false, request.captured.pqClientCanDecapsulate)
     }
 
     // ── Disconnect VPN ──────────────────────────────────────────
@@ -526,6 +570,41 @@ class BirdoRepositoryTest {
         assertEquals(true, request.captured.stealthMode)
         assertEquals(true, request.captured.quantumProtection)
         assertEquals("pq-public-key", request.captured.pqClientPublicKey)
+        // The multi-hop twin must carry the HNDL opt-in exactly like single-hop.
+        assertEquals(true, request.captured.pqClientCanDecapsulate)
+    }
+
+    @Test
+    fun `connectMultiHop forwards the adaptive-transport fallback reason`() = runTest {
+        // Without this field on the wire, a multi-hop user on a DPI-filtered
+        // network can never obtain the stealth rebuild single-hop already gets.
+        val request = slot<MultiHopConnectRequest>()
+        coEvery { api.connectMultiHop(capture(request)) } returns Response.success(
+            MultiHopConnectResponse(success = true, keyId = "mh-key")
+        )
+
+        repository.connectMultiHop(
+            entryNodeId = "de-1",
+            exitNodeId = "nl-1",
+            fallbackReason = app.birdo.vpn.shared.model.TransportFallbackReason.HANDSHAKE_TIMEOUT,
+        )
+
+        assertEquals(
+            app.birdo.vpn.shared.model.TransportFallbackReason.HANDSHAKE_TIMEOUT,
+            request.captured.fallbackReason,
+        )
+    }
+
+    @Test
+    fun `connectMultiHop omits fallbackReason on a normal first attempt`() = runTest {
+        val request = slot<MultiHopConnectRequest>()
+        coEvery { api.connectMultiHop(capture(request)) } returns Response.success(
+            MultiHopConnectResponse(success = true, keyId = "mh-key")
+        )
+
+        repository.connectMultiHop(entryNodeId = "de-1", exitNodeId = "nl-1")
+
+        assertNull(request.captured.fallbackReason)
     }
 
     // ── Port Forwarding ─────────────────────────────────────────

@@ -54,11 +54,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -80,6 +78,7 @@ import app.birdo.vpn.ui.theme.BirdoRed
 import app.birdo.vpn.ui.theme.BirdoSurface
 import app.birdo.vpn.ui.theme.BirdoWhite60
 import app.birdo.vpn.ui.theme.BirdoWhite80
+import app.birdo.vpn.utils.copySensitiveToClipboard
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -229,7 +228,6 @@ private fun ProfileIdentityCard(
         else -> "Account"
     }
     val plan = subscription?.plan ?: "RECON"
-    val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
 
     BirdoCard(
@@ -278,7 +276,7 @@ private fun ProfileIdentityCard(
                         .clip(RoundedCornerShape(14.dp))
                         .background(palette.surfaceRaised)
                         .clickable(role = Role.Button) {
-                            clipboard.setText(AnnotatedString(accountNumber))
+                            copySensitiveToClipboard(context, "Birdo account", accountNumber)
                             Toast.makeText(context, "Account number copied", Toast.LENGTH_SHORT).show()
                         }
                         .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),

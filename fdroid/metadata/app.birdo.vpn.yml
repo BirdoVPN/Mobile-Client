@@ -15,6 +15,14 @@ SourceCode: https://github.com/BirdoVPN/Mobile-Client
 IssueTracker: https://github.com/BirdoVPN/Mobile-Client/issues
 Changelog: https://github.com/BirdoVPN/Mobile-Client/releases
 
+# P5-CICD-07: only index APKs signed by Birdo's release key. `fdroid update`
+# refuses any other signer, so even an asset that slipped past the workflow's
+# own apksigner pin (fdroid.yml) can never enter the index. The fingerprint is
+# the PUBLIC release/upload-key certificate SHA-256 (docs/PLAY-APP-SIGNING.md),
+# lowercase hex as fdroidserver expects.
+AllowedAPKSigningKeys:
+  - f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9
+
 AutoName: BirdoVPN
 Summary: Fast, private, quantum-resistant VPN
 

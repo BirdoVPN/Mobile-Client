@@ -96,6 +96,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # P5-CICD-07: pin the ONLY signer this repo will ever index.
+          # apksigner is installed by the PATH step above and was previously
+          # never invoked — anyone able to replace a release asset (repo write,
+          # a leaked GITHUB_TOKEN, an over-broad PAT) could feed an
+          # arbitrarily-signed VPN client to every NEW install from the repo
+          # users are told to add. The pinned value is the PUBLIC SHA-256 of
+          # Birdo's release/upload signing certificate — the same key
+          # android.yml signs app-release.apk with (docs/PLAY-APP-SIGNING.md).
+          EXPECTED_SIGNER_SHA256="f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
           mkdir -p fdroid/repo/icons
           cp fdroid/icon.png fdroid/repo/icons/icon.png
           tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 60 \
@@ -107,9 +116,18 @@ jobs:
           for t in $tags; do
             if gh release download "$t" --repo "$GITHUB_REPOSITORY" \
                  --pattern app-release.apk --dir "/tmp/dl-$t" 2>/dev/null; then
+              # Verify BEFORE the APK gets anywhere near the indexed repo dir.
+              # A mismatch is an incident (a substituted binary on a published
+              # release), not a skippable asset — fail the whole job loudly.
+              actual=$(apksigner verify --print-certs "/tmp/dl-$t/app-release.apk" \
+                        | awk -F': ' '/^Signer #1 certificate SHA-256 digest/{print $2; exit}')
+              if [ "$actual" != "$EXPECTED_SIGNER_SHA256" ]; then
+                echo "::error::$t: app-release.apk signer SHA-256 '$actual' does not match the pinned Birdo release certificate — refusing to index."
+                exit 1
+              fi
               cp "/tmp/dl-$t/app-release.apk" "fdroid/repo/birdovpn-${t}.apk"
               count=$((count+1))
-              echo "  + $t"
+              echo "  + $t (signer verified)"
             else
               echo "  - $t (no app-release.apk asset)"
             fi

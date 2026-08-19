@@ -293,6 +293,7 @@ class VpnViewModel @Inject constructor(
                         selectedServer = _uiState.value.selectedServer
                             ?: servers.firstOrNull { it.isOnline && it.accessible },
                     )
+                    pruneRetiredMultiHopNodes(servers)
                 }
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
@@ -302,6 +303,51 @@ class VpnViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * S-4 (ported from the desktop Dashboard's prune effect): drop persisted
+     * Multi-Hop selections whose node no longer exists in the fetched list.
+     *
+     * These ids are persisted and nothing ever removed them. When a node was
+     * destroyed the saved pair simply stopped resolving: auto-connect's
+     * incomplete-pair guard refused to connect and the picker sat blank, with
+     * no explanation — leaving the user to work out for themselves that a
+     * server they never touched had been retired.
+     *
+     * Only prunes on a NON-EMPTY list: an empty result is far more likely a
+     * failed or unauthorized fetch than a fleet that ceased to exist, and
+     * wiping the saved route on a transient error would be its own bug.
+     * Skipped unless the session is settled (Disconnected/Error) so a live or
+     * in-flight session's route is never rewritten underneath it.
+     */
+    private fun pruneRetiredMultiHopNodes(servers: List<VpnServer>) {
+        if (servers.isEmpty()) return
+        val state = vpnManager.state.value
+        if (state != VpnState.Disconnected && state !is VpnState.Error) return
+        val entry = prefs.multiHopEntryNodeId
+        val exit = prefs.multiHopExitNodeId
+        val live = servers.mapTo(HashSet()) { it.id }
+        val entryGone = !entry.isNullOrBlank() && entry !in live
+        val exitGone = !exit.isNullOrBlank() && exit !in live
+        if (!entryGone && !exitGone) return
+
+        if (entryGone) prefs.multiHopEntryNodeId = null
+        if (exitGone) prefs.multiHopExitNodeId = null
+        _multiHop.value = MultiHopSelection(
+            enabled = prefs.multiHopEnabled,
+            entryId = if (entryGone) null else entry,
+            exitId = if (exitGone) null else exit,
+        )
+        // Name which end went, rather than leaving a silently half-empty picker.
+        _uiState.value = _uiState.value.copy(
+            error = when {
+                entryGone && exitGone ->
+                    "Both of your Multi-Hop servers were retired. Pick a new entry and exit."
+                entryGone -> "Your Multi-Hop entry server was retired. Pick a new one."
+                else -> "Your Multi-Hop exit server was retired. Pick a new one."
+            },
+        )
     }
 
     /**

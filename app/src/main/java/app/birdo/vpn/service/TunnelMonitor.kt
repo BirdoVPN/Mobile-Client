@@ -64,13 +64,24 @@ class TunnelMonitor(
 
     private var thread: Thread? = null
 
+    /**
+     * Set by [stop] so a DELIBERATE teardown can never be mistaken for a drop.
+     * [isAlive] is necessarily coarse — it cannot observe the moment a caller
+     * decides to tear the tunnel down, and every teardown path calls [stop]
+     * BEFORE it clears the handle or publishes the new state. Without this the
+     * exit check below could still see a live tunnel and fire
+     * [onUnexpectedExit], arming the kill switch and an auto-reconnect over a
+     * server switch or a settings reapply the user asked for.
+     */
+    @Volatile private var stopped = false
+
     /** Start the monitor on a background daemon thread. */
     fun start() {
         thread = Thread({
             Log.i(TAG, "Tunnel monitor started for handle=$handle")
             val startTime = System.currentTimeMillis()
             try {
-                while (isAlive() && !Thread.currentThread().isInterrupted) {
+                while (!stopped && isAlive() && !Thread.currentThread().isInterrupted) {
                     Thread.sleep(CHECK_INTERVAL_MS)
                     try {
                         val v4 = WgNative.getSocketV4(handle)
@@ -101,7 +112,7 @@ class TunnelMonitor(
             } catch (_: InterruptedException) {
                 Log.i(TAG, "Tunnel monitor interrupted")
             }
-            if (isAlive()) {
+            if (!stopped && isAlive()) {
                 Log.w(TAG, "Tunnel monitor exited while connected — triggering kill switch")
                 onUnexpectedExit()
             }
@@ -112,8 +123,17 @@ class TunnelMonitor(
     /** Interrupt the monitor thread and release the reference. */
     @Synchronized
     fun stop() {
+        stopped = true
         val t = thread
         thread = null
+        // stop() is reachable FROM the monitor thread itself: onUnexpectedExit
+        // runs on it, and the service's handler calls activateKillSwitch() →
+        // cleanupTunnelDataPlane() → stop(). Interrupting and joining yourself
+        // sets the caller's own interrupt flag and makes join() throw
+        // immediately, leaking an interrupt into unrelated blocking calls made
+        // later on that thread and turning the barrier below into a no-op.
+        // Nothing to wait for in that case — the thread is already exiting.
+        if (t === Thread.currentThread()) return
         t?.interrupt()
         // Wait (bounded) for the monitor thread to actually exit so a new
         // tunnel's monitor can't race with a stale one still holding the old

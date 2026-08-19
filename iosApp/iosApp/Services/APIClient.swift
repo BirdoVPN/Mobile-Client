@@ -62,8 +62,16 @@ final class APIClient: @unchecked Sendable {
     private let sessionGeneration = SessionGeneration()
 
     /// Memoised device identity — see `deviceContext()`. Idempotent, so a
-    /// concurrent double-read simply recomputes the same value.
-    private var cachedDeviceContext: DeviceIdentity?
+    /// concurrent double-COMPUTE simply recomputes the same value — but the
+    /// read/write themselves cross concurrency domains, so they go through
+    /// `deviceContextLock` (an unsynchronised var in an `@unchecked Sendable`
+    /// class is a data race, and a hard error under Swift 6 strict checking).
+    private let deviceContextLock = NSLock()
+    private var _cachedDeviceContext: DeviceIdentity?
+    private var cachedDeviceContext: DeviceIdentity? {
+        get { deviceContextLock.lock(); defer { deviceContextLock.unlock() }; return _cachedDeviceContext }
+        set { deviceContextLock.lock(); defer { deviceContextLock.unlock() }; _cachedDeviceContext = newValue }
+    }
 
     init(
         baseURL: URL = URL(string: "https://api.birdo.app")!,
@@ -318,7 +326,8 @@ final class APIClient: @unchecked Sendable {
                 deviceId: await deviceContext().id,
                 clientPublicKey: wg.publicKey,
                 quantumProtection: pqPk == nil ? nil : true,
-                pqClientPublicKey: pqPk
+                pqClientPublicKey: pqPk,
+                pqClientCanDecapsulate: pqPk == nil ? nil : true
             )
         )
         let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
@@ -352,7 +361,8 @@ final class APIClient: @unchecked Sendable {
                 deviceId: await deviceContext().id,
                 clientPublicKey: wg.publicKey,
                 quantumProtection: pqPk == nil ? nil : true,
-                pqClientPublicKey: pqPk
+                pqClientPublicKey: pqPk,
+                pqClientCanDecapsulate: pqPk == nil ? nil : true
             )
         )
         let data = try await post(path: "/vpn/multi-hop/connect", body: body, authenticated: true)
@@ -1205,6 +1215,12 @@ private struct ConnectBody: Encodable {
     let quantumProtection: Bool?
     /// AUDIT-C1: BirdoPQ v1 ML-KEM-1024 client public key (Base64).
     let pqClientPublicKey: String?
+    /// BirdoPQ v1 HNDL opt-in: we decapsulate the ciphertext and derive the
+    /// PSK on-device (BirdoPQManager), so the server WITHHOLDS the PSK from
+    /// the response — it never crosses the wire under classical TLS. Only ever
+    /// true alongside `pqClientPublicKey`; VPNManager fails closed if
+    /// decapsulation then fails, so this can never silently downgrade.
+    let pqClientCanDecapsulate: Bool?
 }
 
 private struct MultiHopBody: Encodable {
@@ -1215,6 +1231,9 @@ private struct MultiHopBody: Encodable {
     let clientPublicKey: String?
     let quantumProtection: Bool?
     let pqClientPublicKey: String?
+    /// HNDL opt-in — see ConnectBody. Declared on BOTH bodies (the duplicated
+    /// wire-model twin) so the double-hop path keeps the PSK off the wire too.
+    let pqClientCanDecapsulate: Bool?
 }
 
 private struct PortForwardBody: Encodable {

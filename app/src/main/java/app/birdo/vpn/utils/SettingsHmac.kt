@@ -48,6 +48,11 @@ object SettingsHmac {
         "multi_hop_enabled",
         "multi_hop_entry_node",
         "multi_hop_exit_node",
+        // Routes every private-range destination OUTSIDE the tunnel
+        // (BirdoVpnService route table). Same exposure class as
+        // split_tunnel_apps, which was already protected: an unsigned rewrite
+        // was undetectable and survived the tamper reset.
+        "local_network_sharing",
     )
 
     /**
@@ -69,6 +74,23 @@ object SettingsHmac {
      * legacy sets only widen WHICH honest payloads we recognise.
      */
     internal val LEGACY_PROTECTED_KEY_SETS: List<List<String>> = listOf(
+        // v2 — before local_network_sharing was covered.
+        listOf(
+            "kill_switch_enabled",
+            "stealth_mode_enabled",
+            "quantum_protection_enabled",
+            "split_tunneling_enabled",
+            "split_tunnel_apps",
+            "custom_dns_enabled",
+            "custom_dns_primary",
+            "custom_dns_secondary",
+            "wireguard_port",
+            "wireguard_mtu",
+            "biometric_lock_enabled",
+            "multi_hop_enabled",
+            "multi_hop_entry_node",
+            "multi_hop_exit_node",
+        ),
         // v1 — before the Multi-Hop route was covered.
         listOf(
             "kill_switch_enabled",
@@ -106,7 +128,12 @@ object SettingsHmac {
             PROTECTED_KEYS.forEach { editor.remove(it) }
             editor
                 .putBoolean("kill_switch_enabled", true)
-                .putBoolean("stealth_mode_enabled", true)
+                // false MATCHES THE SHIPPED DEFAULT (AppPreferences KEY_STEALTH_MODE
+                // defaults to false). Pinning true here silently moved reset users
+                // onto the slower Xray transport they never selected, and showed
+                // unentitled users an upgrade prompt triggered by an integrity
+                // reset rather than anything they did.
+                .putBoolean("stealth_mode_enabled", false)
                 .putBoolean("quantum_protection_enabled", true)
                 .putBoolean("split_tunneling_enabled", false)
                 .putStringSet("split_tunnel_apps", emptySet())
@@ -121,6 +148,10 @@ object SettingsHmac {
                 // relocates the user's egress; making them re-pick is the safe
                 // default, and the removal loop above already cleared the ids.
                 .putBoolean("multi_hop_enabled", false)
+                // LAN bypass OFF: a tampered value here routes all private-range
+                // traffic outside the tunnel. The removal loop already cleared the
+                // key; pin it for defense-in-depth like the others.
+                .putBoolean("local_network_sharing", false)
                 .commit()
             sign(prefs)
         } catch (e: Exception) {
@@ -136,7 +167,12 @@ object SettingsHmac {
         try {
             val key = getOrCreateHmacKey()
             val hmac = computeHmac(key, buildCanonicalData(prefs, PROTECTED_KEYS))
-            prefs.edit().putString(HMAC_PREF_KEY, hmac).apply()
+            // commit(), NOT apply(): every protected VALUE is written with
+            // commit() before this runs, so an async apply() here opened a
+            // window where a process kill persisted the value but not its
+            // signature — next launch then failed verify() and wiped every
+            // protected setting, indistinguishable from tampering.
+            prefs.edit().putString(HMAC_PREF_KEY, hmac).commit()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to sign settings", e)
         }

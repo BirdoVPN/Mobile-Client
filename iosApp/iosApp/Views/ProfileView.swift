@@ -407,7 +407,7 @@ struct ProfileView: View {
     }
 
     private func copyAccountNumber(_ number: String) {
-        Clipboard.copy(number)
+        Clipboard.copySensitive(number)
         Announce.message("Account number copied")
         withAnimation(BirdoTheme.Motion.decel()) {
             showCopiedToast = true
@@ -493,6 +493,10 @@ struct ProfileView: View {
               !raw.isEmpty else { return nil }
         guard let date = parseInstantOrDate(raw) else { return nil }
         let formatter = DateFormatter()
+        // Fixed-format string ⇒ fixed locale + Gregorian calendar, or users on
+        // non-Gregorian device calendars see a wrong date (twin of LimitView).
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "MMM d, yyyy"
         return formatter.string(from: date)
     }

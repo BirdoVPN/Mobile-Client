@@ -28,6 +28,23 @@
                 <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
             </array>
         </dict>
+        <!-- Persistent device identifier: "ios_" + SHA-256(IDFV|salt) prefix,
+             persisted in the keychain so it survives reinstall (APIClient
+             deviceContext()); sent on every auth/connect call as deviceId.
+             Linked to the account, not used for tracking. Matches the Play
+             data-safety declaration for the identical Android identifier. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeDeviceID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
         <!-- Other user account data (subscription status / account identifier). -->
         <dict>
             <key>NSPrivacyCollectedDataType</key>

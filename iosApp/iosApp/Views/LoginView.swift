@@ -560,7 +560,7 @@ struct LoginView: View {
     }
 
     private func copyCreatedId(_ id: String) {
-        Clipboard.copy(id)
+        Clipboard.copySensitive(id)
         Haptics.notify(.success)
         AccessibilityNotification.Announcement("Account ID copied").post()
         copyResetTask?.cancel()

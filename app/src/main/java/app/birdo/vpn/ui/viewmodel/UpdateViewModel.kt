@@ -93,8 +93,25 @@ class UpdateViewModel @Inject constructor(
         return if (BuildConfig.IS_PLAY_BUILD) {
             PLAY_LISTING_URL
         } else {
-            info?.downloadUrl ?: info?.releaseUrl ?: FALLBACK_CLIENTS_URL
+            safeHttpsUrl(info?.downloadUrl) ?: safeHttpsUrl(info?.releaseUrl) ?: FALLBACK_CLIENTS_URL
         }
+    }
+
+    /**
+     * The update URL is SERVER-SUPPLIED and launched via ACTION_VIEW into a
+     * context where the user is conditioned to sideload the result. Enforce
+     * https and an expected-host allow-list; anything else falls through to
+     * [FALLBACK_CLIENTS_URL].
+     */
+    private fun safeHttpsUrl(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val uri = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return null
+        if (uri.scheme != "https") return null
+        val host = uri.host?.lowercase() ?: return null
+        val allowed = host == "birdo.app" || host.endsWith(".birdo.app") ||
+            host == "github.com" || host.endsWith(".github.com") ||
+            host.endsWith(".githubusercontent.com")
+        return if (allowed) url else null
     }
 
     companion object {

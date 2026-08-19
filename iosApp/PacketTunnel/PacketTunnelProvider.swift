@@ -1,3 +1,4 @@
+import CommonCrypto
 import NetworkExtension
 import Security
 import WireGuardKit
@@ -17,7 +18,8 @@ import os.log
 /// - Implements live transfer-stats IPC for the host app (`stats` message).
 /// `@unchecked Sendable` (finding #2): the liveness heartbeat runs in a
 /// `Task`, whose closure is `@Sendable` and therefore requires a Sendable
-/// `self`. The only cross-context mutable state is `heartbeatTask`, guarded by
+/// `self`. The cross-context mutable state is `heartbeatTask` and
+/// `tunnelStartedAt` (via its locked accessor), both guarded by
 /// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatSession` are set
 /// once and treated as effectively immutable thereafter (the existing stats /
 /// wake callbacks already read them off-thread). Mirrors the codebase's
@@ -55,11 +57,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     /// When the tunnel came up, so liveness checks can allow a grace period for
     /// the first handshake instead of tearing down a tunnel that is still
-    /// establishing on a slow network.
-    private var tunnelStartedAt: Date?
+    /// establishing on a slow network. Written on the NetworkExtension callback
+    /// context and read from the heartbeat Task — access ONLY via
+    /// `tunnelStartedAt` (guarded by `heartbeatLock`, same as `heartbeatTask`).
+    private var _tunnelStartedAt: Date?
+    private var tunnelStartedAt: Date? {
+        get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _tunnelStartedAt }
+        set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _tunnelStartedAt = newValue }
+    }
 
     /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
-    /// header or body is ever written to disk, matching the host APIClient.
+    /// header or body is ever written to disk, matching the host APIClient —
+    /// and SPKI-PINNED like the host APIClient. This session carries the
+    /// account's bearer token every 30 s for the tunnel's whole life, a
+    /// strictly higher-volume exposure than the host app's occasional calls,
+    /// so an unpinned session here was a hole in the app's pinning guarantee.
     private lazy var heartbeatSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
@@ -67,7 +79,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         config.httpCookieStorage = nil
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config)
+        return URLSession(configuration: config,
+                          delegate: HeartbeatPinningDelegate(),
+                          delegateQueue: nil)
     }()
 
     private lazy var adapter: WireGuardAdapter = {
@@ -123,7 +137,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let heartbeatToken = (proto.providerConfiguration?["hb-access-token"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let heartbeatClientVersion = (proto.providerConfiguration?["hb-client-version"] as? String) ?? "1.0.0"
+        // "0.0.0-unknown", never "1.0.0": a fabricated plausible version
+        // defeats any server-side version floor and corrupts attribution (the
+        // exact regression the codebase eliminated once). MUST stay in
+        // lockstep with VPNManager's fallback.
+        let rawHbVersion = proto.providerConfiguration?["hb-client-version"] as? String
+        let heartbeatClientVersion = (rawHbVersion?.isEmpty == false) ? rawHbVersion! : "0.0.0-unknown"
 
         // Read secrets out of the shared keychain. The IDs are passed via
         // providerConfiguration; the actual material never appears there.
@@ -175,7 +194,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 )
             }()
         } catch {
-            recordFailure("config parse failed: \(error.localizedDescription)")
+            // Type/case discriminant only — TunnelConfiguration parse errors can
+            // carry the offending config LINE, i.e. the private key or PSK.
+            recordFailure("config parse failed: \(Self.errorDiscriminant(error))")
             completionHandler(TunnelError.invalidConfig)
             return
         }
@@ -194,7 +215,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 os_log("Adapter start failed: %{private}@",
                        log: self?.log ?? .default, type: .error,
                        String(describing: adapterError))
-                self?.recordFailure("adapter start failed: \(adapterError)")
+                // Case name only — `.dnsResolution` carries the server endpoint.
+                self?.recordFailure("adapter start failed: \(Self.errorDiscriminant(adapterError))")
                 completionHandler(TunnelError.adapterFailed(String(describing: adapterError)))
                 return
             }
@@ -234,7 +256,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         tunnelStartedAt = nil
         adapter.stop { [weak self] error in
             if let error {
-                os_log("Adapter stop failed: %{public}@",
+                // %{private}@ — same WireGuardAdapterError family as the start
+                // path; its cases can carry the endpoint.
+                os_log("Adapter stop failed: %{private}@",
                        log: self?.log ?? .default, type: .error,
                        String(describing: error))
             }
@@ -436,7 +460,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
         if age > Self.maxHandshakeAge {
             os_log("Data plane dead: last handshake %{public}.0fs ago — cancelling tunnel so it can re-dial",
-                   log: .default, type: .error, age)
+                   log: log, type: .error, age)
             cancelTunnelWithError(NSError(
                 domain: "app.birdo.vpn.tunnel",
                 code: -1001,
@@ -502,9 +526,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// entitled on both sides and already works, whereas an App Group would mean
     /// a new entitlement and regenerating both provisioning profiles.
     ///
+    /// Stable, payload-free discriminant for an error: the enum case name (or
+    /// type name) WITHOUT associated values — so `.dnsResolution(endpoint)`
+    /// logs as "dnsResolution", never the endpoint, and a parse error never
+    /// logs the config line (which can be the private key).
+    private static func errorDiscriminant(_ error: Error) -> String {
+        let mirror = Mirror(reflecting: error)
+        if mirror.displayStyle == .enum, let caseName = mirror.children.first?.label {
+            return "\(type(of: error)).\(caseName)"
+        }
+        return String(describing: type(of: error))
+    }
+
     /// Diagnostic strings only — never key material, never the endpoint.
+    /// Callers must pass pre-sanitised discriminants (see `errorDiscriminant`);
+    /// the os_log below stays %{private}@ as defence in depth so a future call
+    /// site that slips an interpolated error in cannot reach sysdiagnose.
     private func recordFailure(_ reason: String) {
-        os_log("Tunnel start failed: %{public}@", log: log, type: .error, reason)
+        os_log("Tunnel start failed: %{private}@", log: log, type: .error, reason)
         guard let data = reason.data(using: .utf8) else { return }
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -555,5 +594,117 @@ enum TunnelError: Error, LocalizedError {
         case .adapterFailed(let msg): return "Tunnel adapter failed: \(msg)"
         case .connectionRevoked: return "Connection has been revoked. Please reconnect."
         }
+    }
+}
+
+// MARK: - Certificate Pinning (extension copy)
+
+/// SPKI-pinning URLSession delegate for the heartbeat session.
+///
+/// The appex and the host app do not share source files, so — exactly like
+/// `sharedAccessGroup` above — this is a deliberate per-target copy of the
+/// host's `APIClient.PinningDelegate`, and the PIN SET below MUST stay in
+/// lockstep with it (and with Android's `NetworkModule.kt` /
+/// `network_security_config.xml`). Pin-set expiration: 2027-06-01.
+///
+/// Fails CLOSED on every uncertain path: standard CA validation first, then at
+/// least one certificate in the chain must match a pinned SPKI hash; an
+/// unreadable chain or key cancels the challenge rather than falling through.
+private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
+    /// Base64-encoded SHA-256 hashes of the SubjectPublicKeyInfo (SPKI) of
+    /// every certificate we accept, anywhere in the chain.
+    private static let pins: Set<String> = [
+        // WE1 — Google Trust Services intermediate (verified 2026-02-22)
+        "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
+        // GlobalSign ECC Root CA - R4 (verified 2026-02-22)
+        "CLOmM1/OXvSPjw5UOYbAf9GKOxImEp9hhku9W90fHMk=",
+        // ISRG Root X1 — Let's Encrypt root (cross-CA diversity backup)
+        "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=",
+    ]
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let trust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        var trustError: CFError?
+        guard SecTrustEvaluateWithError(trust, &trustError) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+        for cert in chain {
+            guard let pubKey = SecCertificateCopyKey(cert),
+                  let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
+                continue
+            }
+            let spkiHeader = Self.spkiHeader(for: pubKey)
+            var hashable = spkiHeader
+            hashable.append(pubKeyData)
+            let hash = Self.sha256(hashable).base64EncodedString()
+            if Self.pins.contains(hash) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+                return
+            }
+        }
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+
+    /// ASN.1 SubjectPublicKeyInfo header bytes that prefix the raw key data
+    /// produced by `SecKeyCopyExternalRepresentation`. RSA 2048/4096 +
+    /// EC P-256 / P-384 cover every CA in the pin set.
+    private static func spkiHeader(for key: SecKey) -> Data {
+        let attrs = SecKeyCopyAttributes(key) as? [CFString: Any] ?? [:]
+        let type = (attrs[kSecAttrKeyType] as? String) ?? ""
+        let size = (attrs[kSecAttrKeySizeInBits] as? Int) ?? 0
+        let rsaType = kSecAttrKeyTypeRSA as String
+        let ecType = kSecAttrKeyTypeECSECPrimeRandom as String
+        switch (type, size) {
+        case (rsaType, 2048):
+            return Data([
+                0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
+            ])
+        case (rsaType, 4096):
+            return Data([
+                0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09,
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
+                0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
+            ])
+        case (ecType, 256):
+            return Data([
+                0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
+                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+                0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+                0x42, 0x00,
+            ])
+        case (ecType, 384):
+            return Data([
+                0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86,
+                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
+                0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
+            ])
+        default:
+            return Data() // Unknown key type — hash will not match any pin.
+        }
+    }
+
+    private static func sha256(_ data: Data) -> Data {
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes {
+            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return Data(hash)
     }
 }

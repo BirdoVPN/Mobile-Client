@@ -87,6 +87,38 @@ class RequestSerializationTest {
     }
 
     @Test
+    fun `both connect requests carry pqClientCanDecapsulate when set`() {
+        // The HNDL opt-in must reach the wire on BOTH peer-issuing request
+        // types — the duplicated wire-model twin (single-hop + multi-hop).
+        val single = json.encodeToString(
+            serializer<ConnectRequest>(),
+            ConnectRequest(serverNodeId = "node-1", pqClientCanDecapsulate = true),
+        )
+        assertTrue("pqClientCanDecapsulate missing from ConnectRequest", single.contains("pqClientCanDecapsulate"))
+
+        val multi = json.encodeToString(
+            serializer<MultiHopConnectRequest>(),
+            MultiHopConnectRequest(
+                entryNodeId = "entry-1",
+                exitNodeId = "exit-1",
+                pqClientCanDecapsulate = true,
+            ),
+        )
+        assertTrue("pqClientCanDecapsulate missing from MultiHopConnectRequest", multi.contains("pqClientCanDecapsulate"))
+    }
+
+    @Test
+    fun `pqClientCanDecapsulate is omitted at its default`() {
+        // Default-false stays off the wire so older backends (and the strict
+        // zod schema's absent-key path) see exactly the previous payload.
+        val encoded = json.encodeToString(
+            serializer<ConnectRequest>(),
+            ConnectRequest(serverNodeId = "node-1"),
+        )
+        assertTrue("default pqClientCanDecapsulate must not be encoded", !encoded.contains("pqClientCanDecapsulate"))
+    }
+
+    @Test
     fun `AttestationNonceResponse deserializes`() {
         val decoded = json.decodeFromString(
             serializer<AttestationNonceResponse>(),

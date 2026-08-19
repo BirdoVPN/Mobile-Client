@@ -62,9 +62,12 @@ class AppPreferences @Inject constructor(
         set(value) = prefs.edit().putBoolean(KEY_NOTIF_SHOW_LOCATION, value).apply()
 
     // ── VPN Protocol Settings ────────────────────────────────────
+    /** HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS): rewrites the tunnel route
+     *  table (private ranges bypass the VPN), so it must commit() + re-sign
+     *  like split_tunnel_apps. */
     var localNetworkSharing: Boolean
         get() = prefs.getBoolean(KEY_LOCAL_NETWORK_SHARING, false)
-        set(value) = prefs.edit().putBoolean(KEY_LOCAL_NETWORK_SHARING, value).apply()
+        set(value) { prefs.edit().putBoolean(KEY_LOCAL_NETWORK_SHARING, value).commit(); signSettings() }
 
     // ── Stealth Mode (Xray Reality) ──────────────────────────────
     /** When enabled, WireGuard traffic is wrapped in Xray VLESS+Reality TLS tunnel

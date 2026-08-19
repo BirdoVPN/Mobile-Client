@@ -67,6 +67,13 @@ final class SSOService: NSObject {
 
     private static let verifierKey = "sso_code_verifier"
     private static let stateKey = "sso_state"
+    private static let savedAtKey = "sso_saved_at"
+
+    /// Generous multiple of the broker's ~60 s handoff window. Anything older
+    /// is an abandoned attempt (app killed mid-flow) whose PKCE secret must
+    /// not sit in plaintext UserDefaults indefinitely. Mirrors Android's
+    /// OAuthStateStore.MAX_AGE_MS.
+    private static let maxStateAge: TimeInterval = 10 * 60
 
     private let api: APIClient
     /// Strong reference keeps the session (and its sheet) alive while the
@@ -97,6 +104,7 @@ final class SSOService: NSObject {
         let defaults = UserDefaults.standard
         defaults.set(verifier, forKey: Self.verifierKey)
         defaults.set(state, forKey: Self.stateKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: Self.savedAtKey)
 
         // Build the broker URL byte-exact: challenge/state are already
         // URL-safe base64url; redirect_uri is the encoded `birdo://auth`.
@@ -162,8 +170,12 @@ final class SSOService: NSObject {
             clearPersistedState()
             return .cancelled
         }
+        let age = Date().timeIntervalSince1970 - defaults.double(forKey: Self.savedAtKey)
         guard let savedVerifier = defaults.string(forKey: Self.verifierKey),
-              let savedState = defaults.string(forKey: Self.stateKey) else {
+              let savedState = defaults.string(forKey: Self.stateKey),
+              age >= 0, age <= Self.maxStateAge else {
+            // Missing OR stale (a previous attempt's residue, e.g. app killed
+            // mid-flow) — treat as absent and delete the plaintext residue.
             clearPersistedState()
             throw SSOError.sessionExpired
         }
@@ -183,6 +195,7 @@ final class SSOService: NSObject {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: Self.verifierKey)
         defaults.removeObject(forKey: Self.stateKey)
+        defaults.removeObject(forKey: Self.savedAtKey)
     }
 
     // MARK: - Crypto helpers

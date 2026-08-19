@@ -28,11 +28,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -46,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
+import app.birdo.vpn.utils.copySensitiveToClipboard
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.utils.formatAnonymousId
 import app.birdo.vpn.utils.is2faCodeComplete
@@ -848,7 +847,6 @@ private fun AnonymousIdSavedDialog(
     anonymousId: String,
     onAcknowledge: () -> Unit,
 ) {
-    val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val grouped = formatAnonymousId(anonymousId)
 
@@ -896,7 +894,7 @@ private fun AnonymousIdSavedDialog(
                         .clip(RoundedCornerShape(12.dp))
                         .background(BirdoWhite05)
                         .clickable(role = Role.Button) {
-                            clipboard.setText(AnnotatedString(anonymousId))
+                            copySensitiveToClipboard(context, "Birdo account", anonymousId)
                             Toast.makeText(
                                 context,
                                 context.getString(R.string.anon_created_copied),

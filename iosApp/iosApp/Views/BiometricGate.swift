@@ -14,6 +14,10 @@ struct BiometricGate<Content: View>: View {
 
     @State private var unlocked = false
     @State private var lastFailure: String?
+    /// Single-flight: on cold start `.task` and `.onChange(.active)` both fire,
+    /// which stacked two concurrent LAContext evaluations (two Face ID prompts;
+    /// a dismissed one's late callback could flip `unlocked` unexpectedly).
+    @State private var authInFlight = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -49,6 +53,8 @@ struct BiometricGate<Content: View>: View {
     }
 
     private func authenticate() {
+        guard !authInFlight else { return }
+        authInFlight = true
         let ctx = LAContext()
         ctx.localizedFallbackTitle = "Use Passcode"
         var error: NSError?
@@ -57,6 +63,7 @@ struct BiometricGate<Content: View>: View {
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
             // No biometrics + no passcode set → fail open so user can't be
             // permanently locked out of their VPN client.
+            authInFlight = false
             unlocked = true
             return
         }
@@ -65,6 +72,7 @@ struct BiometricGate<Content: View>: View {
             localizedReason: "Unlock Birdo VPN"
         ) { success, evalError in
             DispatchQueue.main.async {
+                authInFlight = false
                 if success {
                     unlocked = true
                     lastFailure = nil

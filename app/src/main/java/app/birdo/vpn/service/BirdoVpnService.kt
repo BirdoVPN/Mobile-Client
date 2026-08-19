@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,6 +12,7 @@ import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.service.quicksettings.TileService
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
@@ -173,6 +175,13 @@ class BirdoVpnService : VpnService() {
         val stateFlow: StateFlow<VpnState> = _stateFlow.asStateFlow()
 
         /**
+         * Application context, captured in [onCreate], so [updateState] can ask
+         * the platform to re-bind the Quick Settings tile. Application context
+         * only — process-scoped, so holding it cannot leak the service.
+         */
+        @Volatile private var appContext: Context? = null
+
+        /**
          * FIX-2-12: Update VPN state atomically — sets both the volatile field
          * (for backward compat / quick reads) and the StateFlow (for reactive
          * collection in VpnManager).
@@ -180,6 +189,32 @@ class BirdoVpnService : VpnService() {
         private fun updateState(newState: VpnState) {
             currentState = newState
             _stateFlow.value = newState
+            requestTileRefresh()
+        }
+
+        /**
+         * Ask the platform to bind [BirdoTileService] so it can re-render.
+         *
+         * The tile declares ACTIVE_TILE, which means the platform binds it ONLY
+         * on a tap or on this request — NOT when the shade opens. Nothing ever
+         * made the request, so the tile showed whatever state was current the
+         * last time the user tapped it: it could read "Disconnected" over a live
+         * tunnel, or active over a dead one. Since onClick acts on the LIVE
+         * state, a user tapping a tile that read "Disconnected" disconnected
+         * their VPN — the exact opposite of their intent.
+         */
+        private fun requestTileRefresh() {
+            val ctx = appContext ?: return
+            try {
+                TileService.requestListeningState(
+                    ctx,
+                    ComponentName(ctx, BirdoTileService::class.java),
+                )
+            } catch (e: Exception) {
+                // Tile not added to the shade, or the platform refused — never
+                // let a cosmetic refresh break a tunnel state transition.
+                Log.w(TAG, "Quick Settings tile refresh request failed", e)
+            }
         }
 
         @Volatile private var activeConfig: ConnectResponse? = null
@@ -204,12 +239,31 @@ class BirdoVpnService : VpnService() {
 
     // ── Tunnel state ─────────────────────────────────────────────
 
+    // @Volatile on all three: this is tunnel-lifecycle state mutated from at
+    // least four threads — the tunnel executor (startTunnel, the drop handler),
+    // the main thread (onStartCommand's STOP / SWITCH_TEARDOWN /
+    // KILL_SWITCH_BLOCK dispatch and onDestroy), the TunnelMonitor thread (via
+    // onUnexpectedExit) — and read from four more: statsExecutor,
+    // birdo-socket-protect, birdo-transport-probe and the ConnectivityManager
+    // callback. Without it the JIT is free to hoist these reads out of a loop,
+    // so the socket-protect daemon's `tunnelHandle != handle` exit condition and
+    // both isAlive predicates could run on a stale value: protect() applied to a
+    // recycled descriptor (excluding an unrelated app's socket from the tunnel),
+    // a leaked fd, or a monitor still watching a dead handle. The neighbouring
+    // isKillSwitchEnabled is already @Volatile for exactly this reason.
+    //
+    // Visibility only. These reads and writes are still not ATOMIC with respect
+    // to each other — serialising every lifecycle transition onto tunnelExecutor
+    // is the real fix and is deliberately left for a change that can be tested
+    // on a device (queueing a user's Disconnect behind an in-flight 30s PQ
+    // establish is its own hazard).
+
     /** VPN interface — only held during kill switch. */
-    private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile private var vpnInterface: ParcelFileDescriptor? = null
     /** wg-go tunnel handle (>= 0 when tunnel is active). */
-    private var tunnelHandle: Int = -1
+    @Volatile private var tunnelHandle: Int = -1
     /** Monitors the tunnel and re-protects sockets. */
-    private var tunnelMonitor: TunnelMonitor? = null
+    @Volatile private var tunnelMonitor: TunnelMonitor? = null
 
     /**
      * Default-network callback — fires when the OS swaps the underlying
@@ -281,21 +335,26 @@ class BirdoVpnService : VpnService() {
     private val connectTimeoutRunnable = Runnable {
         if (currentState is VpnState.Connecting) {
             Log.e(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
-            updateState(VpnState.Error("Connection timed out"))
             // Fail closed on timeout, matching every startTunnel failure path.
             // The old cleanupTunnel() closed the blocking vpnInterface with NO
             // re-arm, so a >30s stall during a reconnect (e.g. PQ key exchange
             // wedged in a dead zone) dropped the kill-switch block and leaked
-            // cleartext + DNS until the next reconnect re-armed it. Tear down the
-            // stalled wg-go setup but keep traffic blocked: activateKillSwitch()
-            // supersedes any stale/held interface with a fresh block. Only fully
-            // release (fail open) when the user has the kill switch OFF.
+            // cleartext + DNS until the next reconnect re-armed it. Keep traffic
+            // blocked: activateKillSwitch() establishes a fresh block that
+            // supersedes any stale/held interface OR a still-live wg-go tunnel,
+            // and only then tears the stalled wg-go setup down — no teardown here
+            // first, or the tun fd closes and routing reverts to the physical
+            // network before the block is up. Only fully release (fail open) when
+            // the user has the kill switch OFF.
+            //
+            // BLOCK FIRST, THEN PUBLISH Error — see the ordering contract on
+            // [activateKillSwitch].
             if (isKillSwitchEnabled) {
-                cleanupTunnelDataPlane()
                 activateKillSwitch()
             } else {
                 cleanupTunnel()
             }
+            updateState(VpnState.Error("Connection timed out"))
             updateNotification("Connection timed out")
         }
     }
@@ -304,6 +363,7 @@ class BirdoVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        appContext = applicationContext
         notifManager.createChannel()
     }
 
@@ -316,17 +376,55 @@ class BirdoVpnService : VpnService() {
         // cleanly instead of parking in a fake "Connecting…" foreground state,
         // and don't ask to be restarted again.
         if (intent?.action == null) {
-            Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
             // The tunnel is down (the OS killed and is restarting us). The widget
             // pref survives process death, so without this the home-screen widget
             // keeps showing a green "Protected" for a VPN that is no longer up.
             updateWidgetState(false, null)
+
+            // RE-ARM THE KILL SWITCH. It is process-local — the blocking
+            // interface died with the process — and the OS-level always-on
+            // lockdown that would have covered this is deliberately disabled
+            // (AndroidManifest SUPPORTS_ALWAYS_ON=false: there is no headless
+            // re-auth path yet). So this branch used to stopSelf(), which also
+            // removed the persistent notification, and a user who had asked for
+            // fail-closed protection was left with traffic flowing unprotected,
+            // no VPN interface, no blocking interface, and no signal at all.
+            //
+            // We cannot re-establish the tunnel (the START intent's config and
+            // consent are gone), but activateKillSwitch() needs neither — it
+            // uses only hard-coded addresses. Honour the preference: block, stay
+            // foreground, and say why.
+            val rearm = try {
+                appPrefs.killSwitchEnabled
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not read kill-switch preference on restart", e)
+                false
+            }
             startForeground(
                 VpnNotificationManager.NOTIFICATION_ID,
-                notifManager.buildForegroundNotification("Disconnected"),
+                notifManager.buildForegroundNotification(
+                    if (rearm) "Kill Switch Active — reconnect required" else "Disconnected",
+                ),
             )
-            stopSelf()
-            return START_NOT_STICKY
+            if (!rearm) {
+                Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            Log.i(TAG, "System restart with kill switch enabled — re-arming the block")
+            isKillSwitchEnabled = true
+            activateKillSwitch()
+            if (!killSwitchActive) {
+                // Silent failure of a security control is worse than a loud one:
+                // the user believes they are fail-closed and they are not.
+                Log.e(TAG, "Kill switch could not be re-armed after restart — traffic is NOT blocked")
+                updateState(VpnState.Error("Kill switch could not be armed — traffic is NOT protected"))
+                updateNotification("Kill switch could not be armed — traffic is NOT protected")
+            }
+            // START_STICKY: if the OS kills us again we want to come back and
+            // re-arm again rather than leave the block down for good.
+            return START_STICKY
         }
 
         // Android 12+ requires startForeground() within ~5s of EVERY
@@ -388,6 +486,14 @@ class BirdoVpnService : VpnService() {
                 startTunnel()
             } catch (t: Throwable) {
                 Log.e(TAG, "Unhandled error in tunnel setup", t)
+                // startTunnel's own catch only covers Exception; a Throwable that
+                // escapes it left the tunnel half-built and the user unprotected
+                // with no block. Fail closed here too, before publishing Error.
+                // activateKillSwitch() does its own ordered teardown (establish
+                // the block first, then turn wg-go off) — no teardown here first.
+                if (isKillSwitchEnabled) {
+                    activateKillSwitch()
+                }
                 updateState(VpnState.Error(t.message ?: "Tunnel crashed"))
                 mainHandler.post { updateNotification("Connection failed") }
             } finally {
@@ -461,7 +567,16 @@ class BirdoVpnService : VpnService() {
             return
         }
 
-        if (currentState is VpnState.Disconnected && !killSwitchActive) {
+        // `!tunnelSetupInProgress` matches the guard on the kill-switch release
+        // branch above, and for the same reason: switchTeardown publishes
+        // Disconnected before the incoming ACTION_START's establish lands, so a
+        // settings push arriving in that window would stopSelf() a service with
+        // a tunnel setup in flight on the executor — onDestroy then runs
+        // cleanupTunnel + shutdownNow underneath it, orphaning a wg-go tunnel
+        // and a VPN interface with no owner.
+        if (currentState is VpnState.Disconnected && !killSwitchActive &&
+            !tunnelSetupInProgress
+        ) {
             // Nothing is running — a stale push started us; don't park in a
             // fake foreground state.
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -487,6 +602,11 @@ class BirdoVpnService : VpnService() {
     override fun onDestroy() {
         stopNotificationTicker()
         mainHandler.removeCallbacks(connectTimeoutRunnable)
+        // The tunnel dies with the service, so the widget's "Protected" must
+        // too. onDestroy is reached on paths that never go through stopTunnel
+        // (handleUpdateSettings' stale-push stopSelf, an OOM kill, a force-stop
+        // that runs it), and none of those reset the flag.
+        updateWidgetState(false, null)
         cleanupTunnel()
         activeConfig = null
         tunnelExecutor.shutdownNow()
@@ -611,15 +731,37 @@ class BirdoVpnService : VpnService() {
 
     // ── Kill Switch ──────────────────────────────────────────────
 
+    /**
+     * Arm the fail-closed blocking interface.
+     *
+     * ORDERING CONTRACT — callers on a FAILURE path must call this BEFORE
+     * publishing [VpnState.Error], never after.
+     *
+     * On success this publishes [VpnState.KillSwitchActive]. VpnManager's
+     * auto-reconnect only fires on Error (and its backoff loop aborts when the
+     * state is neither Error nor Reconnecting), so a failure path that set Error
+     * and THEN called this overwrote the trigger with a state nothing reacts to:
+     * the device sat with every packet blocked, "Kill Switch Active — Traffic
+     * blocked" in the notification, and no retry, indefinitely, until the user
+     * intervened by hand. Arming first makes Error the terminal state, so the
+     * block is held AND auto-reconnect runs — fail-closed and self-healing.
+     */
     private fun activateKillSwitch() {
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
         try {
-            // Tear down wg-go / monitor / callbacks but KEEP the current interface
-            // (if any) up: establish() below atomically supersedes it, so there is
-            // no cleartext gap when re-arming over an existing blocking interface
-            // (e.g. a failed reconnect attempt re-arming for the next backoff).
+            // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
+            // (server switch, connect timeout, KILL_SWITCH_BLOCK, stall) the sole
+            // tun fd lives inside wg-go — startTunnel detachFd()s it and nulls
+            // vpnInterface — so running cleanupTunnelDataPlane() first had
+            // WgNative.turnOff close that fd and destroy the interface, reverting
+            // routing to the physical network for the whole wg-go-shutdown +
+            // establish() window: a cleartext leak at the exact moment the user
+            // asked to be blocked. establish() below atomically supersedes
+            // whatever interface is up — the live tunnel's OR a previous blocking
+            // one (the same semantic startTunnel relies on when its new tunnel
+            // supersedes this block) — so tearing wg-go down AFTER it can never
+            // expose traffic. Callers therefore must NOT tear down first either.
             val stale = vpnInterface
-            cleanupTunnelDataPlane()
             val builder = Builder()
                 .setSession("BirdoVPN Kill Switch")
                 .setMtu(1420)
@@ -637,6 +779,9 @@ class BirdoVpnService : VpnService() {
                 .addDisallowedApplication(packageName)
 
             val established = builder.establish()
+            // The routing decision is made (block up, or establish() refused) —
+            // only now tear down wg-go / monitor / callbacks.
+            cleanupTunnelDataPlane()
             if (established != null) {
                 vpnInterface = established
                 // Release the stale interface — the OS atomically replaced its
@@ -657,6 +802,10 @@ class BirdoVpnService : VpnService() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to activate kill switch", e)
             _killSwitchActiveFlow.value = false
+            // Preserve the contract that this call always tears down the data
+            // plane, even when Builder setup / establish() threw before the
+            // ordered teardown above ran. Idempotent if it already did.
+            cleanupTunnelDataPlane()
         }
     }
 
@@ -755,11 +904,11 @@ class BirdoVpnService : VpnService() {
 
                 if (!XrayManager.isAvailable(applicationContext)) {
                     Log.e(TAG, "Stealth mode requested but Xray runtime is unavailable")
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Stealth engine unavailable"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Stealth engine unavailable") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
 
@@ -776,11 +925,11 @@ class BirdoVpnService : VpnService() {
                 } else {
                     Log.e(TAG, "Xray failed to start — refusing direct fallback because stealth was requested")
                     _stealthActiveFlow.value = false
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Stealth tunnel failed"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Stealth tunnel failed") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
             } else {
@@ -798,11 +947,11 @@ class BirdoVpnService : VpnService() {
                 if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) {
                     Log.e(TAG, "Quantum protection was enabled by server but PQ payload is missing")
                     _quantumActiveFlow.value = false
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Quantum key exchange unavailable"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Quantum unavailable") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
 
@@ -819,11 +968,11 @@ class BirdoVpnService : VpnService() {
                 } else {
                     _quantumActiveFlow.value = false
                     Log.e(TAG, "PQ key exchange failed — refusing non-PQ fallback")
+                    cleanupStealthAndQuantum()
+                    if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Quantum key exchange failed"))
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                     mainHandler.post { updateNotification("Error: Quantum failed") }
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
                     return
                 }
             } else {
@@ -834,21 +983,21 @@ class BirdoVpnService : VpnService() {
             // Verify JNI library integrity before loading (mirrors Windows wintun.dll check)
             if (!app.birdo.vpn.utils.NativeLibraryVerifier.verifyLibrary(this, "wg-go")) {
                 Log.e(TAG, "wg-go native library integrity check failed")
+                cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("Security: library integrity check failed"))
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: Security check failed") }
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
             if (!WgNative.init()) {
                 Log.e(TAG, "WireGuard native library failed to initialize")
+                cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("WireGuard engine unavailable"))
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: WireGuard engine unavailable") }
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
@@ -864,12 +1013,12 @@ class BirdoVpnService : VpnService() {
 
             val wgConfig = buildWireGuardConfig(effectiveConfig)
             val vpnFd = buildVpnInterface(effectiveConfig) ?: run {
-                updateState(VpnState.Error("VPN permission denied"))
                 Log.e(TAG, "Failed to establish VPN interface")
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                mainHandler.post { updateNotification("Error: VPN permission denied") }
                 cleanupStealthAndQuantum()
                 if (isKillSwitchEnabled) activateKillSwitch()
+                updateState(VpnState.Error("VPN permission denied"))
+                mainHandler.removeCallbacks(connectTimeoutRunnable)
+                mainHandler.post { updateNotification("Error: VPN permission denied") }
                 return
             }
 
@@ -888,11 +1037,11 @@ class BirdoVpnService : VpnService() {
             if (handle < 0) {
                 Log.e(TAG, "wgTurnOn failed with code: $handle")
                 try { ParcelFileDescriptor.adoptFd(tunFd).close() } catch (_: Exception) {}
+                cleanupStealthAndQuantum()
+                if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("WireGuard tunnel failed to start"))
                 mainHandler.removeCallbacks(connectTimeoutRunnable)
                 mainHandler.post { updateNotification("Error: WireGuard tunnel failed") }
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
                 return
             }
 
@@ -914,9 +1063,14 @@ class BirdoVpnService : VpnService() {
             startTunnelMonitor(handle)
             registerDefaultNetworkCallback(handle)
 
-            // SEC: wg-go has consumed the private key from configString; wipe it
-            // from the in-memory ConnectResponse so a heap dump or later code
-            // path can't recover it. The kernel/wg-go now owns the key.
+            // SEC (honest scope): drop OUR references to the key from the
+            // retained ConnectResponse. This does NOT scrub the key from process
+            // memory — the key crossed this function as immutable Strings
+            // (configString included), and those copies live until the GC
+            // reclaims them; a heap dump taken in that window can still recover
+            // them. A real fix needs a byte[]-accepting JNI entry point on wg-go
+            // (design work, tracked). What this line buys: later code paths and
+            // long-lived state no longer hold the key.
             activeConfig = activeConfig?.copy(privateKey = "", presharedKey = null)
 
             // The tunnel is up, so we are no longer in the blocking state — clear
@@ -932,32 +1086,59 @@ class BirdoVpnService : VpnService() {
             // whether the user's traffic was flowing. Observed on-device.
             _killSwitchActiveFlow.value = false
 
-            updateState(VpnState.Connected)
             _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
-            _connectedSinceFlow.value = System.currentTimeMillis()
             _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
-
-            updateWidgetState(true, connectedServer)
             extractServerIp()
-            // ADAPTIVE TRANSPORT: we have just told the UI "Connected" on the
-            // strength of the interface being up, which on a filtered network is
-            // a lie — no handshake will ever land. Verify it, and if nothing
-            // arrives, signal VpnManager to retry over stealth.
-            startTransportProbe(handle, config.stealthEnabled == true)
+
+            // DO NOT publish Connected here. The interface being up and wg-go
+            // having accepted the config says nothing about whether a WireGuard
+            // handshake will ever complete — on a DPI-filtered network it never
+            // does, and the UI, the notification and the home-screen widget all
+            // asserted "Protected" over a tunnel carrying zero packets. A green
+            // shield is a safety claim; it must be backed by evidence.
+            //
+            // Stay in Connecting (the honest state: we are still establishing)
+            // and let [startTransportProbe] publish Connected once it OBSERVES a
+            // non-zero last_handshake_time_sec. Republishing Connecting also
+            // normalises the StealthConnecting path back onto the state the
+            // connect watchdog below guards on.
+            updateState(VpnState.Connecting)
+            // Backstop only: the probe is self-bounded at TransportProbe.WINDOW_MS
+            // and always produces a verdict, so this fires solely if a wg-go JNI
+            // read wedges. Deliberately generous — it must not race the ~10s
+            // verdict or the stealth rebuild that a BLOCKED verdict kicks off.
             mainHandler.removeCallbacks(connectTimeoutRunnable)
-            mainHandler.post {
-                updateNotification(buildConnectedText())
-                startNotificationTicker()
-            }
+            mainHandler.postDelayed(
+                connectTimeoutRunnable,
+                TransportProbe.WINDOW_MS + CONNECT_TIMEOUT_MS,
+            )
+            // Whether we are ON the stealth transport is what the fallback
+            // decision turns on, and that is `stealthEndpointOverride != null` —
+            // the endpoint we actually dialled. The old `config.stealthEnabled`
+            // was the server's CLAIM, so a granted-but-unusable response
+            // (stealthEnabled with no xrayEndpoint) skipped the probe on a plain
+            // WireGuard tunnel and disabled the fallback for exactly the
+            // filtered-network users Adaptive Transport exists for.
+            startTransportProbe(handle, onStealthTransport = stealthEndpointOverride != null)
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start tunnel", e)
+            // Match the connect-watchdog idiom: for a fail-closed user, arm the
+            // block BEFORE any teardown — activateKillSwitch() establishes the
+            // blocking interface first (superseding a live wg-go tun or a held
+            // blocking fd) and only then turns wg-go off, so there is no window
+            // where routing reverts to the physical network. Only fully release
+            // when the kill switch is OFF. Block first, publish Error last.
+            if (isKillSwitchEnabled) {
+                activateKillSwitch()
+                cleanupStealthAndQuantum()
+            } else {
+                cleanupTunnel()
+                cleanupStealthAndQuantum()
+            }
             updateState(VpnState.Error(e.message ?: "Tunnel failed"))
-            cleanupTunnel()
-            cleanupStealthAndQuantum()
             mainHandler.removeCallbacks(connectTimeoutRunnable)
             mainHandler.post { updateNotification("Connection failed: ${e.message ?: "Unknown error"}") }
-            if (isKillSwitchEnabled) activateKillSwitch()
         }
     }
 
@@ -997,8 +1178,12 @@ class BirdoVpnService : VpnService() {
             }
         }
 
-        // DNS
-        for (dns in resolveDnsServers(config)) {
+        // DNS — resolved by the SAME code that bakes DNS into the wg-go config
+        // (WireGuardConfigBuilder), so the two can never diverge. The resolver
+        // also filters out addresses unreachable through the tunnel's routes
+        // (RFC1918/link-local/ULA): depending on localNetworkSharing those
+        // either leak queries onto the LAN or blackhole all name resolution.
+        for (dns in WireGuardConfigBuilder.resolveDnsServers(config, appPrefs)) {
             try { builder.addDnsServer(InetAddress.getByName(dns)) }
             catch (e: Exception) { Log.w(TAG, "Invalid DNS: $dns") }
         }
@@ -1106,43 +1291,6 @@ class BirdoVpnService : VpnService() {
         return builder.establish()
     }
 
-    /** Resolve the DNS server list, preferring user overrides when enabled. */
-    private fun resolveDnsServers(config: ConnectResponse): List<String> {
-        val fallback = listOf("1.1.1.1", "1.0.0.1")
-        if (!appPrefs.customDnsEnabled) {
-            val serverDns = config.dns?.filter { isValidDnsAddress(it) } ?: emptyList()
-            if (serverDns.isEmpty()) {
-                Log.w(TAG, "Server provided no valid DNS servers — falling back to defaults (1.1.1.1)")
-            }
-            return serverDns.ifEmpty { fallback }
-        }
-        val custom = buildList {
-            val p = appPrefs.customDnsPrimary.trim()
-            if (p.isNotBlank() && isValidDnsAddress(p)) add(p)
-            val s = appPrefs.customDnsSecondary.trim()
-            if (s.isNotBlank() && isValidDnsAddress(s)) add(s)
-        }
-        if (custom.isEmpty()) {
-            Log.w(TAG, "Custom DNS addresses invalid or empty — falling back to defaults")
-        }
-        return custom.ifEmpty { fallback }
-    }
-
-    /**
-     * Validate a DNS address string at tunnel-start time.
-     * Accepts IPv4 (dotted-quad) and IPv6 (colon-hex). Rejects hostnames,
-     * blank strings, and obviously-invalid addresses.
-     */
-    private fun isValidDnsAddress(address: String): Boolean {
-        return try {
-            val addr = InetAddress.getByName(address)
-            // Reject loopback (127.x.x.x, ::1) — would bypass VPN
-            !addr.isLoopbackAddress && !addr.isAnyLocalAddress
-        } catch (_: Exception) {
-            false
-        }
-    }
-
     private fun protectTunnelSockets(handle: Int) {
         Thread({
             try {
@@ -1163,7 +1311,17 @@ class BirdoVpnService : VpnService() {
         tunnelMonitor = TunnelMonitor(
             handle = handle,
             service = this,
-            isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
+            // Same predicate as the transport probe, and for the same reason:
+            // the monitor starts BEFORE Connected is published (now up to
+            // TransportProbe.WINDOW_MS before it), so gating on Connected made
+            // the monitor thread exit on its very first check and left the
+            // session with no stall detection at all.
+            isAlive = {
+                tunnelHandle == handle &&
+                    currentState !is VpnState.Disconnected &&
+                    currentState !is VpnState.Disconnecting &&
+                    currentState !is VpnState.Error
+            },
             onUnexpectedExit = {
                 // Fail closed FIRST (block all traffic), THEN hand off to
                 // auto-reconnect. Activating the kill switch alone tears wg-go
@@ -1189,38 +1347,106 @@ class BirdoVpnService : VpnService() {
     }
 
     /**
-     * ADAPTIVE TRANSPORT: confirm the tunnel we just reported as Connected is
-     * actually carrying traffic, and signal a fallback if it is not.
+     * ADAPTIVE TRANSPORT + HANDSHAKE GATE: confirm the freshly-established
+     * tunnel is actually carrying traffic, and publish the user-visible
+     * "Protected" state only once it is.
+     *
+     * This is the SOLE publisher of [VpnState.Connected] on the connect path.
+     * Until it runs the service stays in Connecting, so no surface — UI,
+     * notification or widget — ever claims protection that is not in force.
      *
      * Runs on its own short-lived daemon thread — [TransportProbe.await] blocks
      * for up to [TransportProbe.WINDOW_MS], and doing that on the caller would
      * stall tunnel setup and risk an ANR.
      *
-     * `alreadyStealth` short-circuits the probe when this connection IS the
-     * stealth attempt. Without it a stealth tunnel that also fails to handshake
-     * (genuinely offline, server down, or a network that blocks TLS too) would
-     * emit "blocked" and drive VpnManager into a fallback it has already made —
-     * a reconnect loop. Stealth is the last transport we have, so a failure
-     * there is handled by the normal TunnelMonitor/auto-reconnect path instead.
+     * The probe now runs for stealth connections too, because the gate applies
+     * to every transport. `onStealthTransport` no longer skips it; it selects
+     * what a BLOCKED verdict MEANS:
+     *  - direct: stealth is still untried → signal VpnManager to retry over it.
+     *  - stealth: this is the last transport we have, so a failure here is a
+     *    genuine connection failure. Fail closed and publish Error, which drives
+     *    the ordinary backoff reconnect. Emitting "blocked" instead would ask
+     *    VpnManager for a fallback it has already made — a reconnect loop.
      */
-    private fun startTransportProbe(handle: Int, alreadyStealth: Boolean) {
-        if (alreadyStealth) {
-            Log.i(TAG, "Skipping transport probe — already on the stealth transport")
-            return
-        }
+    private fun startTransportProbe(handle: Int, onStealthTransport: Boolean) {
         Thread({
-            val verdict = TransportProbe(
-                handle = handle,
-                isAlive = { currentState == VpnState.Connected && tunnelHandle == handle },
-            ).await()
-            if (verdict == TransportProbe.Result.BLOCKED) {
-                Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
-                // tryEmit, not emit: this is a non-suspending context and the
-                // buffer is sized for it. A dropped emission would only mean a
-                // missed fallback, never a blocked tunnel thread.
-                _transportBlockedFlow.tryEmit(Unit)
+            val verdict = try {
+                TransportProbe(
+                    handle = handle,
+                    // True while THIS tunnel is the live one and nothing has
+                    // torn it down. Deliberately not `is Connected`: during the
+                    // verify window the state is Connecting by design, and
+                    // gating on Connected would abort the probe instantly and
+                    // strand the connect. A kill-switch arm clears tunnelHandle,
+                    // so it is covered by the handle check.
+                    isAlive = {
+                        tunnelHandle == handle &&
+                            currentState !is VpnState.Disconnected &&
+                            currentState !is VpnState.Disconnecting &&
+                            currentState !is VpnState.Error
+                    },
+                ).await()
+            } catch (t: Throwable) {
+                // Never strand the connect on an unexpected probe failure: with
+                // no evidence either way, fall back to the pre-gate behaviour
+                // and let TunnelMonitor's stall detection own the tunnel.
+                Log.e(TAG, "Transport probe failed — publishing Connected unverified", t)
+                TransportProbe.Result.HANDSHAKE_OK
+            }
+            when (verdict) {
+                TransportProbe.Result.HANDSHAKE_OK -> publishConnected(handle)
+
+                TransportProbe.Result.BLOCKED -> if (!onStealthTransport) {
+                    Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
+                    // tryEmit, not emit: this is a non-suspending context and the
+                    // buffer is sized for it. A dropped emission would only mean a
+                    // missed fallback, never a blocked tunnel thread. If VpnManager
+                    // declines the fallback (cooldown, multi-hop, no server) the
+                    // connect watchdog re-armed by startTunnel resolves the state.
+                    _transportBlockedFlow.tryEmit(Unit)
+                } else {
+                    Log.w(TAG, "Transport probe: no handshake over stealth — failing the connect")
+                    // Fail closed first, then publish Error — see the ordering
+                    // contract on [activateKillSwitch]. The tunnel here is LIVE
+                    // (established, just no handshake) and wg-go holds the sole
+                    // tun fd, so activateKillSwitch() must do its own ordered
+                    // establish-then-teardown — a teardown here first would
+                    // revert routing to the physical network before the block.
+                    if (isKillSwitchEnabled) {
+                        activateKillSwitch()
+                    } else {
+                        cleanupTunnel()
+                    }
+                    cleanupStealthAndQuantum()
+                    updateState(VpnState.Error("No handshake — this network is blocking the VPN"))
+                    mainHandler.removeCallbacks(connectTimeoutRunnable)
+                    mainHandler.post { updateNotification("Error: no handshake") }
+                }
+
+                // The tunnel went away while probing (disconnect, switch, kill
+                // switch). Whoever tore it down owns the state.
+                TransportProbe.Result.ABORTED -> Unit
             }
         }, "birdo-transport-probe").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Publish the verified-connected state. Called only after a WireGuard
+     * handshake has been observed on [handle] (or on a build that cannot be
+     * probed at all), so every "Protected" surface it lights up is backed by a
+     * tunnel that has demonstrably passed a packet.
+     */
+    private fun publishConnected(handle: Int) {
+        // A switch/reconnect may have superseded this tunnel while we probed.
+        if (tunnelHandle != handle) return
+        _connectedSinceFlow.value = System.currentTimeMillis()
+        updateState(VpnState.Connected)
+        updateWidgetState(true, connectedServer)
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        mainHandler.post {
+            updateNotification(buildConnectedText())
+            startNotificationTicker()
+        }
     }
 
     private fun buildWireGuardConfig(response: ConnectResponse): Config {
@@ -1261,6 +1487,13 @@ class BirdoVpnService : VpnService() {
      * but leave [vpnInterface] alone. Callers that must keep traffic fail-closed
      * across a transition (kill switch, reconnect/switch) use this so the blocking
      * interface stays up until a replacement interface atomically supersedes it.
+     *
+     * ORDERING: never call this immediately BEFORE [activateKillSwitch]. When the
+     * live tunnel's tun fd is inside wg-go (the normal connected state —
+     * [vpnInterface] is null after detachFd), [WgNative.turnOff] closes that fd
+     * and destroys the interface, reverting routing to the physical network until
+     * the block's establish() lands. [activateKillSwitch] performs this teardown
+     * itself, AFTER its blocking interface is established.
      */
     private fun cleanupTunnelDataPlane() {
         unregisterDefaultNetworkCallback()

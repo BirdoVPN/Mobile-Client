@@ -294,12 +294,22 @@ final class AuthViewModel: ObservableObject {
                     refreshStatsInBackground()
                 }
             } catch {
-                // ANY failure (wrong code, expired/consumed challenge, 429):
-                // stay on the 2FA form. The challenge is consumed server-side
-                // only on success, so the SAME token is retried until it
-                // expires — then the user goes "Back to login". No client-side
-                // retry counter.
-                self.error = "Invalid verification code. Please try again."
+                // Stay on the 2FA form on any failure. The challenge is
+                // consumed server-side only on success, so the SAME token is
+                // retried until it expires — then the user goes "Back to
+                // login". No client-side retry counter.
+                //
+                // Only a definitive 401 means the CODE was wrong. Offline, 5xx
+                // and 429 must NOT read as "invalid code" — that sends a user
+                // on bad signal re-typing a correct code into the server's
+                // 10/min limit, and it would mask a pinning failure (the one
+                // error they genuinely need to see).
+                if Self.isCredentialRejection(error) {
+                    self.error = "Invalid verification code. Please try again."
+                } else {
+                    self.error = mapAuthError(
+                        error, fallback: "Invalid verification code. Please try again.")
+                }
             }
             self.isLoading = false
         }

@@ -624,6 +624,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [release]
     if: ${{ vars.PLAY_UPLOAD_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch') }}
+    # P5-CICD-18: production uploads run in the `production` environment so
+    # required-reviewer protection can gate them. The protection rule itself
+    # (Settings → Environments → production → Required reviewers) can only be
+    # configured from the owner's GitHub console — until that is done this is
+    # an ungated environment, so CONFIGURE IT. Test tracks (manual dispatch,
+    # default 'internal') bind to `play-testing` and stay frictionless.
+    environment: ${{ (github.event.inputs.play_track || 'production') == 'production' && 'production' || 'play-testing' }}
+    # One Play edit at a time: two overlapping tag pushes would race the same
+    # edit and the loser's state is undefined. Never cancel a running upload.
+    concurrency:
+      group: play-upload
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
@@ -633,27 +645,25 @@ jobs:
         with:
           name: release-apk
           path: release-apk/
-      # ── Play upload: auto-submit for review, with a fallback ────────────────
-      # Historically the Play API refused to send this app's edit for review
-      # automatically ("Changes cannot be sent for review automatically") — that
-      # is the API's behaviour for an app whose first release has not yet been
-      # made through the Console. The app is now published under the org account,
-      # so auto-submit should be accepted and we try it FIRST.
-      #
-      # It is attempted with continue-on-error because a refusal must not cost us
-      # the upload: if the API still declines, the fallback step below commits the
-      # same edit without auto-review, so the AAB always lands on the track and
-      # can be submitted from the Console. Never let the review flag be the reason
-      # a release fails to ship.
-      # A tagged release goes to PRODUCTION. A manual run still defaults to
-      # internal, so dispatching the workflow can never surprise anyone with a
-      # live rollout.
+      # ── Play upload: auto-submit for review, staged on production ───────────
+      # A tagged release goes to PRODUCTION as a STAGED rollout (userFraction
+      # 0.1 + status inProgress): every user at once was the P5-CICD-18 defect,
+      # and completing/halting the stage from the Console is the canary this
+      # pipeline never had. Test tracks don't support userFraction, so a manual
+      # run to internal/alpha/beta keeps status completed.
       #
       # This is deliberately ONE upload rather than "internal now, promote to
       # production later": a promotion would re-upload the same AAB, and Play
       # rejects a versionCode it has already seen ("Version code N has already
       # been used"). Shipping the tag straight to its target track is the only
       # path that actually works.
+      #
+      # There is NO changesNotSentForReview fallback any more. That flag parks
+      # the Play edit in the state that BLOCKS the next release until resolved
+      # by hand (it bit this project before — see docs/PLAY-LAUNCH-PLAN.md),
+      # and the old fallback fired it automatically while the workflow
+      # reported success. A refused auto-submit now fails the job loudly and
+      # the operator submits from the Console.
       - name: Upload AAB to Google Play (auto-submit for review)
         id: play_auto
         continue-on-error: true
@@ -663,27 +673,23 @@ jobs:
           packageName: app.birdo.vpn
           releaseFiles: release-apk/*.aab
           track: ${{ github.event.inputs.play_track || 'production' }}
-          status: completed
+          status: ${{ (github.event.inputs.play_track || 'production') == 'production' && 'inProgress' || 'completed' }}
+          userFraction: ${{ (github.event.inputs.play_track || 'production') == 'production' && '0.1' || '' }}
           whatsNewDirectory: distribution/whatsnew
           changesNotSentForReview: false
 
-      - name: Upload AAB to Google Play (fallback — submit from Console)
+      - name: Fail the run — auto-submit was refused (submit from the Play Console)
         if: steps.play_auto.outcome == 'failure'
-        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5 (node24)
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: app.birdo.vpn
-          releaseFiles: release-apk/*.aab
-          track: ${{ github.event.inputs.play_track || 'production' }}
-          status: completed
-          whatsNewDirectory: distribution/whatsnew
-          changesNotSentForReview: true
-
-      - name: Report which Play path was used
         run: |
-          if [ "${{ steps.play_auto.outcome }}" = "success" ]; then
-            echo "::notice::AAB uploaded and SENT FOR REVIEW automatically."
+          echo "::error::The Play API refused the upload/auto-submit. NOT retrying with changesNotSentForReview: true — that flag parks the Play edit in a state that blocks the NEXT release until manually resolved, and it must never be set by automation. Upload and submit this AAB from the Play Console instead (asset: release-apk/*.aab, also attached to the GitHub release)."
+          exit 1
+
+      - name: Report Play upload
+        run: |
+          track="${{ github.event.inputs.play_track || 'production' }}"
+          if [ "$track" = "production" ]; then
+            echo "::notice::AAB uploaded and sent for review on PRODUCTION as a staged 10% rollout. Complete (or halt) the rollout from the Play Console once the canary looks healthy."
           else
-            echo "::warning::Auto-submit was refused by the Play API; the AAB was uploaded WITHOUT review. Submit it from the Play Console."
+            echo "::notice::AAB uploaded and sent for review on the '$track' track."
           fi
 

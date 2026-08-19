@@ -22,6 +22,8 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import app.birdo.vpn.MainActivity
 import app.birdo.vpn.R
+import app.birdo.vpn.service.BirdoVpnService
+import app.birdo.vpn.service.VpnState
 
 /**
  * Birdo VPN home screen widget — minimal dark card that shows VPN status.
@@ -31,7 +33,20 @@ class BirdoWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val prefs = context.getSharedPreferences("birdo_widget", Context.MODE_PRIVATE)
-        val isConnected = prefs.getBoolean("vpn_connected", false)
+        // The persisted flag alone is a STICKY claim of protection: it survives
+        // process death, so after a reboot or a force-stop the widget kept
+        // rendering an emerald "Protected" for a VPN that was no longer running,
+        // and only self-healed on the next explicit connect/disconnect. A
+        // security product's most glanceable surface must not assert protection
+        // that is not in place.
+        //
+        // AND it with the service's live state. The widget renders in the app
+        // process, so a fresh process (reboot, force-stop, OOM kill) reads
+        // Disconnected and the widget goes grey with no receiver to register and
+        // no flag to reset. The pref stays as the "we intended to be connected"
+        // half so a widget refresh during teardown cannot flash green.
+        val isConnected = prefs.getBoolean("vpn_connected", false) &&
+            BirdoVpnService.currentState is VpnState.Connected
         val serverName = prefs.getString("server_name", null)
 
         provideContent {
