@@ -1,0 +1,442 @@
+{
+  "repo": {
+    "name": {
+      "en-US": "BirdoVPN"
+    },
+    "description": {
+      "en-US": "Official self-hosted F-Droid repository for BirdoVPN — a fast, private, quantum-resistant VPN. Add this repository to your F-Droid client to install BirdoVPN and get automatic updates. Every APK here is the same developer-signed build published on GitHub Releases."
+    },
+    "icon": {
+      "en-US": {
+        "name": "/icons/icon.png",
+        "sha256": "b3141b9972ef5246c411b5d43b96bea05b186f0d4637197dae38c1fdab7d1e45",
+        "size": 196745
+      }
+    },
+    "address": "https://birdovpn.github.io/Mobile-Client/fdroid/repo",
+    "timestamp": 1787265906000,
+    "categories": {
+      "Internet": {
+        "name": {
+          "en-US": "Internet"
+        }
+      },
+      "Security": {
+        "name": {
+          "en-US": "Security"
+        }
+      }
+    }
+  },
+  "packages": {
+    "app.birdo.vpn": {
+      "metadata": {
+        "added": 1787265891000,
+        "categories": [
+          "Internet",
+          "Security"
+        ],
+        "changelog": "https://github.com/BirdoVPN/Mobile-Client/releases",
+        "issueTracker": "https://github.com/BirdoVPN/Mobile-Client/issues",
+        "lastUpdated": 1787265894000,
+        "license": "CC-BY-NC-4.0",
+        "sourceCode": "https://github.com/BirdoVPN/Mobile-Client",
+        "webSite": "https://birdo.app",
+        "featureGraphic": {
+          "en-US": {
+            "name": "/app.birdo.vpn/en-US/featureGraphic_TgnRlzv-yKSxgsbw11zzN6MkvEuFY4JcF-wPutX8lAA=.png",
+            "sha256": "4e09d1973bfec8a4b182c6f0d75cf337a324bc4b8563825c17ec0fbad5fc9400",
+            "size": 714467
+          }
+        },
+        "screenshots": {
+          "phone": {
+            "en-US": [
+              {
+                "name": "/app.birdo.vpn/en-US/phoneScreenshots/01.png",
+                "sha256": "90a397e894ded45221ddd248b0cd164c35efeb4d07dc56bb1f66802e026781ae",
+                "size": 206981
+              },
+              {
+                "name": "/app.birdo.vpn/en-US/phoneScreenshots/02.png",
+                "sha256": "a89d2b64296c63484d486101e028ba3abd57be607ca65b09c337e51a22746596",
+                "size": 997227
+              },
+              {
+                "name": "/app.birdo.vpn/en-US/phoneScreenshots/03.png",
+                "sha256": "9346c07fab01955f35a0dfcc195ed091b463d9fc8e0989597bb3a798e320f27a",
+                "size": 235859
+              },
+              {
+                "name": "/app.birdo.vpn/en-US/phoneScreenshots/04.png",
+                "sha256": "c798b856861e5d099c61f08185a69a3f4a2f1ba08eceba1fb80ab34e3e965e7d",
+                "size": 183346
+              },
+              {
+                "name": "/app.birdo.vpn/en-US/phoneScreenshots/05.png",
+                "sha256": "d1a9d023a0e9cb4b5a8383f106e081d067c6dd9c38ffe44f9bdddeb272813003",
+                "size": 259685
+              }
+            ]
+          }
+        },
+        "authorName": "Birdo Networks Ltd",
+        "authorWebSite": "https://birdo.app",
+        "name": {
+          "en-US": "Birdo VPN"
+        },
+        "summary": {
+          "en-US": "Fast, private, quantum-resistant VPN"
+        },
+        "description": {
+          "en-US": "BirdoVPN is a fast, privacy-first VPN with post-quantum protection built in.\n\nYour tunnel is secured with WireGuard and wrapped in a post-quantum key\nexchange (Rosenpass), so traffic captured today cannot be decrypted by a\nfuture quantum computer (\"harvest now, decrypt later\"). An optional stealth\ntransport helps the connection blend in on restrictive networks.\n\nFeatures:\n\n* WireGuard-based tunnel with a post-quantum key exchange layer\n* A reactive kill switch that blocks traffic if the tunnel drops\n* Split tunnelling — choose which apps use the VPN\n* A global network of servers with fast connect and one-tap switching\n* No activity logs; accounts can be created without an email address\n* DNS handled inside the tunnel to reduce leaks\n\nThis build is distributed outside Google Play and is signed with Birdo's own\nrelease key. It is the same APK published on GitHub Releases. A BirdoVPN\naccount is required to connect to the network.\n\nNote: the app bundles prebuilt native networking components (Xray and\nWireGuard-go), which is why it is served from this self-hosted repository\nrather than the main f-droid.org catalogue."
+        },
+        "icon": {
+          "en-US": {
+            "name": "/app.birdo.vpn/en-US/icon_nPpEcVi9Xny6wlAqF7GSo34odTleNa4KPDuHbRDJjsc=.png",
+            "sha256": "9cfa447158bd5e7cbac2502a17b192a37e2875395e35ae0a3c3b876d10c98ec7",
+            "size": 198520
+          }
+        },
+        "preferredSigner": "f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
+      },
+      "versions": {
+        "ca407ca8a2ad87bc14a349f5f6bf9821d5a9b1448a87aea6ceb758082eb19083": {
+          "added": 1787265893000,
+          "file": {
+            "name": "/birdovpn-android-v1.4.20.apk",
+            "sha256": "ca407ca8a2ad87bc14a349f5f6bf9821d5a9b1448a87aea6ceb758082eb19083",
+            "size": 36464300
+          },
+          "manifest": {
+            "nativecode": [
+              "arm64-v8a",
+              "x86_64"
+            ],
+            "versionName": "1.4.20",
+            "versionCode": 10420,
+            "usesSdk": {
+              "minSdkVersion": 29,
+              "targetSdkVersion": 35
+            },
+            "signer": {
+              "sha256": [
+                "f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
+              ]
+            },
+            "usesPermission": [
+              {
+                "name": "android.permission.INTERNET"
+              },
+              {
+                "name": "android.permission.ACCESS_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.CHANGE_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+              },
+              {
+                "name": "android.permission.POST_NOTIFICATIONS"
+              },
+              {
+                "name": "android.permission.ACCESS_WIFI_STATE"
+              },
+              {
+                "name": "android.permission.USE_BIOMETRIC"
+              },
+              {
+                "name": "android.permission.USE_FINGERPRINT"
+              },
+              {
+                "name": "android.permission.WAKE_LOCK"
+              },
+              {
+                "name": "android.permission.RECEIVE_BOOT_COMPLETED"
+              },
+              {
+                "name": "app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+              }
+            ]
+          },
+          "antiFeatures": {
+            "NonFreeDep": {},
+            "NonFreeNet": {}
+          }
+        },
+        "5e7541541fc331efabcd706ce593961f4730b7220675fc0859701153194ae81a": {
+          "added": 1787265892000,
+          "file": {
+            "name": "/birdovpn-android-v1.4.13.apk",
+            "sha256": "5e7541541fc331efabcd706ce593961f4730b7220675fc0859701153194ae81a",
+            "size": 36462520
+          },
+          "manifest": {
+            "nativecode": [
+              "arm64-v8a",
+              "x86_64"
+            ],
+            "versionName": "1.4.13",
+            "versionCode": 10413,
+            "usesSdk": {
+              "minSdkVersion": 29,
+              "targetSdkVersion": 35
+            },
+            "signer": {
+              "sha256": [
+                "f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
+              ]
+            },
+            "usesPermission": [
+              {
+                "name": "android.permission.INTERNET"
+              },
+              {
+                "name": "android.permission.ACCESS_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.CHANGE_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+              },
+              {
+                "name": "android.permission.POST_NOTIFICATIONS"
+              },
+              {
+                "name": "android.permission.ACCESS_WIFI_STATE"
+              },
+              {
+                "name": "android.permission.USE_BIOMETRIC"
+              },
+              {
+                "name": "android.permission.USE_FINGERPRINT"
+              },
+              {
+                "name": "android.permission.WAKE_LOCK"
+              },
+              {
+                "name": "android.permission.RECEIVE_BOOT_COMPLETED"
+              },
+              {
+                "name": "app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+              }
+            ]
+          },
+          "antiFeatures": {
+            "NonFreeDep": {},
+            "NonFreeNet": {}
+          }
+        },
+        "7e6372018ffd8d6f4a9700a7a1792916971ac481fc2d869db2a61145c0621a41": {
+          "added": 1787265892000,
+          "file": {
+            "name": "/birdovpn-android-v1.4.12.apk",
+            "sha256": "7e6372018ffd8d6f4a9700a7a1792916971ac481fc2d869db2a61145c0621a41",
+            "size": 36459616
+          },
+          "manifest": {
+            "nativecode": [
+              "arm64-v8a",
+              "x86_64"
+            ],
+            "versionName": "1.4.12",
+            "versionCode": 10412,
+            "usesSdk": {
+              "minSdkVersion": 29,
+              "targetSdkVersion": 35
+            },
+            "signer": {
+              "sha256": [
+                "f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
+              ]
+            },
+            "usesPermission": [
+              {
+                "name": "android.permission.INTERNET"
+              },
+              {
+                "name": "android.permission.ACCESS_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.CHANGE_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+              },
+              {
+                "name": "android.permission.POST_NOTIFICATIONS"
+              },
+              {
+                "name": "android.permission.ACCESS_WIFI_STATE"
+              },
+              {
+                "name": "android.permission.USE_BIOMETRIC"
+              },
+              {
+                "name": "android.permission.USE_FINGERPRINT"
+              },
+              {
+                "name": "android.permission.WAKE_LOCK"
+              },
+              {
+                "name": "android.permission.RECEIVE_BOOT_COMPLETED"
+              },
+              {
+                "name": "app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+              }
+            ]
+          },
+          "antiFeatures": {
+            "NonFreeDep": {},
+            "NonFreeNet": {}
+          }
+        },
+        "70c58115b11dabe973843a2b27b39fca13989fbfda35c9e7f33e713ca7dcc41f": {
+          "added": 1787265891000,
+          "file": {
+            "name": "/birdovpn-android-v1.4.11.apk",
+            "sha256": "70c58115b11dabe973843a2b27b39fca13989fbfda35c9e7f33e713ca7dcc41f",
+            "size": 36449692
+          },
+          "manifest": {
+            "nativecode": [
+              "arm64-v8a",
+              "x86_64"
+            ],
+            "versionName": "1.4.11",
+            "versionCode": 10411,
+            "usesSdk": {
+              "minSdkVersion": 29,
+              "targetSdkVersion": 35
+            },
+            "signer": {
+              "sha256": [
+                "f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
+              ]
+            },
+            "usesPermission": [
+              {
+                "name": "android.permission.INTERNET"
+              },
+              {
+                "name": "android.permission.ACCESS_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.CHANGE_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+              },
+              {
+                "name": "android.permission.POST_NOTIFICATIONS"
+              },
+              {
+                "name": "android.permission.ACCESS_WIFI_STATE"
+              },
+              {
+                "name": "android.permission.USE_BIOMETRIC"
+              },
+              {
+                "name": "android.permission.USE_FINGERPRINT"
+              },
+              {
+                "name": "android.permission.WAKE_LOCK"
+              },
+              {
+                "name": "android.permission.RECEIVE_BOOT_COMPLETED"
+              },
+              {
+                "name": "app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+              }
+            ]
+          },
+          "antiFeatures": {
+            "NonFreeDep": {},
+            "NonFreeNet": {}
+          }
+        },
+        "4fc573d20f7a67cdf7e5d9496c8c0a98c3d3e8d4b5083fe7f8eaa8c20c881ad2": {
+          "added": 1787265891000,
+          "file": {
+            "name": "/birdovpn-android-v1.4.10.apk",
+            "sha256": "4fc573d20f7a67cdf7e5d9496c8c0a98c3d3e8d4b5083fe7f8eaa8c20c881ad2",
+            "size": 36440344
+          },
+          "manifest": {
+            "nativecode": [
+              "arm64-v8a",
+              "x86_64"
+            ],
+            "versionName": "1.4.10",
+            "versionCode": 10410,
+            "usesSdk": {
+              "minSdkVersion": 29,
+              "targetSdkVersion": 35
+            },
+            "signer": {
+              "sha256": [
+                "f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
+              ]
+            },
+            "usesPermission": [
+              {
+                "name": "android.permission.INTERNET"
+              },
+              {
+                "name": "android.permission.ACCESS_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.CHANGE_NETWORK_STATE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE"
+              },
+              {
+                "name": "android.permission.FOREGROUND_SERVICE_SPECIAL_USE"
+              },
+              {
+                "name": "android.permission.POST_NOTIFICATIONS"
+              },
+              {
+                "name": "android.permission.ACCESS_WIFI_STATE"
+              },
+              {
+                "name": "android.permission.USE_BIOMETRIC"
+              },
+              {
+                "name": "android.permission.USE_FINGERPRINT"
+              },
+              {
+                "name": "android.permission.WAKE_LOCK"
+              },
+              {
+                "name": "android.permission.RECEIVE_BOOT_COMPLETED"
+              },
+              {
+                "name": "app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+              }
+            ]
+          },
+          "antiFeatures": {
+            "NonFreeDep": {},
+            "NonFreeNet": {}
+          }
+        }
+      }
+    }
+  }
+}

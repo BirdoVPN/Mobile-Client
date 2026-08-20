@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<fdroid>
+	<repo icon="icon.png" name="BirdoVPN (Archive)" pubkey="3082053a30820322a003020102020900b1f4832e3a7f6bb0300d06092a864886f70d01010c0500304a310b3009060355040613024742311b3019060355040a1312426972646f204e6574776f726b73204c7464311e301c06035504031315426972646f56504e20462d44726f6964205265706f3020170d3236303730353131353734365a180f32303533313132303131353734365a304a310b3009060355040613024742311b3019060355040a1312426972646f204e6574776f726b73204c7464311e301c06035504031315426972646f56504e20462d44726f6964205265706f30820222300d06092a864886f70d01010105000382020f003082020a0282020100a18e5897043749cbc019ad17060992b24e4f0e1603f1bd3f18f10b3e9ac930b468b650e7d14d4a9aa1ea5880ffe4ede2a17bb90611ea6a6bbf6143bc4e4cdba02f994db2cba285f8d514c6118921f19dc195f25e9f810f297354380fc4afce862afa78b67cb9c27462c5f2763ae8e9228262bacf465306eda8b03755f859ac6dbefb32a5f8a6cb3ce0b0473fe012e8247e5711d33517c371d50f7c49f53af0411b00d9679a9ef713f650c781e86da7ed6da9fdf8d9f6f8e52c588493671a6096d7f70d0be8355ca15994fed868ee47a85f93ea6c9ecce38301801e0d05fcd346838faab09376a73dda318cb95a7bd72d387301ecd032d349e4a46dac1010a8939abadb44295c649f304b1d5957128c253d9bd91b076327d6218bfc8fb8befc6ef1531f4cb34bf3e3bdc73491489fd7732824a0420c7e177dbcc3e3e8556d64bf4cf5668e2394c3ab46af1df0176777505b6aa4709e13fcfa01112aa398aad041870b23b72b3fa6597173bf637309ed2a303ac1b3774e9dee282d01d7d9243ab2a18444cb4348392daf30cfefbf7c7e73eaca00080c347a5e48c4e0a6719a7bf8ad92588c46bdbdb2c1f765dbab2ac8f278dffc187b969d568e15d315817d915fe2f920fc60b379919c277d736be815a5054e7a6c2cccb6a43d75cd7f3813474fd6401a47fe77bba9c7860925020b735cafa5c82c74da231b4a63cee8841894390203010001a321301f301d0603551d0e04160414701292a8bffd0a531867eeb0f7dac9222652882b300d06092a864886f70d01010c05000382020100970bbb54dc1cd52a3869ebdd7d4d14d1beb879c70d47e00d5735e22001fa1096652eafdf72e45272c03d72b758340926e18cba4c107a64e542896ebbcb962ee782e571b7a4c504ee9e59af6d1d13ce0436bc55207fdd559263a3fde2508af03d70e9568517f1e8fa82ea6dea33365ea7f160ab09b33e73767480ad97a8adbe80d5e2fe15e8fbaa69ea50f696818799bf14ce98231dfddb3aacee6261503f0ed7d4e4ec26fb54fe197ff32549e634c83d3f57163649517c363c9bd770ff32de66c16b7db6f68c066c33eb296b628668f1e46e0789dcfd36e800127f942e1d14051188248876bf797bcf2aa12d0e4534b24c77dabee1106b159f43236b7e3da6d453dab0035aaed43b2d8500c11dbdb964c74c61c60043ba98da1a15d4144fafbee82b41a9f1b3e7f34c87696976af64ef7d56fb9c3a05d96543e145cb5e5cc5955cfb1ec3376cf40e1eae982cff61eb6821c96dbfdc9592b41246780fbe104c5210ce4a478fff55e9a3551a6720646ab9e518bc9c7dffcf29a464d7776158bf6ea51932a7ffc0f59ece0697f5f66829fa3ffecd033ecf6dc12464198c5ad4d1968317b1a40ebc5f59b2b9df4bc9c6734862ab2222716bce4e6524f33bf99fba939b1360242556eb8778e659d11be44d0eab1545ef194be253d870e1dc264b2ac0c1d65f65cb433cb4f0790e50fb4fa43b0b26b28f2b37bad6dfb2c9b3e568a40e" timestamp="1787265894" url="https://birdovpn.github.io/Mobile-Client/fdroid/archive" version="20002">
+		<description>Older BirdoVPN releases. Install the newest version from the main repository above unless you specifically need a previous build.</description>
+	</repo>
+	<application id="app.birdo.vpn">
+		<id>app.birdo.vpn</id>
+		<added>2026-08-20</added>
+		<lastupdated>2026-08-20</lastupdated>
+		<name>Birdo VPN</name>
+		<summary>Fast, private, quantum-resistant VPN</summary>
+		<desc>BirdoVPN is a fast, privacy-first VPN with post-quantum protection built in.
+
+Your tunnel is secured with WireGuard and wrapped in a post-quantum key
+exchange (Rosenpass), so traffic captured today cannot be decrypted by a
+future quantum computer (&quot;harvest now, decrypt later&quot;). An optional stealth
+transport helps the connection blend in on restrictive networks.
+
+Features:
+
+* WireGuard-based tunnel with a post-quantum key exchange layer
+* A reactive kill switch that blocks traffic if the tunnel drops
+* Split tunnelling — choose which apps use the VPN
+* A global network of servers with fast connect and one-tap switching
+* No activity logs; accounts can be created without an email address
+* DNS handled inside the tunnel to reduce leaks
+
+This build is distributed outside Google Play and is signed with Birdo's own
+release key. It is the same APK published on GitHub Releases. A BirdoVPN
+account is required to connect to the network.
+
+Note: the app bundles prebuilt native networking components (Xray and
+WireGuard-go), which is why it is served from this self-hosted repository
+rather than the main f-droid.org catalogue.</desc>
+		<license>CC-BY-NC-4.0</license>
+		<categories>Internet,Security</categories>
+		<category>Internet</category>
+		<web>https://birdo.app</web>
+		<source>https://github.com/BirdoVPN/Mobile-Client</source>
+		<tracker>https://github.com/BirdoVPN/Mobile-Client/issues</tracker>
+		<changelog>https://github.com/BirdoVPN/Mobile-Client/releases</changelog>
+		<author>Birdo Networks Ltd</author>
+		<marketversion></marketversion>
+		<marketvercode>10409</marketvercode>
+		<antifeatures>NonFreeDep,NonFreeNet</antifeatures>
+		<package>
+			<version>1.4.9</version>
+			<versioncode>10409</versioncode>
+			<apkname>birdovpn-android-v1.4.9.apk</apkname>
+			<hash type="sha256">8ffe653fe27ed713fa52cb79c8031546dd0ee257866563cc87680172dd5f673f</hash>
+			<size>36439556</size>
+			<sdkver>29</sdkver>
+			<targetSdkVersion>35</targetSdkVersion>
+			<added>2026-08-20</added>
+			<sig>36f4e8305e23da41ed414cacc8ef8378</sig>
+			<permissions>ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_NETWORK_STATE,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,INTERNET,POST_NOTIFICATIONS,RECEIVE_BOOT_COMPLETED,USE_BIOMETRIC,USE_FINGERPRINT,WAKE_LOCK,app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION</permissions>
+			<nativecode>arm64-v8a,x86_64</nativecode>
+		</package>
+		<package>
+			<version>1.4.8</version>
+			<versioncode>10408</versioncode>
+			<apkname>birdovpn-android-v1.4.8.apk</apkname>
+			<hash type="sha256">ebc614936f90e1e3b89cdbc8aa59b216643f0a6f4596456cd1740447949a6539</hash>
+			<size>36446716</size>
+			<sdkver>29</sdkver>
+			<targetSdkVersion>35</targetSdkVersion>
+			<added>2026-08-20</added>
+			<sig>36f4e8305e23da41ed414cacc8ef8378</sig>
+			<permissions>ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_NETWORK_STATE,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,INTERNET,POST_NOTIFICATIONS,RECEIVE_BOOT_COMPLETED,USE_BIOMETRIC,USE_FINGERPRINT,WAKE_LOCK,app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION</permissions>
+			<nativecode>arm64-v8a,x86_64</nativecode>
+		</package>
+		<package>
+			<version>1.4.7</version>
+			<versioncode>10407</versioncode>
+			<apkname>birdovpn-android-v1.4.7.apk</apkname>
+			<hash type="sha256">1b8b4a47b0a9245ede7724e56a7c259b015f2921cf6d1ae1ac6c82f7033a4035</hash>
+			<size>36431576</size>
+			<sdkver>29</sdkver>
+			<targetSdkVersion>35</targetSdkVersion>
+			<added>2026-08-20</added>
+			<sig>36f4e8305e23da41ed414cacc8ef8378</sig>
+			<permissions>ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,CHANGE_NETWORK_STATE,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,INTERNET,POST_NOTIFICATIONS,RECEIVE_BOOT_COMPLETED,USE_BIOMETRIC,USE_FINGERPRINT,WAKE_LOCK,app.birdo.vpn.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION</permissions>
+			<nativecode>arm64-v8a,x86_64</nativecode>
+		</package>
+	</application>
+</fdroid>
