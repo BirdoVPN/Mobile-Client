@@ -7,7 +7,7 @@ import SwiftUI
 /// spec-home-servers-consent.md §8 / spec-secondary-screens.md §0.3 (variants).
 struct PrimaryButton: View {
     enum Variant {
-        /// Solid white, black content (auth submit, "Upgrade for unlimited").
+        /// Solid white, black content (auth submit, "View plans").
         case primary
         /// Deep emerald gradient (0x047857 → 0x064E3B), white content
         /// (consent accept, "Add rule") — the green-budget brand fill.

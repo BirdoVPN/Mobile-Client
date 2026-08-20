@@ -8,6 +8,24 @@ import LocalAuthentication
 /// Activated when `enabled` is `true` (driven by `SettingsViewModel.biometricLockEnabled`).
 /// While locked the wrapped content is replaced with an opaque cover so
 /// snapshotted screens (multitasking switcher) don't leak any UI.
+///
+/// WHAT THIS IS NOT (P1-ios-biometric-gate-is-cosmetic — behaviour accepted by
+/// the owner, so do not "fix" it here; fix the honesty instead):
+///
+/// This is a COVER, not a lock. It hides pixels and nothing else:
+///   * it unlocks no keychain item and derives no key — tokens, the WireGuard
+///     private key and every stored preference are readable by the running app
+///     whether or not this gate has been satisfied;
+///   * the app is fully alive behind it — view models keep polling, and
+///     Auto-Connect will happily bring the tunnel up while the cover is
+///     showing;
+///   * it fails OPEN by design (no biometrics + no passcode → `unlocked = true`
+///     below), so it is not an access control even on paper.
+///
+/// The Settings row is therefore worded as "Hide App Contents", out of the
+/// Security section and off the green icon colour. If this ever DOES gate a
+/// secret, change that copy back — until then, anything that reads as a
+/// security guarantee is a lie the app tells the user.
 struct BiometricGate<Content: View>: View {
     let enabled: Bool
     @ViewBuilder var content: () -> Content
