@@ -1107,7 +1107,6 @@ class VpnManager @Inject constructor(
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch(Dispatchers.IO) {
-            var qualityTickCount = 0
             var keyRotationTickCount = 0
             while (isActive) {
                 delay(HEARTBEAT_INTERVAL_MS)
@@ -1154,30 +1153,6 @@ class VpnManager @Inject constructor(
                             }
                             break
                         }
-                    }
-                }
-
-                // P2-15: Quality report every other heartbeat (~60s)
-                qualityTickCount++
-                if (qualityTickCount >= 2) {
-                    qualityTickCount = 0
-                    val keyId = repository.getLastKeyId()
-                    if (keyId != null) {
-                        val connectedSince = BirdoVpnService.connectedSince
-                        val handshakeAge = if (connectedSince > 0)
-                            (System.currentTimeMillis() - connectedSince) / 1000 else 0L
-                        val report = app.birdo.vpn.data.model.QualityReport(
-                            keyId = keyId,
-                            latencyMs = 0.0, // Not measurable from userspace; requires kernel handshake timestamps
-                            jitterMs = 0.0,
-                            packetLossPercent = 0.0,
-                            bytesIn = BirdoVpnService.rxBytes,
-                            bytesOut = BirdoVpnService.txBytes,
-                            handshakeAgeSeconds = handshakeAge,
-                            connectionState = "connected",
-                            platform = "android",
-                        )
-                        repository.sendQualityReport(report) // fire-and-forget
                     }
                 }
 

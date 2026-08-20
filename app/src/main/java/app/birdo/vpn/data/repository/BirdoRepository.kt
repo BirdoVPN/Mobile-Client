@@ -691,18 +691,6 @@ class BirdoRepository @Inject constructor(
     }
 
     /**
-     * P2-15: Send quality telemetry to backend. Fire-and-forget — callers ignore failures.
-     */
-    suspend fun sendQualityReport(report: QualityReport): ApiResult<Unit> {
-        return withAutoRefresh("Quality report failed") {
-            api.reportQuality(report)
-        }
-    }
-
-    /** P2-15: Expose key ID for quality reporting */
-    fun getLastKeyId(): String? = tokenManager.getLastKeyId()
-
-    /**
      * P1-13: Whether in-session WireGuard key rotation is available.
      *
      * FIX-MOBILE-COMPAT: Backend currently exposes no `POST vpn/connections/{keyId}/rotate`

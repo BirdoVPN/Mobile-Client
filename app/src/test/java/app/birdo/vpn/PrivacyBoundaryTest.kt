@@ -20,6 +20,8 @@ import java.io.File
  *              println/printStackTrace exists in Android or shared source.
  * P6-CLI-A-09: OkHttp logging is DEBUG-only, HEADERS-level, with credential
  *              headers redacted; backups are disabled in the manifest.
+ * P6-CLI-X-01: the unconditional ~60s connection-quality telemetry is GONE
+ *              (owner decision 2026-08-19) and must not come back.
  */
 class PrivacyBoundaryTest {
 
@@ -221,6 +223,34 @@ class PrivacyBoundaryTest {
         assertTrue(
             "P6-CLI-A-09 broken: android:fullBackupContent is no longer \"false\"",
             manifest.contains("android:fullBackupContent=\"false\""),
+        )
+    }
+
+    // ── P6-CLI-X-01 ────────────────────────────────────────────────
+
+    @Test
+    fun `no periodic connection telemetry survives in the client`() {
+        // The client used to POST vpn/quality-report every other heartbeat
+        // (~60s) for the whole session, unconditionally and with no user
+        // control: a per-minute, server-side timeline of exactly when each
+        // account was online, from a product whose promise is that we do not
+        // build one. Owner decision 2026-08-19 (same call as desktop): delete
+        // it, not gate it. This pin fails if the endpoint, its request model
+        // or a caller comes back.
+        val offenders = shippedSources().filter { f ->
+            val text = f.readText()
+            text.contains("quality-report") ||
+                text.contains("QualityReport") ||
+                text.contains("reportQuality") ||
+                text.contains("sendQualityReport")
+        }
+        assertEquals(
+            "P6-CLI-X-01 broken: periodic connection telemetry is back. It was " +
+                "deleted by owner decision, not disabled — re-adding any reporter " +
+                "needs that decision reversed first. Offenders: " +
+                "${offenders.map { it.name }}",
+            emptyList<File>(),
+            offenders,
         )
     }
 }
