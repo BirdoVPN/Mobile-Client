@@ -54,12 +54,12 @@ val allowScreenshots = ((project.findProperty("allowScreenshots") as String?)
 
 android {
     namespace = "app.birdo.vpn"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "app.birdo.vpn"
         minSdk = 29 // Android 10+
-        targetSdk = 35
+        targetSdk = 36
         versionCode = computedVersionCode
         versionName = computedVersionName
 
