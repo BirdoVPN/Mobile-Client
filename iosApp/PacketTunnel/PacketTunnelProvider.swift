@@ -66,6 +66,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _tunnelStartedAt = newValue }
     }
 
+    /// Identity the circuit breaker attributes failures to: the endpoint host
+    /// this tunnel dials (`NEVPNProtocol.serverAddress` — the ENTRY node for a
+    /// Multi-Hop session, the only peer this device handshakes with). Keying by
+    /// node is what makes "switch to another server" a breaker reset.
+    /// Written once in `startTunnel`, read from the heartbeat Task — same lock
+    /// as `tunnelStartedAt`.
+    private var _breakerNodeId: String = "unknown"
+    private var breakerNodeId: String {
+        get { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; return _breakerNodeId }
+        set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _breakerNodeId = newValue }
+    }
+
     /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
     /// header or body is ever written to disk, matching the host APIClient —
     /// and SPKI-PINNED like the host APIClient. This session carries the
@@ -143,6 +155,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // lockstep with VPNManager's fallback.
         let rawHbVersion = proto.providerConfiguration?["hb-client-version"] as? String
         let heartbeatClientVersion = (rawHbVersion?.isEmpty == false) ? rawHbVersion! : "0.0.0-unknown"
+
+        // Circuit-breaker identity (P1-ios-redial-loop-blackhole). `serverAddress`
+        // is the endpoint host, already set by the host app on every connect —
+        // no new providerConfiguration key, and it is exactly the granularity
+        // the breaker wants: failures are per-node, so picking another location
+        // starts with a clean budget.
+        let breakerNode = (proto.serverAddress?.isEmpty == false) ? proto.serverAddress! : "unknown"
 
         // Read secrets out of the shared keychain. The IDs are passed via
         // providerConfiguration; the actual material never appears there.
@@ -232,6 +251,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             // Stamp the start time before the heartbeat begins, so the liveness
             // grace window is measured from when the tunnel actually came up.
             self.tunnelStartedAt = Date()
+            self.breakerNodeId = breakerNode
             if let keyId = heartbeatKeyId, !keyId.isEmpty,
                let token = heartbeatToken, !token.isEmpty {
                 self.startHeartbeat(keyId: keyId, token: token, clientVersion: heartbeatClientVersion)
@@ -392,13 +412,86 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         }
         let valid = (json["valid"] as? Bool) ?? true
         if !valid {
-            os_log("Heartbeat reports connection revoked — tearing tunnel down",
-                   log: log, type: .info)
-            stopHeartbeat()
+            os_log("Heartbeat reports connection revoked", log: log, type: .info)
             // Tearing down here (rather than silently) is the whole point: a
             // revoked/evicted peer must stop routing so the device isn't left
             // blackholing traffic into a peer the server already deleted.
-            cancelTunnelWithError(TunnelError.connectionRevoked)
+            // Routed through the breaker so it can never become an unbounded
+            // teardown ↔ on-demand-re-dial loop — see `handleDataPlaneFailure`.
+            handleDataPlaneFailure(.revoked, error: TunnelError.connectionRevoked)
+        }
+    }
+
+    // MARK: - Circuit breaker (P1-ios-redial-loop-blackhole)
+
+    /// Single exit for every EXTENSION-INITIATED teardown, so the re-dial budget
+    /// is enforced in one place.
+    ///
+    /// ## The interaction this is built around
+    ///
+    /// The extension cannot disarm the on-demand rule — `NETunnelProviderManager`
+    /// preferences are host-app API and the appex has no access to them. So
+    /// `cancelTunnelWithError` from here is not "stop"; with a rule armed it is
+    /// "stop, and be restarted immediately". That is the loop: liveness kills the
+    /// tunnel, on-demand revives it, WireGuardKit brings the interface up against
+    /// a peer that will never answer, liveness kills it again — with
+    /// `includeAllNetworks` blackholing every packet in between, and the host app
+    /// suspended so nothing in-app is counting.
+    ///
+    /// ## What this does instead
+    ///
+    /// Under budget → cancel exactly as before. A bounded re-dial is a genuine
+    /// recovery for a NAT rebind or a node restart, and removing it would trade
+    /// this bug for a worse one.
+    ///
+    /// Over budget → the breaker trips, and the response depends on whether the
+    /// host has an on-demand rule armed (mirrored into the shared keychain by
+    /// `VPNManager`, because the appex cannot read the real flag):
+    ///
+    ///   * **not armed** → `cancelTunnelWithError`. Nothing re-dials, the tunnel
+    ///     stays down, and traffic immediately flows on the physical interface.
+    ///     A complete, unattended fail-open with no user action at all.
+    ///   * **armed** → do NOT cancel. Cancelling is precisely what feeds the
+    ///     loop. Hold the (dead) tunnel in place, stop the heartbeat/liveness
+    ///     loop, and leave the tripped record for the host. Holding is not
+    ///     "worse than cancelling": under `includeAllNetworks` both states drop
+    ///     every packet, but holding stops the thrash, stops the server-side
+    ///     peer churn, and — crucially — leaves `NEVPNStatus == .connected` so
+    ///     the host app can tear it down cleanly the moment it runs.
+    ///     `VpnViewModel.checkCircuitBreaker()` then disarms on-demand, clears
+    ///     `includeAllNetworks` and stops the tunnel: THAT is the fail-open, and
+    ///     it fires on app foreground, on the 30 s host heartbeat and on launch.
+    ///
+    /// The escape hatch never depends on this code being right: the host clears
+    /// the breaker on every user-initiated connect, and the trip lapses after
+    /// `TunnelCircuitBreaker.tripCooldown` on its own.
+    private func handleDataPlaneFailure(_ kind: TunnelFailureKind, error: Error) {
+        let store = TunnelBreakerStore.shared
+        let record = store.recordFailure(kind, nodeId: breakerNodeId)
+        let tripped = TunnelCircuitBreaker.isTripped(record, now: Date())
+
+        os_log("Data-plane failure (%{public}@) #%{public}ld — tripped=%{public}@ onDemandArmed=%{public}@",
+               log: log, type: .error,
+               kind.rawValue, record.consecutiveFailures,
+               tripped ? "yes" : "no", store.onDemandArmed ? "yes" : "no")
+
+        guard tripped else {
+            cancelTunnelWithError(error)
+            return
+        }
+
+        // Stop probing: the verdict is in, and further polls would only append
+        // failures to a record that is already tripped.
+        stopHeartbeat()
+
+        if store.onDemandArmed {
+            os_log("Circuit breaker tripped with on-demand armed — holding the tunnel instead of re-dialling. Open Birdo to restore traffic.",
+                   log: log, type: .error)
+            // Deliberately NO cancelTunnelWithError here. See the doc comment.
+        } else {
+            os_log("Circuit breaker tripped; no on-demand rule armed — stopping for good, traffic falls back to the physical interface",
+                   log: log, type: .error)
+            cancelTunnelWithError(TunnelError.circuitBreakerTripped)
         }
     }
 
@@ -459,9 +552,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             : Date().timeIntervalSince1970 - Double(newest)
 
         if age > Self.maxHandshakeAge {
-            os_log("Data plane dead: last handshake %{public}.0fs ago — cancelling tunnel so it can re-dial",
-                   log: log, type: .error, age)
-            cancelTunnelWithError(NSError(
+            // CLASSIFY, don't just count (P1 requirement 2). `newest == 0` means
+            // the tunnel came up and never handshaked at all — re-dialling the
+            // same endpoint is nearly worthless, so it gets a small budget and
+            // the user is steered to a different location. A handshake that
+            // existed and went stale is the NAT-rebind / node-restart shape,
+            // where re-dialling usually works, so it gets the largest budget.
+            let kind: TunnelFailureKind = (newest == 0) ? .neverEstablished : .diedAfterHandshake
+            os_log("Data plane dead: last handshake %{public}.0fs ago (%{public}@)",
+                   log: log, type: .error, age, kind.rawValue)
+            handleDataPlaneFailure(kind, error: NSError(
                 domain: "app.birdo.vpn.tunnel",
                 code: -1001,
                 userInfo: [NSLocalizedDescriptionKey: "The VPN connection stopped responding."]
@@ -586,6 +686,10 @@ enum TunnelError: Error, LocalizedError {
     /// free-tier evicted). Tearing down on this is what stops a dead peer from
     /// blackholing all traffic under the kill switch.
     case connectionRevoked
+    /// The re-dial circuit breaker ran out of budget for this node
+    /// (P1-ios-redial-loop-blackhole). Only used on the path where no on-demand
+    /// rule is armed, i.e. where stopping actually restores traffic.
+    case circuitBreakerTripped
 
     var errorDescription: String? {
         switch self {
@@ -593,6 +697,8 @@ enum TunnelError: Error, LocalizedError {
         case .invalidConfig: return "Invalid tunnel configuration"
         case .adapterFailed(let msg): return "Tunnel adapter failed: \(msg)"
         case .connectionRevoked: return "Connection has been revoked. Please reconnect."
+        case .circuitBreakerTripped:
+            return "Birdo stopped reconnecting to this server after repeated failures."
         }
     }
 }

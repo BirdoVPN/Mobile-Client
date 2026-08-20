@@ -394,7 +394,15 @@ struct HomeView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
 
-            if let message = vpnVM.error {
+            if let trip = vpnVM.breakerTrip {
+                // P1-ios-redial-loop-blackhole. Takes priority over `error`: the
+                // fail-open provokes an OS `.disconnected` whose generic
+                // "Tunnel failed: …" would otherwise land in `error` a moment
+                // later and bury the one message that explains what happened and
+                // that traffic is flowing again.
+                ErrorBanner(TunnelCircuitBreaker.userMessage(for: trip),
+                            icon: "bolt.horizontal.circle")
+            } else if let message = vpnVM.error {
                 // Backend refusals arrive verbatim in `error` (device cap,
                 // plan gate, node offline/maintenance, 426 version floor,
                 // heartbeat revocation) — render the server's own words,
@@ -415,6 +423,7 @@ struct HomeView: View {
         .animation(anim(BirdoTheme.Motion.decel(BirdoTheme.Motion.standard).delay(0.08)),
                    value: vpnVM.isConnected)
         .animation(anim(BirdoTheme.Motion.easeStandard()), value: vpnVM.error)
+        .animation(anim(BirdoTheme.Motion.easeStandard()), value: vpnVM.breakerTrip)
         .animation(anim(BirdoTheme.Motion.easeStandard()),
                    value: vpnVM.isReapplyingSettings)
     }

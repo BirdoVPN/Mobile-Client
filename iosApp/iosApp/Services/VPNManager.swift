@@ -237,6 +237,7 @@ final class VPNManager: @unchecked Sendable {
         // applyKillSwitchFlag() called from VpnViewModel's .connected handler.
         mgr.onDemandRules = nil
         mgr.isOnDemandEnabled = false
+        TunnelBreakerStore.shared.setOnDemandArmed(false)
 
         do {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -260,6 +261,7 @@ final class VPNManager: @unchecked Sendable {
             // server-side peer VpnViewModel is about to release.
             mgr.onDemandRules = nil
             mgr.isOnDemandEnabled = false
+            TunnelBreakerStore.shared.setOnDemandArmed(false)
             mgr.saveToPreferences { _ in }
             deleteSharedSecret(account: "wg_private_key")
             deleteSharedSecret(account: "wg_preshared_key")
@@ -281,6 +283,10 @@ final class VPNManager: @unchecked Sendable {
         // the user's explicit disconnect bounces straight back to connected.
         mgr.isOnDemandEnabled = false
         mgr.onDemandRules = nil
+        // Mirror the disarm for the tunnel extension, which cannot read
+        // `isOnDemandEnabled` itself and uses this to decide whether an
+        // extension-side teardown is a recovery or a re-dial.
+        TunnelBreakerStore.shared.setOnDemandArmed(false)
         // `mgr` is not Sendable, so it is re-read through `self` inside the
         // completion rather than captured — the same pattern `ensureManager()`
         // already uses for this type.
@@ -324,9 +330,15 @@ final class VPNManager: @unchecked Sendable {
             connectRule.interfaceTypeMatch = .any
             mgr.onDemandRules = [connectRule]
             mgr.isOnDemandEnabled = true
+            // Tell the extension the rule is live. From this moment an
+            // extension-side `cancelTunnelWithError` is a RE-DIAL, not a stop —
+            // which is what the circuit breaker has to know to avoid feeding
+            // the loop. See `PacketTunnelProvider.handleDataPlaneFailure`.
+            TunnelBreakerStore.shared.setOnDemandArmed(true)
         } else if !enabled {
             mgr.onDemandRules = nil
             mgr.isOnDemandEnabled = false
+            TunnelBreakerStore.shared.setOnDemandArmed(false)
         }
         mgr.saveToPreferences { error in
             if let error {
@@ -334,6 +346,56 @@ final class VPNManager: @unchecked Sendable {
                       error.localizedDescription)
             }
         }
+    }
+
+    /// CIRCUIT-BREAKER FAIL-OPEN (P1-ios-redial-loop-blackhole).
+    ///
+    /// Called by `VpnViewModel.checkCircuitBreaker()` when the tunnel extension
+    /// has left a tripped breaker record. Puts the device back on the open
+    /// network, in the order that ordering actually requires:
+    ///
+    ///   1. clear `includeAllNetworks`/`enforceRoutes` on the persisted profile,
+    ///   2. disarm the on-demand rule **and persist it**,
+    ///   3. only then stop the tunnel.
+    ///
+    /// Stopping first would leave the rule live and iOS would re-dial the tunnel
+    /// we just tore down — the same ordering bug `disconnect()` documents, and
+    /// the exact shape of the loop being fixed. Step 1 is belt-and-braces: even
+    /// if the save in step 2 fails, no blocking flag survives in the profile.
+    ///
+    /// This does NOT touch the user's `kill_switch` preference in UserDefaults.
+    /// It clears the flags on the *live profile* only; the next `connect()`
+    /// re-reads the preference and re-applies it, so a user who wants the kill
+    /// switch still has it on their next session.
+    /// - Returns: `false` when there is no loaded VPN configuration to act on
+    ///   yet (cold start races `loadManager()`'s async completion). The caller
+    ///   MUST treat that as "not applied" and try again on the next tick —
+    ///   latching on a no-op is how a fail-open silently fails to happen.
+    @discardableResult
+    func failOpenAndStop() -> Bool {
+        guard let mgr = manager else {
+            NSLog("[VPNManager] failOpenAndStop: no manager loaded yet — caller must retry")
+            return false
+        }
+        NSLog("[VPNManager] circuit breaker tripped — failing OPEN (disarming on-demand, clearing kill-switch flags, stopping)")
+        if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
+            proto.includeAllNetworks = false
+            proto.enforceRoutes = false
+            mgr.protocolConfiguration = proto
+        }
+        mgr.isOnDemandEnabled = false
+        mgr.onDemandRules = nil
+        TunnelBreakerStore.shared.setOnDemandArmed(false)
+        mgr.saveToPreferences { [weak self] error in
+            if let error {
+                NSLog("[VPNManager] failOpenAndStop saveToPreferences failed: %@",
+                      error.localizedDescription)
+            }
+            // Stop on BOTH paths — a failed save must never leave a dead tunnel
+            // up, which is the state that was blackholing traffic.
+            self?.manager?.connection.stopVPNTunnel()
+        }
+        return true
     }
 
     /// Query the PacketTunnel extension for live transfer stats via the
@@ -466,6 +528,7 @@ final class VPNManager: @unchecked Sendable {
         NSLog("[VPNManager] clearing a stale on-demand rule from a previous session")
         mgr.isOnDemandEnabled = false
         mgr.onDemandRules = nil
+        TunnelBreakerStore.shared.setOnDemandArmed(false)
         mgr.saveToPreferences { error in
             if let error {
                 NSLog("[VPNManager] failed clearing stale on-demand: %@", error.localizedDescription)

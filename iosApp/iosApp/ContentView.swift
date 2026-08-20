@@ -64,6 +64,7 @@ struct ContentView: View {
 
     @State private var selectedTab: Tab = .home
     @StateObject private var network = NetworkMonitor()
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Offline banner shows only when the device is truly offline AND the
     /// tunnel is not up/coming up (spec §0.4) — a live/connecting tunnel means
@@ -141,6 +142,19 @@ struct ContentView: View {
             // A fresh session always starts on Connect, like Android's
             // navigate-Home-clearing-backstack after login.
             if !loggedIn { selectedTab = .home }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // P1-ios-redial-loop-blackhole: the recovery hook the user actually
+            // reaches. When the tunnel extension has trapped the device behind a
+            // dead tunnel, the network is gone and the ONLY thing the user can
+            // still do is open this app — so foregrounding must be what restores
+            // traffic. `checkCircuitBreaker()` disarms the on-demand rule, clears
+            // the kill-switch flags and stops the dead tunnel.
+            //
+            // Foregrounding does NOT clear the breaker — it acts on it. The
+            // banner has to survive long enough for the user to read it.
+            guard phase == .active else { return }
+            vpnVM.checkCircuitBreaker()
         }
         .onOpenURL { url in
             // `birdo://` deep links (Android parity: connect / servers /

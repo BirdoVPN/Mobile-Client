@@ -186,6 +186,12 @@ targets:
     sources:
       - path: BirdoVPNTests
       - path: iosApp/Services/MultiHopRoute.swift
+      # P1-ios-redial-loop-blackhole. Foundation-only by design (the keychain
+      # half lives in TunnelBreakerStore.swift, which is deliberately NOT here)
+      # so the re-dial budget, the trip and every reset condition are unit
+      # tested on CI — the bug they fix needs a revoked peer on real hardware to
+      # observe, which is exactly the kind of thing that never gets retested.
+      - path: iosApp/Services/TunnelCircuitBreaker.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tests
@@ -233,6 +239,17 @@ targets:
       - path: PacketTunnel
         excludes:
           - Info.plist
+      # P1-ios-redial-loop-blackhole: the circuit breaker is the one piece of
+      # logic that MUST agree across the process boundary — the extension counts
+      # the failures (it is the only thing running while the host app is
+      # suspended) and the host app performs the fail-open. Compiled into both
+      # targets rather than duplicated, because a breaker that disagreed with
+      # itself between processes would be worse than none. Both files import
+      # only Foundation + Security, so this does not pull the KMP runtime into
+      # the extension — see the OTHER_LDFLAGS note above on the ~50 MB NEProvider
+      # memory ceiling.
+      - path: iosApp/Services/TunnelCircuitBreaker.swift
+      - path: iosApp/Services/TunnelBreakerStore.swift
     # NOTE: deliberately NO `info:` / `entitlements:` blocks — see the BirdoVPN
     # target above. Regenerating these stripped the NSExtension dict (so the
     # packet-tunnel provider could never load) and emptied the
