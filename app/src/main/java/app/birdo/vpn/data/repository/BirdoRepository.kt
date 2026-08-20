@@ -416,10 +416,13 @@ class BirdoRepository @Inject constructor(
             tokenManager.clearAll()
             invalidateServerCache()
             invalidateSubscriptionCache()
-            // PRIVACY: the SSAID-derived deviceId would otherwise survive the
-            // deletion and link the NEXT account registered on this handset to
-            // the one just erased. Mint a fresh random identity so the erased
-            // account's device fingerprint dies with it.
+            // PRIVACY: the deviceId would otherwise survive the deletion and
+            // link the NEXT account registered on this handset to the one just
+            // erased. Mint a fresh random identity so the erased account's
+            // device fingerprint dies with it. (Since P1-dk-ssaid-device-linkage
+            // the id is already random rather than SSAID-derived, so this is now
+            // a rotation of a value nothing can recompute, not an escape from
+            // one that can.)
             deviceInfoProvider.resetDeviceIdentity()
         }
         return result
