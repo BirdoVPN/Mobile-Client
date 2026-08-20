@@ -86,6 +86,17 @@ final class VpnViewModel: ObservableObject {
     /// what decides whether the UI may claim traffic is being blocked.
     @Published private(set) var killSwitchArmed = false
 
+    /// P1-ios-redial-loop-blackhole: the tripped circuit-breaker record left by
+    /// the tunnel extension, or nil.
+    ///
+    /// Non-nil means: automatic re-dials for that node have been stopped, the
+    /// kill switch has been disarmed and traffic is flowing again. Home renders
+    /// `TunnelCircuitBreaker.userMessage(for:)` off this — deliberately its own
+    /// slot rather than the shared `error` string, because the OS `.disconnected`
+    /// that `failOpenAndStop()` provokes lands milliseconds later and would
+    /// overwrite a message written into `error`.
+    @Published private(set) var breakerTrip: TunnelBreakerRecord?
+
     // MARK: - Port Forwarding
     @Published var portForwards: [PortForwardEntry] = []
     @Published private(set) var isLoadingPortForwards = false
@@ -146,6 +157,11 @@ final class VpnViewModel: ObservableObject {
                 self?.handleStatusChange(status)
             }
         }
+
+        // A trip recorded while the app was suspended (or not running at all)
+        // is only actionable once we are here. Cold start is one of the four
+        // places the fail-open fires — see `checkCircuitBreaker()`.
+        checkCircuitBreaker()
     }
 
     // MARK: - Server Management
@@ -245,7 +261,14 @@ final class VpnViewModel: ObservableObject {
 
     // MARK: - Connection
 
-    func connect() {
+    /// - Parameter userInitiated: `true` for anything the user asked for (the
+    ///   Home CTA, a live server switch, a settings blip). Those CLEAR the
+    ///   circuit breaker before dialling, which is the guarantee that a bug in
+    ///   the breaker can never do worse than delay an automatic re-dial — a
+    ///   manual tap always connects. `autoConnectIfEnabled()` passes `false`;
+    ///   auto-connect re-dialling straight into a tripped node is the loop
+    ///   wearing a different hat.
+    func connect(userInitiated: Bool = true) {
         guard let server = selectedServer else {
             error = "Select a server first"
             return
@@ -254,6 +277,7 @@ final class VpnViewModel: ObservableObject {
         // while a connect is already in flight mints a second tunnel session
         // (and a second server-side peer) for the same device.
         guard !isConnecting else { return }
+        if userInitiated { clearCircuitBreaker() }
         isConnecting = true
         error = nil
         // A fresh single-hop dial replaces any multi-hop session state. This is
@@ -338,6 +362,10 @@ final class VpnViewModel: ObservableObject {
     func connectMultiHop(entry: ServerInfo, exit: ServerInfo) async -> Bool {
         // Same re-entrancy guard as connect().
         guard !isConnecting else { return false }
+        // Every caller of this is a user action (the Multi-Hop screen's dial, or
+        // a settings blip rebuilding the pair the user chose), so it clears the
+        // breaker unconditionally — same rule as `connect(userInitiated: true)`.
+        clearCircuitBreaker()
         isConnecting = true
         error = nil
 
@@ -470,6 +498,12 @@ final class VpnViewModel: ObservableObject {
             guard isConnected else { return }
             let stats = await vpnManager.currentStats()
             if stats.rx > 0 {
+                // PRIMARY BREAKER RESET: real inbound bytes prove this node's
+                // data plane works right now, so whatever streak the extension
+                // had recorded against it is spent history. Cleared BEFORE the
+                // kill switch is armed, so the arm can never happen on top of a
+                // stale trip.
+                clearCircuitBreaker()
                 let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
                 vpnManager.applyKillSwitchFlag(killSwitch)
                 // applyKillSwitchFlag mutates the in-memory profile
@@ -514,17 +548,112 @@ final class VpnViewModel: ObservableObject {
     func autoConnectIfEnabled() {
         guard UserDefaults.standard.bool(forKey: "auto_connect") else { return }
         guard !isConnected, !isConnecting else { return }
+        // A tripped breaker means the last few dials to this node produced a
+        // tunnel that carried nothing. Auto-connecting straight back into it is
+        // the re-dial loop with an app-level trigger instead of an on-demand
+        // one. The user's own Connect tap still works (it clears the breaker),
+        // and the trip lapses after `TunnelCircuitBreaker.tripCooldown` so
+        // auto-connect resumes on its own without anyone doing anything.
+        guard breakerTrip == nil else {
+            NSLog("[VpnViewModel] auto-connect suppressed: circuit breaker is tripped")
+            return
+        }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             guard let self else { return }
             guard !self.isConnected, !self.isConnecting else { return }
+            guard self.breakerTrip == nil else { return }
             if self.selectedServer == nil {
                 self.selectedServer = self.servers.first { $0.isOnline && $0.accessible }
             }
             guard self.selectedServer != nil else { return }
-            self.connect()
+            self.connect(userInitiated: false)
         }
     }
+
+    // MARK: - Circuit Breaker (P1-ios-redial-loop-blackhole)
+
+    /// Act on a circuit-breaker trip recorded by the tunnel extension.
+    ///
+    /// THIS IS THE FAIL-OPEN. The extension can count failures and stop
+    /// re-dialling, but it cannot disarm the on-demand rule or clear
+    /// `includeAllNetworks` — those are host-app API. So when it trips with a
+    /// rule armed it holds the dead tunnel in place and leaves the record here,
+    /// and this method is what actually restores traffic:
+    /// `VPNManager.failOpenAndStop()` clears the blocking flags, disarms
+    /// on-demand (persisting BEFORE stopping, or iOS re-dials what we just
+    /// stopped), then stops the tunnel.
+    ///
+    /// Called from FOUR places, so the window between the trip and the recovery
+    /// is as short as iOS allows:
+    ///   * `init` — cold start, covering a trip that happened while the app was
+    ///     not running at all;
+    ///   * the 30 s heartbeat timer — covers a trip while the app is already
+    ///     open in the foreground, where no lifecycle event would fire;
+    ///   * `ContentView`'s `scenePhase == .active` — the common case: the user
+    ///     notices the network is dead and opens Birdo;
+    ///   * every `handleStatusChange`, so a state transition never races ahead
+    ///     of the recovery.
+    ///
+    /// ### Reset conditions (the complete list)
+    /// | Event | Clears? |
+    /// |---|---|
+    /// | Inbound bytes on a new session (real handshake) | YES — `armKillSwitchAfterHandshake` |
+    /// | User taps Connect / switches server / Multi-Hop dial / settings blip | YES — `connect(userInitiated: true)`, `connectMultiHop` |
+    /// | `TunnelCircuitBreaker.tripCooldown` (15 min) elapses | YES — here, on the next check |
+    /// | Dialling a DIFFERENT node | YES — the record is keyed by node, so the streak restarts at 1 |
+    /// | Sign-out | YES — `resetForLogout` |
+    /// | App foreground | NO — foreground is the trigger to ACT on a trip, not to forget it |
+    /// | Network / interface change | NO — a new SSID does not revive a revoked peer; the cooldown covers the case where it would have helped |
+    func checkCircuitBreaker() {
+        let store = TunnelBreakerStore.shared
+        guard let record = store.record else {
+            breakerTrip = nil
+            failOpenAppliedFor = nil
+            return
+        }
+        guard TunnelCircuitBreaker.isTripped(record, now: Date()) else {
+            // Either still under budget (leave the streak alone — it is how the
+            // next failure knows it is the third, not the first) or a trip whose
+            // cooldown has lapsed, which is spent state: drop it so the next
+            // failure starts a clean streak.
+            if record.trippedAt != nil { store.clear() }
+            breakerTrip = nil
+            failOpenAppliedFor = nil
+            return
+        }
+        // The banner is published unconditionally — the user must be told even
+        // on a pass where the teardown cannot run yet.
+        breakerTrip = record
+        // The TEARDOWN, though, is latched separately from the banner. Latching
+        // on `breakerTrip` would mean a pass that failed to act (cold start:
+        // `init` runs before `loadManager()`'s async completion assigns the
+        // manager, so `failOpenAndStop()` has nothing to act on) could never try
+        // again — a fail-open that silently does not happen is the whole bug.
+        guard failOpenAppliedFor != record else { return }
+        NSLog("[VpnViewModel] circuit breaker tripped (%@ x%ld) — failing open",
+              record.kind.rawValue, record.consecutiveFailures)
+        guard vpnManager.failOpenAndStop() else { return }   // retried next tick
+        failOpenAppliedFor = record
+        // Best-effort, exactly like every other call site: the DELETE may well
+        // fail while the tunnel is still tearing down, and the next connect from
+        // this deviceId reclaims the slot server-side anyway.
+        releaseServerSlot()
+        resetSessionState()
+    }
+
+    /// Forget the breaker entirely. See the reset table on
+    /// `checkCircuitBreaker()` for who calls this and why.
+    private func clearCircuitBreaker() {
+        TunnelBreakerStore.shared.clear()
+        breakerTrip = nil
+        failOpenAppliedFor = nil
+    }
+
+    /// The trip whose fail-open teardown has ACTUALLY been performed. Separate
+    /// from `breakerTrip` so a pass that could not act (no manager loaded yet)
+    /// retries, while a pass that did act does not re-tear-down every 30 s.
+    private var failOpenAppliedFor: TunnelBreakerRecord?
 
     // MARK: - Port Forwarding
 
@@ -680,6 +809,16 @@ final class VpnViewModel: ObservableObject {
         @unknown default:
             break
         }
+        // LAST, deliberately. A trip can land on either edge — the extension
+        // holds a dead tunnel at `.connected`, or cancels into `.disconnected` —
+        // and the recovery must win over whatever the branch above just set.
+        // Running it first would let `.connected` re-arm the timers the
+        // fail-open had just torn down.
+        //
+        // No recursion risk: `failOpenAndStop()` provokes another status change,
+        // but the second pass sees the SAME record already in
+        // `failOpenAppliedFor` and returns before touching the tunnel again.
+        checkCircuitBreaker()
     }
 
     private func resetSessionState() {
@@ -736,6 +875,8 @@ final class VpnViewModel: ObservableObject {
     /// previous account's plan/servers.
     func resetForLogout() {
         disconnect()
+        // The next account must not inherit a trip recorded against this one.
+        clearCircuitBreaker()
         servers = []
         selectedServer = nil
         serversError = nil
@@ -783,6 +924,12 @@ final class VpnViewModel: ObservableObject {
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: Self.heartbeatInterval,
                                               repeats: true) { [weak self] _ in
             Task { @MainActor in
+                // Covers the app-already-in-the-foreground case: the extension
+                // holds a dead tunnel at `.connected`, so NO status transition
+                // and NO scenePhase change ever fires. Without this tick the
+                // user would sit on a "Protected" UI with no network until they
+                // backgrounded and reopened the app.
+                self?.checkCircuitBreaker()
                 await self?.sendHeartbeat()
             }
         }
