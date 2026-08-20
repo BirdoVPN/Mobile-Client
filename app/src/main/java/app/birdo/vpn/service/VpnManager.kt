@@ -524,9 +524,16 @@ class VpnManager @Inject constructor(
      * that forgot to attach a token would be an attestation bypass on one path
      * and a broken feature on the other the moment policy flips to enforce.
      * Never hard-blocks on the client — the server owns the decision.
+     *
+     * P6-CLI-A-03: this is NOT once per connect any more. The due check comes
+     * first, before the nonce round trip, so a connect that is not due costs
+     * neither a request to our backend nor — the point of the change — a request
+     * to Google from the user's real IP at the exact moment they start a VPN
+     * session. See [PlayIntegrityManager] for the window and what it costs.
      */
     private suspend fun requestAttestationToken(): String? {
         if (!BuildConfig.IS_PLAY_BUILD) return null
+        if (!PlayIntegrityManager.isAttestationDue(context)) return null
         val nonce = repository.getAttestationNonce() ?: return null
         return PlayIntegrityManager.requestToken(context, nonce)
     }
