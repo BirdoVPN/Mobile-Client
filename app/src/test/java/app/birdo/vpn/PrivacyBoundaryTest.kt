@@ -20,6 +20,10 @@ import java.io.File
  *              println/printStackTrace exists in Android or shared source.
  * P6-CLI-A-09: OkHttp logging is DEBUG-only, HEADERS-level, with credential
  *              headers redacted; backups are disabled in the manifest.
+ * P6-CLI-X-01: the unconditional ~60s connection-quality telemetry is GONE
+ *              (owner decision 2026-08-19) and must not come back.
+ * P1-dk-ssaid: the device id is random and install-scoped — no shipped
+ *              source derives an identifier from the hardware.
  */
 class PrivacyBoundaryTest {
 
@@ -221,6 +225,87 @@ class PrivacyBoundaryTest {
         assertTrue(
             "P6-CLI-A-09 broken: android:fullBackupContent is no longer \"false\"",
             manifest.contains("android:fullBackupContent=\"false\""),
+        )
+    }
+
+    // ── P6-CLI-X-01 ────────────────────────────────────────────────
+
+    @Test
+    fun `no periodic connection telemetry survives in the client`() {
+        // The client used to POST vpn/quality-report every other heartbeat
+        // (~60s) for the whole session, unconditionally and with no user
+        // control: a per-minute, server-side timeline of exactly when each
+        // account was online, from a product whose promise is that we do not
+        // build one. Owner decision 2026-08-19 (same call as desktop): delete
+        // it, not gate it. This pin fails if the endpoint, its request model
+        // or a caller comes back.
+        val offenders = shippedSources().filter { f ->
+            val text = f.readText()
+            text.contains("quality-report") ||
+                text.contains("QualityReport") ||
+                text.contains("reportQuality") ||
+                text.contains("sendQualityReport")
+        }
+        assertEquals(
+            "P6-CLI-X-01 broken: periodic connection telemetry is back. It was " +
+                "deleted by owner decision, not disabled — re-adding any reporter " +
+                "needs that decision reversed first. Offenders: " +
+                "${offenders.map { it.name }}",
+            emptyList<File>(),
+            offenders,
+        )
+    }
+
+    // ── P1-dk-ssaid-device-linkage ────────────────────────────────────────
+
+    @Test
+    fun `no shipped source reads a hardware-derived device identifier`() {
+        // The deviceId must be a random value this install minted, not a
+        // function of the handset. Anything derived from device state is the
+        // same for every account ever used on it, so two anonymous accounts the
+        // user believes are unrelated arrive joinable — and, unlike a stored
+        // random id, the user cannot destroy it by uninstalling. SSAID was the
+        // one that shipped; the others are the obvious replacements someone
+        // would reach for next.
+        val banned = listOf(
+            "ANDROID_ID",
+            "Settings.Secure",
+            "Build.getSerial",
+            "getImei",
+            "getSubscriberId",
+            "getMacAddress",
+            "AdvertisingIdClient",
+        )
+        val offenders = shippedSources().mapNotNull { f ->
+            // CODE lines only. The kdoc on DeviceInfoProvider names the SSAID
+            // API on purpose — it explains why the id is no longer derived from
+            // it — and a scan that cannot tell an explanation from a call site
+            // would force that explanation to be deleted.
+            val code = f.readLines().filterNot { line ->
+                val t = line.trimStart()
+                t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")
+            }
+            val hits = banned.filter { needle -> code.any { it.contains(needle) } }
+            if (hits.isEmpty()) null else "${f.name}: $hits"
+        }
+        assertEquals(
+            "P1-dk-ssaid-device-linkage broken: a hardware-derived identifier is " +
+                "back in shipped source. The device id is deliberately random and " +
+                "install-scoped so it dies with an uninstall. Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+
+        // Vacuity guard: the provider still exists and still persists an id.
+        val provider = File(
+            repoRoot,
+            "app/src/main/java/app/birdo/vpn/data/auth/DeviceInfoProvider.kt",
+        )
+        val text = provider.readText()
+        assertTrue(
+            "DeviceInfoProvider no longer mints a random UUID device id — the " +
+                "identity moved; re-pin this scan against its new home",
+            text.contains("UUID.randomUUID()") && text.contains("KEY_DEVICE_ID"),
         )
     }
 }

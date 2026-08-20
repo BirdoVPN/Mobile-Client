@@ -38,11 +38,12 @@ object NetworkModule {
             .writeTimeout(30, TimeUnit.SECONDS)
             // The three phase timeouts above bound the connect, read and write
             // PHASES individually — they do not bound the call. DNS resolution
-            // runs before the connect phase, and .dns() is a serial three-
-            // provider DoH chain (each with three bootstrap addresses) that ends
-            // in the system resolver, so on a filtered or captive network a
-            // single request could sit in lookup far past the nominal 30s with
-            // the UI on a spinner and no error. withAutoRefresh can then run
+            // runs before the connect phase, and .dns() is a DoH lookup
+            // (Cloudflare, three bootstrap addresses) that falls back to the
+            // system resolver. P6-CLI-A-06 caps that attempt at ~5s, so the walk
+            // to the system resolver is no longer the ~15s a three-provider
+            // chain cost — but it is still time spent inside a Dns.lookup that
+            // the phase timeouts do not bound, and withAutoRefresh can then run
             // call → token refresh → retry on top of that. callTimeout is the
             // only setting that covers the whole thing, including redirects and
             // retries.

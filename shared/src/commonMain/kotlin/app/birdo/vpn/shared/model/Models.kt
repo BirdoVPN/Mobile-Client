@@ -708,19 +708,3 @@ sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
     data class Error(val message: String, val code: ProtocolErrorCode? = null) : ApiResult<Nothing>()
 }
-
-// ─── Connection Quality Reporting ────────────────────────────────────────────
-
-/** Client-reported quality telemetry sent periodically while connected. */
-@Serializable
-data class QualityReport(
-    val keyId: String,
-    val latencyMs: Double,
-    val jitterMs: Double,
-    val packetLossPercent: Double,
-    val bytesIn: Long,
-    val bytesOut: Long,
-    val handshakeAgeSeconds: Long,
-    val connectionState: String,
-    val platform: String,
-)

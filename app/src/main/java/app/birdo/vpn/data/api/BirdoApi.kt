@@ -128,13 +128,6 @@ interface BirdoApi {
         @Path("keyId") keyId: String,
     ): Response<HeartbeatResponse>
 
-    // ── Connection Quality Telemetry (P2-15) ─────────────────────
-
-    @POST("vpn/quality-report")
-    suspend fun reportQuality(
-        @Body report: QualityReport,
-    ): Response<Unit>
-
     // ── Key Rotation (P3-25) ─────────────────────────────────────
 
     @POST("vpn/connections/{keyId}/rotate")

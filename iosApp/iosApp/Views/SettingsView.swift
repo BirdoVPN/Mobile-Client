@@ -66,12 +66,23 @@ struct SettingsView: View {
                     SectionHeader("Appearance")
                     themeCard
 
-                    SectionHeader("Security")
-                    SettingsToggleRow(icon: "faceid", iconColor: BirdoTheme.green,
-                                      title: "Biometric Lock",
-                                      // Android: "Require fingerprint or PIN to open app"
-                                      // — reworded for iOS hardware (owner review).
-                                      description: "Require Face ID or passcode to open app",
+                    // P1-ios-biometric-gate-is-cosmetic: the BEHAVIOUR is
+                    // accepted as-is (owner decision) — this gate covers the UI
+                    // and nothing else. It unlocks no keychain item, decrypts
+                    // nothing, and the app keeps running behind the cover, so
+                    // Auto-Connect still brings the tunnel up while the screen
+                    // is "locked". What changed is that it no longer *reads* as
+                    // a security guarantee: it is out of the Security section,
+                    // off the green (= protected) icon colour, and the copy
+                    // says what it actually does. Do not restore the old
+                    // wording without also making the gate gate something.
+                    SectionHeader("Privacy")
+                    SettingsToggleRow(icon: "eye.slash", iconColor: BirdoTheme.white60,
+                                      title: "Hide App Contents",
+                                      description: "Covers the screen with a Face ID prompt when you "
+                                        + "open the app. Hides what is on screen only — it protects "
+                                        + "no data, and the VPN keeps running behind it, including "
+                                        + "Auto-Connect.",
                                       isOn: $settingsVM.biometricLockEnabled)
 
                     SectionHeader("Connection")
@@ -312,7 +323,12 @@ private struct SettingsRowText: View {
             Text(description)
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .lineLimit(2)
+                // 4, not 2: every other row's copy is one or two lines, so this
+                // is a max that only bites on the one row that needs the space
+                // — "Hide App Contents", whose whole point is saying plainly
+                // what it does NOT protect. A truncated honesty disclaimer is
+                // worse than none.
+                .lineLimit(4)
         }
         .multilineTextAlignment(.leading)
     }

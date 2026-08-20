@@ -74,6 +74,3 @@ typealias ApiErrorBody = app.birdo.vpn.shared.model.ApiErrorBody
 
 // ─── Heartbeat ───────────────────────────────────────────────────────────────
 typealias HeartbeatResponse = app.birdo.vpn.shared.model.HeartbeatResponse
-
-// ─── Quality Reporting ───────────────────────────────────────────────────────
-typealias QualityReport = app.birdo.vpn.shared.model.QualityReport

@@ -524,9 +524,16 @@ class VpnManager @Inject constructor(
      * that forgot to attach a token would be an attestation bypass on one path
      * and a broken feature on the other the moment policy flips to enforce.
      * Never hard-blocks on the client — the server owns the decision.
+     *
+     * P6-CLI-A-03: this is NOT once per connect any more. The due check comes
+     * first, before the nonce round trip, so a connect that is not due costs
+     * neither a request to our backend nor — the point of the change — a request
+     * to Google from the user's real IP at the exact moment they start a VPN
+     * session. See [PlayIntegrityManager] for the window and what it costs.
      */
     private suspend fun requestAttestationToken(): String? {
         if (!BuildConfig.IS_PLAY_BUILD) return null
+        if (!PlayIntegrityManager.isAttestationDue(context)) return null
         val nonce = repository.getAttestationNonce() ?: return null
         return PlayIntegrityManager.requestToken(context, nonce)
     }
@@ -1107,7 +1114,6 @@ class VpnManager @Inject constructor(
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch(Dispatchers.IO) {
-            var qualityTickCount = 0
             var keyRotationTickCount = 0
             while (isActive) {
                 delay(HEARTBEAT_INTERVAL_MS)
@@ -1154,30 +1160,6 @@ class VpnManager @Inject constructor(
                             }
                             break
                         }
-                    }
-                }
-
-                // P2-15: Quality report every other heartbeat (~60s)
-                qualityTickCount++
-                if (qualityTickCount >= 2) {
-                    qualityTickCount = 0
-                    val keyId = repository.getLastKeyId()
-                    if (keyId != null) {
-                        val connectedSince = BirdoVpnService.connectedSince
-                        val handshakeAge = if (connectedSince > 0)
-                            (System.currentTimeMillis() - connectedSince) / 1000 else 0L
-                        val report = app.birdo.vpn.data.model.QualityReport(
-                            keyId = keyId,
-                            latencyMs = 0.0, // Not measurable from userspace; requires kernel handshake timestamps
-                            jitterMs = 0.0,
-                            packetLossPercent = 0.0,
-                            bytesIn = BirdoVpnService.rxBytes,
-                            bytesOut = BirdoVpnService.txBytes,
-                            handshakeAgeSeconds = handshakeAge,
-                            connectionState = "connected",
-                            platform = "android",
-                        )
-                        repository.sendQualityReport(report) // fire-and-forget
                     }
                 }
 

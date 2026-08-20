@@ -242,7 +242,21 @@ struct LimitView: View {
             .frame(width: 1, height: 30)
     }
 
-    // MARK: - Upgrade card (§4.3)
+    // MARK: - Plan card (§4.3)
+    //
+    // P1-ios-limit-upgrade-cta-dead-end: this used to read "Upgrade for
+    // unlimited" and push SubscriptionView — which is INFORMATIONAL ONLY by
+    // design (see SubscriptionView's kdoc: the backend has no Apple IAP, and a
+    // StoreKit purchase would charge real money and unlock nothing, so there is
+    // deliberately no purchase CTA there). The button therefore promised a
+    // purchase and delivered a feature comparison: the users it dead-ended were
+    // the ones actively trying to pay.
+    //
+    // There is no in-app upgrade flow to wire it to, so the upgrade CTA is gone.
+    // What is left is the honest version of what the destination actually is —
+    // "View plans", the exact wording MultiHopView already uses for the same
+    // screen — and body copy that no longer says "Upgrade to Operative" as
+    // though tapping here would do it.
 
     private var upgradeCard: some View {
         BirdoCard {
@@ -260,11 +274,11 @@ struct LimitView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
-                Text("Free accounts include \(Self.wholeGb(limitGb)) GB per month. Upgrade to Operative for unlimited data on every server.")
+                Text("Free accounts include \(Self.wholeGb(limitGb)) GB per month. Paid plans include unlimited data on every server.")
                     .font(.system(size: 13))
                     .lineSpacing(5)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                PrimaryButton("Upgrade for unlimited", height: 48) {
+                PrimaryButton("View plans", height: 48) {
                     showSubscription = true
                 }
             }
