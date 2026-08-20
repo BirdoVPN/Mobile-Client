@@ -7,7 +7,7 @@ import java.net.InetAddress
 /**
  * Unit tests for [DohResolver].
  *
- * Since DohResolver is a singleton with hardcoded DoH endpoints (Cloudflare, Quad9),
+ * Since DohResolver is a singleton with a hardcoded DoH endpoint (Cloudflare),
  * full resolution tests require network access. These tests validate the object's
  * public API contract and the Dns adapter interface.
  */
@@ -60,15 +60,39 @@ class DohResolverTest {
     }
 
     @Test
-    fun `cloudflare and quad9 clients are initialized`() {
-        // Use reflection to verify both DoH clients were constructed
+    fun `cloudflare client is initialized`() {
+        // Use reflection to verify the DoH client was constructed.
         val cfField = DohResolver::class.java.getDeclaredField("cloudflare")
         cfField.isAccessible = true
         assertNotNull(cfField.get(DohResolver))
+    }
 
-        val q9Field = DohResolver::class.java.getDeclaredField("quad9")
-        q9Field.isAccessible = true
-        assertNotNull(q9Field.get(DohResolver))
+    /**
+     * P6-CLI-A-06. This test previously also asserted a `quad9` field existed;
+     * that assertion is gone because the provider is gone, and the check is
+     * inverted here so the removal is pinned rather than merely un-asserted.
+     *
+     * Google and Quad9 have no other visibility into this app, so each lookup
+     * gave them a datapoint they could not otherwise have — this IP is about to
+     * use a VPN, right now. Cloudflare is a different case and stays: it already
+     * terminates TLS for every api.birdo.app request (the host is Cloudflare
+     * proxied), so its DoH endpoint learns nothing new, and dropping DoH
+     * entirely would hand the lookup in cleartext to the local network, which is
+     * the adversary that DPI-blocks WireGuard in the first place. See the
+     * DohResolver kdoc.
+     */
+    @Test
+    fun `third-party DoH providers stay removed`() {
+        val fields = DohResolver::class.java.declaredFields.map { it.name }
+        assertFalse(
+            "P6-CLI-A-06 broken: a Google DoH resolver is back — it learns a " +
+                "user's VPN timing and has no other reason to know it",
+            fields.contains("google"),
+        )
+        assertFalse(
+            "P6-CLI-A-06 broken: a Quad9 DoH resolver is back — same problem",
+            fields.contains("quad9"),
+        )
     }
 
     @Test
