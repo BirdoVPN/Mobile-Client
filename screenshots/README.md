@@ -5,12 +5,22 @@ Pixel 7 (API 35) emulator + production-backend test account.
 
 ## Test account (do NOT use for real traffic)
 
-```
-owner@birdo.app : EeimFNSzZ4GwXGB4ECvBAbvS.
+The account e-mail is `owner@birdo.app`. **The password is NOT stored in this repo.**
+`scripts/capture-screenshots.ps1` reads it from the environment:
+
+```powershell
+$env:BIRDO_TEST_PASSWORD = '<the password>'   # never commit this
+.\scripts\capture-screenshots.ps1
 ```
 
-> This account is owned by the operator and exists purely for marketing
-> screenshots. It has a paid subscription so all premium screens render.
+> ⚠️ **2026-08-21 — a plaintext password used to live on this line.** This repository is
+> PUBLIC and it had been in git history since `ce1f059` (v1.3.15), on an account whose role
+> is `OWNER` with 2FA disabled. The credential was rotated on 2026-08-21 and every session
+> revoked; the audit trail showed 4 failed logins from a single IP over three months and no
+> unfamiliar device registrations, so it looks like exposure without exploitation.
+>
+> Deleting it from this file does NOT un-leak it — the history is public and already cloned.
+> Rotation was the fix. Never put a credential here again; the script takes an env var.
 
 ## Prereqs (already installed on this machine)
 
