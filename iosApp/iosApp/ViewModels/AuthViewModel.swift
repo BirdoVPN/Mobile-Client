@@ -3,17 +3,22 @@ import SwiftUI
 
 /// Auth-method tabs on the Login screen. Labels (exact): `Email` |
 /// `Anonymous` | `SSO`. Hidden while the 2FA step is active.
+/// Anonymous is FIRST and is the default: it is the only way into the app
+/// that needs nothing from the user (5.1.1(v) — "the first and easiest
+/// option"). It is deliberately NOT the only way in; the guest shell works
+/// without tapping it at all, and `AnonymousCreateFailure` covers the case
+/// where the server refuses to mint one.
 enum AuthTab: String, CaseIterable, Identifiable, Sendable {
-    case email
     case anonymous
+    case email
     case sso
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .email: return "Email"
         case .anonymous: return "Anonymous"
+        case .email: return "Email"
         case .sso: return "SSO"
         }
     }
@@ -24,9 +29,11 @@ enum AuthTab: String, CaseIterable, Identifiable, Sendable {
 /// (`GET /auth/me` + `GET /vpn/stats`), logout and GDPR erasure.
 ///
 /// Routing contract (ContentView):
-///   `!hasConsented`            -> Consent
-///   `hasConsented && loggedIn` -> Home (tabbed app)
-///   else                       -> Login
+///   `!hasConsented && !consentDeferred` -> Consent
+///   otherwise                           -> the tab shell, signed in OR GUEST
+///
+/// Sign-in is a SHEET raised at the point of use (`requestSignIn`), never a
+/// route that owns the window — see GuestAccess.swift for why (5.1.1(v)).
 @MainActor
 final class AuthViewModel: ObservableObject {
     // MARK: - Published State
@@ -36,8 +43,21 @@ final class AuthViewModel: ObservableObject {
     /// `GET /auth/me` then confirms; ONLY a definitive 401 (after one
     /// auto-refresh attempt) flips this back to false.
     @Published var isLoggedIn = false
-    /// Consent is shown ONCE, before the user ever sees Login.
+    /// Consent is shown ONCE, on first launch, before anything else.
     @Published var hasConsented = false
+    /// The user chose "Not now" on the privacy disclosure. They get the whole
+    /// guest shell; consent is asked for again before an account is created or
+    /// signed into — the only point at which personal data is processed.
+    @Published private(set) var consentDeferred = false
+    /// The sign-in sheet is up. Raised ONLY by `requestSignIn(_:)`, from an
+    /// action that genuinely needs an account.
+    @Published var isPresentingSignIn = false
+    /// Why the sheet was raised — drives the headline/explanation on it.
+    @Published private(set) var signInReason: SignInReason = .generic
+    /// HTTP status of the last failed anonymous-account creation, or nil.
+    /// Drives whether a "Try again" button is worth offering (a 429 inside the
+    /// rate-limit hour is not — see AnonymousCreateFailure).
+    @Published private(set) var anonymousCreateFailureStatus: Int?
     /// Single-flight flag for every auth submit (login / 2FA / anonymous /
     /// SSO). Double submits mint duplicate backend Session rows — guard on it.
     @Published var isLoading = false
@@ -45,7 +65,7 @@ final class AuthViewModel: ObservableObject {
     /// tabs or typing a 2FA code clears it automatically.
     @Published var error: String?
     /// Selected auth-method tab. Switching clears any error.
-    @Published var selectedTab: AuthTab = .email {
+    @Published var selectedTab: AuthTab = .anonymous {
         didSet {
             if oldValue != selectedTab { error = nil }
         }
@@ -91,6 +111,11 @@ final class AuthViewModel: ObservableObject {
     var onLogout: (() -> Void)?
 
     // MARK: - Derived State
+
+    /// No account on this device. The app is fully usable in this state —
+    /// settings, VPN settings, the policies, the about card and the location
+    /// list — and only account-bound actions raise the sign-in sheet.
+    var isGuest: Bool { !isLoggedIn }
 
     /// True for anonymous accounts (profile-derived; falls back to the stored
     /// anonymous ID before hydration lands).
@@ -149,6 +174,7 @@ final class AuthViewModel: ObservableObject {
         self.keychain = keychain
 
         let storedConsent = UserDefaults.standard.bool(forKey: "gdpr_consented")
+        let storedDeferral = UserDefaults.standard.bool(forKey: Self.consentDeferredKey)
         // Cold-start routing from local tokens only: logged in iff either
         // stored JWT is unexpired. Unparseable = expired (fail-safe).
         let sessionLive = Self.isTokenLive(keychain.accessToken)
@@ -171,26 +197,66 @@ final class AuthViewModel: ObservableObject {
                 keychain.clear()
             }
             hasConsented = storedConsent
+            consentDeferred = storedDeferral
         }
     }
 
     // MARK: - Consent
 
+    static let consentDeferredKey = "gdpr_consent_deferred"
+
     func acceptConsent() {
         hasConsented = true
+        consentDeferred = false
         let defaults = UserDefaults.standard
         defaults.set(true, forKey: "gdpr_consented")
+        defaults.removeObject(forKey: Self.consentDeferredKey)
         // Epoch millis, matching Android's `privacyConsentTimestamp`.
         defaults.set(Date().timeIntervalSince1970 * 1000, forKey: "privacyConsentTimestamp")
     }
 
-    /// iOS cannot exit the app (Android calls `finishAffinity()`), so
-    /// declining simply keeps the user on the Consent screen.
-    func declineConsent() {
+    /// "Not now" on the privacy disclosure.
+    ///
+    /// This REPLACES the old `declineConsent()`, which set the flag false and
+    /// left the user stuck on the Consent screen forever ("iOS cannot
+    /// self-exit") — a dead end, and part of the same launch wall 5.1.1(v)
+    /// names. Deferring drops the user into the guest shell instead: no
+    /// account, no personal data processed, and consent asked for again on the
+    /// sign-in sheet before either happens.
+    func deferConsent() {
         hasConsented = false
+        consentDeferred = true
         let defaults = UserDefaults.standard
         defaults.set(false, forKey: "gdpr_consented")
+        defaults.set(true, forKey: Self.consentDeferredKey)
         defaults.removeObject(forKey: "privacyConsentTimestamp")
+    }
+
+    // MARK: - Sign-in sheet (point of use, never a launch wall)
+
+    /// Raise the sign-in sheet for an action that genuinely needs an account.
+    /// No-op when already signed in — callers must not have asked.
+    func requestSignIn(_ reason: SignInReason = .generic) {
+        guard !isLoggedIn else { return }
+        signInReason = reason
+        error = nil
+        anonymousCreateFailureStatus = nil
+        isPresentingSignIn = true
+    }
+
+    /// Close the sheet and drop back into the guest shell.
+    ///
+    /// Deliberately does NOT run while a freshly minted anonymous ID is
+    /// un-acknowledged: that ID is the account's only credential and is shown
+    /// exactly once (the sheet is also `interactiveDismissDisabled` in that
+    /// step). Any half-finished 2FA challenge is dropped so the next open
+    /// starts clean.
+    func dismissSignIn() {
+        guard createdAnonymousId == nil else { return }
+        if requiresTwoFactor { cancelTwoFactor() }
+        error = nil
+        anonymousCreateFailureStatus = nil
+        isPresentingSignIn = false
     }
 
     // MARK: - Email Login
@@ -380,6 +446,7 @@ final class AuthViewModel: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         error = nil
+        anonymousCreateFailureStatus = nil
         pendingEmail = nil
         pendingContext = .anonymousCreate
 
@@ -404,13 +471,30 @@ final class AuthViewModel: ObservableObject {
                     }
                 }
             } catch {
-                self.error = mapAuthError(
-                    error,
-                    fallback: "Could not create an anonymous account. Please try again."
+                // NOT mapAuthError: its 429 branch says "Too many attempts.
+                // Please wait a moment.", which is wrong twice over here — the
+                // limit is 3 NEW ACCOUNTS per IP per hour (nothing to do with
+                // this user's attempts), and the wait is an hour, not a moment.
+                // On a shared App Review address that copy reads as a broken
+                // app. AnonymousCreateFailure says whose limit it is, how long
+                // it lasts, and that the app still works without an account.
+                let status = Self.httpStatus(of: error)
+                self.anonymousCreateFailureStatus = status
+                self.error = AnonymousCreateFailure.message(
+                    status: status,
+                    serverText: Self.serverText(of: error),
+                    isOffline: Self.isOffline(error)
                 )
             }
             self.isLoading = false
         }
+    }
+
+    /// True when the last anonymous-create failure is worth a "Try again"
+    /// button. A 429 inside the rate-limit hour is not: retrying burns another
+    /// attempt and fails again.
+    var canRetryAnonymousCreate: Bool {
+        AnonymousCreateFailure.isImmediatelyRetryable(status: anonymousCreateFailureStatus)
     }
 
     /// The user confirmed they saved the freshly-minted anonymous ID —
@@ -793,6 +877,40 @@ final class AuthViewModel: ObservableObject {
             }
         }
         return fallback
+    }
+
+    /// HTTP status an error arrived on, or nil when the client minted it
+    /// (transport failure, unusable 2xx body). Classification for user copy is
+    /// on THIS — never on the backend's message text, which changes without
+    /// notice.
+    static func httpStatus(of error: Error) -> Int? {
+        guard let api = error as? APIError else { return nil }
+        switch api {
+        case .serverMessage(_, let status): return status
+        case .httpError(let code): return code
+        case .unauthorized: return 401
+        case .invalidURL, .invalidResponse, .quantumKeyUnavailable: return nil
+        }
+    }
+
+    /// The backend's own words, when it explained itself and the text survives
+    /// sanitisation (blank / >200 chars / HTML / stack-trace fragments -> nil).
+    static func serverText(of error: Error) -> String? {
+        guard let api = error as? APIError, case .serverMessage(let raw, _) = api else { return nil }
+        let sentinel = "__birdo_unusable_server_message__"
+        let cleaned = sanitizedServerMessage(raw, fallback: sentinel)
+        return cleaned == sentinel ? nil : cleaned
+    }
+
+    /// The transport says there is no connection at all.
+    static func isOffline(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .notConnectedToInternet, .cannotFindHost, .dnsLookupFailed:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func sanitizedServerMessage(_ raw: String, fallback: String) -> String {

@@ -3,23 +3,39 @@ import SwiftUI
 import UIKit
 #endif
 
-/// GDPR consent gate — shown once, on first launch, BEFORE Login (routing:
-/// `!authVM.hasConsented`). Copy is exact per spec-auth-flow.md §0 /
-/// spec-home-servers-consent.md §5; visuals keep the legacy dark consent card
-/// (`surfaceVariant`) over the PixelCanvas ambient grid.
+/// GDPR privacy disclosure. Two presentations, one screen:
 ///
-/// Android's Decline terminates the app (finishAffinity). iOS cannot
-/// self-exit, so declining stays here and briefly emphasises the
-/// required-notice footnote instead (recon warning 12).
+///   * FIRST LAUNCH (`isSheet == false`) — the app's first screen. "I Agree &
+///     Continue" accepts; "Not now" DEFERS into the guest shell.
+///   * ON THE SIGN-IN SHEET (`isSheet == true`) — shown ahead of LoginView to
+///     a user who deferred, because creating or signing into an account is the
+///     point at which personal data is actually processed. Accepting swaps the
+///     sheet to LoginView; "Not now" closes the sheet.
+///
+/// Copy follows spec-auth-flow.md §0 / spec-home-servers-consent.md §5;
+/// visuals keep the legacy dark consent card (`surfaceVariant`) over the
+/// PixelCanvas ambient grid.
+///
+/// 🔴 The old secondary action was "Decline", which set the flag false and
+/// kept the user on this screen forever with "You must accept the privacy
+/// policy to use Birdo VPN" (Android exits via finishAffinity; iOS cannot
+/// self-exit). That was a dead end AND untrue of the parts of the app that
+/// process nothing — settings, the policies, the location list. It is now a
+/// deferral. Do not restore the dead end.
 struct ConsentView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @Environment(\.openURL) private var openURL
 
+    /// Presented inside the sign-in sheet rather than as the first-launch
+    /// route. Explicit init below: the private @State properties would
+    /// otherwise make the synthesized memberwise init private.
+    private let isSheet: Bool
+
     @StateObject private var pixelModel = PixelGridModel()
 
-    /// Lifts the footnote out of its faint tier for a moment after Decline.
-    @State private var declineEmphasis = false
-    @State private var emphasisResetTask: Task<Void, Never>?
+    init(isSheet: Bool = false) {
+        self.isSheet = isSheet
+    }
 
     var body: some View {
         ZStack {
@@ -41,7 +57,9 @@ struct ConsentView: View {
                         .multilineTextAlignment(.center)
                         .padding(.top, 16)
 
-                    Text("Before using Birdo VPN, please review how your data is handled.")
+                    Text(isSheet
+                            ? "Before you create or sign in to an account, please review how your data is handled."
+                            : "Before using Birdo VPN, please review how your data is handled.")
                         .font(.system(size: 14))
                         .foregroundStyle(BirdoTheme.white60)
                         .multilineTextAlignment(.center)
@@ -75,12 +93,17 @@ struct ConsentView: View {
                         .padding(.top, 24)
                         .accessibilityIdentifier("consent_accept")
 
-                    declineButton
+                    deferButton
                         .padding(.top, 12)
 
-                    Text("You must accept the privacy policy to use Birdo VPN.")
+                    Text(isSheet
+                            ? "Accepting is required only to create or sign in to an account. "
+                                + "The rest of the app keeps working without one."
+                            : "You can use the app's settings, read the policies and browse "
+                                + "locations without accepting. Accepting is required only to "
+                                + "create or sign in to an account.")
                         .font(.system(size: 12))
-                        .foregroundStyle(declineEmphasis ? BirdoTheme.white80 : BirdoTheme.white20)
+                        .foregroundStyle(BirdoTheme.white40)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 8)
@@ -93,7 +116,6 @@ struct ConsentView: View {
             }
         }
         .pixelCanvasTouchTrail(pixelModel)
-        .onDisappear { emphasisResetTask?.cancel() }
     }
 
     // MARK: - Data summary card
@@ -144,13 +166,13 @@ struct ConsentView: View {
         }
     }
 
-    // MARK: - Decline
+    // MARK: - Not now (deferral, never a dead end)
 
-    private var declineButton: some View {
-        Button(action: decline) {
-            Text("Decline")
+    private var deferButton: some View {
+        Button(action: defer_) {
+            Text(isSheet ? "Not now" : "Not now — look around first")
                 .font(.system(size: 14))
-                .foregroundStyle(BirdoTheme.white40)
+                .foregroundStyle(BirdoTheme.white60)
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .overlay(
                     RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
@@ -158,24 +180,19 @@ struct ConsentView: View {
                 )
         }
         .buttonStyle(PressScaleButtonStyle())
+        // Identifier kept as `consent_decline` so the screenshot UI test and
+        // any existing automation still find this button.
         .accessibilityIdentifier("consent_decline")
     }
 
-    /// iOS cannot terminate itself — stay on Consent and draw the eye to the
-    /// footnote so declining reads as "blocked", not broken.
-    private func decline() {
-        authVM.declineConsent()
-        Haptics.notify(.warning)
-        emphasisResetTask?.cancel()
-        withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.standard)) {
-            declineEmphasis = true
-        }
-        emphasisResetTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.6))
-            guard !Task.isCancelled else { return }
-            withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.standard)) {
-                declineEmphasis = false
-            }
+    /// First launch: fall through to the guest shell. On the sign-in sheet:
+    /// close it — the user stays exactly where they were, signed out.
+    /// (`defer` is a Swift keyword, hence the trailing underscore.)
+    private func defer_() {
+        if isSheet {
+            authVM.dismissSignIn()
+        } else {
+            authVM.deferConsent()
         }
     }
 }

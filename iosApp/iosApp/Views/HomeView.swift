@@ -34,6 +34,11 @@ struct HomeView: View {
     @State private var connectHapticTick = 0
     @State private var disconnectHapticTick = 0
 
+    /// No account on this device. Home stays fully rendered — globe, status,
+    /// location browser, every setting one tab away — and only the actions
+    /// that genuinely need an account raise the sign-in sheet (5.1.1(v)).
+    private var isGuest: Bool { authVM.isGuest }
+
     var body: some View {
         ZStack {
             // Full-bleed globe hero (Android §3.1) — the top bar and the bottom
@@ -71,10 +76,13 @@ struct HomeView: View {
         .modifier(HideNavigationBar())
         .onAppear {
             // Defensive kick — cheap thanks to the 60 s TTL + in-flight guard.
-            // The app root owns the real login-flip / cold-start load.
+            // The app root owns the real login-flip / cold-start load. Both
+            // calls no-op without a session (VpnViewModel.hasSession), so the
+            // guest shell never spends a request to earn a 401.
             vpnVM.loadServers()
             // Keep the Multi-Hop gate honest: the plan slug drives lock vs open.
             vpnVM.refreshSubscription()
+            if isGuest { vpnVM.loadPublicLocations() }
         }
         // Multi-Hop flow — pushed for SOVEREIGN users from the top-bar chip.
         .navigationDestination(isPresented: $showMultiHop) {
@@ -150,19 +158,41 @@ struct HomeView: View {
                         .frame(maxWidth: 120, alignment: .trailing)
                 }
 
-                Button {
-                    showLogoutConfirm = true
-                } label: {
-                    Image(systemName: "rectangle.portrait.and.arrow.right")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                        .frame(width: 40, height: 40)
-                        .background(Circle().fill(BirdoTheme.white05))
+                if isGuest {
+                    // Nothing to log out OF. The affordance is the way IN, and
+                    // it is an offer, not a gate — the whole shell behind it
+                    // already works.
+                    Button {
+                        authVM.requestSignIn(.generic)
+                    } label: {
+                        Text("Sign in")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(BirdoTheme.accent)
+                            .padding(.horizontal, 14)
+                            .frame(height: 34)
+                            .background(Capsule().fill(BirdoTheme.accentA(0.16)))
+                            .overlay(Capsule().strokeBorder(BirdoTheme.accentA(0.45), lineWidth: 1))
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                    .frame(minWidth: BirdoTheme.Spacing.minTouch,
+                           minHeight: BirdoTheme.Spacing.minTouch)
+                    .accessibilityIdentifier("home_sign_in")
+                    .accessibilityLabel("Sign in")
+                } else {
+                    Button {
+                        showLogoutConfirm = true
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                            .frame(width: 40, height: 40)
+                            .background(Circle().fill(BirdoTheme.white05))
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                    .frame(minWidth: BirdoTheme.Spacing.minTouch,
+                           minHeight: BirdoTheme.Spacing.minTouch)
+                    .accessibilityLabel("Logout")
                 }
-                .buttonStyle(PressScaleButtonStyle())
-                .frame(minWidth: BirdoTheme.Spacing.minTouch,
-                       minHeight: BirdoTheme.Spacing.minTouch)
-                .accessibilityLabel("Logout")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
@@ -238,7 +268,9 @@ struct HomeView: View {
     }
 
     private func handleMultiHopTap() {
-        if vpnVM.isSovereign {
+        if isGuest {
+            authVM.requestSignIn(.multiHop)
+        } else if vpnVM.isSovereign {
             showMultiHop = true
         } else {
             Haptics.notify(.error)
@@ -282,6 +314,9 @@ struct HomeView: View {
         // A live server switch tears the tunnel down and rebuilds it on the new
         // node — never show "Protected" over the new name until it lands.
         if vpnVM.isSwitching { return "Switching server…" }
+        // Guests can never be connected; say what is true rather than the bare
+        // "Not Connected", which reads like a failure the user should fix.
+        if isGuest && !vpnVM.isConnected && !vpnVM.isConnecting { return "Not signed in" }
         if vpnVM.isConnected {
             return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
         }
@@ -413,6 +448,8 @@ struct HomeView: View {
             serverSelector
 
             connectButton
+
+            if isGuest { guestNote }
         }
         .frame(maxWidth: 480) // AdaptiveContainer parity (Android §8)
         .padding(.horizontal, BirdoTheme.Spacing.screenH)
@@ -426,6 +463,20 @@ struct HomeView: View {
         .animation(anim(BirdoTheme.Motion.easeStandard()), value: vpnVM.breakerTrip)
         .animation(anim(BirdoTheme.Motion.easeStandard()),
                    value: vpnVM.isReapplyingSettings)
+    }
+
+    /// The standing promise, on the screen a guest lands on: an account buys
+    /// the tunnel, nothing else. Everything named here is reachable right now,
+    /// with no account and no sign-in.
+    private var guestNote: some View {
+        Text("Settings, VPN settings, the locations list and the policies all work without an account.")
+            .font(BirdoTheme.Fonts.bodySmall)
+            .foregroundStyle(BirdoTheme.onSurfaceMuted)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
+            .accessibilityIdentifier("home_guest_note")
     }
 
     /// Sheet-look panel: top corners 24, near-opaque surface fill (no blur —
@@ -557,6 +608,18 @@ struct HomeView: View {
                                 .font(BirdoTheme.Fonts.bodySmall)
                                 .foregroundStyle(BirdoTheme.white60)
                                 .lineLimit(1)
+                        } else if isGuest {
+                            // Guests have no per-account server list; what they
+                            // browse is the public location list, and the row
+                            // must not pretend otherwise.
+                            Text("Browse locations")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(BirdoTheme.onSurface)
+                                .lineLimit(1)
+                            Text(guestLocationsSubtitle)
+                                .font(BirdoTheme.Fonts.bodySmall)
+                                .foregroundStyle(BirdoTheme.white60)
+                                .lineLimit(1)
                         } else {
                             Text(vpnVM.selectedServer?.name ?? "Select Server")
                                 .font(.system(size: 15, weight: .semibold))
@@ -590,6 +653,16 @@ struct HomeView: View {
         .accessibilityHint("Select server")
     }
 
+    /// Honest about what is known: the count only after the public list has
+    /// actually loaded, never a placeholder number.
+    private var guestLocationsSubtitle: String {
+        let count = vpnVM.publicLocations.count
+        if count > 0 {
+            return "\(count) \(count == 1 ? "city" : "cities")  ·  sign in to connect"
+        }
+        return vpnVM.isLoadingPublicLocations ? "Loading…" : "Sign in to connect"
+    }
+
     // MARK: - Connect CTA (Android §3.4 CompactConnectButton)
 
     private enum ConnectCTA: Equatable { case idle, busy, connected }
@@ -605,6 +678,10 @@ struct HomeView: View {
 
     private var ctaLabel: String {
         if vpnVM.isSwitching { return "Switching…" }
+        // Say what the tap will actually do. A guest tapping "Connect" gets a
+        // sign-in sheet, and a button that hides that is the kind of thing App
+        // Review calls misleading.
+        if isGuest && cta == .idle { return "Sign in to connect" }
         switch cta {
         case .connected: return "Disconnect"
         case .busy:      return "Connecting…"
@@ -664,7 +741,12 @@ struct HomeView: View {
     }
 
     private func handleConnectTap() {
-        if vpnVM.isConnected {
+        if isGuest {
+            // Point-of-use prompt, not a launch wall. Connecting really does
+            // need an account (per-account WireGuard peer + connection slot),
+            // and the sheet says exactly that.
+            authVM.requestSignIn(.connect)
+        } else if vpnVM.isConnected {
             disconnectHapticTick += 1
             vpnVM.disconnect()
         } else if !vpnVM.isConnecting {

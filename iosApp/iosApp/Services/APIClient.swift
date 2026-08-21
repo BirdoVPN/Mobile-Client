@@ -291,6 +291,24 @@ final class APIClient: @unchecked Sendable {
         return try decoder.decode([ServerInfo].self, from: data)
     }
 
+    /// Public, UNAUTHENTICATED location list — `GET /vpn/locations`
+    /// (backend `PublicVpnController`, no guard, 60 s server-side cache).
+    ///
+    /// This is what makes the guest shell honest: `GET /vpn/servers` is
+    /// per-account (it is behind `JwtAuthGuard` and its `accessible` flag is
+    /// computed from THIS user's plan), so it cannot be shown signed out. The
+    /// public endpoint carries no per-user data at all — city, country, node
+    /// count, ONLINE/MAINTENANCE — which is exactly the browsable location
+    /// list a signed-out user is entitled to see (5.1.1(v)).
+    func fetchPublicLocations() async throws -> [PublicLocation] {
+        let data = try await performRequest(method: "GET",
+                                            path: "/vpn/locations",
+                                            body: nil,
+                                            authenticated: false,
+                                            refreshOn401: false)
+        return try decoder.decode(PublicLocationsEnvelope.self, from: data).locations
+    }
+
     // MARK: - VPN Config
 
     func getConnectConfig(serverId: String) async throws -> VPNConnectionConfig {
@@ -1024,6 +1042,59 @@ extension UserProfile: Decodable {
 
 /// Canonical subscription/bandwidth truth from `GET /vpn/stats` (spec §3.4).
 /// Every field is defaulted so a shape change can never blank the plan.
+/// One browsable location from the public (unauthenticated) list. Carries no
+/// per-user data — there is no `accessible` flag here, because access is a
+/// property of an ACCOUNT and a signed-out viewer has none.
+struct PublicLocation: Identifiable, Decodable, Equatable, Sendable {
+    let city: String
+    let countryCode: String
+    let countryName: String
+    /// "ONLINE" | "MAINTENANCE" (the backend lists nothing else publicly).
+    let status: String
+    /// How many nodes Birdo runs in this city.
+    let count: Int
+
+    /// City names are unique in the public list (the backend groups by city).
+    var id: String { "\(countryCode)-\(city)" }
+
+    var isOnline: Bool { status.uppercased() == "ONLINE" }
+
+    /// Regional-indicator flag for `countryCode`, falling back to the globe.
+    var flag: String { flagEmoji(countryCode) }
+
+    /// Explicit memberwise init: declaring `init(from:)` below suppresses the
+    /// synthesized one, and tests/previews need to build these.
+    init(city: String, countryCode: String, countryName: String, status: String, count: Int) {
+        self.city = city
+        self.countryCode = countryCode
+        self.countryName = countryName
+        self.status = status
+        self.count = count
+    }
+
+    /// Hand-rolled for the same reason as `ServerInfo`: a missing key degrades
+    /// to a safe default instead of throwing and blanking the WHOLE list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        city = try c.decodeIfPresent(String.self, forKey: .city) ?? ""
+        countryCode = try c.decodeIfPresent(String.self, forKey: .countryCode) ?? ""
+        countryName = try c.decodeIfPresent(String.self, forKey: .countryName) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "ONLINE"
+        count = try c.decodeIfPresent(Int.self, forKey: .count) ?? 1
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        // `location` (lat/lng, for the web globe) is deliberately not decoded —
+        // nothing on iOS plots the public list.
+        case city, countryCode, countryName, status, count
+    }
+}
+
+/// `{ locations: [...], cities: N, nodes: N }` — only `locations` is used.
+private struct PublicLocationsEnvelope: Decodable {
+    let locations: [PublicLocation]
+}
+
 struct VpnStats: Sendable, Equatable {
     /// "RECON" | "OPERATIVE" | "SOVEREIGN" — compare case-insensitively.
     let plan: String

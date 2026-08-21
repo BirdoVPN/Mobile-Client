@@ -13,6 +13,7 @@ import SwiftUI
 /// Tab-root screen: transparent background over the app-root PixelCanvas.
 struct LimitView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
+    @EnvironmentObject var authVM: AuthViewModel
 
     @State private var showSubscription = false
 
@@ -29,19 +30,29 @@ struct LimitView: View {
         return BirdoTheme.accent
     }
 
+    /// Data usage IS account data — there is nothing honest to show without an
+    /// account, so this tab asks for sign-in at the point of use instead of
+    /// spinning on "Loading your usage…" forever (which is what the old
+    /// `stats == nil` state did the moment the launch wall came down).
+    private var isGuest: Bool { authVM.isGuest }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
                 planHeader
 
-                if let error = vpnVM.subscriptionError {
-                    ErrorBanner(error, icon: "exclamationmark.circle")
-                }
+                if isGuest {
+                    guestCard
+                } else {
+                    if let error = vpnVM.subscriptionError {
+                        ErrorBanner(error, icon: "exclamationmark.circle")
+                    }
 
-                usageCard
+                    usageCard
 
-                if stats != nil && hasCap {
-                    upgradeCard
+                    if stats != nil && hasCap {
+                        upgradeCard
+                    }
                 }
 
                 Spacer(minLength: 32)
@@ -58,8 +69,47 @@ struct LimitView: View {
                    value: vpnVM.subscriptionError)
         .task {
             // The user deliberately opened their usage — bypass the 30 s
-            // stats cache (spec-secondary-screens.md warning 11).
+            // stats cache (spec-secondary-screens.md warning 11). No-op
+            // without a session.
             vpnVM.refreshSubscription(force: true)
+        }
+    }
+
+    // MARK: - Guest state
+
+    private var guestCard: some View {
+        BirdoCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(BirdoTheme.accentA(0.14))
+                        .frame(width: 34, height: 34)
+                        .overlay(
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .font(.system(size: 17))
+                                .foregroundStyle(BirdoTheme.accent)
+                        )
+                    Text("Sign in to see your usage")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(BirdoTheme.onSurface)
+                }
+                Text("Data usage is tied to an account, so there is nothing to show "
+                     + "yet. You can still read the plan comparison, change every "
+                     + "setting and browse locations without one.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                PrimaryButton("Sign in", variant: .brand) {
+                    authVM.requestSignIn(.usage)
+                }
+                .accessibilityIdentifier("limit_sign_in")
+
+                PrimaryButton("View plans", variant: .secondary) {
+                    showSubscription = true
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -74,11 +124,11 @@ struct LimitView: View {
                 .padding(.leading, 4)
                 .accessibilityAddTraits(.isHeader)
             HStack(alignment: .center) {
-                Text(BirdoTheme.planDisplayName(vpnVM.currentPlan))
+                Text(isGuest ? "No account" : BirdoTheme.planDisplayName(vpnVM.currentPlan))
                     .font(.system(size: 22, weight: .bold))
                     .foregroundStyle(BirdoTheme.onSurface)
                 Spacer()
-                if stats != nil {
+                if stats != nil && !isGuest {
                     Text(hasCap ? "\(Self.wholeGb(limitGb)) GB / month" : "Unlimited")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(BirdoTheme.accent)

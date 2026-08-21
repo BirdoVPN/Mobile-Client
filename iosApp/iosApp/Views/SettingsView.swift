@@ -29,6 +29,7 @@ import UIKit
 @MainActor
 struct SettingsView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
+    @Environment(\.openURL) private var openURL
 
     /// Theme preference (spec §1.2). "dark" | "light" | "system", default
     /// "system". Persisted view-local so it survives without ViewModel churn;
@@ -114,6 +115,22 @@ struct SettingsView: View {
                     .buttonStyle(PressScaleButtonStyle())
 
                     SectionHeader("About")
+                    // The policies also live on the Profile tab, but they are
+                    // not account based and this is where a signed-out user
+                    // looks for them (5.1.1(v)). Both open in the browser and
+                    // need no account.
+                    SettingsLinkButton(icon: "checkmark.shield", iconColor: BirdoTheme.accent,
+                                       title: "Privacy Policy",
+                                       description: "birdo.app/privacy",
+                                       trailing: "arrow.up.forward.square") {
+                        if let url = URL(string: "https://birdo.app/privacy") { openURL(url) }
+                    }
+                    SettingsLinkButton(icon: "doc.text", iconColor: BirdoTheme.white60,
+                                       title: "Terms of Service",
+                                       description: "birdo.app/terms",
+                                       trailing: "arrow.up.forward.square") {
+                        if let url = URL(string: "https://birdo.app/terms") { openURL(url) }
+                    }
                     aboutCard
 
                     Spacer().frame(height: 32)
