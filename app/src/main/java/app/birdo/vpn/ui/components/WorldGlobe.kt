@@ -31,7 +31,11 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import app.birdo.vpn.data.model.VpnServer
+import app.birdo.vpn.perf.GlobePerf
+import app.birdo.vpn.perf.GlobePerfControls
+import app.birdo.vpn.perf.GlobePerfState
 import app.birdo.vpn.ui.theme.BirdoColors
 import app.birdo.vpn.utils.CountryCoords
 import kotlin.math.PI
@@ -93,7 +97,25 @@ fun WorldGlobe(
 
     // Cost profile for THIS device. Read once — neither the RAM tier nor the
     // heap class changes while the app is alive.
-    val quality = remember(context) { globeQualityFor(context) }
+    val autoQuality = remember(context) { globeQualityFor(context) }
+    // Debug builds (and a release built with -PperfOverlay=true) can pin the
+    // tier from the perf HUD, so FULL and LITE can be compared on ONE device
+    // instead of inferred across two. Constant-folds away otherwise.
+    val quality = debugQualityOverride(autoQuality)
+
+    // Label every frame produced while this globe is composed with its tier, so
+    // JankStats can partition its histogram into globe-on and globe-off. This
+    // runs on composition and on tier change — never per frame.
+    val perfView = LocalView.current
+    if (GlobePerf.ENABLED) {
+        DisposableEffect(perfView, quality) {
+            GlobePerfState.set(
+                perfView,
+                if (quality.lite) GlobePerf.STATE_LITE else GlobePerf.STATE_FULL,
+            )
+            onDispose { GlobePerfState.set(perfView, GlobePerf.STATE_OFF) }
+        }
+    }
 
     // Power: the globe is a full-screen Canvas driven by an animation clock.
     // Compose keeps invalidating it at the display refresh rate (90/120 Hz on
@@ -341,6 +363,23 @@ private fun globeQualityFor(context: Context): GlobeQuality {
     val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         ?: return GlobeQuality.LITE
     return GlobeQuality.forDevice(am.isLowRamDevice, am.memoryClass)
+}
+
+/**
+ * Applies the perf HUD's tier pin, if the HUD is compiled in at all.
+ *
+ * The `GlobePerf.ENABLED` guard is a `static final boolean` in a stock release
+ * build, so this returns [auto] without ever subscribing the composition to the
+ * debug state.
+ */
+@Composable
+private fun debugQualityOverride(auto: GlobeQuality): GlobeQuality {
+    if (!GlobePerf.ENABLED) return auto
+    return when (GlobePerfControls.forcedLite.value) {
+        null -> auto
+        true -> GlobeQuality.LITE
+        false -> GlobeQuality.FULL
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

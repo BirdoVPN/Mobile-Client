@@ -46,6 +46,9 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.AppUpdateInfo
 import app.birdo.vpn.data.model.VpnServer
+import app.birdo.vpn.perf.GlobePerf
+import app.birdo.vpn.perf.GlobePerfControls
+import app.birdo.vpn.perf.GlobePerfOverlay
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
@@ -151,7 +154,10 @@ fun HomeScreen(
         // Mullvad-style full-bleed background map. Everything else floats
         // over it. We don't draw the map while the server sheet is open
         // because the sheet's scrim covers it anyway.
-        if (!showServerSheet) {
+        // `globeSuppressed` is the perf HUD's globe-off baseline: same screen,
+        // same everything, globe gone. It is a compile-time `false` in a stock
+        // release build. See app.birdo.vpn.perf.GlobePerfOverlay.
+        if (!showServerSheet && !globeSuppressed()) {
             WorldGlobe(
                 servers = state.servers,
                 selectedServerId = state.selectedServer?.id,
@@ -368,6 +374,13 @@ fun HomeScreen(
                 shape = RoundedCornerShape(14.dp),
             )
         }
+
+        // Frame-timing HUD. Compiles to nothing in a stock release build.
+        GlobePerfOverlay(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 8.dp, bottom = 8.dp),
+        )
     }
 
     if (showServerSheet) {
@@ -1112,3 +1125,12 @@ private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> U
         }
     }
 }
+
+/**
+ * Whether the perf HUD is currently suppressing the globe to collect its
+ * globe-off baseline. Always `false` unless the HUD is compiled in, and the
+ * guard keeps the composition from subscribing to debug state in release.
+ */
+@Composable
+private fun globeSuppressed(): Boolean =
+    if (GlobePerf.ENABLED) GlobePerfControls.globeHidden.value else false

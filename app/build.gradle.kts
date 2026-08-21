@@ -57,6 +57,20 @@ val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.gete
 val allowScreenshots = ((project.findProperty("allowScreenshots") as String?)
     ?: System.getenv("BIRDO_ALLOW_SCREENSHOTS"))?.toBoolean() ?: false
 
+// Frame-timing HUD flag. The JankStats-backed globe perf overlay
+// (app.birdo.vpn.perf) is always on in DEBUG builds; this flag additionally
+// switches it on in a REAL, minified release build, which is the only way to
+// get frame numbers that mean anything — a debug build is unminified and
+// `debuggable=true`, so its p99 is not the p99 users see.
+//
+// Deliberately NOT double-gated on BuildConfig.DEBUG the way allowScreenshots
+// is: measuring release performance is the point. It is safe to expose because
+// the instrumentation has no network sink and no persistence of any kind — it
+// is an in-memory histogram, pinned by PrivacyBoundaryTest (P6-CLI-PERF-01).
+// Default false; CI release builds never pass it.
+val perfOverlay = ((project.findProperty("perfOverlay") as String?)
+    ?: System.getenv("BIRDO_PERF_OVERLAY"))?.toBoolean() ?: false
+
 android {
     namespace = "app.birdo.vpn"
     compileSdk = 36
@@ -112,6 +126,9 @@ android {
         // Play-distribution flag (see isPlayBuild above). Baked into BuildConfig
         // so UI can hide external-purchase steering in the Play (AAB) build.
         buildConfigField("boolean", "IS_PLAY_BUILD", "$isPlayBuild")
+
+        // Frame-timing HUD flag (see perfOverlay above).
+        buildConfigField("boolean", "PERF_OVERLAY", "$perfOverlay")
 
         // ── Play external-offers (link-out billing) ────────────────────────
         // From 30 Jun 2026 Google permits linking out to your own checkout in
@@ -412,6 +429,14 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
+
+    // ── Frame timing ─────────────────────────────────────────────
+    // JankStats: the supported wrapper over Window.OnFrameMetricsAvailableListener
+    // (API 24+) that also carries per-frame STATE labels, which is what lets the
+    // globe be measured separately from the rest of the screen. Local only —
+    // JankStats reports to an in-process listener and has no reporting backend
+    // of its own. Debug/-PperfOverlay use only; R8 strips it from stock releases.
+    implementation("androidx.metrics:metrics-performance:1.0.0")
 
     // ── Compose ──────────────────────────────────────────────────
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))

@@ -24,6 +24,13 @@ import java.io.File
  *              (owner decision 2026-08-19) and must not come back.
  * P1-dk-ssaid: the device id is random and install-scoped — no shipped
  *              source derives an identifier from the hardware.
+ * P6-CLI-PERF-01: the globe frame-timing instrumentation (app.birdo.vpn.perf)
+ *              is on-device and aggregate ONLY — no network sink, no
+ *              persistence, no wall-clock, no per-frame sample log, and the
+ *              only per-frame label is a closed set of three quality-tier
+ *              strings. Performance telemetry that leaked identity, location or
+ *              connection metadata would be a far worse defect than a slow
+ *              globe, so the boundary is pinned rather than reviewed.
  */
 class PrivacyBoundaryTest {
 
@@ -253,6 +260,200 @@ class PrivacyBoundaryTest {
                 "${offenders.map { it.name }}",
             emptyList<File>(),
             offenders,
+        )
+    }
+
+    // ── P6-CLI-PERF-01 ───────────────────────────────────────────────────
+
+    /** Every shipped file in the frame-timing package. */
+    private fun perfSources(): List<File> {
+        val dir = File(repoRoot, "app/src/main/java/app/birdo/vpn/perf")
+        assertTrue(
+            "the perf package is missing at ${dir.absolutePath} — if the frame " +
+                "instrumentation moved, re-pin these scans against its new home",
+            dir.isDirectory,
+        )
+        val files = dir.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        assertTrue(
+            "perf package walk found ${files.size} files — these scans would be vacuous",
+            files.size >= 4,
+        )
+        return files
+    }
+
+    @Test
+    fun `frame timing has no network sink`() {
+        // The single most damaging way to get this wrong: a well-meaning
+        // "anonymous perf beacon". P6-CLI-X-01 already deleted a per-minute
+        // connection report for this reason; a per-session frame report would
+        // rebuild the same online-timeline from a different direction.
+        val banned = listOf(
+            "retrofit", "Retrofit", "okhttp", "OkHttp", "io.ktor", "HttpClient",
+            "java.net.URL", "HttpURLConnection", "Socket", "sentry", "Sentry",
+            "firebase", "Firebase", "analytics", "Analytics",
+        )
+        val offenders = perfSources().mapNotNull { f ->
+            val text = f.readText()
+            val hits = banned.filter { text.contains(it) }
+            if (hits.isEmpty()) null else "${f.name}: $hits"
+        }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: the frame-timing package can now reach the " +
+                "network. It must stay on-device. Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+    }
+
+    @Test
+    fun `frame timing never persists anything`() {
+        // Nothing survives the process. An in-memory histogram cannot be seized
+        // with the handset or read out of a backup; a file of frame timings can.
+        val banned = listOf(
+            "DataStore", "dataStore", "SharedPreferences", "getSharedPreferences",
+            "AppPreferences", "java.io.File", "FileOutputStream", "openFileOutput",
+            "Room", "SQLite",
+        )
+        val offenders = perfSources().mapNotNull { f ->
+            val text = f.readText()
+            val hits = banned.filter { text.contains(it) }
+            if (hits.isEmpty()) null else "${f.name}: $hits"
+        }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: the frame-timing package now writes to " +
+                "storage. Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+    }
+
+    @Test
+    fun `frame timing keeps no clock and no per frame sample log`() {
+        // A histogram of durations is not a timeline. A list of
+        // (timestamp, duration) IS a timeline of when the user was looking at
+        // their phone — and JankStats hands us `frameStartNanos` on every single
+        // frame, so the only thing keeping it out is that we never read it.
+        val banned = listOf(
+            "frameStartNanos", "currentTimeMillis", "nanoTime", "SystemClock",
+            "Instant", "LocalDate", "LocalTime", "java.util.Date", "Calendar",
+        )
+        val offenders = perfSources().mapNotNull { f ->
+            val code = f.readLines().filterNot { line ->
+                val t = line.trimStart()
+                t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")
+            }
+            val hits = banned.filter { needle -> code.any { it.contains(needle) } }
+            if (hits.isEmpty()) null else "${f.name}: $hits"
+        }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: the frame-timing package now reads a clock " +
+                "or retains a per-frame record. It must stay a bucketed " +
+                "histogram. Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+    }
+
+    @Test
+    fun `the only per frame label is the globe quality tier`() {
+        // JankStats attaches arbitrary key/value state to each frame. The
+        // tempting next step — "label frames with the selected server so we can
+        // see whether the arc is slow" — would put a country, and therefore a
+        // location claim, into the measurement surface.
+        assertEquals(
+            "P6-CLI-PERF-01 broken: the per-frame label set changed. It must stay " +
+                "three fixed, user-independent strings.",
+            listOf("full", "lite", "off"),
+            app.birdo.vpn.perf.GlobePerf.STATE_VALUES,
+        )
+
+        val banned = listOf(
+            "VpnServer", "countryCode", "selectedServer", "userId", "email",
+            "deviceId", "accessToken", "publicKey", "ipAddress", "endpoint",
+            "subscription",
+        )
+        val offenders = perfSources().mapNotNull { f ->
+            val text = f.readText()
+            val hits = banned.filter { text.contains(it) }
+            if (hits.isEmpty()) null else "${f.name}: $hits"
+        }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: the frame-timing package now references " +
+                "account, server or connection data. Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+
+        // The putState call sites are the ONLY way a label reaches a frame.
+        val callSites = perfSources().filter { it.readText().contains("putState(") }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: a putState call site outside GlobePerfState",
+            listOf("GlobePerf.kt"),
+            callSites.map { it.name },
+        )
+        val putStates = callSites.sumOf { f ->
+            Regex("putState\\(").findAll(f.readText()).count()
+        }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: expected exactly the two putState call sites " +
+                "in GlobePerfState (set + flush); a third is a new label",
+            2,
+            putStates,
+        )
+    }
+
+    @Test
+    fun `the frame timing package never reaches the data layer`() {
+        val offenders = shippedSources()
+            .filter { it.path.replace('\\', '/').contains("/data/") }
+            .filter { it.readText().contains("app.birdo.vpn.perf") }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: the data (networking) layer now imports the " +
+                "frame-timing package — the only road off the device. " +
+                "Offenders: ${offenders.map { it.name }}",
+            emptyList<File>(),
+            offenders,
+        )
+    }
+
+    @Test
+    fun `jankstats is confined to the frame timing package`() {
+        val users = shippedSources()
+            .filter { it.readText().contains("androidx.metrics.performance") }
+            .map { it.name }
+            .sorted()
+        assertEquals(
+            "P6-CLI-PERF-01 broken: JankStats is used outside app/.../perf. Every " +
+                "frame-state label must go through GlobePerf, or the closed label " +
+                "set pinned above stops meaning anything. Users: $users",
+            listOf("GlobeFrameMonitor.kt", "GlobePerf.kt", "GlobePerfOverlay.kt"),
+            users,
+        )
+    }
+
+    @Test
+    fun `the perf overlay is off by default in every build`() {
+        val gradle = File(repoRoot, "app/build.gradle.kts").readText()
+        assertTrue(
+            "P6-CLI-PERF-01 broken: the PERF_OVERLAY BuildConfig field is gone",
+            gradle.contains("buildConfigField(\"boolean\", \"PERF_OVERLAY\""),
+        )
+        assertTrue(
+            "P6-CLI-PERF-01 broken: perfOverlay no longer defaults to false — a " +
+                "shipped release would carry a debug HUD over the Home screen",
+            gradle.contains("System.getenv(\"BIRDO_PERF_OVERLAY\"))?.toBoolean() ?: false"),
+        )
+
+        // And the runtime gate is a build constant, not something a user, a
+        // server response or a remote flag can flip.
+        val perf = File(
+            repoRoot,
+            "app/src/main/java/app/birdo/vpn/perf/GlobePerf.kt",
+        ).readText()
+        assertTrue(
+            "P6-CLI-PERF-01 broken: the HUD gate is no longer a compile-time " +
+                "constant, so R8 can no longer remove it from a stock release",
+            perf.contains("BuildConfig.DEBUG || BuildConfig.PERF_OVERLAY"),
         )
     }
 
