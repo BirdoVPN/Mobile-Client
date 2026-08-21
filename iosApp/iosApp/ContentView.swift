@@ -83,6 +83,7 @@ struct ContentView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @EnvironmentObject var vpnVM: VpnViewModel
     @EnvironmentObject var settingsVM: SettingsViewModel
+    @EnvironmentObject var storeVM: StoreKitService
 
     /// Android bottom-nav tab set, in order: Profile · Connect · Limit ·
     /// Settings (spec-home-servers-consent §2). ServerList is NOT a tab — it
@@ -152,6 +153,29 @@ struct ContentView: View {
             authVM.onLogout = { [weak vpnVM] in
                 vpnVM?.resetForLogout()
             }
+
+            // App Store purchase rail (Guideline 3.1.1). Wired here for the
+            // same reason as the hooks above: this is the one place that can
+            // see every view model at once.
+            //
+            // `start()` is what puts the long-lived `Transaction.updates`
+            // listener in place. It has to happen at LAUNCH, not when the
+            // subscription screen opens: an Ask-to-Buy approval, a renewal, a
+            // Family Sharing change or a purchase made on another device all
+            // arrive there, and a purchase completed outside our own
+            // `purchase()` call would otherwise never be seen by this process.
+            let auth = authVM
+            let vpn = vpnVM
+            storeVM.isSignedIn = { [weak auth] in auth?.isLoggedIn ?? false }
+            storeVM.requestSignIn = { [weak auth] in auth?.requestSignIn(.subscribe) }
+            storeVM.onEntitlementChanged = { [weak vpn] in
+                // The server has just changed what this account is entitled
+                // to, and /vpn/stats is the app's single source of plan truth —
+                // force past the 30 s cache so every plan gate opens now
+                // rather than up to half a minute after the user paid.
+                vpn?.refreshSubscription(force: true)
+            }
+            storeVM.start()
         }
         // Sign-in is a SHEET, raised only by an action that genuinely needs an
         // account (5.1.1(v)). Consent comes FIRST inside the same sheet when
@@ -197,6 +221,11 @@ struct ContentView: View {
             }
             vpnVM.refreshSubscription()   // plan gates + Profile/Limit hero (30s cache)
             vpnVM.autoConnectIfEnabled()  // no-op unless the "auto_connect" pref is ON
+            // A purchase can complete while signed out — the App Store does not
+            // care whether Birdo has a session — and /link needs one. Signing
+            // in is therefore the moment those transactions can finally be
+            // bound, so re-present everything StoreKit still considers current.
+            await storeVM.linkExistingEntitlementsAfterSignIn()
         }
         .onChange(of: authVM.isLoggedIn) { _, loggedIn in
             // Signing in is the sheet's whole job — close it the moment it is

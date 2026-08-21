@@ -297,6 +297,32 @@ enum SystemOpen {
         #endif
     }
 
+    /// The Apple Account subscription manager — where an auto-renewable
+    /// subscription is actually cancelled or changed.
+    ///
+    /// Deliberately a URL rather than `AppStore.showManageSubscriptions(in:)`:
+    /// that API needs a `UIWindowScene` and does not exist on macOS at all, and
+    /// this one target ships on both. The App Store apps register these
+    /// schemes, so the link opens the subscriptions pane directly rather than
+    /// a web page.
+    static func manageSubscriptions() {
+        #if os(iOS)
+        let candidates = ["itms-apps://apps.apple.com/account/subscriptions",
+                          "https://apps.apple.com/account/subscriptions"]
+        #elseif os(macOS)
+        let candidates = ["macappstore://apps.apple.com/account/subscriptions",
+                          "https://apps.apple.com/account/subscriptions"]
+        #endif
+        // Fall through to the https form if the app-scheme URL is unusable —
+        // never leave the button doing nothing.
+        for candidate in candidates {
+            if let url = URL(string: candidate) {
+                Self.url(url)
+                return
+            }
+        }
+    }
+
     /// The app's own settings pane.
     ///
     /// iOS deep-links into Settings.app. macOS has no per-app settings pane at

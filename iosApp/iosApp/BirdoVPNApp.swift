@@ -8,6 +8,12 @@ struct BirdoVPNApp: App {
     @StateObject private var authVM = AuthViewModel()
     @StateObject private var vpnVM = VpnViewModel()
     @StateObject private var settingsVM = SettingsViewModel()
+    /// The App Store purchase rail. Owned by the App (not by SubscriptionView)
+    /// because its `Transaction.updates` listener has to outlive every screen:
+    /// an Ask-to-Buy approval, a renewal or a purchase made on another device
+    /// can arrive at any moment, and a listener that only exists while the
+    /// subscription screen is on-screen would miss all three.
+    @StateObject private var storeVM = StoreKitService.shared
 
     init() {
         Self.styleTabBar()
@@ -20,6 +26,7 @@ struct BirdoVPNApp: App {
                     .environmentObject(authVM)
                     .environmentObject(vpnVM)
                     .environmentObject(settingsVM)
+                    .environmentObject(storeVM)
                     .preferredColorScheme(.dark)
             }
         }

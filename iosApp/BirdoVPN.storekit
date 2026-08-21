@@ -1,0 +1,151 @@
+{
+  "identifier" : "B17D0VPN",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_developerTeamID" : "KPUFGR98A5",
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 0,
+    "_locale" : "en_GB",
+    "_storeKitErrors" : [
+
+    ],
+    "_storefront" : "GBR",
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21740801",
+      "localizations" : [
+
+      ],
+      "name" : "Birdo VPN",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "9.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "21740811",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Everything in Operative plus Multi-Hop routing, port forwarding, custom DNS and 10 device connections.",
+              "displayName" : "Sovereign (Monthly)",
+              "locale" : "en_GB"
+            }
+          ],
+          "productID" : "app.birdo.vpn.sovereign.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Birdo Sovereign Monthly",
+          "subscriptionGroupID" : "21740801",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "99.00",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "21740812",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Everything in Operative plus Multi-Hop routing, port forwarding, custom DNS and 10 device connections. Billed yearly.",
+              "displayName" : "Sovereign (Yearly)",
+              "locale" : "en_GB"
+            }
+          ],
+          "productID" : "app.birdo.vpn.sovereign.yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Birdo Sovereign Yearly",
+          "subscriptionGroupID" : "21740801",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "3.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "21740821",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlimited data, every server location, stealth mode and 5 device connections.",
+              "displayName" : "Operative (Monthly)",
+              "locale" : "en_GB"
+            }
+          ],
+          "productID" : "app.birdo.vpn.operative.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Birdo Operative Monthly",
+          "subscriptionGroupID" : "21740801",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "38.00",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "21740822",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlimited data, every server location, stealth mode and 5 device connections. Billed yearly.",
+              "displayName" : "Operative (Yearly)",
+              "locale" : "en_GB"
+            }
+          ],
+          "productID" : "app.birdo.vpn.operative.yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Birdo Operative Yearly",
+          "subscriptionGroupID" : "21740801",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}
