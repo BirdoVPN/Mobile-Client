@@ -8,12 +8,26 @@ import UIKit
 /// (spec-auth-flow.md §1–5: structure, exact copy, entrance stagger) with the
 /// desktop emerald visual language (spec-pixelcanvas-design.md §6).
 ///
-/// Routing: shown whenever `hasConsented && !isLoggedIn`. While
-/// `authVM.createdAnonymousId != nil` the user is between "account created"
-/// and "acknowledged" — `isLoggedIn` stays false, so this view presents the
-/// save-your-ID step until `acknowledgeAnonymousId()` proceeds to Home.
+/// Presentation: this is a SHEET raised at the point of use
+/// (`authVM.requestSignIn(reason)`), never the app's launch route — see
+/// ContentView / GuestAccess.swift for the 5.1.1(v) reasoning. `isSheet`
+/// adds the header explaining WHY sign-in was asked for and the "Continue
+/// without an account" escape; it is false only for previews.
+///
+/// While `authVM.createdAnonymousId != nil` the user is between "account
+/// created" and "acknowledged" — `isLoggedIn` stays false, so this view
+/// presents the save-your-ID step until `acknowledgeAnonymousId()` proceeds.
 struct LoginView: View {
     @EnvironmentObject var authVM: AuthViewModel
+
+    /// Explicit init: the private @State properties below would otherwise
+    /// make the synthesized memberwise init private, so `LoginView(isSheet:)`
+    /// would not compile from ContentView.
+    private let isSheet: Bool
+
+    init(isSheet: Bool = false) {
+        self.isSheet = isSheet
+    }
 
     @StateObject private var pixelModel = PixelGridModel()
 
@@ -48,6 +62,7 @@ struct LoginView: View {
 
                 ScrollView {
                     VStack(spacing: 0) {
+                        if isSheet { sheetChrome }
                         header
                         content
                     }
@@ -68,6 +83,46 @@ struct LoginView: View {
         .onDisappear { copyResetTask?.cancel() }
     }
 
+    // MARK: - Sheet chrome (why we asked + the way out)
+
+    /// The escape hatch that keeps this a prompt rather than a wall: the user
+    /// can always go back to the app with no account. Hidden during the
+    /// save-your-ID step, where leaving would lose the only credential.
+    @ViewBuilder
+    private var sheetChrome: some View {
+        if !isCreatedStep {
+            VStack(spacing: 10) {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        authVM.dismissSignIn()
+                    } label: {
+                        Text("Not now")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(BirdoTheme.white60)
+                            .frame(minWidth: BirdoTheme.Spacing.minTouch,
+                                   minHeight: BirdoTheme.Spacing.minTouch)
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                    .accessibilityIdentifier("signin_dismiss")
+                    .accessibilityLabel("Continue without an account")
+                }
+
+                // WHY this particular action needed an account, in the app's
+                // own words — and the standing promise that the rest of it
+                // does not (SignInReason, GuestAccess.swift).
+                Text(authVM.signInReason.message)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.white40)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("signin_reason")
+            }
+            .padding(.bottom, 4)
+        }
+    }
+
     // MARK: - Header (badge + gradient title + subtitle)
 
     private var isCreatedStep: Bool { authVM.createdAnonymousId != nil }
@@ -77,7 +132,7 @@ struct LoginView: View {
             statusBadge
                 .loginEntrance(entered, delay: 0.08)
 
-            Text(isCreatedStep ? "Account created" : "Welcome Back")
+            Text(headlineText)
                 .font(BirdoTheme.Fonts.displayMedium)
                 .foregroundStyle(BirdoTheme.Gradients.headlineText)
                 .multilineTextAlignment(.center)
@@ -92,6 +147,15 @@ struct LoginView: View {
                 .padding(.top, 8)
                 .loginEntrance(entered, delay: 0.20)
         }
+    }
+
+    private var headlineText: String {
+        if isCreatedStep { return "Account created" }
+        // On the sheet the headline names the action that asked for sign-in
+        // ("Sign in to connect"), so the prompt reads as an answer to what the
+        // user just tapped rather than a generic wall.
+        if isSheet && !authVM.requiresTwoFactor { return authVM.signInReason.title }
+        return "Welcome Back"
     }
 
     private var subtitleText: String {
@@ -242,10 +306,62 @@ struct LoginView: View {
         authVM.login(email: email, password: password)
     }
 
-    // MARK: - Anonymous tab (login with existing ID + one-tap create)
+    // MARK: - Anonymous tab (one-tap create FIRST, then existing-ID sign-in)
 
+    /// Order is deliberate (5.1.1(v)): creating an anonymous account is the
+    /// easiest way in and therefore comes first, as a full-width primary
+    /// button rather than the underlined afterthought it used to be. It is
+    /// NOT the only way in — the sheet is dismissable, the guest shell works
+    /// without it, and `POST /auth/register/anonymous` is rate limited to 3
+    /// per IP per hour, so on a shared address (App Review's, for one) it can
+    /// fail through no fault of the user. The failure copy and the retry
+    /// affordance below exist for exactly that case.
     private var anonymousTab: some View {
         VStack(spacing: 0) {
+            PrimaryButton("Create a new anonymous account",
+                          loadingTitle: "Creating…",
+                          variant: .brand,
+                          isLoading: authVM.isLoading,
+                          isEnabled: !authVM.isLoading,
+                          action: {
+                              authVM.error = nil
+                              authVM.createAnonymousAccount()
+                          })
+                .accessibilityIdentifier("login_anonymous_create")
+                .loginEntrance(entered, delay: 0.25)
+
+            Text("No email, no personal details — the server mints a 24-digit ID.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.white40)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .loginEntrance(entered, delay: 0.27)
+
+            // Only offered when retrying can actually work. A 429 inside the
+            // rate-limit hour would just burn another attempt and fail again,
+            // which is how a reviewer concludes the app is broken.
+            if authVM.error != nil, authVM.anonymousCreateFailureStatus != nil,
+               authVM.canRetryAnonymousCreate {
+                Button {
+                    authVM.createAnonymousAccount()
+                } label: {
+                    Text("Try again")
+                        .font(.system(size: 13, weight: .medium))
+                        .underline()
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .disabled(authVM.isLoading)
+                .padding(.top, 4)
+                .accessibilityIdentifier("login_anonymous_retry")
+            }
+
+            anonymousDivider
+                .padding(.top, 20)
+
             BirdoTextField("Account ID",
                            placeholder: "XXXX XXXX XXXX XXXX XXXX XXXX",
                            text: $anonymousId,
@@ -259,7 +375,8 @@ struct LoginView: View {
                     let filtered = String(newValue.filter(\.isNumber).prefix(24))
                     if filtered != newValue { anonymousId = filtered }
                 }
-                .loginEntrance(entered, delay: 0.25)
+                .padding(.top, 16)
+                .loginEntrance(entered, delay: 0.30)
 
             BirdoTextField("Password (optional)",
                            placeholder: "••••••••",
@@ -270,36 +387,31 @@ struct LoginView: View {
                 .focused($focusedField, equals: .anonymousPassword)
                 .padding(.top, 14)
                 .accessibilityIdentifier("login_anonymous_password_field")
-                .loginEntrance(entered, delay: 0.28)
+                .loginEntrance(entered, delay: 0.32)
 
             PrimaryButton("Sign In",
                           loadingTitle: "Connecting…",
                           isLoading: authVM.isLoading,
                           isEnabled: anonymousId.count == 24,
                           action: submitAnonymousLogin)
-                .padding(.top, 28)
+                .padding(.top, 24)
                 .accessibilityIdentifier("login_anonymous_submit")
-                .loginEntrance(entered, delay: 0.30)
-
-            // Primary path for new users — pure white, not muted (spec §3b).
-            // One tap, no confirmation dialog, no form.
-            Button {
-                authVM.error = nil
-                authVM.createAnonymousAccount()
-            } label: {
-                Text("Create a new anonymous account")
-                    .font(.system(size: 13, weight: .medium))
-                    .underline()
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(PressScaleButtonStyle())
-            .disabled(authVM.isLoading)
-            .opacity(authVM.isLoading ? 0.5 : 1)
-            .padding(.top, 14)
-            .accessibilityIdentifier("login_anonymous_create")
-            .loginEntrance(entered, delay: 0.35)
+                .loginEntrance(entered, delay: 0.35)
         }
+    }
+
+    /// "or sign in with an existing ID" rule between the two anonymous paths.
+    private var anonymousDivider: some View {
+        HStack(spacing: 12) {
+            Rectangle().fill(BirdoTheme.hairlineSoft).frame(height: 1)
+            Text("or use an existing ID")
+                .font(.system(size: 12))
+                .foregroundStyle(BirdoTheme.white40)
+                .fixedSize()
+            Rectangle().fill(BirdoTheme.hairlineSoft).frame(height: 1)
+        }
+        .accessibilityHidden(true)
+        .loginEntrance(entered, delay: 0.28)
     }
 
     private func submitAnonymousLogin() {

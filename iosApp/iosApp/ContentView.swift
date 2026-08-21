@@ -1,6 +1,20 @@
 import SwiftUI
 import Network
 
+/// macOS sizes a sheet to its content, and LoginView's root is a
+/// `GeometryReader` — which has no intrinsic size, so an unconstrained sheet
+/// can collapse to a sliver there. iOS page sheets take their own size, so
+/// this is a no-op on that side.
+private struct SignInSheetSizing: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.frame(minWidth: 460, idealWidth: 520, minHeight: 620, idealHeight: 720)
+        #else
+        content
+        #endif
+    }
+}
+
 /// App-wide reachability probe backing the offline banner (spec §0.4).
 ///
 /// `NWPathMonitor` delivers updates on a private background queue; the update
@@ -31,19 +45,34 @@ final class NetworkMonitor: ObservableObject {
     }
 }
 
-/// Root router + logged-in tab shell.
+/// Root router + tab shell.
 ///
-/// Routing contract (spec-auth-flow §0 — consent gates BEFORE login):
+/// Routing contract (`RootRoute.decide`, GuestAccess.swift):
 ///
-///     !authVM.hasConsented                       -> ConsentView
-///     authVM.hasConsented && authVM.isLoggedIn   -> tab shell
-///     else                                       -> LoginView
+///     !hasConsented && !consentDeferred  -> ConsentView
+///     otherwise                          -> tab shell, SIGNED IN OR GUEST
+///
+/// 🔴 WHAT CHANGED AND WHY — App Store Guideline 5.1.1(v), macOS 1.4.22
+/// rejected 10 Aug 2026: "The app requires users to register or log in to
+/// access features that are not account based." The old contract was
+/// `hasConsented && isLoggedIn -> shell, else -> LoginView`, so NOTHING was
+/// reachable before login — including the entire Settings tab, VPN Settings,
+/// the privacy policy, the terms and the about card, none of which touch an
+/// account at all. `isLoggedIn` no longer appears in the routing decision;
+/// sign-in is a SHEET raised at the point of use (`authVM.requestSignIn`).
+/// Do not reintroduce a login route: `RootRoute.decide` is unit tested
+/// precisely so this cannot regress silently.
+///
+/// What stays gated (and is honestly gated): connect, multi-hop, port
+/// forwarding, data usage and the profile — the server mints a per-account
+/// WireGuard peer and allocates a connection slot, so those genuinely cannot
+/// work without an account.
 ///
 /// `isLoggedIn` is decided synchronously at cold start from the stored JWTs'
 /// `exp` claims (AuthViewModel.init); a background GET /auth/me then runs and
-/// only a definitive 401 flips the user back to Login (network errors keep
-/// the session). While `authVM.createdAnonymousId != nil` the router
-/// deliberately stays on the Login route — LoginView presents the "save your
+/// only a definitive 401 flips the user back to guest (network errors keep
+/// the session). While `authVM.createdAnonymousId != nil` the sign-in sheet
+/// deliberately stays up and undismissable — it presents the "save your
 /// account number" acknowledgment step before `isLoggedIn` flips.
 ///
 /// Back-stack semantics: each tab owns its own NavigationStack, so switching
@@ -85,16 +114,15 @@ struct ContentView: View {
                 }
 
                 ZStack {
-                    if !authVM.hasConsented {
-                        // Consent is shown ONCE, before Login ever appears. The
-                        // screen itself drives authVM.acceptConsent()/
-                        // declineConsent(); decline keeps the user here (iOS
-                        // cannot self-exit).
+                    switch RootRoute.decide(hasConsented: authVM.hasConsented,
+                                            consentDeferred: authVM.consentDeferred) {
+                    case .consent:
+                        // Shown ONCE, on first launch. "Not now" defers into
+                        // the guest shell instead of dead-ending the user
+                        // (the old Decline left them stuck here forever).
                         ConsentView()
-                    } else if authVM.isLoggedIn {
+                    case .shell:
                         mainShell
-                    } else {
-                        LoginView()
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -125,13 +153,45 @@ struct ContentView: View {
                 vpnVM?.resetForLogout()
             }
         }
+        // Sign-in is a SHEET, raised only by an action that genuinely needs an
+        // account (5.1.1(v)). Consent comes FIRST inside the same sheet when
+        // the user deferred it on first launch: creating or signing into an
+        // account is the point at which personal data is processed, so that is
+        // where the disclosure has to be agreed to — not at app launch.
+        .sheet(isPresented: $authVM.isPresentingSignIn) {
+            Group {
+                if authVM.hasConsented {
+                    LoginView(isSheet: true)
+                } else {
+                    ConsentView(isSheet: true)
+                }
+            }
+            // Sheets do not reliably inherit @EnvironmentObject on every
+            // platform/OS combination this app ships to (iOS 17 + macOS 14),
+            // and a missing one is a hard crash — inject explicitly.
+            .environmentObject(authVM)
+            .environmentObject(vpnVM)
+            .environmentObject(settingsVM)
+            .preferredColorScheme(.dark)
+            // A freshly minted anonymous ID is shown EXACTLY once and is the
+            // account's only credential: swiping the sheet away there would
+            // lose it. Every other step is freely dismissable.
+            .interactiveDismissDisabled(authVM.createdAnonymousId != nil)
+            .modifier(SignInSheetSizing())
+        }
         // S1 FIX: loadServers() was previously reachable ONLY from the manual
         // refresh button, so a fresh launch showed "0 servers" and Connect
         // yielded "Select a server first". Fire on the login flip AND on cold
         // start when already logged in — Android parity
         // (BirdoNavGraph.kt:149-151, :168-171).
         .task(id: authVM.isLoggedIn) {
-            guard authVM.isLoggedIn else { return }
+            guard authVM.isLoggedIn else {
+                // Guest shell: the per-account server list is unavailable, so
+                // load the public (unauthenticated) location list instead —
+                // browsing locations is not an account-based feature.
+                vpnVM.loadPublicLocations()
+                return
+            }
             if vpnVM.servers.isEmpty && !vpnVM.isLoadingServers {
                 vpnVM.loadServers()
             }
@@ -139,9 +199,15 @@ struct ContentView: View {
             vpnVM.autoConnectIfEnabled()  // no-op unless the "auto_connect" pref is ON
         }
         .onChange(of: authVM.isLoggedIn) { _, loggedIn in
-            // A fresh session always starts on Connect, like Android's
-            // navigate-Home-clearing-backstack after login.
-            if !loggedIn { selectedTab = .home }
+            // Signing in is the sheet's whole job — close it the moment it is
+            // done, from ONE place rather than at each of the seven sites that
+            // flip `isLoggedIn`.
+            if loggedIn { authVM.isPresentingSignIn = false }
+            // Either direction lands on Connect: a fresh session starts there
+            // (Android's navigate-Home-clearing-backstack), and a sign-out
+            // should not leave the user staring at a tab that just turned into
+            // a sign-in prompt.
+            selectedTab = .home
         }
         .onChange(of: scenePhase) { _, phase in
             // P1-ios-redial-loop-blackhole: the recovery hook the user actually
@@ -161,7 +227,12 @@ struct ContentView: View {
             // settings). `birdo://auth?…` is the SSO callback and is consumed
             // by ASWebAuthenticationSession in-session — if it ever arrives
             // here (plain-browser fallback) it is deliberately ignored.
-            guard url.scheme?.lowercased() == "birdo", authVM.isLoggedIn else { return }
+            // No `isLoggedIn` gate any more: connect / servers / settings are
+            // all reachable in the guest shell (Home and the location list
+            // raise the sign-in sheet themselves when an account is actually
+            // needed), and dropping a deep link on the floor because nobody is
+            // signed in was part of the same launch-wall assumption.
+            guard url.scheme?.lowercased() == "birdo" else { return }
             switch url.host?.lowercased() {
             case "connect":  selectedTab = .home
             case "servers":  selectedTab = .home   // server list is pushed from Home
@@ -191,7 +262,7 @@ struct ContentView: View {
         .accessibilityLabel("No internet connection")
     }
 
-    // MARK: - Logged-in shell
+    // MARK: - Tab shell (signed in OR guest)
 
     private var mainShell: some View {
         TabView(selection: $selectedTab) {

@@ -192,6 +192,12 @@ targets:
       # tested on CI — the bug they fix needs a revoked peer on real hardware to
       # observe, which is exactly the kind of thing that never gets retested.
       - path: iosApp/Services/TunnelCircuitBreaker.swift
+      # 5.1.1(v) guest shell. Foundation-only by design: the root-routing
+      # decision, the point-of-use sign-in reasons and the anonymous-create
+      # failure copy (incl. the 3-per-IP-per-hour 429 that would otherwise
+      # read as a broken app to App Review) are pure functions precisely so
+      # they can be asserted here without an app host or a network.
+      - path: iosApp/ViewModels/GuestAccess.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tests

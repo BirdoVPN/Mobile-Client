@@ -45,6 +45,15 @@ final class VpnViewModel: ObservableObject {
     /// later on the Home tab.
     @Published var serversError: String?
 
+    // MARK: - Public locations (guest shell — GET /vpn/locations, no auth)
+    /// The browsable, per-account-free location list shown when signed out.
+    /// Separate from `servers` on purpose: these carry no `accessible` flag,
+    /// no ids the connect path could use, and must never be mistaken for
+    /// connectable nodes.
+    @Published private(set) var publicLocations: [PublicLocation] = []
+    @Published private(set) var isLoadingPublicLocations = false
+    @Published var publicLocationsError: String?
+
     // MARK: - Subscription (GET /vpn/stats — the canonical plan source)
     @Published private(set) var subscription: VpnStats?
     @Published private(set) var isLoadingSubscription = false
@@ -113,6 +122,20 @@ final class VpnViewModel: ObservableObject {
     // MARK: - Private
     private let api: APIClient
     private let vpnManager: VPNManager
+    private let keychain: KeychainService
+
+    /// Is there a session to authenticate WITH?
+    ///
+    /// Guest-shell guard (5.1.1(v)): with no account the app still shows Home,
+    /// the location list and every setting, so these screens keep calling
+    /// `loadServers()` / `refreshSubscription()` on appear. Firing those
+    /// without a token would spend requests to earn a 401 and paint a "Session
+    /// expired" error over a user who never had a session. Read from the
+    /// keychain rather than a copy of `isLoggedIn` so there is exactly one
+    /// truth and no ordering bug between the two view models.
+    var hasSession: Bool {
+        keychain.accessToken != nil || keychain.refreshToken != nil
+    }
 
     /// How long to wait for the first inbound byte before declaring the tunnel
     /// dead. 15 s (30 × 500 ms) covers a slow mobile handshake — WireGuard
@@ -137,9 +160,12 @@ final class VpnViewModel: ObservableObject {
 
     private static let heartbeatInterval: TimeInterval = 30
 
-    init(api: APIClient = .shared, vpnManager: VPNManager = .shared) {
+    init(api: APIClient = .shared,
+         vpnManager: VPNManager = .shared,
+         keychain: KeychainService = .shared) {
         self.api = api
         self.vpnManager = vpnManager
+        self.keychain = keychain
 
         // Load persisted favorites
         if let ids = UserDefaults.standard.stringArray(forKey: "favorite_servers") {
@@ -174,6 +200,10 @@ final class VpnViewModel: ObservableObject {
     private static let serverCacheTTL: TimeInterval = 60
 
     func loadServers(forceRefresh: Bool = false) {
+        // Guest shell: /vpn/servers is per-account (JwtAuthGuard + a plan-derived
+        // `accessible` flag), so signed out there is nothing to fetch. The
+        // browsable list a guest gets is `loadPublicLocations()`.
+        guard hasSession else { return }
         if !forceRefresh,
            !servers.isEmpty,
            let ts = serverCacheTimestamp,
@@ -204,6 +234,38 @@ final class VpnViewModel: ObservableObject {
         }
     }
 
+    /// Last-fetched public-location cache (same 60 s TTL as `servers`).
+    private var publicLocationsTimestamp: Date?
+
+    /// Fetch the unauthenticated location list for the guest shell.
+    ///
+    /// Deliberately survives sign-out (`resetForLogout` leaves it alone): it is
+    /// public data with nothing of the previous account in it, and dropping it
+    /// would blank the list the signed-out user is looking at.
+    func loadPublicLocations(forceRefresh: Bool = false) {
+        if !forceRefresh,
+           !publicLocations.isEmpty,
+           let ts = publicLocationsTimestamp,
+           Date().timeIntervalSince(ts) < Self.serverCacheTTL {
+            return
+        }
+        guard !isLoadingPublicLocations else { return }
+        isLoadingPublicLocations = true
+        publicLocationsError = nil
+        Task {
+            defer { isLoadingPublicLocations = false }
+            do {
+                publicLocations = try await api.fetchPublicLocations()
+                publicLocationsTimestamp = Date()
+            } catch {
+                // No `reportUnauthorized` here: this call sends no credentials,
+                // so a failure can never mean "your session died" — mapping it
+                // to a logout would sign a user out over a flaky network.
+                publicLocationsError = error.localizedDescription
+            }
+        }
+    }
+
     func selectServer(_ server: ServerInfo) {
         // Defence in depth: the list renders out-of-plan nodes locked and inert,
         // so reaching here means a caller bypassed that. The backend would
@@ -230,6 +292,7 @@ final class VpnViewModel: ObservableObject {
     /// Android's repository: tab-focus refreshes ride the cache; the Limit
     /// screen's "Refresh usage" and voucher-success paths pass `force: true`.
     func refreshSubscription(force: Bool = false) {
+        guard hasSession else { return }
         if !force,
            subscription != nil,
            let ts = subscriptionFetchedAt,
@@ -269,6 +332,14 @@ final class VpnViewModel: ObservableObject {
     ///   auto-connect re-dialling straight into a tripped node is the loop
     ///   wearing a different hat.
     func connect(userInitiated: Bool = true) {
+        // Defence in depth: Home routes a signed-out tap to the sign-in sheet
+        // and never reaches here. Connecting genuinely needs an account — the
+        // server mints a per-account WireGuard peer and holds a connection
+        // slot — so refuse rather than dial into a guaranteed 401.
+        guard hasSession else {
+            error = "Sign in to connect."
+            return
+        }
         guard let server = selectedServer else {
             error = "Select a server first"
             return
@@ -658,6 +729,7 @@ final class VpnViewModel: ObservableObject {
     // MARK: - Port Forwarding
 
     func loadPortForwards() {
+        guard hasSession else { return }
         guard !isLoadingPortForwards else { return }
         isLoadingPortForwards = true
         portForwardError = nil

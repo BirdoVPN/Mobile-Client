@@ -37,11 +37,21 @@ struct ProfileView: View {
     /// delete without one).
     private var requiresPassword: Bool { authVM.user?.hasPassword ?? true }
 
+    /// Signed out. The POLICIES stay exactly where they are — they are not
+    /// account based and a signed-out user must be able to read them (5.1.1(v)
+    /// / 5.1.1(i)). Identity, plan and the session actions are replaced by a
+    /// single honest sign-in card rather than empty scaffolding.
+    private var isGuest: Bool { authVM.isGuest }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                identityCard
-                subscriptionCard
+                if isGuest {
+                    guestCard
+                } else {
+                    identityCard
+                    subscriptionCard
+                }
 
                 sectionLabel("Account")
                     .padding(.top, 4)
@@ -60,23 +70,25 @@ struct ProfileView: View {
                     openURL(URL(string: "https://birdo.app/terms")!)
                 }
 
-                sectionLabel("Session")
-                    .padding(.top, 8)
-                ProfileActionRow(
-                    icon: "rectangle.portrait.and.arrow.right",
-                    title: "Sign out",
-                    subtitle: signOutSubtitle,
-                    destructive: true
-                ) {
-                    signOut()
-                }
-                ProfileActionRow(
-                    icon: "trash",
-                    title: "Delete Account",
-                    subtitle: "Permanently delete your account and data",
-                    destructive: true
-                ) {
-                    showDeleteDialog = true
+                if !isGuest {
+                    sectionLabel("Session")
+                        .padding(.top, 8)
+                    ProfileActionRow(
+                        icon: "rectangle.portrait.and.arrow.right",
+                        title: "Sign out",
+                        subtitle: signOutSubtitle,
+                        destructive: true
+                    ) {
+                        signOut()
+                    }
+                    ProfileActionRow(
+                        icon: "trash",
+                        title: "Delete Account",
+                        subtitle: "Permanently delete your account and data",
+                        destructive: true
+                    ) {
+                        showDeleteDialog = true
+                    }
                 }
 
                 Spacer(minLength: 40)
@@ -104,12 +116,54 @@ struct ProfileView: View {
         }
         .task {
             // Tab focus: refetch identity + plan (30 s stats cache keeps this
-            // cheap — spec-secondary-screens.md warning 11).
+            // cheap — spec-secondary-screens.md warning 11). Both are no-ops
+            // without a session, so the guest card never triggers a request.
+            guard !isGuest else { return }
             vpnVM.refreshSubscription()
             await authVM.refreshProfile()
         }
         .onDisappear {
             copyToastTask?.cancel()
+        }
+    }
+
+    // MARK: - Guest card
+
+    private var guestCard: some View {
+        BirdoCard(cornerRadius: 22, horizontalPadding: 20, verticalPadding: 20) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().fill(BirdoTheme.accentA(0.14)).frame(width: 44, height: 44)
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: 22))
+                            .foregroundStyle(BirdoTheme.accent)
+                    }
+                    .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Not signed in")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(BirdoTheme.onBackground)
+                        Text("Using Birdo VPN without an account")
+                            .font(.system(size: 13))
+                            .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    }
+                }
+
+                Text("An account is what lets the server create your private "
+                     + "WireGuard key and hold a connection slot. Settings, VPN "
+                     + "settings, the locations list and the policies below all "
+                     + "work without one.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                PrimaryButton("Sign in or create an account", variant: .brand) {
+                    authVM.requestSignIn(.profile)
+                }
+                .accessibilityIdentifier("profile_sign_in")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

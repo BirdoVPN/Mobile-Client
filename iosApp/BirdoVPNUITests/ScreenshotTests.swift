@@ -20,6 +20,12 @@ import XCTest
 /// It is passed as an environment variable rather than hardcoded so the suite
 /// carries no credential, and read at runtime so rotating it needs no code
 /// change.
+///
+/// GUEST SHELL (5.1.1(v), Aug 2026): the app no longer opens on Login — it
+/// opens on the tab shell with no account, and sign-in is a sheet raised from
+/// Home's "Sign in" button. So "did we get in?" can no longer be answered by
+/// "does a Settings tab exist" (it always does now); it is answered by the
+/// Home sign-in button DISAPPEARING.
 final class ScreenshotTests: XCTestCase {
 
     private var app: XCUIApplication!
@@ -101,10 +107,22 @@ final class ScreenshotTests: XCTestCase {
         // the queries below find nothing.
         capture("00-launch")
 
+        // ── Open the sign-in sheet ───────────────────────────────────────────
+        // The app is already usable at this point — this button is an offer,
+        // not a gate. Screenshots still want a signed-in app, so take it.
+        let signInButton = app.buttons["home_sign_in"]
+        if waitFor(signInButton, 15) {
+            press(signInButton)
+        } else {
+            // Already signed in (a warm keychain from a previous run) — the
+            // sheet is unnecessary and the flow below is a no-op.
+            capture("00-already-signed-in")
+        }
+
         // ── Sign in with the anonymous account ────────────────────────────────
-        // The login screen opens on the EMAIL tab, so the anonymous field does
-        // not exist yet — the tab has to be selected first. Skipping this is
-        // why the first run captured the login screen instead of the app.
+        // The sheet opens on the ANONYMOUS tab by default (it is the first and
+        // easiest way in), so no tab selection is normally needed — the tap is
+        // kept as a defensive no-op in case the default ever moves.
         if let anonymousTab = control("Anonymous") {
             press(anonymousTab)
         }
@@ -128,23 +146,28 @@ final class ScreenshotTests: XCTestCase {
         }
 
         // ── Home / Connect ────────────────────────────────────────────────────
-        // Wait for the tab shell rather than a fixed sleep: sign-in latency
-        // varies, and capturing on a timer produced a screenshot of the login
-        // screen labelled "connect".
-        var homeArrived = false
+        // Wait for the SESSION rather than for the shell: the shell is up from
+        // launch now (guest mode), so its presence proves nothing. The Home
+        // "Sign in" button is rendered only while signed out, so its
+        // disappearance is the signal that the sheet did its job.
+        var signedIn = false
         let deadline = Date().addingTimeInterval(45)
         while Date() < deadline {
-            if control("Settings") != nil { homeArrived = true; break }
+            if !app.buttons["home_sign_in"].exists && control("Settings") != nil {
+                signedIn = true
+                break
+            }
             usleep(500_000)
         }
-        if !homeArrived {
+        if !signedIn {
             // Capture the screen BEFORE asserting: without this the failure says
-            // only "still on login" and the reason — a rejected ID, a validation
-            // message, an unexpected step — is lost with the simulator.
+            // only "still signed out" and the reason — a rejected ID, a
+            // validation message, the anonymous-create rate limit — is lost
+            // with the simulator.
             capture("99-stuck")
             let err = app.staticTexts["login_error"]
             let detail = err.exists ? err.label : "(no login_error element)"
-            XCTFail("Never reached the tab shell. On-screen error: \(detail)")
+            XCTFail("Never signed in. On-screen error: \(detail)")
             return
         }
         // The globe animates in; let it settle rather than catching a

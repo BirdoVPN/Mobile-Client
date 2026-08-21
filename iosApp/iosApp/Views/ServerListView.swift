@@ -16,6 +16,7 @@ import UIKit
 ///   small high-speed / port-forwarding capability glyphs.
 struct ServerListView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
+    @EnvironmentObject var authVM: AuthViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -50,6 +51,29 @@ struct ServerListView: View {
 
     private var favoriteCount: Int {
         vpnVM.servers.reduce(0) { $0 + (vpnVM.favoriteIds.contains($1.id) ? 1 : 0) }
+    }
+
+    /// Signed out. The list is still browsable — it just comes from the
+    /// PUBLIC endpoint (`GET /vpn/locations`, no auth, no per-user fields)
+    /// rather than the per-account `/vpn/servers`, because "which nodes YOUR
+    /// plan reaches" is genuinely account data and "where Birdo has servers"
+    /// is not (5.1.1(v)).
+    private var isGuest: Bool { authVM.isGuest }
+
+    private var filteredLocations: [PublicLocation] {
+        let query = trimmedQuery
+        return vpnVM.publicLocations
+            .filter { location in
+                query.isEmpty
+                    || location.city.localizedCaseInsensitiveContains(query)
+                    || location.countryName.localizedCaseInsensitiveContains(query)
+                    || location.countryCode.localizedCaseInsensitiveContains(query)
+            }
+            .sorted {
+                if $0.isOnline != $1.isOnline { return $0.isOnline }
+                if $0.countryName != $1.countryName { return $0.countryName < $1.countryName }
+                return $0.city < $1.city
+            }
     }
 
     private var filteredServers: [ServerInfo] {
@@ -87,6 +111,7 @@ struct ServerListView: View {
 
     var body: some View {
         let filtered = filteredServers
+        let locations = filteredLocations
         ZStack {
             // Pushed-screen contract: opaque black base + own pixel canvas
             // (the root canvas is hidden behind the push transition).
@@ -94,11 +119,20 @@ struct ServerListView: View {
             PixelCanvasView()
 
             VStack(spacing: 0) {
-                topBar(filteredCount: filtered.count)
+                topBar(filteredCount: isGuest ? locations.count : filtered.count)
 
                 VStack(spacing: 0) {
                     searchField
-                    filterPills
+                    // The pills filter per-account facets (favorites, plan
+                    // capabilities) that do not exist without an account —
+                    // showing them signed out would be four dead controls.
+                    if !isGuest { filterPills }
+
+                    if isGuest, let error = vpnVM.publicLocationsError {
+                        ErrorBanner(error, icon: "exclamationmark.circle")
+                            .padding(.horizontal, BirdoTheme.Spacing.lg)
+                            .padding(.top, BirdoTheme.Spacing.sm)
+                    }
 
                     if let error = vpnVM.serversError {
                         // S2 fix: this screen renders its OWN fetch errors —
@@ -114,7 +148,11 @@ struct ServerListView: View {
                             .padding(.top, BirdoTheme.Spacing.xs)
                     }
 
-                    serverList(filtered)
+                    if isGuest {
+                        guestLocationList(locations)
+                    } else {
+                        serverList(filtered)
+                    }
                 }
                 // AdaptiveContainer parity (§8): full width on phones,
                 // centered column on wide layouts (Stage Manager / iPad).
@@ -141,7 +179,13 @@ struct ServerListView: View {
         // Belt-and-braces for S1: entering the screen kicks a load. The 60 s
         // TTL cache in the VM makes revisits free; the app root owns the
         // canonical login/cold-start trigger.
-        .task { vpnVM.loadServers() }
+        .task {
+            // Both are no-ops on the wrong side of the session check
+            // (loadServers guards on hasSession), so this is one line either
+            // way rather than a branch that can drift.
+            vpnVM.loadServers()
+            if isGuest { vpnVM.loadPublicLocations() }
+        }
     }
 
     // MARK: - Top bar (spec §4.1 item 1)
@@ -162,18 +206,26 @@ struct ServerListView: View {
                 .accessibilityLabel("Back")
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Servers")
+                    Text(isGuest ? "Locations" : "Servers")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.white)
                         .accessibilityAddTraits(.isHeader)
                     // Filtered count, not the total — Android parity (§4.1).
-                    Text("\(filteredCount) servers")
+                    Text(isGuest
+                            ? "\(filteredCount) \(filteredCount == 1 ? "location" : "locations")"
+                            : "\(filteredCount) servers")
                         .font(BirdoTheme.Fonts.bodySmall)
                         .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button(action: { vpnVM.loadServers(forceRefresh: true) }) {
+                Button(action: {
+                    if isGuest {
+                        vpnVM.loadPublicLocations(forceRefresh: true)
+                    } else {
+                        vpnVM.loadServers(forceRefresh: true)
+                    }
+                }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(BirdoTheme.onSurfaceMuted)
@@ -209,7 +261,7 @@ struct ServerListView: View {
             TextField(
                 "",
                 text: $searchQuery,
-                prompt: Text("Search servers…")
+                prompt: Text(isGuest ? "Search locations…" : "Search servers…")
                     .font(.system(size: 14))
                     .foregroundStyle(BirdoTheme.white40)
             )
@@ -357,6 +409,79 @@ struct ServerListView: View {
         }
     }
 
+    // MARK: - Guest location list (public, unauthenticated)
+
+    /// Read-only browse of where Birdo runs nodes. Every row is tappable and
+    /// every tap raises the sign-in sheet with the honest reason — connecting
+    /// needs an account, browsing does not.
+    private func guestLocationList(_ locations: [PublicLocation]) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                guestBanner
+
+                if vpnVM.isLoadingPublicLocations && vpnVM.publicLocations.isEmpty {
+                    SkeletonRows()
+                } else if locations.isEmpty {
+                    ServersEmptyState(
+                        title: trimmedQuery.isEmpty
+                            ? "No locations available"
+                            : "No locations match \"\(trimmedQuery)\"",
+                        description: vpnVM.publicLocations.isEmpty
+                            ? "Pull down to refresh or tap retry." : nil,
+                        showRetry: vpnVM.publicLocations.isEmpty,
+                        onRetry: { vpnVM.loadPublicLocations(forceRefresh: true) }
+                    )
+                } else {
+                    ForEach(locations) { location in
+                        PublicLocationRow(location: location) {
+                            authVM.requestSignIn(.servers)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, BirdoTheme.Spacing.lg)
+            .padding(.vertical, BirdoTheme.Spacing.sm)
+        }
+        .refreshable { [vpnVM] in
+            await Self.awaitPublicLocationRefresh(vpnVM)
+        }
+    }
+
+    private var guestBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 14))
+                .foregroundStyle(BirdoTheme.accentSoft)
+                .accessibilityHidden(true)
+            Text("Browsing without an account. Sign in to pick a location and connect.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.white60)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                .fill(BirdoTheme.white04)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
+        )
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("servers_guest_banner")
+    }
+
+    /// Same hold-the-spinner shape as `awaitServerRefresh`.
+    private nonisolated static func awaitPublicLocationRefresh(_ vm: VpnViewModel) async {
+        await vm.loadPublicLocations(forceRefresh: true)
+        while await vm.isLoadingPublicLocations {
+            if Task.isCancelled { return }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
     // MARK: - Empty state copy (spec §4.1 item 5; strings verbatim)
 
     private var emptyTitle: String {
@@ -406,6 +531,75 @@ struct ServerListView: View {
         .padding(.horizontal, BirdoTheme.Spacing.lg)
         .padding(.bottom, BirdoTheme.Spacing.md)
         .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+// MARK: - Public location row (guest shell)
+
+/// A location from the public list. Deliberately carries NO selected /
+/// connected / favorite / plan-lock state: none of that exists without an
+/// account, and faking it would be the kind of half-signed-in UI that gets
+/// read as broken.
+private struct PublicLocationRow: View {
+    let location: PublicLocation
+    let onTap: () -> Void
+
+    init(location: PublicLocation, onTap: @escaping () -> Void) {
+        self.location = location
+        self.onTap = onTap
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                Text(location.flag)
+                    .font(.system(size: 24))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(location.city.isEmpty ? location.countryName : location.city)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(BirdoTheme.onSurface)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.white60)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Sign in")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(BirdoTheme.accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(BirdoTheme.accentA(0.16)))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(minHeight: 60)
+            .background(
+                RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                    .fill(BirdoTheme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
+                    .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous))
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Sign in to connect")
+    }
+
+    /// Country · node count · maintenance, and nothing that needs an account.
+    private var subtitle: String {
+        var parts: [String] = []
+        if !location.countryName.isEmpty { parts.append(location.countryName) }
+        parts.append("\(location.count) \(location.count == 1 ? "server" : "servers")")
+        if !location.isOnline { parts.append("Maintenance") }
+        return parts.joined(separator: "  ·  ")
     }
 }
 
