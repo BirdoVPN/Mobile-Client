@@ -14,6 +14,10 @@ import SwiftUI
 struct LimitView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
     @EnvironmentObject var authVM: AuthViewModel
+    /// App-scoped (injected in BirdoVPNApp), so this is the SAME storefront
+    /// SubscriptionView renders — the upgrade card cannot promise a purchase
+    /// the destination screen will then refuse.
+    @EnvironmentObject var store: StoreKitService
 
     @State private var showSubscription = false
 
@@ -309,6 +313,43 @@ struct LimitView: View {
     // being handed a comparison table — is what closes here, and it closes by
     // giving them somewhere to pay rather than by removing the sign that said
     // "this way".
+    //
+    // ⚠️ CONDITIONAL ON THE REAL STOREFRONT. The reversal is only honest while
+    // StoreKit actually has products. With the Paid Applications Agreement
+    // still inactive `Product.products(for:)` returns EMPTY, SubscriptionView
+    // renders "Purchasing is unavailable", and an unconditional "Upgrade for
+    // unlimited data" would rebuild the identical dead end this branch exists
+    // to close — with an App Reviewer following it straight into a 2.1 / 3.1.1
+    // re-rejection. So the CTA label, the body copy and the footnote all read
+    // from `store.storefront`, exactly as SubscriptionView's own cards do:
+    //   .ready       -> "Upgrade for unlimited data", buy-in-app copy, App
+    //                   Store subscription footnote.
+    //   .loading     -> "View plans", no purchase claim yet (the load has a
+    //                   15 s deadline, so this is never a permanent state).
+    //   .unavailable -> "View plans" and the pre-3.1.1 wording. The
+    //                   destination still explains itself in place; this card
+    //                   simply stops promising something it cannot deliver.
+
+    /// True only when StoreKit resolved at least one product, i.e. the
+    /// destination screen can genuinely take money. `.loading` is FALSE on
+    /// purpose: a claim we cannot yet stand behind must not be made and then
+    /// retracted.
+    private var canPurchaseInApp: Bool { store.storefront == .ready }
+
+    private var upgradeCtaTitle: String {
+        canPurchaseInApp
+            ? "Upgrade for unlimited data"
+            // The exact wording MultiHopView uses for the same destination.
+            : "View plans"
+    }
+
+    private var upgradeBody: String {
+        let cap = "Free accounts include \(Self.wholeGb(limitGb)) GB per month. "
+        return canPurchaseInApp
+            ? cap + "Unlimited data on every server needs a paid subscription, which you can "
+                  + "buy in the app."
+            : cap + "Paid plans include unlimited data on every server."
+    }
 
     private var upgradeCard: some View {
         BirdoCard {
@@ -326,20 +367,23 @@ struct LimitView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
-                Text("Free accounts include \(Self.wholeGb(limitGb)) GB per month. Unlimited data on "
-                     + "every server needs a paid subscription, which you can buy in the app.")
+                Text(upgradeBody)
                     .font(.system(size: 13))
                     .lineSpacing(5)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                PrimaryButton("Upgrade for unlimited data", variant: .brand, height: 48) {
+                PrimaryButton(upgradeCtaTitle,
+                              variant: canPurchaseInApp ? .brand : .secondary,
+                              height: 48) {
                     showSubscription = true
                 }
                 .accessibilityIdentifier("limit_upgrade")
-                Text("Opens Birdo's plans, where Operative and Sovereign are available as "
-                     + "auto-renewing App Store subscriptions.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                    .fixedSize(horizontal: false, vertical: true)
+                if canPurchaseInApp {
+                    Text("Opens Birdo's plans, where Operative and Sovereign are available as "
+                         + "auto-renewing App Store subscriptions.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

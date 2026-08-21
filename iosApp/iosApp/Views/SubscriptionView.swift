@@ -499,9 +499,30 @@ struct SubscriptionView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 4)
+        } else if store.storefront == .loading {
+            // STILL LOADING — not a verdict. Branching on `product == nil`
+            // alone made every card announce "Not available to purchase in the
+            // app right now." for the whole of the in-flight fetch, so the
+            // first thing anyone opening this screen saw was a refusal that
+            // then silently turned into a Subscribe button. `.loading` and
+            // `.ready` were computed by StorefrontState and matched by no view
+            // at all; this is the branch that was missing.
+            //
+            // The spinner is bounded: StorefrontState.loadDeadlineSeconds (15 s)
+            // forces `.unavailable`, so this can never be the terminal state.
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(BirdoTheme.onSurfaceFaint)
+                Text("Checking the App Store for prices…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
+            }
+            .padding(.top, 4)
+            .accessibilityElement(children: .combine)
         } else {
-            // The plan exists, the product did not resolve. Say exactly that
-            // rather than rendering a dead button.
+            // The fetch has FINISHED and this product did not resolve. Say
+            // exactly that rather than rendering a dead button.
             Text("Not available to purchase in the app right now.")
                 .font(.system(size: 12))
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
