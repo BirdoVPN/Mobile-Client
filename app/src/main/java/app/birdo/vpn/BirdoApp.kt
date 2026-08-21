@@ -1,11 +1,32 @@
 package app.birdo.vpn
 
 import android.app.Application
+import app.birdo.vpn.billing.PlayBillingManager
 import dagger.hilt.android.HiltAndroidApp
 import io.sentry.android.core.SentryAndroid
+import javax.inject.Inject
 
 @HiltAndroidApp
 class BirdoApp : Application() {
+
+    /**
+     * The Google Play purchase rail.
+     *
+     * Started HERE, at application scope, and not from the subscription screen.
+     * Its PurchasesUpdatedListener has to be live before any purchase so that a
+     * deferred payment clearing, an Ask-to-Buy approval or a purchase made on
+     * another device is still linked to the account — all three arrive long
+     * after the purchase sheet closed, and a screen-scoped listener would miss
+     * every one of them. The same call reconciles anything Play already
+     * considers current, which is how a purchase that completed while the app
+     * was dead reaches the server at all.
+     *
+     * Cheap in a non-Play build: the rail is gated on BuildConfig.IS_PLAY_BUILD
+     * and the BillingClient is created lazily, so nothing binds to the Play
+     * Store service in the sideload or F-Droid builds.
+     */
+    @Inject lateinit var playBilling: dagger.Lazy<PlayBillingManager>
+
     override fun onCreate() {
         super.onCreate()
         try {
@@ -13,6 +34,21 @@ class BirdoApp : Application() {
         } catch (e: Exception) {
             // Sentry init should never take down the whole app
             android.util.Log.e("BirdoApp", "Sentry init failed", e)
+        }
+        // dagger.Lazy, and the flag checked HERE rather than only inside
+        // start(): in a non-Play build (debug, sideload APK, F-Droid) the rail
+        // can never work — Play Billing does not sell to an app the Play Store
+        // did not install — so nothing about it should be built during
+        // Application.onCreate, which is on the cold-start critical path.
+        // Constructing the manager here would also pull in the Retrofit/OkHttp
+        // graph, which otherwise waits until the first screen composes.
+        if (BuildConfig.IS_PLAY_BUILD) {
+            try {
+                playBilling.get().start()
+            } catch (e: Exception) {
+                // A wedged Play Store must never take down the whole app.
+                android.util.Log.e("BirdoApp", "Play Billing init failed", e)
+            }
         }
     }
 

@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.billing.BirdoBillingPeriod
 import androidx.compose.ui.res.stringResource
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.SubscriptionStatus
@@ -115,14 +116,43 @@ fun SubscriptionScreen(
     onNavigateBack: () -> Unit,
     onSelectPlan: (planId: String, period: String) -> Unit,
     onManageOnWeb: () -> Unit,
-    billingReady: Boolean = false,
     billingMessage: String? = null,
     billingIsError: Boolean = false,
     billingIsPurchasing: Boolean = false,
     onClearBillingMessage: () -> Unit = {},
-    // Google Play build: hide all external-purchase steering (no "buy"/"manage
-    // on web" links). Premium tiers become an informational feature comparison.
+    // Google Play build: subscriptions are sold through Play Billing and there
+    // is no steering anywhere else. Non-Play builds (sideload APK, F-Droid)
+    // keep the web-billing links, which Play policy does not reach.
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
+    /**
+     * Whether the "Manage on web" affordances may be shown. Deliberately a
+     * SEPARATE input from [isPlayBuild] rather than its inverse: an
+     * external-offers-ENROLLED Play build is both a Play build and permitted to
+     * link out, and collapsing the two would either hide the link from an
+     * enrolled build or show it from an unenrolled one. The second mistake is
+     * the one that gets `app.birdo.vpn` removed, permanently.
+     */
+    showWebManageAction: Boolean = !isPlayBuild,
+    // -- Play rail ------------------------------------------------------
+    // playPriceFor returns Google Play's own localised price for a plan+period,
+    // or NULL when that combination is not purchasable on this device.
+    //
+    // NULL IS THE GATE. A plan card renders a purchase CTA if and only if this
+    // returns a price, so a button can never be drawn for something Play never
+    // offered. Deriving the button from the plan constants instead is how the
+    // iOS build earned its Guideline 2.1 rejection: a "buy" control that
+    // dead-ends in "purchasing unavailable".
+    playPriceFor: (planId: String, period: String) -> String? = { _, _ -> null },
+    // Non-null means nothing is purchasable and this sentence says why. It is a
+    // first-class state, not an empty list.
+    storefrontMessage: String? = null,
+    storefrontLoading: Boolean = false,
+    storefrontCanRetry: Boolean = false,
+    onRetryStorefront: () -> Unit = {},
+    onRestorePurchases: () -> Unit = {},
+    isRestoring: Boolean = false,
+    duplicateBillingMessage: String? = null,
+    onDismissDuplicateBilling: () -> Unit = {},
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
     val palette = BirdoColors.current
@@ -133,8 +163,8 @@ fun SubscriptionScreen(
                 title = stringResource(R.string.subscription_title),
                 onBack = onNavigateBack,
                 actions = {
-                    // Play build: no web-billing steering in the toolbar.
-                    if (!isPlayBuild) {
+                    // No web-billing steering in an unenrolled Play build.
+                    if (showWebManageAction) {
                         BirdoIconAction(
                             icon = Icons.Default.OpenInNew,
                             contentDescription = stringResource(R.string.subscription_manage_web),
@@ -181,52 +211,128 @@ fun SubscriptionScreen(
 
             Spacer(Modifier.height(16.dp))
 
+            // Duplicate billing: the account is paying on another rail too.
+            // Sticky and never auto-dismissed, because it is about money.
+            if (duplicateBillingMessage != null) {
+                BillingBanner(
+                    text = duplicateBillingMessage,
+                    isError = true,
+                    onDismiss = onDismissDuplicateBilling,
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+
             // Plan cards
             plans.forEach { plan ->
                 val isCurrent = currentSubscription?.plan?.equals(plan.id, ignoreCase = true) == true
+                // Google Play's own localised price, or null when this plan is
+                // not purchasable here. Never hardcode a price we can look up.
+                val playPrice = if (isPlayBuild) playPriceFor(plan.id, billingPeriod) else null
+                val fallbackPrice =
+                    if (billingPeriod == "yearly") plan.priceYearly else plan.priceMonthly
                 PlanCard(
                     plan = plan,
                     isCurrent = isCurrent,
-                    price = if (billingPeriod == "yearly") plan.priceYearly else plan.priceMonthly,
+                    // The published web price is shown ONLY as an informational
+                    // figure when Play has no live price -- and in that state
+                    // there is no purchase button next to it.
+                    price = playPrice ?: fallbackPrice,
                     isPurchasing = billingIsPurchasing,
-                    showManageButton = !isPlayBuild,
+                    // THE GATE. In a Play build a CTA exists only when a real
+                    // offer resolved; in a non-Play build the CTA is the
+                    // web-billing link it has always been.
+                    showManageButton = showWebManageAction,
+                    showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent,
+                    isChangingPlan = currentSubscription?.plan?.equals("RECON", true) == false,
                     onSelect = { onSelectPlan(plan.id, billingPeriod) },
                 )
                 Spacer(Modifier.height(12.dp))
             }
 
-            // Billing status banner (Play unavailable / purchase result)
-            if (billingMessage != null) {
-                Spacer(Modifier.height(8.dp))
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (billingIsError) BirdoRed.copy(alpha = 0.12f) else BirdoGreen.copy(alpha = 0.12f),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            if (billingIsError) Icons.Default.ErrorOutline else Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = if (billingIsError) BirdoRed else BirdoGreen,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            billingMessage,
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (billingIsError) BirdoRed else BirdoGreen,
-                        )
-                        TextButton(onClick = onClearBillingMessage) {
-                            Text(stringResource(R.string.dismiss), color = palette.onSurfaceMuted, fontSize = 12.sp)
+            // Auto-renewal terms, stated before the purchase sheet rather
+            // than only inside it. Shown only when something is actually
+            // purchasable, so it never describes a subscription that cannot be
+            // bought.
+            if (isPlayBuild && storefrontMessage == null && !storefrontLoading) {
+                BirdoBillingPeriod.fromKey(billingPeriod)?.let { period ->
+                    Text(
+                        period.renewalSentence,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.onSurfaceMuted,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
+                }
+            }
+
+            // Storefront state. An honest sentence beats an empty list that
+            // looks like a broken screen, and beats a spinner with no way out.
+            if (isPlayBuild) {
+                if (storefrontLoading) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        stringResource(R.string.subscription_loading_prices),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.onSurfaceMuted,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
+                } else if (storefrontMessage != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        storefrontMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.onSurfaceMuted,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    )
+                    if (storefrontCanRetry) {
+                        TextButton(
+                            onClick = onRetryStorefront,
+                            modifier = Modifier.align(Alignment.CenterHorizontally),
+                        ) {
+                            Text(stringResource(R.string.subscription_retry))
                         }
                     }
                 }
             }
-            if (!billingReady && !isPlayBuild) {
+
+            // Billing status banner (purchase result / server refusal).
+            if (billingMessage != null) {
+                Spacer(Modifier.height(8.dp))
+                BillingBanner(
+                    text = billingMessage,
+                    isError = billingIsError,
+                    onDismiss = onClearBillingMessage,
+                )
+            }
+
+            // Restore Purchases. Always available in a Play build, INCLUDING
+            // when nothing is purchasable: a purchase the server refused (or
+            // one made while signed out) is exactly the case where the
+            // storefront may be empty and the user still has something to
+            // recover. A control hidden in the one state it is needed in is
+            // not a control.
+            if (isPlayBuild) {
+                Spacer(Modifier.height(8.dp))
+                app.birdo.vpn.ui.components.BirdoButton(
+                    text = stringResource(R.string.subscription_restore),
+                    onClick = onRestorePurchases,
+                    variant = app.birdo.vpn.ui.components.BirdoButtonVariant.Secondary,
+                    icon = Icons.Default.Restore,
+                    isLoading = isRestoring,
+                    enabled = !isRestoring,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.subscription_play_manage),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.onSurfaceMuted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                )
+            } else {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     stringResource(R.string.subscription_web_note),
@@ -345,6 +451,14 @@ private fun PlanCard(
     price: String,
     isPurchasing: Boolean = false,
     showManageButton: Boolean = true,
+    /**
+     * Google Play purchase CTA. Set ONLY when a real, loaded offer backs this
+     * card -- see the playPriceFor gate in [SubscriptionScreen]. Never derive
+     * it from the plan constants.
+     */
+    showPurchaseButton: Boolean = false,
+    /** The user already pays for something; this is a change, not a first buy. */
+    isChangingPlan: Boolean = false,
     onSelect: () -> Unit,
 ) {
     val palette = BirdoColors.current
@@ -439,12 +553,25 @@ private fun PlanCard(
                 }
             }
 
-            if (!isCurrent && plan.id != "RECON" && showManageButton) {
+            if (!isCurrent && plan.id != "RECON" && showPurchaseButton) {
                 Spacer(Modifier.height(16.dp))
-                // Account-management framing (no in-app "buy" CTA): subscriptions
-                // are purchased and changed on the web. This opens the billing
-                // page on birdo.app rather than initiating an in-app purchase.
-                // Hidden entirely in the Play build (showManageButton = false).
+                // Google Play purchase. Reached only when a real offer resolved.
+                app.birdo.vpn.ui.components.BirdoButton(
+                    text = stringResource(
+                        if (isChangingPlan) R.string.subscription_change_plan
+                        else R.string.subscription_subscribe,
+                    ),
+                    onClick = onSelect,
+                    variant = app.birdo.vpn.ui.components.BirdoButtonVariant.Primary,
+                    icon = Icons.Default.WorkspacePremium,
+                    isLoading = isPurchasing,
+                    enabled = !isPurchasing,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else if (!isCurrent && plan.id != "RECON" && showManageButton) {
+                Spacer(Modifier.height(16.dp))
+                // Non-Play distribution only: subscriptions are purchased and
+                // changed on the web. Opens the billing page on birdo.app.
                 app.birdo.vpn.ui.components.BirdoButton(
                     text = stringResource(R.string.subscription_manage_web),
                     onClick = onSelect,
@@ -453,6 +580,46 @@ private fun PlanCard(
                     isLoading = isPurchasing,
                     enabled = !isPurchasing,
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One status banner. Extracted so the purchase-result banner and the
+ * duplicate-billing banner cannot drift apart in colour or affordance.
+ */
+@Composable
+private fun BillingBanner(text: String, isError: Boolean, onDismiss: () -> Unit) {
+    val palette = BirdoColors.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isError) BirdoRed.copy(alpha = 0.12f) else BirdoGreen.copy(alpha = 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (isError) Icons.Default.ErrorOutline else Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = if (isError) BirdoRed else BirdoGreen,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isError) BirdoRed else BirdoGreen,
+            )
+            TextButton(onClick = onDismiss) {
+                Text(
+                    stringResource(R.string.dismiss),
+                    color = palette.onSurfaceMuted,
+                    fontSize = 12.sp,
                 )
             }
         }

@@ -34,8 +34,12 @@ import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
+import app.birdo.vpn.billing.BirdoBillingPeriod
+import app.birdo.vpn.billing.PurchasableOffer
+import app.birdo.vpn.billing.StorefrontState
 import app.birdo.vpn.ui.components.BillingChoice
 import app.birdo.vpn.ui.components.BirdoBillingChoiceSheet
+import app.birdo.vpn.ui.viewmodel.BillingViewModel
 import app.birdo.vpn.ui.components.PixelCanvas
 import app.birdo.vpn.ui.screen.*
 import app.birdo.vpn.ui.TestTags
@@ -113,6 +117,10 @@ fun BirdoNavGraph(
     val vpnViewModel: VpnViewModel = hiltViewModel()
     val settingsViewModel: SettingsViewModel = hiltViewModel()
     val updateViewModel: UpdateViewModel = hiltViewModel()
+    // Hoisted to the graph, not the Subscription route: a purchase made while
+    // signed out can only be bound once a session exists, and that moment is
+    // here, not on a screen the user may never open.
+    val billingViewModel: BillingViewModel = hiltViewModel()
     var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedPrivacyPolicy) }
     val isOnline by networkMonitor.isOnline.collectAsState(initial = true)
 
@@ -120,6 +128,23 @@ fun BirdoNavGraph(
     val vpnState by vpnViewModel.uiState.collectAsState()
     val settingsState by settingsViewModel.uiState.collectAsState()
     val updateState by updateViewModel.state.collectAsState()
+    val billingState by billingViewModel.state.collectAsState()
+
+    // A session has appeared. Re-present anything Play still considers current
+    // so a subscription bought before signing in (or on another device, or on a
+    // previous install) binds itself with no user action.
+    LaunchedEffect(authState.isLoggedIn) {
+        if (authState.isLoggedIn) billingViewModel.onSignedIn()
+    }
+
+    // The server accepted an entitlement: re-read the plan snapshot so every
+    // plan gate in the app opens without a restart. Graph-scoped because a
+    // deferred approval can land while the user is anywhere in the app.
+    LaunchedEffect(Unit) {
+        billingViewModel.entitlementChanged.collect {
+            vpnViewModel.fetchSubscription(forceRefresh = true)
+        }
+    }
 
     // Handle VPN permission requests
     LaunchedEffect(vpnState.needsVpnPermission) {
@@ -673,9 +698,11 @@ fun BirdoNavGraph(
                     //
                     //  1. Not a Play build (direct APK / F-Droid) — always free to
                     //     open the web checkout. Unchanged behaviour.
-                    //  2. Play build, NOT enrolled in external offers — must not
-                    //     steer anywhere. Silent no-op, exactly as today.
-                    //  3. Play build, ENROLLED — may offer a side-by-side choice.
+                    //  2. Play build, NOT enrolled in external offers — Google Play
+                    //     Billing is the only purchase route, and there is no
+                    //     steering anywhere else.
+                    //  3. Play build, ENROLLED — may offer a side-by-side choice
+                    //     between Play Billing and the web checkout.
                     //
                     // Case 3 requires BOTH flags. Being a Play build is deliberately
                     // not sufficient on its own: unenrolled steering is a policy
@@ -688,26 +715,101 @@ fun BirdoNavGraph(
                     var showBillingChoice by rememberSaveable { mutableStateOf(false) }
                     val billingSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
+                    // launchBillingFlow needs a real Activity. LocalActivity
+                    // would be tidier but arrived in activity-compose 1.10 and
+                    // this module is pinned to 1.9.3, so unwrap the context.
+                    val activity = LocalContext.current.findActivity()
+
+                    // Refresh the catalogue when the screen opens. The LISTENER is
+                    // not started here — it lives in BirdoApp so that a deferred
+                    // approval landing minutes later is still linked.
+                    LaunchedEffect(Unit) { billingViewModel.refresh() }
+
+                    // Which period the sheet is offering, so a Play-Billing pick
+                    // knows what the user actually chose.
+                    var pendingPurchase by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+                    // Resolve a plan card + period toggle to a REAL offer, read
+                    // from the collected state so the UI recomposes when the
+                    // catalogue arrives. Null means not purchasable, and null is
+                    // what suppresses the CTA.
+                    val offerFor: (String, String) -> PurchasableOffer? = { planId, period ->
+                        BirdoBillingPeriod.fromKey(period)
+                            ?.let { billingState.offerFor(planId, it) }
+                    }
+
+                    // The ONE place a Play purchase is started from the UI. It
+                    // takes a resolved offer, so it cannot be reached for
+                    // something Play never returned.
+                    val startPlayPurchase: (String, String) -> Unit = { planId, period ->
+                        val offer = offerFor(planId, period)
+                        if (offer != null && activity != null) {
+                            billingViewModel.purchase(activity, offer) {
+                                navController.navigate(Screen.Login.route)
+                            }
+                        }
+                    }
+
+                    val storefront = billingState.storefront
+
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
-                        onSelectPlan = { _, _ ->
+                        onSelectPlan = { planId, period ->
                             when {
-                                externalOffersAllowed -> showBillingChoice = true
-                                !BuildConfig.IS_PLAY_BUILD -> openWebCheckout()
-                                else -> Unit // Play build, unenrolled: no steering.
+                                externalOffersAllowed -> {
+                                    pendingPurchase = planId to period
+                                    showBillingChoice = true
+                                }
+                                BuildConfig.IS_PLAY_BUILD -> startPlayPurchase(planId, period)
+                                else -> openWebCheckout()
                             }
                         },
+                        // "Manage on web" is an account action, not a
+                        // purchase, so it goes straight to the billing page
+                        // rather than through the choice sheet — routing it
+                        // through the sheet left a GooglePlay branch with no
+                        // plan selected, which silently did nothing.
                         onManageOnWeb = {
-                            when {
-                                externalOffersAllowed -> showBillingChoice = true
-                                !BuildConfig.IS_PLAY_BUILD -> openWebCheckout()
-                                else -> Unit
+                            if (!BuildConfig.IS_PLAY_BUILD || externalOffersAllowed) {
+                                openWebCheckout()
                             }
                         },
-                        // Show the buy/manage CTAs in an enrolled Play build too —
-                        // that is the whole point of enrolling.
-                        isPlayBuild = BuildConfig.IS_PLAY_BUILD && !externalOffersAllowed,
+                        isPlayBuild = BuildConfig.IS_PLAY_BUILD,
+                        // An ENROLLED build must keep a route to the web
+                        // checkout even when Play has nothing to sell —
+                        // otherwise an empty storefront leaves an enrolled user
+                        // with no purchase route at all. An UNENROLLED Play
+                        // build must never show it: that is the steering that
+                        // gets an app removed.
+                        showWebManageAction =
+                            !BuildConfig.IS_PLAY_BUILD || externalOffersAllowed,
+                        // NULL when that plan+period is not purchasable, which is
+                        // what suppresses the CTA. See SubscriptionScreen.
+                        // Play returns a bare localised amount ("£3.99"); the
+                        // period it recurs on comes from the base plan, so the
+                        // two are joined here rather than hardcoded anywhere.
+                        playPriceFor = { planId, period ->
+                            offerFor(planId, period)?.let { offer ->
+                                offer.formattedPrice + offer.period.priceSuffix
+                            }
+                        },
+                        storefrontMessage =
+                            (storefront as? StorefrontState.Unavailable)?.message,
+                        storefrontLoading = storefront is StorefrontState.Loading,
+                        storefrontCanRetry =
+                            (storefront as? StorefrontState.Unavailable)?.canRetry == true,
+                        onRetryStorefront = { billingViewModel.refresh() },
+                        onRestorePurchases = { billingViewModel.restorePurchases() },
+                        isRestoring = billingState.isRestoring,
+                        billingMessage = billingState.notice?.text,
+                        billingIsError = billingState.notice?.isError == true,
+                        billingIsPurchasing = billingState.purchasingProductId != null,
+                        onClearBillingMessage = { billingViewModel.dismissNotice() },
+                        duplicateBillingMessage = billingState.duplicateBilling?.message,
+                        onDismissDuplicateBilling = {
+                            billingViewModel.dismissDuplicateBilling()
+                        },
                     )
 
                     if (showBillingChoice) {
@@ -715,16 +817,16 @@ fun BirdoNavGraph(
                             sheetState = billingSheetState,
                             onChoose = { choice ->
                                 showBillingChoice = false
+                                val target = pendingPurchase
+                                pendingPurchase = null
                                 when (choice) {
                                     BillingChoice.Web -> openWebCheckout()
-                                    // Google Play Billing is not implemented: the
-                                    // chosen route links out to the existing Polar
-                                    // checkout, which keeps Polar as merchant of
-                                    // record and leaves the FreeAgent/HMRC pipeline
-                                    // untouched. The option is only ever rendered if
-                                    // offerGooglePlayBilling is turned on, which it
-                                    // is not.
-                                    BillingChoice.GooglePlay -> Unit
+                                    // Google Play Billing is now implemented. This
+                                    // branch is only ever reachable in an enrolled
+                                    // external-offers build, where the user is being
+                                    // given a genuine choice between the two.
+                                    BillingChoice.GooglePlay ->
+                                        target?.let { startPlayPurchase(it.first, it.second) }
                                 }
                             },
                             onDismiss = { showBillingChoice = false },
@@ -737,4 +839,18 @@ fun BirdoNavGraph(
         } // end Column
         } // end Box
     }
+}
+
+/**
+ * The Activity behind a Compose [android.content.Context], or null.
+ *
+ * `LocalContext.current` is usually the Activity, but not always — a dialog or
+ * a themed subtree hands out a ContextWrapper — so the chain is unwrapped
+ * rather than cast. Returning null instead of throwing keeps a missing Activity
+ * from crashing the screen; the purchase simply does not start.
+ */
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
