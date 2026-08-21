@@ -1,6 +1,6 @@
 package app.birdo.vpn.ui.components
 
-import android.util.Base64
+import java.util.Base64
 import androidx.compose.ui.graphics.Path
 
 /**
@@ -595,7 +595,12 @@ internal object WorldLandmask {
     }
 
     private val cells: BooleanArray by lazy {
-        val bytes = Base64.decode(packedB64, Base64.DEFAULT)
+        // java.util.Base64 (API 26+, minSdk is 29) rather than android.util.Base64:
+        // behaviourally identical for this payload — the literal is already
+        // whitespace-stripped standard-alphabet base64 — but it keeps the mask
+        // decodable from a plain JVM unit test, which is what lets
+        // GlobeGeometryTest measure the REAL 720x360 landmask instead of a toy one.
+        val bytes: ByteArray = Base64.getMimeDecoder().decode(packedB64)
         val out = BooleanArray(COLS * ROWS)
         var i = 0
         for (b in bytes) {
