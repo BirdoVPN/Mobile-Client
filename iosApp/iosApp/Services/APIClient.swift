@@ -517,8 +517,10 @@ final class APIClient: @unchecked Sendable {
     /// client says about what it bought is an input to what it gets. The server
     /// verifies Apple's signature and decides.
     ///
-    /// Rate limited 20/60s. Refusals arrive as 409 with `details.code` — see
-    /// `StoreLinkRefusal.classify`.
+    /// Rate limited 20/60s. Refusals arrive with `details.code` — 409 for the
+    /// ownership conflicts and 401 for APPLE_JWS_INVALID, which is why this
+    /// call opts into `structuredErrors` and why `performRequest` exempts a
+    /// CODED 401 from the refresh-and-retry path. See `StoreLinkRefusal.classify`.
     func linkAppleTransaction(signedTransaction: String) async throws -> AppleLinkResult {
         // The DTO is @MinLength(20)/@MaxLength(65536). A JWS is always far
         // longer than 20 characters, so a short one is a client bug we should
@@ -797,9 +799,32 @@ final class APIClient: @unchecked Sendable {
             throw APIError.invalidResponse
         }
 
+        // A 401 that carries a structured `details.code` is the ENDPOINT'S OWN
+        // refusal, never an expired access token, and must not be laundered
+        // into a token refresh.
+        //
+        // WHY THIS EXISTS. `POST /payments/store/apple/link` answers a JWS that
+        // Apple's trust anchors reject with `401 { details: { code:
+        // "APPLE_JWS_INVALID" } }` (apple-store.service.ts:552). Refreshing on
+        // it burned a refresh-token rotation, spent a second of the endpoint's
+        // 20/60s bucket re-sending the identical unverifiable JWS, got the
+        // identical 401 back and then threw a BARE `.unauthorized` — which
+        // DISCARDS `details.code`, so `StoreLinkRefusal.classify(401, nil)`
+        // came out `.needsSignIn`: a red "Sign in" banner shown to an
+        // already-signed-in user, on every launch and every Restore tap.
+        //
+        // The test is the CODE, not a blanket `refreshOn401: false` on the call
+        // site. A 401 on that endpoint has two sources — the JWT guard (session
+        // genuinely expired, no `details.code`, refresh is exactly right) and
+        // linkTransaction (Apple's JWS, always coded). Switching refresh off
+        // wholesale would fix the coded case by re-breaking the other one: an
+        // expired access token would again be reported as "sign in", just less
+        // often. Only the guard-issued 401 lacks a code, so only it refreshes.
+        let isStructuredRefusal = structuredErrors && Self.structuredCode(in: data) != nil
+
         // Handle 401 — refresh once, then retry. Concurrent 401s coalesce
         // through `refreshActor` so we never refresh twice in parallel.
-        if http.statusCode == 401 && authenticated && refreshOn401 {
+        if http.statusCode == 401 && authenticated && refreshOn401 && !isStructuredRefusal {
             do {
                 try await refreshActor.refresh { [weak self] in
                     try await self?.refreshTokens()
@@ -827,7 +852,14 @@ final class APIClient: @unchecked Sendable {
                 throw APIError.invalidResponse
             }
             guard (200...299).contains(retryHttp.statusCode) else {
-                if retryHttp.statusCode == 401 { throw APIError.unauthorized }
+                // Same rule on the retry: a coded 401 is the endpoint refusing,
+                // not the session dying. Collapsing it to `.unauthorized` here
+                // would throw the code away after the refresh succeeded, which
+                // is a logged-out user for no reason at all.
+                if retryHttp.statusCode == 401,
+                   !(structuredErrors && Self.structuredCode(in: retryData) != nil) {
+                    throw APIError.unauthorized
+                }
                 throw Self.error(status: retryHttp.statusCode, body: retryData,
                                  structured: structuredErrors)
             }
@@ -844,6 +876,16 @@ final class APIClient: @unchecked Sendable {
     /// Sovereign subscription", "Device limit reached") instead of a bare status
     /// code. Nest error bodies carry `message` as either a string or an array of
     /// validation strings.
+    /// The backend's `details.code`, if this body carries one. Nil for every
+    /// body that does not — including the JWT guard's own 401, which is what
+    /// makes the presence of a code a reliable "the endpoint decided this"
+    /// signal rather than "the session expired".
+    private static func structuredCode(in body: Data) -> String? {
+        guard let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body),
+              let code = parsed.details?.code, !code.isEmpty else { return nil }
+        return code
+    }
+
     private static func error(status: Int, body: Data, structured: Bool = false) -> APIError {
         // 426 Upgrade Required = the backend's minimum-supported-version floor.
         // Surface a fixed, actionable string rather than the raw body (Review #219).

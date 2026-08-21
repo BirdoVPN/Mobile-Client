@@ -170,6 +170,16 @@ enum StorefrontState: Equatable, Sendable {
 ///                                          PURCHASED_ON_ANOTHER_ACCOUNT)
 ///   409 STORE_TRANSACTION_NOT_PURCHASED   (reason FAMILY_SHARED | UNKNOWN)
 ///   409 STORE_PRODUCT_UNMAPPED
+///   401 APPLE_JWS_INVALID                 (reason from AppleJwsError)
+///
+/// ⚠️ APPLE_JWS_INVALID arrives on a 401, NOT a 409 — `linkTransaction` throws
+/// `UnauthorizedException` when Apple's signature does not verify
+/// (apple-store.service.ts:552). A 401 on this endpoint therefore has TWO
+/// meanings, and only the code tells them apart: with a code it is Apple's
+/// JWS being rejected, without one it is the JWT guard and the Birdo session.
+/// Classifying a coded 401 as `.needsSignIn` would tell an already-signed-in
+/// user to sign in — see `APIClient.performRequest`, which for the same reason
+/// must not launder a coded 401 into a token refresh.
 enum StoreLinkRefusal: Equatable, Sendable {
     /// This App Store subscription belongs to a DIFFERENT Birdo account. The
     /// account-sharing refusal. Not an error to retry — a decision to explain.
@@ -179,6 +189,12 @@ enum StoreLinkRefusal: Equatable, Sendable {
     case notThePurchaser
     /// The backend does not map this product id to a plan.
     case productUnmapped
+    /// Apple's signature on the transaction did not verify against the
+    /// server's trust anchors, or the JWS was not for this bundle id / this
+    /// environment. NOTHING the user can do — a bundle-id, trust-anchor or
+    /// sandbox-vs-production mismatch is the single most likely first-contact
+    /// failure in sandbox, and it is a Birdo-side configuration fault.
+    case jwsInvalid
     /// No usable session. The purchase is safe; it just cannot be bound yet.
     case needsSignIn
     /// The rail's 20-per-60s bucket. Genuinely transient.
@@ -199,6 +215,7 @@ enum StoreLinkRefusal: Equatable, Sendable {
         case "STORE_TRANSACTION_ALREADY_LINKED": return .alreadyLinkedToAnotherAccount
         case "STORE_TRANSACTION_NOT_PURCHASED":  return .notThePurchaser
         case "STORE_PRODUCT_UNMAPPED":           return .productUnmapped
+        case "APPLE_JWS_INVALID":                return .jwsInvalid
         default: break
         }
         switch status {
@@ -219,7 +236,7 @@ enum StoreLinkRefusal: Equatable, Sendable {
     /// of the app session.
     var isTerminal: Bool {
         switch self {
-        case .alreadyLinkedToAnotherAccount, .notThePurchaser, .productUnmapped:
+        case .alreadyLinkedToAnotherAccount, .notThePurchaser, .productUnmapped, .jwsInvalid:
             return true
         case .needsSignIn, .rateLimited, .transient:
             return false
@@ -252,6 +269,11 @@ enum StoreLinkRefusal: Equatable, Sendable {
         case .productUnmapped:
             return "Birdo does not recognise this App Store product yet. Your purchase is safe — "
                 + "please contact support and we will activate it."
+        case .jwsInvalid:
+            return "Birdo could not verify this App Store purchase with Apple. This is a problem "
+                + "on Birdo's side, not with your account or your payment — nothing is wrong at "
+                + "your end and there is nothing to sign in to. Your purchase is safe; please "
+                + "contact support and we will activate it."
         case .needsSignIn:
             return "Sign in to Birdo to add this subscription to your account. Your purchase is "
                 + "safe: tap Restore Purchases once you are signed in."
@@ -267,7 +289,11 @@ enum StoreLinkRefusal: Equatable, Sendable {
     /// Tone for the banner. A refusal the user cannot act on is not an alarm.
     var isAlarming: Bool {
         switch self {
-        case .alreadyLinkedToAnotherAccount, .notThePurchaser: return false
+        // `.jwsInvalid` is deliberately calm. It is not actionable by the
+        // user, their money is not at risk, and the previous behaviour — a red
+        // "Sign in" banner shown to an already-signed-in user on every launch
+        // and every Restore tap — was the worst possible reading of it.
+        case .alreadyLinkedToAnotherAccount, .notThePurchaser, .jwsInvalid: return false
         default: return true
         }
     }
