@@ -84,20 +84,31 @@ targets:
         - BirdoVPNTests
         - BirdoVPNUITests
       gatherCoverageData: false
-      # LOCAL StoreKit testing, and the ONLY way the in-app-purchase rail can be
-      # exercised today: the Paid Applications Agreement is not active, so no
-      # products exist in App Store Connect and `Product.products(for:)` returns
-      # an EMPTY array against the real App Store. Pointing the run action at
-      # BirdoVPN.storekit makes StoreKit resolve the four products locally, with
-      # no sandbox Apple ID and no network.
+      # LOCAL StoreKit testing: the Paid Applications Agreement is not active,
+      # so no products exist in App Store Connect and `Product.products(for:)`
+      # returns an EMPTY array against the real App Store. Pointing the run
+      # action at BirdoVPN.storekit makes StoreKit resolve the four products
+      # locally, with no sandbox Apple ID and no network.
+      #
+      # ⚠️ MUST SIT DIRECTLY UNDER `scheme:` — NOT nested under a `run:` key.
+      # A target-level `scheme:` is an XcodeGen *TargetScheme*, which has no
+      # `run:` sub-key at all; `run:` exists only on TOP-LEVEL `schemes:`
+      # entries. XcodeGen 2.46.0 silently IGNORES the unknown key — no warning,
+      # no error — and the generated BirdoVPN.xcscheme comes out with no
+      # StoreKitConfigurationFileReference whatsoever. Verified empirically by
+      # generating both spellings and diffing the .xcscheme. Regression check:
+      #   xcodegen generate --spec iosApp/project.yml
+      #   grep StoreKitConfigurationFileReference       #     iosApp/BirdoVPN.xcodeproj/xcshareddata/xcschemes/BirdoVPN.xcscheme
+      # must print a line. If it prints nothing the purchase rail cannot be
+      # exercised at all — Product.products(for:) returns [] and every card
+      # reads "Not available to purchase in the app right now."
       #
       # This affects the RUN action only — it is a debugger setting, not a build
       # setting — so it cannot leak into an archive. The file is deliberately at
       # iosApp/BirdoVPN.storekit (NOT inside iosApp/iosApp/), because the app
       # target's `sources: - path: iosApp` copies anything it finds into the
       # bundle as a resource, and a StoreKit configuration must never ship.
-      run:
-        storeKitConfiguration: BirdoVPN.storekit
+      storeKitConfiguration: BirdoVPN.storekit
     sources:
       - path: iosApp
         excludes:
