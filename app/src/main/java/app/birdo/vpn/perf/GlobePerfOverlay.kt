@@ -56,15 +56,7 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
 
     val view = LocalView.current
     val monitor = remember { GlobeFrameMonitor() }
-
-    DisposableEffect(view) {
-        val window = view.context.findWindow()
-        val stats: JankStats? = window?.let { JankStats.createAndTrack(it, monitor.listener) }
-        // The globe composed before we started tracking, so its tag has to be
-        // re-applied or the first session's frames all land in `off`.
-        GlobePerfState.flush()
-        onDispose { stats?.isTrackingEnabled = false }
-    }
+    trackGlobeFrames(monitor)
 
     val refreshHz = view.display?.refreshRate ?: 60f
     var snapshot by remember { mutableStateOf(monitor.snapshot(refreshHz)) }
@@ -142,6 +134,28 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
             }
             Btn("[reset]") { monitor.reset() }
         }
+    }
+}
+
+/**
+ * Starts JankStats on the hosting window and feeds every frame to [monitor] for
+ * as long as this stays in composition.
+ *
+ * Separate from the HUD so `GlobeFrameMonitorInstrumentedTest` exercises the
+ * REAL attach path — including the [GlobePerfState.flush] ordering, which is
+ * the part that would otherwise fail silently by labelling every frame `off`.
+ */
+@Composable
+internal fun trackGlobeFrames(monitor: GlobeFrameMonitor) {
+    val view = LocalView.current
+    DisposableEffect(view, monitor) {
+        val window = view.context.findWindow()
+        val stats: JankStats? = window?.let { JankStats.createAndTrack(it, monitor.listener) }
+        // A PerformanceMetricsState holder has no live `state` until JankStats
+        // is tracking, and the globe composed before we got here — so its tag
+        // has to be re-applied or the whole first session lands in `off`.
+        GlobePerfState.flush()
+        onDispose { stats?.isTrackingEnabled = false }
     }
 }
 
