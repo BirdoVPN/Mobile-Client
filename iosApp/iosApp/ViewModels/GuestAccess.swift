@@ -64,6 +64,10 @@ enum SignInReason: String, Equatable, Sendable, CaseIterable {
     case profile
     /// The Multi-Hop entry chip.
     case multiHop
+    /// Buying a subscription. The server binds the App Store purchase to a
+    /// Birdo account (it mints the `appAccountToken`), so there has to be an
+    /// account to bind it to before the App Store sheet is ever shown.
+    case subscribe
     /// Raised from somewhere with no more specific story.
     case generic
 
@@ -75,6 +79,7 @@ enum SignInReason: String, Equatable, Sendable, CaseIterable {
         case .usage:    return "Sign in to see your usage"
         case .profile:  return "Sign in to see your account"
         case .multiHop: return "Sign in to use Multi-Hop"
+        case .subscribe: return "Sign in to subscribe"
         case .generic:  return "Sign in to Birdo VPN"
         }
     }
@@ -94,6 +99,10 @@ enum SignInReason: String, Equatable, Sendable, CaseIterable {
         case .profile:
             return "Your plan and account details need an account. The privacy "
                 + "policy and terms stay readable without one."
+        case .subscribe:
+            return "A subscription has to belong to an account, so Birdo needs one before the "
+                + "App Store can charge you — nothing is charged until you confirm. Comparing "
+                + "the plans, changing settings and browsing locations all work without one."
         case .generic:
             return "An account is only needed to connect. Settings, locations "
                 + "and the policies work without one."

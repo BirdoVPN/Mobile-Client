@@ -84,6 +84,20 @@ targets:
         - BirdoVPNTests
         - BirdoVPNUITests
       gatherCoverageData: false
+      # LOCAL StoreKit testing, and the ONLY way the in-app-purchase rail can be
+      # exercised today: the Paid Applications Agreement is not active, so no
+      # products exist in App Store Connect and `Product.products(for:)` returns
+      # an EMPTY array against the real App Store. Pointing the run action at
+      # BirdoVPN.storekit makes StoreKit resolve the four products locally, with
+      # no sandbox Apple ID and no network.
+      #
+      # This affects the RUN action only — it is a debugger setting, not a build
+      # setting — so it cannot leak into an archive. The file is deliberately at
+      # iosApp/BirdoVPN.storekit (NOT inside iosApp/iosApp/), because the app
+      # target's `sources: - path: iosApp` copies anything it finds into the
+      # bundle as a resource, and a StoreKit configuration must never ship.
+      run:
+        storeKitConfiguration: BirdoVPN.storekit
     sources:
       - path: iosApp
         excludes:
@@ -198,6 +212,18 @@ targets:
       # read as a broken app to App Review) are pure functions precisely so
       # they can be asserted here without an app host or a network.
       - path: iosApp/ViewModels/GuestAccess.swift
+      # App Store in-app purchase (Guideline 3.1.1). Foundation-only by design:
+      # the product-to-plan map, the storefront state machine and — the one that
+      # matters — the classification of the server's 409 refusals are pure
+      # functions precisely so they can be asserted here, with no StoreKit, no
+      # sandbox Apple ID, no app host and no network.
+      - path: iosApp/Services/StoreCatalog.swift
+      # The StoreKit testing configuration, carried as a RESOURCE of the test
+      # bundle so a test can read it as JSON and prove it still declares exactly
+      # the four product ids BirdoStoreProduct expects. A .storekit file that
+      # drifts from the enum is invisible until someone runs the app by hand.
+      - path: BirdoVPN.storekit
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.birdo.vpn.tests

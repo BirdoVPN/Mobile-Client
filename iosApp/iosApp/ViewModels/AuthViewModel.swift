@@ -785,6 +785,8 @@ final class AuthViewModel: ObservableObject {
             return code == 401
         case .serverMessage(_, let status):
             return status == 401
+        case .serverRefusal(_, let status, _, _):
+            return status == 401
         case .invalidURL, .invalidResponse, .quantumKeyUnavailable:
             return false
         }
@@ -848,6 +850,13 @@ final class AuthViewModel: ObservableObject {
                 // show as-is, never with the "Login failed:" prefix.
                 if msg == "Unexpected server response (no tokens)" { return msg }
                 return Self.mapKnownMessage(msg)
+            case .serverRefusal(let raw, let status, _, _):
+                // Same shape as .serverMessage, but the server also named a
+                // machine code. Status decides; the text is only a fallback.
+                if status == 401 { return "Invalid email or password" }
+                if status == 429 { return "Too many attempts. Please wait a moment." }
+                let msg = Self.sanitizedServerMessage(raw ?? "", fallback: fallback)
+                return msg == fallback ? fallback : Self.mapKnownMessage(msg)
             case .unauthorized:
                 return "Invalid email or password"
             case .httpError(let code):
@@ -887,6 +896,7 @@ final class AuthViewModel: ObservableObject {
         guard let api = error as? APIError else { return nil }
         switch api {
         case .serverMessage(_, let status): return status
+        case .serverRefusal(_, let status, _, _): return status
         case .httpError(let code): return code
         case .unauthorized: return 401
         case .invalidURL, .invalidResponse, .quantumKeyUnavailable: return nil
@@ -954,6 +964,11 @@ final class AuthViewModel: ObservableObject {
                 if msg.contains("429") || msg.lowercased().contains("too many") {
                     return "Too many attempts. Please wait a moment."
                 }
+                return "Account deletion failed. Please try again."
+            case .serverRefusal(let msg, let status, _, _):
+                if status == 401 { return "Incorrect password" }
+                if status == 429 { return "Too many attempts. Please wait a moment." }
+                if (msg ?? "").lowercased().contains("password") { return "Incorrect password" }
                 return "Account deletion failed. Please try again."
             case .unauthorized:
                 return "Incorrect password"

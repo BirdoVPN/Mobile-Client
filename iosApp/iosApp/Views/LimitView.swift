@@ -294,19 +294,21 @@ struct LimitView: View {
 
     // MARK: - Plan card (§4.3)
     //
-    // P1-ios-limit-upgrade-cta-dead-end: this used to read "Upgrade for
-    // unlimited" and push SubscriptionView — which is INFORMATIONAL ONLY by
-    // design (see SubscriptionView's kdoc: the backend has no Apple IAP, and a
-    // StoreKit purchase would charge real money and unlock nothing, so there is
-    // deliberately no purchase CTA there). The button therefore promised a
-    // purchase and delivered a feature comparison: the users it dead-ended were
-    // the ones actively trying to pay.
+    // 🔴 DELIBERATE REVERSAL of P1-ios-limit-upgrade-cta-dead-end.
     //
-    // There is no in-app upgrade flow to wire it to, so the upgrade CTA is gone.
-    // What is left is the honest version of what the destination actually is —
-    // "View plans", the exact wording MultiHopView already uses for the same
-    // screen — and body copy that no longer says "Upgrade to Operative" as
-    // though tapping here would do it.
+    // That fix deleted the "Upgrade for unlimited" button and left only "View
+    // plans", on the stated grounds that "there is no in-app upgrade flow to
+    // wire it to" — true at the time, because SubscriptionView was a feature
+    // comparison with no purchase CTA. Both halves of that are now obsolete:
+    // SubscriptionView sells the subscription through StoreKit (App Store
+    // Guideline 3.1.1 requires it to), so the destination IS an upgrade flow
+    // and calling the button "Upgrade" is finally the honest label rather than
+    // the misleading one.
+    //
+    // The dead end the old fix described — a user actively trying to pay and
+    // being handed a comparison table — is what closes here, and it closes by
+    // giving them somewhere to pay rather than by removing the sign that said
+    // "this way".
 
     private var upgradeCard: some View {
         BirdoCard {
@@ -324,13 +326,20 @@ struct LimitView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
-                Text("Free accounts include \(Self.wholeGb(limitGb)) GB per month. Paid plans include unlimited data on every server.")
+                Text("Free accounts include \(Self.wholeGb(limitGb)) GB per month. Unlimited data on "
+                     + "every server needs a paid subscription, which you can buy in the app.")
                     .font(.system(size: 13))
                     .lineSpacing(5)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                PrimaryButton("View plans", height: 48) {
+                PrimaryButton("Upgrade for unlimited data", variant: .brand, height: 48) {
                     showSubscription = true
                 }
+                .accessibilityIdentifier("limit_upgrade")
+                Text("Opens Birdo's plans, where Operative and Sovereign are available as "
+                     + "auto-renewing App Store subscriptions.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

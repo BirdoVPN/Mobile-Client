@@ -469,6 +469,77 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    // MARK: - App Store in-app purchase (Apple rail)
+
+    /// `POST /payments/store/apple/purchase-token` — mint the `appAccountToken`
+    /// that binds a StoreKit purchase to THIS Birdo account.
+    ///
+    /// THE CLIENT MUST NOT INVENT THIS UUID. If the client chose it, the client
+    /// could choose someone else's and attach a purchase to an account the
+    /// buyer does not own; minted server-side against the authenticated
+    /// session, a client can only ever bind to the account it is already
+    /// signed into. It is also the only channel Apple offers for identifying
+    /// the buyer at all — Apple sends no Apple ID, no email and no stable user
+    /// id, and a Birdo ANONYMOUS account has no email to fall back on. Apple
+    /// then echoes this UUID back inside every signed transaction for that
+    /// subscription, forever, which is what makes a reinstall re-bind to the
+    /// same account.
+    ///
+    /// Idempotent server-side: repeated taps of Subscribe reuse the
+    /// outstanding unconsumed token. Rate limited 20/60s.
+    func mintApplePurchaseToken() async throws -> UUID {
+        let data = try await performRequest(
+            method: "POST",
+            path: "/payments/store/apple/purchase-token",
+            body: Data("{}".utf8),
+            authenticated: true,
+            structuredErrors: true
+        )
+        let parsed = try decoder.decode(ApplePurchaseTokenResponse.self, from: data)
+        // Apple requires a UUID for appAccountToken and SILENTLY DROPS anything
+        // else — a dropped token means the purchase arrives unattributable and
+        // the entitlement is stranded, so refuse to start the purchase instead
+        // of starting one we could not bind.
+        guard let uuid = UUID(uuidString: parsed.appAccountToken) else {
+            throw APIError.serverMessage(
+                "Could not start the purchase: the server returned an unusable purchase token.",
+                status: nil
+            )
+        }
+        return uuid
+    }
+
+    /// `POST /payments/store/apple/link` — hand the server the JWS StoreKit
+    /// signed, after a purchase and again for every entitlement found during
+    /// Restore Purchases.
+    ///
+    /// The body deliberately carries NO plan, price or expiry: nothing the
+    /// client says about what it bought is an input to what it gets. The server
+    /// verifies Apple's signature and decides.
+    ///
+    /// Rate limited 20/60s. Refusals arrive as 409 with `details.code` — see
+    /// `StoreLinkRefusal.classify`.
+    func linkAppleTransaction(signedTransaction: String) async throws -> AppleLinkResult {
+        // The DTO is @MinLength(20)/@MaxLength(65536). A JWS is always far
+        // longer than 20 characters, so a short one is a client bug we should
+        // not spend a rate-limit token discovering.
+        guard signedTransaction.count >= 20, signedTransaction.count <= 65_536 else {
+            throw APIError.serverMessage(
+                "Could not confirm this purchase: the App Store receipt was unusable.",
+                status: nil
+            )
+        }
+        let body = try encoder.encode(AppleLinkBody(signedTransaction: signedTransaction))
+        let data = try await performRequest(
+            method: "POST",
+            path: "/payments/store/apple/link",
+            body: body,
+            authenticated: true,
+            structuredErrors: true
+        )
+        return try decoder.decode(AppleLinkResult.self, from: data)
+    }
+
     // MARK: - Speed Test
 
     // AUDIT-M-DRIFT: the speed-test trio lives under `/vpn/speed-test/*` on
@@ -690,7 +761,18 @@ final class APIClient: @unchecked Sendable {
         /// expired access token (e.g. GDPR erasure's password re-confirmation).
         /// Refresh-and-retry there wastes a token rotation and replaces the
         /// backend's own explanation with a bogus "Session expired".
-        refreshOn401: Bool = true
+        refreshOn401: Bool = true,
+        /// Opt IN to `APIError.serverRefusal`, which carries the backend's
+        /// `details.code`/`details.reason` alongside the message.
+        ///
+        /// Deliberately OPT-IN rather than the default. Six existing call sites
+        /// pattern-match `case .serverMessage` (all of them in AuthViewModel's
+        /// credential-rejection classification), and silently re-typing every
+        /// error that happens to carry a `details` block would make those
+        /// branches stop matching without a single compiler complaint. Only the
+        /// Apple store rail — which is the reason `details.code` exists — asks
+        /// for the structured form.
+        structuredErrors: Bool = false
     ) async throws -> Data {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw APIError.invalidURL
@@ -746,13 +828,14 @@ final class APIClient: @unchecked Sendable {
             }
             guard (200...299).contains(retryHttp.statusCode) else {
                 if retryHttp.statusCode == 401 { throw APIError.unauthorized }
-                throw Self.error(status: retryHttp.statusCode, body: retryData)
+                throw Self.error(status: retryHttp.statusCode, body: retryData,
+                                 structured: structuredErrors)
             }
             return retryData
         }
 
         guard (200...299).contains(http.statusCode) else {
-            throw Self.error(status: http.statusCode, body: data)
+            throw Self.error(status: http.statusCode, body: data, structured: structuredErrors)
         }
         return data
     }
@@ -761,12 +844,26 @@ final class APIClient: @unchecked Sendable {
     /// Sovereign subscription", "Device limit reached") instead of a bare status
     /// code. Nest error bodies carry `message` as either a string or an array of
     /// validation strings.
-    private static func error(status: Int, body: Data) -> APIError {
+    private static func error(status: Int, body: Data, structured: Bool = false) -> APIError {
         // 426 Upgrade Required = the backend's minimum-supported-version floor.
         // Surface a fixed, actionable string rather than the raw body (Review #219).
         if status == 426 {
             return .serverMessage("This app version is no longer supported. Update Birdo VPN to reconnect.",
                                   status: status)
+        }
+        if structured {
+            let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body)
+            let message = parsed?.message?.text
+            // `details` is the ONLY key GlobalExceptionFilter copies from a
+            // thrown HttpException onto the wire — it rebuilds every other
+            // field, so a top-level `code` never arrives. Read it from there or
+            // not at all.
+            return .serverRefusal(
+                message: (message?.isEmpty == false) ? message! : nil,
+                status: status,
+                code: parsed?.details?.code,
+                reason: parsed?.details?.reason
+            )
         }
         if let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body),
            let message = parsed.message?.text, !message.isEmpty {
@@ -948,6 +1045,14 @@ enum APIError: Error, LocalizedError {
     /// string. Only classify on this field — never by matching the message text,
     /// which is backend copy and changes without notice.
     case serverMessage(String, status: Int?)
+    /// A refusal that also carried the backend's STRUCTURED reason, i.e. the
+    /// `details` block GlobalExceptionFilter copies verbatim onto the wire.
+    ///
+    /// Only endpoints that pass `structuredErrors: true` produce this — today
+    /// that is the Apple in-app-purchase rail, whose 409s must be told apart by
+    /// CODE and never by message text. `message` is nil when the backend sent
+    /// no words of its own; the caller then supplies its own copy.
+    case serverRefusal(message: String?, status: Int?, code: String?, reason: String?)
     /// Post-quantum protection is enabled but the ML-KEM keypair could not be
     /// produced. Surfaced rather than silently connecting without PQ.
     case quantumKeyUnavailable
@@ -959,6 +1064,9 @@ enum APIError: Error, LocalizedError {
         case .unauthorized: return "Session expired. Please log in again."
         case .httpError(let code): return "Server error (\(code))"
         case .serverMessage(let message, _): return message
+        case .serverRefusal(let message, let status, _, _):
+            if let message, !message.isEmpty { return message }
+            return status.map { "Server error (\($0))" } ?? "Server error"
         case .quantumKeyUnavailable:
             return "Could not prepare quantum-protected encryption. Not connecting, because "
                 + "continuing would use weaker encryption. Try again, or turn off Quantum "
@@ -1195,6 +1303,16 @@ private struct APIErrorBody: Decodable {
     }
 
     let message: Message?
+    /// The single reserved key GlobalExceptionFilter passes through from a
+    /// thrown HttpException. Everything else on the thrown object is rebuilt
+    /// away before serialisation, so this is the ONLY place a machine-readable
+    /// code can arrive.
+    struct Details: Decodable {
+        let code: String?
+        let reason: String?
+    }
+
+    let details: Details?
 }
 
 /// Resolved device identity attached to every auth call. The full six-field
@@ -1552,5 +1670,60 @@ enum VPNConfigValidationError: LocalizedError {
         case .invalidMTU:           return "Server returned an out-of-range MTU."
         case .invalidDNS:           return "Server returned an invalid DNS address."
         }
+    }
+}
+
+// MARK: - Apple in-app-purchase wire models
+
+/// `POST /payments/store/apple/purchase-token` response.
+private struct ApplePurchaseTokenResponse: Decodable {
+    let appAccountToken: String
+}
+
+/// `POST /payments/store/apple/link` request.
+///
+/// One field, on purpose. The server derives the plan, the price and the
+/// expiry from Apple's own signature — anything the client asserted about what
+/// it bought would be an input the buyer controls.
+private struct AppleLinkBody: Encodable {
+    let signedTransaction: String
+}
+
+/// The account is paying for the same service on two rails at once. Returned
+/// by /link rather than emailed, because an anonymous account has no email —
+/// and that is exactly the kind of account this happens to.
+struct AppleDuplicateBilling: Decodable, Sendable, Equatable {
+    /// "WEB" | "APPLE_APP_STORE" | ... — the OTHER rail, not this one.
+    let otherSource: String
+    let otherPlan: String
+    let otherPeriodEnd: String?
+    /// Server-authored, and the only string to show: it already names the
+    /// plan, the renewal date and where to cancel.
+    let message: String
+}
+
+/// `POST /payments/store/apple/link` success body.
+struct AppleLinkResult: Decodable, Sendable, Equatable {
+    let linked: Bool
+    /// Server-decided plan slug. Note the client never sent one.
+    let plan: String
+    let state: String
+    let expiresAt: String?
+    let duplicateBilling: AppleDuplicateBilling?
+
+    private enum CodingKeys: String, CodingKey {
+        case linked, plan, state, expiresAt, duplicateBilling
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Defaulted like every other model here, so a new server field or a
+        // renamed one can never turn a SUCCESSFUL purchase into a decode error
+        // — the user has already been charged by the time this body arrives.
+        linked = try c.decodeIfPresent(Bool.self, forKey: .linked) ?? true
+        plan = try c.decodeIfPresent(String.self, forKey: .plan) ?? ""
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
+        expiresAt = try c.decodeIfPresent(String.self, forKey: .expiresAt)
+        duplicateBilling = try c.decodeIfPresent(AppleDuplicateBilling.self, forKey: .duplicateBilling)
     }
 }
