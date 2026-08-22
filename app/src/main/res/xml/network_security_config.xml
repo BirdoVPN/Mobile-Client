@@ -7,27 +7,63 @@
         </trust-anchors>
     </base-config>
 
-    <!-- Pin birdo.app API certificate chain (defense-in-depth with OkHttp pinning) -->
-    <!-- Chain: birdo.app → WE1 (Google Trust Services) → GlobalSign ECC Root CA - R4 -->
-    <!-- Pins generated 2026-02-22 via PowerShell SPKI SHA-256 against live birdo.app -->
     <!--
-        I-01 REMINDER: Certificate pins expire 2027-06-01.
-        Set a calendar reminder for 2027-04-01 (60 days before) to:
-        1. Run: ./scripts/generate-cert-pins.sh birdo.app
-        2. Update both pins below and the OkHttp CertificatePinner in NetworkModule.kt
-        3. Ship an app update BEFORE expiry — expired pins cause hard connection failures
-        4. Consider overlapping old+new pins during the transition window
+        Pin the birdo.app API certificate CHAIN (defence in depth alongside the
+        OkHttp CertificatePinner in di/NetworkModule.kt).
+
+        SOURCE OF TRUTH: third_party/cert-pins.json, vendored from
+        birdo-shared/cert-pins.json. This pin-set must equal the birdo.app pin
+        set declared there, and so must NetworkModule.kt, the iOS
+        PinningDelegate in iosApp/iosApp/Services/APIClient.swift, and the
+        desktop client's src-tauri/src/api/cert_pin.rs.
+        scripts/check-cert-pins.sh enforces that in CI on every PR — the four
+        copies had silently drifted to 8 pins on desktop vs 3 here.
+
+        Live chain measured 2026-08-22:
+            leaf CN=birdo.app  ->  CN=WE1  ->  CN=GTS Root R4
+        Android accepts the connection if ANY pin below matches ANY certificate
+        in the PRESENTED chain. A pin for an anchor the server does not send is
+        dormant — genuine insurance against a future CA migration, but it can
+        never satisfy today's handshake.
+
+        ROTATION: ADD, NEVER SWAP. Add the new pin, ship it, wait for the fleet
+        to adopt it, and only then remove the old one in a later release. There
+        is no remote recovery from a wrong pin on an installed client.
+
+        Note on `expiration` below: when that date passes Android STOPS
+        ENFORCING this pin-set (it falls back to ordinary CA validation) rather
+        than breaking connections. It is a safety valve, not a deadline that can
+        brick the app — but it does silently disable this layer, so keep it
+        ahead of the release cadence.
     -->
     <domain-config>
         <domain includeSubdomains="true">birdo.app</domain>
         <pin-set expiration="2027-06-01">
-            <!-- WE1 — Google Trust Services intermediate (verified 2026-02-22) -->
+            <!-- ============ live in the presented chain ============ -->
+            <!-- WE1 — Google Trust Services intermediate -->
             <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
-            <!-- GlobalSign ECC Root CA - R4 (actual root in chain, verified 2026-02-22) -->
+            <!-- GTS Root R4 — the actual trust anchor api.birdo.app chains to.
+                 ADDED 2026-08-22. Until now WE1 was the ONLY pin here that could
+                 ever match; the previous comment claiming the chain rooted at
+                 GlobalSign ECC Root CA - R4 was simply wrong. -->
+            <pin digest="SHA-256">mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=</pin>
+
+            <!-- ====== dormant: cross-CA insurance, not in today's chain ====== -->
+            <!-- GlobalSign ECC Root CA - R4 — alternate Google cross-sign anchor -->
             <pin digest="SHA-256">CLOmM1/OXvSPjw5UOYbAf9GKOxImEp9hhku9W90fHMk=</pin>
-            <!-- ISRG Root X1 — Let's Encrypt root (cross-CA diversity backup) -->
-            <!-- Ensures app survives a Google → Let's Encrypt CA migration -->
+            <!-- ISRG Root X1 — Let's Encrypt root. A default Let's Encrypt server
+                 sends the leaf + ONE issuing intermediate and never this root, so
+                 this pin alone could not have rescued a migration. The four
+                 issuing intermediates below make the backup real. -->
             <pin digest="SHA-256">C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=</pin>
+            <!-- Let's Encrypt R10 (RSA issuing intermediate) -->
+            <pin digest="SHA-256">K7rZOrXHknnsEhUH8nLL4MZkejquUuIvOIr6tCa0rbo=</pin>
+            <!-- Let's Encrypt R11 (RSA issuing intermediate) -->
+            <pin digest="SHA-256">bdrBhpj38ffhxpubzkINl0rG+UyossdhcBYj+Zx2fcc=</pin>
+            <!-- Let's Encrypt E5 (ECDSA issuing intermediate) -->
+            <pin digest="SHA-256">NYbU7PBwV4y9J67c4guWTki8FJ+uudrXL0a4V4aRcrg=</pin>
+            <!-- Let's Encrypt E6 (ECDSA issuing intermediate) -->
+            <pin digest="SHA-256">0Bbh/jEZSKymTy3kTOhsmlHKBB32EDu1KojrP3YfV9c=</pin>
         </pin-set>
         <trust-anchors>
             <certificates src="system" />

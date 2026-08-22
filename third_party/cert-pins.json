@@ -1,0 +1,181 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for TLS certificate pins across all Birdo clients. Every pin below is base64(SHA-256(DER SubjectPublicKeyInfo)) - the same value OkHttp writes as `sha256/...`, Android's <pin digest=\"SHA-256\">, the rustls verifiers in the desktop app, and the iOS URLSession PinningDelegate. Pins are on the CA CHAIN (intermediate/root), never the leaf, so a ~90-day leaf renewal never needs a client release.",
+  "_schema": 2,
+  "_generated": "2026-08-22",
+  "_generated_by": "measured with openssl against the live chains; see _verification on each pin",
+  "_enforcement_rule": "A connection is accepted if ANY certificate in the PRESENTED chain matches ANY pin for that host. A pin whose certificate the server does not send is dormant: it protects a future migration but can never satisfy today's handshake. Therefore every host MUST keep at least one pin that is present in the live chain.",
+  "_rotation_rule": "ADD, NEVER SWAP. Add the new pin, ship it, wait for the fleet to adopt it, and only then remove the old one in a later release. Removing a pin that installed clients still rely on is unrecoverable - there is no remote kill switch for a bricked pin.",
+  "_ci": "scripts/check-cert-pins.sh in birdo-client-desktop and birdo-client-mobile parses every pin file in that repo, asserts it matches this SSOT exactly, and asserts each host's live chain still satisfies its pins. This file is vendored into both client repos as third_party/cert-pins.json; the checker fails if a vendored copy drifts from this one.",
+
+  "hosts": {
+    "birdo.app": {
+      "include_subdomains": true,
+      "note": "Apex + api.birdo.app + admin.birdo.app. Live chain: leaf CN=birdo.app -> CN=WE1 -> CN=GTS Root R4.",
+      "leaf_expires": "2026-09-28",
+      "leaf_expires_measured": "2026-08-22",
+      "enforced_by": [
+        "birdo-client-desktop:src-tauri/src/api/cert_pin.rs",
+        "birdo-client-mobile:app/src/main/java/app/birdo/vpn/di/NetworkModule.kt",
+        "birdo-client-mobile:app/src/main/res/xml/network_security_config.xml",
+        "birdo-client-mobile:iosApp/iosApp/Services/APIClient.swift"
+      ],
+      "pins": [
+        {
+          "hash": "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
+          "label": "WE1 - Google Trust Services intermediate",
+          "role": "active-intermediate",
+          "in_live_chain": true,
+          "_verification": "2026-08-22 measured in the live api.birdo.app chain"
+        },
+        {
+          "hash": "mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=",
+          "label": "GTS Root R4 - Google Trust Services LLC, the live trust anchor",
+          "role": "active-root",
+          "in_live_chain": true,
+          "_verification": "2026-08-22 measured in the live api.birdo.app chain AND independently against https://i.pki.goog/r4.crt"
+        },
+        {
+          "hash": "CLOmM1/OXvSPjw5UOYbAf9GKOxImEp9hhku9W90fHMk=",
+          "label": "GlobalSign ECC Root CA - R4 - alternate Google cross-sign anchor",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against the Mozilla CA bundle; genuine certificate, but NOT sent in today's chain"
+        },
+        {
+          "hash": "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=",
+          "label": "ISRG Root X1 - Let's Encrypt root",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/isrgrootx1.pem",
+          "_note": "A default Let's Encrypt server sends the leaf + ONE issuing intermediate, never this root. The root pin alone cannot rescue a migration, which is why the four issuing intermediates below are pinned too."
+        },
+        {
+          "hash": "K7rZOrXHknnsEhUH8nLL4MZkejquUuIvOIr6tCa0rbo=",
+          "label": "Let's Encrypt R10 - RSA issuing intermediate",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/r10.pem"
+        },
+        {
+          "hash": "bdrBhpj38ffhxpubzkINl0rG+UyossdhcBYj+Zx2fcc=",
+          "label": "Let's Encrypt R11 - RSA issuing intermediate",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/r11.pem"
+        },
+        {
+          "hash": "NYbU7PBwV4y9J67c4guWTki8FJ+uudrXL0a4V4aRcrg=",
+          "label": "Let's Encrypt E5 - ECDSA issuing intermediate",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/e5.pem"
+        },
+        {
+          "hash": "0Bbh/jEZSKymTy3kTOhsmlHKBB32EDu1KojrP3YfV9c=",
+          "label": "Let's Encrypt E6 - ECDSA issuing intermediate",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/e6.pem"
+        }
+      ]
+    },
+
+    "cloudflare-dns.com": {
+      "include_subdomains": false,
+      "note": "DoH resolver. Live chain: leaf -> SSL.com SSL Intermediate CA ECC R2 -> SSL.com Root Certification Authority ECC. Cloudflare has MIGRATED OFF DigiCert; any DigiCert pin here is dormant.",
+      "enforced_by": [
+        "birdo-client-desktop:src-tauri/src/vpn/doh.rs",
+        "birdo-client-mobile:app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt"
+      ],
+      "pins": [
+        {
+          "hash": "zGgA4OU4DjJdvpRYUqbi5Vh2g9W5Oc/PgKihy9mkLsE=",
+          "label": "SSL.com SSL Intermediate CA ECC R2",
+          "role": "active-intermediate",
+          "in_live_chain": true,
+          "_verification": "2026-08-22 measured against 1.1.1.1 with SNI cloudflare-dns.com"
+        },
+        {
+          "hash": "oyD01TTXvpfBro3QSZc1vIlcMjrdLTiL/M9mLCPX+Zo=",
+          "label": "SSL.com Root Certification Authority ECC - trust anchor",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against the Mozilla CA bundle; not sent in the chain"
+        },
+        {
+          "hash": "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=",
+          "label": "DigiCert High Assurance EV Root CA - legacy Cloudflare anchor",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against the Mozilla CA bundle. NOTE: the Android source mislabelled this as 'DigiCert ECC Secure Global Root G3'; the hash is genuine but the label was wrong. Kept as overlap only - it matches nothing Cloudflare serves today."
+        }
+      ]
+    },
+
+    "dns.google": {
+      "include_subdomains": false,
+      "note": "DoH resolver, desktop only. Android dropped this provider (P6-CLI-A-06). Live chain: leaf -> WR2 -> GTS Root R1.",
+      "enforced_by": ["birdo-client-desktop:src-tauri/src/vpn/doh.rs"],
+      "pins": [
+        {
+          "hash": "YPtHaftLw6/0vnc2BnNKGF54xiCA28WFcccjkA4ypCM=",
+          "label": "WR2 - Google Trust Services intermediate",
+          "role": "active-intermediate",
+          "in_live_chain": true,
+          "_verification": "2026-08-22 measured in the live dns.google chain"
+        },
+        {
+          "hash": "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=",
+          "label": "GTS Root R1 - Google Trust Services LLC",
+          "role": "active-root",
+          "in_live_chain": true,
+          "_verification": "2026-08-22 measured in the live dns.google chain AND independently against https://i.pki.goog/r1.crt"
+        }
+      ]
+    },
+
+    "dns.quad9.net": {
+      "include_subdomains": false,
+      "note": "DoH resolver, desktop only. Android dropped this provider (P6-CLI-A-06). Live chain: leaf -> DigiCert Global G3 TLS ECC SHA384 2020 CA1 (root NOT sent).",
+      "enforced_by": ["birdo-client-desktop:src-tauri/src/vpn/doh.rs"],
+      "pins": [
+        {
+          "hash": "qBRjZmOmkSNJL0p70zek7odSIzqs/muR4Jk9xYyCP+E=",
+          "label": "DigiCert Global G3 TLS ECC SHA384 2020 CA1",
+          "role": "active-intermediate",
+          "in_live_chain": true,
+          "_verification": "2026-08-22 measured in the live dns.quad9.net chain"
+        },
+        {
+          "hash": "uUwZgwDOxcBXrQcntwu+kYFpkiVkOaezL0WYEZ3anJc=",
+          "label": "DigiCert Global Root G3 - trust anchor",
+          "role": "dormant-backup",
+          "in_live_chain": false,
+          "_verification": "2026-08-22 verified against https://cacerts.digicert.com/DigiCertGlobalRootG3.crt.pem; not sent in the chain"
+        }
+      ]
+    }
+  },
+
+  "_removed": [
+    {
+      "hash": "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Vg=",
+      "was_labelled": "Baltimore CyberTrust root (cross-sign backup)",
+      "was_in": "birdo-client-mobile:app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt",
+      "removed": "2026-08-22",
+      "reason": "NOT A REAL CERTIFICATE HASH. It is a corrupted transcription of GTS Root R1 (ends 63Gc=), differing only in the final two base64 characters, and it is absent from the Mozilla root store. The genuine Baltimore CyberTrust Root is Y9mvm0exBk1JoQ57f9Vm28jKo5lFm/woKcVxrYxu80o=. Removing it cannot brick anything: a hash that matches no certificate in existence provides zero overlap."
+    },
+    {
+      "hash": "hObTwNVt08WYElPDYs2wHT2Ec/+8OYssiRcCmFHg0A0=",
+      "was_labelled": "leaf DER hash, birdo.app (leaf expired 2026-07-31)",
+      "removed": "2026-08-22",
+      "reason": "Leaf DER pinning was abandoned for CA-chain SPKI pinning; no client has read der_sha256 since. Historical only."
+    },
+    {
+      "hash": "EQul2kftgtOaU85XCKuj4SK3DW5256uxNdEvZXZbuJM=",
+      "was_labelled": "previous leaf DER hash (expired ~2026-05)",
+      "removed": "2026-08-22",
+      "reason": "Same as above - dead leaf-DER pinning scheme."
+    }
+  ]
+}
