@@ -8,6 +8,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -17,6 +18,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,13 +43,28 @@ import org.junit.runner.RunWith
  * keeps the main looper permanently busy, and `ActivityScenario` then blocks
  * forever waiting for idle — which is exactly how the first version of this
  * test hung instead of failing.
+ *
+ * Every read of the monitor goes through [snapshotOnUi]. `GlobeFrameMonitor`
+ * documents itself as unsynchronised because JankStats delivers on the UI
+ * thread and the HUD reads there too; a test polling it from the
+ * instrumentation thread would be racing `counts[]`, `frames`, `sumUs` and
+ * `maxUs` against the very frames it is waiting for, and would be asserting
+ * against a threading contract the production code does not have.
  */
 @RunWith(AndroidJUnit4::class)
 class GlobeFrameMonitorInstrumentedTest {
 
     private companion object {
         const val DRIVEN_FRAMES = 150
+
+        /**
+         * The disposal test needs frames BEFORE and AFTER the globe leaves the
+         * composition, so its driver has to outlive both waits. Still finite,
+         * for the reason in the class kdoc.
+         */
+        const val LONG_RUN_FRAMES = 600
         const val DEADLINE_MS = 20_000L
+        const val POLL_MS = 50L
     }
 
     /**
@@ -54,10 +72,10 @@ class GlobeFrameMonitorInstrumentedTest {
      * animator duration scale, which a test device may legitimately have at 0.
      */
     @Composable
-    private fun FiniteFrameDriver() {
+    private fun FiniteFrameDriver(frames: Int = DRIVEN_FRAMES) {
         var tick by remember { mutableIntStateOf(0) }
         LaunchedEffect(Unit) {
-            repeat(DRIVEN_FRAMES) {
+            repeat(frames) {
                 withFrameNanos { }
                 tick++
             }
@@ -96,7 +114,7 @@ class GlobeFrameMonitorInstrumentedTest {
             awaitFrames(monitor, atLeast = 20)
         }
 
-        val snap = monitor.snapshot(60f)
+        val snap = snapshotOnUi(monitor)
         val full = snap.tier(GlobeTag.FULL)!!
         val off = snap.tier(GlobeTag.OFF)!!
         assertTrue(
@@ -120,40 +138,95 @@ class GlobeFrameMonitorInstrumentedTest {
     @Test
     fun leavingCompositionRetagsToOffSoTheBaselineIsClean() {
         val monitor = GlobeFrameMonitor()
+        // The globe really does leave the composition here. The previous
+        // version set FULL and then OFF inside one effect whose onDispose was
+        // empty, so it proved that of two `set` calls in a row the second one
+        // wins, and nothing at all about disposal. The retag in onDispose is
+        // the only thing that makes an OFF baseline clean, so it has to be the
+        // thing under test.
+        val globeComposed = mutableStateOf(true)
+
         ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
                 activity.setContent {
                     val view = LocalView.current
-                    // Tagged, then immediately disposed — the retag in onDispose
-                    // is what makes a globe-off baseline mean anything.
-                    DisposableEffect(Unit) {
-                        GlobePerfState.set(view, GlobePerf.STATE_FULL)
-                        GlobePerfState.set(view, GlobePerf.STATE_OFF)
-                        onDispose { }
+                    if (globeComposed.value) {
+                        DisposableEffect(view) {
+                            GlobePerfState.set(view, GlobePerf.STATE_FULL)
+                            onDispose { GlobePerfState.set(view, GlobePerf.STATE_OFF) }
+                        }
                     }
                     trackGlobeFrames(monitor)
-                    FiniteFrameDriver()
+                    FiniteFrameDriver(frames = LONG_RUN_FRAMES)
                 }
             }
-            awaitFrames(monitor, atLeast = 20)
-        }
 
-        val snap = monitor.snapshot(60f)
-        assertTrue(
-            "frames should be attributed to `off` after the retag, got " +
-                "full=${snap.tier(GlobeTag.FULL)!!.frames} " +
-                "off=${snap.tier(GlobeTag.OFF)!!.frames}",
-            snap.tier(GlobeTag.OFF)!!.frames > snap.tier(GlobeTag.FULL)!!.frames,
-        )
+            // Phase 1: the globe is composed, so frames land under FULL.
+            awaitTier(monitor, GlobeTag.FULL, atLeast = 20L)
+            val atExit = snapshotOnUi(monitor)
+            val fullAtExit = atExit.tier(GlobeTag.FULL)!!.frames
+            val offAtExit = atExit.tier(GlobeTag.OFF)!!.frames
+
+            // Phase 2: remove it from the composition, keep driving frames.
+            scenario.onActivity { globeComposed.value = false }
+
+            // Let the disposal land first. Frames already in flight when the
+            // flag flipped are still legitimately FULL, so they are not part of
+            // the measurement window.
+            awaitTier(monitor, GlobeTag.OFF, atLeast = offAtExit + 20L)
+            val settled = snapshotOnUi(monitor)
+            val fullSettled = settled.tier(GlobeTag.FULL)!!.frames
+            val offSettled = settled.tier(GlobeTag.OFF)!!.frames
+
+            // Phase 3: a clean window. Nothing may reach FULL any more.
+            awaitTier(monitor, GlobeTag.OFF, atLeast = offSettled + 20L)
+            val snap = snapshotOnUi(monitor)
+            val off = snap.tier(GlobeTag.OFF)!!.frames
+            assertTrue(
+                "no frames were attributed to `off` after the globe left the " +
+                    "composition (off at exit=" + offAtExit + ", off now=" + off +
+                    ") — onDispose never retagged",
+                off - offAtExit >= 20L,
+            )
+            assertEquals(
+                "frames were still attributed to `full` " + (off - offSettled) +
+                    " frames after the globe left the composition (full at " +
+                    "exit=" + fullAtExit + ") — the onDispose retag did not " +
+                    "stick, so every globe-off baseline is contaminated with " +
+                    "globe-on frames",
+                fullSettled,
+                snap.tier(GlobeTag.FULL)!!.frames,
+            )
+        }
     }
 
-    /** Polls off the main thread until enough frames land, or the deadline passes. */
-    private fun awaitFrames(monitor: GlobeFrameMonitor, atLeast: Int) {
+    /**
+     * Reads the monitor ON THE UI THREAD, where JankStats writes it.
+     * `runOnMainSync` blocks until the main looper has run the block, which is
+     * also what gives the calling thread a happens-before edge onto every frame
+     * recorded so far.
+     */
+    private fun snapshotOnUi(monitor: GlobeFrameMonitor): PerfSnapshot {
+        lateinit var snap: PerfSnapshot
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            snap = monitor.snapshot(60f)
+        }
+        return snap
+    }
+
+    /** Waits until [atLeast] frames have landed in total, or the deadline passes. */
+    private fun awaitFrames(monitor: GlobeFrameMonitor, atLeast: Int) =
+        await(monitor) { snap -> snap.tiers.sumOf { it.frames } >= atLeast }
+
+    /** Waits until [tag] holds [atLeast] frames, or the deadline passes. */
+    private fun awaitTier(monitor: GlobeFrameMonitor, tag: GlobeTag, atLeast: Long) =
+        await(monitor) { snap -> snap.tier(tag)!!.frames >= atLeast }
+
+    private fun await(monitor: GlobeFrameMonitor, done: (PerfSnapshot) -> Boolean) {
         val deadline = System.nanoTime() + DEADLINE_MS * 1_000_000
         while (System.nanoTime() < deadline) {
-            val total = monitor.snapshot(60f).tiers.sumOf { it.frames }
-            if (total >= atLeast) return
-            Thread.sleep(100)
+            if (done(snapshotOnUi(monitor))) return
+            Thread.sleep(POLL_MS)
         }
     }
 }

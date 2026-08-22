@@ -28,7 +28,10 @@ import java.io.File
  *              is on-device and aggregate ONLY — no network sink, no
  *              persistence, no wall-clock, no per-frame sample log, and the
  *              only per-frame label is a closed set of three quality-tier
- *              strings. Performance telemetry that leaked identity, location or
+ *              strings, passed as a constant at every call site. Its types are
+ *              `internal`, i.e. module-visible, so the scans cover the perf
+ *              package AND every other shipped file that names them — plus a
+ *              containment pin that keeps that second set empty. Performance telemetry that leaked identity, location or
  *              connection metadata would be a far worse defect than a slow
  *              globe, so the boundary is pinned rather than reviewed.
  */
@@ -281,6 +284,37 @@ class PrivacyBoundaryTest {
         return files
     }
 
+    /**
+     * The measurement API: the types that hold, reduce or expose frame
+     * durations. Every one of them is `internal`, which in Kotlin means
+     * module-wide — the compiler is perfectly happy for a file in `ui/` or
+     * `service/` to construct a [app.birdo.vpn.perf.GlobeFrameMonitor], take a
+     * snapshot and do anything at all with it.
+     */
+    private val measurementApi = listOf(
+        "GlobeFrameMonitor", "PerfSnapshot", "TierStats", "FrameHistogram",
+        "GlobeTag", "percentileUs", "androidx.metrics.performance",
+    )
+
+    /**
+     * The REAL surface the scans below have to cover: the perf package plus
+     * every other shipped file that names any part of the measurement API.
+     *
+     * Scanning only the package would pin nothing, because the leak can simply
+     * be written one directory over — a privacy test that does not constrain
+     * the surface it claims to is worse than no test, since it manufactures
+     * confidence. Today the containment pin below holds this to exactly the
+     * package; if that ever stops being true, these scans follow the data.
+     */
+    private fun perfSurfaceSources(): List<File> {
+        val perf = perfSources()
+        val inPackage = perf.map { it.canonicalPath }.toSet()
+        val consumers = shippedSources()
+            .filter { it.canonicalPath !in inPackage }
+            .filter { f -> f.readText().let { t -> measurementApi.any { n -> t.contains(n) } } }
+        return perf + consumers
+    }
+
     @Test
     fun `frame timing has no network sink`() {
         // The single most damaging way to get this wrong: a well-meaning
@@ -292,7 +326,7 @@ class PrivacyBoundaryTest {
             "java.net.URL", "HttpURLConnection", "Socket", "sentry", "Sentry",
             "firebase", "Firebase", "analytics", "Analytics",
         )
-        val offenders = perfSources().mapNotNull { f ->
+        val offenders = perfSurfaceSources().mapNotNull { f ->
             val text = f.readText()
             val hits = banned.filter { text.contains(it) }
             if (hits.isEmpty()) null else "${f.name}: $hits"
@@ -314,7 +348,7 @@ class PrivacyBoundaryTest {
             "AppPreferences", "java.io.File", "FileOutputStream", "openFileOutput",
             "Room", "SQLite",
         )
-        val offenders = perfSources().mapNotNull { f ->
+        val offenders = perfSurfaceSources().mapNotNull { f ->
             val text = f.readText()
             val hits = banned.filter { text.contains(it) }
             if (hits.isEmpty()) null else "${f.name}: $hits"
@@ -337,7 +371,7 @@ class PrivacyBoundaryTest {
             "frameStartNanos", "currentTimeMillis", "nanoTime", "SystemClock",
             "Instant", "LocalDate", "LocalTime", "java.util.Date", "Calendar",
         )
-        val offenders = perfSources().mapNotNull { f ->
+        val offenders = perfSurfaceSources().mapNotNull { f ->
             val code = f.readLines().filterNot { line ->
                 val t = line.trimStart()
                 t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")
@@ -372,7 +406,7 @@ class PrivacyBoundaryTest {
             "deviceId", "accessToken", "publicKey", "ipAddress", "endpoint",
             "subscription",
         )
-        val offenders = perfSources().mapNotNull { f ->
+        val offenders = perfSurfaceSources().mapNotNull { f ->
             val text = f.readText()
             val hits = banned.filter { text.contains(it) }
             if (hits.isEmpty()) null else "${f.name}: $hits"
@@ -384,8 +418,10 @@ class PrivacyBoundaryTest {
             offenders,
         )
 
-        // The putState call sites are the ONLY way a label reaches a frame.
-        val callSites = perfSources().filter { it.readText().contains("putState(") }
+        // The putState call sites are the ONLY way a label reaches a frame, and
+        // this looks at EVERY shipped file, not just the perf package —
+        // PerformanceMetricsState is public API that any file could call.
+        val callSites = shippedSources().filter { it.readText().contains("putState(") }
         assertEquals(
             "P6-CLI-PERF-01 broken: a putState call site outside GlobePerfState",
             listOf("GlobePerf.kt"),
@@ -400,6 +436,100 @@ class PrivacyBoundaryTest {
             2,
             putStates,
         )
+    }
+
+    @Test
+    fun `the frame timing measurement API is confined to its own package`() {
+        // This is what makes every scan above mean something. The scans read a
+        // directory; the types are `internal`, so the compiler does not. If a
+        // file in ui/ or service/ can hold a PerfSnapshot, the scans are
+        // pinning a directory rather than a boundary.
+        val perfDir = File(repoRoot, "app/src/main/java/app/birdo/vpn/perf").canonicalPath
+
+        // Vacuity guard: a needle that matches nothing anywhere would make this
+        // scan pass by spelling mistake.
+        val inPackage = perfSources().joinToString(separator = "\n") { it.readText() }
+        assertEquals(
+            "a measurement-API needle matches nothing in the perf package — this " +
+                "scan would be vacuous",
+            emptyList<String>(),
+            measurementApi.filterNot { inPackage.contains(it) },
+        )
+
+        val offenders = shippedSources()
+            .filterNot { it.canonicalPath.startsWith(perfDir) }
+            .mapNotNull { f ->
+                val text = f.readText()
+                val hits = measurementApi.filter { text.contains(it) }
+                if (hits.isEmpty()) null else "${f.name}: $hits"
+            }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: frame-timing measurement types are reachable " +
+                "outside app/.../perf. Everything a file there does with them is " +
+                "invisible to the on-device/no-clock/no-sink scans above. Only " +
+                "the control surface (GlobePerf, GlobePerfState.set, " +
+                "GlobePerfControls, GlobePerfOverlay) may cross the package line. " +
+                "Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+    }
+
+    @Test
+    fun `every frame label call site passes a fixed GlobePerf constant`() {
+        // GlobePerfState.set takes a String and is `internal`, so any file in
+        // the module can stamp an arbitrary label onto every frame —
+        // `set(view, "server:" + server.countryCode)` compiles today and the
+        // closed STATE_VALUES list above does not stop it, because that list
+        // pins the constants, not the call sites.
+        val calls = shippedSources().flatMap { f ->
+            callArgs(f.readText(), "GlobePerfState.set(").map { f.name to it }
+        }
+        assertTrue(
+            "no GlobePerfState.set call site found at all — this scan is vacuous",
+            calls.isNotEmpty(),
+        )
+        val offenders = calls
+            .filterNot { (_, args) ->
+                args.contains("GlobePerf.STATE_") &&
+                    !args.contains('"') && !args.contains('$')
+            }
+            .map { (name, args) -> "$name: ${args.trim()}" }
+        assertEquals(
+            "P6-CLI-PERF-01 broken: a frame label is built at the call site " +
+                "instead of being one of the three GlobePerf.STATE_* constants. " +
+                "That is how a country, a server or an account id gets attached " +
+                "to every frame. Offenders: $offenders",
+            emptyList<String>(),
+            offenders,
+        )
+    }
+
+    /**
+     * The argument text of every `needle(...)` call in [text], with nested
+     * parentheses balanced so a multi-line call is read whole.
+     */
+    private fun callArgs(text: String, needle: String): List<String> {
+        require(needle.endsWith("("))
+        val out = mutableListOf<String>()
+        var from = text.indexOf(needle)
+        while (from >= 0) {
+            var i = from + needle.length - 1
+            val start = i + 1
+            var depth = 0
+            while (i < text.length) {
+                val c = text[i]
+                if (c == '(') depth++
+                if (c == ')') {
+                    depth--
+                    if (depth == 0) break
+                }
+                i++
+            }
+            out += text.substring(start, i.coerceAtMost(text.length))
+            from = text.indexOf(needle, from + needle.length)
+        }
+        return out
     }
 
     @Test

@@ -45,6 +45,24 @@ class GlobeOverdrawTest {
     private val radius = 496.8
     private val atmR = radius * 1.22
 
+    /**
+     * Reads a `private const val NAME = 0.78f` out of the real renderer.
+     *
+     * The saving below used to be computed from float literals typed into this
+     * file, which made it a statement about the test's own constants: widen a
+     * band in WorldGlobe.kt and the assertion still passed. The numbers have to
+     * come from the code being measured or the measurement is decoration.
+     */
+    private fun stop(name: String): Double {
+        val m = Regex("private const val " + name + " = ([0-9.]+)f").find(source)
+        assertTrue(
+            name + " is not a private const val Float in WorldGlobe.kt — the " +
+                "fill-rate arithmetic below has nothing real to read",
+            m != null,
+        )
+        return m!!.groupValues[1].toDouble()
+    }
+
     private fun disc(r: Double) = PI * r * r
     private fun band(outer: Double, innerFraction: Double) =
         PI * (outer * outer - (outer * innerFraction) * (outer * innerFraction))
@@ -107,10 +125,18 @@ class GlobeOverdrawTest {
 
     @Test
     fun `dropping the transparent regions removes about a million blends a frame`() {
+        // Both inner stops are read out of WorldGlobe.kt, so widening either
+        // band in the renderer moves these numbers and this test fails for a
+        // real reason instead of restating its own literals.
+        val atmosphereStop = stop("ATMOSPHERE_INNER_STOP")
+        val limbStop = stop("LIMB_INNER_STOP")
+        assertEquals("the atmosphere band moved", 0.78, atmosphereStop, 1e-9)
+        assertEquals("the limb band moved", 0.65, limbStop, 1e-9)
+
         val atmosphereBefore = disc(atmR)
-        val atmosphereAfter = band(atmR, 0.78)
+        val atmosphereAfter = band(atmR, atmosphereStop)
         val limbBefore = disc(radius)
-        val limbAfter = band(radius, 0.65)
+        val limbAfter = band(radius, limbStop)
 
         val saved = (atmosphereBefore - atmosphereAfter) + (limbBefore - limbAfter)
         assertEquals(
