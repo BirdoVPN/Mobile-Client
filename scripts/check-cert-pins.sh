@@ -156,6 +156,7 @@ EXTRACTORS = [
     ("app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt",         kotlin_doh),
     ("app/src/main/res/xml/network_security_config.xml",                    android_xml),
     ("iosApp/iosApp/Services/APIClient.swift",                              swift_api),
+    ("iosApp/PacketTunnel/PacketTunnelProvider.swift",                      swift_api),
 ]
 
 expected = {h: {p["hash"] for p in v["pins"]} for h, v in ssot["hosts"].items()}
@@ -195,6 +196,63 @@ for rel, fn in EXTRACTORS:
 if not seen_any:
     print("FAIL  no known pin files found in this repo — is the extractor list stale?")
     failed = True
+
+# ---------------------------------------------------------------------------
+# SWEEP: find pin files nobody registered above.
+#
+# The extractor list is hand-maintained, which is the same weakness that
+# produced the drift in the first place: a new file carrying pins is simply
+# never looked at, and the check reports green. This sweep walks the repo for
+# any file containing a hash the SSOT knows about and fails on any that no
+# extractor reads. A pin site the checker cannot see is a pin site that rots.
+#
+# It is how iosApp/PacketTunnel/PacketTunnelProvider.swift was found: a second,
+# FAIL-CLOSED pinning delegate carrying its own stale copy of the pin set.
+# ---------------------------------------------------------------------------
+known_hashes = set()
+for _pins in expected.values():
+    known_hashes |= _pins
+known_hashes |= retired
+
+covered = {os.path.normpath(rel) for rel, _ in EXTRACTORS}
+covered.add(os.path.normpath("third_party/cert-pins.json"))
+covered.add(os.path.normpath("scripts/check-cert-pins.sh"))
+
+SKIP_DIRS = {".git", "build", "target", "node_modules", "dist", ".gradle",
+             "DerivedData", "Pods", ".idea", "vendor", "third_party"}
+TEXT_EXT = {".rs", ".kt", ".kts", ".java", ".swift", ".xml", ".json", ".m",
+            ".mm", ".h", ".c", ".cpp", ".ts", ".js", ".py", ".sh", ".yml",
+            ".yaml", ".toml", ".md", ".plist", ".gradle", ".properties"}
+
+unregistered = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+    for fn in filenames:
+        if os.path.splitext(fn)[1].lower() not in TEXT_EXT:
+            continue
+        full = os.path.join(dirpath, fn)
+        rel = os.path.normpath(os.path.relpath(full, root))
+        if rel in covered:
+            continue
+        try:
+            body = open(full, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        hits = sorted(h for h in known_hashes if h in body)
+        if hits:
+            unregistered.append((rel, hits))
+
+for rel, hits in unregistered:
+    print("FAIL  " + rel + ": contains " + str(len(hits)) + " known certificate "
+          "pin(s), but no extractor in check-cert-pins.sh reads this file, so "
+          "its pins are never checked against the SSOT. Add an extractor.")
+    for h in hits[:3]:
+        print("        " + h)
+    failed = True
+
+if not unregistered:
+    print("ok    sweep: no unregistered pin-bearing files (" +
+          str(len(covered) - 2) + " pin files known to the checker)")
 
 sys.exit(1 if failed else 0)
 PYEOF
