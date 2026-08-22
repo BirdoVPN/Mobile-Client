@@ -68,11 +68,29 @@ internal object GlobePerfState {
     var current: String = GlobePerf.STATE_OFF
         private set
 
+    /**
+     * The last tier the globe actually rendered at, or `null` before it has
+     * rendered at all. NOT the same thing as [GlobePerfControls.forcedLite]:
+     * that flag is `null` on any device running its auto-assigned tier, and on
+     * a low-RAM device the auto tier is LITE — so reading the override to
+     * decide which histogram holds "the globe on" points at an empty FULL
+     * bucket on exactly the old hardware this instrument exists to investigate.
+     *
+     * Deliberately keeps its value while the globe is hidden ([current] goes to
+     * [GlobePerf.STATE_OFF] then): hiding the globe is how the OFF baseline is
+     * collected, and the delta row still has to know which tier it is
+     * subtracting that baseline from.
+     */
+    @Volatile
+    var lastActive: String? = null
+        private set
+
     private var holder: PerformanceMetricsState.Holder? = null
 
     fun set(view: View, value: String) {
         if (!GlobePerf.ENABLED) return
         current = value
+        if (value != GlobePerf.STATE_OFF) lastActive = value
         val h = PerformanceMetricsState.getHolderForHierarchy(view)
         holder = h
         h.state?.putState(GlobePerf.STATE_KEY, value)

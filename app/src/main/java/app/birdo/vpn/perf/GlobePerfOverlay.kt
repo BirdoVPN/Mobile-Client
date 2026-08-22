@@ -60,12 +60,24 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
 
     val refreshHz = view.display?.refreshRate ?: 60f
     var snapshot by remember { mutableStateOf(monitor.snapshot(refreshHz)) }
+    // Which histogram holds "the globe on". Read from the tier the globe
+    // actually rendered at, never from the override flag — see
+    // [GlobePerfState.lastActive].
+    var onTag by remember { mutableStateOf(GlobePerfState.lastActive?.let { GlobeTag.of(it) }) }
     // 2 Hz. Fast enough to watch a change land, slow enough that the HUD is not
-    // a meaningful share of the frames it is reporting on.
+    // a meaningful share of the frames it is reporting on. `revision` skips the
+    // reduction entirely when no frame has landed since the last poll, so a
+    // still screen costs no recomposition at all.
     LaunchedEffect(monitor) {
+        var seen = -1
         while (true) {
             delay(500)
-            snapshot = monitor.snapshot(refreshHz)
+            onTag = GlobePerfState.lastActive?.let { GlobeTag.of(it) }
+            val revision = monitor.revision
+            if (revision != seen) {
+                seen = revision
+                snapshot = monitor.snapshot(refreshHz)
+            }
         }
     }
 
@@ -102,12 +114,18 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
             )
         }
 
-        val on = snapshot.tier(if (forcedLite == true) GlobeTag.LITE else GlobeTag.FULL)
+        val activeTag = onTag?.takeIf { it != GlobeTag.OFF }
+        val on = activeTag?.let { snapshot.tier(it) }
         val off = snapshot.tier(GlobeTag.OFF)
-        if (on != null && off != null && on.frames > 0 && off.frames > 0) {
+        if (activeTag != null && on != null && off != null && on.frames > 0 && off.frames > 0) {
             Hud(
-                text = "delta      " + pad("", 6) +
-                    ms(on.p50Us - off.p50Us) + ms(on.p90Us - off.p90Us) + ms(on.p99Us - off.p99Us),
+                // Names the tier, because on an auto-tiered low-RAM device the
+                // row is LITE-minus-OFF and reading it as FULL is the whole
+                // measurement wrong.
+                text = ("delta " + activeTag.label.removePrefix("globe ").trim()).padEnd(17) +
+                    delta(on.p50Us - off.p50Us) +
+                    delta(on.p90Us - off.p90Us) +
+                    delta(on.p99Us - off.p99Us),
                 color = Color(0xFF34D399),
                 bold = true,
             )
@@ -185,6 +203,18 @@ private fun Hud(
 /** Right-aligned millisecond column, one decimal. `-1 µs` means "no samples". */
 private fun ms(us: Int): String =
     if (us < 0) pad("-", 7) else pad(String.format("%.1f", us / 1000f), 7)
+
+/**
+ * Right-aligned millisecond column for a DIFFERENCE, always signed.
+ *
+ * [ms] renders any negative as "-" because in an absolute column a negative is
+ * the no-samples sentinel. In the delta row a negative is a real and important
+ * result — the globe cost less than the noise floor — and collapsing it into
+ * the same "-" as "no data" hides the one outcome that would end the
+ * investigation.
+ */
+private fun delta(us: Int): String =
+    pad(String.format("%+.1f", us / 1000f), 7)
 
 private fun pad(s: String, width: Int): String =
     if (s.length >= width) s else " ".repeat(width - s.length) + s

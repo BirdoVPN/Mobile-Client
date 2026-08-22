@@ -18,8 +18,8 @@ import kotlin.math.ceil
  * Bucket counts cannot reconstruct a timeline. There is no ordering, no
  * wall-clock, and no way to tell one session's minute from another's. That is a
  * privacy property first and a memory property second — but it is also why this
- * class costs 868 bytes and zero allocations per frame, which matters when the
- * thing being measured is the frame loop itself.
+ * class costs 964 bytes of bucket counts (241 ints) and zero allocations per
+ * frame, which matters when the thing being measured is the frame loop itself.
  *
  * ## Resolution
  *
@@ -29,6 +29,12 @@ import kotlin.math.ceil
  * of the bucket that contains it, so every figure this class returns is an
  * over-estimate by less than one bucket width, never an under-estimate. A
  * measurement tool that flatters the thing it measures is worse than no tool.
+ *
+ * The last bucket is open-ended and therefore has no upper edge to report. A
+ * percentile landing in it returns the exactly-tracked [maxUs] instead, which
+ * is still >= the true value — see [percentileUs]. Reporting the bucket's lower
+ * edge there would turn a 9-second freeze into "2.048 s", which is precisely
+ * the under-estimate the guarantee above exists to rule out.
  */
 internal class FrameHistogram {
 
@@ -70,6 +76,12 @@ internal class FrameHistogram {
      *
      * Nearest-rank, rounding UP: `p99` of 100 frames is the 99th slowest frame,
      * not an interpolation that would quietly discard the tail.
+     *
+     * The final bucket is the open-ended `>= 2.048 s` overflow and has no upper
+     * edge; a quantile landing there reports [maxUs], the largest duration
+     * actually recorded. That is an over-estimate of the quantile (every frame
+     * in the bucket is <= maxUs) and so keeps the never-under-report guarantee,
+     * where [bucketUpperUs] on its own cannot.
      */
     fun percentileUs(p: Double): Int {
         if (frames == 0L) return -1
@@ -78,11 +90,15 @@ internal class FrameHistogram {
         var i = 0
         while (i < BUCKET_COUNT) {
             seen += counts[i]
-            if (seen >= rank) return bucketUpperUs(i)
+            if (seen >= rank) return edgeUs(i)
             i++
         }
-        return bucketUpperUs(BUCKET_COUNT - 1)
+        return edgeUs(BUCKET_COUNT - 1)
     }
+
+    /** [bucketUpperUs], except the open-ended last bucket reports [maxUs]. */
+    private fun edgeUs(i: Int): Int =
+        if (i == BUCKET_COUNT - 1) maxUs.coerceAtLeast(bucketUpperUs(i)) else bucketUpperUs(i)
 
     /**
      * The number the owner should NOT be shown on its own. Kept because a mean
@@ -118,6 +134,12 @@ internal class FrameHistogram {
             else -> 240
         }
 
+        /**
+         * Upper edge of bucket [i]. For the overflow bucket 240 this is its
+         * LOWER edge (2.048 s) — the bucket is open-ended, so no static
+         * function can name its top. Callers that must not under-report go
+         * through [percentileUs], which substitutes the recorded max.
+         */
         fun bucketUpperUs(i: Int): Int = when {
             i < 96 -> (i + 1) * 250
             i < 136 -> T1 + (i - 95) * 1_000

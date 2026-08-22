@@ -93,6 +93,26 @@ class FrameHistogramTest {
     }
 
     @Test
+    fun `a frame past the last bucket is over-reported not truncated`() {
+        // The ladder's last bucket is the open-ended `>= 2.048 s` overflow. Its
+        // "upper edge" is its lower edge, so reporting it would turn a 3-second
+        // freeze into 2.048 s — an UNDER-estimate, which is the one thing the
+        // class guarantees it never returns.
+        val h = FrameHistogram()
+        repeat(98) { h.record(5_000, jank = false) }
+        repeat(2) { h.record(3_000_000, jank = true) }
+        assertEquals(3_000_000, h.maxUs)
+        assertTrue(
+            "p99 under-reports a 3.0s frame as ${h.percentileUs(0.99)}us — the " +
+                "overflow bucket is being reported at its lower edge",
+            h.percentileUs(0.99) >= 3_000_000,
+        )
+        // And the guarantee still holds in the other direction: it must not
+        // invent a number larger than the largest frame actually seen.
+        assertTrue(h.percentileUs(0.99) <= h.maxUs)
+    }
+
+    @Test
     fun `p99 exposes a tail a mean would hide`() {
         val h = FrameHistogram()
         // 98 smooth frames and 2 frozen ones. p50 says 9ms and looks fine; the
@@ -126,7 +146,7 @@ class FrameHistogramTest {
     fun `storage is bounded regardless of how many frames are recorded`() {
         // A million frames is ~5 hours at 60fps. If this class kept samples it
         // would be holding a 5-hour, millisecond-resolution record of when the
-        // user was looking at their screen. It keeps 217 ints.
+        // user was looking at their screen. It keeps BUCKET_COUNT (241) ints.
         val h = FrameHistogram()
         val rng = Random(11)
         repeat(1_000_000) { h.record(rng.nextInt(3_000, 40_000), jank = false) }
