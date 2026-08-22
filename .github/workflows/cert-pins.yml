@@ -1,0 +1,54 @@
+name: Cert Pins
+
+# Enforces the certificate-pin contract that used to be only a doc comment.
+#
+# On every PR that touches a pin file (and on every push to main) the
+# DIVERGENCE check runs offline: each pin file in this repo must declare
+# exactly the pin set that third_party/cert-pins.json lists for the host it
+# pins. This is the check that was missing — the pin sets had silently drifted
+# to 8 pins on desktop vs 3 on Android/iOS.
+#
+# Daily, the full check also fetches the LIVE chain for every pinned host and
+# fails if any host has no matching pin. This repo had NO cert-pin CI at all,
+# which is how both Cloudflare DoH pins in DohResolver.kt stayed dead for
+# months while Android quietly fell back to the system resolver.
+
+on:
+  pull_request:
+    paths:
+      - 'third_party/cert-pins.json'
+      - 'scripts/check-cert-pins.sh'
+      - 'app/src/main/java/app/birdo/vpn/di/NetworkModule.kt'
+      - 'app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt'
+      - 'app/src/main/res/xml/network_security_config.xml'
+      - 'iosApp/iosApp/Services/APIClient.swift'
+      - 'iosApp/PacketTunnel/PacketTunnelProvider.swift'
+      - '.github/workflows/cert-pins.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * *'   # daily 06:17 UTC — catches a CA migration we did not make
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  divergence:
+    name: Pin sets agree with the SSOT
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-cert-pins.sh --offline
+        run: bash scripts/check-cert-pins.sh --offline
+
+  liveness:
+    name: Live chains still satisfy the pins
+    # Only on the schedule / manual runs: a PR must never go red because a
+    # third-party CDN was briefly unreachable from a runner.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-cert-pins.sh (full, incl. live chains)
+        run: bash scripts/check-cert-pins.sh

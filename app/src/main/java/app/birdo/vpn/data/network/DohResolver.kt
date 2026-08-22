@@ -79,17 +79,43 @@ object DohResolver {
             .readTimeout(BOOTSTRAP_TIMEOUT_SEC, TimeUnit.SECONDS)
             .callTimeout(BOOTSTRAP_CALL_TIMEOUT_SEC, TimeUnit.SECONDS)
         if (!BuildConfig.DEBUG) {
-            // SPKI pins for Cloudflare (1.1.1.1). Verified 2026-04-15.
-            // Rotate when intermediates are renewed.
+            // SPKI pins for Cloudflare DoH. SOURCE OF TRUTH:
+            // third_party/cert-pins.json (vendored from birdo-shared);
+            // scripts/check-cert-pins.sh enforces the match in CI.
+            //
+            // Re-measured 2026-08-22 against 1.1.1.1 with SNI cloudflare-dns.com:
+            //     leaf -> SSL.com SSL Intermediate CA ECC R2
+            //          -> SSL.com Root Certification Authority ECC
+            //
+            // BOTH previous pins here were dead, and had been for months:
+            //   * "WoiWRyIO...PB18=" is genuinely DigiCert High Assurance EV
+            //     Root CA (NOT "DigiCert ECC Secure Global Root G3" as labelled)
+            //     and Cloudflare has since migrated off DigiCert entirely.
+            //   * "hxqRlPTu...63Vg=" was not a certificate hash at all. It is a
+            //     corrupted transcription of GTS Root R1 (...63Gc=), differing
+            //     only in the last two base64 characters, and appears in no root
+            //     store. The real Baltimore CyberTrust Root is
+            //     Y9mvm0exBk1JoQ57f9Vm28jKo5lFm/woKcVxrYxu80o=.
+            //
+            // With no pin able to match, every release-build handshake failed
+            // the pinner, resolve() caught it, and DNS fell through to the
+            // SYSTEM resolver — silently defeating the DNS-leak protection this
+            // class exists to provide. Nothing broke visibly, so nobody noticed.
             //
             // P6-CLI-A-06: the dns.google and dns.quad9.net pins were removed
             // with those providers. Do not re-add a provider without re-adding
             // its pins — an unpinned DoH provider is a resolver a hostile
             // network can impersonate.
             val pinner = CertificatePinner.Builder()
-                // Cloudflare DoH — cloudflare-dns.com
-                .add("cloudflare-dns.com", "sha256/WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=") // DigiCert ECC Secure Global Root G3
-                .add("cloudflare-dns.com", "sha256/hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Vg=") // Baltimore CyberTrust root (cross-sign backup)
+                // --- live in the presented chain ---
+                // SSL.com SSL Intermediate CA ECC R2
+                .add("cloudflare-dns.com", "sha256/zGgA4OU4DjJdvpRYUqbi5Vh2g9W5Oc/PgKihy9mkLsE=")
+                // --- dormant overlap ---
+                // SSL.com Root Certification Authority ECC (trust anchor, not sent)
+                .add("cloudflare-dns.com", "sha256/oyD01TTXvpfBro3QSZc1vIlcMjrdLTiL/M9mLCPX+Zo=")
+                // DigiCert High Assurance EV Root CA — Cloudflare's legacy
+                // anchor, kept as migration overlap (correctly labelled now).
+                .add("cloudflare-dns.com", "sha256/WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=")
                 .build()
             builder.certificatePinner(pinner)
         }
