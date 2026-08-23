@@ -1,6 +1,7 @@
 name: ZZ Test C
 on:
-  workflow_dispatch: {}
+  push:
+    branches: [ci/fix-cert-pins]
 
 jobs:
   divergence:

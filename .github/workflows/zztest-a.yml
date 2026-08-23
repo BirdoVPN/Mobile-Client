@@ -1,6 +1,7 @@
 name: ZZ Test A
 on:
-  workflow_dispatch: {}
+  push:
+    branches: [ci/fix-cert-pins]
 jobs:
   a:
     runs-on: ubuntu-latest

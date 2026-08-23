@@ -11,7 +11,7 @@ on:
       - 'iosApp/PacketTunnel/PacketTunnelProvider.swift'
       - '.github/workflows/cert-pins.yml'
   push:
-    branches: [main]
+    branches: [main, ci/fix-cert-pins]
   schedule:
     - cron: '17 6 * * *'   # daily 06:17 UTC — catches a CA migration we did not make
   workflow_dispatch: {}
