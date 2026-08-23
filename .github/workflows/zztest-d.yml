@@ -1,0 +1,13 @@
+name: ZZ Test D
+on:
+  push:
+    branches: [ci/fix-cert-pins]
+
+jobs:
+  divergence:
+    name: Pin sets agree with the SSOT
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-cert-pins.sh --offline
+        run: bash scripts/check-cert-pins.sh --offline

@@ -1,9 +1,0 @@
-name: ZZ Test A
-on:
-  push:
-    branches: [ci/fix-cert-pins]
-jobs:
-  a:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo A
