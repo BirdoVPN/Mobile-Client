@@ -1,5 +1,10 @@
 package app.birdo.vpn.data.repository
 
+import app.birdo.vpn.billing.GooglePlayLinkRequest
+import app.birdo.vpn.billing.GooglePurchaseIntentResponse
+import app.birdo.vpn.billing.StoreErrorEnvelope
+import app.birdo.vpn.billing.StoreLinkOutcome
+import app.birdo.vpn.billing.StoreLinkRefusal
 import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
@@ -808,5 +813,110 @@ class BirdoRepository @Inject constructor(
         } catch (e: Exception) {
             ApiResult.Error(e.message ?: "Network error")
         }
+    }
+
+    // ── Google Play store rail ───────────────────────────────────
+    //
+    // SUBSCRIPTIONS ONLY, by owner decision: vouchers and one-time purchases
+    // stay on the web. See app/src/main/java/app/birdo/vpn/billing/ for the
+    // rest of the rail and GoogleStoreContract.kt for the assumed wire shapes.
+
+    /**
+     * Ask the server to mint the obfuscatedAccountId for the next purchase.
+     *
+     * A 401 here really is a session problem — this endpoint has no coded 401 —
+     * so the ordinary auto-refresh wrapper is correct.
+     */
+    suspend fun mintGooglePurchaseIntent(): ApiResult<GooglePurchaseIntentResponse> =
+        withAutoRefresh("Could not start the purchase") { api.mintGooglePurchaseIntent() }
+
+    /**
+     * Present a Play purchase token for server-side verification.
+     *
+     * NOT routed through [withAutoRefresh], and that is the whole point of this
+     * method existing. `POST payments/store/google/link` answers **401** in two
+     * completely different situations:
+     *
+     *   * WITHOUT `details.code` — the JwtAuthGuard rejected the bearer token.
+     *     A genuine session problem; refresh and retry once.
+     *   * WITH `details.code = GOOGLE_PLAY_PURCHASE_NOT_FOUND` — the session is
+     *     fine and Google says the purchase token is not (yet) a purchase.
+     *
+     * `withAutoRefresh` cannot tell them apart, so it would spend a single-use
+     * refresh token on a perfectly healthy session. Refresh rotation treats a
+     * replayed token as THEFT and revokes the family, so that mistake does not
+     * end in a harmless extra request — it ends in the user being signed out.
+     * The coded 401 is therefore never allowed to reach the refresh path.
+     */
+    suspend fun linkGooglePurchase(purchaseToken: String): StoreLinkOutcome {
+        val body = GooglePlayLinkRequest(purchaseToken = purchaseToken)
+        return try {
+            val first = api.linkGooglePurchase(body)
+            if (first.isSuccessful) {
+                first.body()?.let { return StoreLinkOutcome.Accepted(it) }
+                    ?: return refusal(StoreLinkRefusal.TRANSIENT, null)
+            }
+
+            val parsed = parseStoreError(first)
+            // ONLY an UNCODED 401 is a session problem. See the doc comment.
+            if (first.code() == 401 && parsed.code == null) {
+                return when (refreshToken()) {
+                    RefreshOutcome.SUCCESS -> {
+                        val retry = api.linkGooglePurchase(body)
+                        if (retry.isSuccessful) {
+                            retry.body()?.let { StoreLinkOutcome.Accepted(it) }
+                                ?: refusal(StoreLinkRefusal.TRANSIENT, null)
+                        } else {
+                            val retryParsed = parseStoreError(retry)
+                            refusal(
+                                StoreLinkRefusal.classify(retry.code(), retryParsed.code),
+                                retryParsed.message,
+                            )
+                        }
+                    }
+                    RefreshOutcome.UNAUTHORIZED -> refusal(StoreLinkRefusal.NEEDS_SIGN_IN, null)
+                    RefreshOutcome.TRANSIENT -> refusal(StoreLinkRefusal.TRANSIENT, null)
+                }
+            }
+
+            refusal(StoreLinkRefusal.classify(first.code(), parsed.code), parsed.message)
+        } catch (e: Exception) {
+            // Transport failure: no status, no code. The purchase is still real.
+            refusal(StoreLinkRefusal.TRANSIENT, null)
+        }
+    }
+
+    /**
+     * Prefer the SERVER'S words when it wrote any — the account-sharing and
+     * product-unmapped strings were written for exactly these cases and name
+     * the way out, including the support transfer. Fall back to our own copy
+     * when it did not, or when the body is not something we would show a user.
+     */
+    private fun refusal(kind: StoreLinkRefusal, serverMessage: String?): StoreLinkOutcome.Refused {
+        val text = InputValidator.sanitizeErrorMessage(serverMessage, kind.fallbackMessage)
+        return StoreLinkOutcome.Refused(kind, text)
+    }
+
+    /**
+     * Parse the GlobalExceptionFilter envelope far enough to classify.
+     *
+     * `errorBody()` is a one-shot stream, so it is read exactly once here. An
+     * unparseable body yields nulls, which classify() then resolves from the
+     * HTTP status alone.
+     */
+    private fun parseStoreError(response: Response<*>): ParsedStoreError {
+        val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+            ?: return ParsedStoreError(null, null)
+        val envelope = runCatching {
+            storeErrorJson.decodeFromString(StoreErrorEnvelope.serializer(), raw)
+        }.getOrNull() ?: return ParsedStoreError(null, null)
+        return ParsedStoreError(envelope.details?.code, envelope.message)
+    }
+
+    private data class ParsedStoreError(val code: String?, val message: String?)
+
+    private val storeErrorJson = kotlinx.serialization.json.Json {
+        ignoreUnknownKeys = true
+        coerceInputValues = true
     }
 }

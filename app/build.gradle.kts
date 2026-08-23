@@ -34,13 +34,18 @@ val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint"
     ?: ""
 
 // Google Play distribution flag. When true (CI builds the AAB with
-// -PplayBuild=true), the app removes all steering to external subscription
-// purchase, per Google Play's Payments policy: the free tier works, existing
-// paid accounts are honoured, and premium tiers are shown as an informational
-// feature comparison with no "buy"/"manage on web" purchase link. The default
-// (false) is the direct/sideload APK distributed via GitHub, which is NOT bound
-// by Play policy and keeps the web-billing links for a smoother direct-download
-// upgrade path.
+// -PplayBuild=true) the app sells subscriptions through GOOGLE PLAY BILLING and
+// steers nowhere else, per Google Play's Payments policy. When false (the
+// direct/sideload APK distributed via GitHub, and the F-Droid build) Play
+// Billing cannot work at all — the Play Store will not sell to an app it did
+// not install — so the rail is disabled and the existing web-billing links are
+// kept, which is allowed because those channels are not bound by Play policy.
+//
+// This flag used to mean "hide all purchase steering and show premium tiers as
+// a read-only feature comparison". That was the pre-IAP compromise; the Play
+// build now has a real in-app purchase path, so the comparison-only mode is
+// gone. External LINK-OUT steering is a separate thing and still requires the
+// playExternalOffers flag below.
 val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.getenv("BIRDO_PLAY_BUILD"))
     ?.toBoolean() ?: false
 
@@ -375,6 +380,22 @@ afterEvaluate {
 dependencies {
     // ── Shared KMP Module ────────────────────────────────────────
     implementation(project(":shared"))
+
+    // ── Google Play Billing (in-app subscriptions) ───────────────
+    // Play Console enforces a MINIMUM Billing Library version on upload and
+    // raises it roughly yearly; an old one is rejected at upload, not at
+    // review, so it blocks the release outright. 9.1.0 is the current release
+    // as of 2026-08 (dl.google.com maven-metadata, published 2026-06-18).
+    //
+    // Note the transitive play-services-location: it has been a dependency of
+    // the billing library since 7.x and cannot be excluded without breaking it.
+    // The billing AAR adds exactly one permission to the merged manifest,
+    // com.android.vending.BILLING, and no location permission — verified by
+    // reading app/build/intermediates/merged_manifest/debug/... after
+    // :app:processDebugMainManifest. PlayBillingDependencyTest pins the part
+    // that can regress from a source edit: that nothing ever CALLS the location
+    // APIs, plus the version floor and the lockfile agreeing with this line.
+    implementation("com.android.billingclient:billing:9.1.0")
 
     // ── Play Integrity (official-client attestation) ─────────────
     // Requests a device/app integrity verdict the backend verifies so only the

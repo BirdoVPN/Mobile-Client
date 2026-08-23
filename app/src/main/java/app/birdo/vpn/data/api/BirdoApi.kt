@@ -1,5 +1,9 @@
 package app.birdo.vpn.data.api
 
+import app.birdo.vpn.billing.GooglePlayLinkRequest
+import app.birdo.vpn.billing.GooglePlayLinkResponse
+import app.birdo.vpn.billing.GooglePurchaseIntentResponse
+import app.birdo.vpn.billing.GoogleStoreRoutes
 import app.birdo.vpn.data.model.*
 import retrofit2.Response
 import retrofit2.http.*
@@ -160,4 +164,32 @@ interface BirdoApi {
     suspend fun deletePortForward(
         @Path("id") id: String,
     ): Response<Unit>
+
+    // ── Google Play store rail ───────────────────────────────────
+    //
+    // SUBSCRIPTIONS ONLY. Vouchers and one-time purchases stay on the web by
+    // owner decision, so there is deliberately no consumable/one-time endpoint
+    // here and none is planned.
+    //
+    // The route strings live in GoogleStoreRoutes so a server-side rename is a
+    // one-file change; see GoogleStoreContract.kt for the request/response
+    // shapes this client assumes and where they were read from.
+
+    /**
+     * Mint the obfuscatedAccountId that binds the next purchase to this Birdo
+     * account. Called BEFORE launchBillingFlow, never after: a purchase made
+     * without it cannot be attributed to an anonymous account at all.
+     */
+    @POST(GoogleStoreRoutes.PURCHASE_TOKEN)
+    suspend fun mintGooglePurchaseIntent(): Response<GooglePurchaseIntentResponse>
+
+    /**
+     * Present a Play purchaseToken for verification. The body carries no plan,
+     * no price and no expiry, because nothing this client says about what it
+     * bought is an input to what it gets — the server asks Google.
+     */
+    @POST(GoogleStoreRoutes.LINK)
+    suspend fun linkGooglePurchase(
+        @Body request: GooglePlayLinkRequest,
+    ): Response<GooglePlayLinkResponse>
 }

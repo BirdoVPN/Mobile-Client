@@ -245,6 +245,13 @@
     <string name="subscription_unlimited">Unlimited</string>
     <string name="subscription_popular">POPULAR</string>
     <string name="subscription_current">CURRENT</string>
+    <!-- Google Play Billing (Play build only; see PlayBillingManager) -->
+    <string name="subscription_subscribe">Subscribe</string>
+    <string name="subscription_change_plan">Change plan</string>
+    <string name="subscription_restore">Restore purchases</string>
+    <string name="subscription_retry">Try again</string>
+    <string name="subscription_loading_prices">Loading subscription prices…</string>
+    <string name="subscription_play_manage">Manage or cancel your subscription in the Google Play Store.</string>
     <!-- Billing choice (Play external-offers / link-out). Copy must stay NEUTRAL:
          the programme forbids steering away from, or disparaging, Google's option. -->
     <string name="billing_choice_title">Choose how to subscribe</string>
