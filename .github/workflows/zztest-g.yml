@@ -1,0 +1,12 @@
+name: ZZ Test G
+on:
+  push:
+    branches: [ci/fix-cert-pins]
+
+jobs:
+
+  jobg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo G

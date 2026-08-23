@@ -1,0 +1,12 @@
+name: ZZ Test F
+on:
+  push:
+    branches: [ci/fix-cert-pins]
+
+jobs:
+
+  jobf:
+    name: Pin sets agree with the SSOT
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo F
