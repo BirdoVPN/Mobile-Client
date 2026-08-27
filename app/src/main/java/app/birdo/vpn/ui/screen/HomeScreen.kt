@@ -50,6 +50,7 @@ import app.birdo.vpn.perf.GlobePerf
 import app.birdo.vpn.perf.GlobePerfControls
 import app.birdo.vpn.perf.GlobePerfOverlay
 import app.birdo.vpn.service.VpnState
+import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
@@ -88,7 +89,7 @@ fun HomeScreen(
 ) {
     val palette = BirdoColors.current
     val isConnected = state.vpnState is VpnState.Connected
-    val isConnecting = state.vpnState is VpnState.Connecting
+    val isConnecting = state.vpnState.isConnectingPhase
     val isDisconnecting = state.vpnState is VpnState.Disconnecting
     val isError = state.vpnState is VpnState.Error
     val isKillSwitchActive = state.killSwitchActive
