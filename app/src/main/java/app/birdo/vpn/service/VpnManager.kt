@@ -279,7 +279,7 @@ class VpnManager @Inject constructor(
         // → connect cycle, so every session is a new identity.
         val priorState = _state.value
         if (priorState is VpnState.Connected ||
-            priorState is VpnState.Connecting ||
+            priorState.isConnectingPhase ||
             priorState is VpnState.Reconnecting
         ) {
             // A user-initiated switch must cancel any pending auto-reconnect; the
@@ -561,7 +561,7 @@ class VpnManager @Inject constructor(
         // the ViewModel, so this block is a no-op for them.
         val priorState = _state.value
         if (priorState is VpnState.Connected ||
-            priorState is VpnState.Connecting ||
+            priorState.isConnectingPhase ||
             priorState is VpnState.Reconnecting
         ) {
             if (priorState !is VpnState.Reconnecting) cancelAutoReconnect()
@@ -914,15 +914,15 @@ class VpnManager @Inject constructor(
         if (elapsed < TRANSITION_GUARD_MS) {
             when {
                 // We set Connecting/Reconnecting but service hasn't started yet (still Disconnected)
-                (localState is VpnState.Connecting || localState is VpnState.Reconnecting) && serviceState is VpnState.Disconnected -> return
+                (localState.isConnectingPhase || localState is VpnState.Reconnecting) && serviceState is VpnState.Disconnected -> return
                 // We set Disconnecting but service hasn't stopped yet (still Connected/Connecting)
                 localState is VpnState.Disconnecting &&
-                    (serviceState is VpnState.Connected || serviceState is VpnState.Connecting) -> return
+                    (serviceState is VpnState.Connected || serviceState.isConnectingPhase) -> return
             }
         }
 
         // Safety net: if Connecting for too long (service + guard both stuck), force Error
-        if ((localState is VpnState.Connecting || serviceState is VpnState.Connecting) &&
+        if ((localState.isConnectingPhase || serviceState.isConnectingPhase) &&
             elapsed > CONNECT_STUCK_TIMEOUT_MS
         ) {
             _state.value = VpnState.Error("Connection timed out — server may be unreachable")
@@ -1065,7 +1065,7 @@ class VpnManager @Inject constructor(
             // finally then releases the forced block for a fail-open user so an
             // exception can never leave them stuck behind a total block.
             android.util.Log.e("VpnManager", "reapply rebuild threw", e)
-            if (_state.value is VpnState.Connecting) {
+            if (_state.value.isConnectingPhase) {
                 _state.value = VpnState.Error("Couldn't apply settings")
             }
         } finally {

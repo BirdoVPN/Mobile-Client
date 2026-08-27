@@ -333,7 +333,7 @@ class BirdoVpnService : VpnService() {
     }
 
     private val connectTimeoutRunnable = Runnable {
-        if (currentState is VpnState.Connecting) {
+        if (currentState.isConnectingPhase) {
             Log.e(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
             // Fail closed on timeout, matching every startTunnel failure path.
             // The old cleanupTunnel() closed the blocking vpnInterface with NO
@@ -1653,7 +1653,15 @@ class BirdoVpnService : VpnService() {
 sealed class VpnState {
     data object Disconnected : VpnState()
     data object Connecting : VpnState()
-    /** Authenticating with the API server (pre-tunnel). */
+    /**
+     * Authenticating with the API server (pre-tunnel).
+     *
+     * DEAD as of 2026-08-27: nothing anywhere calls `updateState(Authenticating)`.
+     * Kept because it is part of the public state surface, but it is NOT in
+     * [isConnectingPhase] — adding an unreachable state to a fail-closed
+     * predicate buys nothing and hides the fact that it is unused. If it is ever
+     * published, add it there and to the UI mapping in the same commit.
+     */
     data object Authenticating : VpnState()
     /** Establishing stealth tunnel (Xray Reality). */
     data object StealthConnecting : VpnState()
@@ -1665,3 +1673,37 @@ sealed class VpnState {
     data object KillSwitchActive : VpnState()
     data class Error(val message: String) : VpnState()
 }
+
+/**
+ * True while a tunnel setup is IN FLIGHT — the window in which a second connect
+ * must be refused, a watchdog must be able to fire, and a fail-closed teardown
+ * must be armed before anything touches the existing tunnel.
+ *
+ * WHY THIS EXISTS AS ONE PREDICATE.
+ *
+ * [VpnState.StealthConnecting] is published for the whole stealth setup —
+ * Xray start, the Rosenpass exchange, WgNative init/turnOn and establish() —
+ * and every single consumer that enumerated transitional states listed only
+ * `Connecting` and missed it:
+ *
+ *   - the 30s connect watchdog (BirdoVpnService.connectTimeoutRunnable)
+ *   - VpnManager's 45s stuck-connect safety net
+ *   - VpnManager.connect() / connectMultiHop()'s fail-closed switchTeardown
+ *   - VpnViewModel's three re-entry gates
+ *   - HomeScreen's isConnecting, which drives whether Connect is tappable
+ *
+ * The consequence was a real leak window, not a cosmetic one: during stealth
+ * setup the Home button rendered as an idle, tappable "Connect", a second tap
+ * passed the ViewModel gate AND the switchTeardown predicate, so no blocking
+ * interface was armed — and the second startTunnel's cleanupTunnelDataPlane()
+ * then closed the LIVE tunnel's fd, reverting routing to the physical network
+ * with nothing blocking for the whole Xray+PQ+establish window of the retry.
+ * For a user who explicitly chose fail-closed. Meanwhile neither watchdog could
+ * fire, because both guarded on `Connecting`.
+ *
+ * Enumerating states at each call site is what produced that. Adding a new
+ * transitional state must be a ONE-line change here, not a hunt through five
+ * files — so use this everywhere instead of matching states inline.
+ */
+val VpnState.isConnectingPhase: Boolean
+    get() = this is VpnState.Connecting || this is VpnState.StealthConnecting

@@ -14,6 +14,7 @@ import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
+import app.birdo.vpn.service.isConnectingPhase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -447,7 +448,7 @@ class VpnViewModel @Inject constructor(
 
     fun connect() {
         val currentState = vpnManager.state.value
-        if (currentState is VpnState.Connecting || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
+        if (currentState.isConnectingPhase || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
 
         if (!vpnManager.isVpnPermissionGranted()) {
             _uiState.value = _uiState.value.copy(needsVpnPermission = true)
@@ -477,7 +478,7 @@ class VpnViewModel @Inject constructor(
 
     fun quickConnect() {
         val currentState = vpnManager.state.value
-        if (currentState is VpnState.Connecting || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
+        if (currentState.isConnectingPhase || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
 
         if (!vpnManager.isVpnPermissionGranted()) {
             _uiState.value = _uiState.value.copy(needsVpnPermission = true)
@@ -532,7 +533,7 @@ class VpnViewModel @Inject constructor(
 
     fun connectMultiHop(entryNodeId: String, exitNodeId: String) {
         val currentState = vpnManager.state.value
-        if (currentState is VpnState.Connecting || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
+        if (currentState.isConnectingPhase || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
 
         if (!vpnManager.isVpnPermissionGranted()) {
             _uiState.value = _uiState.value.copy(needsVpnPermission = true)
