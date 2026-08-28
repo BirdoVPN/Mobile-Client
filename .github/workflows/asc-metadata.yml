@@ -1,0 +1,69 @@
+name: ASC metadata
+
+# App Store Connect metadata for the fields Apple's automated review rejects on,
+# for BOTH platforms in one run.
+#
+# WHY THIS EXISTS
+# ---------------
+# Two rejection reasons keep recurring and neither is fixable from Xcode:
+#
+#   3.1.2  "offers auto-renewable subscriptions but does not include a functional
+#           link to the Terms of Use (EULA) in the app metadata that appears on
+#           the app's App Store product page"  -> App DESCRIPTION
+#   2.1.0  "provide detailed responses to the following questions regarding the
+#           app's VPN functionality ... and add this information to the App
+#           Review Information section"        -> App Review Information NOTES
+#
+# Both live in App Store Connect, not in the build, and both must be set on the
+# iOS app AND the macOS app separately. Doing it by hand across two platforms is
+# how one of them ends up missing — which is exactly the state this repo was in.
+#
+# MODE=read makes no changes at all. Run it first: it prints what each platform
+# currently has, so the apply run is made against observed state rather than an
+# assumption about what a previous session did.
+#
+# The credentials are the ones ios.yml and macos.yml already use.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "read = print current state only. apply = write description + review notes."
+        required: true
+        default: read
+        type: choice
+        options: [read, apply]
+      platforms:
+        description: "Which apps to act on"
+        required: true
+        default: both
+        type: choice
+        options: [both, ios, macos]
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: ASC metadata (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@e348410e00f449ec9a71226a191d9f256b2f0e57 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install --quiet pyjwt cryptography requests
+
+      - name: Run
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          MODE: ${{ inputs.mode }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: python .github/scripts/asc_metadata.py
