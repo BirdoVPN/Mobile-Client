@@ -22,7 +22,6 @@ Deliberate design choices, because this writes to a live storefront:
 """
 
 import base64
-import json
 import os
 import sys
 import time
