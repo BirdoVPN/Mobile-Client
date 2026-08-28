@@ -32,7 +32,7 @@ on:
         required: true
         default: read
         type: choice
-        options: [read, apply, plan-attach, attach]
+        options: [read, apply, plan-attach, attach, inspect]
       platforms:
         description: "Which apps to act on"
         required: true
@@ -66,6 +66,14 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
           ASC_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
         run: python .github/scripts/asc_metadata_subs.py
+
+      - name: Inspect review submission items (read-only)
+        if: inputs.mode == 'inspect'
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+        run: python .github/scripts/asc_inspect_items.py
 
       - name: Attach versions + subscriptions to review submissions
         if: inputs.mode == 'plan-attach' || inputs.mode == 'attach'
