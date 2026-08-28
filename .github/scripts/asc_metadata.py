@@ -206,8 +206,25 @@ def handle(asc: Asc, app, want_platform: str, mode: str) -> None:
             continue
 
         notes = detail["attributes"].get("notes") or ""
-        has = "VPN FUNCTIONALITY" in notes
+        # Match on the QUESTIONS themselves, not on a heading. Prepared notes for
+        # the two platforms used different headings ("VPN FUNCTIONALITY" vs
+        # "VPN DATA QUESTIONS"), and keying on a heading reports a false negative
+        # for one of them — which would then append a duplicate.
+        has = any(
+            m in notes
+            for m in (
+                "VPN FUNCTIONALITY",
+                "VPN DATA QUESTIONS",
+                "information is the app collecting",
+                "information is collected using the VPN",
+            )
+        )
         print(f"  [{vs}] review notes: {len(notes)} chars, VPN answers present = {has}")
+        if mode == "read":
+            print("  ----- CURRENT REVIEW NOTES -----")
+            for line in notes.splitlines():
+                print(f"  | {line}")
+            print("  ----- END -----")
         if has or mode != "apply":
             continue
         new_notes = (notes.rstrip() + "\n" + VPN_ANSWERS).strip()
