@@ -95,7 +95,12 @@ def main() -> int:
         # listing useless.
         items = get(
             f"reviewSubmissions/{rs['id']}/items",
-            **{"limit": 50, "include": "appStoreVersion,subscription"},
+            # 'subscription' is NOT a valid relationship name here - Apple
+            # returns 400 PARAMETER_ERROR.INVALID for it. That is the
+            # authoritative answer to whether the API can attach subscriptions
+            # to a review submission: it cannot, and no change of submission
+            # state would make it possible.
+            **{"limit": 50, "include": "appStoreVersion"},
         )
         if not items:
             continue
