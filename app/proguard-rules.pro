@@ -58,14 +58,32 @@
 -dontwarn com.google.errorprone.annotations.Immutable
 -dontwarn com.google.errorprone.annotations.RestrictedApi
 
-# Sentry — keep for proper stack traces
--keep class io.sentry.** { *; }
+# Sentry
+#
+# The blanket `-keep class io.sentry.** { *; }` that used to live here produced
+# 14,384 of the 17,829 total R8 seeds — 80.7% of everything R8 was forbidden to
+# touch — and left 1,239 io/sentry class descriptors unobfuscated in the DEX,
+# against 107 for all of app.birdo.
+#
+# It was also unnecessary. The Sentry AAR ships complete, full-mode-aware
+# consumer rules of its own: an NDK Class.forName keep, a DebugImage JNI keep, a
+# native-methods keep, an enum keep, -keeppackagenames, and keepnames for every
+# Integration. Those are exactly what stack traces need; the blanket rule added
+# nothing except forbidding R8 from optimising the rest of the library.
+#
+# -dontwarn is retained: it suppresses build noise and keeps nothing.
 -dontwarn io.sentry.**
 
-# ── Xray (libXray gomobile binding) ──────────────────────────────
-# libXray uses gomobile reflection bindings — keep all public methods
--keep class libXray.Libxray { *; }
--keep class libXray.** { *; }
+# ── Xray ──────────────────────────────────────────────────────────
+# The libXray gomobile keeps that used to live here were DEAD CONFIGURATION:
+# the AAR is not in the build. There is no app/libs directory and no committed
+# jniLibs; build.gradle.kts documents the AAR as absent, and R8 reported ZERO
+# seeds for libXray. XrayManager's Class.forName therefore always throws and the
+# code always takes the packaged-binary fallback path.
+#
+# Rules for a dependency that is not present cost nothing at runtime but are
+# actively misleading: they imply a binding exists. If the AAR is ever added
+# back, restore the keeps WITH it rather than leaving them here in advance.
 -dontwarn libXray.**
 
 # ── Rosenpass (post-quantum key exchange) ─────────────────────────
