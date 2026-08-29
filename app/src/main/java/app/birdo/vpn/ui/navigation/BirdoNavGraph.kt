@@ -545,6 +545,10 @@ fun BirdoNavGraph(
                         onToggleFavorite = { vpnViewModel.toggleFavorite(it) },
                         onRefresh = { vpnViewModel.loadServers(forceRefresh = true) },
                         onBack = { navController.popBackStack() },
+                        // selectServer can REFUSE (live Multi-Hop downgrade).
+                        // HomeScreen already renders this; without it here the
+                        // refusal was silent on the surface that triggers it.
+                        errorMessage = vpnState.error,
                     )
                 }
             }

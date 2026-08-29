@@ -405,7 +405,6 @@ class VpnViewModel @Inject constructor(
         if (!server.accessible) return
 
         val prev = _uiState.value.selectedServer
-        _uiState.value = _uiState.value.copy(selectedServer = server)
 
         // Live server switch: if already on the tunnel and a DIFFERENT node is
         // picked, switch to it instead of only changing the label. vpnManager
@@ -414,6 +413,59 @@ class VpnViewModel @Inject constructor(
         // connected, this is just a selection used by the next Connect tap.
         val st = vpnManager.state.value
         val onTunnel = st == VpnState.Connected || st is VpnState.Reconnecting
+
+        // REFUSE to downgrade a LIVE Multi-Hop session. A single server cannot
+        // express an entry -> exit pair, so switching here would drop the second
+        // hop while the user kept paying for -- and believing in -- a
+        // jurisdictional separation that no longer existed. They cannot observe
+        // their own egress country, so the app is the only thing that could say
+        // otherwise, and it would carry on drawing the route.
+        //
+        // autoConnectIfEnabled() and quickConnect() already refuse to BUILD a
+        // single hop while Multi-Hop is armed; this path -- switching one that
+        // is already up -- was the one that was missed. iOS refuses it in
+        // selectServerLive().
+        //
+        // ORDER MATTERS, and getting it wrong is how this drifted from iOS in
+        // the first place. The refusal sits AFTER `onTunnel` -- mirroring
+        // selectServerLive's `guard isConnected || isConnecting`, which precedes
+        // its own refusal -- and BEFORE the same-node check, which is also where
+        // iOS puts it. Two reasons it cannot move above `onTunnel`:
+        //
+        //   * A tap that only relabels (nothing connected) can downgrade
+        //     nothing, so refusing it is pure obstruction.
+        //   * activeMultiHopRoute goes STALE. VpnManager clears it in connect()
+        //     and tearDownTunnel() only, and a teardown driven by the service --
+        //     the notification's Disconnect action, onRevoke(), onDestroy() --
+        //     reaches neither. It also gets set on connectMultiHop's API success,
+        //     before the tunnel is established, so a multi-hop dial that fails
+        //     leaves it set with nothing running. Gating on it alone would then
+        //     refuse every server tap while the user is plainly disconnected,
+        //     with no Disconnect control rendered anywhere to satisfy the
+        //     message. Requiring `onTunnel` confines the refusal to a session
+        //     that genuinely exists.
+        //
+        // The field is NOT cleared on a service-published Disconnect on purpose:
+        // startAutoReconnect() reads it to rebuild the SAME route after a drop,
+        // and clearing it there would silently convert a dropped multi-hop into
+        // a single-hop reconnect -- the very failure this guard exists to stop.
+        // No same-node exemption, deliberately, and this matches iOS. `prev` is
+        // the SELECTION label, which during a multi-hop session does not track
+        // the live route at all -- so exempting `prev?.id == server.id` let a tap
+        // on the highlighted row fall through to the `error = null` below and
+        // silently wipe the refusal the previous tap had just raised.
+        if (onTunnel && vpnManager.activeMultiHopRoute != null) {
+            _uiState.value = _uiState.value.copy(
+                error = "Switching servers would replace your Multi-Hop route with " +
+                    "a single hop. Disconnect first if you meant to switch.",
+            )
+            return
+        }
+
+        // Clear the refusal (and any stale connect error) once a selection is
+        // actually accepted -- the Servers tab now renders uiState.error, so a
+        // banner left standing would outlive the tap that caused it.
+        _uiState.value = _uiState.value.copy(selectedServer = server, error = null)
         if (!onTunnel || prev?.id == server.id) return
         if (!vpnManager.isVpnPermissionGranted()) {
             _uiState.value = _uiState.value.copy(needsVpnPermission = true)

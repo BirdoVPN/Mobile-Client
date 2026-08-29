@@ -41,6 +41,9 @@ import androidx.annotation.StringRes
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.VpnServer
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.utils.countryCodeToFlag
@@ -77,6 +80,11 @@ fun ServerListScreen(
     onToggleFavorite: (String) -> Unit,
     onRefresh: () -> Unit,
     onBack: () -> Unit,
+    // A tap here can be REFUSED (selectServer declines to downgrade a live
+    // Multi-Hop route). Without somewhere to say so, the refusal was a tap that
+    // changed nothing and explained nothing on the app's primary switching
+    // surface -- indistinguishable from the screen being broken.
+    errorMessage: String? = null,
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var activeFilter by remember { mutableStateOf(ServerFilter.All) }
@@ -127,6 +135,41 @@ fun ServerListScreen(
                 )
             },
         )
+
+        // ── Refusal / error banner ──
+        // Assertive live region: an alert that appears silently is an alert a
+        // TalkBack user never receives, and silence is the defect this exists
+        // to fix. Mirrors HomeScreen's HomeBanner, which is private to that file.
+        if (errorMessage != null) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .semantics { liveRegion = LiveRegionMode.Assertive },
+                shape = RoundedCornerShape(14.dp),
+                color = BirdoRedBg,
+                border = BorderStroke(1.dp, BirdoRed.copy(alpha = 0.3f)),
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.ErrorOutline,
+                        contentDescription = null,
+                        tint = BirdoRed,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        text = errorMessage,
+                        color = BirdoRed,
+                        fontSize = 13.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
 
         // ── Search bar ──
         BirdoTextField(

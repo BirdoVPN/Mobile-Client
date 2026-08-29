@@ -37,10 +37,16 @@ final class KeychainService: @unchecked Sendable {
     var accessToken: String? { read(key: "access_token") }
     var refreshToken: String? { read(key: "refresh_token") }
     var userEmail: String? { read(key: "user_email") }
-    /// SSOT device identity ("ios_" + hash, minted by APIClient). Deliberately
-    /// survives `clear()`: it keys the server-side trusted-device 2FA skip and
-    /// connection-slot reclamation, so it must be stable across logins AND
-    /// reinstalls (keychain items outlive the app bundle).
+    /// SSOT device identity ("ios_" + a random v4 UUID, minted by APIClient).
+    /// Deliberately survives `clear()`: it keys the server-side trusted-device
+    /// 2FA skip and connection-slot reclamation, so it must be stable across
+    /// logins AND reinstalls (keychain items outlive the app bundle).
+    ///
+    /// It was a hash of the IDFV until that was found to be recomputable by
+    /// anyone holding the IDFV, and impossible to rotate away from. Erasure now
+    /// rotates it (`APIClient.resetDeviceIdentity`); a value already stored by
+    /// an older install is read back unchanged so nobody burns a device slot on
+    /// upgrade.
     var deviceId: String? { read(key: "device_id") }
     /// The 24-digit anonymous account ID — the SOLE recovery credential for an
     /// anonymous account. Deliberately survives `clear()` (logout) so a user
