@@ -74,6 +74,30 @@ class VpnManager @Inject constructor(
      */
     @Volatile private var activeMultiHop: Pair<String, String>? = null
 
+    /**
+     * Read-only view of [activeMultiHop] for the UI layer, so a caller can
+     * refuse to downgrade a live multi-hop route to a single hop (see
+     * `VpnViewModel.selectServer`).
+     *
+     * NOT a liveness signal on its own, and callers MUST combine it with the
+     * connection state. It is set by [connectMultiHop] on API success -- before
+     * the tunnel is actually established -- and cleared ONLY by [connect] and
+     * [tearDownTunnel]. Any teardown that bypasses this class therefore leaves
+     * it set with nothing running: the notification's Disconnect action goes
+     * straight to `BirdoVpnService` ACTION_STOP, as do `onRevoke()` and
+     * `onDestroy()`, and none of them re-enters [tearDownTunnel].
+     *
+     * That staleness is deliberate rather than a bug to fix here:
+     * [startAutoReconnect] reads this field to rebuild the SAME entry -> exit
+     * route after a drop, and clearing it on a service-published Disconnected
+     * would silently turn a dropped multi-hop session into a single-hop
+     * reconnect -- exactly the downgrade the readers exist to prevent.
+     *
+     * So: "the pair this session would rebuild", not "a session is live now".
+     */
+    val activeMultiHopRoute: Pair<String, String>?
+        get() = activeMultiHop
+
     /** Debounced settings-changed signals — see [requestSettingsReapply]. */
     private val reapplyRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 16)
 

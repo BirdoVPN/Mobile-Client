@@ -67,6 +67,9 @@ final class APIClient: @unchecked Sendable {
     /// `deviceContextLock` (an unsynchronised var in an `@unchecked Sendable`
     /// class is a data race, and a hard error under Swift 6 strict checking).
     private let deviceContextLock = NSLock()
+    /// A mint that has not yet reached the keychain. Keeps the id stable for
+    /// this process while writes keep failing -- see `deviceContext()`.
+    private var pendingDeviceId: String?
     private var _cachedDeviceContext: DeviceIdentity?
     private var cachedDeviceContext: DeviceIdentity? {
         get { deviceContextLock.lock(); defer { deviceContextLock.unlock() }; return _cachedDeviceContext }
@@ -280,6 +283,12 @@ final class APIClient: @unchecked Sendable {
             authenticated: true,
             refreshOn401: true
         )
+        // PRIVACY: only after the erasure actually succeeded (performRequest
+        // throws otherwise, so a failed delete leaves the identity alone and the
+        // account stays usable). The deviceId would otherwise survive and link
+        // the NEXT account registered on this handset to the one just erased.
+        // Android does the same in `BirdoRepository`'s deletion path.
+        resetDeviceIdentity()
     }
 
     // MARK: - Servers
@@ -689,38 +698,97 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Device Identity
 
-    /// SSOT device identity, mirroring Android's derivation
-    /// (`"android_" + first32hex(SHA-256(SSAID + "|birdo-vpn-device-ssot-v1"))`):
-    /// iOS uses `"ios_" + first32hex(SHA-256(IDFV + salt))`, PERSISTED IN THE
-    /// KEYCHAIN so it survives reinstall (bare `identifierForVendor` does not —
-    /// it resets when the last vendor app is removed). The stored value is
-    /// load-bearing: it keys the server-side trusted-device 2FA skip and
-    /// connection-slot reclamation (unstable IDs read as "device limit
-    /// reached" after every reinstall). Cached after the first resolution;
-    /// the mint is idempotent while IDFV is available.
+    /// SSOT device identity, PERSISTED IN THE KEYCHAIN so it survives reinstall
+    /// (bare `identifierForVendor` does not — it resets when the last vendor app
+    /// is removed). The stored value is load-bearing: it keys the server-side
+    /// trusted-device 2FA skip and connection-slot reclamation (unstable IDs
+    /// read as "device limit reached" after every reinstall). Cached after the
+    /// first resolution.
+    ///
+    /// The id is RANDOM, not derived. It used to be
+    /// `"ios_" + first32hex(SHA-256(IDFV + "|birdo-vpn-device-ssot-v1"))`, whose
+    /// doc comment described Android as doing the same with SSAID — but Android
+    /// moved to a random v4 UUID (`DeviceInfoProvider.mintDeviceId`) and this
+    /// side was left behind, so the comment documented behaviour that no longer
+    /// existed on either platform. A derived id is recomputable by anyone who
+    /// learns the IDFV, since the salt is a constant in a PUBLIC repository, and
+    /// it cannot be rotated away from because the seed does not change.
+    ///
+    /// Reading the stored value back UNCHANGED is the migration hinge: an
+    /// install that already minted the derived id keeps it, so no existing user
+    /// burns a device slot or loses their trusted-device 2FA skip on upgrade.
+    /// Only a fresh mint gets the random form.
     private func deviceContext() async -> DeviceIdentity {
         if let cached = cachedDeviceContext { return cached }
-        let (idfv, osVersion) = await MainActor.run {
-            (PlatformDevice.vendorId, PlatformDevice.systemVersion)
-        }
+        let osVersion = await MainActor.run { PlatformDevice.systemVersion }
         let deviceId: String
+        var persisted = true
         if let stored = keychain.deviceId {
             deviceId = stored
         } else {
-            let seed = (idfv ?? UUID().uuidString) + "|birdo-vpn-device-ssot-v1"
-            let derived = "ios_" + String(Self.sha256Hex(seed).prefix(32))
-            // Re-check before persisting: a concurrent first-call may have
-            // minted (only divergent when IDFV was nil — random fallback).
+            // Reuse this process's earlier mint before making a new one. The old
+            // id was DERIVED, so an unpersisted mint was harmless -- the next
+            // call recomputed the same value. A random mint has no such safety:
+            // without this, every failed keychain write would hand the backend a
+            // BRAND NEW device, burning a connection slot from the plan's cap
+            // and losing the trusted-device 2FA skip each time.
+            //
+            // The window is real, not theoretical: items are written
+            // `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, so a write
+            // before the first unlock after a reboot fails -- and a boot-time
+            // VPN auto-connect is exactly when this runs.
+            let minted = pendingDeviceId ?? Self.mintDeviceId()
+            pendingDeviceId = minted
+            // Re-check before persisting: a concurrent first-call may already
+            // have minted, and two random mints would diverge.
             if let raced = keychain.deviceId {
                 deviceId = raced
             } else {
-                keychain.saveDeviceId(derived)
-                deviceId = derived
+                persisted = keychain.saveDeviceId(minted)
+                deviceId = minted
             }
         }
         let context = DeviceIdentity(id: deviceId, name: Self.deviceModelName(), osVersion: osVersion)
-        cachedDeviceContext = context
+        // Cache only a DURABLE identity. If the keychain write failed, leaving
+        // the cache empty means the next call retries the write (reusing
+        // pendingDeviceId, so the id itself stays stable for this process)
+        // instead of settling for an id that dies with the process.
+        if persisted {
+            cachedDeviceContext = context
+        }
         return context
+    }
+
+    /// Mint a fresh random device id. `UUID()` is backed by the system CSPRNG,
+    /// so the value is a v4 UUID rather than a hash of anything and carries no
+    /// information about the handset or the user. Mirrors Android's
+    /// `DeviceInfoProvider.mintDeviceId`.
+    private static func mintDeviceId() -> String {
+        "ios_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
+
+    /// PRIVACY: throw this install's device identity away and mint a new one.
+    ///
+    /// Called on successful account deletion (GDPR Art. 17) so the identity dies
+    /// with the account it identified, and the next account registered on this
+    /// handset cannot be joined to the erased one. Android has done this since
+    /// the SSAID work (`BirdoRepository` calls `resetDeviceIdentity()` in the
+    /// deletion path); iOS had no equivalent, so an erased account's device
+    /// fingerprint outlived the erasure.
+    ///
+    /// Deliberately NOT called anywhere a live account still exists: the
+    /// backend's `(userId, deviceId)` SSOT and its connect-time slot
+    /// reclamation both key on this value, so rotating under a live account
+    /// strands the old device row against the plan's device cap.
+    func resetDeviceIdentity() {
+        let fresh = Self.mintDeviceId()
+        keychain.saveDeviceId(fresh)
+        // Drop any unpersisted mint too, or a failed write during rotation would
+        // resurrect the ERASED account's id on the next deviceContext() call.
+        pendingDeviceId = nil
+        // The cache holds the OLD id; leaving it would keep sending the erased
+        // identity for the rest of the process lifetime.
+        cachedDeviceContext = nil
     }
 
     /// Hardware model identifier, e.g. "Apple iPhone15,3" (Android parity is
@@ -732,15 +800,6 @@ final class APIClient: @unchecked Sendable {
             String(decoding: rawBuffer.prefix(while: { $0 != 0 }), as: UTF8.self)
         }
         return machine.isEmpty ? "iOS device" : "Apple \(machine)"
-    }
-
-    private static func sha256Hex(_ input: String) -> String {
-        let data = Data(input.utf8)
-        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        data.withUnsafeBytes {
-            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
-        }
-        return hash.map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Core HTTP

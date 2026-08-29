@@ -1252,6 +1252,7 @@ class BirdoVpnService : VpnService() {
             }
         } else {
             var hasV6Default = false
+            var hasV4Default = false
             for (cidr in config.allowedIps ?: listOf("0.0.0.0/0", "::/0")) {
                 try {
                     val parts = cidr.split("/")
@@ -1260,6 +1261,7 @@ class BirdoVpnService : VpnService() {
                         if (cidr.contains(":")) 128 else 32
                     builder.addRoute(addr, prefix)
                     if (addr == "::" && prefix == 0) hasV6Default = true
+                    if (addr == "0.0.0.0" && prefix == 0) hasV4Default = true
                 } catch (e: Exception) { Log.w(TAG, "Invalid route: $cidr — ${e.message}") }
             }
             // Enforce an IPv6 blackhole client-side even when the server omits
@@ -1271,6 +1273,36 @@ class BirdoVpnService : VpnService() {
             if (!hasV6Default) {
                 try { builder.addRoute("::", 0) } catch (e: Exception) {
                     Log.w(TAG, "Failed to add IPv6 blackhole route: ${e.message}")
+                }
+            }
+            // The IPv4 twin of the check above, which did not exist. Every
+            // addRoute() failure in the loop is caught and merely logged, so a
+            // single unparseable entry silently drops that route -- and if the
+            // dropped one is the default, IPv4 leaves on the physical interface
+            // in cleartext while establish() succeeds and the UI says Connected.
+            // Two inputs reach this, both surviving the validation that runs
+            // first (WireGuardConfigBuilder.isValidCidr, applied at line 1014
+            // before buildVpnInterface is called at 1015):
+            //   * a well-formed list with no v4 default, e.g.
+            //     ["10.0.0.0/8", "::/0"] -- every entry valid, no 0.0.0.0/0;
+            //   * an entry with host bits set, e.g. "10.0.0.1/8", which
+            //     isValidCidr accepts but VpnService.Builder.addRoute rejects
+            //     with "Bad address", so the catch above swallows it.
+            // A prefix-less "0.0.0.0" is NOT one of them -- isValidCidr requires
+            // a '/' and the connect aborts before reaching this loop.
+            //
+            // Unlike IPv6 -- where we blackhole and a failure merely leaks v6 --
+            // there is no safe degraded state for v4 here, so fail CLOSED:
+            // returning null makes the caller engage the kill switch and surface
+            // an error, which is the correct outcome for a privacy VPN that
+            // cannot capture the traffic it promised to capture.
+            if (!hasV4Default) {
+                try {
+                    builder.addRoute("0.0.0.0", 0)
+                    Log.w(TAG, "allowedIps carried no IPv4 default route - added one")
+                } catch (e: Exception) {
+                    Log.e(TAG, "No IPv4 default route and none could be added: ${e.message}")
+                    return null
                 }
             }
         }

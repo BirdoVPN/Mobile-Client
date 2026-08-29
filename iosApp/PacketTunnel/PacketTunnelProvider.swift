@@ -119,8 +119,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             // definition. No private key, preshared key or token can reach this
             // closure. Verbose output, which does carry endpoints and per-packet
             // detail, stays redacted.
+            //
+            // CORRECTION: the reasoning above holds for the `peer` argument but
+            // NOT for the wrapped error beside it. wireguard-go logs
+            //   device/send.go:135
+            //   Errorf("%v - Failed to send handshake initiation: %v", peer, err)
+            // and on Apple platforms that `err` originates in
+            // `conn.WriteMsgUDP(..., msg.Addr)` (conn/bind_std.go:428, the
+            // non-Linux branch), which returns a `*net.OpError` rendering as
+            //   write udp 0.0.0.0:0->203.0.113.7:51820: <syscall error>
+            // i.e. the VPN server's address and port. Publishing that writes the
+            // chosen node into the unified log and into every sysdiagnose taken
+            // afterwards, which is exactly what the adapter-start log below
+            // already marks %{private}@ to avoid. It also fires precisely when
+            // handshakes fail, i.e. on networks already interfering with us.
+            //
+            // Keep the DISCRIMINANT public and the payload private, the same
+            // split `errorDiscriminant` applies to adapter errors. The macOS
+            // bring-up failure that motivated public error logging still reads
+            // as "Unable to update bind" with no logging profile installed, so
+            // field diagnosability is preserved.
             if type == .error {
-                os_log("wg: %{public}@", log: self.log, type: type, message)
+                os_log("wg: %{public}@ | %{private}@",
+                       log: self.log, type: type, Self.logSummary(message), message)
             } else {
                 os_log("wg: %{private}@", log: self.log, type: type, message)
             }
@@ -636,6 +657,48 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return "\(type(of: error)).\(caseName)"
         }
         return String(describing: type(of: error))
+    }
+
+    /// Payload-free summary of a tunnel log line, for the PUBLIC half of the
+    /// split log in `wgLogger`.
+    ///
+    /// Take the text before the first ": " -- Go wraps causes as
+    /// `"<context>: <cause>"`, and the cause is what carries addresses
+    /// (`*net.OpError` renders as `"write udp <laddr>-><raddr>: ..."`) -- then
+    /// scrub what remains.
+    ///
+    /// The scrub is NOT belt-and-braces. The first draft published the head
+    /// unconditionally on the theory that an address always follows the
+    /// separator; that is false for a site in this very repo.
+    /// `WireGuardAdapter.swift:409` logs, at error level,
+    ///   "Failed to resolve endpoint \(resolutionError.address): ..."
+    /// and `DNSResolutionError.address` is the bare hostname with no port
+    /// (`DNSResolver.swift:58`), so the endpoint sits BEFORE the first ": ".
+    /// That line fires on `startTunnel` and on every network change, i.e.
+    /// exactly when a user is roaming.
+    ///
+    /// A second draft caught it only because production node names contain a
+    /// digit (`de1.birdo.app`): the test required `isNumber` before treating a
+    /// token as an address, so `frankfurt.birdo.app` would have published
+    /// cleanly. A naming convention enforced nowhere is not a privacy control.
+    ///
+    /// So: redact per TOKEN and on STRUCTURE alone. Any whitespace-separated
+    /// token containing "." or ":" is replaced, which covers hostnames, IPv4,
+    /// IPv6 and host:port with no digit test. wireguard-go's abbreviated peer
+    /// id is `peer(____<U+2026>____)` over the base64 alphabet, which contains
+    /// neither character, so the useful context survives -- as does the macOS
+    /// bring-up failure that motivated public error logging ("Unable to update
+    /// bind"). Android redacts hostnames structurally too (`BirdoApp.kt`);
+    /// this brings the twins back into line.
+    static func logSummary(_ message: String) -> String {
+        let head = message.components(separatedBy: ": ").first ?? message
+        let scrubbed = head
+            .split(separator: " ", omittingEmptySubsequences: false)
+            .map { token -> String in
+                token.contains(".") || token.contains(":") ? "<redacted>" : String(token)
+            }
+            .joined(separator: " ")
+        return String(scrubbed.prefix(120))
     }
 
     /// Diagnostic strings only — never key material, never the endpoint.
