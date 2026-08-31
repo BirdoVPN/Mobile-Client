@@ -127,6 +127,26 @@ struct LoginView: View {
 
     private var isCreatedStep: Bool { authVM.createdAnonymousId != nil }
 
+    /// Shown while a Connect tap mints an anonymous account. No fields, no
+    /// tabs, nothing to fill in -- the point is that the user supplies nothing.
+    private var provisioningStep: some View {
+        VStack(spacing: BirdoTheme.Spacing.md) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Setting up your anonymous account")
+                .font(BirdoTheme.Fonts.body)
+                .foregroundStyle(BirdoTheme.onSurface)
+            Text("No email, no password, nothing to fill in. You'll get a 24-digit number to save.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, BirdoTheme.Spacing.xl)
+        .accessibilityIdentifier("login_provisioning_step")
+    }
+
     private var header: some View {
         VStack(spacing: 0) {
             statusBadge
@@ -188,6 +208,14 @@ struct LoginView: View {
         Group {
             if let id = authVM.createdAnonymousId {
                 createdIdStep(id)
+                    .transition(stepTransition)
+            } else if authVM.isAutoProvisioning {
+                // Connect was tapped with no account. An anonymous one is
+                // being minted with no input from the user, so the tabbed
+                // sign-in form must not appear -- showing it is precisely what
+                // guideline 5.1.1(v) rejected. On failure the flag clears and
+                // the form returns, carrying the error.
+                provisioningStep
                     .transition(stepTransition)
             } else if authVM.requiresTwoFactor {
                 // 2FA replaces the whole tabbed form; tabs stay hidden and

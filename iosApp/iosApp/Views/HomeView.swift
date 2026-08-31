@@ -469,7 +469,7 @@ struct HomeView: View {
     /// the tunnel, nothing else. Everything named here is reachable right now,
     /// with no account and no sign-in.
     private var guestNote: some View {
-        Text("Settings, VPN settings, the locations list and the policies all work without an account.")
+        Text("No account needed. Connect and we'll set up an anonymous one \u{2014} no email, no password.")
             .font(BirdoTheme.Fonts.bodySmall)
             .foregroundStyle(BirdoTheme.onSurfaceMuted)
             .multilineTextAlignment(.center)
@@ -681,7 +681,10 @@ struct HomeView: View {
         // Say what the tap will actually do. A guest tapping "Connect" gets a
         // sign-in sheet, and a button that hides that is the kind of thing App
         // Review calls misleading.
-        if isGuest && cta == .idle { return "Sign in to connect" }
+        // Not "Sign in to connect" any more: nothing is signed in to. The
+        // label has to match what the tap now does, or it re-states the very
+        // barrier that was removed.
+        if isGuest && cta == .idle { return "Connect" }
         switch cta {
         case .connected: return "Disconnect"
         case .busy:      return "Connecting…"
@@ -742,10 +745,13 @@ struct HomeView: View {
 
     private func handleConnectTap() {
         if isGuest {
-            // Point-of-use prompt, not a launch wall. Connecting really does
-            // need an account (per-account WireGuard peer + connection slot),
-            // and the sheet says exactly that.
-            authVM.requestSignIn(.connect)
+            // Connecting does need an account server-side (per-account
+            // WireGuard peer + connection slot), but it does NOT need one the
+            // user has to fill in a form for. Mint an anonymous account on the
+            // tap -- no email, no password, no typing -- which is what
+            // guideline 5.1.1(v) requires: the user enters no personal
+            // information to reach a non-account-based feature.
+            authVM.provisionAnonymouslyAndConnect()
         } else if vpnVM.isConnected {
             disconnectHapticTick += 1
             vpnVM.disconnect()

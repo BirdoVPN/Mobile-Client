@@ -54,6 +54,10 @@ final class AuthViewModel: ObservableObject {
     @Published var isPresentingSignIn = false
     /// Why the sheet was raised — drives the headline/explanation on it.
     @Published private(set) var signInReason: SignInReason = .generic
+    /// True while a Connect tap is minting an anonymous account with no user
+    /// input. The sheet renders a progress step instead of the tabbed form, so
+    /// the success path never shows a sign-in UI at all.
+    @Published private(set) var isAutoProvisioning = false
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -241,7 +245,45 @@ final class AuthViewModel: ObservableObject {
         signInReason = reason
         error = nil
         anonymousCreateFailureStatus = nil
+        isAutoProvisioning = false
         isPresentingSignIn = true
+    }
+
+    /// Connect with no account and no typing (App Store guideline 5.1.1(v)).
+    ///
+    /// macOS 1.4.23 was rejected because tapping Connect opened the sign-in
+    /// sheet: "the app requires users to register before accessing non
+    /// account-based features (connect to VPN)". 5.1.1 prohibits requiring a
+    /// user to ENTER PERSONAL INFORMATION. An anonymous account satisfies that
+    /// literally -- it is a server-minted 24-digit number, there is no email,
+    /// no password and no form -- so the fix is to mint one on the tap instead
+    /// of asking for credentials.
+    ///
+    /// The sheet is still presented, for one reason: the minted ID is the
+    /// account's ONLY credential and is displayed exactly once, and that step
+    /// (with its dismissal guard) already lives there. Minting silently with
+    /// nothing shown would hand the user an account they can never recover
+    /// after a reinstall -- trading Apple's objection for a worse one of ours.
+    ///
+    /// Two deliberate fall-backs to the ordinary sheet:
+    ///   * no consent yet -- creating an account for someone who deferred the
+    ///     GDPR consent is not ours to do, so ask first;
+    ///   * creation failed -- `isAutoProvisioning` clears, the tabbed form
+    ///     appears carrying `AnonymousCreateFailure`'s copy, and the user can
+    ///     retry or pick another method. The wall only ever appears when the
+    ///     no-input path could not be delivered.
+    func provisionAnonymouslyAndConnect() {
+        guard !isLoggedIn, !isLoading else { return }
+        guard hasConsented else {
+            requestSignIn(.connect)
+            return
+        }
+        signInReason = .connect
+        error = nil
+        anonymousCreateFailureStatus = nil
+        isAutoProvisioning = true
+        isPresentingSignIn = true
+        createAnonymousAccount()
     }
 
     /// Close the sheet and drop back into the guest shell.
@@ -256,6 +298,7 @@ final class AuthViewModel: ObservableObject {
         if requiresTwoFactor { cancelTwoFactor() }
         error = nil
         anonymousCreateFailureStatus = nil
+        isAutoProvisioning = false
         isPresentingSignIn = false
     }
 
@@ -479,6 +522,10 @@ final class AuthViewModel: ObservableObject {
                 // app. AnonymousCreateFailure says whose limit it is, how long
                 // it lasts, and that the app still works without an account.
                 let status = Self.httpStatus(of: error)
+                // Hand the user back the ordinary sheet: the no-input path
+                // could not be delivered, and AnonymousCreateFailure's copy
+                // lives on the tabbed form.
+                self.isAutoProvisioning = false
                 self.anonymousCreateFailureStatus = status
                 self.error = AnonymousCreateFailure.message(
                     status: status,
@@ -502,6 +549,7 @@ final class AuthViewModel: ObservableObject {
     func acknowledgeAnonymousId() {
         guard createdAnonymousId != nil else { return }
         createdAnonymousId = nil
+        isAutoProvisioning = false
         isLoggedIn = true
         refreshStatsInBackground()
     }
