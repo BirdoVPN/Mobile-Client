@@ -28,8 +28,36 @@ struct BirdoVPNApp: App {
                     .environmentObject(settingsVM)
                     .environmentObject(storeVM)
                     .preferredColorScheme(.dark)
+                    // macOS 1.4.23 was rejected under guideline 4 for "windows
+                    // laid out and partially hidden under menu bar".
+                    //
+                    // The scene declared no size, no minimum and no
+                    // resizability, so AppKit derived the window from the
+                    // content -- and the content is a phone-shaped column
+                    // (`.frame(maxWidth: 480)` inside a TabView) with no lower
+                    // bound. A window whose height is driven by intrinsic
+                    // content can exceed the usable screen, and once it does,
+                    // its top is placed above the menu bar rather than below
+                    // it. Reviewed on a 15-inch MacBook Air, where the visible
+                    // height is ~900pt.
+                    //
+                    // A floor on the CONTENT is what stops that: it makes the
+                    // window's minimum a number we chose rather than whatever
+                    // the tallest screen's layout happens to produce.
+                    #if os(macOS)
+                    .frame(minWidth: 420, minHeight: 560)
+                    #endif
             }
         }
+        // 760pt fits inside the 15-inch Air's usable height with room for the
+        // menu bar; 480 matches the content column so nothing is letterboxed on
+        // first launch. `.contentMinSize` ties the smallest window to the frame
+        // floor above, so the user cannot drag it to a size where the title bar
+        // is unreachable.
+        #if os(macOS)
+        .defaultSize(width: 480, height: 760)
+        .windowResizability(.contentMinSize)
+        #endif
     }
 
     /// Android bottom-bar chrome (spec-home-servers-consent §2): surface fill,
