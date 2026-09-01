@@ -316,7 +316,9 @@ struct HomeView: View {
         if vpnVM.isSwitching { return "Switching server…" }
         // Guests can never be connected; say what is true rather than the bare
         // "Not Connected", which reads like a failure the user should fix.
-        if isGuest && !vpnVM.isConnected && !vpnVM.isConnecting { return "Not signed in" }
+        // Not "Not signed in": nothing needs signing in to any more, and the
+        // status line is one of the surfaces a reviewer reads.
+        if isGuest && !vpnVM.isConnected && !vpnVM.isConnecting { return "Not connected" }
         if vpnVM.isConnected {
             return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
         }
@@ -469,7 +471,7 @@ struct HomeView: View {
     /// the tunnel, nothing else. Everything named here is reachable right now,
     /// with no account and no sign-in.
     private var guestNote: some View {
-        Text("Settings, VPN settings, the locations list and the policies all work without an account.")
+        Text("No account needed. Connect and we'll set up an anonymous one \u{2014} no email, no password.")
             .font(BirdoTheme.Fonts.bodySmall)
             .foregroundStyle(BirdoTheme.onSurfaceMuted)
             .multilineTextAlignment(.center)
@@ -658,9 +660,9 @@ struct HomeView: View {
     private var guestLocationsSubtitle: String {
         let count = vpnVM.publicLocations.count
         if count > 0 {
-            return "\(count) \(count == 1 ? "city" : "cities")  ·  sign in to connect"
+            return "\(count) \(count == 1 ? "city" : "cities")"
         }
-        return vpnVM.isLoadingPublicLocations ? "Loading…" : "Sign in to connect"
+        return vpnVM.isLoadingPublicLocations ? "Loading…" : "Tap Connect to start"
     }
 
     // MARK: - Connect CTA (Android §3.4 CompactConnectButton)
@@ -681,7 +683,10 @@ struct HomeView: View {
         // Say what the tap will actually do. A guest tapping "Connect" gets a
         // sign-in sheet, and a button that hides that is the kind of thing App
         // Review calls misleading.
-        if isGuest && cta == .idle { return "Sign in to connect" }
+        // Not "Sign in to connect" any more: nothing is signed in to. The
+        // label has to match what the tap now does, or it re-states the very
+        // barrier that was removed.
+        if isGuest && cta == .idle { return "Connect" }
         switch cta {
         case .connected: return "Disconnect"
         case .busy:      return "Connecting…"
@@ -742,10 +747,13 @@ struct HomeView: View {
 
     private func handleConnectTap() {
         if isGuest {
-            // Point-of-use prompt, not a launch wall. Connecting really does
-            // need an account (per-account WireGuard peer + connection slot),
-            // and the sheet says exactly that.
-            authVM.requestSignIn(.connect)
+            // Connecting does need an account server-side (per-account
+            // WireGuard peer + connection slot), but it does NOT need one the
+            // user has to fill in a form for. Mint an anonymous account on the
+            // tap -- no email, no password, no typing -- which is what
+            // guideline 5.1.1(v) requires: the user enters no personal
+            // information to reach a non-account-based feature.
+            authVM.provisionAnonymously(reason: .connect)
         } else if vpnVM.isConnected {
             disconnectHapticTick += 1
             vpnVM.disconnect()

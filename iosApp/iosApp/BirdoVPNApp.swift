@@ -2,6 +2,9 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @main
 struct BirdoVPNApp: App {
@@ -28,9 +31,80 @@ struct BirdoVPNApp: App {
                     .environmentObject(settingsVM)
                     .environmentObject(storeVM)
                     .preferredColorScheme(.dark)
+                    // macOS 1.4.23 was rejected under guideline 4 for "windows
+                    // laid out and partially hidden under menu bar".
+                    //
+                    // The scene declared no size, no minimum and no
+                    // resizability, so AppKit derived the window from the
+                    // content -- and the content is a phone-shaped column
+                    // (`.frame(maxWidth: 480)` inside a TabView) with no lower
+                    // bound. A window whose height is driven by intrinsic
+                    // content can exceed the usable screen, and once it does,
+                    // its top is placed above the menu bar rather than below
+                    // it. Reviewed on a 15-inch MacBook Air, where the visible
+                    // height is ~900pt.
+                    //
+                    // The minimum below is a FLOOR, not a ceiling -- it cannot
+                    // stop a window being too tall, and saying otherwise (as an
+                    // earlier draft of this comment did) describes a mechanism
+                    // that does not exist. It is here so the window cannot be
+                    // dragged small enough to hide its own title bar.
+                    //
+                    // What actually fixes the rejection is clampToVisibleFrame
+                    // below. `.defaultSize` alone would not: AppKit restores a
+                    // saved frame in preference to it, and the reviewer's Mac
+                    // has ALREADY RUN the rejected build, so it has a saved
+                    // frame -- the very machine the fix must work on is the one
+                    // where the default is ignored.
+                    #if os(macOS)
+                    .frame(minWidth: 420, minHeight: 560)
+                    .onAppear { MacWindow.clampToVisibleFrame() }
+                    #endif
+            }
+        }
+        // 760pt fits inside the 15-inch Air's usable height with room for the
+        // menu bar; 480 matches the content column so nothing is letterboxed on
+        // first launch. `.contentMinSize` ties the smallest window to the frame
+        // floor above, so the user cannot drag it to a size where the title bar
+        // is unreachable.
+        #if os(macOS)
+        .defaultSize(width: 480, height: 760)
+        .windowResizability(.contentMinSize)
+        #endif
+    }
+
+    #if os(macOS)
+    /// Pull the window fully inside the screen's usable area.
+    ///
+    /// Guideline 4 was "windows laid out and partially hidden under menu bar".
+    /// `visibleFrame` already excludes the menu bar and the Dock, so clamping
+    /// to it is exactly the property the reviewer checked. Runs on appear
+    /// because a RESTORED frame is applied after the scene's defaultSize, and
+    /// a Mac that ran the rejected build has one saved.
+    enum MacWindow {
+        static func clampToVisibleFrame() {
+            DispatchQueue.main.async {
+                guard let window = NSApplication.shared.keyWindow
+                        ?? NSApplication.shared.windows.first,
+                      let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+                else { return }
+                var frame = window.frame
+                frame.size.width = min(frame.width, visible.width)
+                frame.size.height = min(frame.height, visible.height)
+                frame.origin.x = min(max(frame.minX, visible.minX),
+                                     visible.maxX - frame.width)
+                // maxY is the top edge. Keeping it at or below the visible
+                // maximum is what keeps the title bar CLEAR of the menu bar --
+                // an earlier wording of this comment said the opposite, and
+                // described the defect as though it were the goal.
+                frame.origin.y = min(max(frame.minY, visible.minY),
+                                     visible.maxY - frame.height)
+                guard frame != window.frame else { return }
+                window.setFrame(frame, display: true)
             }
         }
     }
+    #endif
 
     /// Android bottom-bar chrome (spec-home-servers-consent §2): surface fill,
     /// hairlineSoft top divider, selected = accent, unselected =

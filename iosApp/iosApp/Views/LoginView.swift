@@ -90,6 +90,13 @@ struct LoginView: View {
     /// save-your-ID step, where leaving would lose the only credential.
     @ViewBuilder
     private var sheetChrome: some View {
+        // Visible during provisioning too. Hiding it was justified by the
+        // claim that dismissing mid-mint loses the only credential -- and that
+        // claim is false in this repo's own terms: completeAuthentication
+        // persists the id (`keychain.saveAnonymousId`) and ProfileView renders
+        // it afterwards. What hiding it actually bought was an uncancellable
+        // modal for as long as two 30-second requests can take, on the first
+        // tap of the app's primary button, which on macOS reads as a hang.
         if !isCreatedStep {
             VStack(spacing: 10) {
                 HStack {
@@ -127,6 +134,29 @@ struct LoginView: View {
 
     private var isCreatedStep: Bool { authVM.createdAnonymousId != nil }
 
+    /// Shown while a Connect tap mints an anonymous account. No fields, no
+    /// tabs, nothing to fill in -- the point is that the user supplies nothing.
+    private var provisioningStep: some View {
+        VStack(spacing: BirdoTheme.Spacing.md) {
+            // Every sibling branch renders this; without it a failure that
+            // clears the spinner but not the step is invisible.
+            errorBanner
+            ProgressView()
+                .controlSize(.large)
+            Text("Setting up your anonymous account")
+                .font(BirdoTheme.Fonts.bodyMedium)
+                .foregroundStyle(BirdoTheme.onSurface)
+            Text("No email, no password, nothing to fill in. You'll get a 24-digit number to save.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, BirdoTheme.Spacing.xl)
+        .accessibilityIdentifier("login_provisioning_step")
+    }
+
     private var header: some View {
         VStack(spacing: 0) {
             statusBadge
@@ -151,6 +181,10 @@ struct LoginView: View {
 
     private var headlineText: String {
         if isCreatedStep { return "Account created" }
+        // NOT signInReason.title here: that is literally "Sign in to connect",
+        // the sentence guideline 5.1.1(v) was rejected over. Gating only the
+        // form would have left the rejected copy sitting above the spinner.
+        if authVM.isAutoProvisioning { return "Setting you up" }
         // On the sheet the headline names the action that asked for sign-in
         // ("Sign in to connect"), so the prompt reads as an answer to what the
         // user just tapped rather than a generic wall.
@@ -160,6 +194,7 @@ struct LoginView: View {
 
     private var subtitleText: String {
         if isCreatedStep { return "Save your recovery ID" }
+        if authVM.isAutoProvisioning { return "No account needed" }
         if authVM.requiresTwoFactor { return "Enter your authenticator code" }
         return "Sign in to access the sovereign network"
     }
@@ -188,6 +223,14 @@ struct LoginView: View {
         Group {
             if let id = authVM.createdAnonymousId {
                 createdIdStep(id)
+                    .transition(stepTransition)
+            } else if authVM.isAutoProvisioning {
+                // Connect was tapped with no account. An anonymous one is
+                // being minted with no input from the user, so the tabbed
+                // sign-in form must not appear -- showing it is precisely what
+                // guideline 5.1.1(v) rejected. On failure the flag clears and
+                // the form returns, carrying the error.
+                provisioningStep
                     .transition(stepTransition)
             } else if authVM.requiresTwoFactor {
                 // 2FA replaces the whole tabbed form; tabs stay hidden and

@@ -54,6 +54,27 @@ final class AuthViewModel: ObservableObject {
     @Published var isPresentingSignIn = false
     /// Why the sheet was raised — drives the headline/explanation on it.
     @Published private(set) var signInReason: SignInReason = .generic
+    /// True while a Connect tap is minting an anonymous account with no user
+    /// input. The sheet renders a progress step instead of the tabbed form, so
+    /// the success path never shows a sign-in UI at all.
+    @Published private(set) var isAutoProvisioning = false
+    /// The Connect (or location) tap that was interrupted by the consent
+    /// screen, so accepting consent can hand back to it.
+    ///
+    /// Consumed in `acceptConsent()`. (An earlier comment here claimed this
+    /// happened "synchronously"; it does not -- the hand-back is deferred to
+    /// the next main-queue turn so the sheet's Consent -> Login swap can
+    /// settle. Being wrong about that is what let the value latch unowned.)
+    ///
+    /// It is cleared by `requestSignIn` and `dismissSignIn`, so only the tap
+    /// that set it can spend it. Without that, swiping the consent sheet away
+    /// left it armed and the NEXT consent acceptance -- raised from Profile,
+    /// from Settings, from anywhere -- minted an anonymous account nobody asked
+    /// for, spent one of three mints per IP per hour, and locked the sheet onto
+    /// "save your recovery ID" instead of the login form that was requested.
+    private var pendingProvisionReason: SignInReason?
+    /// The in-flight anonymous mint, retained so backing out can CANCEL it.
+    private var provisioningTask: Task<Void, Never>?
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -208,6 +229,15 @@ final class AuthViewModel: ObservableObject {
     func acceptConsent() {
         hasConsented = true
         consentDeferred = false
+        // Hand back to the tap that was interrupted. Deferred so the sheet's
+        // ConsentView -> LoginView swap settles before provisioning re-enters
+        // and flips it to the progress step.
+        if let resumed = pendingProvisionReason {
+            pendingProvisionReason = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.provisionAnonymously(reason: resumed)
+            }
+        }
         let defaults = UserDefaults.standard
         defaults.set(true, forKey: "gdpr_consented")
         defaults.removeObject(forKey: Self.consentDeferredKey)
@@ -241,7 +271,99 @@ final class AuthViewModel: ObservableObject {
         signInReason = reason
         error = nil
         anonymousCreateFailureStatus = nil
+        isAutoProvisioning = false
+        // Only the tap that armed a continuation may spend it.
+        pendingProvisionReason = nil
         isPresentingSignIn = true
+    }
+
+    /// Connect with no account and no typing (App Store guideline 5.1.1(v)).
+    ///
+    /// macOS 1.4.23 was rejected because tapping Connect opened the sign-in
+    /// sheet: "the app requires users to register before accessing non
+    /// account-based features (connect to VPN)". 5.1.1 prohibits requiring a
+    /// user to ENTER PERSONAL INFORMATION. An anonymous account satisfies that
+    /// literally -- it is a server-minted 24-digit number, there is no email,
+    /// no password and no form -- so the fix is to mint one on the tap instead
+    /// of asking for credentials.
+    ///
+    /// The sheet is still presented, for one reason: the minted ID is the
+    /// account's ONLY credential and is displayed exactly once, and that step
+    /// (with its dismissal guard) already lives there. Minting silently with
+    /// nothing shown would hand the user an account they can never recover
+    /// after a reinstall -- trading Apple's objection for a worse one of ours.
+    ///
+    /// Two deliberate fall-backs to the ordinary sheet:
+    ///   * no consent yet -- creating an account for someone who deferred the
+    ///     GDPR consent is not ours to do, so ask first;
+    ///   * creation failed -- `isAutoProvisioning` clears, the tabbed form
+    ///     appears carrying `AnonymousCreateFailure`'s copy, and the user can
+    ///     retry or pick another method. The wall only ever appears when the
+    ///     no-input path could not be delivered.
+    /// Deliberately does NOT dial the tunnel afterwards.
+    ///
+    /// Auto-connecting was attempted twice and was wrong twice. Both attempts
+    /// hung a reactive trigger on state that does not behave as assumed: a
+    /// guest has no authenticated server list at all, so firing on the login
+    /// flip called connect() against a nil selection ("Select a server
+    /// first"), and firing on the selection instead went SILENT whenever the
+    /// post-login fetch failed or returned nothing usable -- no tunnel, no
+    /// error, nothing -- while leaving the intent latched to dial later from a
+    /// pull-to-refresh the user never connected to a Connect tap.
+    ///
+    /// Guideline 5.1.1(v) requires that connecting not demand registration. It
+    /// does not require the app to connect on the user's behalf. The extra tap
+    /// costs the user one gesture, after a screen that already asks them to
+    /// save a recovery number; the reactive trigger cost three review rounds
+    /// and was never once correct. Removing it deletes that whole class.
+    ///
+    /// - Parameter reason: what the user was trying to do. Drives the sheet
+    ///   copy if the mint FAILS and the ordinary form has to come back;
+    ///   hardcoding `.connect` told a user who tapped a location row
+    ///   "Sign in to connect", which is both wrong and the rejected sentence.
+    func provisionAnonymously(reason: SignInReason = .connect) {
+        guard !isLoggedIn else { return }
+        // An un-acknowledged ID is still on screen. Minting again would show
+        // account A's number while account B's tokens land in the keychain --
+        // the user saves a credential for an account they no longer hold, and
+        // account A is orphaned forever.
+        guard createdAnonymousId == nil else {
+            isPresentingSignIn = true
+            return
+        }
+        // Already minting. Re-present rather than returning silently: the
+        // second tap of a double-tap must not look like a dead button.
+        guard !isLoading else {
+            isPresentingSignIn = true
+            return
+        }
+        // Consent first: creating a server-side account for someone who chose
+        // "Not now" on the privacy screen is not ours to do.
+        //
+        // requestSignIn is the right destination, and an earlier comment here
+        // claiming otherwise ("the sheet has no way to consent") was simply
+        // false -- ContentView.swift:187 renders ConsentView inside this very
+        // sheet whenever hasConsented is false. The alternative built on that
+        // false belief swapped the ROOT ROUTE to the consent screen, which
+        // destroys the tab shell. Checked before restoring it.
+        guard hasConsented else {
+            // Remember what they tapped. Without this, accepting consent
+            // dropped them on the tabbed registration form under the headline
+            // "Sign in to connect" -- the exact wall, and the exact sentence,
+            // guideline 5.1.1(v) was rejected over. Anyone who chose "Not now"
+            // on the first-launch privacy screen hit it, which plausibly
+            // includes App Review, and the new copy had just promised them no
+            // form was coming.
+            pendingProvisionReason = reason
+            requestSignIn(reason)
+            return
+        }
+        signInReason = reason
+        error = nil
+        anonymousCreateFailureStatus = nil
+        isAutoProvisioning = true
+        isPresentingSignIn = true
+        createAnonymousAccount()
     }
 
     /// Close the sheet and drop back into the guest shell.
@@ -254,8 +376,22 @@ final class AuthViewModel: ObservableObject {
     func dismissSignIn() {
         guard createdAnonymousId == nil else { return }
         if requiresTwoFactor { cancelTwoFactor() }
+        // Backing out of a mint must ABORT it, not just hide it. Leaving the
+        // Task running meant "Not now" still created the account, spent one of
+        // three mints per IP per hour and signed the user in with nothing on
+        // screen to say so -- and, because isLoading stayed true, the next
+        // Connect tap hit the in-flight guard and re-opened the sheet with
+        // isAutoProvisioning already false, which renders the tabbed
+        // registration form under "Sign in to connect": the exact screen and
+        // the exact sentence guideline 5.1.1(v) was rejected over, three taps
+        // from a cold start.
+        provisioningTask?.cancel()
+        provisioningTask = nil
+        if isAutoProvisioning { isLoading = false }
         error = nil
         anonymousCreateFailureStatus = nil
+        isAutoProvisioning = false
+        pendingProvisionReason = nil
         isPresentingSignIn = false
     }
 
@@ -450,10 +586,17 @@ final class AuthViewModel: ObservableObject {
         pendingEmail = nil
         pendingContext = .anonymousCreate
 
-        Task { [weak self] in
+        provisioningTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let registration = try await api.registerAnonymous()
+                // The user backed out while this was in flight. Drop the
+                // result rather than signing them into an account they
+                // abandoned; the request itself cannot be un-sent.
+                if Task.isCancelled {
+                    self.isLoading = false
+                    return
+                }
                 if await completeAuthentication(tokens: registration.tokens,
                                                 knownEmail: nil,
                                                 knownAnonymousId: registration.anonymousId,
@@ -463,12 +606,23 @@ final class AuthViewModel: ObservableObject {
                         ?? keychain.anonymousId
                     if let minted {
                         createdAnonymousId = minted
+                        isAutoProvisioning = false
                     } else {
                         // Server didn't surface the ID anywhere (should never
                         // happen) — nothing to acknowledge; proceed.
+                        isAutoProvisioning = false
                         isLoggedIn = true
                         refreshStatsInBackground()
                     }
+                } else {
+                    // completeAuthentication returned FALSE without throwing --
+                    // a keychain write failure. The account exists server-side,
+                    // its ID was never persisted, and without clearing the flag
+                    // the sheet stays on a spinner that cannot render the error
+                    // completeAuthentication set. One of three mints per IP per
+                    // hour has already been spent, so say so rather than
+                    // spinning.
+                    isAutoProvisioning = false
                 }
             } catch {
                 // NOT mapAuthError: its 429 branch says "Too many attempts.
@@ -479,6 +633,10 @@ final class AuthViewModel: ObservableObject {
                 // app. AnonymousCreateFailure says whose limit it is, how long
                 // it lasts, and that the app still works without an account.
                 let status = Self.httpStatus(of: error)
+                // Hand the user back the ordinary sheet: the no-input path
+                // could not be delivered, and AnonymousCreateFailure's copy
+                // lives on the tabbed form.
+                self.isAutoProvisioning = false
                 self.anonymousCreateFailureStatus = status
                 self.error = AnonymousCreateFailure.message(
                     status: status,
@@ -502,6 +660,7 @@ final class AuthViewModel: ObservableObject {
     func acknowledgeAnonymousId() {
         guard createdAnonymousId != nil else { return }
         createdAnonymousId = nil
+        isAutoProvisioning = false
         isLoggedIn = true
         refreshStatsInBackground()
     }
