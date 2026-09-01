@@ -134,7 +134,7 @@ struct LoginView: View {
             ProgressView()
                 .controlSize(.large)
             Text("Setting up your anonymous account")
-                .font(BirdoTheme.Fonts.body)
+                .font(BirdoTheme.Fonts.bodyMedium)
                 .foregroundStyle(BirdoTheme.onSurface)
             Text("No email, no password, nothing to fill in. You'll get a 24-digit number to save.")
                 .font(BirdoTheme.Fonts.bodySmall)
