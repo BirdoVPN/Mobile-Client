@@ -434,7 +434,12 @@ struct ServerListView: View {
                 } else {
                     ForEach(locations) { location in
                         PublicLocationRow(location: location) {
-                            authVM.requestSignIn(.servers)
+                            // The connect path was un-gated on Home only; this
+                            // row still raised the tabbed registration form,
+                            // which is the same wall guideline 5.1.1(v)
+                            // rejected. thenConnect is false -- the user asked
+                            // for the list to work, not for a tunnel.
+                            authVM.provisionAnonymously(thenConnect: false)
                         }
                     }
                 }

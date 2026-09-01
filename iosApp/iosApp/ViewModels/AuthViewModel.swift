@@ -58,6 +58,12 @@ final class AuthViewModel: ObservableObject {
     /// input. The sheet renders a progress step instead of the tabbed form, so
     /// the success path never shows a sign-in UI at all.
     @Published private(set) var isAutoProvisioning = false
+    /// Set when the provisioning run was started by a Connect tap, so the
+    /// caller can dial the tunnel once the account exists and its ID has been
+    /// acknowledged. Without it the button says "Connect", mints an account,
+    /// and leaves the user sitting on a disconnected Home -- the label would be
+    /// describing something the code does not do.
+    @Published var connectAfterProvisioning = false
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -272,18 +278,49 @@ final class AuthViewModel: ObservableObject {
     ///     appears carrying `AnonymousCreateFailure`'s copy, and the user can
     ///     retry or pick another method. The wall only ever appears when the
     ///     no-input path could not be delivered.
-    func provisionAnonymouslyAndConnect() {
-        guard !isLoggedIn, !isLoading else { return }
-        guard hasConsented else {
-            requestSignIn(.connect)
+    /// - Parameter thenConnect: dial the tunnel once the ID is acknowledged.
+    ///   Home passes true (the button says "Connect"); the servers list passes
+    ///   false, where the user only wants the list to become usable.
+    func provisionAnonymously(thenConnect: Bool) {
+        guard !isLoggedIn else { return }
+        // An un-acknowledged ID is still on screen. Minting again would show
+        // account A's number while account B's tokens land in the keychain --
+        // the user saves a credential for an account they no longer hold, and
+        // account A is orphaned forever.
+        guard createdAnonymousId == nil else {
+            isPresentingSignIn = true
             return
         }
+        // Already minting. Re-present rather than returning silently: the
+        // second tap of a double-tap must not look like a dead button.
+        guard !isLoading else {
+            isPresentingSignIn = true
+            return
+        }
+        // Consent first. `deferConsent()` is a real state -- "Not now" on the
+        // privacy screen -- and creating a server-side account for someone who
+        // chose it is not ours to do. Sending them to the sign-in sheet instead
+        // is a dead end: the sheet has no way to consent. Clearing the deferral
+        // puts the consent screen back, which is the only surface that can.
+        guard hasConsented else {
+            connectAfterProvisioning = thenConnect
+            reopenConsent()
+            return
+        }
+        connectAfterProvisioning = thenConnect
         signInReason = .connect
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = true
         isPresentingSignIn = true
         createAnonymousAccount()
+    }
+
+    /// Put the privacy screen back for a user who deferred it. Leaves
+    /// `hasConsented` false -- this asks, it does not decide.
+    func reopenConsent() {
+        consentDeferred = false
+        UserDefaults.standard.set(false, forKey: Self.consentDeferredKey)
     }
 
     /// Close the sheet and drop back into the guest shell.
@@ -299,6 +336,7 @@ final class AuthViewModel: ObservableObject {
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
+        connectAfterProvisioning = false
         isPresentingSignIn = false
     }
 
@@ -506,12 +544,24 @@ final class AuthViewModel: ObservableObject {
                         ?? keychain.anonymousId
                     if let minted {
                         createdAnonymousId = minted
+                        isAutoProvisioning = false
                     } else {
                         // Server didn't surface the ID anywhere (should never
                         // happen) — nothing to acknowledge; proceed.
+                        isAutoProvisioning = false
                         isLoggedIn = true
                         refreshStatsInBackground()
                     }
+                } else {
+                    // completeAuthentication returned FALSE without throwing --
+                    // a keychain write failure. The account exists server-side,
+                    // its ID was never persisted, and without clearing the flag
+                    // the sheet stays on a spinner that cannot render the error
+                    // completeAuthentication set. One of three mints per IP per
+                    // hour has already been spent, so say so rather than
+                    // spinning.
+                    isAutoProvisioning = false
+                    connectAfterProvisioning = false
                 }
             } catch {
                 // NOT mapAuthError: its 429 branch says "Too many attempts.
@@ -526,6 +576,7 @@ final class AuthViewModel: ObservableObject {
                 // could not be delivered, and AnonymousCreateFailure's copy
                 // lives on the tabbed form.
                 self.isAutoProvisioning = false
+                self.connectAfterProvisioning = false
                 self.anonymousCreateFailureStatus = status
                 self.error = AnonymousCreateFailure.message(
                     status: status,

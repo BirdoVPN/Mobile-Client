@@ -200,7 +200,11 @@ struct ContentView: View {
             // A freshly minted anonymous ID is shown EXACTLY once and is the
             // account's only credential: swiping the sheet away there would
             // lose it. Every other step is freely dismissable.
-            .interactiveDismissDisabled(authVM.createdAnonymousId != nil)
+            // Also locked while minting: dismissing mid-flight does not
+            // cancel the request, so the account completes off-screen and its
+            // only credential is lost.
+            .interactiveDismissDisabled(authVM.createdAnonymousId != nil
+                                        || authVM.isAutoProvisioning)
             .modifier(SignInSheetSizing())
         }
         // S1 FIX: loadServers() was previously reachable ONLY from the manual

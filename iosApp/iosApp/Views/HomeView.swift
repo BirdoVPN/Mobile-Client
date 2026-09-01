@@ -84,6 +84,15 @@ struct HomeView: View {
             vpnVM.refreshSubscription()
             if isGuest { vpnVM.loadPublicLocations() }
         }
+        // The Connect tap that minted the account finishes here. Gated on
+        // isLoggedIn, which acknowledgeAnonymousId() sets only after the user
+        // has seen and dismissed their recovery ID -- connecting earlier would
+        // pull that number off the screen.
+        .onChange(of: authVM.isLoggedIn) { _, loggedIn in
+            guard loggedIn, authVM.connectAfterProvisioning else { return }
+            authVM.connectAfterProvisioning = false
+            vpnVM.connect()
+        }
         // Multi-Hop flow — pushed for SOVEREIGN users from the top-bar chip.
         .navigationDestination(isPresented: $showMultiHop) {
             MultiHopView()
@@ -316,7 +325,9 @@ struct HomeView: View {
         if vpnVM.isSwitching { return "Switching server…" }
         // Guests can never be connected; say what is true rather than the bare
         // "Not Connected", which reads like a failure the user should fix.
-        if isGuest && !vpnVM.isConnected && !vpnVM.isConnecting { return "Not signed in" }
+        // Not "Not signed in": nothing needs signing in to any more, and the
+        // status line is one of the surfaces a reviewer reads.
+        if isGuest && !vpnVM.isConnected && !vpnVM.isConnecting { return "Not connected" }
         if vpnVM.isConnected {
             return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
         }
@@ -658,9 +669,9 @@ struct HomeView: View {
     private var guestLocationsSubtitle: String {
         let count = vpnVM.publicLocations.count
         if count > 0 {
-            return "\(count) \(count == 1 ? "city" : "cities")  ·  sign in to connect"
+            return "\(count) \(count == 1 ? "city" : "cities")"
         }
-        return vpnVM.isLoadingPublicLocations ? "Loading…" : "Sign in to connect"
+        return vpnVM.isLoadingPublicLocations ? "Loading…" : "Tap Connect to start"
     }
 
     // MARK: - Connect CTA (Android §3.4 CompactConnectButton)
@@ -751,7 +762,7 @@ struct HomeView: View {
             // tap -- no email, no password, no typing -- which is what
             // guideline 5.1.1(v) requires: the user enters no personal
             // information to reach a non-account-based feature.
-            authVM.provisionAnonymouslyAndConnect()
+            authVM.provisionAnonymously(thenConnect: true)
         } else if vpnVM.isConnected {
             disconnectHapticTick += 1
             vpnVM.disconnect()

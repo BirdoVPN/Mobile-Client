@@ -90,7 +90,11 @@ struct LoginView: View {
     /// save-your-ID step, where leaving would lose the only credential.
     @ViewBuilder
     private var sheetChrome: some View {
-        if !isCreatedStep {
+        // Also hidden while provisioning. "Not now" here closes the sheet
+        // WITHOUT cancelling the in-flight request, so the account completes
+        // with nothing on screen and its 24-digit ID -- the only credential --
+        // is never shown.
+        if !isCreatedStep && !authVM.isAutoProvisioning {
             VStack(spacing: 10) {
                 HStack {
                     Spacer(minLength: 0)
@@ -131,6 +135,9 @@ struct LoginView: View {
     /// tabs, nothing to fill in -- the point is that the user supplies nothing.
     private var provisioningStep: some View {
         VStack(spacing: BirdoTheme.Spacing.md) {
+            // Every sibling branch renders this; without it a failure that
+            // clears the spinner but not the step is invisible.
+            errorBanner
             ProgressView()
                 .controlSize(.large)
             Text("Setting up your anonymous account")
@@ -171,6 +178,10 @@ struct LoginView: View {
 
     private var headlineText: String {
         if isCreatedStep { return "Account created" }
+        // NOT signInReason.title here: that is literally "Sign in to connect",
+        // the sentence guideline 5.1.1(v) was rejected over. Gating only the
+        // form would have left the rejected copy sitting above the spinner.
+        if authVM.isAutoProvisioning { return "Setting you up" }
         // On the sheet the headline names the action that asked for sign-in
         // ("Sign in to connect"), so the prompt reads as an answer to what the
         // user just tapped rather than a generic wall.
@@ -180,6 +191,7 @@ struct LoginView: View {
 
     private var subtitleText: String {
         if isCreatedStep { return "Save your recovery ID" }
+        if authVM.isAutoProvisioning { return "No account needed" }
         if authVM.requiresTwoFactor { return "Enter your authenticator code" }
         return "Sign in to access the sovereign network"
     }
