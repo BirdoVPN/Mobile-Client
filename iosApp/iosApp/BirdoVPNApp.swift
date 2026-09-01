@@ -93,8 +93,10 @@ struct BirdoVPNApp: App {
                 frame.size.height = min(frame.height, visible.height)
                 frame.origin.x = min(max(frame.minX, visible.minX),
                                      visible.maxX - frame.width)
-                // maxY is the top edge: keeping it at or below the visible
-                // maximum is what puts the title bar under the menu bar.
+                // maxY is the top edge. Keeping it at or below the visible
+                // maximum is what keeps the title bar CLEAR of the menu bar --
+                // an earlier wording of this comment said the opposite, and
+                // described the defect as though it were the goal.
                 frame.origin.y = min(max(frame.minY, visible.minY),
                                      visible.maxY - frame.height)
                 guard frame != window.frame else { return }

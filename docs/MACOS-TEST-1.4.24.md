@@ -39,6 +39,34 @@ taller than the screen.
 ⚠️ If the window opens correctly but only because the display is large, the test
 has not passed. Repeat on the built-in display with the Dock visible.
 
+### A2. The RESTORED-frame run `BLOCKER`
+
+**A1 does not exercise the fix.** Deleting saved state means the window opens at
+its default size, which already fits — so `clampToVisibleFrame()` finds nothing
+to correct and returns immediately. A1 proves the default is sane; it proves
+nothing about the code written to handle a restored frame.
+
+**And a restored frame is what the reviewer has.** Their Mac already ran the
+rejected 1.4.23, so it has a saved window frame, and AppKit restores that in
+preference to `.defaultSize`. A1 tests the one machine state the reviewer is not
+in.
+
+1. **Do not** delete saved state this time.
+2. Launch the app, drag the window mostly off the top of the screen and resize it
+   taller than the display. Quit with ⌘Q so the frame is saved.
+3. Relaunch.
+
+**Correct:** the window comes back fully inside the screen, title bar below the
+menu bar — the clamp corrected the restored frame.
+
+**Regression:** it returns exactly where you left it, still oversized or still
+under the menu bar. That means the clamp ran too early (before AppKit restored
+the frame), too late, or not at all — and the guideline-4 fix does not work on
+the reviewer's machine.
+
+4. Repeat with an external display attached, then with it unplugged before
+   relaunching, so the saved frame refers to a screen that no longer exists.
+
 ## B. Connect with no account `BLOCKER` — guideline 5.1.1(v)
 
 The rejection: *"the app requires users to register before accessing non
@@ -93,30 +121,53 @@ connect"**. If you see either, stop; the fix does not cover this user.
 
 4. Repeat with a location row on the Servers tab instead of Connect.
 
-## C. The 24-digit ID is never lost `BLOCKER`
+## C. Backing out, and the 24-digit ID `BLOCKER`
 
-This is the risk the fix deliberately traded against. The ID is the **only** way
-back into that account.
+Two different moments, with deliberately different behaviour. An earlier draft of
+this section claimed dismissal always loses the account; that was wrong, and the
+code says otherwise.
 
-1. Repeat B up to the point where the 24-digit number is shown.
-2. **Try to dismiss the sheet without acknowledging:** swipe down, press Escape,
-   click outside it, and use ⌘W.
+**C1 — during the mint, backing out is allowed and must ABORT it.**
+
+1. Tap Connect from a clean guest state. While the spinner shows, tap **"Not
+   now"** (and on a repeat, swipe the sheet away, and press Escape).
+
+**Correct:** the sheet closes and you are back on Home, still signed out. No
+account was created.
+
+**Regression:** you end up silently signed in, or the Profile tab shows an
+anonymous number you never saw. That means the request was not cancelled — it
+also burns one of only three mints per IP per hour.
+
+2. Tap Connect again. **Correct:** a fresh mint starts, showing the spinner.
+**Regression:** the tabbed email/password form appears, or a headline reading
+"Sign in to connect". Either is the rejection reproducing.
+
+**C2 — once the 24-digit number is shown, it must NOT be dismissable.**
+
+3. Reach the number. Try swipe down, Escape, click outside, ⌘W.
 
 **Correct:** the sheet refuses to close. The number stays on screen.
 
-**Regression:** the sheet closes. That account is now unrecoverable — report it
-immediately, it is worse than the bug being fixed.
+**Regression:** the sheet closes before you acknowledge.
 
-3. Copy the number. Sign out, then sign back in using the anonymous tab and that
+4. Copy the number. Sign out, then sign back in using the anonymous tab and that
    number. It must work.
+
+> The number also appears on the Profile tab afterwards, so it is recoverable
+> even if C2 ever regresses — but do not treat that as a substitute. It is shown
+> once, on purpose, because that is when the user is looking.
 
 ## D. Rate limit — the 429 path
 
 Anonymous creation is capped at **3 new accounts per IP per hour**. Testing B and
 C repeatedly will hit it, so exercise it deliberately rather than being surprised.
 
-1. From a clean state, tap Connect four or more times in an hour (creating an
-   account each time).
+1. From a clean state, mint four or more accounts within one hour. **Tapping
+   Connect repeatedly does not do this** — after the first account you are
+   signed in, so Connect dials the tunnel instead of minting. Between each
+   attempt you must sign out AND clear the stored session (delete the app's
+   keychain entries) so the app is a guest again.
 2. On the attempt that trips the limit:
 
 **Correct:** the spinner is replaced by the ordinary sign-in form carrying a
@@ -152,13 +203,13 @@ here is confirming nothing broke.
 Per section: pass / fail / not run. On failure capture the exact step, a
 screenshot, and Console output for the app.
 
-**A, B, B2 and C are blockers** — do not resubmit without all four passing. D, E, F are
+**A, A2, B, B2 and C are blockers** — do not resubmit without all four passing. D, E, F are
 important; a release could proceed with them noted as untested only if you accept
 that risk explicitly rather than leaving it implied.
 
 ## Before resubmitting
 
-- [ ] A, B, B2 and C pass on a 15-inch (or smaller) built-in display
+- [ ] A, A2, B, B2 and C pass on a 15-inch (or smaller) built-in display
 - [ ] The four subscriptions are attached to the **macOS** submission — see
       `APPLE-MACOS-WEBUI-STEPS.md`, and verify via the API afterwards rather
       than trusting the UI

@@ -182,7 +182,12 @@ struct ContentView: View {
         // the user deferred it on first launch: creating or signing into an
         // account is the point at which personal data is processed, so that is
         // where the disclosure has to be agreed to — not at app launch.
-        .sheet(isPresented: $authVM.isPresentingSignIn) {
+        // onDismiss so a SWIPE or Escape runs the same teardown as "Not now".
+        // Without it those paths wrote isPresentingSignIn = false straight
+        // through the binding, leaving a pending continuation armed and an
+        // in-flight mint running.
+        .sheet(isPresented: $authVM.isPresentingSignIn,
+               onDismiss: { authVM.dismissSignIn() }) {
             Group {
                 if authVM.hasConsented {
                     LoginView(isSheet: true)

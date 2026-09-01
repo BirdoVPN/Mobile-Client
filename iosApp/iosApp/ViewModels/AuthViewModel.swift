@@ -61,11 +61,20 @@ final class AuthViewModel: ObservableObject {
     /// The Connect (or location) tap that was interrupted by the consent
     /// screen, so accepting consent can hand back to it.
     ///
-    /// Consumed SYNCHRONOUSLY in `acceptConsent()` -- not by an observer on
-    /// some published value. An earlier version of this change used a reactive
-    /// trigger for the analogous problem and was wrong three times, because the
-    /// state it watched never reached the value it assumed.
+    /// Consumed in `acceptConsent()`. (An earlier comment here claimed this
+    /// happened "synchronously"; it does not -- the hand-back is deferred to
+    /// the next main-queue turn so the sheet's Consent -> Login swap can
+    /// settle. Being wrong about that is what let the value latch unowned.)
+    ///
+    /// It is cleared by `requestSignIn` and `dismissSignIn`, so only the tap
+    /// that set it can spend it. Without that, swiping the consent sheet away
+    /// left it armed and the NEXT consent acceptance -- raised from Profile,
+    /// from Settings, from anywhere -- minted an anonymous account nobody asked
+    /// for, spent one of three mints per IP per hour, and locked the sheet onto
+    /// "save your recovery ID" instead of the login form that was requested.
     private var pendingProvisionReason: SignInReason?
+    /// The in-flight anonymous mint, retained so backing out can CANCEL it.
+    private var provisioningTask: Task<Void, Never>?
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -263,6 +272,8 @@ final class AuthViewModel: ObservableObject {
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
+        // Only the tap that armed a continuation may spend it.
+        pendingProvisionReason = nil
         isPresentingSignIn = true
     }
 
@@ -365,6 +376,18 @@ final class AuthViewModel: ObservableObject {
     func dismissSignIn() {
         guard createdAnonymousId == nil else { return }
         if requiresTwoFactor { cancelTwoFactor() }
+        // Backing out of a mint must ABORT it, not just hide it. Leaving the
+        // Task running meant "Not now" still created the account, spent one of
+        // three mints per IP per hour and signed the user in with nothing on
+        // screen to say so -- and, because isLoading stayed true, the next
+        // Connect tap hit the in-flight guard and re-opened the sheet with
+        // isAutoProvisioning already false, which renders the tabbed
+        // registration form under "Sign in to connect": the exact screen and
+        // the exact sentence guideline 5.1.1(v) was rejected over, three taps
+        // from a cold start.
+        provisioningTask?.cancel()
+        provisioningTask = nil
+        if isAutoProvisioning { isLoading = false }
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
@@ -563,10 +586,17 @@ final class AuthViewModel: ObservableObject {
         pendingEmail = nil
         pendingContext = .anonymousCreate
 
-        Task { [weak self] in
+        provisioningTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let registration = try await api.registerAnonymous()
+                // The user backed out while this was in flight. Drop the
+                // result rather than signing them into an account they
+                // abandoned; the request itself cannot be un-sent.
+                if Task.isCancelled {
+                    self.isLoading = false
+                    return
+                }
                 if await completeAuthentication(tokens: registration.tokens,
                                                 knownEmail: nil,
                                                 knownAnonymousId: registration.anonymousId,
