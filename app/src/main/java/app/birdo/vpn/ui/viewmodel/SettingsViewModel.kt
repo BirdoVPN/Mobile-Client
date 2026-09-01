@@ -88,12 +88,17 @@ class SettingsViewModel @Inject constructor(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     // Set by the text-field setters (MTU / port / DNS); flushed once when the
-    // VPN Settings screen is left, so a live tunnel rebuilds with the FINAL
-    // committed value rather than every half-typed intermediate.
+    // screen OWNING the edited field is left, so a live tunnel rebuilds with the
+    // FINAL committed value rather than every half-typed intermediate.
+    //
+    // Two screens call the flush now: VPN Settings (MTU, port) and the Settings
+    // root (DNS, which moved out of the sub-page). Naming only one of them is
+    // how the next field gets wired to a contract that does not cover it.
     private var pendingReapplyOnExit = false
 
     /**
-     * Called when the VPN Settings screen is left. Applies any pending
+     * Called when a screen carrying reapply-backed text fields is left --
+     * VPN Settings (MTU, port) or the Settings root (DNS). Applies any pending
      * text-field edits with a single reapply blip. Toggles reapply immediately
      * on tap, so they don't route through here.
      */

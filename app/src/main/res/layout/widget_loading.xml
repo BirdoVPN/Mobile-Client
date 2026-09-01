@@ -14,7 +14,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Birdo VPN"
+            android:text="BirdoVPN"
             android:textColor="@color/widget_text"
             android:textSize="14sp"
             android:textStyle="bold" />

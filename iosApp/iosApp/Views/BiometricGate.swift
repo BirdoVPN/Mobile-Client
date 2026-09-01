@@ -87,7 +87,7 @@ struct BiometricGate<Content: View>: View {
         }
         ctx.evaluatePolicy(
             .deviceOwnerAuthentication,
-            localizedReason: "Unlock Birdo VPN"
+            localizedReason: "Unlock BirdoVPN"
         ) { success, evalError in
             DispatchQueue.main.async {
                 authInFlight = false
@@ -114,7 +114,7 @@ private struct LockOverlay: View {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 64, weight: .light))
                     .foregroundStyle(.white)
-                Text("Birdo VPN")
+                Text("BirdoVPN")
                     .font(.title2.bold())
                     .foregroundStyle(.white)
                 if let failure {

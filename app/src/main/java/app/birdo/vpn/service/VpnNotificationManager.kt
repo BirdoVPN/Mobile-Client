@@ -102,12 +102,12 @@ internal class VpnNotificationManager(private val context: Context) {
         }
 
         val title = when (state) {
-            is VpnState.Connected -> "● Birdo VPN — Protected"
-            is VpnState.Connecting -> "◌ Birdo VPN — Connecting…"
-            is VpnState.Disconnecting -> "◌ Birdo VPN — Disconnecting…"
-            is VpnState.Error -> "✕ Birdo VPN — Connection Error"
-            else -> if (killSwitchActive) "● Birdo VPN — Kill Switch Active"
-                    else "○ Birdo VPN — Not Protected"
+            is VpnState.Connected -> "● BirdoVPN — Protected"
+            is VpnState.Connecting -> "◌ BirdoVPN — Connecting…"
+            is VpnState.Disconnecting -> "◌ BirdoVPN — Disconnecting…"
+            is VpnState.Error -> "✕ BirdoVPN — Connection Error"
+            else -> if (killSwitchActive) "● BirdoVPN — Kill Switch Active"
+                    else "○ BirdoVPN — Not Protected"
         }
 
         val accentColor = when (state) {
@@ -224,7 +224,7 @@ internal class VpnNotificationManager(private val context: Context) {
 
             val notif = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notif_disconnected)
-                .setContentTitle("○ Birdo VPN — Not Protected")
+                .setContentTitle("○ BirdoVPN — Not Protected")
                 .setContentText("Tap Connect to protect your connection")
                 .setContentIntent(pendingOpen)
                 .setSilent(true)

@@ -10,12 +10,15 @@ import UIKit
 ///     present and its choice is PERSISTED (`app_theme` AppStorage) so the
 ///     preference survives the eventual light-palette work — until then only
 ///     "Dark" has a visible effect (owner decision, spec §1.2).
-///   - Notifications: iOS has no in-app connection-notification delivery yet,
-///     but the spec'd Notifications group is present — the master toggle is
-///     persisted (`notifications_enabled` AppStorage) and "Notification
-///     Settings" deep-links to the OS notification page for the app. The
-///     per-detail Show-IP / Show-Server sub-toggles are deferred with the
-///     delivery code (reported as a gap), not faked here.
+///   - Display: the master connection-notifications toggle lives here and is
+///     persisted (`notifications_enabled` AppStorage). The section's other two
+///     spec'd members — Show IP Address and Show Server Location — do NOT
+///     exist on iOS: they are per-notification detail switches and there is no
+///     in-app notification delivery code to detail. They stay deferred with
+///     that code (reported as a gap) rather than shipped as dead switches.
+///   - "Notification Settings" keeps its own group: it deep-links to the OS
+///     notification page for the app, which is a destination, not a display
+///     preference.
 ///   - Split Tunneling: per-app VPN is MDM-only on iOS, so the section is
 ///     OMITTED entirely (platform-constraints §1.4) — not shown locked.
 ///
@@ -29,7 +32,13 @@ import UIKit
 @MainActor
 struct SettingsView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
+    /// Needed since Custom DNS / Port Forwarding moved up from the VPN
+    /// Settings sub-page: both are SOVEREIGN-gated and route to the upgrade
+    /// flow when locked.
+    @EnvironmentObject var vpnVM: VpnViewModel
     @Environment(\.openURL) private var openURL
+    /// Backstop for the reapply commit — see the .onChange below.
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Theme preference (spec §1.2). "dark" | "light" | "system", default
     /// "system". Persisted view-local so it survives without ViewModel churn;
@@ -38,6 +47,9 @@ struct SettingsView: View {
 
     /// Master connection-notifications preference (spec §1.7), default ON.
     @AppStorage("notifications_enabled") private var notificationsEnabled = true
+
+    /// Upgrade destination for the two locked VPN rows (§0.5).
+    @State private var showSubscription = false
 
     private let themeOptions = ["dark", "light", "system"]
 
@@ -67,24 +79,7 @@ struct SettingsView: View {
                     SectionHeader("Appearance")
                     themeCard
 
-                    // P1-ios-biometric-gate-is-cosmetic: the BEHAVIOUR is
-                    // accepted as-is (owner decision) — this gate covers the UI
-                    // and nothing else. It unlocks no keychain item, decrypts
-                    // nothing, and the app keeps running behind the cover, so
-                    // Auto-Connect still brings the tunnel up while the screen
-                    // is "locked". What changed is that it no longer *reads* as
-                    // a security guarantee: it is out of the Security section,
-                    // off the green (= protected) icon colour, and the copy
-                    // says what it actually does. Do not restore the old
-                    // wording without also making the gate gate something.
-                    SectionHeader("Privacy")
-                    SettingsToggleRow(icon: "eye.slash", iconColor: BirdoTheme.white60,
-                                      title: "Hide App Contents",
-                                      description: "Covers the screen with a Face ID prompt when you "
-                                        + "open the app. Hides what is on screen only — it protects "
-                                        + "no data, and the VPN keeps running behind it, including "
-                                        + "Auto-Connect.",
-                                      isOn: $settingsVM.biometricLockEnabled)
+                    privacySection
 
                     SectionHeader("Connection")
                     SettingsToggleRow(icon: "wifi", iconColor: BirdoTheme.blue,
@@ -92,7 +87,11 @@ struct SettingsView: View {
                                       description: "Connect to VPN on app startup",
                                       isOn: $settingsVM.autoConnect)
 
-                    SectionHeader("Notifications")
+                    // The system-settings link lives here too. Splitting it into
+                    // its own "Notifications" header left two adjacent sections
+                    // whose names overlapped, which reads worse than either the
+                    // layout before or the one intended.
+                    SectionHeader("Display")
                     SettingsToggleRow(icon: "bell", iconColor: BirdoTheme.yellow,
                                       title: "Notifications",
                                       description: "Show connection notifications",
@@ -104,15 +103,7 @@ struct SettingsView: View {
                         SystemOpen.appSettings()
                     }
 
-                    SectionHeader("VPN")
-                    NavigationLink {
-                        VpnSettingsView()
-                    } label: {
-                        SettingsLinkRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
-                                        title: "VPN Settings",
-                                        description: "Protocol, DNS, port, and MTU")
-                    }
-                    .buttonStyle(PressScaleButtonStyle())
+                    vpnSection
 
                     SectionHeader("About")
                     // The policies also live on the Profile tab, but they are
@@ -140,6 +131,170 @@ struct SettingsView: View {
             }
         }
         .modifier(HideNavigationBar())
+        .navigationDestination(isPresented: $showSubscription) { SubscriptionView() }
+        .birdoConfirmDialog(
+            isPresented: $settingsVM.showKillSwitchDisableConfirm,
+            title: "Disable kill switch?",
+            // Android's copy minus its trailing "Always-on VPN" sentence
+            // (Android-only system setting; an iOS-equivalent clause is
+            // pending owner review — spec-secondary-screens warning 4).
+            message: "If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on.",
+            confirmLabel: "Turn off anyway",
+            onConfirm: { settingsVM.confirmDisableKillSwitch() },
+            onCancel: { settingsVM.cancelDisableKillSwitch() }
+        )
+        .onDisappear {
+            // §0.6 path 3, same contract VpnSettingsView honours for the port
+            // and MTU fields: the DNS fields persist per keystroke but only
+            // FLAG a reapply, so leaving the screen fires the one blip with
+            // the final values. No-op when nothing was edited.
+            settingsVM.commitPendingReapply()
+        }
+        // BACKSTOP. On the sub-page this contract hung off a pushed screen's
+        // pop, which always happens. Here it hangs off a TAB ROOT, and
+        // ContentView keeps every tab's content mounted -- so the commit now
+        // depends on TabView choosing to fire onDisappear for a deselected tab.
+        // Edit a DNS field, background the app, and the value is already
+        // persisted while the reapply that makes it live never fires.
+        //
+        // Backgrounding is the one moment we are always told about, so commit
+        // there too. commitPendingReapply is a no-op when nothing is pending,
+        // so the two paths cannot double-blip.
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { settingsVM.commitPendingReapply() }
+        }
+    }
+
+    // MARK: - DNS (SOVEREIGN-gated, §0.5) — promoted from VPN Settings
+
+    @ViewBuilder
+    private var customDnsRow: some View {
+        if vpnVM.isSovereign {
+            SettingsToggleRow(icon: "server.rack", iconColor: BirdoTheme.accent,
+                              title: "Custom DNS Servers",
+                              description: "Use your own DNS servers instead of the VPN defaults",
+                              isOn: $settingsVM.customDnsEnabled)
+        } else {
+            SettingsLockedRow(icon: "server.rack",
+                              title: "Custom DNS Servers",
+                              description: "Use your own DNS servers instead of the VPN defaults",
+                              action: routeToUpgrade)
+        }
+    }
+
+    /// Fields hold raw typing; the ViewModel persists only valid-or-empty
+    /// values and VPNManager re-validates at tunnel-build time regardless.
+    private var dnsFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            BirdoTextField("Primary DNS",
+                           placeholder: "e.g. 1.1.1.1",
+                           text: $settingsVM.customDnsPrimary,
+                           error: dnsError(settingsVM.customDnsPrimary),
+                           keyboardType: .decimalPad)
+            BirdoTextField("Secondary DNS (optional)",
+                           placeholder: "e.g. 1.0.0.1",
+                           text: $settingsVM.customDnsSecondary,
+                           error: dnsError(settingsVM.customDnsSecondary),
+                           keyboardType: .decimalPad)
+        }
+    }
+
+    /// Error only when non-blank AND invalid (blank = "use VPN defaults").
+    /// Same predicate the tunnel builder uses, so UI and gate never drift.
+    private func dnsError(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !SettingsViewModel.isValidDnsAddress(trimmed) else { return nil }
+        return "Enter a valid IP address"
+    }
+
+    // MARK: - Port Forwarding (SOVEREIGN-gated) — promoted from VPN Settings
+
+    @ViewBuilder
+    private var portForwardingRow: some View {
+        if vpnVM.isSovereign {
+            NavigationLink {
+                PortForwardView()
+            } label: {
+                SettingsLinkRow(icon: "arrow.left.arrow.right", iconColor: BirdoTheme.blue,
+                                title: "Port Forwarding",
+                                description: "Expose ports through your VPN tunnel")
+            }
+            .buttonStyle(PressScaleButtonStyle())
+        } else {
+            SettingsLockedRow(icon: "arrow.left.arrow.right",
+                              title: "Port Forwarding",
+                              description: "Expose ports through your VPN tunnel",
+                              action: routeToUpgrade)
+        }
+    }
+
+    /// §0.5: every lock affordance does fetchSubscription() then routes to
+    /// the Subscription screen — there is no per-feature upsell.
+    private func routeToUpgrade() {
+        vpnVM.refreshSubscription()
+        showSubscription = true
+    }
+
+    // MARK: - Privacy
+
+    /// Grouped so the body stays a flat list of sections; a @ViewBuilder
+    /// property flattens into the enclosing VStack, so spacing is unchanged.
+    @ViewBuilder
+    private var privacySection: some View {
+        // P1-ios-biometric-gate-is-cosmetic: the BEHAVIOUR is accepted as-is
+        // (owner decision) — this gate covers the UI and nothing else. It
+        // unlocks no keychain item, decrypts nothing, and the app keeps running
+        // behind the cover, so Auto-Connect still brings the tunnel up while
+        // the screen is "locked". What changed is that it no longer *reads* as
+        // a security guarantee: it is out of the Security section, off the
+        // green (= protected) icon colour, and the copy says what it actually
+        // does. Do not restore the old wording without also making the gate
+        // gate something.
+        SectionHeader("Privacy")
+        SettingsToggleRow(icon: "eye.slash", iconColor: BirdoTheme.white60,
+                          title: "Hide App Contents",
+                          description: "Covers the screen with a Face ID prompt when you "
+                            + "open the app. Hides what is on screen only — it protects "
+                            + "no data, and the VPN keeps running behind it, including "
+                            + "Auto-Connect.",
+                          isOn: $settingsVM.biometricLockEnabled)
+        // The two settings that actually protect traffic sit directly under
+        // the gate that protects none of it — the ordering is the point. Kill
+        // Switch keeps its T2 binding (`killSwitchToggleBinding`, never
+        // `killSwitchEnabled`) and the confirm-before-disable dialog attached
+        // to this screen's body.
+        SettingsToggleRow(icon: "checkmark.shield.fill", iconColor: BirdoTheme.green,
+                          title: "Kill Switch",
+                          description: "Block all traffic if VPN disconnects",
+                          isOn: settingsVM.killSwitchToggleBinding)
+        SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.accent,
+                          title: "Quantum Protection",
+                          description: "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
+                          isOn: $settingsVM.quantumProtectionEnabled)
+    }
+
+    // MARK: - VPN
+
+    /// The sub-page link plus the two rows promoted out of it (Custom DNS
+    /// Servers, Port Forwarding) — both SOVEREIGN-gated exactly as before.
+    @ViewBuilder
+    private var vpnSection: some View {
+        SectionHeader("VPN")
+        NavigationLink {
+            VpnSettingsView()
+        } label: {
+            SettingsLinkRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
+                            title: "VPN Settings",
+                            description: "Local network, port, and MTU")
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        customDnsRow
+        // Locked rows render checked = persisted && unlocked (§0.5), so the
+        // fields also stay hidden while locked.
+        if vpnVM.isSovereign && settingsVM.customDnsEnabled {
+            dnsFields
+        }
+        portForwardingRow
     }
 
     // MARK: - Top bar (Android BirdoTopBar — no back button on a tab root)
@@ -198,7 +353,7 @@ struct SettingsView: View {
             HStack(spacing: 12) {
                 BirdoLogo(.boxed(size: 44, cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Birdo VPN")
+                    Text("BirdoVPN")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(BirdoTheme.onSurface)
                     Text("Version \(appVersion)")
@@ -301,6 +456,36 @@ private struct SettingsLinkButton: View {
         }
         .buttonStyle(PressScaleButtonStyle())
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+/// Plan-locked row (§0.3): control replaced by a lock, leading icon dimmed,
+/// whole row routes to the upgrade flow. The Settings-tab counterpart of the
+/// VPN Settings screen's locked row, so the two promoted SOVEREIGN rows keep
+/// their lock affordance in this screen's card idiom.
+private struct SettingsLockedRow: View {
+    let icon: String
+    let title: String
+    let description: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
+                HStack(spacing: 12) {
+                    SettingsIconChip(icon: icon, color: BirdoTheme.onSurfaceFaint)
+                    SettingsRowText(title: title, description: description)
+                    Spacer(minLength: 8)
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                }
+            }
+        }
+        .buttonStyle(PressScaleButtonStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title). Premium feature — upgrade to unlock")
         .accessibilityAddTraits(.isButton)
     }
 }

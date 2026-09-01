@@ -5,7 +5,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Birdo VPN</string>
+    <string>BirdoVPN</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -13,7 +13,7 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Birdo VPN</string>
+    <string>BirdoVPN</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <!-- Driven from version.properties by the CI build, NOT hardcoded. These
@@ -73,7 +73,7 @@
         <false/>
     </dict>
     <key>NSFaceIDUsageDescription</key>
-    <string>Birdo VPN uses Face ID to protect your account.</string>
+    <string>BirdoVPN uses Face ID to protect your account.</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <!-- Custom URL scheme `birdo` (spec-auth-flow §4): the SSO broker 302s its

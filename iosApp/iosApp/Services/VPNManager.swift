@@ -225,7 +225,7 @@ final class VPNManager: @unchecked Sendable {
 
         mgr.protocolConfiguration = proto
         mgr.isEnabled = true
-        mgr.localizedDescription = "Birdo VPN"
+        mgr.localizedDescription = "BirdoVPN"
 
         // On-demand: NEVER arm it before the tunnel is actually up (finding #5).
         // Arming persists a NEOnDemandRuleConnect that survives even if the

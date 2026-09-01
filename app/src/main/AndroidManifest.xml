@@ -129,7 +129,7 @@
             android:name=".service.BirdoTileService"
             android:exported="true"
             android:icon="@drawable/ic_vpn_tile"
-            android:label="Birdo VPN"
+            android:label="BirdoVPN"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

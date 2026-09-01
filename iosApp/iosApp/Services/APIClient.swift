@@ -949,7 +949,7 @@ final class APIClient: @unchecked Sendable {
         // 426 Upgrade Required = the backend's minimum-supported-version floor.
         // Surface a fixed, actionable string rather than the raw body (Review #219).
         if status == 426 {
-            return .serverMessage("This app version is no longer supported. Update Birdo VPN to reconnect.",
+            return .serverMessage("This app version is no longer supported. Update BirdoVPN to reconnect.",
                                   status: status)
         }
         if structured {

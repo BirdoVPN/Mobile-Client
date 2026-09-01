@@ -144,7 +144,7 @@ struct ProfileView: View {
                         Text("Not signed in")
                             .font(.system(size: 18, weight: .semibold))
                             .foregroundStyle(BirdoTheme.onBackground)
-                        Text("Using Birdo VPN without an account")
+                        Text("Using BirdoVPN without an account")
                             .font(.system(size: 13))
                             .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     }

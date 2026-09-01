@@ -244,7 +244,7 @@ class MainActivity : FragmentActivity() {
         }
 
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock Birdo VPN")
+            .setTitle("Unlock BirdoVPN")
             .setSubtitle("Verify your identity to continue")
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
@@ -451,7 +451,7 @@ private fun BiometricLockScreen(onUnlock: () -> Unit) {
             )
             Spacer(Modifier.height(20.dp))
             Text(
-                text = "Birdo VPN is locked",
+                text = "BirdoVPN is locked",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground,
                 textAlign = TextAlign.Center,

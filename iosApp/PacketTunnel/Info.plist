@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Birdo VPN Tunnel</string>
+    <string>BirdoVPN Tunnel</string>
     <!-- CFBundleName is REQUIRED for an app extension: installd rejects the
          host app outright ("does not have a CFBundleName key with a non-zero
          length string value") if the appex omits it. -->

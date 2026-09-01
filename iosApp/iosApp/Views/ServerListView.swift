@@ -699,16 +699,10 @@ private struct ServerRow: View {
 
             Spacer().frame(width: 8)
 
-            // Load readout — or offline marker: a stale load % on a downed
-            // node is noise, so the column says what actually matters.
-            if server.isOnline {
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text("\(server.load)%")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(LoadBar.color(for: Int(server.load)))
-                    LoadBar(load: Int(server.load))
-                }
-            } else {
+            // Status column. Server load is never surfaced to users — it is
+            // still what `filteredServers` sorts on, so a downed node is the
+            // only thing this column has left to say.
+            if !server.isOnline {
                 Text("Offline")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(BirdoTheme.white40)
