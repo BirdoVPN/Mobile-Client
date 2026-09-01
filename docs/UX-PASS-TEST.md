@@ -40,6 +40,10 @@ comparators actually drive is **the order of the server list**. Test that.
 
 **List order still follows load:**
 
+⚠️ **Sign in first.** The load comparator sorts the *authenticated* server list.
+A signed-out guest sees the public locations list, which is ordered differently
+and never consults load — testing it there is a guaranteed false fail.
+
 5. Open the admin console's fleet view, which *does* still show load —
    deliberately, it is operational data — and note the current load of three or
    four online servers in the same country.

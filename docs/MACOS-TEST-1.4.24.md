@@ -16,20 +16,33 @@ window bug will not reproduce even if it is still there.
 `POST /auth/register/anonymous` is rate limited **server-side to 3 creations per
 IP per hour**. The client keeps no count and nothing resets it.
 
-Sections B, B2 and C each mint at least one account, so running them
-back-to-back **exhausts the budget partway through C** — and a 429 renders the
-tabbed sign-in form under the headline "Sign in to connect", which B, B2 and C
-all name as the regression. You would report the rejection as reproducing on a
-correct build.
+**C1 on its own needs four**, so it cannot be finished on one IP no matter what
+order you run things in — and a 429 renders the tabbed sign-in form under the
+headline "Sign in to connect", which B, B2 and C all name as the regression. You
+would report the rejection as reproducing on a correct build.
 
 So:
 
-- **Run C1 first**, then B, then B2, and treat D as its own session.
-- Between sections, either wait the hour or **change your public IP** (phone
-  hotspot, different network). A VPN to somewhere else works too — you are
-  testing the app, not the tunnel, at that point.
-- If you hit a 429 mid-section, that is **not** a failure. Its message names an
-  IP limit lasting an hour. Stop, change IP or wait, and restart that section.
+Budget per section, counted:
+
+| section | mints |
+|---|---|
+| B | 1 |
+| B2 | 2 (Connect, then the location row) |
+| C1 | **4** — three back-outs plus the "tap Connect again" check |
+| C2 | 1 |
+| D | 4+, deliberately |
+
+**C1 alone exceeds the hourly budget**, so it cannot be completed on one IP.
+Plan for it rather than discovering it:
+
+- Do **B**, then **B2**, then **C**, each with a fresh hour or a **changed
+  public IP** (phone hotspot, another network). Treat D as its own session.
+- Inside C1, do the three back-outs, then **change IP before step 2**.
+- A 429 is **never** a test failure. Its message names an IP limit lasting an
+  hour, and the tabbed sign-in form it renders is the *correct* 429 behaviour —
+  not the rejection reproducing. When in doubt, check whether the sheet says
+  anything about a limit before recording a failure.
 
 ---
 
@@ -46,15 +59,44 @@ under menu bar."*
    app.birdo.vpn` resolves to a path that does not exist for a container app and
    silently does nothing.
 
-   The command that actually works:
+   **A reset is two steps, and the container is only one of them.** The tokens
+   live in the keychain, which is not in the container and survives deleting
+   it. That matters more than it sounds: on launch, a live token makes
+   `AuthViewModel.swift:207` set `hasConsented = true` and write
+   `gdpr_consented` back — so a container-only wipe relaunches you signed in
+   with consent already granted, and **the privacy screen never appears**.
+   Sections B2 and C1 then quietly test nothing.
+
+   So, in this order:
+
+   1. **In the app, Settings → Sign Out.** This is the reliable way to clear
+      the tokens — it calls the app's own `KeychainService.clear()`.
+   2. Quit with ⌘Q, then:
+
+      ```
+      rm -rf ~/Library/Containers/app.birdo.vpn
+      ```
+
+      which removes the sandbox container: the autosaved window frame and the
+      consent flags.
+
+   If the app will not open far enough to sign out, the fallback is:
 
    ```
-   rm -rf ~/Library/Containers/app.birdo.vpn
+   security delete-generic-password -s app.birdo.vpn        # repeat until it errors
+   security delete-generic-password -s app.birdo.vpn.shared # repeat until it errors
    ```
 
-   That removes the sandbox container, including the autosaved window frame and
-   the consent flag. Use this same command wherever a section below says "reset"
-   or "clean state".
+   ⚠️ Treat that fallback as unverified. There are two services, not one, and
+   these items are in the **data-protection** keychain
+   (`kSecUseDataProtectionKeychain = true`, `KeychainService.swift:23`), which
+   the `security` CLI does not reliably reach on macOS. Prefer Sign Out.
+
+   **Verify the reset rather than assuming it:** relaunch. If you do not see the
+   first-launch privacy screen, you are not reset — do not proceed, and do not
+   record the section as a pass.
+
+   Do **both** steps wherever a section below says "reset" or "clean state".
 
 2. Launch on the **built-in display**, not an external monitor.
 
@@ -85,13 +127,18 @@ preference to `.defaultSize`. A1 tests the one machine state the reviewer is not
 in.
 
 1. **Do not** wipe the container this time.
-2. Launch the app and **resize it taller than the display** — drag the bottom
-   edge down until the window is clearly taller than the screen. Quit with ⌘Q so
-   the frame is saved.
+2. Give it a frame bigger than the built-in screen, and save it.
 
-   > Do not bother trying to drag the title bar above the menu bar: AppKit
-   > refuses that for any titled window, with or without this fix. Only the
-   > oversize case is reachable, so that is what this tests.
+   You **cannot** do this by dragging on a single display — AppKit will not let
+   a window exceed the screen, nor let the title bar go above the menu bar, fix
+   or no fix. Use a larger display instead:
+
+   - Attach an external monitor taller than the laptop screen.
+   - Move the app there and maximise / resize it to fill that screen.
+   - Quit with ⌘Q so the frame is saved, then **unplug the monitor**.
+
+   If no external display is available, skip to step 4 and say A2 was not run —
+   do **not** record it as a pass.
 
 3. Relaunch.
 
@@ -114,8 +161,9 @@ work on.
 The rejection: *"the app requires users to register before accessing non
 account-based features (connect to VPN)."*
 
-Start from a genuinely clean state — sign out, then delete the keychain entries
-so the app has no session and no stored anonymous id.
+Start from a genuinely clean state — **the two-step reset in A step 1** (Sign
+Out, then delete the container). Confirm it worked by seeing the first-launch
+privacy screen; if you do not see it, you still have a session.
 
 1. Launch. You should land in the **guest shell**, signed out.
 2. Confirm the Connect button reads **"Connect"**, not "Sign in to connect", and
@@ -149,7 +197,11 @@ most likely to be in ("Not now" is offered on the very first screen), and a
 build that passes B can still fail here. Review found this exact path still
 showing the rejected form after B had been declared passing.
 
-1. Fully reset: delete the app's data so the privacy screen appears again.
+1. Fully reset — **both steps** from A step 1: Sign Out, *then* delete the
+   container. Deleting the container alone leaves the tokens in the keychain,
+   the app relaunches signed in with consent grandfathered, and the privacy
+   screen never appears — so this section silently tests nothing. **If you do
+   not see the privacy screen, you are not reset.**
 2. On the first-launch privacy screen tap **"Not now"**, not "I Agree".
 3. You land in the guest shell. **Tap Connect.**
 
@@ -171,7 +223,9 @@ code says otherwise.
 
 **C1 — during the mint, backing out is allowed and must ABORT it.**
 
-1. Tap Connect from a clean guest state. While the spinner shows, tap **"Not
+1. Tap Connect from a clean guest state — again **both steps** from A step 1;
+   Sign Out is what actually makes you a guest. While the
+   spinner shows, tap **"Not
    now"** (and on a repeat, swipe the sheet away, and press Escape).
 
 **Correct:** the sheet closes and you are back on Home, **still signed out**.
@@ -186,9 +240,15 @@ number you never saw.
 > device. What is being tested is that the app does not sign you into an account
 > you backed out of.
 
-2. Tap Connect again. **Correct:** a fresh mint starts, showing the spinner.
+2. **Change your public IP first** (see the budget table — you have spent three
+   mints by now), then tap Connect again.
+
+**Correct:** a fresh mint starts, showing the spinner.
+
 **Regression:** the tabbed email/password form appears, or a headline reading
-"Sign in to connect". Either is the rejection reproducing.
+"Sign in to connect", **and the sheet says nothing about a rate limit**. If it
+does mention an hourly IP limit, you simply ran out of mints — change IP and
+repeat this step; that is not the rejection.
 
 **C2 — once the 24-digit number is shown, it must NOT be dismissable.**
 

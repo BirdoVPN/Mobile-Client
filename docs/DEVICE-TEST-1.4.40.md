@@ -33,17 +33,28 @@ while the app kept drawing both.
    adb shell am start -a android.intent.action.VIEW -d birdo://servers
    ```
 
-   On iOS/macOS, reach it from the home screen's server selector (it appears
-   once Multi-Hop is disarmed — so for iOS, test the refusal by arming
-   Multi-Hop, connecting, then navigating to the list before it re-renders, or
-   report that the path is unreachable, which is itself worth knowing).
+   On iOS/macOS, open the server list from the home screen's server selector.
+   (An earlier draft claimed the selector disappears while Multi-Hop is armed
+   and told you to race the render — that was wrong, and it licensed skipping a
+   blocker. Just open the list normally.)
 
 4. Tap a different node.
 
-**Correct:** the tap is refused. A red banner appears on the list reading
-*"Switching servers would replace your Multi-Hop route with a single hop.
-Disconnect first if you meant to switch."* The session stays up. Egress country
-is **unchanged**.
+**Correct:** the tap is refused, the session stays up, and the egress country is
+**unchanged**.
+
+⚠️ **Where the message appears differs by platform**, so do not fail iOS for
+looking wrong:
+
+- **Android** shows the red banner on the server list itself.
+- **iOS/macOS** writes it to `vpnVM.error`, which only the **Home** screen
+  renders — `ServerListView` deliberately isolates its own errors. So on iOS
+  the list shows nothing; **go back to Home** and the banner reading *"Switching
+  servers would replace your Multi-Hop route with a single hop. Disconnect first
+  if you meant to switch."* should be there.
+
+That split is itself worth reporting — the user gets no feedback on the screen
+they tapped — but it is **not** a regression from this change.
 
 **Regression:** the tunnel reconnects, the app still shows the entry → exit route,
 and the egress country becomes the tapped node's. That is the original bug.
@@ -55,7 +66,10 @@ and the egress country becomes the tapped node's. That is the original bug.
 ## B. Multi-Hop downgrade — Quick Settings tile `BLOCKER`
 
 1. Still SOVEREIGN, Multi-Hop armed, **disconnected**.
-2. Add the Birdo tile to the Quick Settings shade. Tap it.
+2. Add the Birdo tile to the Quick Settings shade. Open the app so the
+   subscription is cached, then **tap the tile within 30 seconds** — the tile
+   reads a cache with a 30-second TTL refilled only from UI paths. Wait longer
+   and you are testing the "entitlement unknown" branch instead of this one.
 
 **Correct:** connects as **Multi-Hop** — the app shows entry → exit and the egress
 country is the exit's.
