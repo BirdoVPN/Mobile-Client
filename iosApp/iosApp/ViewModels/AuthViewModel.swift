@@ -266,14 +266,23 @@ final class AuthViewModel: ObservableObject {
 
     /// Raise the sign-in sheet for an action that genuinely needs an account.
     /// No-op when already signed in — callers must not have asked.
-    func requestSignIn(_ reason: SignInReason = .generic) {
+    /// - Parameter keepingContinuation: preserve `pendingProvisionReason`.
+    ///   Only the consent detour in `provisionAnonymously` passes true; every
+    ///   ordinary caller must clear it, so a continuation can never be spent by
+    ///   a sign-in the user raised for some other reason.
+    ///
+    ///   It is a parameter rather than a matter of call ORDER because order was
+    ///   already got wrong once: the arm was written before the call and this
+    ///   method cleared it on the next line, so the two guards — added in
+    ///   different rounds, each correct alone — silently cancelled out.
+    func requestSignIn(_ reason: SignInReason = .generic,
+                       keepingContinuation: Bool = false) {
         guard !isLoggedIn else { return }
         signInReason = reason
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
-        // Only the tap that armed a continuation may spend it.
-        pendingProvisionReason = nil
+        if !keepingContinuation { pendingProvisionReason = nil }
         isPresentingSignIn = true
     }
 
@@ -355,7 +364,12 @@ final class AuthViewModel: ObservableObject {
             // includes App Review, and the new copy had just promised them no
             // form was coming.
             pendingProvisionReason = reason
-            requestSignIn(reason)
+            // keepingContinuation: this is the ONE caller whose continuation
+            // must outlive raising the sheet. Without it the arm above was
+            // cleared on the next line and consent-deferred users still landed
+            // on the tabbed form under "Sign in to connect" -- the exact screen
+            // 5.1.1(v) was rejected over.
+            requestSignIn(reason, keepingContinuation: true)
             return
         }
         signInReason = reason
