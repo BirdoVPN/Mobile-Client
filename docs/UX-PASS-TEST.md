@@ -13,11 +13,22 @@ Run on **all three** platforms unless a section says otherwise. Sections marked
 
 ---
 
-## 1. Server load is gone — but selection still works `BLOCKER`
+## 1. Server load is gone, and list ORDER still follows it `BLOCKER`
 
-The display goes; the behaviour stays. That distinction is the whole risk here:
-if the load-based comparators were damaged, the app still *looks* correct while
-quietly sending people to worse servers.
+The display goes; the ordering behaviour stays.
+
+⚠️ **An earlier draft of this section was wrong and would have failed a correct
+build.** It told you to check that the app *selects* a low-load server. It does
+not, on two of the three clients, and never did:
+
+| client | how it picks a server |
+|---|---|
+| iOS / macOS | `list.first { isOnline && accessible }` — API order, **load not consulted** |
+| Desktop | `.find(\|s\| s.is_online)` — first online, **load not consulted** |
+| Android | `minByOrNull { it.load }` in `VpnManager.quickConnect` — the only load-aware selection anywhere, and only reached when no server is already selected |
+
+So "did it pick a low-load node?" is not a valid check. What the surviving
+comparators actually drive is **the order of the server list**. Test that.
 
 **Nothing shows load:**
 
@@ -27,16 +38,21 @@ quietly sending people to worse servers.
 3. Open the Multi-Hop entry/exit pickers. No percentages next to the nodes.
 4. Desktop: check the globe and the dashboard too.
 
-**Selection still prefers a good server:**
+**List order still follows load:**
 
-5. With several servers online, use Quick Connect / auto-select. Note which
-   server you land on, twice, from a disconnected state.
-6. Compare against the admin console's fleet view (which *does* still show load —
-   deliberately, it is operational data). **The app should be picking a
-   low-load node, not the first alphabetically or the last in the list.**
+5. Open the admin console's fleet view, which *does* still show load —
+   deliberately, it is operational data — and note the current load of three or
+   four online servers in the same country.
+6. Open the app's server list and compare. Within a group that is otherwise
+   equal, **the lower-load servers should appear above the higher-load ones.**
 
-**Regression:** you consistently land on the same busy or arbitrary server. That
-means a comparator was removed with the display.
+**Regression:** the list order bears no relation to load — e.g. strictly
+alphabetical, or unchanged as load shifts. That means a comparator was deleted
+along with the display.
+
+> Worth raising separately: that iOS and Desktop ignore load when auto-selecting
+> is a **pre-existing** product gap, not something this change caused. It is
+> noted here only so you do not report it as a regression.
 
 ## 2. The name reads BirdoVPN everywhere `BLOCKER`
 

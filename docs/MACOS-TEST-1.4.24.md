@@ -11,6 +11,26 @@ Use a Mac with a display no taller than the review device — a **15-inch MacBoo
 Air (M3)**, which is what the reviewer used. On a large external monitor the
 window bug will not reproduce even if it is still there.
 
+## ⚠️ Read this before starting: you get three account creations per hour
+
+`POST /auth/register/anonymous` is rate limited **server-side to 3 creations per
+IP per hour**. The client keeps no count and nothing resets it.
+
+Sections B, B2 and C each mint at least one account, so running them
+back-to-back **exhausts the budget partway through C** — and a 429 renders the
+tabbed sign-in form under the headline "Sign in to connect", which B, B2 and C
+all name as the regression. You would report the rejection as reproducing on a
+correct build.
+
+So:
+
+- **Run C1 first**, then B, then B2, and treat D as its own session.
+- Between sections, either wait the hour or **change your public IP** (phone
+  hotspot, different network). A VPN to somewhere else works too — you are
+  testing the app, not the tunnel, at that point.
+- If you hit a 429 mid-section, that is **not** a failure. Its message names an
+  IP limit lasting an hour. Stop, change IP or wait, and restart that section.
+
 ---
 
 ## A. Window position `BLOCKER` — guideline 4
@@ -18,9 +38,24 @@ window bug will not reproduce even if it is still there.
 The rejection: *"the app includes windows that laid out and partially hidden
 under menu bar."*
 
-1. Quit the app completely. Delete its saved window state so you get a genuine
-   first launch:
-   `defaults delete app.birdo.vpn 2>/dev/null; rm -rf ~/Library/Saved\ Application\ State/app.birdo.vpn.savedState`
+1. Quit the app completely, then wipe its state.
+
+   ⚠️ **The macOS build is sandboxed** (`BirdoVPN-macOS.entitlements` sets
+   `com.apple.security.app-sandbox`), so its preferences and saved window frame
+   live inside a container — **not** the usual locations. `defaults delete
+   app.birdo.vpn` resolves to a path that does not exist for a container app and
+   silently does nothing.
+
+   The command that actually works:
+
+   ```
+   rm -rf ~/Library/Containers/app.birdo.vpn
+   ```
+
+   That removes the sandbox container, including the autosaved window frame and
+   the consent flag. Use this same command wherever a section below says "reset"
+   or "clean state".
+
 2. Launch on the **built-in display**, not an external monitor.
 
 **Correct:** the whole window is visible. The title bar sits fully **below** the
@@ -29,9 +64,7 @@ menu bar and can be grabbed with the mouse.
 **Regression:** any part of the title bar is under the menu bar, or the window is
 taller than the screen.
 
-3. Drag the window to the very top of the screen and release. It must not be
-   possible to park the title bar under the menu bar.
-4. Resize to the **smallest** the app allows. At minimum size the title bar must
+3. Resize to the **smallest** the app allows. At minimum size the title bar must
    still be reachable and the Connect button still visible.
 5. Resize **larger**, and maximise. It must still resize — if it is locked to one
    size, that is its own guideline-4 problem and a regression from this fix.
@@ -51,21 +84,30 @@ rejected 1.4.23, so it has a saved window frame, and AppKit restores that in
 preference to `.defaultSize`. A1 tests the one machine state the reviewer is not
 in.
 
-1. **Do not** delete saved state this time.
-2. Launch the app, drag the window mostly off the top of the screen and resize it
-   taller than the display. Quit with ⌘Q so the frame is saved.
+1. **Do not** wipe the container this time.
+2. Launch the app and **resize it taller than the display** — drag the bottom
+   edge down until the window is clearly taller than the screen. Quit with ⌘Q so
+   the frame is saved.
+
+   > Do not bother trying to drag the title bar above the menu bar: AppKit
+   > refuses that for any titled window, with or without this fix. Only the
+   > oversize case is reachable, so that is what this tests.
+
 3. Relaunch.
 
-**Correct:** the window comes back fully inside the screen, title bar below the
-menu bar — the clamp corrected the restored frame.
+**Correct:** the window comes back **fitting inside the screen** — its height has
+been reduced and the title bar sits below the menu bar. The clamp corrected the
+restored frame.
 
-**Regression:** it returns exactly where you left it, still oversized or still
-under the menu bar. That means the clamp ran too early (before AppKit restored
-the frame), too late, or not at all — and the guideline-4 fix does not work on
-the reviewer's machine.
+**Regression:** it returns at the oversized height you left it. That means the
+clamp ran before AppKit restored the frame, or not at all — and the guideline-4
+fix does not work on the reviewer's machine, which is the one machine it must
+work on.
 
-4. Repeat with an external display attached, then with it unplugged before
-   relaunching, so the saved frame refers to a screen that no longer exists.
+4. *(optional, informational)* Repeat with an external display attached, then
+   unplug it before relaunching. macOS relocates a window whose saved screen is
+   gone **before** the app gets `onAppear`, so the clamp may legitimately have
+   nothing to do here. Report what you see; there is no pass/fail.
 
 ## B. Connect with no account `BLOCKER` — guideline 5.1.1(v)
 
@@ -132,12 +174,17 @@ code says otherwise.
 1. Tap Connect from a clean guest state. While the spinner shows, tap **"Not
    now"** (and on a repeat, swipe the sheet away, and press Escape).
 
-**Correct:** the sheet closes and you are back on Home, still signed out. No
-account was created.
+**Correct:** the sheet closes and you are back on Home, **still signed out**.
 
-**Regression:** you end up silently signed in, or the Profile tab shows an
-anonymous number you never saw. That means the request was not cancelled — it
-also burns one of only three mints per IP per hour.
+**Regression:** you end up signed in, or the Profile tab shows an anonymous
+number you never saw.
+
+> ⚠️ An account **is** still created server-side either way. Cancelling drops the
+> *result* — the request has already been sent and cannot be un-sent (the code
+> says so at the cancellation check). So this step always spends one of your
+> three mints, and "no account exists" is neither true nor observable from the
+> device. What is being tested is that the app does not sign you into an account
+> you backed out of.
 
 2. Tap Connect again. **Correct:** a fresh mint starts, showing the spinner.
 **Regression:** the tabbed email/password form appears, or a headline reading
