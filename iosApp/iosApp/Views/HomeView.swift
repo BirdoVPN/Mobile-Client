@@ -84,12 +84,23 @@ struct HomeView: View {
             vpnVM.refreshSubscription()
             if isGuest { vpnVM.loadPublicLocations() }
         }
-        // The Connect tap that minted the account finishes here. Gated on
-        // isLoggedIn, which acknowledgeAnonymousId() sets only after the user
-        // has seen and dismissed their recovery ID -- connecting earlier would
-        // pull that number off the screen.
-        .onChange(of: authVM.isLoggedIn) { _, loggedIn in
-            guard loggedIn, authVM.connectAfterProvisioning else { return }
+        // The Connect tap that minted the account finishes here.
+        //
+        // Keyed on selectedServer, NOT on the isLoggedIn flip. A guest has no
+        // authenticated server list at all -- loadServers() begins with
+        // `guard hasSession` -- so selectedServer is nil right up until the
+        // post-login fetch lands. Firing on the login flip called connect()
+        // synchronously against a nil selection, which bails with "Select a
+        // server first" and leaves the tunnel down. The flag was burned in the
+        // same breath, so nothing retried: the fix for "it never connected"
+        // never connected either.
+        //
+        // Waiting for a server closes that. The flag is only ever set by a
+        // provisioning tap, so an ordinary server switch cannot trigger this.
+        .onChange(of: vpnVM.selectedServer?.id) { _, serverId in
+            guard serverId != nil,
+                  authVM.isLoggedIn,
+                  authVM.connectAfterProvisioning else { return }
             authVM.connectAfterProvisioning = false
             vpnVM.connect()
         }

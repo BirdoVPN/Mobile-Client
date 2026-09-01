@@ -439,7 +439,8 @@ struct ServerListView: View {
                             // which is the same wall guideline 5.1.1(v)
                             // rejected. thenConnect is false -- the user asked
                             // for the list to work, not for a tunnel.
-                            authVM.provisionAnonymously(thenConnect: false)
+                            authVM.provisionAnonymously(thenConnect: false,
+                                                        reason: .servers)
                         }
                     }
                 }
@@ -458,7 +459,7 @@ struct ServerListView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(BirdoTheme.accentSoft)
                 .accessibilityHidden(true)
-            Text("Browsing without an account. Sign in to pick a location and connect.")
+            Text("Pick a location to get started. No account needed.")
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.white60)
                 .fixedSize(horizontal: false, vertical: true)
@@ -573,7 +574,7 @@ private struct PublicLocationRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text("Sign in")
+                Text("Use")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(BirdoTheme.accent)
                     .padding(.horizontal, 10)
@@ -595,7 +596,7 @@ private struct PublicLocationRow: View {
         }
         .buttonStyle(PressScaleButtonStyle())
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Sign in to connect")
+        .accessibilityHint("Sets up an anonymous account and selects this location")
     }
 
     /// Country · node count · maintenance, and nothing that needs an account.

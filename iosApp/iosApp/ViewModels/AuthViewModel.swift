@@ -252,6 +252,8 @@ final class AuthViewModel: ObservableObject {
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
+        // An ordinary sign-in must never inherit a provisioning intent.
+        connectAfterProvisioning = false
         isPresentingSignIn = true
     }
 
@@ -281,7 +283,11 @@ final class AuthViewModel: ObservableObject {
     /// - Parameter thenConnect: dial the tunnel once the ID is acknowledged.
     ///   Home passes true (the button says "Connect"); the servers list passes
     ///   false, where the user only wants the list to become usable.
-    func provisionAnonymously(thenConnect: Bool) {
+    /// - Parameter reason: what the user was trying to do. Drives the sheet
+    ///   copy if the mint FAILS and the ordinary form has to come back;
+    ///   hardcoding `.connect` there told a user who tapped a location row
+    ///   "Sign in to connect", which is both wrong and the rejected sentence.
+    func provisionAnonymously(thenConnect: Bool, reason: SignInReason = .connect) {
         guard !isLoggedIn else { return }
         // An un-acknowledged ID is still on screen. Minting again would show
         // account A's number while account B's tokens land in the keychain --
@@ -303,12 +309,17 @@ final class AuthViewModel: ObservableObject {
         // is a dead end: the sheet has no way to consent. Clearing the deferral
         // puts the consent screen back, which is the only surface that can.
         guard hasConsented else {
-            connectAfterProvisioning = thenConnect
+            // Deliberately does NOT arm connectAfterProvisioning. Nothing on
+            // this path consumes it -- accepting consent does not resume the
+            // mint -- so it would sit set until some later, unrelated sign-in
+            // flipped isLoggedIn and fired a connect the user never asked for.
+            // The user taps Connect again after consenting; that is one tap,
+            // against a stale flag that dials a tunnel out of nowhere.
             reopenConsent()
             return
         }
         connectAfterProvisioning = thenConnect
-        signInReason = .connect
+        signInReason = reason
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = true
@@ -319,8 +330,11 @@ final class AuthViewModel: ObservableObject {
     /// Put the privacy screen back for a user who deferred it. Leaves
     /// `hasConsented` false -- this asks, it does not decide.
     func reopenConsent() {
+        // IN-MEMORY ONLY. Persisting the cleared deferral would make the
+        // first-launch-only consent screen the launch route on every
+        // subsequent cold start -- turning a one-tap ask into a permanent
+        // wall, which is the shape of the thing being fixed.
         consentDeferred = false
-        UserDefaults.standard.set(false, forKey: Self.consentDeferredKey)
     }
 
     /// Close the sheet and drop back into the guest shell.
