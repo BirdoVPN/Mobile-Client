@@ -80,7 +80,7 @@ enum SignInReason: String, Equatable, Sendable, CaseIterable {
         case .profile:  return "Sign in to see your account"
         case .multiHop: return "Sign in to use Multi-Hop"
         case .subscribe: return "Sign in to subscribe"
-        case .generic:  return "Sign in to Birdo VPN"
+        case .generic:  return "Sign in to BirdoVPN"
         }
     }
 

@@ -231,7 +231,7 @@ class BirdoTileService : TileService() {
         when (state) {
             is VpnState.Connected -> {
                 tile.state = Tile.STATE_ACTIVE
-                tile.label = "Birdo VPN"
+                tile.label = "BirdoVPN"
                 // The shade is readable from a LOCKED device and had no opt-out:
                 // gate the exit-node name on the same preference that governs
                 // the notification's location line.
@@ -245,13 +245,13 @@ class BirdoTileService : TileService() {
             }
             is VpnState.Connecting, is VpnState.Disconnecting -> {
                 tile.state = Tile.STATE_ACTIVE
-                tile.label = "Birdo VPN"
+                tile.label = "BirdoVPN"
                 tile.subtitle = if (state is VpnState.Connecting) "Connecting…" else "Disconnecting…"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
             is VpnState.Disconnected, is VpnState.Error -> {
                 tile.state = Tile.STATE_INACTIVE
-                tile.label = "Birdo VPN"
+                tile.label = "BirdoVPN"
                 tile.subtitle = "Disconnected"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
@@ -260,14 +260,14 @@ class BirdoTileService : TileService() {
             // on the device is being dropped. INACTIVE + the truth.
             is VpnState.KillSwitchActive -> {
                 tile.state = Tile.STATE_INACTIVE
-                tile.label = "Birdo VPN"
+                tile.label = "BirdoVPN"
                 tile.subtitle = "Traffic blocked"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }
             else -> {
                 // Authenticating, StealthConnecting, Reconnecting
                 tile.state = Tile.STATE_ACTIVE
-                tile.label = "Birdo VPN"
+                tile.label = "BirdoVPN"
                 tile.subtitle = "Working\u2026"
                 tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
             }

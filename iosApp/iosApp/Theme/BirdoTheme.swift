@@ -278,7 +278,7 @@ enum BirdoTheme {
         static let statValue      = Font.system(size: 12, weight: .semibold)
         /// Stat tile caption: uppercase + tracked, color `white55`.
         static let statCaption    = Font.system(size: 9, weight: .medium)
-        /// Monospace (anonymous account number, load %, IPs).
+        /// Monospace (anonymous account number, IPs).
         static let mono           = Font.system(size: 14, design: .monospaced)
     }
 }

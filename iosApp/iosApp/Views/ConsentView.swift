@@ -59,7 +59,7 @@ struct ConsentView: View {
 
                     Text(isSheet
                             ? "Before you create or sign in to an account, please review how your data is handled."
-                            : "Before using Birdo VPN, please review how your data is handled.")
+                            : "Before using BirdoVPN, please review how your data is handled.")
                         .font(.system(size: 14))
                         .foregroundStyle(BirdoTheme.white60)
                         .multilineTextAlignment(.center)

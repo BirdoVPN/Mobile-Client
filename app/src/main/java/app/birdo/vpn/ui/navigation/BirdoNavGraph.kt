@@ -561,6 +561,17 @@ fun BirdoNavGraph(
             ) {
                 AdaptiveContainer {
                     val context = LocalContext.current
+                    // Custom DNS moved onto this page, so its commit-on-exit
+                    // moved with it: pending text-field edits apply as ONE
+                    // reapply blip when the tab is left, not per keystroke.
+                    DisposableEffect(Unit) {
+                        onDispose { settingsViewModel.commitPendingReapply() }
+                    }
+                    // Custom DNS and Port Forwarding are SOVEREIGN-only.
+                    // Post-quantum protection is a FREE-tier feature (per the
+                    // pricing/feature lists) so it stays ungated for everyone.
+                    val settingsPlan = vpnState.subscription?.plan?.uppercase()
+                    val settingsIsSovereign = settingsPlan == "SOVEREIGN"
                     SettingsScreen(
                         state = settingsState,
                         onAutoConnectChange = { settingsViewModel.setAutoConnect(it) },
@@ -581,8 +592,21 @@ fun BirdoNavGraph(
                         onOpenVpnSettings = {
                             navController.navigate(Screen.VpnSettings.route)
                         },
+                        onCustomDnsEnabledChange = { settingsViewModel.setCustomDnsEnabled(it) },
+                        onCustomDnsPrimaryChange = { settingsViewModel.setCustomDnsPrimary(it) },
+                        onCustomDnsSecondaryChange = { settingsViewModel.setCustomDnsSecondary(it) },
+                        onOpenPortForward = { navController.navigate(Screen.PortForward.route) },
+                        onQuantumProtectionChange = { settingsViewModel.setQuantumProtection(it) },
+                        onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
+                        customDnsUnlocked = settingsIsSovereign,
+                        portForwardUnlocked = settingsIsSovereign,
+                        quantumUnlocked = true,
+                        onUpgradeRequired = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
                     )
                 }
             }
@@ -596,40 +620,32 @@ fun BirdoNavGraph(
                 popExitTransition = pushPopExit,
             ) {
                 AdaptiveContainer {
-                    // Commit pending text-field edits (MTU/port/DNS) as ONE
-                    // reapply blip when this screen is left, so the live tunnel
-                    // rebuilds with the final value, not every half-typed one.
+                    // Commit pending text-field edits (MTU/port) as ONE reapply
+                    // blip when this screen is left, so the live tunnel rebuilds
+                    // with the final value, not every half-typed one.
+                    //
+                    // DNS moved to the Settings root and is committed by the
+                    // effect there. There are now TWO callers of
+                    // commitPendingReapply(); a field added to either screen
+                    // needs the one on ITS screen, not this one.
                     DisposableEffect(Unit) {
                         onDispose { settingsViewModel.commitPendingReapply() }
                     }
                     // Plan gating mirrors the Multi-Hop pattern on the Connect
-                    // screen: Custom DNS and Port Forwarding are SOVEREIGN-only.
-                    // Post-quantum protection is a FREE-tier feature (per the
-                    // pricing/feature lists) so it stays ungated for everyone.
-                    // Locked toggles route to the upgrade flow instead of toggling.
+                    // screen. Stealth + Split tunnel are OPERATIVE-and-above,
+                    // keyed on the plan string only — an anonymous account on
+                    // RECON is gated exactly like an email/SSO account on RECON.
+                    // A locked toggle routes to the upgrade flow instead of toggling.
                     val plan = vpnState.subscription?.plan?.uppercase()
-                    val isSovereign = plan == "SOVEREIGN"
-                    // Stealth + Split tunnel are OPERATIVE-and-above. Keyed on the
-                    // plan string only — an anonymous account on RECON is gated
-                    // exactly like an email/SSO account on RECON.
                     val isOperativeOrAbove = plan == "OPERATIVE" || plan == "SOVEREIGN"
                     VpnSettingsScreen(
                         state = settingsState,
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
-                        onCustomDnsEnabledChange = { settingsViewModel.setCustomDnsEnabled(it) },
-                        onCustomDnsPrimaryChange = { settingsViewModel.setCustomDnsPrimary(it) },
-                        onCustomDnsSecondaryChange = { settingsViewModel.setCustomDnsSecondary(it) },
                         onWireGuardPortChange = { settingsViewModel.setWireGuardPort(it) },
                         onWireGuardMtuChange = { settingsViewModel.setWireGuardMtu(it) },
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
-                        onQuantumProtectionChange = { settingsViewModel.setQuantumProtection(it) },
-                        onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
-                        onOpenPortForward = { navController.navigate(Screen.PortForward.route) },
                         onBack = { navController.popBackStack() },
                         stealthUnlocked = isOperativeOrAbove,
-                        customDnsUnlocked = isSovereign,
-                        portForwardUnlocked = isSovereign,
-                        quantumUnlocked = true,
                         onUpgradeRequired = {
                             vpnViewModel.fetchSubscription()
                             navController.navigate(Screen.Subscription.route)

@@ -19,6 +19,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,10 +42,12 @@ import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.BirdoSectionHeader
 import app.birdo.vpn.ui.components.BirdoSegmentedControl
+import app.birdo.vpn.ui.components.BirdoTextField
 import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.AppInfo
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
+import app.birdo.vpn.utils.InputValidator
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,9 +61,26 @@ fun SettingsScreen(
     onSplitTunnelingChange: (Boolean) -> Unit,
     onOpenSplitTunnelApps: () -> Unit,
     onOpenVpnSettings: () -> Unit,
+    onCustomDnsEnabledChange: (Boolean) -> Unit,
+    onCustomDnsPrimaryChange: (String) -> Unit,
+    onCustomDnsSecondaryChange: (String) -> Unit,
+    onOpenPortForward: () -> Unit,
+    onQuantumProtectionChange: (Boolean) -> Unit,
+    onKillSwitchChange: (Boolean) -> Unit,
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
+    // ── Plan gating ──────────────────────────────────────────────
+    // A locked row does not toggle; it taps through to the upgrade flow,
+    // the same affordance Stealth Mode uses on the VPN Settings sub-page.
+    customDnsUnlocked: Boolean = true,
+    portForwardUnlocked: Boolean = true,
+    quantumUnlocked: Boolean = true,
+    onUpgradeRequired: (feature: String) -> Unit = {},
 ) {
+    // Turning the kill switch OFF weakens leak protection, so it is gated behind
+    // an explicit confirmation dialog (enabling it stays immediate).
+    var showKillSwitchDisableDialog by rememberSaveable { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             BirdoTopBar(
@@ -100,6 +120,44 @@ fun SettingsScreen(
                 )
             }
 
+            item {
+                SettingsToggle(
+                    icon = Icons.Default.Lock,
+                    iconColor = BirdoAccent,
+                    title = stringResource(R.string.vpn_settings_quantum_title),
+                    checked = state.quantumProtectionEnabled && quantumUnlocked,
+                    onCheckedChange = onQuantumProtectionChange,
+                    locked = !quantumUnlocked,
+                    onLockedTap = { onUpgradeRequired("Quantum Protection") },
+                )
+            }
+
+            item {
+                // Kill switch defaults ON (the safe choice) but is user-toggleable.
+                // Enabling is immediate; disabling is gated behind a confirmation
+                // dialog because it trades leak-proofing for connectivity — if the
+                // tunnel drops, apps fall back to the open internet and can briefly
+                // expose the real IP. The service gates every activateKillSwitch() on
+                // the value behind this toggle, so turning it off genuinely lets
+                // traffic through.
+                SettingsToggle(
+                    icon = Icons.Default.Shield,
+                    iconColor = BirdoGreen,
+                    title = stringResource(R.string.settings_kill_switch),
+                    checked = state.killSwitchEnabled,
+                    onCheckedChange = { enabled ->
+                        if (enabled) {
+                            onKillSwitchChange(true)
+                        } else {
+                            // Leave the toggle ON (state unchanged) until the user
+                            // confirms in the warning dialog below.
+                            showKillSwitchDisableDialog = true
+                        }
+                    },
+                    testTag = TestTags.KILL_SWITCH_TOGGLE,
+                )
+            }
+
             // ── Connection ───────────────────────────────────────
             item { BirdoSectionHeader(stringResource(R.string.settings_section_connection)) }
 
@@ -113,6 +171,22 @@ fun SettingsScreen(
                     testTag = TestTags.AUTO_CONNECT_TOGGLE,
                 )
             }
+
+            item {
+                SettingsLink(
+                    icon = Icons.Default.NotificationsActive,
+                    iconColor = BirdoWhite60,
+                    title = stringResource(R.string.settings_notif_system),
+                    onClick = onOpenNotificationSettings,
+                    trailing = Icons.AutoMirrored.Filled.OpenInNew,
+                )
+            }
+
+            // ── Display ──────────────────────────────────────────
+            // What the app shows about a connection. The two detail rows
+            // describe the notification's contents, so they appear only while
+            // the notification itself is on.
+            item { BirdoSectionHeader(stringResource(R.string.settings_section_display)) }
 
             item {
                 SettingsToggle(
@@ -147,18 +221,10 @@ fun SettingsScreen(
                 }
             }
 
-            item {
-                SettingsLink(
-                    icon = Icons.Default.NotificationsActive,
-                    iconColor = BirdoWhite60,
-                    title = stringResource(R.string.settings_notif_system),
-                    onClick = onOpenNotificationSettings,
-                    trailing = Icons.AutoMirrored.Filled.OpenInNew,
-                )
-            }
-
             // ── VPN ──────────────────────────────────────────────
-            // Unified group: protocol, split tunneling. Kill switch & port-forward live in VPN Settings.
+            // Unified group: the VPN Settings sub-page, plus the two controls
+            // promoted out of it (custom DNS, port forwarding) and split
+            // tunneling, which has always lived here.
             item { BirdoSectionHeader(stringResource(R.string.settings_section_vpn)) }
 
             item {
@@ -167,6 +233,54 @@ fun SettingsScreen(
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_vpn_settings),
                     onClick = onOpenVpnSettings,
+                )
+            }
+
+            item {
+                SettingsToggle(
+                    icon = Icons.Default.Dns,
+                    iconColor = BirdoAccent,
+                    title = stringResource(R.string.vpn_settings_custom_dns),
+                    checked = state.customDnsEnabled && customDnsUnlocked,
+                    onCheckedChange = onCustomDnsEnabledChange,
+                    locked = !customDnsUnlocked,
+                    onLockedTap = { onUpgradeRequired("Custom DNS") },
+                )
+            }
+
+            if (state.customDnsEnabled && customDnsUnlocked) {
+                item {
+                    BirdoTextField(
+                        value = state.customDnsPrimary,
+                        onValueChange = onCustomDnsPrimaryChange,
+                        label = stringResource(R.string.vpn_settings_dns_primary),
+                        placeholder = stringResource(R.string.vpn_settings_dns_primary_hint),
+                        keyboardType = KeyboardType.Decimal,
+                        isError = state.customDnsPrimary.isNotBlank() &&
+                            !InputValidator.isValidDnsAddress(state.customDnsPrimary),
+                    )
+                }
+                item {
+                    BirdoTextField(
+                        value = state.customDnsSecondary,
+                        onValueChange = onCustomDnsSecondaryChange,
+                        label = stringResource(R.string.vpn_settings_dns_secondary),
+                        placeholder = stringResource(R.string.vpn_settings_dns_secondary_hint),
+                        keyboardType = KeyboardType.Decimal,
+                        isError = state.customDnsSecondary.isNotBlank() &&
+                            !InputValidator.isValidDnsAddress(state.customDnsSecondary),
+                    )
+                }
+            }
+
+            item {
+                SettingsLink(
+                    icon = Icons.Default.SwapHoriz,
+                    iconColor = BirdoBlue,
+                    title = stringResource(R.string.settings_port_forward),
+                    onClick = if (portForwardUnlocked) onOpenPortForward
+                        else { { onUpgradeRequired("Port Forwarding") } },
+                    locked = !portForwardUnlocked,
                 )
             }
 
@@ -220,6 +334,43 @@ fun SettingsScreen(
             }
 
             item { Spacer(Modifier.height(32.dp)) }
+        }
+
+        if (showKillSwitchDisableDialog) {
+            val palette = BirdoColors.current
+            AlertDialog(
+                onDismissRequest = { showKillSwitchDisableDialog = false },
+                containerColor = palette.surfaceElevated,
+                titleContentColor = palette.onSurface,
+                textContentColor = palette.onSurfaceMuted,
+                title = {
+                    Text(
+                        stringResource(R.string.settings_kill_switch_disable_title),
+                        fontWeight = FontWeight.Bold,
+                    )
+                },
+                text = { Text(stringResource(R.string.settings_kill_switch_disable_msg)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onKillSwitchChange(false)
+                        showKillSwitchDisableDialog = false
+                    }) {
+                        Text(
+                            stringResource(R.string.settings_kill_switch_disable_confirm),
+                            color = BirdoRed,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showKillSwitchDisableDialog = false }) {
+                        Text(
+                            stringResource(R.string.delete_dialog_cancel),
+                            color = palette.onSurfaceMuted,
+                        )
+                    }
+                },
+            )
         }
     }
 }
@@ -327,6 +478,10 @@ private fun SettingsLink(
     description: String? = null,
     onClick: () -> Unit,
     trailing: ImageVector = Icons.Default.ChevronRight,
+    // When `locked` the row still taps through (callers route it to the upgrade
+    // flow) but reads as gated: dimmed chip, padlock instead of the chevron.
+    // Mirrors SettingsToggle's locked state.
+    locked: Boolean = false,
 ) {
     val palette = BirdoColors.current
     BirdoCard(
@@ -341,7 +496,7 @@ private fun SettingsLink(
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SettingIconChip(icon = icon, iconColor = iconColor, contentDescription = title)
+            SettingIconChip(icon = icon, iconColor = if (locked) palette.onSurfaceFaint else iconColor, contentDescription = title)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -350,7 +505,12 @@ private fun SettingsLink(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Icon(trailing, stringResource(R.string.cd_open), tint = palette.onSurfaceFaint, modifier = Modifier.size(18.dp))
+            Icon(
+                if (locked) Icons.Default.Lock else trailing,
+                if (locked) stringResource(R.string.cd_locked_feature) else stringResource(R.string.cd_open),
+                tint = palette.onSurfaceFaint,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }

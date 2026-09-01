@@ -584,7 +584,7 @@ private fun MultiHopServerCard(
                 )
                 if (server != null) {
                     Text(
-                        text = "${server.city.ifBlank { server.country }}  ·  ${stringResource(R.string.server_load, server.load)}",
+                        text = server.city.ifBlank { server.country },
                         color = BirdoWhite60,
                         fontSize = 12.sp,
                         maxLines = 1,
@@ -634,7 +634,7 @@ private fun HomeTopBar(
                 if (userEmail != null) {
                     // A weight(1f) spacer collapses to ZERO once the row's content
                     // overflows, which it does for an anonymous account id — the
-                    // username then sits flush against "Birdo VPN" with no gap at
+                    // username then sits flush against "BirdoVPN" with no gap at
                     // all. The start padding is what actually guarantees the gap;
                     // the spacer only distributes what is left over.
                     Text(
@@ -1109,7 +1109,7 @@ private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> U
                 )
                 if (server != null) {
                     Text(
-                        text = "${server.city.ifBlank { server.country }}  ·  ${stringResource(R.string.server_load, server.load)}",
+                        text = server.city.ifBlank { server.country },
                         color = BirdoWhite60,
                         fontSize = 12.sp,
                         maxLines = 1,

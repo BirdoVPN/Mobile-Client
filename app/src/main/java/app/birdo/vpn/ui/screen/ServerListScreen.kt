@@ -19,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -32,7 +31,6 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,7 +50,7 @@ import app.birdo.vpn.utils.countryCodeToFlag
  * Server list screen — matches the Windows client design:
  * - Search input with glass styling
  * - Filter pills: All | ★ Favorites | ⚡ High-Speed | ⇄ Port Forwarding
- * - Server cards with country flag, name, load bar, favorite star
+ * - Server cards with country flag, name, location, favorite star
  * - White-based color scheme (no purple accents)
  * - Selected server: subtle white ring (ring-white/20)
  *
@@ -315,14 +313,13 @@ fun ServerListScreen(
 
 private val ServerCardShape = RoundedCornerShape(14.dp)
 private val FlagShape = RoundedCornerShape(10.dp)
-private val LoadBarShape = RoundedCornerShape(2.dp)
 
 /**
  * Flat, allocation-free server card optimised for fast scrolling.
  *
  * Previous version wrapped the row in [BirdoCard] (extra Box layers) and
- * allocated a new `Brush.linearGradient` per recomposition for both the card
- * border and the load-bar fill. With 100+ rows that dominated frame cost.
+ * allocated a new `Brush.linearGradient` per recomposition for the card
+ * border. With 100+ rows that dominated frame cost.
  *
  * This version uses solid colors only, hoists shapes to file-level vals, and
  * remembers all per-row derived state keyed on inputs that actually change.
@@ -343,9 +340,6 @@ internal fun ServerCard(
     // but cannot be picked — offering it would only earn a server-side refusal.
     val isLocked = !server.accessible
     val isSelectable = isOnline && !isLocked
-    val load = server.load
-    val loadFraction = remember(load) { (load / 100f).coerceIn(0f, 1f) }
-    val loadCol = remember(load) { loadColor(load) }
     // Solid colours only (the perf note above bans per-frame Brush allocation);
     // animateColorAsState is allocation-free and makes selection feel deliberate.
     val borderColor by animateColorAsState(
@@ -430,34 +424,6 @@ internal fun ServerCard(
 
         Spacer(Modifier.width(8.dp))
 
-        // Load indicator (solid colors only — no gradient brush)
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = "$load%",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = FontFamily.Monospace,
-                color = loadCol,
-            )
-            Spacer(Modifier.height(3.dp))
-            Box(
-                modifier = Modifier
-                    .width(36.dp)
-                    .height(4.dp)
-                    .clip(LoadBarShape)
-                    .background(BirdoWhite10),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(loadFraction)
-                        .background(loadCol),
-                )
-            }
-        }
-
-        Spacer(Modifier.width(6.dp))
-
         // Favorite star (lightweight Box.clickable — no IconButton ripple stack).
         // 36dp visual, 48dp hit area: this sits in a fast-scrolling list, the
         // hardest place to hit a small target.
@@ -482,12 +448,4 @@ internal fun ServerCard(
             )
         }
     }
-}
-
-// ── Helpers ──
-
-private fun loadColor(load: Int): Color = when {
-    load < 50 -> BirdoGreenLight
-    load < 80 -> BirdoYellowLight
-    else -> BirdoRed
 }

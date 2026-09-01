@@ -619,7 +619,7 @@ class VpnViewModel @Inject constructor(
      */
     private fun connectErrorMessage(result: ApiResult.Error): String =
         if (result.code == 426) {
-            "This app version is no longer supported. Update Birdo VPN to reconnect."
+            "This app version is no longer supported. Update BirdoVPN to reconnect."
         } else {
             result.message
         }

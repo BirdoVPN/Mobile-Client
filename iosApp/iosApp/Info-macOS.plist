@@ -20,7 +20,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Birdo VPN</string>
+    <string>BirdoVPN</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -28,7 +28,7 @@
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Birdo VPN</string>
+    <string>BirdoVPN</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <!-- Driven from version.properties by CI, exactly as on iOS: the host app
@@ -59,7 +59,7 @@
     <!-- Touch ID on the Mac is gated by the same key as Face ID on iOS —
          LocalAuthentication reads NSFaceIDUsageDescription on both platforms. -->
     <key>NSFaceIDUsageDescription</key>
-    <string>Birdo VPN uses Touch ID to protect your account.</string>
+    <string>BirdoVPN uses Touch ID to protect your account.</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <!-- Same custom scheme as iOS: the SSO broker 302s its PKCE handoff to

@@ -274,10 +274,6 @@ struct MultiHopView: View {
                                     .foregroundColor(BirdoTheme.onSurface)
                                     .lineLimit(1)
                                 Spacer()
-                                Text("\(srv.load)%")
-                                    .font(BirdoTheme.Fonts.mono)
-                                    .monospacedDigit()
-                                    .foregroundColor(LoadBar.color(for: Int(srv.load)))
                                 if server?.id == srv.id {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(BirdoTheme.green)

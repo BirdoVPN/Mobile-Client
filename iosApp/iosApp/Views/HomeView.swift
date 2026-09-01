@@ -142,7 +142,7 @@ struct HomeView: View {
                 // Real brand asset — the SF-symbol bird placeholder is dead.
                 BirdoLogo.topBar
 
-                Text("Birdo VPN")
+                Text("BirdoVPN")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(BirdoTheme.onBackground)
                     .lineLimit(1)
@@ -628,9 +628,10 @@ struct HomeView: View {
                                 .foregroundStyle(BirdoTheme.onSurface)
                                 .lineLimit(1)
                             if let server = vpnVM.selectedServer {
-                                // Two spaces around the middle dot — Android
-                                // renders "%s  ·  %d%% load" exactly.
-                                Text("\(server.city.isEmpty ? server.country : server.city)  ·  \(server.load)% load")
+                                // Server load is never shown to users — it
+                                // still drives selection, so the subtitle is
+                                // the city alone, without a dangling separator.
+                                Text(server.city.isEmpty ? server.country : server.city)
                                     .font(BirdoTheme.Fonts.bodySmall)
                                     .foregroundStyle(BirdoTheme.white60)
                                     .lineLimit(1)

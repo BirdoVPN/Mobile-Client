@@ -4,16 +4,17 @@ import SwiftUI
 /// (spec-secondary-screens §2) with the platform deltas:
 ///   - NO Stealth Mode row: iOS has no Xray transport, so the toggle is
 ///     omitted entirely (platform-constraints §3.7) — not shown locked.
-///   - Kill switch confirm-before-disable drives SettingsViewModel's T2 API
-///     (`killSwitchToggleBinding` + confirm/cancel) so the switch never
-///     bounces: the binding echoes "off" while the dialog is up, Cancel
-///     animates it back on, Confirm commits without a snap.
+///   - Kill Switch, Quantum Protection, Custom DNS Servers and Port
+///     Forwarding are NOT here: they were promoted to the Settings root, so
+///     what is left is the WireGuard transport shape. The kill-switch
+///     confirm-before-disable dialog moved with its toggle.
 ///   - Custom WireGuard port persists per valid keystroke (T3). The radio
 ///     selection is LOCAL UI state — deriving it from the persisted port is
 ///     the exact bug that made "Custom" unreachable.
-///   - Apply-on-change (§0.6): toggle flips blip via the ViewModel's 1200 ms
-///     debounce; field edits (DNS/port/MTU) persist immediately but re-apply
-///     ONCE on screen exit via `commitPendingReapply()` in `.onDisappear`.
+///   - Apply-on-change (§0.6): the Local Network Sharing flip blips via the
+///     ViewModel's 1200 ms debounce; field edits (port/MTU) persist
+///     immediately but re-apply ONCE on screen exit via
+///     `commitPendingReapply()` in `.onDisappear`.
 ///
 /// Pushed-screen contract: opaque black base + own PixelCanvasView (the
 /// app-root canvas is covered by pushed content). T1: no nested
@@ -36,7 +37,6 @@ struct VpnSettingsView: View {
     @State private var customPortValid = false
     @State private var mtuText = ""
     @State private var didSyncFromStore = false
-    @State private var showSubscription = false
 
     var body: some View {
         ZStack {
@@ -48,37 +48,16 @@ struct VpnSettingsView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
-                        SectionHeader("Security")
-                        VpnToggleRow(icon: "checkmark.shield.fill", iconColor: BirdoTheme.green,
-                                     title: "Kill Switch",
-                                     description: "Block all traffic if VPN disconnects",
-                                     isOn: settingsVM.killSwitchToggleBinding)
-                        VpnToggleRow(icon: "lock.fill", iconColor: BirdoTheme.accent,
-                                     title: "Quantum Protection",
-                                     description: "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
-                                     isOn: $settingsVM.quantumProtectionEnabled)
-
                         SectionHeader("Network")
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",
                                      description: "Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN",
                                      isOn: $settingsVM.localNetworkSharing)
 
-                        SectionHeader("DNS")
-                        customDnsRow
-                        // Locked rows render checked = persisted && unlocked
-                        // (§0.5), so the fields also stay hidden while locked.
-                        if vpnVM.isSovereign && settingsVM.customDnsEnabled {
-                            dnsFields
-                        }
-
                         SectionHeader("WireGuard")
                         portCard
                         mtuCard
                         infoNote
-
-                        SectionHeader("Features")
-                        portForwardingRow
 
                         Spacer().frame(height: 32)
                     }
@@ -91,21 +70,9 @@ struct VpnSettingsView: View {
         .navigationBarBackButtonHidden(true)
         // Android parity: sub-screens hide the bottom tab bar too.
         .modifier(HideNavigationAndTabBar())
-        .navigationDestination(isPresented: $showSubscription) { SubscriptionView() }
-        .birdoConfirmDialog(
-            isPresented: $settingsVM.showKillSwitchDisableConfirm,
-            title: "Disable kill switch?",
-            // Android's copy minus its trailing "Always-on VPN" sentence
-            // (Android-only system setting; an iOS-equivalent clause is
-            // pending owner review — spec-secondary-screens warning 4).
-            message: "If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on.",
-            confirmLabel: "Turn off anyway",
-            onConfirm: { settingsVM.confirmDisableKillSwitch() },
-            onCancel: { settingsVM.cancelDisableKillSwitch() }
-        )
         .onAppear { syncFromStore() }
         .onDisappear {
-            // §0.6 path 3: one blip with the FINAL field values (DNS/port/MTU).
+            // §0.6 path 3: one blip with the FINAL field values (port/MTU).
             settingsVM.commitPendingReapply()
         }
     }
@@ -147,50 +114,6 @@ struct VpnSettingsView: View {
                 .frame(height: 1)
         }
         .background(BirdoTheme.glassStrong.ignoresSafeArea(edges: .top))
-    }
-
-    // MARK: - DNS (SOVEREIGN-gated, §0.5)
-
-    @ViewBuilder
-    private var customDnsRow: some View {
-        if vpnVM.isSovereign {
-            VpnToggleRow(icon: "server.rack", iconColor: BirdoTheme.accent,
-                         title: "Custom DNS Servers",
-                         description: "Use your own DNS servers instead of the VPN defaults",
-                         isOn: $settingsVM.customDnsEnabled)
-        } else {
-            VpnLockedRow(icon: "server.rack",
-                         title: "Custom DNS Servers",
-                         description: "Use your own DNS servers instead of the VPN defaults",
-                         action: routeToUpgrade)
-        }
-    }
-
-    /// Fields hold raw typing; the ViewModel persists only valid-or-empty
-    /// values and VPNManager re-validates at tunnel-build time regardless.
-    private var dnsFields: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            BirdoTextField("Primary DNS",
-                           placeholder: "e.g. 1.1.1.1",
-                           text: $settingsVM.customDnsPrimary,
-                           error: dnsError(settingsVM.customDnsPrimary),
-                           keyboardType: .decimalPad)
-            BirdoTextField("Secondary DNS (optional)",
-                           placeholder: "e.g. 1.0.0.1",
-                           text: $settingsVM.customDnsSecondary,
-                           error: dnsError(settingsVM.customDnsSecondary),
-                           keyboardType: .decimalPad)
-        }
-        .padding(.top, 8)
-        .padding(.bottom, 4)
-    }
-
-    /// Error only when non-blank AND invalid (blank = "use VPN defaults").
-    /// Same predicate the tunnel builder uses, so UI and gate never drift.
-    private func dnsError(_ text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, !SettingsViewModel.isValidDnsAddress(trimmed) else { return nil }
-        return "Enter a valid IP address"
     }
 
     // MARK: - WireGuard port (T3)
@@ -397,34 +320,6 @@ struct VpnSettingsView: View {
         .padding(.top, 4)
     }
 
-    // MARK: - Features (Port Forwarding, SOVEREIGN-gated)
-
-    @ViewBuilder
-    private var portForwardingRow: some View {
-        if vpnVM.isSovereign {
-            NavigationLink {
-                PortForwardView()
-            } label: {
-                VpnLinkRow(icon: "arrow.left.arrow.right", iconColor: BirdoTheme.blue,
-                           title: "Port Forwarding",
-                           description: "Expose ports through your VPN tunnel")
-            }
-            .buttonStyle(PressScaleButtonStyle())
-        } else {
-            VpnLockedRow(icon: "arrow.left.arrow.right",
-                         title: "Port Forwarding",
-                         description: "Expose ports through your VPN tunnel",
-                         action: routeToUpgrade)
-        }
-    }
-
-    /// §0.5: every lock affordance does fetchSubscription() then routes to
-    /// the Subscription screen — there is no per-feature upsell.
-    private func routeToUpgrade() {
-        vpnVM.refreshSubscription()
-        showSubscription = true
-    }
-
     // MARK: - Reapply blip toast
 
     private var reapplyToast: some View {
@@ -517,63 +412,6 @@ private struct VpnToggleRow: View {
         .buttonStyle(PressScaleButtonStyle())
         .accessibilityRepresentation {
             Toggle(isOn: $isOn) { Text(title) }
-        }
-    }
-}
-
-/// Plan-locked row (§0.3): switch replaced by a lock, leading icon dimmed,
-/// whole row routes to the upgrade flow.
-private struct VpnLockedRow: View {
-    let icon: String
-    let title: String
-    let description: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            BirdoCard(cornerRadius: 14, horizontalPadding: 16, verticalPadding: 14) {
-                HStack(spacing: 14) {
-                    Image(systemName: icon)
-                        .font(.system(size: 20))
-                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                        .frame(width: 24)
-                    VpnRowText(title: title, description: description)
-                    Spacer(minLength: 8)
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                }
-            }
-        }
-        .buttonStyle(PressScaleButtonStyle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title). Premium feature — upgrade to unlock")
-        .accessibilityAddTraits(.isButton)
-    }
-}
-
-/// Navigation row: plain icon + title/desc + trailing chevron (faint).
-private struct VpnLinkRow: View {
-    let icon: String
-    let iconColor: Color
-    let title: String
-    let description: String
-
-    var body: some View {
-        BirdoCard(cornerRadius: 14, horizontalPadding: 16, verticalPadding: 14) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 20))
-                    .foregroundStyle(iconColor)
-                    .frame(width: 24)
-                    .accessibilityHidden(true)
-                VpnRowText(title: title, description: description)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                    .accessibilityHidden(true)
-            }
         }
     }
 }
