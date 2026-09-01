@@ -76,8 +76,19 @@ country is the exit's.
 
 **Regression:** connects single-hop while the app draws two hops.
 
-3. Disconnect. In Settings, clear one of the two Multi-Hop nodes so the pair is
-   incomplete. Tap the tile.
+3. Disconnect, then make the Multi-Hop pair **incomplete**.
+
+   ⚠️ There is no Multi-Hop UI in Settings at all, and no "clear this node"
+   control anywhere — the only writer is Home (`HomeScreen.kt:304-311`) and the
+   arm toggle nulls **both** nodes together (`HomeScreen.kt:196-200`). So build
+   the half-set state going *up*, not down: with Multi-Hop armed, set the
+   **entry** node only and leave the exit unset (do not open the exit picker).
+
+   If arming auto-populates both, say so and mark this step not-run — it would
+   mean the incomplete state is unreachable through the UI, which is itself
+   worth reporting.
+
+   Then tap the tile.
 
 **Correct:** the app opens. Nothing connects silently.
 
@@ -148,7 +159,14 @@ The migration must be invisible. If it is not, every existing iOS user burns a
 device slot and loses their trusted-device 2FA skip.
 
 1. On an iPhone with a **pre-#335 build already installed and signed in**, note
-   the device row in Profile → Devices (name and last-seen).
+   the device row (name and last-seen).
+
+   ⚠️ **The device list is not in the app.** Neither client has a devices
+   screen — iOS Profile shows only a `Devices` count tile
+   (`SubscriptionView.swift:153`), and Android's Profile has none. The per-device
+   rows live in the **web dashboard**: sign in at
+   `https://birdo.app/dashboard/devices` (`birdo-web/app/dashboard/devices/page.tsx`)
+   and read them there. Sections F and G both depend on this.
 2. Install the new build **over** it. Do not delete the app — that defeats the
    test.
 3. Open, sign in if needed, connect.
@@ -162,7 +180,8 @@ migration hinge failing, and it affects every existing user.
 ## G. iOS device identity — rotation on erasure
 
 1. Fresh iPhone install. Create a throwaway account. Connect once so a device row
-   exists. Note it.
+   exists. Note it — again from `https://birdo.app/dashboard/devices`, not the
+   app (see F step 1).
 2. Delete the account from Profile.
 3. Register a **new** account on the same handset. Connect.
 

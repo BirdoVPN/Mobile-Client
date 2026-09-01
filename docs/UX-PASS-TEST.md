@@ -106,6 +106,12 @@ Settings page.
    visible in the VPN group, without opening a sub-page.
 2. Open the VPN Settings sub-page. **Neither should still be there** — if you
    see them in both places, the move duplicated rather than relocated.
+⚠️ **Steps 3-4 and §3a need a SOVEREIGN account.** Custom DNS is plan-gated on
+every client — `SettingsView.swift:281-292` renders `SettingsLockedRow` instead
+of the toggle when `!vpnVM.isSovereign`, and `SettingsScreen.kt:239-250` does the
+same on Android. On a lower plan there is no toggle to turn on, so these steps
+cannot run at all (which is *correct* behaviour, not a finding).
+
 3. Turn Custom DNS on, enter a valid address, and confirm it saves.
 4. Enter an **invalid** address. The same validation error as before must appear.
 5. Port Forwarding: if your plan does not include it, the upgrade route must
