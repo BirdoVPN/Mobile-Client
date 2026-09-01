@@ -2,6 +2,9 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @main
 struct BirdoVPNApp: App {
@@ -41,11 +44,21 @@ struct BirdoVPNApp: App {
                     // it. Reviewed on a 15-inch MacBook Air, where the visible
                     // height is ~900pt.
                     //
-                    // A floor on the CONTENT is what stops that: it makes the
-                    // window's minimum a number we chose rather than whatever
-                    // the tallest screen's layout happens to produce.
+                    // The minimum below is a FLOOR, not a ceiling -- it cannot
+                    // stop a window being too tall, and saying otherwise (as an
+                    // earlier draft of this comment did) describes a mechanism
+                    // that does not exist. It is here so the window cannot be
+                    // dragged small enough to hide its own title bar.
+                    //
+                    // What actually fixes the rejection is clampToVisibleFrame
+                    // below. `.defaultSize` alone would not: AppKit restores a
+                    // saved frame in preference to it, and the reviewer's Mac
+                    // has ALREADY RUN the rejected build, so it has a saved
+                    // frame -- the very machine the fix must work on is the one
+                    // where the default is ignored.
                     #if os(macOS)
                     .frame(minWidth: 420, minHeight: 560)
+                    .onAppear { MacWindow.clampToVisibleFrame() }
                     #endif
             }
         }
@@ -59,6 +72,37 @@ struct BirdoVPNApp: App {
         .windowResizability(.contentMinSize)
         #endif
     }
+
+    #if os(macOS)
+    /// Pull the window fully inside the screen's usable area.
+    ///
+    /// Guideline 4 was "windows laid out and partially hidden under menu bar".
+    /// `visibleFrame` already excludes the menu bar and the Dock, so clamping
+    /// to it is exactly the property the reviewer checked. Runs on appear
+    /// because a RESTORED frame is applied after the scene's defaultSize, and
+    /// a Mac that ran the rejected build has one saved.
+    enum MacWindow {
+        static func clampToVisibleFrame() {
+            DispatchQueue.main.async {
+                guard let window = NSApplication.shared.keyWindow
+                        ?? NSApplication.shared.windows.first,
+                      let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+                else { return }
+                var frame = window.frame
+                frame.size.width = min(frame.width, visible.width)
+                frame.size.height = min(frame.height, visible.height)
+                frame.origin.x = min(max(frame.minX, visible.minX),
+                                     visible.maxX - frame.width)
+                // maxY is the top edge: keeping it at or below the visible
+                // maximum is what puts the title bar under the menu bar.
+                frame.origin.y = min(max(frame.minY, visible.minY),
+                                     visible.maxY - frame.height)
+                guard frame != window.frame else { return }
+                window.setFrame(frame, display: true)
+            }
+        }
+    }
+    #endif
 
     /// Android bottom-bar chrome (spec-home-servers-consent §2): surface fill,
     /// hairlineSoft top divider, selected = accent, unselected =

@@ -90,11 +90,14 @@ struct LoginView: View {
     /// save-your-ID step, where leaving would lose the only credential.
     @ViewBuilder
     private var sheetChrome: some View {
-        // Also hidden while provisioning. "Not now" here closes the sheet
-        // WITHOUT cancelling the in-flight request, so the account completes
-        // with nothing on screen and its 24-digit ID -- the only credential --
-        // is never shown.
-        if !isCreatedStep && !authVM.isAutoProvisioning {
+        // Visible during provisioning too. Hiding it was justified by the
+        // claim that dismissing mid-mint loses the only credential -- and that
+        // claim is false in this repo's own terms: completeAuthentication
+        // persists the id (`keychain.saveAnonymousId`) and ProfileView renders
+        // it afterwards. What hiding it actually bought was an uncancellable
+        // modal for as long as two 30-second requests can take, on the first
+        // tap of the app's primary button, which on macOS reads as a hang.
+        if !isCreatedStep {
             VStack(spacing: 10) {
                 HStack {
                     Spacer(minLength: 0)

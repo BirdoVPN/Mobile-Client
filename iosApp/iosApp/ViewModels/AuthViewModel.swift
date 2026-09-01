@@ -58,6 +58,14 @@ final class AuthViewModel: ObservableObject {
     /// input. The sheet renders a progress step instead of the tabbed form, so
     /// the success path never shows a sign-in UI at all.
     @Published private(set) var isAutoProvisioning = false
+    /// The Connect (or location) tap that was interrupted by the consent
+    /// screen, so accepting consent can hand back to it.
+    ///
+    /// Consumed SYNCHRONOUSLY in `acceptConsent()` -- not by an observer on
+    /// some published value. An earlier version of this change used a reactive
+    /// trigger for the analogous problem and was wrong three times, because the
+    /// state it watched never reached the value it assumed.
+    private var pendingProvisionReason: SignInReason?
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -212,6 +220,15 @@ final class AuthViewModel: ObservableObject {
     func acceptConsent() {
         hasConsented = true
         consentDeferred = false
+        // Hand back to the tap that was interrupted. Deferred so the sheet's
+        // ConsentView -> LoginView swap settles before provisioning re-enters
+        // and flips it to the progress step.
+        if let resumed = pendingProvisionReason {
+            pendingProvisionReason = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.provisionAnonymously(reason: resumed)
+            }
+        }
         let defaults = UserDefaults.standard
         defaults.set(true, forKey: "gdpr_consented")
         defaults.removeObject(forKey: Self.consentDeferredKey)
@@ -319,6 +336,14 @@ final class AuthViewModel: ObservableObject {
         // false belief swapped the ROOT ROUTE to the consent screen, which
         // destroys the tab shell. Checked before restoring it.
         guard hasConsented else {
+            // Remember what they tapped. Without this, accepting consent
+            // dropped them on the tabbed registration form under the headline
+            // "Sign in to connect" -- the exact wall, and the exact sentence,
+            // guideline 5.1.1(v) was rejected over. Anyone who chose "Not now"
+            // on the first-launch privacy screen hit it, which plausibly
+            // includes App Review, and the new copy had just promised them no
+            // form was coming.
+            pendingProvisionReason = reason
             requestSignIn(reason)
             return
         }
@@ -343,6 +368,7 @@ final class AuthViewModel: ObservableObject {
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
+        pendingProvisionReason = nil
         isPresentingSignIn = false
     }
 
