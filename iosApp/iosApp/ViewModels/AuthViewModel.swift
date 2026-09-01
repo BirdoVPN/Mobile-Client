@@ -58,12 +58,6 @@ final class AuthViewModel: ObservableObject {
     /// input. The sheet renders a progress step instead of the tabbed form, so
     /// the success path never shows a sign-in UI at all.
     @Published private(set) var isAutoProvisioning = false
-    /// Set when the provisioning run was started by a Connect tap, so the
-    /// caller can dial the tunnel once the account exists and its ID has been
-    /// acknowledged. Without it the button says "Connect", mints an account,
-    /// and leaves the user sitting on a disconnected Home -- the label would be
-    /// describing something the code does not do.
-    @Published var connectAfterProvisioning = false
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -252,8 +246,6 @@ final class AuthViewModel: ObservableObject {
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
-        // An ordinary sign-in must never inherit a provisioning intent.
-        connectAfterProvisioning = false
         isPresentingSignIn = true
     }
 
@@ -280,14 +272,28 @@ final class AuthViewModel: ObservableObject {
     ///     appears carrying `AnonymousCreateFailure`'s copy, and the user can
     ///     retry or pick another method. The wall only ever appears when the
     ///     no-input path could not be delivered.
-    /// - Parameter thenConnect: dial the tunnel once the ID is acknowledged.
-    ///   Home passes true (the button says "Connect"); the servers list passes
-    ///   false, where the user only wants the list to become usable.
+    /// Deliberately does NOT dial the tunnel afterwards.
+    ///
+    /// Auto-connecting was attempted twice and was wrong twice. Both attempts
+    /// hung a reactive trigger on state that does not behave as assumed: a
+    /// guest has no authenticated server list at all, so firing on the login
+    /// flip called connect() against a nil selection ("Select a server
+    /// first"), and firing on the selection instead went SILENT whenever the
+    /// post-login fetch failed or returned nothing usable -- no tunnel, no
+    /// error, nothing -- while leaving the intent latched to dial later from a
+    /// pull-to-refresh the user never connected to a Connect tap.
+    ///
+    /// Guideline 5.1.1(v) requires that connecting not demand registration. It
+    /// does not require the app to connect on the user's behalf. The extra tap
+    /// costs the user one gesture, after a screen that already asks them to
+    /// save a recovery number; the reactive trigger cost three review rounds
+    /// and was never once correct. Removing it deletes that whole class.
+    ///
     /// - Parameter reason: what the user was trying to do. Drives the sheet
     ///   copy if the mint FAILS and the ordinary form has to come back;
-    ///   hardcoding `.connect` there told a user who tapped a location row
+    ///   hardcoding `.connect` told a user who tapped a location row
     ///   "Sign in to connect", which is both wrong and the rejected sentence.
-    func provisionAnonymously(thenConnect: Bool, reason: SignInReason = .connect) {
+    func provisionAnonymously(reason: SignInReason = .connect) {
         guard !isLoggedIn else { return }
         // An un-acknowledged ID is still on screen. Minting again would show
         // account A's number while account B's tokens land in the keychain --
@@ -303,38 +309,25 @@ final class AuthViewModel: ObservableObject {
             isPresentingSignIn = true
             return
         }
-        // Consent first. `deferConsent()` is a real state -- "Not now" on the
-        // privacy screen -- and creating a server-side account for someone who
-        // chose it is not ours to do. Sending them to the sign-in sheet instead
-        // is a dead end: the sheet has no way to consent. Clearing the deferral
-        // puts the consent screen back, which is the only surface that can.
+        // Consent first: creating a server-side account for someone who chose
+        // "Not now" on the privacy screen is not ours to do.
+        //
+        // requestSignIn is the right destination, and an earlier comment here
+        // claiming otherwise ("the sheet has no way to consent") was simply
+        // false -- ContentView.swift:187 renders ConsentView inside this very
+        // sheet whenever hasConsented is false. The alternative built on that
+        // false belief swapped the ROOT ROUTE to the consent screen, which
+        // destroys the tab shell. Checked before restoring it.
         guard hasConsented else {
-            // Deliberately does NOT arm connectAfterProvisioning. Nothing on
-            // this path consumes it -- accepting consent does not resume the
-            // mint -- so it would sit set until some later, unrelated sign-in
-            // flipped isLoggedIn and fired a connect the user never asked for.
-            // The user taps Connect again after consenting; that is one tap,
-            // against a stale flag that dials a tunnel out of nowhere.
-            reopenConsent()
+            requestSignIn(reason)
             return
         }
-        connectAfterProvisioning = thenConnect
         signInReason = reason
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = true
         isPresentingSignIn = true
         createAnonymousAccount()
-    }
-
-    /// Put the privacy screen back for a user who deferred it. Leaves
-    /// `hasConsented` false -- this asks, it does not decide.
-    func reopenConsent() {
-        // IN-MEMORY ONLY. Persisting the cleared deferral would make the
-        // first-launch-only consent screen the launch route on every
-        // subsequent cold start -- turning a one-tap ask into a permanent
-        // wall, which is the shape of the thing being fixed.
-        consentDeferred = false
     }
 
     /// Close the sheet and drop back into the guest shell.
@@ -350,7 +343,6 @@ final class AuthViewModel: ObservableObject {
         error = nil
         anonymousCreateFailureStatus = nil
         isAutoProvisioning = false
-        connectAfterProvisioning = false
         isPresentingSignIn = false
     }
 
@@ -575,7 +567,6 @@ final class AuthViewModel: ObservableObject {
                     // hour has already been spent, so say so rather than
                     // spinning.
                     isAutoProvisioning = false
-                    connectAfterProvisioning = false
                 }
             } catch {
                 // NOT mapAuthError: its 429 branch says "Too many attempts.
@@ -590,7 +581,6 @@ final class AuthViewModel: ObservableObject {
                 // could not be delivered, and AnonymousCreateFailure's copy
                 // lives on the tabbed form.
                 self.isAutoProvisioning = false
-                self.connectAfterProvisioning = false
                 self.anonymousCreateFailureStatus = status
                 self.error = AnonymousCreateFailure.message(
                     status: status,

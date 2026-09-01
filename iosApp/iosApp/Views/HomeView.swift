@@ -84,26 +84,6 @@ struct HomeView: View {
             vpnVM.refreshSubscription()
             if isGuest { vpnVM.loadPublicLocations() }
         }
-        // The Connect tap that minted the account finishes here.
-        //
-        // Keyed on selectedServer, NOT on the isLoggedIn flip. A guest has no
-        // authenticated server list at all -- loadServers() begins with
-        // `guard hasSession` -- so selectedServer is nil right up until the
-        // post-login fetch lands. Firing on the login flip called connect()
-        // synchronously against a nil selection, which bails with "Select a
-        // server first" and leaves the tunnel down. The flag was burned in the
-        // same breath, so nothing retried: the fix for "it never connected"
-        // never connected either.
-        //
-        // Waiting for a server closes that. The flag is only ever set by a
-        // provisioning tap, so an ordinary server switch cannot trigger this.
-        .onChange(of: vpnVM.selectedServer?.id) { _, serverId in
-            guard serverId != nil,
-                  authVM.isLoggedIn,
-                  authVM.connectAfterProvisioning else { return }
-            authVM.connectAfterProvisioning = false
-            vpnVM.connect()
-        }
         // Multi-Hop flow — pushed for SOVEREIGN users from the top-bar chip.
         .navigationDestination(isPresented: $showMultiHop) {
             MultiHopView()
@@ -773,7 +753,7 @@ struct HomeView: View {
             // tap -- no email, no password, no typing -- which is what
             // guideline 5.1.1(v) requires: the user enters no personal
             // information to reach a non-account-based feature.
-            authVM.provisionAnonymously(thenConnect: true)
+            authVM.provisionAnonymously(reason: .connect)
         } else if vpnVM.isConnected {
             disconnectHapticTick += 1
             vpnVM.disconnect()

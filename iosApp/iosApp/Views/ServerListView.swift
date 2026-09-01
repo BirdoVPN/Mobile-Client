@@ -437,10 +437,9 @@ struct ServerListView: View {
                             // The connect path was un-gated on Home only; this
                             // row still raised the tabbed registration form,
                             // which is the same wall guideline 5.1.1(v)
-                            // rejected. thenConnect is false -- the user asked
-                            // for the list to work, not for a tunnel.
-                            authVM.provisionAnonymously(thenConnect: false,
-                                                        reason: .servers)
+                            // rejected. It provisions only; connecting stays
+                            // a deliberate second action by the user.
+                            authVM.provisionAnonymously(reason: .servers)
                         }
                     }
                 }
@@ -459,7 +458,7 @@ struct ServerListView: View {
                 .font(.system(size: 14))
                 .foregroundStyle(BirdoTheme.accentSoft)
                 .accessibilityHidden(true)
-            Text("Pick a location to get started. No account needed.")
+            Text("Browsing the network. Set up a free anonymous account to use it \u{2014} no email, no password.")
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.white60)
                 .fixedSize(horizontal: false, vertical: true)
@@ -574,7 +573,7 @@ private struct PublicLocationRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text("Use")
+                Text("Set up")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(BirdoTheme.accent)
                     .padding(.horizontal, 10)
@@ -596,7 +595,11 @@ private struct PublicLocationRow: View {
         }
         .buttonStyle(PressScaleButtonStyle())
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Sets up an anonymous account and selects this location")
+        // Says only what the tap does. The action provisions an account; it
+        // does NOT select this location -- the authenticated list picks its own
+        // default -- and promising otherwise sent a user who tapped Tokyo to
+        // whichever node came first, believing they had chosen.
+        .accessibilityHint("Sets up an anonymous account so you can use the network")
     }
 
     /// Country · node count · maintenance, and nothing that needs an account.
