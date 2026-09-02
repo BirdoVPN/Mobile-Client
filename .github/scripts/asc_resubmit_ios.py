@@ -152,18 +152,17 @@ def main() -> int:
         a = b["attributes"]
         print(f"  build {a['version']} {a['processingState']} uploaded={a['uploadedDate']} id={b['id']}")
     valid = [b for b in cands if b["attributes"]["processingState"] == "VALID"]
-    if not valid:
-        print(f"  build {target_build} is not yet VALID (uploaded and processed) — run again later")
-        # Still continue to report submissions/subscriptions, but do not attach.
-        build_id = None
-    else:
-        build_id = valid[0]["id"]
+    if valid:
         asc.patch(
             f"appStoreVersions/{ver_id}/relationships/build",
-            {"data": {"type": "builds", "id": build_id}},
+            {"data": {"type": "builds", "id": valid[0]["id"]}},
             f"(attach build {target_build})",
             apply,
         )
+    else:
+        # Keep going so the submission and subscription state is still reported,
+        # but nothing can be attached yet.
+        print(f"  build {target_build} is not yet VALID (uploaded and processed) — run again later")
 
     # 3. the open iOS submission and its rejected version item -----------------
     subs_all = asc.get(f"apps/{app_id}/reviewSubmissions", **{"limit": 50})["data"]
