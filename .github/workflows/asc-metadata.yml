@@ -32,7 +32,7 @@ on:
         required: true
         default: read
         type: choice
-        options: [read, apply, plan-attach, attach, inspect]
+        options: [read, apply, plan-attach, attach, inspect, resubmit-ios-plan, resubmit-ios-apply]
       platforms:
         description: "Which apps to act on"
         required: true
@@ -93,3 +93,22 @@ jobs:
           MODE: ${{ inputs.mode }}
           PLATFORMS: ${{ inputs.platforms }}
         run: python .github/scripts/asc_metadata.py
+
+      # After a rejection: bump the iOS version record to version.properties,
+      # attach the processed build for it, mark the rejected review item
+      # resolved, and re-submit any subscription the rejection released.
+      # NEVER presses Submit. plan = print only.
+      - name: Resubmit iOS (prepare only; never submits)
+        if: startsWith(inputs.mode, 'resubmit-ios')
+        env:
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_KEY_B64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          MODE: ${{ inputs.mode == 'resubmit-ios-apply' && 'apply' || 'plan' }}
+        run: |
+          set -euo pipefail
+          . <(grep -E '^VERSION_(MAJOR|MINOR|PATCH)=' version.properties)
+          export TARGET_VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}"
+          export TARGET_BUILD="$(( VERSION_MAJOR * 10000 + VERSION_MINOR * 100 + VERSION_PATCH ))"
+          echo "target ${TARGET_VERSION} (${TARGET_BUILD})"
+          python .github/scripts/asc_resubmit_ios.py
