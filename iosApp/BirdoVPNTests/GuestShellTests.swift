@@ -98,6 +98,37 @@ final class GuestShellTests: XCTestCase {
         XCTAssertFalse(message.lowercased().contains("moment"), message)
     }
 
+    /// The SECOND 429. `POST /auth/register/anonymous` also caps 5 creations
+    /// per DEVICE per 24 hours, keyed on the stable device id that survives
+    /// sign-out, container deletion and reinstall. The copy above — "this
+    /// network", "about an hour" — is wrong on both counts for this refusal,
+    /// and its implied remedy (change network) cannot work. The backend's body
+    /// distinguishes the two; the client must not collapse them.
+    func testDeviceRateLimitCopyNamesTheDeviceAndSaysNetworksWontHelp() {
+        let message = AnonymousCreateFailure.message(status: 429, serverText:
+            "Too many accounts created from this device, please try later")
+
+        XCTAssertTrue(message.lowercased().contains("device"),
+                      "Must name the device, not the network: \(message)")
+        XCTAssertTrue(message.contains("24 hours"),
+                      "Must give the real window, which is a day not an hour: \(message)")
+        XCTAssertFalse(message.lowercased().contains("this network"),
+                       "Must not blame the network for a device cap: \(message)")
+        XCTAssertTrue(message.lowercased().contains("will not help"),
+                      "Must say the obvious remedy is futile: \(message)")
+        XCTAssertTrue(message.contains(AnonymousCreateFailure.stillUsableSuffix), message)
+    }
+
+    /// And the network copy must not regress when the body is absent or
+    /// unrecognised — the IP limit is the common case.
+    func testUnrecognisedRateLimitBodyFallsBackToTheNetworkCopy() {
+        for text in [nil, "", "Too Many Requests"] {
+            let message = AnonymousCreateFailure.message(status: 429, serverText: text)
+            XCTAssertTrue(message.lowercased().contains("network"), "\(String(describing: text)) -> \(message)")
+            XCTAssertTrue(message.lowercased().contains("hour"), "\(String(describing: text)) -> \(message)")
+        }
+    }
+
     /// Retrying inside the rate-limit hour burns another attempt and fails
     /// again, which is precisely how a reviewer concludes the app is broken.
     func testRateLimitOffersNoImmediateRetry() {

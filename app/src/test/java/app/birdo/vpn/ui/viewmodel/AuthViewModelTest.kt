@@ -1140,6 +1140,47 @@ class AuthViewModelTest {
             app.birdo.vpn.data.model.AnonymousLoginResponse(ok = true, anonymousId = id, tokens = tokens)
         )
 
+    /** `POST /auth/register/anonymous` has TWO rate limits behind one 429 — 3 per
+     *  IP per hour, and 5 per DEVICE per 24h keyed on a device id that survives
+     *  sign-out and reinstall. The old path ran the body through parseLoginError,
+     *  which said "Too many attempts. Please wait a moment." for both: wrong about
+     *  whose limit, wrong about the wait, and for the device cap it implies a
+     *  remedy (try again shortly / elsewhere) that cannot work. */
+    @Test
+    fun `registerAnonymous 429 from the DEVICE cap names the device and says networks will not help`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns ApiResult.Error(
+            """{"message":"Too many accounts created from this device, please try later","statusCode":429}""",
+            429,
+        )
+
+        viewModel.registerAnonymous()
+
+        val error = viewModel.uiState.value.error.orEmpty()
+        assertTrue(error, "device" in error.lowercase())
+        assertTrue(error, "24 hours" in error)
+        assertTrue(error, "will not help" in error.lowercase())
+        assertFalse(error, "this network" in error.lowercase())
+        assertFalse(error, "moment" in error.lowercase())
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `registerAnonymous 429 from the IP cap names the network and the hour`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.registerAnonymous() } returns ApiResult.Error(
+            """{"message":"Too many accounts created from this network, please try later","statusCode":429}""",
+            429,
+        )
+
+        viewModel.registerAnonymous()
+
+        val error = viewModel.uiState.value.error.orEmpty()
+        assertTrue(error, "network" in error.lowercase())
+        assertTrue(error, "hour" in error.lowercase())
+        assertFalse(error, "moment" in error.lowercase())
+    }
+
     @Test
     fun `registerAnonymous surfaces the minted ID and does NOT sign in until acknowledged`() = runTest {
         viewModel = createLoggedOutViewModel()

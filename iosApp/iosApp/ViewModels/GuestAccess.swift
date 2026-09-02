@@ -142,7 +142,25 @@ enum AnonymousCreateFailure {
         }
         switch status {
         case 429:
-            // 3 per IP per hour (auth.controller.ts `rl:anon-register:ip:*`).
+            // TWO server-side limits share this status, with different
+            // remedies, and the backend's body says which one fired
+            // (auth.controller.ts):
+            //   • `rl:anon-register:ip:*`  — 3 per IP per hour. Body says
+            //     "from this network". Changing network, or an hour, clears it.
+            //   • `rl:anon-register:dev:*` — 5 per DEVICE per 24h, keyed on
+            //     the stable deviceId. Body says "from this device". NOTHING
+            //     the user can do clears it — not another network, not signing
+            //     out, not reinstalling (device_id survives all three) — only
+            //     the 24 hours passing.
+            // This used to render the network/hour copy for BOTH, so a
+            // device-capped user was sent off to change networks, which cannot
+            // help, and told to wait an hour, which is 23 short.
+            if serverText?.lowercased().contains("device") == true {
+                return "This device has created too many anonymous accounts in "
+                    + "the past 24 hours, so this one was refused. Switching "
+                    + "networks will not help — the limit is per device and "
+                    + "clears on its own after 24 hours. " + stillUsableSuffix
+            }
             // Name the network, give the wait, and offer the two other doors.
             return "Too many anonymous accounts have been created from this "
                 + "network in the past hour, so this one was refused. Try again "
