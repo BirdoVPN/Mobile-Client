@@ -229,6 +229,13 @@ targets:
       # functions precisely so they can be asserted here, with no StoreKit, no
       # sandbox Apple ID, no app host and no network.
       - path: iosApp/Services/StoreCatalog.swift
+      # Mobile-Client #159 live rebuild. Foundation-only by design: the "server
+      # does not know `rebuild`" classification, the deferredKeyId check and
+      # the decision table that decides whether a live, kill-switched session
+      # is ever stopped are pure functions precisely so they can be asserted
+      # here — the bug they guard needs a peer removed by hand on a node to
+      # observe.
+      - path: iosApp/Services/LiveRebuild.swift
       # The StoreKit testing configuration, carried as a RESOURCE of the test
       # bundle so a test can read it as JSON and prove it still declares exactly
       # the four product ids BirdoStoreProduct expects. A .storekit file that

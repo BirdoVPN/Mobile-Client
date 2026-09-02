@@ -158,6 +158,12 @@ final class VpnViewModel: ObservableObject {
     private(set) var activeKeyId: String?
     private static let lastKeyIdDefaultsKey = "last_key_id"
 
+    /// REBUILD (Mobile-Client #159): an in-place live rebuild is in flight.
+    /// Re-entrancy guard for `rebuildLive`; also suppresses the generic
+    /// post-`.connected` handshake arm, whose no-handshake teardown would
+    /// otherwise race the rebuild's own revert.
+    private var isRebuildingLive = false
+
     private static let heartbeatInterval: TimeInterval = 30
 
     init(api: APIClient = .shared,
@@ -431,12 +437,32 @@ final class VpnViewModel: ObservableObject {
     /// `handleStatusChange`, exactly as for single-hop).
     @discardableResult
     func connectMultiHop(entry: ServerInfo, exit: ServerInfo) async -> Bool {
-        // Same re-entrancy guard as connect().
-        guard !isConnecting else { return false }
+        // Same re-entrancy guard as connect(); a live in-place rebuild counts.
+        guard !isConnecting, !isRebuildingLive else { return false }
         // Every caller of this is a user action (the Multi-Hop screen's dial, or
         // a settings blip rebuilding the pair the user chose), so it clears the
         // breaker unconditionally — same rule as `connect(userInitiated: true)`.
         clearCircuitBreaker()
+        if isConnected {
+            // MULTI-HOP CHANGE-EXIT (#159 review item (d)) — the ONE live
+            // rebuild that is deliberately NOT done in place. The Multi-Hop
+            // screen can dial a new pair over a live session, and the node-agent
+            // one-exit-per-entry guard (birdo-node-agent
+            // src/handlers/multihop.rs, `set_exit_default_peer`) 409s a
+            // "same entry, different exit" install while a live client — this
+            // device's own deferred previous session — still routes via the
+            // old exit. Today's eviction-first order is what avoids that, so
+            // this path keeps it: stop, wait for the teardown to land, redial.
+            // It leaks the gap exactly as before; only the same confirmed pair
+            // (a settings blip) is rebuilt in place, via reapplySettings.
+            // Also fixes the pre-existing shape here, where `vpnManager.connect`
+            // overwrote the profile (on-demand OFF) under a still-running
+            // session that the server had just evicted mid-request.
+            NSLog("[VpnViewModel] multi-hop dial over a live session — using the disconnect-first path (one-exit-per-entry guard)")
+            isSwitching = true
+            vpnManager.disconnect()
+            await awaitTeardown()
+        }
         isConnecting = true
         error = nil
 
@@ -486,37 +512,45 @@ final class VpnViewModel: ObservableObject {
     }
 
     /// Settings "blip" (Android apply-on-change, path 2): rebuild the live
-    /// tunnel so changed tunnel-shape settings (quantum, DNS, local network
-    /// sharing, port, MTU) take effect. Wired to
-    /// `SettingsViewModel.onSettingsReapplyNeeded` at the app root; no-op
-    /// unless connected. The immediate reconnect replaces this device's
-    /// server-side slot atomically (`evictForConnect` reclaims by deviceId),
-    /// so the old peer needs no DELETE round-trip and a free-tier slot is
-    /// never double-consumed. A user disconnect during the blip WINS:
-    /// `disconnect()` clears `isReapplyingSettings`, which gates the deferred
-    /// reconnect below.
+    /// tunnel so changed tunnel-shape settings (quantum, DNS, port, MTU) take
+    /// effect. Wired to `SettingsViewModel.onSettingsReapplyNeeded` at the app
+    /// root; no-op unless connected.
+    ///
+    /// REBUILD (Mobile-Client #159): this never calls `vpnManager.disconnect()`
+    /// any more — that disarmed on-demand and dropped the session, and with no
+    /// session `includeAllNetworks` blocks nothing, so the gap leaked. The peer
+    /// is swapped on the LIVE session instead (`rebuildLive`); the server
+    /// defers this device's old key until the new peer handshakes. The one
+    /// exception is a PROTOCOL-level flag (Local Network Sharing →
+    /// `excludeLocalNetworks`), which iOS applies only at tunnel start: that
+    /// setting alone still takes the restart path. A user disconnect during
+    /// the blip WINS: it clears `isReapplyingSettings` and drops the session
+    /// the swap would probe, so the rebuild ends without touching anything.
     func reapplySettings() {
         guard isConnected, !isConnecting else { return }
         guard activeMultiHop != nil || selectedServer != nil else { return }
-        guard !isReapplyingSettings else { return }
+        guard !isReapplyingSettings, !isRebuildingLive else { return }
+        let target: RebuildTarget
+        if let mh = activeMultiHop {
+            // A live Multi-Hop session rebuilds as the SAME confirmed pair.
+            // The unconditional single-hop connect() here used to pass its
+            // guard (fetchServers auto-picks selectedServer) and silently
+            // rebuild any settings change as single-hop — the user kept
+            // seeing the multi-hop UI over a one-hop tunnel.
+            target = .multiHop(entry: mh.entry, exit: mh.exit)
+        } else if let server = selectedServer {
+            target = .single(server)
+        } else {
+            return
+        }
         isReapplyingSettings = true
         error = nil
-        vpnManager.disconnect()
-        Task { [weak self] in
-            await self?.awaitTeardown()
-            guard let self, self.isReapplyingSettings else { return }
-            if let mh = self.activeMultiHop {
-                // A live Multi-Hop session rebuilds as the SAME confirmed pair.
-                // The unconditional single-hop connect() here used to pass its
-                // guard (fetchServers auto-picks selectedServer) and silently
-                // rebuild any settings change as single-hop — the user kept
-                // seeing the multi-hop UI over a one-hop tunnel.
-                await self.connectMultiHop(entry: mh.entry, exit: mh.exit)
-            } else {
-                self.connect()
-            }
-            await self.clearRebuildFlagsIfStalled()
+        if vpnManager.liveProfileNeedsRestart {
+            NSLog("[VpnViewModel] reapply: a tunnel-start-only flag changed — using the disconnect-first path")
+            legacyRebuild(target)
+            return
         }
+        Task { [weak self] in await self?.rebuildLive(target, revertSelectionTo: nil) }
     }
 
     /// Wait for the teardown we just requested to ACTUALLY land.
@@ -563,6 +597,11 @@ final class VpnViewModel: ObservableObject {
     /// has exactly one, and a stranded peer makes the next attempt read as
     /// "device limit reached".
     private func armKillSwitchAfterHandshake() async {
+        // A live rebuild owns the handshake wait for its swap (and the revert
+        // when it fails); this generic arm must not run its own no-handshake
+        // teardown on top of it. The rule it would arm is already armed — the
+        // rebuild never disarmed it.
+        guard !isRebuildingLive else { return }
         for _ in 0..<HANDSHAKE_POLLS {
             try? await Task.sleep(for: .milliseconds(HANDSHAKE_POLL_MS))
             // The user (or a settings blip) tore it down while we waited.
@@ -926,18 +965,307 @@ final class VpnViewModel: ObservableObject {
             return
         }
         if server.id == connectedServerId { return }
+        // A switch is already being swapped in place: never stack a second
+        // rebuild on it — the first commits or reverts on its own.
+        guard !isRebuildingLive else { return }
+        let previous = selectedServer
         selectedServer = server
         error = nil
         isSwitching = true
-        // Reuse the settings-blip sequencing: stop, WAIT for the teardown to
-        // actually land (not a fixed sleep — see `awaitTeardown()`), then
-        // reconnect. evictForConnect reclaims the device slot atomically, so no
-        // DELETE round-trip is needed and the free-tier slot is never doubled.
+        guard isConnected, !isConnecting else {
+            // Still dialling — no settled session to swap under. Today's
+            // stop, wait-for-teardown, redial sequence, unchanged.
+            legacyRebuild(.single(server))
+            return
+        }
+        // REBUILD (Mobile-Client #159): swap the peer on the live session; the
+        // kill switch stays armed throughout. See `rebuildLive`.
+        Task { [weak self] in await self?.rebuildLive(.single(server), revertSelectionTo: previous) }
+    }
+
+    // MARK: - Live rebuild (Mobile-Client #159)
+
+    private enum RebuildTarget {
+        case single(ServerInfo)
+        case multiHop(entry: ServerInfo, exit: ServerInfo)
+    }
+
+    /// Everything one rebuild attempt needs to finish, whichever way it ends.
+    private struct RebuildContext {
+        let target: RebuildTarget
+        /// Selection to put back if the switch does not take (server switch only).
+        let previous: ServerInfo?
+        /// The key the live tunnel is riding — the one the server defers.
+        let oldKeyId: String
+        /// The live profile + secrets, for the swap-back.
+        let snapshot: VPNManager.TunnelProfileSnapshot
+        /// The minted config, once /connect answered.
+        var newConfig: VPNConnectionConfig?
+        var confirmedRoute: String?
+    }
+
+    /// In-place live rebuild. The `/connect` goes THROUGH the live tunnel with
+    /// `rebuild: true` + the key it is riding (`currentKeyId`); the server
+    /// defers that ONE key's eviction until the new peer handshakes (its
+    /// sweeper retires it — birdo-web `VpnService.sweepSupersededPeers`); the
+    /// peer is swapped on the running utun (`WireGuardAdapter.update`, no
+    /// interface drop); and only once the NEW peer has delivered bytes does this
+    /// client consider the old key released. The session never drops, so the
+    /// kill switch never disarms. If the new peer never answers, the snapshot is
+    /// swapped back — its peer is still on its node, and the server keeps it
+    /// because it is the live one.
+    ///
+    /// Every outcome goes through `LiveRebuildPolicy` (LiveRebuild.swift) and
+    /// `finishRebuild` is its only interpreter. The ONE directive that may stop
+    /// the tunnel is `legacyDisconnectFirst`, reached solely when the SERVER
+    /// cannot defer (it does not know the fields, or it did not echo our key).
+    /// No error path stops the tunnel or disarms on-demand.
+    private func rebuildLive(_ target: RebuildTarget, revertSelectionTo previous: ServerInfo?) async {
+        guard !isRebuildingLive else { return }
+        guard let oldKeyId = activeKeyId else {
+            // No server handle for the live session (an install upgraded under a
+            // live tunnel from a build that never stored one): nothing the server
+            // could defer against — today's path.
+            NSLog("[VpnViewModel] rebuild: live session has no connection handle — using the disconnect-first path")
+            legacyRebuild(target)
+            return
+        }
+        let snapshot: VPNManager.TunnelProfileSnapshot
+        do {
+            snapshot = try vpnManager.snapshotRunningProfile()
+        } catch {
+            NSLog("[VpnViewModel] rebuild: could not snapshot the live profile — using the disconnect-first path")
+            legacyRebuild(target)
+            return
+        }
+        isRebuildingLive = true
+        var flagsOwnedElsewhere = false
+        defer {
+            isRebuildingLive = false
+            if !flagsOwnedElsewhere {
+                isReapplyingSettings = false
+                isSwitching = false
+            }
+        }
+        var ctx = RebuildContext(target: target, previous: previous, oldKeyId: oldKeyId,
+                                 snapshot: snapshot, newConfig: nil, confirmedRoute: nil)
+
+        // 1. /connect THROUGH the live tunnel, telling the server which key it rides.
+        let config: VPNConnectionConfig
+        do {
+            switch target {
+            case .single(let server):
+                config = try await api.getConnectConfig(serverId: server.id, rebuildOf: oldKeyId)
+            case .multiHop(let entry, let exit):
+                config = try await api.getMultiHopConfig(entryId: entry.id, exitId: exit.id, rebuildOf: oldKeyId)
+            }
+        } catch let apiError as APIError where apiError.isRebuildFieldRejection {
+            // The server does not know `rebuild` — read from the validation
+            // error's own words, never from a bare 400. It would evict our own
+            // peer mid-request, so use the pre-#159 path (leaks the gap as
+            // today; never a blackhole).
+            NSLog("[VpnViewModel] rebuild: server does not know the rebuild fields — using the disconnect-first path")
+            flagsOwnedElsewhere = await finishRebuild(.serverDoesNotKnowRebuild, ctx)
+            return
+        } catch {
+            // Old tunnel untouched, still protected.
+            self.error = error.localizedDescription
+            reportUnauthorized(error)
+            flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)
+            return
+        }
+        // Server-side the NEW peer now exists (and, if honoured, the OLD one is
+        // deferred rather than evicted).
+        ctx.newConfig = config
+
+        // 2. Multi-Hop: refuse a route the server did not confirm (same rule as
+        //    connectMultiHop — rationale in MultiHopRoute.swift).
+        if case .multiHop(let entry, let exit) = target {
+            do {
+                ctx.confirmedRoute = try MultiHopRouteCheck.validate(
+                    config.multiHop, requestedEntryId: entry.id, requestedExitId: exit.id
+                ).route
+            } catch {
+                self.error = error.localizedDescription
+                flagsOwnedElsewhere = await finishRebuild(.routeNotConfirmed, ctx)
+                return
+            }
+        }
+
+        // 3. Was OUR key deferred? Only an echo of the exact key counts.
+        guard let newKeyId = config.keyId,
+              RebuildDeferral.honoured(currentKeyId: oldKeyId, deferredKeyId: config.deferredKeyId) else {
+            // The server accepted the flag but did not echo the key we ride: it
+            // did not defer it (a backend that knows the field but not the echo,
+            // or a handle it no longer holds), so the old peer may already be
+            // gone. Today's path, minus the key this attempt minted.
+            NSLog("[VpnViewModel] rebuild: server did not defer this device's current key — using the disconnect-first path")
+            flagsOwnedElsewhere = await finishRebuild(.deferralNotHonoured, ctx)
+            return
+        }
+
+        // 4. Swap the peer on the RUNNING session. On-demand stays armed.
+        setActiveKeyId(newKeyId)
+        do {
+            try await vpnManager.swapConfig(config: config)
+        } catch let swapError {
+            NSLog("[VpnViewModel] rebuild: in-place swap refused — restoring the previous profile: %@",
+                  swapError.localizedDescription)
+            // Put the snapshot back so the persisted profile, the keychain and
+            // the running tunnel agree again; the old peer is still on its node.
+            do {
+                try await vpnManager.restoreProfile(snapshot)
+            } catch {
+                NSLog("[VpnViewModel] rebuild: restore after a refused swap also failed: %@",
+                      error.localizedDescription)
+            }
+            self.error = swapError.localizedDescription
+            flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
+            return
+        }
+
+        // 5. Only the NEW peer's bytes prove the switch.
+        flagsOwnedElsewhere = await finishRebuild(await awaitNewPeerHandshake(), ctx)
+    }
+
+    /// The single interpreter of `LiveRebuildPolicy`. Returns true when the
+    /// in-flight flags (`isSwitching` / `isReapplyingSettings`) are now owned by
+    /// a later `.connected` or the stalled-flags watchdog rather than by
+    /// `rebuildLive`'s exit.
+    private func finishRebuild(_ event: LiveRebuildEvent, _ ctx: RebuildContext) async -> Bool {
+        let directive = LiveRebuildPolicy.directive(for: event)
+        // No identifiers in this line: no key ids, no hosts (node-agent privacy
+        // guard convention, applied to client logs too).
+        NSLog("[VpnViewModel] rebuild outcome: %@ -> %@", String(describing: event), String(describing: directive))
+        switch directive {
+        case .legacyDisconnectFirst(let releaseNewKeyFirst):
+            if releaseNewKeyFirst, let newId = ctx.newConfig?.keyId { release(keyId: newId) }
+            legacyRebuild(ctx.target)
+            return true
+
+        case .keepSession(let followUp):
+            switch followUp {
+            case .nothing:
+                if let previous = ctx.previous { selectedServer = previous }
+                return false
+
+            case .releaseNewKey:
+                if let newId = ctx.newConfig?.keyId { release(keyId: newId) }
+                // Still riding the old peer (unless the user disconnected meanwhile).
+                if isConnected || isConnecting { setActiveKeyId(ctx.oldKeyId) }
+                if let previous = ctx.previous { selectedServer = previous }
+                return false
+
+            case .commitNew:
+                switch ctx.target {
+                case .single(let server):
+                    activeMultiHop = nil
+                    connectedServerId = server.id
+                case .multiHop(let entry, let exit):
+                    activeMultiHop = MultiHopSession(entry: entry, exit: exit, route: ctx.confirmedRoute ?? "")
+                    connectedServerId = entry.id
+                }
+                quantumActive = BirdoPQManager.shared.currentMode == .bilateral
+                // Real inbound bytes on the new peer: the breaker's streak is
+                // spent history (same rule as armKillSwitchAfterHandshake).
+                clearCircuitBreaker()
+                killSwitchArmed = vpnManager.killSwitchArmed
+                error = nil
+                // Belt-and-braces: the server retires the old key itself once
+                // the new peer handshakes (its supersede sweeper); this only
+                // shortens the double-tenancy window. A row it has already
+                // retired answers "Connection not found", which is harmless.
+                release(keyId: ctx.oldKeyId)
+                return false
+
+            case .revertToOld:
+                do {
+                    try await vpnManager.restoreProfile(ctx.snapshot)
+                } catch VPNManagerError.reconfigureRefused {
+                    return await finishRebuild(.revertFailed(persistedProfileIsOld: true), ctx)
+                } catch {
+                    return await finishRebuild(.revertFailed(persistedProfileIsOld: false), ctx)
+                }
+                setActiveKeyId(ctx.oldKeyId)
+                if let previous = ctx.previous {
+                    selectedServer = previous
+                    connectedServerId = previous.id
+                }
+                if let newId = ctx.newConfig?.keyId { release(keyId: newId) }
+                error = "Couldn't reach that server. You're still connected to your previous location."
+                return false
+
+            case .handOffToOnDemandRedial:
+                // The OS is re-dialling the persisted NEW profile under the
+                // still-armed rule; `.connected` (or the watchdog) owns the flags.
+                Task { [weak self] in await self?.clearRebuildFlagsIfStalled() }
+                return true
+
+            case .stayFailedClosed(let persistedProfileIsOld):
+                // FAIL CLOSED. Nothing here stops the tunnel or disarms
+                // on-demand. The extension's liveness check / heartbeat will
+                // cancel the dead peer, the armed rule re-dials the persisted
+                // profile, and if that never comes up the breaker trips and
+                // `checkCircuitBreaker` performs the user-visible fail-open —
+                // the same recovery every dead tunnel already has.
+                if persistedProfileIsOld {
+                    setActiveKeyId(ctx.oldKeyId)
+                    if let previous = ctx.previous {
+                        selectedServer = previous
+                        connectedServerId = previous.id
+                    }
+                } else if let newId = ctx.newConfig?.keyId {
+                    setActiveKeyId(newId)
+                }
+                error = "That server didn't answer and the tunnel couldn't be switched back. "
+                    + "Traffic stays blocked until Birdo recovers the connection — or tap Disconnect."
+                return false
+            }
+        }
+    }
+
+    /// After `replace_peers` the old peer's counters left with it, so any rx on
+    /// the interface came from the NEW peer — the same proof
+    /// `armKillSwitchAfterHandshake` uses. `currentStats` reports (0,0) while
+    /// the session is `.reasserting`, which simply keeps polling.
+    private func awaitNewPeerHandshake() async -> LiveRebuildEvent {
+        for _ in 0..<HANDSHAKE_POLLS {
+            try? await Task.sleep(for: .milliseconds(HANDSHAKE_POLL_MS))
+            guard isConnected || isConnecting else { return .sessionDroppedWhileProbing }
+            if await vpnManager.currentStats().rx > 0 { return .newPeerHandshaked }
+        }
+        guard isConnected || isConnecting else { return .sessionDroppedWhileProbing }
+        return .newPeerSilent
+    }
+
+    /// Fire-and-forget `DELETE /vpn/connections/{keyId}` for a key this device
+    /// no longer rides. Best effort, like `releaseServerSlot`; never logs the id.
+    private func release(keyId: String) {
+        Task { [api] in
+            do {
+                try await api.disconnect(keyId: keyId)
+            } catch {
+                NSLog("[VpnViewModel] rebuild: key release failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    /// The pre-#159 rebuild: disconnect, WAIT for the teardown to land, redial.
+    /// It disarms on-demand and leaks the gap — kept ONLY as the fallback for a
+    /// server that cannot defer our key, where the old peer is (or may be) gone
+    /// and there is nothing left to keep up.
+    private func legacyRebuild(_ target: RebuildTarget) {
         vpnManager.disconnect()
         Task { [weak self] in
             await self?.awaitTeardown()
-            guard let self, self.isSwitching else { return }
-            self.connect()
+            guard let self, self.isReapplyingSettings || self.isSwitching else { return }
+            switch target {
+            case .single(let server):
+                self.selectedServer = server
+                self.connect()
+            case .multiHop(let entry, let exit):
+                await self.connectMultiHop(entry: entry, exit: exit)
+            }
             await self.clearRebuildFlagsIfStalled()
         }
     }

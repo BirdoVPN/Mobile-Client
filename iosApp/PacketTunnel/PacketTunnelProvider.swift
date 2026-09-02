@@ -337,6 +337,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             completionHandler?(nil)
             return
         }
+        // REBUILD (Mobile-Client #159): JSON commands. `reconfigure` is the only
+        // one today; the plain-string commands below are unchanged.
+        if command.hasPrefix("{") {
+            reconfigure(messageData, completionHandler: completionHandler)
+            return
+        }
         switch command {
         case "stats":
             adapter.getRuntimeConfiguration { [weak self] config in
@@ -351,6 +357,95 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             completionHandler?(#"{"ok":true}"#.data(using: .utf8))
         default:
             completionHandler?(nil)
+        }
+    }
+
+    // MARK: - Live rebuild (Mobile-Client #159)
+
+    /// Swap the peer on the RUNNING tunnel.
+    ///
+    /// `WireGuardAdapter.update` (vendored WireGuardAdapter.swift:241) re-applies
+    /// the network settings and `wgSetConfig`s the new peer on the existing utun
+    /// with `replace_peers=true` (PacketTunnelSettingsGenerator.swift:51),
+    /// flipping `reasserting` true→false so the host sees .reasserting →
+    /// .connected. The interface — and therefore `includeAllNetworks` — never
+    /// drops. Secrets are re-read from the shared keychain by ref exactly as in
+    /// `startTunnel`; the material never rides the IPC message. On success the
+    /// heartbeat is re-targeted at the new keyId, the breaker identity at the
+    /// new node, and the liveness grace restarts for the new peer. Replies
+    /// `{"ok":Bool,"error"?:String}`; on failure the previous configuration is
+    /// still what the adapter runs and the host restores its snapshot.
+    private func reconfigure(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        func reply(_ ok: Bool, _ error: String? = nil) {
+            var body: [String: Any] = ["ok": ok]
+            if let error { body["error"] = error }
+            completionHandler?(try? JSONSerialization.data(withJSONObject: body))
+        }
+        guard let message = (try? JSONSerialization.jsonObject(with: messageData)) as? [String: Any],
+              message["cmd"] as? String == "reconfigure",
+              let configString = message["wg-config"] as? String, !configString.isEmpty else {
+            reply(false, "bad reconfigure message")
+            return
+        }
+        let privateKeyRef = (message["wg-private-key-ref"] as? String) ?? "wg_private_key"
+        let presharedKeyRef = (message["wg-preshared-key-ref"] as? String) ?? ""
+        guard let privateKey = readSharedKeychain(account: privateKeyRef), !privateKey.isEmpty else {
+            reply(false, "private key missing from shared keychain")
+            return
+        }
+        // Same fail-closed rule as startTunnel: a non-empty ref means the host
+        // wrote a PSK and the server expects it — never build without it.
+        var presharedKey: String?
+        if !presharedKeyRef.isEmpty {
+            guard let psk = readSharedKeychain(account: presharedKeyRef), !psk.isEmpty else {
+                reply(false, "preshared key missing from shared keychain")
+                return
+            }
+            presharedKey = psk
+        }
+        let tunnelConfiguration: TunnelConfiguration
+        do {
+            tunnelConfiguration = try TunnelConfiguration(
+                fromWgQuickConfig: injectSecrets(into: configString, privateKey: privateKey, presharedKey: presharedKey),
+                called: "birdo"
+            )
+        } catch {
+            // Discriminant only — a parse error can carry the offending line.
+            reply(false, "config parse failed: \(Self.errorDiscriminant(error))")
+            return
+        }
+        let keyId = ((message["hb-key-id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = ((message["hb-access-token"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawVersion = message["hb-client-version"] as? String
+        let clientVersion = (rawVersion?.isEmpty == false) ? rawVersion! : "0.0.0-unknown"
+        let rawServer = message["server"] as? String
+        let breakerNode = (rawServer?.isEmpty == false) ? rawServer! : "unknown"
+
+        os_log("Reconfiguring tunnel in place", log: log, type: .info)
+        adapter.update(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
+            guard let self else {
+                reply(false, "provider deallocated")
+                return
+            }
+            if let error {
+                // %{private}@ — the adapter error family can carry the endpoint.
+                os_log("Adapter update failed: %{private}@", log: self.log, type: .error,
+                       String(describing: error))
+                reply(false, "adapter update failed: \(Self.errorDiscriminant(error))")
+                return
+            }
+            // The new peer starts its own liveness clock and its own heartbeat.
+            self.stopHeartbeat()
+            self.tunnelStartedAt = Date()
+            self.breakerNodeId = breakerNode
+            if !keyId.isEmpty, !token.isEmpty {
+                self.startHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
+            } else {
+                os_log("No heartbeat credentials in reconfigure — extension heartbeat disabled",
+                       log: self.log, type: .info)
+            }
+            os_log("Tunnel reconfigured in place", log: self.log, type: .info)
+            reply(true)
         }
     }
 

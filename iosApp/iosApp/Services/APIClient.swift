@@ -320,7 +320,14 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - VPN Config
 
-    func getConnectConfig(serverId: String) async throws -> VPNConnectionConfig {
+    /// `rebuildOf`: the server-side key the LIVE tunnel is riding (Mobile-Client
+    /// #159). When set, the body carries `rebuild: true` + `currentKeyId` and
+    /// the request is travelling THROUGH the tunnel it is about to replace, so
+    /// the backend defers that ONE key's eviction until the new peer handshakes
+    /// instead of tearing it down mid-request. The response's `deferredKeyId`
+    /// echoes the key when the deferral was honoured. A backend that predates
+    /// the fields 400s them by name — see `APIError.isRebuildFieldRejection`.
+    func getConnectConfig(serverId: String, rebuildOf currentKeyId: String? = nil) async throws -> VPNConnectionConfig {
         // AUDIT-C1: attach the persistent ML-KEM-1024 client public key so the
         // server can encapsulate against it and ship the ciphertext back in
         // `rosenpassPublicKey` for true bilateral PQ PSK derivation.
@@ -354,7 +361,9 @@ final class APIClient: @unchecked Sendable {
                 clientPublicKey: wg.publicKey,
                 quantumProtection: pqPk == nil ? nil : true,
                 pqClientPublicKey: pqPk,
-                pqClientCanDecapsulate: pqPk == nil ? nil : true
+                pqClientCanDecapsulate: pqPk == nil ? nil : true,
+                rebuild: currentKeyId == nil ? nil : true,
+                currentKeyId: currentKeyId
             )
         )
         let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
@@ -364,7 +373,10 @@ final class APIClient: @unchecked Sendable {
         return config
     }
 
-    func getMultiHopConfig(entryId: String, exitId: String) async throws -> VPNConnectionConfig {
+    /// `rebuildOf`: see `getConnectConfig`. The multi-hop schema is `.strict()`,
+    /// so an older backend 400s these fields via zod's `details.formErrors`
+    /// rather than class-validator's `message` — both are classified.
+    func getMultiHopConfig(entryId: String, exitId: String, rebuildOf currentKeyId: String? = nil) async throws -> VPNConnectionConfig {
         // AUDIT-M-DRIFT: route is `@Post('multi-hop/connect')` and the zod schema
         // (`multiHopConnectSchema`) is `.strict()` with `entryNodeId`/`exitNodeId`.
         // The old `/vpn/multi-hop` + `entryId`/`exitId` 404'd, and would have 400'd
@@ -389,7 +401,9 @@ final class APIClient: @unchecked Sendable {
                 clientPublicKey: wg.publicKey,
                 quantumProtection: pqPk == nil ? nil : true,
                 pqClientPublicKey: pqPk,
-                pqClientCanDecapsulate: pqPk == nil ? nil : true
+                pqClientCanDecapsulate: pqPk == nil ? nil : true,
+                rebuild: currentKeyId == nil ? nil : true,
+                currentKeyId: currentKeyId
             )
         )
         let data = try await post(path: "/vpn/multi-hop/connect", body: body, authenticated: true)
@@ -952,6 +966,21 @@ final class APIClient: @unchecked Sendable {
             return .serverMessage("This app version is no longer supported. Update BirdoVPN to reconnect.",
                                   status: status)
         }
+        // Mobile-Client #159: an older backend rejects the live-rebuild request
+        // fields with a validation 400 that NAMES them — class-validator's
+        // `message` on /vpn/connect, zod's `details.formErrors` on the
+        // multi-hop twin. Read those words so the rebuild caller can tell "the
+        // server does not know `rebuild`" apart from every other 400.
+        if status == 400 {
+            let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body)
+            let rejected = RebuildFieldRejection.rejectedFields(
+                status: status, message: parsed?.message?.text, formErrors: parsed?.details?.formErrors)
+            if !rejected.isEmpty {
+                return .unknownRequestField(fields: rejected,
+                                            message: parsed?.message?.text ?? "Bad Request",
+                                            status: status)
+            }
+        }
         if structured {
             let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body)
             let message = parsed?.message?.text
@@ -1186,6 +1215,24 @@ enum APIError: Error, LocalizedError {
     /// Post-quantum protection is enabled but the ML-KEM keypair could not be
     /// produced. Surfaced rather than silently connecting without PQ.
     case quantumKeyUnavailable
+    /// A validation 400 whose body NAMES request fields the backend does not
+    /// know (class-validator `forbidNonWhitelisted` on /vpn/connect, zod
+    /// `.strict()` on the multi-hop twin). Only minted for the live-rebuild
+    /// fields (`RebuildFieldRejection`); every other 400 stays `.serverMessage`.
+    /// `message` is the server's own text, rendered verbatim like any refusal.
+    case unknownRequestField(fields: [String], message: String, status: Int)
+
+    /// The 400 an OLDER backend returns for the live-rebuild request fields
+    /// (Mobile-Client #159). Classified from the validation error's own words,
+    /// never from the bare status: a genuine 400 must keep the live tunnel up.
+    /// The rebuild caller falls back to the pre-#159 disconnect-first path on
+    /// exactly this.
+    var isRebuildFieldRejection: Bool {
+        if case .unknownRequestField(let fields, _, _) = self {
+            return fields.contains(where: { LiveRebuildWire.requestFields.contains($0) })
+        }
+        return false
+    }
 
     var errorDescription: String? {
         switch self {
@@ -1201,6 +1248,8 @@ enum APIError: Error, LocalizedError {
             return "Could not prepare quantum-protected encryption. Not connecting, because "
                 + "continuing would use weaker encryption. Try again, or turn off Quantum "
                 + "Protection in Settings."
+        case .unknownRequestField(_, let message, _):
+            return message
         }
     }
 }
@@ -1440,6 +1489,11 @@ private struct APIErrorBody: Decodable {
     struct Details: Decodable {
         let code: String?
         let reason: String?
+        /// `ZodValidationPipe` puts `error.flatten()` here: issues with an
+        /// empty path — zod's `unrecognized_keys` for a `.strict()` schema —
+        /// land in `formErrors`. The multi-hop route's "Validation failed"
+        /// message never names the field; this does.
+        let formErrors: [String]?
     }
 
     let details: Details?
@@ -1540,6 +1594,13 @@ private struct ConnectBody: Encodable {
     /// true alongside `pqClientPublicKey`; VPNManager fails closed if
     /// decapsulation then fails, so this can never silently downgrade.
     let pqClientCanDecapsulate: Bool?
+    /// REBUILD (Mobile-Client #159): this request rides the live tunnel it is
+    /// replacing — see `APIClient.getConnectConfig(serverId:rebuildOf:)`.
+    /// Twin of birdo-web `ConnectDto.rebuild` / `.currentKeyId`.
+    let rebuild: Bool?
+    /// The server-side key the live tunnel is riding; the ONE key the server
+    /// defers. Sent only together with `rebuild`.
+    let currentKeyId: String?
 }
 
 private struct MultiHopBody: Encodable {
@@ -1553,6 +1614,10 @@ private struct MultiHopBody: Encodable {
     /// HNDL opt-in — see ConnectBody. Declared on BOTH bodies (the duplicated
     /// wire-model twin) so the double-hop path keeps the PSK off the wire too.
     let pqClientCanDecapsulate: Bool?
+    /// REBUILD (#159) — declared on BOTH bodies (the wire-model twin); the
+    /// backend's `multiHopConnectSchema` is `.strict()`.
+    let rebuild: Bool?
+    let currentKeyId: String?
 }
 
 private struct PortForwardBody: Encodable {
@@ -1647,6 +1712,13 @@ struct VPNConnectionConfig: Decodable {
     /// `DELETE /vpn/connections/{keyId}` on disconnect.
     let keyId: String?
 
+    /// REBUILD (Mobile-Client #159): echo of the request's `currentKeyId` when
+    /// the server deferred that key's eviction (it stays on its node until this
+    /// new peer handshakes). Absent on a plain connect, and on a backend that
+    /// accepted the flag but did not defer — the client treats both as
+    /// "not honoured" (`RebuildDeferral`).
+    let deferredKeyId: String?
+
     /// AUDIT-C1 (BirdoPQ v1, optional): set when the server received a
     /// `pqClientPublicKey` and produced a per-connect ML-KEM ciphertext for
     /// the client to decapsulate. The Swift `BirdoPQManager` derives a
@@ -1663,7 +1735,7 @@ struct VPNConnectionConfig: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case endpoint, privateKey, serverPublicKey, presharedKey
-        case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId
+        case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId, deferredKeyId
         case quantumEnabled, rosenpassPublicKey, rosenpassEndpoint
         case multiHop
     }
@@ -1701,6 +1773,7 @@ struct VPNConnectionConfig: Decodable {
         allowedIPs = try c.decodeIfPresent([String].self, forKey: .allowedIps) ?? []
         mtu = try c.decodeIfPresent(Int.self, forKey: .mtu)
         keyId = try c.decodeIfPresent(String.self, forKey: .keyId)
+        deferredKeyId = try c.decodeIfPresent(String.self, forKey: .deferredKeyId)
 
         quantumEnabled = try c.decodeIfPresent(Bool.self, forKey: .quantumEnabled)
         rosenpassPublicKey = try c.decodeIfPresent(String.self, forKey: .rosenpassPublicKey)
