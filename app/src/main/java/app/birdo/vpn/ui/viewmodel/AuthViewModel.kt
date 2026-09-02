@@ -442,7 +442,7 @@ class AuthViewModel @Inject constructor(
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = parseLoginError(result.message),
+                        error = parseAnonymousRegisterError(result.message),
                     )
                 }
             }
@@ -555,6 +555,37 @@ class AuthViewModel @Inject constructor(
      * recognise. Matching is on `lower` so a wording change in case cannot
      * silently drop an arm back into the catch-all.
      */
+    /**
+     * Errors from `POST /auth/register/anonymous`. Distinct from [parseLoginError]
+     * because that endpoint has TWO rate limits behind one 429, with different
+     * remedies, and the backend's body says which fired:
+     *
+     *  - `rl:anon-register:ip:*`  — 3 per IP per hour; body says "from this
+     *    network". Another network, or an hour, clears it.
+     *  - `rl:anon-register:dev:*` — 5 per DEVICE per 24h, keyed on the stable
+     *    device id that survives sign-out and reinstall; body says "from this
+     *    device". Nothing the user does clears it — only the 24 hours passing.
+     *
+     * Routing this through [parseLoginError] rendered "Too many attempts.
+     * Please wait a moment." for both — wrong about whose limit it is and
+     * wrong about the wait by either an hour or a day. The iOS client had the
+     * same split (GuestAccess.swift); keep the two in step.
+     */
+    private fun parseAnonymousRegisterError(raw: String): String {
+        val lower = raw.lowercase()
+        val suffix = "You can keep using the app without an account, or sign in with an existing one."
+        return when {
+            "from this device" in lower ->
+                "This device has created too many anonymous accounts in the past 24 hours, " +
+                    "so this one was refused. Switching networks will not help — the limit is " +
+                    "per device and clears on its own after 24 hours. $suffix"
+            "from this network" in lower || "429" in raw ->
+                "Too many anonymous accounts have been created from this network in the past " +
+                    "hour, so this one was refused. Try again in about an hour. $suffix"
+            else -> parseLoginError(raw)
+        }
+    }
+
     private fun parseLoginError(raw: String): String {
         val lower = raw.lowercase()
         return when {
