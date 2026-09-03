@@ -4,9 +4,11 @@ import XCTest
 /// (`LiveRebuild.swift`), compiled directly into this un-hosted bundle (no app
 /// host, no KMP framework, no WireGuardKit).
 ///
-/// These pin the three decisions that decide whether a live, kill-switched
-/// session is ever stopped. The bug they guard needs a second node and a peer
-/// removed by hand on the first to observe, so nobody re-runs that by hand.
+/// These pin the decisions that decide whether a live, kill-switched session
+/// is ever stopped — and, since the follow-up review of the shipped set, the
+/// server-refusal routing, the probe window and the single revert path. The
+/// bug they guard needs a second node and a peer removed by hand on the first
+/// to observe, so nobody re-runs that by hand.
 ///
 /// On the pre-#159 code this file does not compile ("cannot find
 /// 'RebuildFieldRejection' in scope", and the same for every type below): the
@@ -93,21 +95,30 @@ final class LiveRebuildTests: XCTestCase {
 
     // MARK: - Never stop the tunnel on an error path
 
-    func testOnlyTheTwoServerCannotDeferEventsMayStopTheTunnel() {
+    func testOnlyTheServerCannotOrWillNotDeferEventsMayStopTheTunnel() {
         for event in LiveRebuildEvent.allCases {
             let directive = LiveRebuildPolicy.directive(for: event)
             let mayStop = LiveRebuildPolicy.eventsThatMayStopTheTunnel.contains(event)
             XCTAssertEqual(directive.stopsTheTunnel, mayStop,
                            "\(event) must \(mayStop ? "" : "NOT ")reach the disconnect-first path")
         }
-        XCTAssertEqual(LiveRebuildPolicy.eventsThatMayStopTheTunnel,
-                       [.serverDoesNotKnowRebuild, .deferralNotHonoured])
+        // Branch code: the list had two entries — a refusal for a key the server
+        // will not defer stayed on a tunnel that could never be rebuilt again.
+        XCTAssertEqual(LiveRebuildPolicy.eventsThatMayStopTheTunnel, [
+            .serverDoesNotKnowRebuild,
+            .deferralNotHonoured,
+            .rebuildRefused(.unknownCurrentKey),
+            .rebuildRefused(.sameEntryExitChange),
+        ])
     }
 
     func testEveryFailureKeepsTheSessionAndReleasesOnlyWhatWasMinted() {
         XCTAssertEqual(LiveRebuildPolicy.directive(for: .configRequestFailed), .keepSession(.nothing))
         XCTAssertEqual(LiveRebuildPolicy.directive(for: .routeNotConfirmed), .keepSession(.releaseNewKey))
-        XCTAssertEqual(LiveRebuildPolicy.directive(for: .swapFailed), .keepSession(.releaseNewKey))
+        XCTAssertEqual(LiveRebuildPolicy.directive(for: .sessionGoneBeforeSwap), .keepSession(.releaseNewKey))
+        // Branch code: `.swapFailed` → `.releaseNewKey` — the NEW key was deleted
+        // while the keychain and the persisted profile could still name it.
+        XCTAssertEqual(LiveRebuildPolicy.directive(for: .swapFailed), .keepSession(.revertToOld))
         XCTAssertEqual(LiveRebuildPolicy.directive(for: .newPeerSilent), .keepSession(.revertToOld))
         XCTAssertEqual(LiveRebuildPolicy.directive(for: .sessionDroppedWhileProbing),
                        .keepSession(.handOffToOnDemandRedial))
@@ -126,5 +137,130 @@ final class LiveRebuildTests: XCTestCase {
                        .legacyDisconnectFirst(releaseNewKeyFirst: false))
         XCTAssertEqual(LiveRebuildPolicy.directive(for: .deferralNotHonoured),
                        .legacyDisconnectFirst(releaseNewKeyFirst: true))
+    }
+
+    // MARK: - (D) Old-backend detection is by fragment, in either order
+
+    func testRejectionMatchingDoesNotDependOnTheOrderTheBodyListedTheKeys() {
+        // Both backends list unknown keys in the REQUEST BODY's order; the
+        // pinned strings show "rebuild, currentKeyId" only because that is how
+        // this client's bodies happen to encode them. Reverse it, and match
+        // each field alone. (Passes on the branch code too — a regression pin.)
+        XCTAssertEqual(RebuildFieldRejection.rejectedFields(
+            status: 400,
+            message: "property currentKeyId should not exist, property rebuild should not exist",
+            formErrors: nil), ["rebuild", "currentKeyId"])
+        XCTAssertEqual(RebuildFieldRejection.rejectedFields(
+            status: 400, message: "Validation failed",
+            formErrors: [#"Unrecognized keys: "currentKeyId", "rebuild""#]), ["rebuild", "currentKeyId"])
+        // Other unknown keys around ours, in any order.
+        XCTAssertEqual(RebuildFieldRejection.rejectedFields(
+            status: 400,
+            message: "property foo should not exist, property currentKeyId should not exist, property bar should not exist",
+            formErrors: nil), ["currentKeyId"])
+        // class-validator's raw ARRAY form (before GlobalExceptionFilter joins it)
+        // arrives joined by a space in APIErrorBody — still a fragment match.
+        XCTAssertEqual(RebuildFieldRejection.rejectedFields(
+            status: 400,
+            message: "property currentKeyId should not exist property rebuild should not exist",
+            formErrors: nil), ["rebuild", "currentKeyId"])
+    }
+
+    // MARK: - (A) A refusal the server sends with success:false
+
+    func testRefusalCodesAreTheBackendsCodes() {
+        // Twin of birdo-web `RebuildRefusal` (vpn.service.ts). Renaming one
+        // side turns that refusal into "unknown code" — keep-session — silently.
+        XCTAssertEqual(RebuildRefusal.deviceIdentity.rawValue, "device-identity")
+        XCTAssertEqual(RebuildRefusal.unknownCurrentKey.rawValue, "unknown-current-key")
+        XCTAssertEqual(RebuildRefusal.lookupFailed.rawValue, "lookup-failed")
+        XCTAssertEqual(RebuildRefusal.keyReuse.rawValue, "key-reuse")
+        XCTAssertEqual(RebuildRefusal.sameEntryExitChange.rawValue, "same-entry-exit-change")
+        XCTAssertEqual(LiveRebuildWire.rebuildRefusedField, "rebuildRefused")
+    }
+
+    func testARefusalForAKeyTheServerWillNotDeferTakesTheLegacyPath() {
+        // unknown-current-key: the server holds no live session under the
+        // handle we ride — nothing to defer, nothing to blackhole, and every
+        // later rebuild would be refused the same way. same-entry-exit-change:
+        // the server asks for a full reconnect. Both: nothing was minted.
+        XCTAssertEqual(RebuildRefusal.event(forCode: "unknown-current-key"),
+                       .rebuildRefused(.unknownCurrentKey))
+        XCTAssertEqual(LiveRebuildPolicy.directive(for: .rebuildRefused(.unknownCurrentKey)),
+                       .legacyDisconnectFirst(releaseNewKeyFirst: false))
+        XCTAssertEqual(LiveRebuildPolicy.directive(for: .rebuildRefused(.sameEntryExitChange)),
+                       .legacyDisconnectFirst(releaseNewKeyFirst: false))
+    }
+
+    func testTheOtherRefusalsKeepTheSessionAndShowTheServersWords() {
+        for refusal in [RebuildRefusal.deviceIdentity, .lookupFailed, .keyReuse] {
+            XCTAssertEqual(LiveRebuildPolicy.directive(for: .rebuildRefused(refusal)), .keepSession(.nothing),
+                           "\(refusal) leaves the old tunnel exactly as it was")
+        }
+    }
+
+    func testAnUnreadableRefusalCodeNeverStopsTheTunnel() {
+        // A code a future backend adds, an empty one, none at all: keep the
+        // session, show the message. Only a code we can read may route to the
+        // disconnect-first path.
+        XCTAssertEqual(RebuildRefusal.event(forCode: "some-future-reason"), .configRequestFailed)
+        XCTAssertEqual(RebuildRefusal.event(forCode: ""), .configRequestFailed)
+        XCTAssertEqual(RebuildRefusal.event(forCode: nil), .configRequestFailed)
+        XCTAssertFalse(LiveRebuildPolicy.directive(for: RebuildRefusal.event(forCode: "unknown-current-key ")).stopsTheTunnel,
+                       "a near-miss is not the code")
+    }
+
+    // MARK: - (B) The probe-then-revert window
+
+    func testTheRebuildProbeIsNotARekeyMultipleAndEndsInsideTheServerGrace() {
+        // Branch code: the rebuild probe shared the fresh dial's 15 s — a
+        // multiple of REKEY_TIMEOUT, ending exactly when the fourth handshake
+        // initiation leaves.
+        XCTAssertEqual(LiveRebuildProbe.polls, 36)
+        XCTAssertEqual(LiveRebuildProbe.pollMs, 500)
+        XCTAssertEqual(LiveRebuildProbe.windowMs, 18_000)
+        XCTAssertEqual(LiveRebuildProbe.wireGuardRekeyTimeoutMs, 5_000)
+        XCTAssertNotEqual(LiveRebuildProbe.windowMs % LiveRebuildProbe.wireGuardRekeyTimeoutMs, 0,
+                          "a window ending on a REKEY_TIMEOUT boundary throws a whole handshake attempt away")
+        // Measured from the SERVER mint, so the round trip and the swap before
+        // the probe, and the restore and re-handshake after it, all count.
+        XCTAssertEqual(LiveRebuildProbe.serverGraceMs, 30_000, "twin of birdo-web VpnService.SUPERSEDE_GRACE_MS")
+        XCTAssertLessThan(LiveRebuildProbe.windowMs + LiveRebuildProbe.surroundingWorkAllowanceMs,
+                          LiveRebuildProbe.serverGraceMs)
+    }
+
+    // MARK: - (C) One revert path, and nothing is released before the restore
+
+    func testARefusedSwapRevertsThroughTheSamePathAsASilentPeer() {
+        // Branch code: `.swapFailed` → `.releaseNewKey`, which DELETEd the new
+        // key regardless of whether the best-effort restore in rebuildLive had
+        // succeeded — so a failed restore left `activeKeyId`, the keychain and
+        // the persisted profile on a peer this client had just deleted, and
+        // the armed on-demand rule re-dialling it.
+        XCTAssertEqual(LiveRebuildPolicy.directive(for: .swapFailed), .keepSession(.revertToOld))
+        XCTAssertEqual(LiveRebuildPolicy.directive(for: .swapFailed),
+                       LiveRebuildPolicy.directive(for: .newPeerSilent),
+                       "two revert paths are the twin-drift shape this exists to remove")
+    }
+
+    func testOnlyARouteRefusalReleasesWithoutRestoringTheProfile() {
+        // `.releaseNewKey` is correct exactly when nothing was swapped locally,
+        // which is only the route check refusing the minted config before the
+        // swap. Every other minted-then-failed outcome restores first.
+        let releasing = LiveRebuildEvent.allCases.filter {
+            LiveRebuildPolicy.directive(for: $0) == .keepSession(.releaseNewKey)
+        }
+        XCTAssertEqual(releasing, [.routeNotConfirmed, .sessionGoneBeforeSwap])
+    }
+
+    func testAFailedRestoreNeverReleasesAKey() {
+        // The persisted profile may still name the NEW peer; deleting it would
+        // strand the armed rule's re-dial. Both failure shapes fail closed.
+        for persistedIsOld in [true, false] {
+            let directive = LiveRebuildPolicy.directive(for: .revertFailed(persistedProfileIsOld: persistedIsOld))
+            XCTAssertEqual(directive, .keepSession(.stayFailedClosed(persistedProfileIsOld: persistedIsOld)))
+            XCTAssertNotEqual(directive, .keepSession(.releaseNewKey))
+            XCTAssertNotEqual(directive, .keepSession(.revertToOld))
+        }
     }
 }

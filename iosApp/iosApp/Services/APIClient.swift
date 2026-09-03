@@ -428,11 +428,27 @@ final class APIClient: @unchecked Sendable {
     /// Both connect routes answer HTTP 2xx with `{ success: false, message }` for
     /// user-actionable refusals (device cap, out-of-plan node, node offline). Pull
     /// the message out instead of surfacing an opaque JSON decoding failure.
+    ///
+    /// REBUILD (Mobile-Client #159): a `rebuild: true` request the server
+    /// refuses BEFORE touching anything carries `rebuildRefused` beside
+    /// `success:false` (birdo-web `VpnService.rebuildRefusal`). That is the
+    /// one envelope with a machine-readable reason, and the reason decides
+    /// whether the live tunnel is kept or rebuilt disconnect-first, so it is
+    /// thrown as its own type — `RebuildRefusedError`, classified by
+    /// `RebuildRefusal.event(forCode:)` — never folded into `.serverMessage`,
+    /// whose text is backend copy nobody may match on. This is NOT the
+    /// old-backend 400 (that is `APIError.isRebuildFieldRejection`, matched
+    /// by fragment in `RebuildFieldRejection`); a backend that predates
+    /// `rebuild` never answers this shape.
     private func decodeConnectResult(_ data: Data) throws -> VPNConnectionConfig {
         if let envelope = try? decoder.decode(ConnectEnvelope.self, from: data),
            envelope.success == false {
+            let message = envelope.message ?? "Could not connect. Please try again."
+            if let code = envelope.rebuildRefused, !code.isEmpty {
+                throw RebuildRefusedError(code: code, message: message)
+            }
             // Carried on a 2xx, so there is no error status to attribute.
-            throw APIError.serverMessage(envelope.message ?? "Could not connect. Please try again.", status: nil)
+            throw APIError.serverMessage(message, status: nil)
         }
         return try decoder.decode(VPNConnectionConfig.self, from: data)
     }
@@ -968,9 +984,14 @@ final class APIClient: @unchecked Sendable {
         }
         // Mobile-Client #159: an older backend rejects the live-rebuild request
         // fields with a validation 400 that NAMES them — class-validator's
-        // `message` on /vpn/connect, zod's `details.formErrors` on the
-        // multi-hop twin. Read those words so the rebuild caller can tell "the
-        // server does not know `rebuild`" apart from every other 400.
+        // `message` on /vpn/connect ("property rebuild should not exist,
+        // property currentKeyId should not exist"), zod's `details.formErrors`
+        // on the multi-hop twin ("Unrecognized keys: \"rebuild\",
+        // \"currentKeyId\""). Both list the keys in the REQUEST BODY's order,
+        // so `RebuildFieldRejection` matches each field by FRAGMENT, in either
+        // order, never the whole string — that lets the rebuild caller tell
+        // "the server does not know `rebuild`" apart from every other 400
+        // without depending on how this client happens to order its body.
         if status == 400 {
             let parsed = try? JSONDecoder().decode(APIErrorBody.self, from: body)
             let rejected = RebuildFieldRejection.rejectedFields(
@@ -1676,10 +1697,30 @@ private struct RefreshTokensResponse: Decodable {
 }
 
 /// The `{ success, message }` envelope both connect routes use for
-/// user-actionable refusals returned with a 2xx status.
+/// user-actionable refusals returned with a 2xx status — plus, for a refused
+/// `rebuild: true` connect, the reason (`LiveRebuildWire.rebuildRefusedField`).
 private struct ConnectEnvelope: Decodable {
     let success: Bool?
     let message: String?
+    /// One of birdo-web's `RebuildRefusal` codes, or absent. Kept as the raw
+    /// wire string so a code this build cannot read still reaches the policy.
+    let rebuildRefused: String?
+}
+
+/// REBUILD (Mobile-Client #159): a `rebuild: true` connect the server refused
+/// before touching anything — 2xx `{ success:false, message, rebuildRefused }`.
+/// Nothing was evicted or minted; the caller's live tunnel is exactly as it
+/// was. Its own type rather than an `APIError` case on purpose: the code means
+/// something to exactly one caller (`VpnViewModel.rebuildLive`), and every
+/// exhaustive `APIError` switch in AuthViewModel would otherwise have to name
+/// a case that can never reach it. `LocalizedError`, so a caller that only
+/// renders `localizedDescription` shows the server's words like any refusal.
+struct RebuildRefusedError: Error, LocalizedError {
+    /// The wire code, verbatim — `RebuildRefusal.event(forCode:)` reads it.
+    let code: String
+    /// The server's own text, rendered verbatim like any refusal.
+    let message: String
+    var errorDescription: String? { message }
 }
 
 /// VPN connection configuration returned by server.

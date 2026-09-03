@@ -414,6 +414,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             reply(false, "config parse failed: \(Self.errorDiscriminant(error))")
             return
         }
+        // Exactly ONE peer, always. `replace_peers=true` is emitted only for a
+        // non-empty peer list (vendored PacketTunnelSettingsGenerator.swift:51):
+        // a config with none would leave the OLD peer installed under a new
+        // interface config while this reply said ok, and two would hold two
+        // peers on one utun. The host builds exactly one [Peer]; hold it to that.
+        guard tunnelConfiguration.peers.count == 1 else {
+            reply(false, "config must carry exactly one peer, got \(tunnelConfiguration.peers.count)")
+            return
+        }
         let keyId = ((message["hb-key-id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let token = ((message["hb-access-token"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let rawVersion = message["hb-client-version"] as? String

@@ -140,7 +140,9 @@ final class VpnViewModel: ObservableObject {
     /// How long to wait for the first inbound byte before declaring the tunnel
     /// dead. 15 s (30 × 500 ms) covers a slow mobile handshake — WireGuard
     /// retries its handshake every 5 s — without leaving the user staring at a
-    /// tunnel that is never coming up.
+    /// tunnel that is never coming up. FRESH DIALS ONLY: the live rebuild's
+    /// probe-then-revert window is `LiveRebuildProbe` (18 s — deliberately not
+    /// a multiple of that 5 s, and bounded by the server's deferral grace).
     private let HANDSHAKE_POLLS = 30
     private let HANDSHAKE_POLL_MS = 500
     // `nonisolated(unsafe)` so the nonisolated `deinit` below can still invalidate
@@ -1018,8 +1020,10 @@ final class VpnViewModel: ObservableObject {
     /// Every outcome goes through `LiveRebuildPolicy` (LiveRebuild.swift) and
     /// `finishRebuild` is its only interpreter. The ONE directive that may stop
     /// the tunnel is `legacyDisconnectFirst`, reached solely when the SERVER
-    /// cannot defer (it does not know the fields, or it did not echo our key).
-    /// No error path stops the tunnel or disarms on-demand.
+    /// cannot or will not defer our key: it does not know the fields, it did
+    /// not echo the key, or it refused the rebuild for a key it holds no live
+    /// session under / a route change it will not make in place
+    /// (`RebuildRefusal`). No error path stops the tunnel or disarms on-demand.
     private func rebuildLive(_ target: RebuildTarget, revertSelectionTo previous: ServerInfo?) async {
         guard !isRebuildingLive else { return }
         guard let oldKeyId = activeKeyId else {
@@ -1067,6 +1071,22 @@ final class VpnViewModel: ObservableObject {
             NSLog("[VpnViewModel] rebuild: server does not know the rebuild fields — using the disconnect-first path")
             flagsOwnedElsewhere = await finishRebuild(.serverDoesNotKnowRebuild, ctx)
             return
+        } catch let refusal as RebuildRefusedError {
+            // The server REFUSED the rebuild before touching anything (2xx
+            // {success:false, rebuildRefused}): nothing evicted, nothing minted.
+            // The policy decides by code — `unknown-current-key` (no live
+            // session under the handle we ride: nothing to defer, nothing to
+            // blackhole, and every later rebuild refused the same way) and
+            // `same-entry-exit-change` take the disconnect-first path; the rest
+            // keep the session and show the server's words. The log names the
+            // classified event, never the server's string.
+            let event = RebuildRefusal.event(forCode: refusal.code)
+            NSLog("[VpnViewModel] rebuild: refused by the server — %@", String(describing: event))
+            if !LiveRebuildPolicy.directive(for: event).stopsTheTunnel {
+                self.error = refusal.message
+            }
+            flagsOwnedElsewhere = await finishRebuild(event, ctx)
+            return
         } catch {
             // Old tunnel untouched, still protected.
             self.error = error.localizedDescription
@@ -1108,17 +1128,30 @@ final class VpnViewModel: ObservableObject {
         setActiveKeyId(newKeyId)
         do {
             try await vpnManager.swapConfig(config: config)
+        } catch VPNManagerError.noLiveSession {
+            // The session went away under the swap (user disconnect, OS drop,
+            // a heartbeat revoke). `applyLiveProfile` throws this BEFORE any
+            // write, so nothing was swapped: keychain and persisted profile are
+            // still the OLD ones. Not `.swapFailed`: its revert would fail the
+            // same way into `.stayFailedClosed(false)`, pinning `activeKeyId`
+            // on a NEW key nothing rides (the host heartbeat then tears the
+            // re-dialled OLD tunnel down once the sweeper retires that key) and
+            // telling a user who just disconnected that traffic is blocked.
+            NSLog("[VpnViewModel] rebuild: session gone before the swap — releasing the minted key")
+            flagsOwnedElsewhere = await finishRebuild(.sessionGoneBeforeSwap, ctx)
+            return
         } catch let swapError {
-            NSLog("[VpnViewModel] rebuild: in-place swap refused — restoring the previous profile: %@",
+            NSLog("[VpnViewModel] rebuild: in-place swap refused — reverting to the previous profile: %@",
                   swapError.localizedDescription)
-            // Put the snapshot back so the persisted profile, the keychain and
-            // the running tunnel agree again; the old peer is still on its node.
-            do {
-                try await vpnManager.restoreProfile(snapshot)
-            } catch {
-                NSLog("[VpnViewModel] rebuild: restore after a refused swap also failed: %@",
-                      error.localizedDescription)
-            }
+            // Deliberately NO restore here. `.swapFailed` → `.revertToOld` runs
+            // the ONE revert path in `finishRebuild`: restore the snapshot so
+            // the keychain, the persisted profile, the running tunnel and both
+            // heartbeats name the OLD key again, and release the NEW key only
+            // once that restore has succeeded. A best-effort restore here
+            // followed by `.releaseNewKey` deleted the new key even when the
+            // restore had failed — leaving the persisted profile, and so the
+            // armed on-demand rule's re-dial, on a peer this client had just
+            // deleted.
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
             return
@@ -1151,8 +1184,14 @@ final class VpnViewModel: ObservableObject {
 
             case .releaseNewKey:
                 if let newId = ctx.newConfig?.keyId { release(keyId: newId) }
-                // Still riding the old peer (unless the user disconnected meanwhile).
-                if isConnected || isConnecting { setActiveKeyId(ctx.oldKeyId) }
+                // The persisted profile is the OLD one on both events that land
+                // here, so the OLD key is what any armed re-dial rides — put the
+                // handle back unconditionally (the re-dial may not have reached
+                // `.connecting` yet). After a user disconnect it is a stale
+                // handle, never a live one this device is not on: the next
+                // connect overwrites it and a repeated DELETE answers
+                // "Connection not found".
+                setActiveKeyId(ctx.oldKeyId)
                 if let previous = ctx.previous { selectedServer = previous }
                 return false
 
@@ -1179,6 +1218,26 @@ final class VpnViewModel: ObservableObject {
                 return false
 
             case .revertToOld:
+                // The ONE revert path — a refused swap and a silent new peer
+                // alike. Order is load-bearing: restore FIRST (the snapshot
+                // puts the OLD secrets back under the same keychain refs,
+                // persists the OLD profile — what the armed on-demand rule
+                // re-dials — and reconfigures the running tunnel, whose
+                // `reconfigure` restarts the extension heartbeat on the OLD
+                // `hb-key-id`); then the host heartbeat target; then the DELETE
+                // of the NEW key. A restore that fails is `.revertFailed`,
+                // which releases nothing.
+                //
+                // The extension answers a refused `adapter.update` while the
+                // adapter still has `reasserting` raised, so for a few ms the
+                // host can see `.reasserting` (`isConnecting`) and the restore
+                // would refuse with `noLiveSession` on exactly the path that
+                // needs it. Let it settle — bounded to 1 s.
+                var settleTicks = 0
+                while isConnected, isConnecting, settleTicks < 10 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    settleTicks += 1
+                }
                 do {
                     try await vpnManager.restoreProfile(ctx.snapshot)
                 } catch VPNManagerError.reconfigureRefused {
@@ -1192,7 +1251,10 @@ final class VpnViewModel: ObservableObject {
                     connectedServerId = previous.id
                 }
                 if let newId = ctx.newConfig?.keyId { release(keyId: newId) }
-                error = "Couldn't reach that server. You're still connected to your previous location."
+                // A refused swap already put its own reason on screen (rebuildLive).
+                if event != .swapFailed {
+                    error = "Couldn't reach that server. You're still connected to your previous location."
+                }
                 return false
 
             case .handOffToOnDemandRedial:
@@ -1228,9 +1290,15 @@ final class VpnViewModel: ObservableObject {
     /// the interface came from the NEW peer — the same proof
     /// `armKillSwitchAfterHandshake` uses. `currentStats` reports (0,0) while
     /// the session is `.reasserting`, which simply keeps polling.
+    ///
+    /// The window is `LiveRebuildProbe` (18 s), NOT the fresh dial's 15 s:
+    /// it must not end on a WireGuard REKEY_TIMEOUT boundary, and with the
+    /// round trip, the swap and the revert's re-handshake added it must still
+    /// end inside the server's 30 s deferral grace, which runs from the
+    /// server mint. The reasoning lives beside the constants.
     private func awaitNewPeerHandshake() async -> LiveRebuildEvent {
-        for _ in 0..<HANDSHAKE_POLLS {
-            try? await Task.sleep(for: .milliseconds(HANDSHAKE_POLL_MS))
+        for _ in 0..<LiveRebuildProbe.polls {
+            try? await Task.sleep(for: .milliseconds(LiveRebuildProbe.pollMs))
             guard isConnected || isConnecting else { return .sessionDroppedWhileProbing }
             if await vpnManager.currentStats().rx > 0 { return .newPeerHandshaked }
         }
