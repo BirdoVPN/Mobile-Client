@@ -457,7 +457,36 @@ class BirdoVpnService : VpnService() {
             ACTION_START -> handleStart(intent)
             ACTION_STOP  -> stopTunnel()
             ACTION_SWITCH_TEARDOWN -> switchTeardown(intent)
-            ACTION_KILL_SWITCH_BLOCK -> activateKillSwitch()
+            ACTION_KILL_SWITCH_BLOCK -> {
+                // Latch the service-side flag too. It is otherwise captured
+                // ONCE from the START intent, and this action now has a real
+                // sender (VpnManager.sessionDeadTeardown); handleUpdateSettings
+                // and handleStart's finally both RELEASE the block when this
+                // reads false. The restart re-arm above sets it for the same
+                // reason — a guard on one of several parallel paths is how a
+                // fail-open window gets reintroduced here.
+                isKillSwitchEnabled = true
+                activateKillSwitch()
+                if (!killSwitchActive) {
+                    // establish() refused (in practice: VPN consent revoked).
+                    // activateKillSwitch has already torn the data plane down,
+                    // so traffic is in the clear while currentState still reads
+                    // Connected and the notification still says "Blocking
+                    // traffic". Silent failure of a security control is worse
+                    // than a loud one — same handling as the restart re-arm.
+                    Log.e(TAG, "Kill switch could not be armed for an invalidated session — traffic is NOT blocked")
+                    updateState(VpnState.Error("Kill switch could not be armed — traffic is NOT protected"))
+                    updateNotification("Kill switch could not be armed — traffic is NOT protected")
+                }
+                // The tunnel is gone on BOTH branches (activateKillSwitch tears
+                // wg-go down either way), but the widget's "Protected" flag
+                // lives in SharedPreferences and outlives it. Only stopTunnel()
+                // and TunnelMonitor.onUnexpectedExit cleared it, so this path
+                // would have left a green home-screen widget asserting
+                // protection over a dead tunnel — the false safety signal the
+                // block exists to prevent. Unconditional, as in onUnexpectedExit.
+                updateWidgetState(false, null)
+            }
             ACTION_UPDATE_SETTINGS -> handleUpdateSettings(intent)
         }
         return START_STICKY

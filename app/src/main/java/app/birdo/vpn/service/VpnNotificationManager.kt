@@ -94,18 +94,27 @@ internal class VpnNotificationManager(private val context: Context) {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
 
-        val iconRes = when (state) {
-            is VpnState.Connected -> R.drawable.ic_notif_connected
-            is VpnState.Connecting -> R.drawable.ic_notif_connecting
-            is VpnState.Error -> R.drawable.ic_notif_error
+        // Subjectless `when` + [isConnectingPhase], not an inline
+        // `is VpnState.Connecting`. The inline form missed
+        // [VpnState.StealthConnecting], which BirdoVpnService publishes for the
+        // WHOLE stealth setup (Xray start, Rosenpass exchange, WgNative turnOn,
+        // establish) — and updateNotification passes currentState straight in.
+        // So for those seconds the ongoing notification showed the disconnected
+        // icon and "Not Protected" over a connect that was very much in flight.
+        // Same stale-enumeration shape isConnectingPhase was introduced to end;
+        // this file was the call site it missed. See its kdoc.
+        val iconRes = when {
+            state is VpnState.Connected -> R.drawable.ic_notif_connected
+            state.isConnectingPhase -> R.drawable.ic_notif_connecting
+            state is VpnState.Error -> R.drawable.ic_notif_error
             else -> R.drawable.ic_notif_disconnected
         }
 
-        val title = when (state) {
-            is VpnState.Connected -> "● BirdoVPN — Protected"
-            is VpnState.Connecting -> "◌ BirdoVPN — Connecting…"
-            is VpnState.Disconnecting -> "◌ BirdoVPN — Disconnecting…"
-            is VpnState.Error -> "✕ BirdoVPN — Connection Error"
+        val title = when {
+            state is VpnState.Connected -> "● BirdoVPN — Protected"
+            state.isConnectingPhase -> "◌ BirdoVPN — Connecting…"
+            state is VpnState.Disconnecting -> "◌ BirdoVPN — Disconnecting…"
+            state is VpnState.Error -> "✕ BirdoVPN — Connection Error"
             else -> if (killSwitchActive) "● BirdoVPN — Kill Switch Active"
                     else "○ BirdoVPN — Not Protected"
         }
@@ -183,7 +192,7 @@ internal class VpnNotificationManager(private val context: Context) {
             R.drawable.ic_notif_disconnected, "Disable Kill Switch", stopPendingIntent,
         ).setAuthenticationRequired(true).build()
         when {
-            state is VpnState.Connected || state is VpnState.Connecting -> {
+            state is VpnState.Connected || state.isConnectingPhase -> {
                 builder.addAction(disconnectAction)
             }
             killSwitchActive -> {
