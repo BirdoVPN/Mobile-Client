@@ -68,6 +68,57 @@ if [ "${#LIBS[@]}" -eq 0 ]; then
     exit 1
 fi
 
+# WHY THIS IS NOT A FLAT "ZERO INSTRUCTIONS" CHECK ANY MORE
+#
+# The first version of this gate asserted zero SHA3-extension instructions in
+# every shipped arm64 library. That threshold was measured against
+# librosenpass_jni.so, where it is exactly right: Rust/PQClean picks its
+# implementation at COMPILE time, so an emitted eor3 is an executed eor3.
+#
+# It is wrong for a Go library. Go internal/cpu reads HWCAP at process start and
+# every SIMD-accelerated crypto path branches on those flags, so a Go binary
+# legitimately CONTAINS instructions it will never execute on a CPU lacking the
+# feature. libxray.so carries 64 of them and has shipped for months without a
+# single Xray frame in a SIGILL report -- the production crash that prompted this
+# gate died in ML-KEM, on devices that were running libxray.so quite happily.
+#
+# So the policy is per-library, and neither half is an exemption list:
+#
+#   STRICT  libraries WE build, where no runtime dispatch exists. Zero
+#           instructions, no evidence accepted, no exceptions.
+#
+#   GATED   any other library. Instructions are permitted ONLY if the binary
+#           carries positive evidence of runtime CPU detection. No evidence
+#           means FAIL, so a third-party .so that starts emitting an ungated
+#           SHA3 path still breaks the build.
+#
+# The distinction is "can this instruction be reached without a feature check",
+# not "do we trust this vendor".
+STRICT_LIBS=("librosenpass_jni.so")
+
+is_strict() {
+    local base
+    base=$(basename "$1")
+    local s
+    for s in "${STRICT_LIBS[@]}"; do
+        [ "$base" = "$s" ] && return 0
+    done
+    return 1
+}
+
+# Positive evidence that a Go binary performs runtime CPU feature detection.
+# internal/cpu is what populates ARM64.HasSHA3 from AT_HWCAP, and its symbol
+# names survive in the pclntab even in a stripped .so.
+has_runtime_cpu_detection() {
+    # `grep -a` rather than `strings`: strings needs binutils, which is not
+    # guaranteed on every runner or dev machine, and a MISSING tool here would
+    # silently answer "no evidence" and fail the build for a reason that has
+    # nothing to do with the binary. grep is everywhere and reads the file
+    # directly. Go stores these symbol names contiguously in the pclntab, so a
+    # plain byte-run match is sound.
+    grep -aqE 'internal/cpu|runtime/internal/cpu|ARM64\.Has' "$1" 2>/dev/null
+}
+
 FAILED=0
 for so in "${LIBS[@]}"; do
     # -d disassembles executable sections only, which is what matters: an opcode
@@ -76,13 +127,18 @@ for so in "${LIBS[@]}"; do
         | grep -coE '[[:space:]](eor3|rax1|xar|bcax)[[:space:]]' || true)
     hits="${hits:-0}"
 
-    if [ "$hits" -ne 0 ]; then
-        echo "::error::$so contains $hits ARMv8.2 SHA3-extension instruction(s) — this WILL SIGILL on any arm64 device without FEAT_SHA3"
-        "$OBJDUMP" -d "$so" 2>/dev/null \
-            | grep -nE '[[:space:]](eor3|rax1|xar|bcax)[[:space:]]' | head -5 >&2 || true
+    if [ "$hits" -eq 0 ]; then
+        echo "  ok: $(basename "$so") - no SHA3-extension instructions"
+    elif is_strict "$so"; then
+        echo "::error::$so contains $hits ARMv8.2 SHA3-extension instruction(s). This library is built by us and has NO runtime dispatch, so an emitted instruction is an executed one - it WILL SIGILL on any arm64 device without FEAT_SHA3."
+        "$OBJDUMP" -d "$so" 2>/dev/null | grep -nE '[[:space:]](eor3|rax1|xar|bcax)[[:space:]]' | head -5 >&2 || true
         FAILED=1
+    elif has_runtime_cpu_detection "$so"; then
+        echo "  ok: $(basename "$so") - $hits SHA3-extension instruction(s), but the binary carries runtime CPU-feature detection, so they are reached only where FEAT_SHA3 is present"
     else
-        echo "  ok: $(basename "$so") — no SHA3-extension instructions"
+        echo "::error::$so contains $hits ARMv8.2 SHA3-extension instruction(s) and NO evidence of runtime CPU-feature detection. Either it gained an ungated SIMD path, or it is no longer a Go binary and this gate assumption about it is stale. Both need a human."
+        "$OBJDUMP" -d "$so" 2>/dev/null | grep -nE '[[:space:]](eor3|rax1|xar|bcax)[[:space:]]' | head -5 >&2 || true
+        FAILED=1
     fi
 done
 
