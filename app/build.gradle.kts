@@ -84,17 +84,34 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // ABI allow-list: ship ONLY the ABIs that carry the complete VPN
-        // engine set (libxray.so + libwg-go.so). armeabi-v7a is deliberately
-        // excluded — the pinned Xray Reality engine is only downloaded for
-        // arm64-v8a and x86_64 in CI (see .github/workflows/android.yml), so a
-        // 32-bit-only device would install but hit UnsatisfiedLinkError / a
-        // missing xray binary on first VPN connect. Excluding the ABI here
-        // makes Play/sideload mark such devices as unsupported instead.
-        // (The rosenpass-jni Rust crate is still cross-compiled for armv7, but
-        // that partial native set must never reach a shipped APK on its own.)
+        // ABI allow-list: ship every live Android ABI, and ship each one ONLY
+        // with the complete VPN engine set behind it — libxray.so, libwg-go.so
+        // and librosenpass_jni.so. An APK that installs and then cannot start a
+        // tunnel is worse for the user than one that does not install, so the
+        // two directions are enforced together by
+        // scripts/verify_android_release_apk.py (cross product of these ABIs
+        // against the three engines, plus a check that no OTHER lib/<abi>/
+        // appears in the APK).
+        //
+        // All four are covered as of this change:
+        //
+        //   ABI          libwg-go.so   librosenpass_jni.so   libxray.so
+        //   arm64-v8a    AAR           cargo-ndk             pinned release zip
+        //   armeabi-v7a  AAR           cargo-ndk             built from source
+        //   x86_64       AAR           cargo-ndk             pinned release zip
+        //   x86          AAR           cargo-ndk             built from source
+        //
+        // The 32-bit engines are built from source because XTLS publishes no
+        // 32-bit Android binary — the pinned release carries exactly two Android
+        // assets, arm64-v8a and amd64. The linux-arm32/linux-32 assets are NOT
+        // substitutes (glibc, not bionic). See scripts/provision_xray_engines.sh
+        // for how they are pinned and built.
+        //
+        // KEEP IN SYNC: scripts/provision_xray_engines.sh (ALL_ABIS),
+        // native/build.sh + native/build.ps1 (cargo-ndk targets), and
+        // SHIPPED_ABIS in scripts/verify_android_release_apk.py.
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
 
         buildConfigField("String", "API_BASE_URL", "\"https://api.birdo.app\"")
@@ -261,8 +278,9 @@ val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfi
 
 // ── Rosenpass JNI native build ──────────────────────────────────────────────
 //
-// Cross-compiles `native/rosenpass-jni/` (Rust) for arm64-v8a, armeabi-v7a,
-// and x86_64 via cargo-ndk, depositing librosenpass_jni.so into
+// Cross-compiles `native/rosenpass-jni/` (Rust) for all four live Android
+// ABIs (arm64-v8a, armeabi-v7a, x86_64, x86) via cargo-ndk, depositing
+// librosenpass_jni.so into
 // app/src/main/jniLibs/<abi>/ where AGP picks it up automatically.
 //
 // This task is NOT auto-wired into mergeReleaseNativeLibs — local debug builds
@@ -293,6 +311,7 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
         "${project.projectDir}/src/main/jniLibs/arm64-v8a/librosenpass_jni.so",
         "${project.projectDir}/src/main/jniLibs/armeabi-v7a/librosenpass_jni.so",
         "${project.projectDir}/src/main/jniLibs/x86_64/librosenpass_jni.so",
+        "${project.projectDir}/src/main/jniLibs/x86/librosenpass_jni.so",
     )
 
     // Surface a clear diagnostic when Rust toolchain isn't installed locally,
@@ -470,7 +489,7 @@ dependencies {
 
     // NOTE: Xray core (libXray) is loaded at runtime via reflection.
     // Place libXray.aar in app/libs/ or include the native .so files
-    // in src/main/jniLibs/{arm64-v8a,armeabi-v7a}/ when available.
+    // in src/main/jniLibs/<abi>/ when available.
     // XrayManager falls back to bundled xray binary if library is absent.
 
     // ── Security ─────────────────────────────────────────────────

@@ -14,15 +14,34 @@ import sys
 import zipfile
 
 
-# Only arm64-v8a and x86_64 are shipped (see app/build.gradle.kts abiFilters).
-# armeabi-v7a is intentionally excluded: the Xray Reality engine is not built
-# for 32-bit, so a partial armv7 native set must never reach a shipped APK.
-REQUIRED_NATIVE_LIBS = (
-    "lib/arm64-v8a/libwg-go.so",
-    "lib/arm64-v8a/libxray.so",
-    "lib/x86_64/libxray.so",
-    "lib/arm64-v8a/librosenpass_jni.so",
-    "lib/x86_64/librosenpass_jni.so",
+# ---------------------------------------------------------------------------
+# ABI / native-engine contract.
+#
+# SHIPPED_ABIS must equal the abiFilters allow-list in app/build.gradle.kts, and
+# every ABI in it must carry the COMPLETE engine set. Both directions are
+# enforced on purpose:
+#
+#   * every (abi x engine) pair must be present -- a shipped ABI missing an
+#     engine installs fine and then fails on first connect, dropping the user
+#     into the kill switch, which is worse than not shipping that ABI at all;
+#   * no lib/<abi>/ directory outside SHIPPED_ABIS may appear -- that is how a
+#     partial ABI sneaks in, since native/build.sh cross-compiles
+#     librosenpass_jni.so for every ABI whether or not an Xray engine exists
+#     for it.
+#
+# Deriving the required set as a cross product rather than hand-listing it is
+# deliberate: the previous hand-written list omitted lib/x86_64/libwg-go.so, so
+# an x86_64 build with no WireGuard engine at all would have passed this gate.
+# ---------------------------------------------------------------------------
+SHIPPED_ABIS = ("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
+# Engines without which the VPN cannot establish a tunnel on a given ABI.
+REQUIRED_ENGINES = ("libwg-go.so", "libxray.so", "librosenpass_jni.so")
+
+REQUIRED_NATIVE_LIBS = tuple(
+    f"lib/{abi}/{engine}"
+    for abi in SHIPPED_ABIS
+    for engine in REQUIRED_ENGINES
 )
 
 
@@ -94,6 +113,24 @@ def main() -> None:
         if missing_libs:
             fail("release APK is missing required native libraries: " + ", ".join(missing_libs))
 
+        # Reverse direction: an ABI we never provisioned engines for must not be
+        # packaged. Such a build installs on devices whose VPN can never start.
+        packaged_abis = {
+            name.split("/")[1]
+            for name in names
+            if name.startswith("lib/") and name.count("/") >= 2
+        }
+        unexpected_abis = sorted(packaged_abis - set(SHIPPED_ABIS))
+        if unexpected_abis:
+            fail(
+                "release APK packages ABI(s) with no provisioned VPN engine set: "
+                + ", ".join(unexpected_abis)
+                + ". Every shipped ABI needs "
+                + ", ".join(REQUIRED_ENGINES)
+                + ". Provision the engines for that ABI, or restore the abiFilters "
+                "allow-list in app/build.gradle.kts."
+            )
+
         all_strings: list[str] = []
         for name in names:
             if name.startswith("classes") and name.endswith(".dex"):
@@ -111,7 +148,10 @@ def main() -> None:
     if not found_fingerprint:
         fail("release APK does not contain the expected signing fingerprint constant")
 
-    print("Release APK payload verification passed")
+    print(
+        "Release APK payload verification passed "
+        f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines)"
+    )
 
 
 if __name__ == "__main__":
