@@ -182,6 +182,12 @@ has_runtime_cpu_detection() {
     grep -aqE 'internal/cpu|runtime/internal/cpu|ARM64\.Has|X86\.Has|ARM\.Has' "$1" 2>/dev/null
 }
 
+# Scratch space for the disassembly of each library. Written to disk rather than
+# piped so that objdump's exit status can be checked on its own line -- see the
+# comment at the call site.
+DIS_DIR="$(mktemp -d)"
+trap 'rm -rf "$DIS_DIR"' EXIT
+
 # ── Walk every ABI directory present ────────────────────────────────────────
 mapfile -t ABI_DIRS < <(find "$LIB_ROOT" -mindepth 1 -maxdepth 1 -type d | sort)
 
@@ -218,21 +224,62 @@ for abi_dir in "${ABI_DIRS[@]}"; do
     for so in "${LIBS[@]}"; do
         # -d disassembles executable sections only, which is what matters: an
         # opcode that is never decoded cannot raise SIGILL.
-        hits=$("$OBJDUMP" -d "$so" 2>/dev/null | grep -coE "$rule" || true)
-        hits="${hits:-0}"
+        #
+        # THE DISASSEMBLY IS WRITTEN TO A FILE AND CHECKED, NOT PIPED.
+        #
+        # `hits=$(objdump -d "$so" | grep -c ...)` reports grep's view of an
+        # EMPTY stream when objdump fails to run at all, and an empty stream
+        # counts zero -- which is this script's PASS value. A tool that never
+        # decoded a single instruction would therefore print "ok" for every
+        # library in the ABI. That is precisely the silent green the header of
+        # this file says is worse than having no gate, and it stopped being
+        # hypothetical when the walk went from one ABI to four: the fallback
+        # chain above will happily select a single-target GNU `objdump`, which
+        # exits non-zero on three of the four ELF machines we now ship.
+        #
+        # So: objdump's exit status is captured on its own line, and the output
+        # must actually contain disassembled instruction lines. Either check
+        # failing is a FAILURE, never a skip.
+        dis="$DIS_DIR/$abi-$(basename "$so").txt"
+        # `|| objdump_rc=$?` rather than a bare call followed by `objdump_rc=$?`:
+        # `set -e` is on, so a bare failing command would abort the script before
+        # the assignment ran and the operator would never see which library or
+        # which disassembler was the problem.
+        objdump_rc=0
+        "$OBJDUMP" -d "$so" > "$dis" 2> "$dis.err" || objdump_rc=$?
         CHECKED=$((CHECKED + 1))
+
+        if [ "$objdump_rc" -ne 0 ]; then
+            echo "::error::check_no_sha3_ext: $OBJDUMP exited $objdump_rc on $so — the library was NOT disassembled and therefore NOT checked. Most likely the disassembler does not understand this ABI's ELF machine (a single-target binutils objdump handed a foreign object). Install the NDK's llvm-objdump (\$ANDROID_NDK_HOME) or an llvm-objdump that covers every shipped ABI." >&2
+            head -3 "$dis.err" >&2 || true
+            FAILED=1
+            continue
+        fi
+
+        # A clean exit with no instruction lines is the same blind spot wearing
+        # a different hat (a stripped-to-nothing object, a wrong -d default, an
+        # objdump that printed only headers). Every supported disassembler
+        # formats an instruction line as "<hex-address>:" at the start.
+        if ! grep -qE '^[[:space:]]*[0-9a-fA-F]+:' "$dis"; then
+            echo "::error::check_no_sha3_ext: $OBJDUMP produced no disassembly for $so (exit 0, $(wc -l < "$dis") line(s) of output). Nothing was checked, so this is a failure, not a pass." >&2
+            FAILED=1
+            continue
+        fi
+
+        hits=$(grep -coE "$rule" "$dis" || true)
+        hits="${hits:-0}"
 
         if [ "$hits" -eq 0 ]; then
             echo "  ok: $abi/$(basename "$so") - no $rule_name instructions"
         elif is_strict "$so"; then
             echo "::error::$so contains $hits $rule_name instruction(s). This library is built by us and has NO runtime dispatch, so an emitted instruction is an executed one - it WILL SIGILL on any $abi device without the feature."
-            "$OBJDUMP" -d "$so" 2>/dev/null | grep -nE "$rule" | head -5 >&2 || true
+            grep -nE "$rule" "$dis" | head -5 >&2 || true
             FAILED=1
         elif has_runtime_cpu_detection "$so"; then
             echo "  ok: $abi/$(basename "$so") - $hits $rule_name instruction(s), but the binary carries runtime CPU-feature detection, so they are reached only where the feature is present"
         else
             echo "::error::$so contains $hits $rule_name instruction(s) and NO evidence of runtime CPU-feature detection. Either it gained an ungated SIMD path, or it is no longer a Go binary and this gate assumption about it is stale. Both need a human."
-            "$OBJDUMP" -d "$so" 2>/dev/null | grep -nE "$rule" | head -5 >&2 || true
+            grep -nE "$rule" "$dis" | head -5 >&2 || true
             FAILED=1
         fi
     done

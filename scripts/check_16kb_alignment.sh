@@ -34,10 +34,22 @@ DIR="${1:-app/src/main/jniLibs}"
 MIN_ALIGN=16384  # 0x4000
 
 # Pick an available ELF reader (llvm-readelf preferred; GNU readelf works too).
+#
+# $ANDROID_NDK_HOME is searched FIRST, the way scripts/check_no_sha3_ext.sh
+# already does. Neither MSYS/Git-Bash nor a stock Windows install carries a
+# readelf, so without this the gate is unrunnable on a developer machine and
+# only ever fails in CI -- exactly the situation the sibling gate calls out.
+# The `-name 'llvm-readelf*'` form matches llvm-readelf.exe as well.
 READELF=""
-for cand in llvm-readelf readelf; do
-  if command -v "$cand" >/dev/null 2>&1; then READELF="$cand"; break; fi
-done
+if [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
+  cand=$(find "$ANDROID_NDK_HOME" \( -name 'llvm-readelf' -o -name 'llvm-readelf.exe' \) -type f 2>/dev/null | head -1 || true)
+  [[ -n "$cand" ]] && READELF="$cand"
+fi
+if [[ -z "$READELF" ]]; then
+  for cand in llvm-readelf readelf; do
+    if command -v "$cand" >/dev/null 2>&1; then READELF="$cand"; break; fi
+  done
+fi
 if [[ -z "$READELF" ]]; then
   echo "ERROR: no readelf/llvm-readelf found on PATH" >&2
   exit 1
