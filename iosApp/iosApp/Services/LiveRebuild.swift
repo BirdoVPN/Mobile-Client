@@ -373,3 +373,196 @@ enum LiveRebuildPolicy {
         }
     }
 }
+
+/// The FRESH dial's post-`.connected` handshake window, and the one decision
+/// that can undo a live session's protection.
+///
+/// `VpnViewModel.armKillSwitchAfterHandshake` waits here for the first inbound
+/// byte before arming the on-demand rule. Its NO-handshake exit is the only
+/// place in this client that stops a tunnel because a peer stayed silent, and
+/// what it does is a deliberate fail-OPEN: `VPNManager.disconnect()` persists
+/// on-demand OFF *before* stopping, and the server-side key is DELETEd. That is
+/// right for exactly one input — a FRESH dial, whose rule was never armed and
+/// which would otherwise become the re-dial blackhole the circuit breaker
+/// exists to escape (see the doc comment on `armKillSwitchAfterHandshake`).
+///
+/// #351: it was also reached with two inputs it is wrong for, and on both the
+/// session was ALREADY protected, so stopping it took the protection away:
+///
+///   * the OLD peer a live rebuild's revert put back on the RUNNING session
+///     (`.revertToOld`, and `.stayFailedClosed` when that restore failed). The
+///     `.reasserting → .connected` the restore raises is handled after
+///     `rebuildLive`'s `defer` has cleared `isRebuildingLive` — there is no
+///     suspension point between `restoreProfile` returning and that `defer` —
+///     so the generic arm's guard no longer suppressed it, and a restored peer
+///     that had not re-handshaked inside 15 s (old node down, or the server
+///     sweeper's retire-old race) was torn down and its key deleted;
+///   * a probe that never actually spent its window. `try? await Task.sleep`
+///     on a CANCELLED task returns instantly and swallows the error, so the
+///     loop can reach the exit in microseconds having proved nothing — the
+///     same shape that once spun `awaitNewPeerHandshake` 7.7 M times in 2 s,
+///     except that here the cost is not a spin but a teardown.
+///
+/// The window is measured on a `ContinuousClock`, not counted in passes: passes
+/// are what a cancelled sleep makes worthless.
+enum HandshakeArm {
+    /// 30 × 500 ms = 15 s. Covers a slow mobile handshake — WireGuard retries
+    /// its handshake every 5 s — without leaving the user staring at a tunnel
+    /// that is never coming up.
+    ///
+    /// Declared HERE, beside `LiveRebuildProbe`, rather than in `VpnViewModel`:
+    /// the two windows are deliberately different (the rebuild's 18 s must not
+    /// land on a REKEY_TIMEOUT boundary and must fit inside the server's
+    /// deferral grace), they were once the same value — bug (B) of #350's
+    /// review — and `VpnViewModel` is not one of BirdoVPNTests' sources, so
+    /// side by side here is the only place the difference can be asserted.
+    static let polls = 30
+    /// Poll cadence. A FLOOR on elapsed time, never the elapsed time itself:
+    /// each pass also pays a `sendProviderMessage` round trip to the extension.
+    static let pollMs = 500
+    /// 15 s. The wall clock the no-handshake verdict requires to have passed.
+    static var windowMs: Int { polls * pollMs }
+
+    /// Does this follow-up leave a peer that this client RESTORED on the live
+    /// session — i.e. one whose `.connected` is a reconfigure of a tunnel that
+    /// never dropped and whose on-demand rule has been armed throughout?
+    ///
+    /// Exhaustive on purpose (no `default`): a follow-up added later cannot
+    /// compile until someone has decided which side of the fail-open it is on.
+    static func restoresPeerInPlace(_ followUp: LiveRebuildFollowUp) -> Bool {
+        switch followUp {
+        // `.revertToOld` restores the snapshot; `.stayFailedClosed` is only
+        // reachable from that same restore having FAILED, which can still have
+        // reconfigured the running tunnel (and is the case that most needs the
+        // session left alone — the breaker owns the recovery there).
+        case .revertToOld, .stayFailedClosed:
+            return true
+        // Nothing local was swapped (`.nothing`, `.releaseNewKey`), the NEW
+        // peer is the session and handshaked (`.commitNew`), or the session is
+        // already down and the armed rule is re-dialling it
+        // (`.handOffToOnDemandRedial`).
+        case .nothing, .releaseNewKey, .commitNew, .handOffToOnDemandRedial:
+            return false
+        }
+    }
+
+    /// The verdict when the probe ends with no inbound bytes. The order of the
+    /// tests is the order of the evidence: a window that was not spent proves
+    /// nothing at all, so it is answered before anything is decided about the
+    /// peer.
+    static func noHandshakeOutcome(peerWasRestoredInPlace: Bool,
+                                   elapsed: Duration,
+                                   window: Duration) -> HandshakeArmOutcome {
+        if elapsed < window { return .inconclusive }
+        if peerWasRestoredInPlace { return .keepSessionFailClosed }
+        return .tearDownFailOpen
+    }
+}
+
+/// What the handshake arm may do when its window ends with no inbound bytes.
+/// Pure so the one decision that can disarm a live kill switch is asserted in
+/// BirdoVPNTests rather than on a device with a peer removed by hand.
+enum HandshakeArmOutcome: Equatable {
+    /// FRESH dial, window actually spent, still nothing received: stop the
+    /// tunnel and release the server-side key. A fail-OPEN, and the deliberate
+    /// one — nothing re-dials a tunnel that was never armed, and the user is
+    /// told which server did not answer.
+    case tearDownFailOpen
+    /// The peer under this `.connected` was RESTORED in place (#351). Keep the
+    /// session and the armed on-demand rule exactly as they are and tell the
+    /// user traffic is blocked: the extension's liveness check, the armed
+    /// rule's re-dial and then the circuit breaker are the recovery, which is
+    /// the same escape `LiveRebuildFollowUp.stayFailedClosed` relies on.
+    case keepSessionFailClosed
+    /// The probe returned without spending its window (a cancelled task, whose
+    /// `CancellationError` the caller's `try?` eats). It has proved nothing, so
+    /// it decides nothing: no teardown, and no message claiming a verdict.
+    case inconclusive
+}
+
+/// #351 / #336 — the ONE "may a dial start right now?" decision, so the five
+/// entry points that can start or change a tunnel cannot answer it five
+/// different ways.
+///
+/// `isConnecting` alone CANNOT answer it, and that is the whole of #351 item 2:
+/// `VpnViewModel.handleStatusChange` clears `isConnecting` on `.disconnecting`
+/// and `.disconnected`, which are precisely the transitions the two
+/// disconnect-first paths WAIT for. So from `vpnManager.disconnect()` until the
+/// redial — a window `awaitTeardown()` bounds at about 5 s — every entry point
+/// read "idle", and a second dial in it minted a second server-side peer for
+/// the same device while the first was still tearing the tunnel down under it.
+/// Raising `isConnecting` earlier does not work either: the status handler is
+/// the thing that clears it.
+///
+/// `isTearingDownForRedial` is the flag that survives those transitions. It is
+/// owned by the two teardown sites in `RedialTeardownSite` and read only here.
+enum TunnelDialGate {
+    /// Why a dial is refused. A raw-valued, `CaseIterable` enum rather than a
+    /// bare Bool so BirdoVPNTests can enumerate the blocking states and a new
+    /// one cannot be added without the enumeration failing to compile.
+    enum Block: String, Equatable, CaseIterable {
+        /// A dial is already in flight and has not resolved (`isConnecting`).
+        case dialInFlight
+        /// A live in-place rebuild owns the session; it commits or reverts on
+        /// its own (`isRebuildingLive`).
+        case liveRebuildInFlight
+        /// #351: a disconnect-first path has asked for the teardown and is
+        /// waiting for it to land. The state `isConnecting` cannot express.
+        case tearingDownForRedial
+    }
+
+    /// The first reason this dial is refused, or `nil` when it may start.
+    /// Order is severity-free — a caller that treats one reason differently
+    /// (`selectServerLive` and `.dialInFlight`) switches on it explicitly, so
+    /// the exception is written down rather than achieved by omission.
+    static func block(isConnecting: Bool,
+                      isRebuildingLive: Bool,
+                      isTearingDownForRedial: Bool) -> Block? {
+        if isConnecting { return .dialInFlight }
+        if isRebuildingLive { return .liveRebuildInFlight }
+        if isTearingDownForRedial { return .tearingDownForRedial }
+        return nil
+    }
+
+    static func mayStartDial(isConnecting: Bool,
+                             isRebuildingLive: Bool,
+                             isTearingDownForRedial: Bool) -> Bool {
+        block(isConnecting: isConnecting,
+              isRebuildingLive: isRebuildingLive,
+              isTearingDownForRedial: isTearingDownForRedial) == nil
+    }
+}
+
+/// Every entry point in this client that can START or CHANGE a tunnel.
+///
+/// An inventory, pinned by a test, because #336's finding is that a guard
+/// landing on some of N parallel paths is this estate's most common defect and
+/// that a COMMENT naming the other paths is demonstrably not protection. A
+/// sixth path cannot be added without this list — and therefore its test —
+/// being edited, which is the moment to ask whether it calls `TunnelDialGate`.
+enum TunnelDialEntryPoint: String, CaseIterable {
+    /// `VpnViewModel.connect(userInitiated:)` — the Home CTA and every redial.
+    case connect
+    /// `VpnViewModel.connectMultiHop(entry:exit:)` — the Multi-Hop screen.
+    case connectMultiHop
+    /// `VpnViewModel.reapplySettings()` — the settings apply-on-change blip.
+    case reapplySettings
+    /// `VpnViewModel.selectServerLive(_:)` — a tap on a different node. Treats
+    /// `.dialInFlight` as its switch-while-connecting case, refuses the rest.
+    case selectServerLive
+    /// `VpnViewModel.autoConnectIfEnabled()` — the launch auto-connect.
+    case autoConnectIfEnabled
+}
+
+/// Every place that stops a LIVE tunnel and then re-dials it: the two sides of
+/// the twin the #351 guard has to cover. Guarding one and not the other is the
+/// #336 shape exactly — and the shape #350's own review noted was left open.
+enum RedialTeardownSite: String, CaseIterable {
+    /// `VpnViewModel.connectMultiHop` over a live session — the one live
+    /// rebuild deliberately NOT done in place (the node-agent's
+    /// one-exit-per-entry guard would 409 the install).
+    case connectMultiHopOverALiveSession
+    /// `VpnViewModel.legacyRebuild` — the pre-#159 disconnect-first rebuild,
+    /// reached only when the SERVER cannot defer this device's key.
+    case legacyRebuild
+}
