@@ -63,6 +63,29 @@ class VpnManager @Inject constructor(
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
 
+    /**
+     * Latched when the AUTH session is dead: a heartbeat that came back 401,
+     * meaning withAutoRefresh had the refresh token rejected and has now
+     * discarded it. Set by [sessionDeadTeardown], and ONLY with
+     * `permanent = true`.
+     *
+     * Deliberately NOT set for a heartbeat body with `valid = false`. That
+     * answer means only that the WireGuard peer row is gone or inactive —
+     * revoked, reaped, or evicted — and the backend says so in as many words
+     * ("Connection has been revoked. Please reconnect."). The tokens are still
+     * good, so a fresh /vpn/connect succeeds and the device heals itself
+     * behind the held block.
+     *
+     * A 401 cannot heal itself: every retry needs credentials we no longer
+     * hold. So the auto-reconnect collector must not answer THAT Error with
+     * five doomed attempts, each overwriting the "sign in again" message with
+     * a generic connect failure and leaving the user looking at a fully
+     * blocked device with no explanation of why. Cleared as soon as any
+     * connecting phase is entered, i.e. the moment a NEW session is actually
+     * being requested.
+     */
+    @Volatile private var sessionDead = false
+
     // ── Heartbeat keepalive ─────────────────────────────────────────
     private var heartbeatJob: Job? = null
 
@@ -193,11 +216,27 @@ class VpnManager @Inject constructor(
                     // (activeMultiHop) sessions — a multi-hop drop has no
                     // lastServerId, and gating on it alone left multi-hop users
                     // stranded (blocked, or leaking if fail-open) with no retry.
+                    // Any connecting phase means a NEW session is being asked
+                    // for, so the dead-session latch no longer applies. Gated
+                    // on the shared [isConnectingPhase] predicate rather than
+                    // an inline `is Connecting`, so a future transitional
+                    // state clears it too — see that predicate's kdoc for what
+                    // inline enumeration cost us last time.
+                    if (vpnState.isConnectingPhase) sessionDead = false
+
                     if (vpnState is VpnState.Error &&
                         (prefs.lastServerId != null || activeMultiHop != null)
                     ) {
                         stopHeartbeat()
-                        startAutoReconnect()
+                        // But NOT when the REFRESH TOKEN was rejected: every
+                        // attempt would need credentials we no longer hold, and
+                        // five failures would bury the one message the user
+                        // needs ("sign in again") under a generic connect error
+                        // while their traffic sits blocked. A revoked WireGuard
+                        // peer is the opposite case — the tokens still work, so
+                        // it MUST keep retrying: the block stays up until it
+                        // succeeds, and nothing else would ever lift it.
+                        if (!sessionDead) startAutoReconnect()
                     } else if (vpnState is VpnState.Connected) {
                         cancelAutoReconnect()
                         startHeartbeat()
@@ -816,6 +855,138 @@ class VpnManager @Inject constructor(
     }
 
     /**
+     * Fail-closed teardown for a tunnel the SERVER has invalidated: a heartbeat
+     * body with `valid = false` (the WireGuard peer was revoked or reaped), or
+     * a 401 (the refresh token was rejected and discarded). Both heartbeat
+     * paths call THIS, never [disconnect].
+     *
+     * WHY NOT [disconnect]: that path sends ACTION_STOP, and the service's
+     * stopTunnel() deactivates the kill switch as its fifth line. So the
+     * client's answer to "the backend has already deleted your peer" was to
+     * REMOVE the block — releasing everything queued behind the dead tunnel
+     * onto the physical interface in cleartext, for a user who had chosen
+     * fail-closed and whose UI said "Protected" less than 30s earlier. A
+     * server-side invalidation is an UNEXPECTED drop, the exact case the kill
+     * switch exists for; it is not a user Disconnect.
+     *
+     * For a fail-closed user we therefore send
+     * [BirdoVpnService.ACTION_KILL_SWITCH_BLOCK], which establishes the
+     * blocking interface FIRST and only then turns wg-go off, so there is no
+     * cleartext window — the same ordering contract [switchTeardown] relies on.
+     *
+     * @param reason user-facing explanation, published once the block is
+     *   confirmed. A held block with no explanation would be its own defect:
+     *   the notification reads "Kill Switch Active — Traffic blocked" with an
+     *   unlock-gated "Disable Kill Switch" action, Home shows the kill-switch
+     *   banner AND this text, and the widget stops claiming "Protected". The
+     *   Birdo app itself is exempt from the block (the service adds it via
+     *   addDisallowedApplication), so signing in again — and the automatic
+     *   retry below — both work from behind it.
+     * @param permanent true ONLY for the 401 branch, where nothing can succeed
+     *   until the user signs in again. `valid = false` is NOT that: the tokens
+     *   still work, so we leave automatic recovery available and let the
+     *   auto-reconnect collector rebuild. That rebuild runs entirely behind the
+     *   block ([connect] tears down via [switchTeardown], which holds the
+     *   blocking interface across the whole cycle), so self-healing costs no
+     *   cleartext — whereas latching both branches would strand a fail-closed
+     *   device with no traffic and no way back except a human. When true we
+     *   suppress the retry instead, so [reason] survives on screen.
+     *
+     * A user who turned the kill switch OFF chose fail-open and is torn down
+     * exactly as before — we must never strand someone behind a block they
+     * declined.
+     */
+    private suspend fun sessionDeadTeardown(reason: String, permanent: Boolean) {
+        // Only a rejected refresh token is unrecoverable. Latch that BEFORE
+        // publishing anything, or the reconnect collector answers the Error
+        // below with five attempts that can only fail, each overwriting
+        // `reason` on screen with a generic connect failure.
+        sessionDead = permanent
+        // Win over any in-flight settings-reapply blip, exactly as [disconnect].
+        reapplyAbortGeneration++
+        reapplyInProgress = false
+        cancelAutoReconnect()
+
+        // The route auto-reconnect would rebuild, captured before any teardown
+        // can clear it. The collector gates retry on
+        // `lastServerId != null || activeMultiHop != null`, and a multi-hop
+        // session has NO lastServerId — so dropping activeMultiHop on a
+        // RECOVERABLE teardown would silently remove multi-hop recovery while
+        // leaving every packet blocked. [switchTeardown] keeps it for exactly
+        // this reason; only a permanent teardown clears it.
+        val route = activeMultiHop
+
+        // NonCancellable for everything below, and it is not optional here:
+        // any state this publishes that the reconnect collector reacts to
+        // makes it call stopHeartbeat(), which cancels heartbeatJob — the very
+        // coroutine this function runs in. Without the guard the peer
+        // unregister and the on-screen explanation would both be dropped at
+        // their next suspension point, leaving a blocked device and a silent
+        // screen. Same guard, same reason, as reapplySettingsNow's finally.
+        // Bounded, but not tightly: the 5s block confirmation plus one
+        // disconnectVpn() round trip, which OkHttp caps at callTimeout 45s
+        // (NetworkModule) — ~50s worst case, off the Main thread, with the
+        // block already armed throughout.
+        withContext(NonCancellable) {
+            if (!prefs.killSwitchEnabled) {
+                // Fail-open by explicit user choice — full teardown, unchanged.
+                tearDownTunnel()
+                // ...which clears activeMultiHop. Correct for a user
+                // Disconnect, wrong for a recoverable drop: put the route back
+                // before publishing the Error the collector reacts to, or a
+                // multi-hop user gets no retry at all.
+                if (!permanent) activeMultiHop = route
+                _state.value = VpnState.Error(reason)
+                return@withContext
+            }
+
+            _state.value = VpnState.Disconnecting
+            transitionStartTime = System.currentTimeMillis()
+            // A recoverable teardown keeps the route (see `route` above); a
+            // permanent one clears it, as [tearDownTunnel] does.
+            if (permanent) activeMultiHop = null
+
+            val intent = Intent(context, BirdoVpnService::class.java).apply {
+                action = BirdoVpnService.ACTION_KILL_SWITCH_BLOCK
+            }
+            // Everything that decides protection happens before the first
+            // suspension point below. Guarded like every other service start
+            // in this file.
+            try {
+                context.startForegroundService(intent)
+            } catch (e: Exception) {
+                android.util.Log.e("VpnManager", "startForegroundService(KILL_SWITCH_BLOCK) failed", e)
+            }
+
+            // Unregister the dead peer and drop the stale keyId so no later
+            // heartbeat can resume against it, and so a retry mints a clean
+            // one. Best effort: on a 401 this call fails too, and the backend
+            // reaps orphaned peers on missed heartbeats. Ordered after the
+            // block intent, never before it.
+            repository.disconnectVpn()
+
+            // Publish the reason only AFTER the service confirms the block is
+            // up, so its own KillSwitchActive emission cannot land on top and
+            // leave a fully blocked device with nothing on screen saying why.
+            // This Error is also what the reconnect collector reacts to, so on
+            // a recoverable teardown it is what starts the self-healing retry —
+            // one more reason it must not be published before the block is up.
+            // Bounded; returns the instant the block is armed (~150-300ms).
+            val blocked = waitUntil(5000) { isKillSwitchActive }
+            // false means establish() refused (in practice: VPN consent
+            // revoked) — and activateKillSwitch has ALREADY torn the data
+            // plane down by then, so traffic really IS in the clear. Say so out
+            // loud: silent failure of a security control is worse than a loud
+            // one, the same rule the service's restart re-arm follows. Never
+            // render reassurance we have not confirmed.
+            _state.value = VpnState.Error(
+                if (blocked) reason
+                else "$reason — kill switch could NOT be armed, traffic is NOT protected",
+            )
+        }
+    }
+
+    /**
      * Tear down the active tunnel (stop the service, notify the backend) WITHOUT
      * cancelling any in-flight auto-reconnect. [disconnect] wraps this with a
      * [cancelAutoReconnect] for the user-initiated case; the auto-reconnect job
@@ -823,6 +994,13 @@ class VpnManager @Inject constructor(
      * (via disconnect()) aborted the reconnect coroutine at its next suspension
      * point AND left the kill switch torn down, i.e. a traffic leak that only a
      * manual reconnect recovered.
+     *
+     * THIS PATH RELEASES THE KILL SWITCH: ACTION_STOP → stopTunnel() →
+     * deactivateKillSwitch(). It is therefore only for a teardown the USER
+     * asked for, or one where dropping the block is the point. An unexpected
+     * loss of protection must use [sessionDeadTeardown] (server invalidated the
+     * tunnel, stay blocked) or [switchTeardown] (rebuild, block held across it)
+     * instead.
      */
     private suspend fun tearDownTunnel() {
         _state.value = VpnState.Disconnecting
@@ -1146,11 +1324,35 @@ class VpnManager @Inject constructor(
                     is ApiResult.Success -> {
                         val resp = result.data
                         if (!resp.valid) {
-                            // Session invalidated server-side — disconnect immediately
-                            android.util.Log.w("VpnManager", "Heartbeat: session invalid, disconnecting")
+                            // Session invalidated server-side. This is an
+                            // UNEXPECTED drop — the one class the kill switch
+                            // exists for — not a user Disconnect, so it must
+                            // NOT go through disconnect(). That path sends
+                            // ACTION_STOP, whose stopTunnel() deactivates the
+                            // kill switch: the block came DOWN at the exact
+                            // moment the backend had already deleted the peer,
+                            // and everything queued behind the dead tunnel
+                            // egressed in cleartext under a UI that had said
+                            // "Protected" a moment earlier.
+                            //
+                            // permanent = false, and that is the whole reason
+                            // the flag exists. The backend answers valid=false
+                            // in exactly two cases — the WireGuard key row is
+                            // missing, or isActive=false — and its own message
+                            // is "Connection has been revoked. Please
+                            // reconnect." The AUTH session is untouched, so a
+                            // fresh /vpn/connect on the same tokens succeeds.
+                            // Auto-reconnect therefore stays available and
+                            // rebuilds BEHIND the held block; latching here
+                            // would turn a routine server-side key reap into a
+                            // device with every packet blocked and nothing
+                            // retrying until a human noticed.
+                            android.util.Log.w("VpnManager", "Heartbeat: connection revoked, holding fail-closed (recoverable)")
                             withContext(Dispatchers.Main) {
-                                disconnect()
-                                _state.value = VpnState.Error("Session expired — please reconnect")
+                                sessionDeadTeardown(
+                                    "Connection revoked — please reconnect",
+                                    permanent = false,
+                                )
                             }
                             break
                         }
@@ -1177,10 +1379,25 @@ class VpnManager @Inject constructor(
                         // timeouts, a lost mobile signal) must NOT drop a working
                         // tunnel — those keep looping exactly as before.
                         if (result.code == 401) {
-                            android.util.Log.w("VpnManager", "Heartbeat: session dead, tearing down tunnel")
+                            // Same teardown as the !valid branch above, and
+                            // deliberately the SAME function: these two are
+                            // twins in everything except recoverability, and a
+                            // guard applied to one of two parallel paths is how
+                            // this codebase keeps reintroducing fail-open
+                            // windows. Both hold the block.
+                            //
+                            // permanent = true, and ONLY here: withAutoRefresh
+                            // has already had the refresh token rejected and
+                            // discarded it, so no retry can carry credentials.
+                            // Suppressing auto-reconnect is what keeps "sign in
+                            // again" on screen instead of five generic connect
+                            // failures over a blocked device.
+                            android.util.Log.w("VpnManager", "Heartbeat: session dead, holding fail-closed")
                             withContext(Dispatchers.Main) {
-                                disconnect()
-                                _state.value = VpnState.Error("Session expired — please sign in again")
+                                sessionDeadTeardown(
+                                    "Session expired — please sign in again",
+                                    permanent = true,
+                                )
                             }
                             break
                         }
