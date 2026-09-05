@@ -31,7 +31,32 @@ getrandom = { version = "0.2", features = ["std"] }
 # Post-quantum primitive: ML-KEM-1024 (FIPS 203), the strongest standardised
 # NIST PQ KEM. Public key ~1568 B, ciphertext ~1568 B, shared secret 32 B.
 # This is the same KEM Mullvad uses in their PQ-PSK product.
-pqcrypto-mlkem = "0.1"
+# NO DEFAULT FEATURES -- this is a crash fix, not a preference.
+#
+# pqcrypto-mlkem's defaults are ["avx2", "neon", "std"]. With `neon` on, build.rs
+# compiles PQClean's AArch64 ML-KEM and sets `enable_aarch64_neon`, which switches
+# the FFI bindings from PQCLEAN_MLKEM1024_CLEAN_* to PQCLEAN_MLKEM1024_AARCH64_*.
+# That path pulls in pqclean/common/keccak2x/feat.S, which uses 64 ARMv8.2 SHA3
+# instructions -- eor3 x10, rax1 x5, xar x24, bcax x25 -- with no `.arch` guard
+# and, critically, NO RUNTIME CPU DETECTION. The selection is compile-time only:
+#
+#     if target_arch == "aarch64" && neon_enabled { build_aarch64!("ml-kem-1024"); }
+#
+# FEAT_SHA3 is OPTIONAL in ARMv8.2-A. On any arm64 device without it, the first
+# `eor3` executed raises SIGILL and the process dies. That is a hard crash in
+# nativeGenerateKeypair, i.e. before a tunnel can be established at all, and with
+# PQ default-ON it takes the whole connection with it. Reported in production on
+# 1.4.25 from a Galaxy A70 (Snapdragon 675 / Kryo 460 -- ARMv8.2-A WITHOUT
+# FEAT_SHA3), and it applies to every mid-range SoC that omits the extension.
+#
+# The portable CLEAN implementation is plain C and runs on every arm64. ML-KEM
+# keygen there is on the order of a few hundred microseconds and happens once per
+# handshake, so the cost is not measurable next to the network round trip -- and
+# a slower handshake beats a SIGILL for every affected user.
+#
+# Restoring the optimised path needs runtime dispatch on getauxval(AT_HWCAP) &
+# HWCAP_SHA3, which this crate does not offer. Do not re-enable `neon` without it.
+pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 
 # Encoding for keys / handshake messages on the wire
