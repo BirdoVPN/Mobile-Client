@@ -160,10 +160,21 @@ enum RebuildRefusal: String, Equatable {
 enum LiveRebuildProbe {
     /// WireGuard REKEY_TIMEOUT (wireguard-go `device.RekeyTimeout`).
     static let wireGuardRekeyTimeoutMs = 5_000
-    /// Poll cadence — the same 500 ms the fresh-dial arm uses.
+    /// Poll cadence — the same 500 ms the fresh-dial arm uses. This is the gap
+    /// BETWEEN probes, not the cost of one: a probe also pays an
+    /// `NETunnelProviderSession.sendProviderMessage` round trip to the tunnel
+    /// extension (`VPNManager.currentStats`), so `polls × pollMs` is a FLOOR on
+    /// the elapsed time, never the elapsed time itself.
     static let pollMs = 500
-    /// 36 × 500 ms = 18 s.
+    /// 36 × 500 ms = 18 s. The cap on the WORK: at most this many probes,
+    /// whatever the clock says. It is kept ALONGSIDE the `windowMs` clock bound,
+    /// not replaced by it — it is what stops the loop spinning if `Task.sleep`
+    /// ever returns without consuming time (a cancelled task, whose
+    /// `CancellationError` the caller's `try?` swallows).
     static let polls = 36
+    /// The cap on the TIME. The probe stops at 18 s of wall clock even when the
+    /// passes were slower than `pollMs` each. Both caps are enforced, together,
+    /// by `shouldProbeAgain`.
     static var windowMs: Int { polls * pollMs }
     /// Twin of birdo-web `VpnService.SUPERSEDE_GRACE_MS`, from the server mint.
     static let serverGraceMs = 30_000
@@ -172,7 +183,47 @@ enum LiveRebuildProbe {
     /// a slow link), restore + re-handshake of the old peer after it (about
     /// 2 s — a re-added peer with PersistentKeepalive initiates at once),
     /// doubled for a bad day. 18 s + 8 s leaves 4 s of the 30 s unspent.
+    ///
+    /// A BUDGET, not an enforced bound — read it as the assumption the probe's
+    /// own bound is only as good as. `mintedAtMs` is stamped SERVER-side
+    /// immediately before the response returns (birdo-web `VpnService.connect`
+    /// → `writeSupersedeHandle`), so the response's DOWNSTREAM transit spends
+    /// this allowance and nothing on this side clamps it: `APIClient`'s session
+    /// allows `timeoutIntervalForResource = 60`. Overrunning it produces the
+    /// same outcome `shouldProbeAgain` bounds the probe against. Clamping it is
+    /// #351's, not this file's.
     static let surroundingWorkAllowanceMs = 8_000
+
+    /// Should the probe make another pass? BOTH caps, and PURE so both can be
+    /// asserted: `VpnViewModel` is not one of BirdoVPNTests' sources
+    /// (`project.yml`), so this is the only place the rule is testable at all.
+    ///
+    /// The clock cap is the one that was missing. `polls` alone counts
+    /// ITERATIONS, while every claim beside these constants is about ELAPSED
+    /// TIME measured against a grace the SERVER started before this client even
+    /// had the response. A loaded extension stretching 36 probes past 18 s
+    /// silently spends the allowance the revert needs — and it does so on
+    /// exactly the case this window exists for: a NEW peer that completed a
+    /// handshake but carries nothing back. There the sweeper sees
+    /// `newHs != null` and, until the restored OLD peer has re-handshaked, an
+    /// `oldHs` older than it, which is `retire-old` (birdo-web
+    /// `VpnService.decideSupersede`) — the server tearing down the very peer
+    /// this client is reverting TO, leaving it on a peer that no longer exists
+    /// under an armed kill switch.
+    ///
+    /// It bounds the loop BETWEEN passes only. One `currentStats()` is a
+    /// continuation around `sendProviderMessage` with NO timeout, so a WEDGED
+    /// extension still overruns whatever this returns; that residual is #351's.
+    static func shouldProbeAgain(passesDone: Int, remaining: Duration) -> Bool {
+        passesDone < polls && remaining > .zero
+    }
+
+    /// How long the next pass may sleep — never past the end of the window,
+    /// since an overshoot on the last pass is the same overrun the caps exist
+    /// to avoid.
+    static func nextSleep(remaining: Duration) -> Duration {
+        min(remaining, .milliseconds(pollMs))
+    }
 }
 
 /// What the rebuild observed at the point it has to decide what happens to the

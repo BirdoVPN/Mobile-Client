@@ -229,6 +229,35 @@ final class LiveRebuildTests: XCTestCase {
                           LiveRebuildProbe.serverGraceMs)
     }
 
+    func testTheProbeIsBoundedByTheClockAndNotOnlyByThePassCount() {
+        // Branch code counted ITERATIONS. `polls × pollMs` is only a FLOOR on
+        // elapsed time — every pass also pays a sendProviderMessage round trip
+        // — so 36 probes can outlast 18 s while the server's grace, started at
+        // the mint, runs out and the sweeper retires the peer the client is
+        // about to revert TO. Time spent has to end the probe even with passes
+        // left in the budget.
+        XCTAssertFalse(LiveRebuildProbe.shouldProbeAgain(passesDone: 0, remaining: .zero),
+                       "the window is spent; unused passes are not a reason to keep probing")
+        XCTAssertFalse(LiveRebuildProbe.shouldProbeAgain(passesDone: 1, remaining: .milliseconds(-3_600)),
+                       "already past the window: 35 unused passes must not extend it")
+        XCTAssertTrue(LiveRebuildProbe.shouldProbeAgain(passesDone: 35, remaining: .milliseconds(500)),
+                      "time and passes both left: probe")
+        // ...and the pass cap still holds, so a `Task.sleep` that returns
+        // without consuming time (a cancelled task, whose error `try?` eats)
+        // can never spin this loop for the whole 18 s.
+        XCTAssertFalse(LiveRebuildProbe.shouldProbeAgain(passesDone: LiveRebuildProbe.polls,
+                                                         remaining: .milliseconds(5_000)),
+                       "the work cap bounds a sleep that consumes no time")
+    }
+
+    func testTheLastPassNeverSleepsPastTheEndOfTheWindow() {
+        // An overshoot on the last pass is the same overrun the caps exist to
+        // avoid, so the final sleep is the remainder, not a whole cadence.
+        XCTAssertEqual(LiveRebuildProbe.nextSleep(remaining: .milliseconds(120)), .milliseconds(120))
+        XCTAssertEqual(LiveRebuildProbe.nextSleep(remaining: .milliseconds(9_000)),
+                       .milliseconds(LiveRebuildProbe.pollMs))
+    }
+
     // MARK: - (C) One revert path, and nothing is released before the restore
 
     func testARefusedSwapRevertsThroughTheSamePathAsASilentPeer() {

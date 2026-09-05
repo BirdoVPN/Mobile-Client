@@ -1296,9 +1296,27 @@ final class VpnViewModel: ObservableObject {
     /// round trip, the swap and the revert's re-handshake added it must still
     /// end inside the server's 30 s deferral grace, which runs from the
     /// server mint. The reasoning lives beside the constants.
+    ///
+    /// Bounded by the CLOCK as well as by the pass count. `polls × pollMs` is a
+    /// FLOOR on the elapsed time, not the window: each pass also pays a
+    /// `sendProviderMessage` round trip, so counting iterations alone lets a
+    /// loaded extension carry the probe past 18 s and spend the grace the
+    /// revert still needs — on the one case where overrunning it costs the
+    /// user the peer they are reverting TO. Both caps live in
+    /// `LiveRebuildProbe.shouldProbeAgain`, which is where they are tested;
+    /// keeping the pass count is what makes a `Task.sleep` that consumes no
+    /// time (a cancelled task) exit instead of spin.
     private func awaitNewPeerHandshake() async -> LiveRebuildEvent {
-        for _ in 0..<LiveRebuildProbe.polls {
-            try? await Task.sleep(for: .milliseconds(LiveRebuildProbe.pollMs))
+        // ContinuousClock, not Date: a clock step (NTP, a manual date change)
+        // must not shorten or extend the one window the server's grace is
+        // being measured against.
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(LiveRebuildProbe.windowMs))
+        var passesDone = 0
+        while true {
+            let remaining = ContinuousClock.now.duration(to: deadline)
+            guard LiveRebuildProbe.shouldProbeAgain(passesDone: passesDone, remaining: remaining) else { break }
+            passesDone += 1
+            try? await Task.sleep(for: LiveRebuildProbe.nextSleep(remaining: remaining))
             guard isConnected || isConnecting else { return .sessionDroppedWhileProbing }
             if await vpnManager.currentStats().rx > 0 { return .newPeerHandshaked }
         }
