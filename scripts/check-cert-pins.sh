@@ -334,8 +334,40 @@ print('\n'.join(p['hash'] for p in d['hosts'][sys.argv[2]]['pins']))" "$SSOT" "$
       declared=$("$PY" -c "
 import json,sys;print(json.load(open(sys.argv[1]))['hosts']['birdo.app'].get('leaf_expires',''))" "$SSOT")
       actual=$(date -u -d "$na" +%Y-%m-%d)
-      if [ -n "$declared" ] && [ "$declared" != "$actual" ]; then
-        fail "birdo.app: SSOT declares leaf_expires=$declared but the live leaf expires $actual"
+      # A LEAF RENEWAL IS NOT A FAILURE.
+      #
+      # This used to fail on any mismatch, which made it fail by itself roughly
+      # every 90 days: the leaf auto-renews, `actual` moves forward, and the
+      # declared field goes stale through nobody's fault. It held the scheduled
+      # run RED for 7+ consecutive days across BOTH client repos while every pin
+      # was healthy and every live chain satisfied it — training whoever reads
+      # this job to ignore a red cert-pin check, which is the one job where that
+      # habit is expensive.
+      #
+      # The pins are on the CA chain and survive a leaf renewal; this block's own
+      # comment says so. So the direction of the change is what carries meaning:
+      #
+      #   forward  -> a normal renewal. Say the field needs refreshing, pass.
+      #   backward -> the live leaf expires SOONER than we recorded. That is not
+      #               a renewal; it means the certificate was replaced with a
+      #               shorter-lived one. Worth a human. FAIL.
+      if [ -n "$declared" ]; then
+        d_epoch=$(date -u -d "$declared" +%s 2>/dev/null || echo "")
+        a_epoch=$(date -u -d "$actual" +%s 2>/dev/null || echo "")
+        if [ -z "$d_epoch" ] || [ -z "$a_epoch" ]; then
+          # Never silently skip: an unparseable date means this control did not
+          # run, and a check that cannot run must not report green.
+          fail "birdo.app: cannot compare leaf expiry (declared='$declared' actual='$actual')"
+        elif [ "$a_epoch" -lt "$d_epoch" ]; then
+          fail "birdo.app: live leaf expires $actual, EARLIER than the declared $declared — the certificate was replaced with a shorter-lived one, not renewed"
+        elif [ "$actual" != "$declared" ]; then
+          info "  leaf renewed forward: SSOT says $declared, live is $actual — refresh leaf_expires/leaf_expires_measured in birdo-shared (cosmetic, pins unaffected)"
+        fi
+      fi
+      # Renewal-window warning: the pins survive a renewal, but a leaf that is
+      # about to lapse with nobody watching is a real outage in waiting.
+      if [ "$days" -lt 21 ]; then
+        fail "birdo.app: leaf expires in $days days — inside the renewal window, confirm auto-renewal is working"
       fi
     fi
   fi

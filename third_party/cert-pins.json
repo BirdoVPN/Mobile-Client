@@ -11,8 +11,8 @@
     "birdo.app": {
       "include_subdomains": true,
       "note": "Apex + api.birdo.app + admin.birdo.app. Live chain: leaf CN=birdo.app -> CN=WE1 -> CN=GTS Root R4.",
-      "leaf_expires": "2026-09-28",
-      "leaf_expires_measured": "2026-08-22",
+      "leaf_expires": "2026-11-27",
+      "leaf_expires_measured": "2026-09-04",
       "enforced_by": [
         "birdo-client-desktop:src-tauri/src/api/cert_pin.rs",
         "birdo-client-mobile:app/src/main/java/app/birdo/vpn/di/NetworkModule.kt",
