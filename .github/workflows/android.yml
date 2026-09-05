@@ -259,10 +259,45 @@ jobs:
           chmod +x scripts/provision_xray_engines.sh
           scripts/provision_xray_engines.sh
 
+      # WHY THE DEBUG BUILD BUILDS THE RUST ENGINE TOO
+      #
+      # The debug APK is the ONLY Android artifact a pull request can produce:
+      # the release job needs Azure Key Vault and is gated on
+      # main/tags/workflow_dispatch. Until this step existed, `assembleDebug`
+      # packaged no librosenpass_jni.so at all, so nothing on a PR could tell
+      # you whether a newly added ABI actually carries a complete engine set —
+      # that was discovered only by the release job, i.e. after merge to the
+      # branch that deploys. Building it here costs a cargo-ndk cross-compile
+      # and buys a real artifact to gate on.
+      - name: Build Rosenpass JNI engine for every shipped ABI
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:buildRustLibs
+
       - name: Build Debug APK
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug
+
+      # Same ABI x engine contract the release job enforces, run here on the
+      # artifact a PR can actually build. --native-libs-only because a debug APK
+      # legitimately has no signing-fingerprint constant.
+      - name: Verify every shipped ABI carries the complete engine set
+        run: |
+          python3 scripts/verify_android_release_apk.py --native-libs-only             app/build/outputs/apk/debug/app-debug.apk
+
+      # The SHA3/extended-ISA gate was release-only too, so a PR re-enabling
+      # pqcrypto-mlkem's `neon` feature passed every check and broke only on
+      # main. The native libraries in the debug APK are byte-identical to the
+      # ones the release build packages (native/build.sh builds the release
+      # profile, and the Xray engines come from the same provisioning step), so
+      # this is the same binary being checked, one merge earlier.
+      - name: Verify no ungated extended-ISA instructions in shipped libraries
+        run: |
+          chmod +x scripts/check_no_sha3_ext.sh
+          rm -rf "$RUNNER_TEMP/debug-apk-libs"
+          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*'             -d "$RUNNER_TEMP/debug-apk-libs"
+          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/debug-apk-libs/lib"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -469,6 +504,14 @@ jobs:
 
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
+
+      # The AAB is what reaches Play, and it is built by a SEPARATE Gradle
+      # invocation (`bundleRelease -PplayBuild=true`). Checking only the APK is
+      # the "guard on some of N parallel paths" shape: the two artifacts share
+      # abiFilters today, but nothing enforced that they share a native payload.
+      - name: Verify release AAB native engine set
+        run: |
+          python3 scripts/verify_android_release_apk.py --native-libs-only             app/build/outputs/bundle/release/*.aab
 
       - name: Clean up keystore
         if: always()

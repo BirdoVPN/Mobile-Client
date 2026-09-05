@@ -64,7 +64,10 @@ fi
 # unchecked binary, which is the exact failure mode this repo keeps paying for.
 OBJDUMP=""
 if [ -n "${ANDROID_NDK_HOME:-}" ]; then
-    cand=$(find "$ANDROID_NDK_HOME" -name 'llvm-objdump' -type f 2>/dev/null | head -1 || true)
+    # -name 'llvm-objdump*' so a Windows dev machine (llvm-objdump.exe) can run
+    # this gate locally too. A gate nobody can run before pushing is a gate that
+    # only ever fails in CI.
+    cand=$(find "$ANDROID_NDK_HOME" \( -name 'llvm-objdump' -o -name 'llvm-objdump.exe' \) -type f 2>/dev/null | head -1 || true)
     [ -n "$cand" ] && OBJDUMP="$cand"
 fi
 if [ -z "$OBJDUMP" ]; then
