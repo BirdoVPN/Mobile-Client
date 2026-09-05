@@ -1,0 +1,119 @@
+# Prove the SENTRY_DSN secret is a WORKING DSN — not merely present.
+#
+# WHY THIS EXISTS
+#
+# This estate keeps paying for the same defect: a value is SET, everything
+# reports healthy, and nothing is delivered. The alerting webhook was configured
+# and paged nobody. The Android app shipped a Sentry SDK with an empty DSN for
+# months. hub-sync exited 0 on every merge without ever running. In each case a
+# presence check passed and the mechanism did nothing.
+#
+# `gh secret list` proves a secret EXISTS. It cannot prove the bytes inside it
+# are a valid DSN for a live project — a truncated paste, a DSN from a deleted
+# project, or one from the wrong org all look identical from the outside, and
+# would only surface the day you go looking for a crash report that was never
+# recorded.
+#
+# This job sends one real event through the real secret and fails if Sentry does
+# not accept it.
+#
+# Run it: Actions -> "Verify SENTRY_DSN" -> Run workflow.
+name: Verify SENTRY_DSN
+
+on:
+  workflow_dispatch:
+  # Monthly, because the failure this guards against is SILENT and arrives with
+  # no event: a revoked key, a deleted project, a rotated DSN nobody propagated.
+  # Crash reporting is exactly the system you do not find out is broken through
+  # normal use — you find out the day you need it and the data is not there.
+  #
+  # 09:00 UTC on the 1st. Deliberately not near 05:30, when the hub reboots and
+  # its cron cluster runs; an unrelated red job in that window has cost real
+  # diagnostic time before.
+  schedule:
+    - cron: '0 9 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Send one test event through the real secret
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send and check
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${SENTRY_DSN}" ]; then
+            echo "::error::SENTRY_DSN is not set on this repository. Create a Sentry project and run: gh secret set SENTRY_DSN --repo ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
+          # Parse without echoing. GitHub masks the secret itself, but NOT values
+          # derived from it, so the public key is deliberately never printed —
+          # only its length. Host and numeric project id are safe to show and are
+          # what you need to confirm you pointed at the right project.
+          KEY=$(printf '%s' "$SENTRY_DSN" | sed -E 's|^https://([^@]+)@.*|\1|')
+          HOST=$(printf '%s' "$SENTRY_DSN" | sed -E 's|^https://[^@]+@([^/]+)/.*|\1|')
+          PROJ=$(printf '%s' "$SENTRY_DSN" | sed -E 's|.*/([0-9]+)$|\1|')
+
+          if [ "$HOST" = "$SENTRY_DSN" ] || [ -z "$PROJ" ] || [ "$PROJ" = "$SENTRY_DSN" ]; then
+            echo "::error::SENTRY_DSN is not DSN-shaped. Expected https://<publicKey>@<host>/<projectId>"
+            exit 1
+          fi
+
+          echo "host:       $HOST"
+          echo "project id: $PROJ"
+          echo "public key: ${#KEY} chars (not printed)"
+
+          EID=$(python3 -c "import secrets;print(secrets.token_hex(16))")
+          BODY=$(python3 -c "
+          import json,sys
+          print(json.dumps({
+            'event_id': sys.argv[1],
+            'level': 'info',
+            'platform': 'other',
+            'logger': 'birdo.ci.dsn-check',
+            'message': {'formatted': 'SENTRY_DSN verification from CI - safe to delete'},
+            'tags': {'source': 'github-actions', 'repo': sys.argv[2]},
+          }))" "$EID" "$GITHUB_REPOSITORY")
+
+          # Capture the status on its OWN line. `curl ... | tail` would report
+          # tail's exit code, which is the trap that has produced false PASSes in
+          # this repo before.
+          CODE=$(curl -s -o /tmp/sentry-resp.txt -w '%{http_code}' --max-time 30 \
+            -X POST "https://$HOST/api/$PROJ/store/" \
+            -H 'Content-Type: application/json' \
+            -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$KEY, sentry_client=birdo-ci-check/1.0" \
+            --data "$BODY")
+          RC=$?
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::curl itself failed (exit $RC) — could not reach $HOST"
+            exit 1
+          fi
+
+          echo "ingest HTTP $CODE"
+
+          case "$CODE" in
+            200|201)
+              echo "✅ SENTRY_DSN is LIVE — Sentry accepted event $EID"
+              echo "Look for 'SENTRY_DSN verification from CI - safe to delete' in project $PROJ."
+              ;;
+            429)
+              echo "✅ SENTRY_DSN is VALID (rate limited, which still proves the key and project resolve)"
+              ;;
+            401|403)
+              echo "::error::Sentry REJECTED the key (HTTP $CODE). The secret is present but not usable — wrong project, revoked key, or a truncated paste."
+              head -c 300 /tmp/sentry-resp.txt
+              exit 1
+              ;;
+            *)
+              echo "::error::Unexpected response HTTP $CODE from $HOST"
+              head -c 300 /tmp/sentry-resp.txt
+              exit 1
+              ;;
+          esac
