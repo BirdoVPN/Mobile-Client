@@ -256,6 +256,52 @@ jobs:
           name: debug-apk
           path: app/build/outputs/apk/debug/*.apk
 
+      # -- R8 on the pull-request path -----------------------------------
+      #
+      # Until this step existed, R8 NEVER RAN ON A PULL REQUEST. This job builds
+      # only assembleDebug, and the `release` job below is gated on
+      # `github.ref == refs/heads/main`, a tag, or workflow_dispatch -- which a
+      # pull_request event never satisfies. Every change to
+      # app/proguard-rules.pro therefore merged green without the shrinker
+      # having looked at it once, and the first minified build was the release.
+      #
+      # We run the R8 TASK, not assembleRelease: packageRelease needs the Azure
+      # keystore, which a fork or dependabot PR does not have, whereas
+      # minifyReleaseWithR8 produces the shrunk DEX plus
+      # mapping/seeds/usage/configuration with no signing material at all. The
+      # two -P flags exist only to get past validateReleaseSecurityConfig and
+      # validateSentryDsn; nothing is packaged, so neither value ships.
+      - name: Run R8 (minified release) - proves shrinker changes on the PR
+        run: |
+          ./gradlew :app:minifyReleaseWithR8 \
+            -PbirdoSigningCertFingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00 \
+            -PallowMissingSentryDsn=true
+
+      # Asserts against the shrunk DEX that R8 did not silently delete the
+      # WireGuard/Rosenpass JNI bindings or a kotlinx.serialization serializer.
+      # Both break only at runtime, on a user's device, with no logcat --
+      # -assumenosideeffects strips every Log.* call from release builds -- so
+      # this is the only place they can be caught.
+      #
+      # Demonstrated, not assumed: deleting the GoBackend keep produces a build
+      # that SUCCEEDS and a DEX with wgTurnOn, wgGetSocketV4 and wgGetSocketV6
+      # gone. This step returns 1 on that build.
+      - name: Verify R8 keeps
+        run: python3 scripts/check_r8_keeps.py
+
+      # seeds.txt / usage.txt / configuration.txt are written by AGP next to
+      # mapping.txt on every minified build, with no extra ProGuard directives
+      # needed. They are how the next person measures a rule change instead of
+      # guessing: configuration.txt is the fully merged rule set naming the
+      # source file of every rule, seeds.txt is everything R8 was forbidden to
+      # touch, usage.txt is everything it removed.
+      - name: Upload R8 reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: r8-reports-pr
+          path: app/build/outputs/mapping/release/
+
   release:
     name: Build Release APK
     runs-on: ubuntu-latest
@@ -422,6 +468,12 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :app:buildRustLibs
           ./gradlew assembleRelease
+          # -PplayBuild flips BuildConfig.IS_PLAY_BUILD, so the bundle is a
+          # SECOND, DIFFERENT R8 run: different constant folding, different
+          # reachability, and it overwrites mapping/ in place. Keep the APK's
+          # mapping before it is clobbered, or the APK can never be checked or
+          # symbolicated against the build that produced it.
+          cp app/build/outputs/mapping/release/mapping.txt "$RUNNER_TEMP/mapping-apk.txt"
           ./gradlew bundleRelease -PplayBuild=true
 
       # Google Play requires 16 KB page-size support for apps targeting API 35+.
@@ -455,6 +507,27 @@ jobs:
 
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
+
+      # The same assertions the PR path runs, but against the artifacts that are
+      # about to be signed and shipped.
+      #
+      # BOTH artifacts, because this job ships two of them from two separate R8
+      # runs. The AAB is the one with the users on it; checking only the
+      # sideload APK would leave every Play install ungated. Each is checked
+      # against ITS OWN mapping.txt -- the bundle build overwrote the shared
+      # mapping/ output, and a cross-wired pair verifies nothing (the script
+      # detects that case and fails rather than passing vacuously).
+      - name: Verify R8 keeps (sideload APK)
+        run: |
+          python3 scripts/check_r8_keeps.py \
+            app/build/outputs/apk/release/app-release.apk \
+            --mapping "$RUNNER_TEMP/mapping-apk.txt"
+
+      - name: Verify R8 keeps (Play AAB)
+        run: |
+          set -euo pipefail
+          AAB=$(ls app/build/outputs/bundle/release/*.aab | head -n1)
+          python3 scripts/check_r8_keeps.py "$AAB"
 
       - name: Clean up keystore
         if: always()
@@ -555,11 +628,21 @@ jobs:
           path: |
             app/build/release-artifacts/*
 
-      - name: Upload Mapping File
+      # The whole directory, not just mapping.txt. AGP writes seeds.txt,
+      # usage.txt, configuration.txt and resources.txt alongside it on every
+      # minified build. Without them nobody can measure a shrinker change
+      # against the release it shipped in: seeds.txt is what R8 was forbidden to
+      # touch, usage.txt is what it removed, configuration.txt is the merged
+      # rule set with per-rule provenance. mapping-apk.txt is the APK's own
+      # mapping, kept before the bundle build overwrote mapping.txt.
+      - name: Stage the APK mapping alongside the bundle's
+        run: cp "$RUNNER_TEMP/mapping-apk.txt" app/build/outputs/mapping/release/mapping-apk.txt
+
+      - name: Upload Mapping and R8 reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mapping
-          path: app/build/outputs/mapping/release/mapping.txt
+          path: app/build/outputs/mapping/release/
 
   # -- GitHub Draft Release (sideload APK for phone install) ----------
   # Publishes the signed release APK + sigstore bundle + GPG .asc + checksums

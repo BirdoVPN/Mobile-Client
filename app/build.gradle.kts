@@ -421,79 +421,148 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
 }
 
 // Compute SHA-256 hashes of native .so libraries for runtime integrity verification.
-// The NativeLibraryVerifier reads these BuildConfig fields to validate binaries at load time.
+// NativeLibraryVerifier reads these BuildConfig fields to validate binaries at load time.
+//
+// WHY THIS NO LONGER WRITES THROUGH `android.defaultConfig`
+// ---------------------------------------------------------
+// The previous version computed the hashes inside `generateReleaseBuildConfig`'s
+// `doFirst { }` and wrote them with `android.defaultConfig.buildConfigField(...)`.
+// The values never reached the generated BuildConfig. `defaultConfig` is a DSL
+// object AGP has already read and locked by the time any task executes, and the
+// GenerateBuildConfig task resolves its field input when the task STARTS, which
+// is before its own doFirst actions run. So all three constants shipped as the
+// `""` declared in defaultConfig, in every release ever built, and
+// NativeLibraryVerifier took its no-registered-hash branch on every device: the
+// engine-integrity control silently degraded to the APK-signature check.
+//
+// Measured, not inferred. A DEX string-pool scan of the signed release APK from
+// CI run 33994039401 (main @ fa94ae1) finds ZERO `<abi>=<sha256>` strings, and a
+// local `:app:assembleRelease` off the same commit generates
+//     public static final String NATIVE_HASH_WG_GO = "";
+// Both builds succeeded.
+//
+// Nothing caught it because the `check(...)` guards below lived in that same
+// doFirst: they correctly asserted the hashes WERE COMPUTED -- which they were --
+// and then the computed values were thrown away.
+//
+// THE SIGNATURE CHECK REMAINS MANDATORY. Nothing here weakens
+// NativeLibraryVerifier: its no-hash branch still returns false unless a signing
+// fingerprint is configured AND the package signature is trusted, and its
+// hash-mismatch branch still requires the same. This change only makes the hash
+// branch reachable at all.
+//
+// `Variant.buildConfigFields` is the supported route: in AGP 8.11.2 it is a lazy
+// MapProperty, so a Provider put here is resolved at task-execution time.
+val nativeIntegrityHashes: MapProperty<String, String> =
+    objects.mapProperty(String::class.java, String::class.java)
+
+androidComponents.onVariants(
+    androidComponents.selector().withBuildType("release")
+) { variant ->
+    // Nullable when buildFeatures.buildConfig is off. Asserting rather than
+    // null-safe-calling is deliberate: silently skipping is exactly how these
+    // constants came to be blank in the first place.
+    val buildConfigFields = checkNotNull(variant.buildConfigFields) {
+        "buildFeatures.buildConfig is disabled for ${variant.name}, so the native " +
+            "integrity hashes have nowhere to go and NativeLibraryVerifier would " +
+            "ship disarmed."
+    }
+    for (field in listOf("NATIVE_HASH_WG_GO", "NATIVE_HASH_XRAY", "NATIVE_HASH_ROSENPASS_JNI")) {
+        buildConfigFields.put(
+            field,
+            nativeIntegrityHashes.map { hashes ->
+                com.android.build.api.variant.BuildConfigField(
+                    "String",
+                    // AGP writes the value verbatim into the generated Java, so a
+                    // String constant has to arrive already quoted.
+                    "\"" + (hashes[field] ?: "") + "\"",
+                    "SHA-256 of each shipped ABI .so, encoded abi=hash;abi=hash",
+                )
+            },
+        )
+    }
+}
+
 afterEvaluate {
     android.applicationVariants.all {
         if (buildType.name == "release") {
             val variantName = name.replaceFirstChar { it.uppercase() }
             val mergeTask = tasks.findByName("merge${variantName}NativeLibs")
-            val generateBuildConfig = tasks.findByName("generate${variantName}BuildConfig")
-            if (mergeTask != null && generateBuildConfig != null) {
-                generateBuildConfig.doFirst {
-                    val nativeDirs = mergeTask.outputs.files.files
-                    fun hashSo(name: String): String {
-                        val candidates = nativeDirs.flatMap { dir ->
-                            fileTree(dir) { include("**/lib$name.so") }.files
+            if (mergeTask != null) {
+                nativeIntegrityHashes.set(
+                    // A Provider read at execution time, after the .so files are
+                    // in place -- generateBuildConfig depends on mergeTask below.
+                    provider {
+                        val nativeDirs = mergeTask.outputs.files.files
+                        fun hashSo(name: String): String {
+                            val candidates = nativeDirs.flatMap { dir ->
+                                fileTree(dir) { include("**/lib$name.so") }.files
+                            }
+                            // Hash EVERY shipped ABI variant, keyed by its ABI dir name,
+                            // and encode as "abi=hash;abi=hash". Previously only the
+                            // arm64-v8a hash was baked, so on the x86_64 build the
+                            // runtime hash never matched and integrity silently fell back
+                            // to signature-only verification. The verifier now looks up
+                            // the hash for the device's actual ABI.
+                            //
+                            // Hashing the MERGE output is sound because nothing
+                            // downstream rewrites these files: verified by SHA-256 that
+                            // the packaged lib/arm64-v8a/libxray.so equals the `xray`
+                            // binary inside the pinned upstream release zip byte for
+                            // byte, and that all three engines are identical between the
+                            // debug and release APKs of the same commit.
+                            val knownAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+                            return candidates.mapNotNull { f ->
+                                val normalized = f.path.replace('\\', '/')
+                                val abi = knownAbis.firstOrNull { normalized.contains("/$it/") }
+                                    ?: return@mapNotNull null
+                                val hash = MessageDigest.getInstance("SHA-256")
+                                    .digest(f.readBytes())
+                                    .joinToString("") { b -> "%02x".format(b) }
+                                "$abi=$hash"
+                            }.distinct().joinToString(";")
                         }
-                        // Hash EVERY shipped ABI variant, keyed by its ABI dir name,
-                        // and encode as "abi=hash;abi=hash". Previously only the
-                        // arm64-v8a hash was baked, so on the x86_64 build the
-                        // runtime hash never matched and integrity silently fell back
-                        // to signature-only verification. The verifier now looks up
-                        // the hash for the device's actual ABI.
-                        val knownAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
-                        return candidates.mapNotNull { f ->
-                            val normalized = f.path.replace('\\', '/')
-                            val abi = knownAbis.firstOrNull { normalized.contains("/$it/") }
-                                ?: return@mapNotNull null
-                            val hash = MessageDigest.getInstance("SHA-256")
-                                .digest(f.readBytes())
-                                .joinToString("") { b -> "%02x".format(b) }
-                            "$abi=$hash"
-                        }.distinct().joinToString(";")
+                        val wgHash = hashSo("wg-go")
+                        val xrayHash = hashSo("xray").ifBlank { hashSo("Xray") }
+                        // AUDIT-E1: include librosenpass_jni.so in the integrity
+                        // set. Without this, an attacker who swaps just the
+                        // PQ JNI .so could silently downgrade BirdoPQ v1 by
+                        // returning an attacker-known PSK from deriveSharedPsk().
+                        val rosenpassJniHash = hashSo("rosenpass_jni")
+                        // FAIL LOUDLY on a blank hash. A release that bakes "" here
+                        // makes NativeLibraryVerifier take its no-registered-hash
+                        // branch, silently reducing the engine-integrity control to
+                        // the installer/signature check.
+                        check(wgHash.isNotBlank()) {
+                            "NATIVE_HASH_WG_GO is blank - libwg-go.so was not found in " +
+                                "${mergeTask.name} outputs; refusing to ship a release " +
+                                "with the native integrity check disarmed."
+                        }
+                        check(xrayHash.isNotBlank()) {
+                            "NATIVE_HASH_XRAY is blank - libxray.so was not found in " +
+                                "${mergeTask.name} outputs; refusing to ship a release " +
+                                "with the native integrity check disarmed."
+                        }
+                        check(rosenpassJniHash.isNotBlank()) {
+                            "NATIVE_HASH_ROSENPASS_JNI is blank - librosenpass_jni.so was not " +
+                                "found in ${mergeTask.name} outputs; refusing to ship a release " +
+                                "with the native integrity check disarmed."
+                        }
+                        mapOf(
+                            "NATIVE_HASH_WG_GO" to wgHash,
+                            "NATIVE_HASH_XRAY" to xrayHash,
+                            "NATIVE_HASH_ROSENPASS_JNI" to rosenpassJniHash,
+                        )
                     }
-                    val wgHash = hashSo("wg-go")
-                    val xrayHash = hashSo("xray").ifBlank { hashSo("Xray") }
-                    // AUDIT-E1: include librosenpass_jni.so in the integrity
-                    // set. Without this, an attacker who swaps just the
-                    // PQ JNI .so could silently downgrade BirdoPQ v1 by
-                    // returning an attacker-known PSK from deriveSharedPsk().
-                    val rosenpassJniHash = hashSo("rosenpass_jni")
-                    // FAIL LOUDLY on a blank hash. A release that bakes "" here
-                    // makes NativeLibraryVerifier take its no-registered-hash
-                    // branch, silently reducing the engine-integrity control to
-                    // the installer/signature check — with no build-time or
-                    // runtime signal that it happened.
-                    check(wgHash.isNotBlank()) {
-                        "NATIVE_HASH_WG_GO is blank — libwg-go.so was not found in " +
-                            "${mergeTask.name} outputs; refusing to ship a release " +
-                            "with the native integrity check disarmed."
-                    }
-                    check(xrayHash.isNotBlank()) {
-                        "NATIVE_HASH_XRAY is blank — libxray.so was not found in " +
-                            "${mergeTask.name} outputs; refusing to ship a release " +
-                            "with the native integrity check disarmed."
-                    }
-                    check(rosenpassJniHash.isNotBlank()) {
-                        "NATIVE_HASH_ROSENPASS_JNI is blank — librosenpass_jni.so was not " +
-                            "found in ${mergeTask.name} outputs; refusing to ship a release " +
-                            "with the native integrity check disarmed."
-                    }
-                    android.defaultConfig.buildConfigField("String", "NATIVE_HASH_WG_GO", "\"$wgHash\"")
-                    android.defaultConfig.buildConfigField("String", "NATIVE_HASH_XRAY", "\"$xrayHash\"")
-                    android.defaultConfig.buildConfigField("String", "NATIVE_HASH_ROSENPASS_JNI", "\"$rosenpassJniHash\"")
-                }
-                // dependsOn, not mustRunAfter: mustRunAfter is ORDERING-only, so
-                // in a graph where the merge task was not scheduled (or in a warm
-                // build dir where generateBuildConfig would otherwise be skipped
-                // as UP-TO-DATE with stale/blank hashes) the doFirst above hashed
-                // nothing. Declaring the merged native libs as a real task input
-                // also makes generateBuildConfig re-run whenever any shipped .so
-                // changes — the hashes are now derived from a declared input, not
-                // from whatever happened to be on disk.
-                generateBuildConfig.dependsOn(mergeTask)
-                generateBuildConfig.inputs.files(mergeTask.outputs.files)
-                    .withPropertyName("nativeLibsForIntegrityHash")
+                )
+                // Belt and braces on top of the provider wiring: keep the explicit
+                // dependency and the declared input so generateBuildConfig also
+                // re-runs whenever a shipped .so changes, rather than being skipped
+                // UP-TO-DATE with stale hashes.
+                val generateBuildConfig = tasks.findByName("generate${variantName}BuildConfig")
+                generateBuildConfig?.dependsOn(mergeTask)
+                generateBuildConfig?.inputs?.files(mergeTask.outputs.files)
+                    ?.withPropertyName("nativeLibsForIntegrityHash")
             }
         }
     }
