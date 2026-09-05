@@ -137,14 +137,13 @@ final class VpnViewModel: ObservableObject {
         keychain.accessToken != nil || keychain.refreshToken != nil
     }
 
-    /// How long to wait for the first inbound byte before declaring the tunnel
-    /// dead. 15 s (30 × 500 ms) covers a slow mobile handshake — WireGuard
-    /// retries its handshake every 5 s — without leaving the user staring at a
-    /// tunnel that is never coming up. FRESH DIALS ONLY: the live rebuild's
-    /// probe-then-revert window is `LiveRebuildProbe` (18 s — deliberately not
-    /// a multiple of that 5 s, and bounded by the server's deferral grace).
-    private let HANDSHAKE_POLLS = 30
-    private let HANDSHAKE_POLL_MS = 500
+    // How long to wait for the first inbound byte before declaring the tunnel
+    // dead lives in `HandshakeArm` (15 s, fresh dials only), beside the live
+    // rebuild's probe-then-revert window in `LiveRebuildProbe` (18 s). Two
+    // windows, one file: they were a single value until bug (B) of #350's
+    // review, and this file is not one of BirdoVPNTests' sources, so only
+    // there can the difference — or the fail-open decision either of them
+    // ends in — be asserted at all.
     // `nonisolated(unsafe)` so the nonisolated `deinit` below can still invalidate
     // the Timers (Swift 6 forbids touching MainActor-isolated non-Sendable state
     // from deinit). Every read/write outside deinit is on the main actor.
@@ -165,6 +164,32 @@ final class VpnViewModel: ObservableObject {
     /// post-`.connected` handshake arm, whose no-handshake teardown would
     /// otherwise race the rebuild's own revert.
     private var isRebuildingLive = false
+
+    /// REBUILD (#351): a disconnect-first path has stopped the live tunnel and
+    /// is waiting for that teardown to land before it re-dials.
+    ///
+    /// `isConnecting` cannot express this state — `handleStatusChange` CLEARS
+    /// it on `.disconnecting` and `.disconnected`, the exact transitions
+    /// `awaitTeardown()` waits for — so for the whole ~5 s wait every entry
+    /// point read "idle" and a second dial minted a second server-side peer for
+    /// the same device. Owned by the two sites in `RedialTeardownSite`, read
+    /// only through `TunnelDialGate`, and deliberately NOT cleared by
+    /// `resetSessionState()`: a user disconnect landing inside the window would
+    /// otherwise re-open the very gap this closes.
+    private var isTearingDownForRedial = false
+
+    /// REBUILD (#351): a live rebuild's revert has put the OLD peer back on the
+    /// RUNNING session and the `.connected` that restore raises has not been
+    /// consumed yet.
+    ///
+    /// Consumed by `handleStatusChange(.connected)` — the transition itself, so
+    /// exactly one arm can inherit it — and dropped on `.disconnected` /
+    /// `.invalid` and in `resetSessionState()`, because a marker that outlived
+    /// its session would misdescribe the NEXT one. Without it the post-connect
+    /// arm treated a restored peer as a fresh dial and could tear down — and
+    /// disarm — a session that had been protected the whole time. The decision
+    /// itself is `HandshakeArm.noHandshakeOutcome`.
+    private var revertRestoredPeerAwaitingConnected = false
 
     private static let heartbeatInterval: TimeInterval = 30
 
@@ -354,8 +379,13 @@ final class VpnViewModel: ObservableObject {
         }
         // Re-entrancy guard, matching the Android VpnViewModel: a second tap
         // while a connect is already in flight mints a second tunnel session
-        // (and a second server-side peer) for the same device.
-        guard !isConnecting else { return }
+        // (and a second server-side peer) for the same device. Asked of
+        // `TunnelDialGate` rather than of `isConnecting`, which goes FALSE for
+        // the several seconds a disconnect-first teardown takes to land (#351)
+        // — one decision, read the same way by every entry point (#336).
+        guard TunnelDialGate.mayStartDial(isConnecting: isConnecting,
+                                          isRebuildingLive: isRebuildingLive,
+                                          isTearingDownForRedial: isTearingDownForRedial) else { return }
         if userInitiated { clearCircuitBreaker() }
         isConnecting = true
         error = nil
@@ -439,8 +469,12 @@ final class VpnViewModel: ObservableObject {
     /// `handleStatusChange`, exactly as for single-hop).
     @discardableResult
     func connectMultiHop(entry: ServerInfo, exit: ServerInfo) async -> Bool {
-        // Same re-entrancy guard as connect(); a live in-place rebuild counts.
-        guard !isConnecting, !isRebuildingLive else { return false }
+        // Same re-entrancy guard as connect(), through the same gate: a live
+        // in-place rebuild counts, and so does the teardown this very function
+        // performs below when it is dialled over a live session (#351).
+        guard TunnelDialGate.mayStartDial(isConnecting: isConnecting,
+                                          isRebuildingLive: isRebuildingLive,
+                                          isTearingDownForRedial: isTearingDownForRedial) else { return false }
         // Every caller of this is a user action (the Multi-Hop screen's dial, or
         // a settings blip rebuilding the pair the user chose), so it clears the
         // breaker unconditionally — same rule as `connect(userInitiated: true)`.
@@ -462,8 +496,22 @@ final class VpnViewModel: ObservableObject {
             // session that the server had just evicted mid-request.
             NSLog("[VpnViewModel] multi-hop dial over a live session — using the disconnect-first path (one-exit-per-entry guard)")
             isSwitching = true
+            // #351: hold the gate across the wait. Nothing else can. The
+            // teardown below drives the session through `.disconnecting` and
+            // `.disconnected`, and the status handler clears `isConnecting` on
+            // both, so a second dial arriving inside this window passed every
+            // re-entrancy guard and minted a second peer while this one was
+            // still tearing the tunnel down under it. `MultiHopView`'s
+            // `isSubmitting` covers one door of four. Twin: `legacyRebuild`,
+            // which waits on the same `awaitTeardown()`.
+            isTearingDownForRedial = true
             vpnManager.disconnect()
             await awaitTeardown()
+            // Dropped here and NOT in a `defer`: there is no suspension point
+            // between this line and `isConnecting = true` below, so the gate
+            // hands straight over to the flag the status handler maintains,
+            // with no instant in between where a second dial reads "idle".
+            isTearingDownForRedial = false
         }
         isConnecting = true
         error = nil
@@ -529,9 +577,16 @@ final class VpnViewModel: ObservableObject {
     /// the blip WINS: it clears `isReapplyingSettings` and drops the session
     /// the swap would probe, so the rebuild ends without touching anything.
     func reapplySettings() {
-        guard isConnected, !isConnecting else { return }
+        guard isConnected else { return }
+        // `isConnecting` and `isRebuildingLive` are read through the gate, which
+        // also sees the disconnect-first teardown window neither of them covers
+        // (#351). `isReapplyingSettings` stays separate: it is this path's own
+        // in-flight flag, not a property of the tunnel.
+        guard TunnelDialGate.mayStartDial(isConnecting: isConnecting,
+                                          isRebuildingLive: isRebuildingLive,
+                                          isTearingDownForRedial: isTearingDownForRedial) else { return }
         guard activeMultiHop != nil || selectedServer != nil else { return }
-        guard !isReapplyingSettings, !isRebuildingLive else { return }
+        guard !isReapplyingSettings else { return }
         let target: RebuildTarget
         if let mh = activeMultiHop {
             // A live Multi-Hop session rebuilds as the SAME confirmed pair.
@@ -597,15 +652,37 @@ final class VpnViewModel: ObservableObject {
     /// On failure this tears the tunnel down and releases the server-side peer
     /// rather than leaving it to hold the user's connection slot — the free tier
     /// has exactly one, and a stranded peer makes the next attempt read as
-    /// "device limit reached".
-    private func armKillSwitchAfterHandshake() async {
+    /// "device limit reached". That teardown is a fail-OPEN
+    /// (`VPNManager.disconnect()` persists on-demand OFF *before* stopping) and
+    /// it is the RIGHT answer for exactly one input: a fresh dial, whose rule
+    /// was never armed. `HandshakeArm.noHandshakeOutcome` is where that is
+    /// decided, and it is decided there — in BirdoVPNTests' one Foundation-only
+    /// source — rather than here, because this file is not in that bundle.
+    ///
+    /// - Parameter peerWasRestoredInPlace: this `.connected` is the OLD peer a
+    ///   live rebuild's revert put back on the RUNNING session (#351), not a
+    ///   fresh dial. Its on-demand rule has been armed throughout and its key is
+    ///   the one the user is still riding, so the no-handshake exit must fail
+    ///   CLOSED: the extension's liveness check, the armed rule's re-dial and
+    ///   then the circuit breaker are the recovery, exactly as for
+    ///   `LiveRebuildFollowUp.stayFailedClosed`. Deliberately has no default —
+    ///   a future caller has to answer the question rather than inherit an
+    ///   answer, which is how a guard lands on some of N paths (#336).
+    private func armKillSwitchAfterHandshake(peerWasRestoredInPlace: Bool) async {
         // A live rebuild owns the handshake wait for its swap (and the revert
         // when it fails); this generic arm must not run its own no-handshake
         // teardown on top of it. The rule it would arm is already armed — the
         // rebuild never disarmed it.
         guard !isRebuildingLive else { return }
-        for _ in 0..<HANDSHAKE_POLLS {
-            try? await Task.sleep(for: .milliseconds(HANDSHAKE_POLL_MS))
+        // Measured, not counted. `try? await Task.sleep` on a CANCELLED task
+        // returns instantly and swallows the error, so a pass count alone can
+        // reach the exit below in microseconds having proved nothing — the
+        // shape that once ran 7.7 M iterations in 2 s in the rebuild probe,
+        // except that here the cost is not a spin but a teardown. ContinuousClock
+        // rather than Date, so an NTP step cannot shorten the window either.
+        let startedAt = ContinuousClock.now
+        for _ in 0..<HandshakeArm.polls {
+            try? await Task.sleep(for: .milliseconds(HandshakeArm.pollMs))
             // The user (or a settings blip) tore it down while we waited.
             guard isConnected else { return }
             let stats = await vpnManager.currentStats()
@@ -626,21 +703,49 @@ final class VpnViewModel: ObservableObject {
             }
         }
         guard isConnected else { return }
-        // Never handshook. Do NOT arm on-demand — that is the trap this exists to
-        // avoid. Tear down explicitly so iOS has nothing to re-dial.
-        //
-        // Include the extension's own failure reason when iOS gave us one: the
-        // appex is a separate process, so without this the user (and anyone
-        // reading a bug report) sees only "it didn't work" for causes as
-        // different as a rejected config and a crashed provider.
-        if let reason = vpnManager.lastDisconnectReason {
-            error = "Tunnel failed: \(reason)"
-        } else {
-            error = "Couldn't establish a secure tunnel to this server. Try another location."
+        switch HandshakeArm.noHandshakeOutcome(
+            peerWasRestoredInPlace: peerWasRestoredInPlace,
+            elapsed: startedAt.duration(to: ContinuousClock.now),
+            window: .milliseconds(HandshakeArm.windowMs)
+        ) {
+        case .inconclusive:
+            // The loop came back without spending its window, so it has proved
+            // nothing about this peer. Decide nothing: no teardown, and no
+            // message claiming a verdict. Whatever cancelled it owns the state.
+            NSLog("[VpnViewModel] handshake arm ended before its window — no verdict, session left alone")
+
+        case .keepSessionFailClosed:
+            // #351. This is the OLD peer a revert put back on a session that
+            // never dropped and whose on-demand rule is armed right now. The
+            // teardown below would disarm that rule, stop the tunnel and DELETE
+            // the key the user is still riding — a fail-OPEN at the end of the
+            // one path that exists to fail closed. Keep everything and say so:
+            // the extension's liveness check cancels a peer whose handshake has
+            // gone stale, the armed rule re-dials the persisted OLD profile,
+            // and if that never comes up the breaker trips and
+            // `checkCircuitBreaker` performs the counted, user-visible
+            // fail-open. Same recovery `.stayFailedClosed` relies on.
+            NSLog("[VpnViewModel] restored peer has not re-handshaked — staying fail-closed under the armed rule")
+            error = "Your previous location hasn't answered yet. Traffic stays blocked "
+                + "until Birdo recovers the connection — or tap Disconnect."
+
+        case .tearDownFailOpen:
+            // Never handshook. Do NOT arm on-demand — that is the trap this exists to
+            // avoid. Tear down explicitly so iOS has nothing to re-dial.
+            //
+            // Include the extension's own failure reason when iOS gave us one: the
+            // appex is a separate process, so without this the user (and anyone
+            // reading a bug report) sees only "it didn't work" for causes as
+            // different as a rejected config and a crashed provider.
+            if let reason = vpnManager.lastDisconnectReason {
+                error = "Tunnel failed: \(reason)"
+            } else {
+                error = "Couldn't establish a secure tunnel to this server. Try another location."
+            }
+            vpnManager.disconnect()
+            releaseServerSlot()
+            resetSessionState()
         }
-        vpnManager.disconnect()
-        releaseServerSlot()
-        resetSessionState()
     }
 
     /// Watchdog: a rebuild that never reaches `.connected` must not leave the
@@ -659,7 +764,13 @@ final class VpnViewModel: ObservableObject {
     /// No-op unless the preference is ON and nothing is connected/connecting.
     func autoConnectIfEnabled() {
         guard UserDefaults.standard.bool(forKey: "auto_connect") else { return }
-        guard !isConnected, !isConnecting else { return }
+        guard !isConnected else { return }
+        // The fourth door a disconnect-first teardown window used to look idle
+        // to (#351). `connect()` reads the same gate, but a dial refused here is
+        // also a 1.5 s timer never started and a breaker check never run.
+        guard TunnelDialGate.mayStartDial(isConnecting: isConnecting,
+                                          isRebuildingLive: isRebuildingLive,
+                                          isTearingDownForRedial: isTearingDownForRedial) else { return }
         // A tripped breaker means the last few dials to this node produced a
         // tunnel that carried nothing. Auto-connecting straight back into it is
         // the re-dial loop with an app-level trigger instead of an on-demand
@@ -673,7 +784,12 @@ final class VpnViewModel: ObservableObject {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.5))
             guard let self else { return }
-            guard !self.isConnected, !self.isConnecting else { return }
+            guard !self.isConnected else { return }
+            // Re-checked after the sleep against the same gate: 1.5 s is long
+            // enough for a user tap, a settings blip or a teardown to start.
+            guard TunnelDialGate.mayStartDial(isConnecting: self.isConnecting,
+                                              isRebuildingLive: self.isRebuildingLive,
+                                              isTearingDownForRedial: self.isTearingDownForRedial) else { return }
             guard self.breakerTrip == nil else { return }
             if self.selectedServer == nil {
                 self.selectedServer = self.servers.first { $0.isOnline && $0.accessible }
@@ -882,7 +998,15 @@ final class VpnViewModel: ObservableObject {
             // arming on that alone is what turns a tunnel that can never
             // handshake into an endless re-dial the user cannot escape without
             // disabling the VPN in iOS Settings.
-            Task { [weak self] in await self?.armKillSwitchAfterHandshake() }
+            // #351: consume the revert marker on the TRANSITION, not inside the
+            // arm — the arm runs in its own Task and a second `.connected` for
+            // the same session would otherwise inherit the same marker. Read
+            // and cleared in one main-actor step, so exactly one arm can see it.
+            let peerWasRestoredInPlace = revertRestoredPeerAwaitingConnected
+            revertRestoredPeerAwaitingConnected = false
+            Task { [weak self] in
+                await self?.armKillSwitchAfterHandshake(peerWasRestoredInPlace: peerWasRestoredInPlace)
+            }
             startStatsTimer()
             startHeartbeat()
         case .connecting, .reasserting:
@@ -912,6 +1036,14 @@ final class VpnViewModel: ObservableObject {
             bytesSent = 0
             stopStatsTimer()
             stopHeartbeat()
+            // #351: the session a revert restored is over, so its marker is
+            // spent. Bounding it here is what stops a revert whose restore
+            // never raised `.connected` at all from describing the NEXT
+            // session's peer. A latched marker could not leak traffic — it only
+            // ever suppresses a fail-OPEN — but it would leave a genuinely dead
+            // fresh tunnel blocking until the breaker trips, and a flag that
+            // outlives the thing it describes is how these fixes rot.
+            revertRestoredPeerAwaitingConnected = false
             // `activeKeyId` deliberately survives here: a transient OS drop
             // (network change with the kill switch re-dialling) resumes the
             // SAME server-side session, and a settings blip passes through
@@ -935,6 +1067,11 @@ final class VpnViewModel: ObservableObject {
     }
 
     private func resetSessionState() {
+        // #351: the session is gone, so the revert marker describes nothing.
+        // `isTearingDownForRedial` is deliberately NOT cleared here — this runs
+        // from `disconnect()`, which a user can tap INSIDE the teardown window,
+        // and clearing it there would re-open the double-dial gap it closes.
+        revertRestoredPeerAwaitingConnected = false
         isConnected = false
         isConnecting = false
         quantumActive = false
@@ -967,9 +1104,28 @@ final class VpnViewModel: ObservableObject {
             return
         }
         if server.id == connectedServerId { return }
-        // A switch is already being swapped in place: never stack a second
-        // rebuild on it — the first commits or reverts on its own.
-        guard !isRebuildingLive else { return }
+        // The same gate every other entry point reads (#336: one decision, not
+        // five), switched on rather than collapsed to a Bool because this door
+        // treats one of its reasons differently — and an exception that is
+        // written down is one a later reader can check.
+        switch TunnelDialGate.block(isConnecting: isConnecting,
+                                    isRebuildingLive: isRebuildingLive,
+                                    isTearingDownForRedial: isTearingDownForRedial) {
+        case .some(.liveRebuildInFlight), .some(.tearingDownForRedial):
+            // A switch is already being swapped in place, or a teardown is
+            // still landing: never stack a second rebuild on either — the first
+            // commits or reverts on its own. (`.tearingDownForRedial` is not
+            // reachable today: the `isConnected || isConnecting` guard above
+            // already sends a tap during a teardown to a plain selection. It is
+            // refused rather than assumed impossible.)
+            return
+        case .some(.dialInFlight), .none:
+            // `.dialInFlight` is NOT a refusal here: a tap while the first dial
+            // is still in flight is the documented switch-while-connecting
+            // case, and the `guard isConnected, !isConnecting` below routes it
+            // to the legacy stop-wait-redial path on purpose.
+            break
+        }
         let previous = selectedServer
         selectedServer = server
         error = nil
@@ -1177,6 +1333,28 @@ final class VpnViewModel: ObservableObject {
             return true
 
         case .keepSession(let followUp):
+            // #351 - DERIVED from the policy, never hand-placed. This is the
+            // ONE assignment of the marker, and it is what makes
+            // `HandshakeArm.restoresPeerInPlace` a function the APP calls
+            // rather than a table only the tests read. Written out by hand
+            // inside `.revertToOld`, the marker could be deleted - reverting
+            // the whole fail-open fix - with all 30 BirdoVPNTests cases still
+            // green: `VpnViewModel` is not one of that bundle's sources
+            // (project.yml), so no test could ever see it. Reading it from the
+            // tested function is what makes those tests load-bearing on the
+            // app (#336: a truth stated twice is the defect shape).
+            //
+            // Raised HERE, before the switch body, because `.revertToOld`'s
+            // `restoreProfile` can have the `.reasserting -> .connected` it
+            // provokes delivered while it is still awaiting: handleStatusChange
+            // has to already know that peer was PUT BACK, not freshly dialled.
+            // Monotonic (`if`, never `=`): `.revertToOld` recurses into
+            // `.revertFailed` -> `.stayFailedClosed`, and a failed restore must
+            // not clear a marker the attempt earned. Only the end of the
+            // session clears it (handleStatusChange, resetSessionState).
+            if HandshakeArm.restoresPeerInPlace(followUp) {
+                revertRestoredPeerAwaitingConnected = true
+            }
             switch followUp {
             case .nothing:
                 if let previous = ctx.previous { selectedServer = previous }
@@ -1238,6 +1416,29 @@ final class VpnViewModel: ObservableObject {
                     try? await Task.sleep(for: .milliseconds(100))
                     settleTicks += 1
                 }
+                // #351 — raise the marker BEFORE the restore, never after. The
+                // `.reasserting → .connected` the extension's `adapter.update`
+                // raises can be delivered while `restoreProfile` is still
+                // awaiting, and `handleStatusChange` has to already know that
+                // the peer under that `.connected` is one this client PUT BACK
+                // on a session whose rule has been armed throughout — not a
+                // fresh dial. Without it the generic arm probed the restored
+                // OLD peer for 15 s and, if it had not re-handshaked (old node
+                // down, or the server sweeper's retire-old race), called
+                // `vpnManager.disconnect()` + `releaseServerSlot()`: on-demand
+                // persisted OFF, the tunnel stopped, the OLD key DELETEd. The
+                // arm's own `isRebuildingLive` guard does not cover it —
+                // there is no suspension point between `restoreProfile`
+                // returning and `rebuildLive`'s `defer`, so that `.connected`
+                // is handled after the flag is already down.
+                //
+                // It stays raised through a FAILED restore too: `.revertFailed`
+                // → `.stayFailedClosed` keeps the session and the armed rule for
+                // the breaker to resolve, and a teardown there is the same
+                // fail-open by another route.
+                // The marker for this follow-up is raised by the single
+                // `HandshakeArm.restoresPeerInPlace` gate above, which runs
+                // before this body and therefore before the restore.
                 do {
                     try await vpnManager.restoreProfile(ctx.snapshot)
                 } catch VPNManagerError.reconfigureRefused {
@@ -1341,10 +1542,25 @@ final class VpnViewModel: ObservableObject {
     /// server that cannot defer our key, where the old peer is (or may be) gone
     /// and there is nothing left to keep up.
     private func legacyRebuild(_ target: RebuildTarget) {
+        // #351, and the twin of `connectMultiHop`'s disconnect-first block: the
+        // redial below waits for a teardown that CLEARS `isConnecting`, so
+        // without a flag that survives those transitions every entry point read
+        // "idle" for the whole wait. Guarding one of the two teardown sites and
+        // not the other is the #336 shape exactly.
+        isTearingDownForRedial = true
         vpnManager.disconnect()
         Task { [weak self] in
             await self?.awaitTeardown()
-            guard let self, self.isReapplyingSettings || self.isSwitching else { return }
+            guard let self else { return }
+            // Dropped before the redial, because this teardown and that redial
+            // are ONE attempt: `connect()` / `connectMultiHop()` read the flag
+            // through `TunnelDialGate` and would otherwise refuse the very dial
+            // this teardown was performed for. `isRebuildingLive` is already
+            // false by now even when `finishRebuild` called us mid-rebuild —
+            // nothing suspends between `legacyRebuild` returning and
+            // `rebuildLive`'s `defer`, and `awaitTeardown()` always sleeps.
+            self.isTearingDownForRedial = false
+            guard self.isReapplyingSettings || self.isSwitching else { return }
             switch target {
             case .single(let server):
                 self.selectedServer = server

@@ -292,4 +292,185 @@ final class LiveRebuildTests: XCTestCase {
             XCTAssertNotEqual(directive, .keepSession(.revertToOld))
         }
     }
+
+    // MARK: - #351 (1) The no-handshake exit is a fail-OPEN; only a fresh dial may reach it
+
+    func testTheFreshDialWindowAndTheRebuildProbeAreDifferentWindows() {
+        // Both windows now live in LiveRebuild.swift, which is why this can be
+        // asserted at all: `VpnViewModel` is not one of this bundle's sources
+        // (project.yml), so while the fresh dial's 15 s lived there as a private
+        // constant, nothing could compare the two. They were ONE value on the
+        // #350 branch — bug (B) of its review.
+        XCTAssertEqual(HandshakeArm.polls, 30)
+        XCTAssertEqual(HandshakeArm.pollMs, 500)
+        XCTAssertEqual(HandshakeArm.windowMs, 15_000)
+        XCTAssertNotEqual(HandshakeArm.windowMs, LiveRebuildProbe.windowMs,
+                          "the rebuild probe must not share the fresh dial's REKEY_TIMEOUT-multiple window")
+    }
+
+    func testAPeerTheRevertRestoredIsNeverTornDownForNotHandshaking() {
+        // THE #351 FIX. `armKillSwitchAfterHandshake`'s no-handshake exit calls
+        // `VPNManager.disconnect()` (which persists on-demand OFF *before*
+        // stopping) and DELETEs the server-side key. On a peer this client just
+        // restored on a LIVE session that is the reverse of what the revert is
+        // for: the rule has been armed the whole time and the key is the one the
+        // user is still riding.
+        let window = Duration.milliseconds(HandshakeArm.windowMs)
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: true,
+                                                       elapsed: window, window: window),
+                       .keepSessionFailClosed)
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: true,
+                                                       elapsed: .seconds(600), window: window),
+                       .keepSessionFailClosed,
+                       "however long it waited, a restored peer is still not a fresh dial")
+        // ...and the deliberate fail-open is untouched for the input it exists
+        // for: a FRESH dial that spent its whole window in silence. Removing
+        // that would trade this bug for the re-dial blackhole loop.
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+                                                       elapsed: window, window: window),
+                       .tearDownFailOpen)
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+                                                       elapsed: .seconds(600), window: window),
+                       .tearDownFailOpen)
+    }
+
+    func testAWindowThatWasNeverSpentDecidesNothing() {
+        // `try? await Task.sleep` on a cancelled task returns instantly and eats
+        // the CancellationError — the shape that ran 7.7 M iterations in 2 s in
+        // the rebuild probe. Here the loop is bounded by its pass count, so it
+        // does not spin; it arrives at the exit having proved nothing, and that
+        // exit STOPS THE TUNNEL. Elapsed time is the only evidence that the peer
+        // was actually given its window.
+        let window = Duration.milliseconds(HandshakeArm.windowMs)
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+                                                       elapsed: .zero, window: window),
+                       .inconclusive)
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: false,
+                                                       elapsed: .milliseconds(14_999), window: window),
+                       .inconclusive,
+                       "one millisecond short is still short — this exit disarms a live kill switch")
+        XCTAssertEqual(HandshakeArm.noHandshakeOutcome(peerWasRestoredInPlace: true,
+                                                       elapsed: .zero, window: window),
+                       .inconclusive,
+                       "no verdict beats a fail-closed message the probe did not earn")
+    }
+
+    func testEveryFollowUpThatRestoresAPeerInPlaceMustFailClosed() {
+        // The enumeration #336 asks for: not "does the revert path fail closed?"
+        // but "for every outcome the policy can produce, is the one that leaves
+        // a restored peer on a live session marked as such?" A follow-up added
+        // later cannot compile in `HandshakeArm.restoresPeerInPlace` (no
+        // `default`) until someone has answered this for it.
+        let restoring = LiveRebuildEvent.allCases.filter { event in
+            guard case .keepSession(let followUp) = LiveRebuildPolicy.directive(for: event) else { return false }
+            return HandshakeArm.restoresPeerInPlace(followUp)
+        }
+        XCTAssertEqual(restoring, [
+            .swapFailed,                                    // .revertToOld
+            .newPeerSilent,                                 // .revertToOld
+            .revertFailed(persistedProfileIsOld: true),     // .stayFailedClosed
+            .revertFailed(persistedProfileIsOld: false),    // .stayFailedClosed
+        ])
+        for event in restoring {
+            XCTAssertEqual(HandshakeArm.noHandshakeOutcome(
+                peerWasRestoredInPlace: true,
+                elapsed: .milliseconds(HandshakeArm.windowMs),
+                window: .milliseconds(HandshakeArm.windowMs)), .keepSessionFailClosed,
+                "\(event) leaves the OLD peer on a live, armed session")
+        }
+    }
+
+    func testAFollowUpThatSwappedNothingLocallyIsNotARestore() {
+        // The other half of the enumeration: a marker raised for these would
+        // suppress the fresh-dial teardown on a tunnel that genuinely never
+        // came up, which is the trap the teardown exists to escape.
+        XCTAssertFalse(HandshakeArm.restoresPeerInPlace(.nothing))
+        XCTAssertFalse(HandshakeArm.restoresPeerInPlace(.releaseNewKey))
+        XCTAssertFalse(HandshakeArm.restoresPeerInPlace(.commitNew))
+        XCTAssertFalse(HandshakeArm.restoresPeerInPlace(.handOffToOnDemandRedial))
+        XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.revertToOld))
+        XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.stayFailedClosed(persistedProfileIsOld: true)))
+        XCTAssertTrue(HandshakeArm.restoresPeerInPlace(.stayFailedClosed(persistedProfileIsOld: false)))
+    }
+
+    func testNoEventBothStopsTheTunnelAndRestoresAPeerInPlace() {
+        // The two are contradictory by construction — the legacy path stops the
+        // session it would be restoring a peer onto — so a policy edit that made
+        // one event both is a bug in the edit, not a new state.
+        for event in LiveRebuildEvent.allCases {
+            let directive = LiveRebuildPolicy.directive(for: event)
+            guard case .keepSession(let followUp) = directive else {
+                XCTAssertTrue(directive.stopsTheTunnel)
+                continue
+            }
+            if HandshakeArm.restoresPeerInPlace(followUp) {
+                XCTAssertFalse(directive.stopsTheTunnel, "\(event)")
+            }
+        }
+    }
+
+    // MARK: - #351 (2) The teardown window is a state of its own
+
+    func testTheTeardownWindowRefusesADialThatIsConnectingCannotSee() {
+        // THE #351 item-2 FIX. `handleStatusChange` clears `isConnecting` on
+        // `.disconnecting` and `.disconnected` — the very transitions
+        // `awaitTeardown()` waits for — so on the branch code the ~5 s between
+        // `vpnManager.disconnect()` and the redial read "idle" at every entry
+        // point, and a second dial in it minted a second server-side peer.
+        XCTAssertNil(TunnelDialGate.block(isConnecting: false, isRebuildingLive: false,
+                                          isTearingDownForRedial: false))
+        XCTAssertTrue(TunnelDialGate.mayStartDial(isConnecting: false, isRebuildingLive: false,
+                                                  isTearingDownForRedial: false))
+        XCTAssertEqual(TunnelDialGate.block(isConnecting: false, isRebuildingLive: false,
+                                            isTearingDownForRedial: true),
+                       .tearingDownForRedial)
+        XCTAssertFalse(TunnelDialGate.mayStartDial(isConnecting: false, isRebuildingLive: false,
+                                                   isTearingDownForRedial: true),
+                       "the teardown window is exactly the state isConnecting cannot express")
+    }
+
+    func testEveryBlockingStateRefusesADialOnItsOwn() {
+        // Enumerated, not spot-checked: a fourth blocking state cannot be added
+        // without this switch failing to compile, and each state is asserted to
+        // refuse on its own rather than only in combination with another.
+        func flags(for block: TunnelDialGate.Block) -> (Bool, Bool, Bool) {
+            switch block {
+            case .dialInFlight:         return (true, false, false)
+            case .liveRebuildInFlight:  return (false, true, false)
+            case .tearingDownForRedial: return (false, false, true)
+            }
+        }
+        for block in TunnelDialGate.Block.allCases {
+            let (connecting, rebuilding, tearingDown) = flags(for: block)
+            XCTAssertEqual(TunnelDialGate.block(isConnecting: connecting,
+                                                isRebuildingLive: rebuilding,
+                                                isTearingDownForRedial: tearingDown), block)
+            XCTAssertFalse(TunnelDialGate.mayStartDial(isConnecting: connecting,
+                                                       isRebuildingLive: rebuilding,
+                                                       isTearingDownForRedial: tearingDown),
+                           "\(block) must refuse a dial on its own")
+        }
+        XCTAssertEqual(TunnelDialGate.Block.allCases.count, 3,
+                       "branch code had two states; the teardown window was the missing third")
+    }
+
+    func testTheDialEntryPointsAndTeardownSitesAreEnumerated() {
+        // #336's remedy 2, applied to this policy: a list a sixth path cannot be
+        // added to without editing a test, which is the moment to ask whether it
+        // calls `TunnelDialGate`. A comment naming the other paths is
+        // demonstrably not protection — the Quick Settings tile proved that.
+        XCTAssertEqual(TunnelDialEntryPoint.allCases.map(\.rawValue), [
+            "connect",
+            "connectMultiHop",
+            "reapplySettings",
+            "selectServerLive",
+            "autoConnectIfEnabled",
+        ])
+        // The twin: the guard has to cover BOTH places that stop a live tunnel
+        // and then re-dial it. #350's review named only the multi-hop one.
+        XCTAssertEqual(RedialTeardownSite.allCases.map(\.rawValue), [
+            "connectMultiHopOverALiveSession",
+            "legacyRebuild",
+        ])
+    }
 }
