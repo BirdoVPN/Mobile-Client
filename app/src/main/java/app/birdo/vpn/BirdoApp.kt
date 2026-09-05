@@ -54,22 +54,66 @@ class BirdoApp : Application() {
 
     private fun initSentry() {
         // Skip Sentry entirely in debug builds — avoids DSN validation issues
-        // and keeps development logcat clean.
+        // and keeps development logcat clean. This is also why a debug build
+        // never needs the SENTRY_DSN secret; see docs/SENTRY-SETUP.md.
         if (BuildConfig.DEBUG) return
 
+        // Nothing to send to. A release build cannot normally reach this branch
+        // — :app:validateSentryDsn refuses to produce a release artifact with a
+        // blank or malformed DSN (issue #357) — but an older artifact, or one
+        // built with -PallowMissingSentryDsn=true, can. Return before init
+        // rather than handing Sentry a value it will either reject with an
+        // exception or accept into a permanent no-op.
+        val dsn = BuildConfig.SENTRY_DSN
+        if (dsn.isBlank() || dsn == "null") return
+
         SentryAndroid.init(this) { options ->
-            options.dsn = BuildConfig.SENTRY_DSN
+            options.dsn = dsn
             options.isEnableAutoSessionTracking = true
             options.environment = "production"
             options.release = "${BuildConfig.APPLICATION_ID}@${BuildConfig.APP_VERSION}"
 
-            // Privacy: disable PII collection — critical for a VPN app
-            options.isSendDefaultPii = false
-            options.isAttachScreenshot = false
-            options.isAttachViewHierarchy = false
+            // ── Privacy ────────────────────────────────────────────────────
+            // This is a VPN whose privacy policy states no connection logs are
+            // kept. A crash reporter that exports a destination host, a tunnel
+            // address or an account email contradicts that policy just as
+            // surely as a server-side log line would. Every switch below is set
+            // EXPLICITLY, including the ones that already default the safe way:
+            // an SDK default is a decision made by someone else that can change
+            // in a version bump, and "we relied on the default" is not an
+            // answer to a data-protection question.
+            options.isSendDefaultPii = false          // no IP, no device name
+            options.isAttachScreenshot = false        // never photograph the UI
+            options.isAttachViewHierarchy = false     // …nor describe it
+            options.isAttachServerName = false        // no host identity
+            options.isSendModules = false             // no dependency inventory
 
-            // Performance — sample 100% of transactions (aligned with Windows client)
-            options.tracesSampleRate = 1.0
+            // User-interaction tracing/breadcrumbs record which control the
+            // user touched, keyed by resource id, on every tap. That is a
+            // behavioural trace of a privacy tool's UI; it is not needed to
+            // diagnose a crash.
+            options.isEnableUserInteractionTracing = false
+            options.isEnableUserInteractionBreadcrumbs = false
+
+            // Session Replay records the screen. Its defaults are already 0,
+            // and it is pinned to 0 here so that a future SDK default, or a
+            // stray copy-paste, cannot switch a screen recorder on inside a
+            // VPN client.
+            options.sessionReplay.sessionSampleRate = 0.0
+            options.sessionReplay.onErrorSampleRate = 0.0
+
+            // Performance monitoring is OFF, and not merely unsampled.
+            //
+            // beforeSend — the scrubber below — does NOT run for transactions;
+            // they take the separate beforeSendTransaction path. Span
+            // descriptions and transaction names are exactly where a request
+            // URL or an endpoint host would appear, so leaving APM on would
+            // open an unscrubbed egress channel alongside a carefully scrubbed
+            // one. Dropped twice over: nothing is sampled, and anything that
+            // somehow is gets discarded before it can be sent.
+            options.tracesSampleRate = 0.0
+            options.beforeSendTransaction =
+                io.sentry.SentryOptions.BeforeSendTransactionCallback { _, _ -> null }
 
             // SEC: Scrub sensitive values from error events before they are sent.
             // Covers the event message, every exception value AND breadcrumb
@@ -103,12 +147,31 @@ class BirdoApp : Application() {
                     // Bare hostnames (≥3 labels, like our node names) — desktop HOST_RE.
                     ?.replace(Regex("\\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+\\.[a-zA-Z]{2,}\\b"), "[HOST]")
             }
+            // Scrub breadcrumbs at CAPTURE time, not only on the way out.
+            // beforeSend (below) sees only the crumbs attached to an event it
+            // is given; a crumb recorded now can also be attached by a code
+            // path that does not pass through that callback. Scrubbing on
+            // arrival means an unscrubbed value is never held in the ring
+            // buffer at all — the buffer is in-process memory that lands in a
+            // native crash dump or an ANR trace.
+            options.beforeBreadcrumb = io.sentry.SentryOptions.BeforeBreadcrumbCallback { crumb, _ ->
+                crumb.message = scrub(crumb.message)
+                crumb.data.keys.toList().forEach { key ->
+                    val value = crumb.data[key]
+                    if (value is String) crumb.setData(key, scrub(value) ?: "")
+                }
+                crumb
+            }
+
             options.beforeSend = io.sentry.SentryOptions.BeforeSendCallback { event, _ ->
                 event.message?.let { it.formatted = scrub(it.formatted) }
                 event.exceptions?.forEach { ex -> ex.value = scrub(ex.value) }
                 // Breadcrumbs ride along on crash events (auto-instrumented
                 // network/lifecycle crumbs included) and were sent VERBATIM —
                 // scrub both the message and every string data value.
+                // Re-applied here as well as in beforeBreadcrumb: a crumb can
+                // be attached to an event by a path that bypassed the capture
+                // hook, and scrub() is idempotent.
                 event.breadcrumbs?.forEach { crumb ->
                     crumb.message = scrub(crumb.message)
                     crumb.data.keys.toList().forEach { key ->
@@ -116,6 +179,25 @@ class BirdoApp : Application() {
                         if (value is String) crumb.setData(key, scrub(value) ?: "")
                     }
                 }
+                // Anything a future caller attaches with Sentry.setExtra /
+                // withScope { it.setExtra(...) } — the most likely place for
+                // someone to helpfully add "endpoint" or "server" to a report.
+                event.extras?.keys?.toList()?.forEach { key ->
+                    val value = event.getExtra(key)
+                    if (value is String) event.setExtra(key, scrub(value) ?: "")
+                }
+                // Tags are low-cardinality labels; a scrubbed one is still a
+                // label. Same reasoning as extras.
+                event.tags?.keys?.toList()?.forEach { key ->
+                    event.getTag(key)?.let { event.setTag(key, scrub(it) ?: "") }
+                }
+                // Belt and braces on identity: isSendDefaultPii=false already
+                // stops the SDK populating these, but an explicit
+                // Sentry.setUser(...) added later would land here regardless.
+                // The account this crash belongs to is not something a VPN
+                // needs in order to fix the crash.
+                event.user = null
+                event.serverName = null
                 event
             }
         }

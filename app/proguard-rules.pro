@@ -8,6 +8,17 @@
 
 # ── Strip all Log.* calls from release builds ─────────────────────
 # This removes ALL logging in production — no sensitive data in logcat.
+#
+# SCOPE IS LOAD-BEARING: this rule names android.util.Log and NOTHING else, and
+# it must stay that way. Log.e/Log.wtf being stripped is precisely why a failure
+# on the VPN data path leaves no local trace (issue #357) — Sentry is the only
+# remaining signal. Adding io.sentry.** (or Sentry.captureException) to an
+# -assumenosideeffects rule would delete that signal too and, as with the Log
+# calls, would do it silently: R8 does not report what it removed, the build
+# stays green, and the app reports nothing forever.
+#
+# Verified 2026-09-05: io.sentry appears in this file only under -dontwarn
+# (below), which keeps nothing and removes nothing.
 -assumenosideeffects class android.util.Log {
     public static int v(...);
     public static int d(...);
@@ -73,6 +84,21 @@
 #
 # -dontwarn is retained: it suppresses build noise and keeps nothing.
 -dontwarn io.sentry.**
+
+# Stack-trace readability under R8.
+#
+# `-keepattributes SourceFile,LineNumberTable` + `-renamesourcefileattribute`
+# at the top of this file keep LINE NUMBERS in release stack traces, so a
+# Sentry event always points at a real line. Class and method names are still
+# obfuscated, which is intended — restoring them is a job for the mapping file,
+# not for keep rules, because every keep rule is code R8 may not optimise.
+#
+# app/build/outputs/mapping/release/mapping.txt is uploaded as a CI artifact by
+# the `release` job ("Upload Mapping File"). Uploading it to Sentry so traces
+# de-obfuscate in the UI needs an ORG-scoped auth token plus org/project slugs —
+# credentials the SENTRY_DSN secret does not provide and a DSN cannot grant.
+# That step is therefore deliberately NOT wired here; docs/SENTRY-SETUP.md
+# carries the optional recipe and the exact secrets it would need.
 
 # ── Xray ──────────────────────────────────────────────────────────
 # The libXray gomobile keeps that used to live here were DEAD CONFIGURATION:

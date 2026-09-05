@@ -145,6 +145,84 @@ class PrivacyBoundaryTest {
         )
     }
 
+    // ── P6-CLI-SENTRY-01 ─────────────────────────────────────────────────
+
+    @Test
+    fun `sentry is never added to the proguard strip list`() {
+        val rules = File(repoRoot, "app/proguard-rules.pro").readText()
+        val stripped = Regex("-assumenosideeffects\\s+class\\s+([\\w.*]+)")
+            .findAll(rules)
+            .map { it.groupValues[1] }
+            .toList()
+        assertEquals(
+            "P6-CLI-SENTRY-01 broken: -assumenosideeffects must name android.util.Log " +
+                "and NOTHING else. Log.e/Log.wtf are already stripped from release, so " +
+                "Sentry is the only remaining signal on the VPN data path (issue #357); " +
+                "stripping io.sentry too would delete it silently — R8 does not report " +
+                "what it removed. Current strip list: $stripped",
+            listOf("android.util.Log"),
+            stripped,
+        )
+    }
+
+    @Test
+    fun `sentry init keeps every privacy switch off`() {
+        val app = File(repoRoot, "app/src/main/java/app/birdo/vpn/BirdoApp.kt").readText()
+        assertTrue(
+            "P6-CLI-SENTRY-01 broken: BirdoApp no longer initialises Sentry at all",
+            app.contains("SentryAndroid.init("),
+        )
+        // A crash reporter in a VPN must not export identity, the screen, or
+        // performance spans (which bypass beforeSend entirely). Each of these
+        // is set EXPLICITLY in source precisely so a changed SDK default cannot
+        // switch one back on without this pin failing.
+        val required = listOf(
+            "options.isSendDefaultPii = false",
+            "options.isAttachScreenshot = false",
+            "options.isAttachViewHierarchy = false",
+            "options.isAttachServerName = false",
+            "options.isEnableUserInteractionTracing = false",
+            "options.isEnableUserInteractionBreadcrumbs = false",
+            "options.sessionReplay.sessionSampleRate = 0.0",
+            "options.sessionReplay.onErrorSampleRate = 0.0",
+            "options.tracesSampleRate = 0.0",
+            "options.beforeSendTransaction",
+            "options.beforeBreadcrumb",
+            "options.beforeSend",
+            "event.user = null",
+        )
+        val missing = required.filterNot { app.contains(it) }
+        assertEquals(
+            "P6-CLI-SENTRY-01 broken: BirdoApp.initSentry no longer pins these to the " +
+                "privacy-preserving value: $missing",
+            emptyList<String>(),
+            missing,
+        )
+    }
+
+    @Test
+    fun `a release build cannot ship without a sentry dsn`() {
+        // Issue #357: SENTRY_DSN was read and never supplied, so every shipped
+        // artifact compiled an inert crash reporter and NOTHING failed. The
+        // gate below is the only thing that turns that back into a build error.
+        val gradle = File(repoRoot, "app/build.gradle.kts").readText()
+        assertTrue(
+            "#357 regression: the validateSentryDsn gate is gone from app/build.gradle.kts",
+            gradle.contains("tasks.register(\"validateSentryDsn\")"),
+        )
+        assertTrue(
+            "#357 regression: validateSentryDsn is no longer wired into preReleaseBuild, " +
+                "so a release with no DSN would build green again",
+            Regex("preRelease\\.dependsOn\\([^)]*validateSentryDsn").containsMatchIn(gradle),
+        )
+        val workflow = File(repoRoot, ".github/workflows/android.yml").readText()
+        assertTrue(
+            "#357 regression: the release job no longer passes the SENTRY_DSN secret, " +
+                "which is the exact configuration gap the issue was filed for",
+            workflow.contains("SENTRY_DSN: \${{ secrets.SENTRY_DSN }}"),
+        )
+    }
+
     @Test
     fun `no println or printStackTrace in shipped android or shared source`() {
         val offenders = shippedSources().filter { f ->
