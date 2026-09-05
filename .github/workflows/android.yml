@@ -418,6 +418,21 @@ jobs:
           unzip -q -o app/build/outputs/bundle/release/*.aab 'base/lib/*' -d "$RUNNER_TEMP/aab-libs"
           scripts/check_16kb_alignment.sh "$RUNNER_TEMP/aab-libs/base/lib"
 
+      # A SIGILL crash shipped in 1.4.25: pqcrypto-mlkem's default `neon` feature
+      # compiles PQClean's AArch64 ML-KEM, which reaches 64 ARMv8.2 SHA3-extension
+      # instructions with no runtime CPU check. FEAT_SHA3 is OPTIONAL, so on any
+      # arm64 device without it the first `eor3` killed the process inside
+      # nativeGenerateKeypair -- and with PQ default-ON, took the connection with
+      # it. Reported from a Galaxy A70 (Snapdragon 675, ARMv8.2-A without
+      # FEAT_SHA3). This asserts the opcodes are absent from what actually ships,
+      # so re-enabling the feature fails the build instead of the user's phone.
+      - name: Verify no SHA3-extension instructions in arm64 libraries
+        run: |
+          chmod +x scripts/check_no_sha3_ext.sh
+          rm -rf "$RUNNER_TEMP/aab-libs-sha3"
+          unzip -q -o app/build/outputs/bundle/release/*.aab 'base/lib/*' -d "$RUNNER_TEMP/aab-libs-sha3"
+          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/aab-libs-sha3/base/lib"
+
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
 
