@@ -960,7 +960,7 @@ final class AuthViewModel: ObservableObject {
             return status == 401
         case .serverRefusal(_, let status, _, _):
             return status == 401
-        case .invalidURL, .invalidResponse, .quantumKeyUnavailable:
+        case .invalidURL, .invalidResponse, .quantumKeyUnavailable, .unknownRequestField:
             return false
         }
     }
@@ -1036,7 +1036,7 @@ final class AuthViewModel: ObservableObject {
                 if code == 401 { return "Invalid email or password" }
                 if code == 429 { return "Too many attempts. Please wait a moment." }
                 return "Login failed: Server error (\(code))"
-            case .invalidURL, .invalidResponse, .quantumKeyUnavailable:
+            case .invalidURL, .invalidResponse, .quantumKeyUnavailable, .unknownRequestField:
                 // quantumKeyUnavailable is raised only on the VPN connect path,
                 // never during login — handled explicitly because the switch is
                 // exhaustive, rather than adding a `default` that would silently
@@ -1072,6 +1072,7 @@ final class AuthViewModel: ObservableObject {
         case .serverRefusal(_, let status, _, _): return status
         case .httpError(let code): return code
         case .unauthorized: return 401
+        case .unknownRequestField(_, _, let status): return status
         case .invalidURL, .invalidResponse, .quantumKeyUnavailable: return nil
         }
     }
@@ -1149,7 +1150,7 @@ final class AuthViewModel: ObservableObject {
                 if code == 401 { return "Incorrect password" }
                 if code == 429 { return "Too many attempts. Please wait a moment." }
                 return "Account deletion failed. Please try again."
-            case .invalidURL, .invalidResponse, .quantumKeyUnavailable:
+            case .invalidURL, .invalidResponse, .quantumKeyUnavailable, .unknownRequestField:
                 // quantumKeyUnavailable cannot arise from account deletion — it is
                 // raised only on the VPN connect path — but the switch is
                 // exhaustive, so it is handled explicitly rather than via a

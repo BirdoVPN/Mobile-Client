@@ -118,38 +118,9 @@ final class VPNManager: @unchecked Sendable {
 
         let mgr = try await ensureManager()
 
-        // AUDIT-C1: prefer a true bilateral PQ PSK over the server-provided
-        // classical one. `tryDecapsulate` returns nil when the server didn't
-        // ship a ciphertext, in which case we fall back to `presharedKey`.
-        let pqPsk = BirdoPQManager.shared.tryDecapsulate(
-            quantumEnabled: config.quantumEnabled ?? false,
-            rosenpassPublicKeyBase64: config.rosenpassPublicKey,
-            rosenpassEndpointBase64: config.rosenpassEndpoint
-        )
-        let effectivePsk: String?
-        if let pqPsk {
-            effectivePsk = pqPsk
-        } else if config.quantumEnabled == true {
-            // FAIL CLOSED. The server said this session IS post-quantum, and we
-            // could not complete the decapsulation — so the bilateral PQ PSK does
-            // not exist. Falling through to `config.presharedKey` here would
-            // silently substitute the TLS-delivered CLASSICAL key while the app
-            // still reports quantum protection, which is exactly the
-            // harvest-now-decrypt-later property the feature exists to defeat.
-            //
-            // `tryDecapsulate` collapses three distinct failures to nil (malformed
-            // ciphertext, missing keypair, rc != BIRDO_PQ_OK) and all three landed
-            // here. Desktop (commands/vpn.rs) and Android (BirdoVpnService.kt)
-            // both abort; iOS was the only platform that downgraded in silence.
-            BirdoPQManager.shared.recordDisabled()
-            throw VPNManagerError.quantumHandshakeFailed
-        } else if let serverPsk = config.presharedKey, !serverPsk.isEmpty {
-            BirdoPQManager.shared.recordServerProvided()
-            effectivePsk = serverPsk
-        } else {
-            BirdoPQManager.shared.recordDisabled()
-            effectivePsk = nil
-        }
+        // The PSK decision is shared with the in-place rebuild (`swapConfig`),
+        // so the two paths can never drift — see `resolveEffectivePsk`.
+        let effectivePsk = try resolveEffectivePsk(config)
 
         // Park secrets in the shared keychain — the extension reads them by
         // ID instead of receiving them through plaintext provider config.
@@ -201,9 +172,7 @@ final class VPNManager: @unchecked Sendable {
         // (adaptive-transport rollout). An impossible sentinel is filterable
         // server-side; a real-looking one corrupts version attribution.
         // MUST stay in lockstep with PacketTunnelProvider's fallback.
-        let rawVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        let clientVersion = (rawVersion?.isEmpty == false) ? rawVersion! : "0.0.0-unknown"
-        providerConfig["hb-client-version"] = clientVersion
+        providerConfig["hb-client-version"] = Self.heartbeatClientVersion()
         proto.providerConfiguration = providerConfig
         // SEC: kill switch — when ON, block all traffic while the tunnel is not
         // up. User-toggleable, default ON: read the raw stored value so a fresh
@@ -267,6 +236,250 @@ final class VPNManager: @unchecked Sendable {
             deleteSharedSecret(account: "wg_preshared_key")
             throw error
         }
+    }
+
+    // MARK: - Live rebuild (Mobile-Client #159)
+
+    /// Everything needed to put the RUNNING tunnel back the way it was: the
+    /// persisted provider configuration (all string-valued — the redacted
+    /// wg-quick config, the keychain refs, the heartbeat handle) plus the two
+    /// secrets the extension reads by those refs. Taken before a swap and
+    /// dropped the moment the swap commits or reverts, so the previous private
+    /// key is in app memory for seconds, not for the session. Read back from
+    /// the system profile and the shared keychain — not from memory — so a
+    /// rebuild after an app relaunch under a live tunnel can still revert.
+    struct TunnelProfileSnapshot: Sendable {
+        let providerConfiguration: [String: String]
+        let serverAddress: String
+        let privateKey: String
+        let presharedKey: String?
+    }
+
+    /// True when the persisted profile carries a PROTOCOL-level flag that no
+    /// longer matches the user's setting. iOS applies `excludeLocalNetworks`
+    /// only when a tunnel STARTS (see `applyKillSwitchFlag`), so a Local Network
+    /// Sharing change cannot be swapped in place — the caller must use the
+    /// restart path for that one setting. `includeAllNetworks` is deliberately
+    /// not consulted: the kill switch is pushed at runtime by
+    /// `applyKillSwitchFlag`, never by a rebuild.
+    var liveProfileNeedsRestart: Bool {
+        guard let mgr = manager,
+              let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol else { return true }
+        return proto.excludeLocalNetworks != UserDefaults.standard.bool(forKey: "local_network_sharing")
+    }
+
+    /// Capture the live session's profile + secrets so `restoreProfile` can put
+    /// them back without a server round-trip. Throws `noLiveSession` unless a
+    /// session is `.connected` with a complete profile.
+    func snapshotRunningProfile() throws -> TunnelProfileSnapshot {
+        guard let mgr = manager,
+              mgr.connection.status == .connected,
+              let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol,
+              let raw = proto.providerConfiguration,
+              raw["wg-config"] as? String != nil,
+              let serverAddress = proto.serverAddress, !serverAddress.isEmpty else {
+            throw VPNManagerError.noLiveSession
+        }
+        let providerConfiguration = raw.compactMapValues { $0 as? String }
+        guard let privateKey = readSharedSecret(account: "wg_private_key"), !privateKey.isEmpty else {
+            throw VPNManagerError.keychainUnavailable
+        }
+        var presharedKey: String?
+        let pskRef = providerConfiguration["wg-preshared-key-ref"] ?? ""
+        if !pskRef.isEmpty {
+            guard let psk = readSharedSecret(account: pskRef), !psk.isEmpty else {
+                throw VPNManagerError.keychainUnavailable
+            }
+            presharedKey = psk
+        }
+        return TunnelProfileSnapshot(providerConfiguration: providerConfiguration,
+                                     serverAddress: serverAddress,
+                                     privateKey: privateKey,
+                                     presharedKey: presharedKey)
+    }
+
+    /// REBUILD (Mobile-Client #159): replace the peer of the LIVE session in
+    /// place. The session — and with it `includeAllNetworks` and the armed
+    /// on-demand rule — never goes away, so nothing is exposed during the
+    /// switch. Same requested-vs-granted PQ guard and the SAME PSK decision as
+    /// `connect` (`resolveEffectivePsk`). Order: secrets under the same keychain
+    /// refs → persist the profile with on-demand UNTOUCHED (an OS re-dial later
+    /// starts the NEW peer) → ask the extension to `WireGuardAdapter.update` the
+    /// running utun. On any throw the caller restores the snapshot it took first.
+    func swapConfig(config: VPNConnectionConfig) async throws {
+        try config.validate()
+        let userRequestedPQ = UserDefaults.standard.object(forKey: "quantum_protection") as? Bool ?? true
+        if userRequestedPQ && config.quantumEnabled != true {
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed
+        }
+        let effectivePsk = try resolveEffectivePsk(config)
+        var providerConfiguration: [String: String] = [
+            "wg-config": buildRedactedWireGuardConfig(config),
+            "wg-private-key-ref": "wg_private_key",
+            "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
+            "hb-client-version": Self.heartbeatClientVersion(),
+        ]
+        if let keyId = config.keyId, !keyId.isEmpty {
+            providerConfiguration["hb-key-id"] = keyId
+        }
+        if let token = KeychainService.shared.accessToken, !token.isEmpty {
+            providerConfiguration["hb-access-token"] = token
+        }
+        try await applyLiveProfile(providerConfiguration: providerConfiguration,
+                                   serverAddress: config.serverAddress,
+                                   privateKey: config.privateKey,
+                                   presharedKey: effectivePsk)
+    }
+
+    /// Put a snapshot back on the RUNNING session (the revert half of a swap).
+    /// Persists first, then reconfigures: a `reconfigureRefused` throw therefore
+    /// means the persisted profile IS the snapshot again, so an OS re-dial lands
+    /// on the previous peer; any other throw means it may not be.
+    func restoreProfile(_ snapshot: TunnelProfileSnapshot) async throws {
+        var providerConfiguration = snapshot.providerConfiguration
+        // A token refreshed since the snapshot is the one the extension should
+        // heartbeat with.
+        if let token = KeychainService.shared.accessToken, !token.isEmpty {
+            providerConfiguration["hb-access-token"] = token
+        }
+        try await applyLiveProfile(providerConfiguration: providerConfiguration,
+                                   serverAddress: snapshot.serverAddress,
+                                   privateKey: snapshot.privateKey,
+                                   presharedKey: snapshot.presharedKey)
+    }
+
+    private func applyLiveProfile(providerConfiguration: [String: String],
+                                  serverAddress: String,
+                                  privateKey: String,
+                                  presharedKey: String?) async throws {
+        guard let mgr = manager,
+              let session = mgr.connection as? NETunnelProviderSession,
+              session.status == .connected,
+              let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol else {
+            throw VPNManagerError.noLiveSession
+        }
+        // 1. Secrets, under the SAME refs the running extension already reads.
+        guard writeSharedSecret(account: "wg_private_key", value: privateKey) else {
+            throw VPNManagerError.keychainUnavailable
+        }
+        if let psk = presharedKey, !psk.isEmpty {
+            guard writeSharedSecret(account: "wg_preshared_key", value: psk) else {
+                throw VPNManagerError.keychainUnavailable
+            }
+        } else {
+            deleteSharedSecret(account: "wg_preshared_key")
+        }
+        // 2. Persist. onDemandRules / isOnDemandEnabled / includeAllNetworks are
+        //    deliberately NOT touched: the kill switch stays armed for the whole
+        //    swap. That is the entire point of this method. Saving while
+        //    connected does not restart the session; the running tunnel is
+        //    reconfigured in step 3, and the persisted profile is what an OS
+        //    re-dial would start.
+        var persisted: [String: Any] = [:]
+        for (key, value) in providerConfiguration { persisted[key] = value }
+        proto.providerConfiguration = persisted
+        proto.serverAddress = serverAddress
+        mgr.protocolConfiguration = proto
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            mgr.saveToPreferences { error in
+                if let error { cont.resume(throwing: error) }
+                else { cont.resume() }
+            }
+        }
+        // 3. Reconfigure the running tunnel. Keychain REFS ride the message,
+        //    never the material — exactly as providerConfiguration does; the
+        //    access token already rides providerConfiguration (reviewed at
+        //    connect()).
+        var message: [String: Any] = ["cmd": "reconfigure", "server": serverAddress]
+        for (key, value) in providerConfiguration { message[key] = value }
+        let data = try JSONSerialization.data(withJSONObject: message)
+        let (ok, refusal): (Bool, String?) = try await withCheckedThrowingContinuation {
+            (cont: CheckedContinuation<(Bool, String?), Error>) in
+            do {
+                try session.sendProviderMessage(data) { response in
+                    guard let response,
+                          let json = try? JSONSerialization.jsonObject(with: response) as? [String: Any] else {
+                        cont.resume(returning: (false, "no reply from tunnel"))
+                        return
+                    }
+                    cont.resume(returning: ((json["ok"] as? Bool) ?? false, json["error"] as? String))
+                }
+            } catch {
+                cont.resume(throwing: error)
+            }
+        }
+        guard ok else {
+            throw VPNManagerError.reconfigureRefused(refusal ?? "tunnel refused the reconfigure")
+        }
+    }
+
+    /// The PSK a session actually uses — shared by `connect()` and `swapConfig`
+    /// so an in-place rebuild can never make a different decision from a fresh
+    /// dial (the twin-drift class of bug). Bilateral ML-KEM first; FAIL CLOSED
+    /// when the server said PQ but decapsulation failed; else the server's
+    /// classical PSK; else none.
+    private func resolveEffectivePsk(_ config: VPNConnectionConfig) throws -> String? {
+        // AUDIT-C1: prefer a true bilateral PQ PSK over the server-provided
+        // classical one. `tryDecapsulate` returns nil when the server didn't
+        // ship a ciphertext, in which case we fall back to `presharedKey`.
+        let pqPsk = BirdoPQManager.shared.tryDecapsulate(
+            quantumEnabled: config.quantumEnabled ?? false,
+            rosenpassPublicKeyBase64: config.rosenpassPublicKey,
+            rosenpassEndpointBase64: config.rosenpassEndpoint
+        )
+        if let pqPsk { return pqPsk }
+        if config.quantumEnabled == true {
+            // FAIL CLOSED. The server said this session IS post-quantum, and we
+            // could not complete the decapsulation — so the bilateral PQ PSK does
+            // not exist. Falling through to `config.presharedKey` here would
+            // silently substitute the TLS-delivered CLASSICAL key while the app
+            // still reports quantum protection, which is exactly the
+            // harvest-now-decrypt-later property the feature exists to defeat.
+            //
+            // `tryDecapsulate` collapses three distinct failures to nil (malformed
+            // ciphertext, missing keypair, rc != BIRDO_PQ_OK) and all three landed
+            // here. Desktop (commands/vpn.rs) and Android (BirdoVpnService.kt)
+            // both abort; iOS was the only platform that downgraded in silence.
+            BirdoPQManager.shared.recordDisabled()
+            throw VPNManagerError.quantumHandshakeFailed
+        }
+        if let serverPsk = config.presharedKey, !serverPsk.isEmpty {
+            BirdoPQManager.shared.recordServerProvided()
+            return serverPsk
+        }
+        BirdoPQManager.shared.recordDisabled()
+        return nil
+    }
+
+    /// Never fabricate a plausible version: a "1.0.0" fallback is exactly the
+    /// hardcoded value that defeated the iOS version floor once already
+    /// (adaptive-transport rollout). An impossible sentinel is filterable
+    /// server-side; a real-looking one corrupts version attribution.
+    /// MUST stay in lockstep with PacketTunnelProvider's fallback.
+    private static func heartbeatClientVersion() -> String {
+        let raw = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        return (raw?.isEmpty == false) ? raw! : "0.0.0-unknown"
+    }
+
+    /// Read a tunnel secret back from the shared access group — the query
+    /// `takeExtensionFailure` uses, without the consume. Only the live-rebuild
+    /// snapshot needs it: the previous session's keys have to survive a swap
+    /// that turns out to need reverting.
+    private func readSharedSecret(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.sharedKeychainService,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessGroup as String: Self.sharedKeychainAccessGroup,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     func disconnect() {
@@ -767,6 +980,13 @@ enum VPNManagerError: Error, LocalizedError {
     /// The server negotiated a post-quantum session but ML-KEM decapsulation did
     /// not yield a key. Surfaced rather than downgraded — see `connect`.
     case quantumHandshakeFailed
+    /// A live-rebuild swap/restore was asked for with no `.connected` session
+    /// (or an incomplete persisted profile) to swap under. (Mobile-Client #159)
+    case noLiveSession
+    /// The running tunnel refused an in-place peer swap (Mobile-Client #159).
+    /// The previous peer is still what the adapter runs; the caller restores
+    /// its snapshot. Carries the extension's payload-free reason only.
+    case reconfigureRefused(String)
 
     var errorDescription: String? {
         switch self {
@@ -778,6 +998,10 @@ enum VPNManagerError: Error, LocalizedError {
             return "Quantum-protected handshake failed. Not connecting, because continuing "
                 + "would fall back to weaker encryption. Try again, or turn off Quantum "
                 + "Protection in Settings to connect without it."
+        case .noLiveSession:
+            return "No active VPN session to update."
+        case .reconfigureRefused(let why):
+            return "Couldn't switch the tunnel in place (\(why))."
         }
     }
 }
