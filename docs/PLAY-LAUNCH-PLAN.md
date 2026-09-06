@@ -83,7 +83,7 @@ The app was already hardened across previous work; verified this pass:
 | **Crash reporting** |  Sentry with `isSendDefaultPii = false` + `beforeSend` scrubber; no analytics or ad SDKs. |
 | **Self-update** |  None — the app does **not** download/sideload APKs (that would be a Device-and-Network-Abuse violation). Updates come through Play. |
 | **Account deletion** |  In-app account deletion exists (Play requirement for apps with accounts) + web URL `birdo.app/delete-account`. |
-| **Release engineering** |  AGP 8.11, R8 minify + resource shrink, `debugSymbolLevel=FULL`, ABI filter arm64-v8a + x86_64, signed AAB in CI, Sigstore provenance, versionCode from `version.properties`. |
+| **Release engineering** |  AGP 8.11, R8 minify + resource shrink, `debugSymbolLevel=FULL`, ABI filter arm64-v8a + armeabi-v7a + x86_64 + x86 (all four live Android ABIs, each with the complete native engine set), signed AAB in CI, Sigstore provenance, versionCode from `version.properties`. |
 
 ## 2. What this change set added
 

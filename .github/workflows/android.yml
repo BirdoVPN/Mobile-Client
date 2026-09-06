@@ -56,9 +56,6 @@ permissions:
 env:
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
-  XRAY_VERSION: v26.2.6
-  XRAY_ANDROID_ARM64_SHA256: 952ccbb2275eace52e644a349358de293278eefc32b139d795b067edcb6a2f07
-  XRAY_ANDROID_AMD64_SHA256: f11f5bb71ebb2fe4127670404fbd0c21d93f62e453870fda65ad6effe7a6131e
 
 jobs:
   lint:
@@ -220,35 +217,87 @@ jobs:
 
       - name: Install Rust Android toolchain
         run: |
-          # armv7-linux-androideabi is needed so cargo-ndk can cross-compile
-          # the rosenpass-jni crate for armeabi-v7a (native/build.sh). NOTE:
-          # armeabi-v7a is NOT a shipped ABI — app/build.gradle.kts abiFilters
-          # restricts the packaged APK/AAB to arm64-v8a + x86_64 because the
-          # Xray Reality engine is only downloaded for those two ABIs below.
-          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          # One Rust target per shipped ABI, so native/build.sh produces a
+          # librosenpass_jni.so for every entry in app/build.gradle.kts
+          # abiFilters. A missing target here does not fail the Rust build — it
+          # silently yields one fewer .so, which is caught much later by
+          # scripts/verify_android_release_apk.py.
+          rustup target add aarch64-linux-android armv7-linux-androideabi \
+                            x86_64-linux-android i686-linux-android
           cargo install cargo-ndk --locked --version 4.1.2
 
-      - name: Download pinned Xray Reality engines
+      # XTLS ships an Android binary for arm64-v8a and amd64 only, so the two
+      # 32-bit ABIs are built from the same pinned Xray-core commit with the
+      # NDK's clang. Go refuses to internally link GOOS=android outside arm64,
+      # which is why cgo and the NDK are involved at all. Pins live in the
+      # script.
+      - name: Set up Go (the 32-bit Xray engines are built from source)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # Only the Go module + build caches. The engines themselves are NOT cached:
+      # a cache hit would hand us a binary that never went through the commit-SHA
+      # assertion in the script, which is the whole provenance story for the two
+      # ABIs we build.
+      - name: Cache Go build for the Xray engines
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+          restore-keys: xray-go-${{ runner.os }}-
+
+      - name: Provision Xray Reality engines for every shipped ABI
         run: |
           set -euo pipefail
-          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/x86_64 "$RUNNER_TEMP/xray-arm64" "$RUNNER_TEMP/xray-amd64"
+          # The runner image sets ANDROID_NDK_HOME; fall back to the versioned
+          # variable rather than letting the script fail with a bare "not set".
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x scripts/provision_xray_engines.sh
+          scripts/provision_xray_engines.sh
 
-          curl -fsSL -o "$RUNNER_TEMP/xray-arm64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
-          echo "${XRAY_ANDROID_ARM64_SHA256}  $RUNNER_TEMP/xray-arm64.zip" | sha256sum -c -
-          unzip -q "$RUNNER_TEMP/xray-arm64.zip" -d "$RUNNER_TEMP/xray-arm64"
-          cp "$(find "$RUNNER_TEMP/xray-arm64" -type f -name xray | head -n1)" app/src/main/jniLibs/arm64-v8a/libxray.so
-
-          curl -fsSL -o "$RUNNER_TEMP/xray-amd64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-amd64.zip"
-          echo "${XRAY_ANDROID_AMD64_SHA256}  $RUNNER_TEMP/xray-amd64.zip" | sha256sum -c -
-          unzip -q "$RUNNER_TEMP/xray-amd64.zip" -d "$RUNNER_TEMP/xray-amd64"
-          cp "$(find "$RUNNER_TEMP/xray-amd64" -type f -name xray | head -n1)" app/src/main/jniLibs/x86_64/libxray.so
-
-          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so app/src/main/jniLibs/x86_64/libxray.so
+      # WHY THE DEBUG BUILD BUILDS THE RUST ENGINE TOO
+      #
+      # The debug APK is the ONLY Android artifact a pull request can produce:
+      # the release job needs Azure Key Vault and is gated on
+      # main/tags/workflow_dispatch. Until this step existed, `assembleDebug`
+      # packaged no librosenpass_jni.so at all, so nothing on a PR could tell
+      # you whether a newly added ABI actually carries a complete engine set —
+      # that was discovered only by the release job, i.e. after merge to the
+      # branch that deploys. Building it here costs a cargo-ndk cross-compile
+      # and buys a real artifact to gate on.
+      - name: Build Rosenpass JNI engine for every shipped ABI
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:buildRustLibs
 
       - name: Build Debug APK
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug
+
+      # Same ABI x engine contract the release job enforces, run here on the
+      # artifact a PR can actually build. --native-libs-only because a debug APK
+      # legitimately has no signing-fingerprint constant.
+      - name: Verify every shipped ABI carries the complete engine set
+        run: |
+          python3 scripts/verify_android_release_apk.py --native-libs-only             app/build/outputs/apk/debug/app-debug.apk
+
+      # The SHA3/extended-ISA gate was release-only too, so a PR re-enabling
+      # pqcrypto-mlkem's `neon` feature passed every check and broke only on
+      # main. The native libraries in the debug APK are byte-identical to the
+      # ones the release build packages (native/build.sh builds the release
+      # profile, and the Xray engines come from the same provisioning step), so
+      # this is the same binary being checked, one merge earlier.
+      - name: Verify no ungated extended-ISA instructions in shipped libraries
+        run: |
+          chmod +x scripts/check_no_sha3_ext.sh
+          rm -rf "$RUNNER_TEMP/debug-apk-libs"
+          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*'             -d "$RUNNER_TEMP/debug-apk-libs"
+          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/debug-apk-libs/lib"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -314,30 +363,47 @@ jobs:
 
       - name: Install Rust Android toolchain
         run: |
-          # armv7-linux-androideabi is needed so cargo-ndk can cross-compile
-          # the rosenpass-jni crate for armeabi-v7a (native/build.sh). NOTE:
-          # armeabi-v7a is NOT a shipped ABI — app/build.gradle.kts abiFilters
-          # restricts the packaged APK/AAB to arm64-v8a + x86_64 because the
-          # Xray Reality engine is only downloaded for those two ABIs below.
-          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+          # One Rust target per shipped ABI, so native/build.sh produces a
+          # librosenpass_jni.so for every entry in app/build.gradle.kts
+          # abiFilters. A missing target here does not fail the Rust build — it
+          # silently yields one fewer .so, which is caught much later by
+          # scripts/verify_android_release_apk.py.
+          rustup target add aarch64-linux-android armv7-linux-androideabi \
+                            x86_64-linux-android i686-linux-android
           cargo install cargo-ndk --locked --version 4.1.2
 
-      - name: Download pinned Xray Reality engines
+      # XTLS ships an Android binary for arm64-v8a and amd64 only, so the two
+      # 32-bit ABIs are built from the same pinned Xray-core commit with the
+      # NDK's clang. Go refuses to internally link GOOS=android outside arm64,
+      # which is why cgo and the NDK are involved at all. Pins live in the
+      # script.
+      - name: Set up Go (the 32-bit Xray engines are built from source)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25'
+          cache: false
+
+      # Only the Go module + build caches. The engines themselves are NOT cached:
+      # a cache hit would hand us a binary that never went through the commit-SHA
+      # assertion in the script, which is the whole provenance story for the two
+      # ABIs we build.
+      - name: Cache Go build for the Xray engines
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+          restore-keys: xray-go-${{ runner.os }}-
+
+      - name: Provision Xray Reality engines for every shipped ABI
         run: |
           set -euo pipefail
-          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/jniLibs/x86_64 "$RUNNER_TEMP/xray-arm64" "$RUNNER_TEMP/xray-amd64"
-
-          curl -fsSL -o "$RUNNER_TEMP/xray-arm64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-arm64-v8a.zip"
-          echo "${XRAY_ANDROID_ARM64_SHA256}  $RUNNER_TEMP/xray-arm64.zip" | sha256sum -c -
-          unzip -q "$RUNNER_TEMP/xray-arm64.zip" -d "$RUNNER_TEMP/xray-arm64"
-          cp "$(find "$RUNNER_TEMP/xray-arm64" -type f -name xray | head -n1)" app/src/main/jniLibs/arm64-v8a/libxray.so
-
-          curl -fsSL -o "$RUNNER_TEMP/xray-amd64.zip" "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-android-amd64.zip"
-          echo "${XRAY_ANDROID_AMD64_SHA256}  $RUNNER_TEMP/xray-amd64.zip" | sha256sum -c -
-          unzip -q "$RUNNER_TEMP/xray-amd64.zip" -d "$RUNNER_TEMP/xray-amd64"
-          cp "$(find "$RUNNER_TEMP/xray-amd64" -type f -name xray | head -n1)" app/src/main/jniLibs/x86_64/libxray.so
-
-          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so app/src/main/jniLibs/x86_64/libxray.so
+          # The runner image sets ANDROID_NDK_HOME; fall back to the versioned
+          # variable rather than letting the script fail with a bare "not set".
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x scripts/provision_xray_engines.sh
+          scripts/provision_xray_engines.sh
 
       # Log in to Azure using OIDC - no stored client secrets required.
       - name: Azure Login (OIDC)
@@ -425,13 +491,16 @@ jobs:
           ./gradlew bundleRelease -PplayBuild=true
 
       # Google Play requires 16 KB page-size support for apps targeting API 35+.
-      # Assert every shipped native .so has 16 KB-aligned LOAD segments BEFORE we
+      # It is a 64-bit-only requirement — 32-bit Android runs 4 KB pages and the
+      # toolchains align accordingly — so the script checks the arm64-v8a and
+      # x86_64 slices and reports what it skipped.
+      # Assert every shipped 64-bit .so has 16 KB-aligned LOAD segments BEFORE we
       # sign/upload — a non-aligned lib is rejected by the Play Console. We check
       # the libs INSIDE the built AAB (base/lib/**), so this covers not just our
       # own libs (xray, rosenpass-jni) but every .so merged in from AAR
       # dependencies (wg-go, Sentry, glance, datastore) — the ones the source
       # jniLibs dir does not contain.
-      - name: Verify 16 KB native library alignment
+      - name: Verify 16 KB native library alignment (64-bit ABIs)
         run: |
           chmod +x scripts/check_16kb_alignment.sh
           rm -rf "$RUNNER_TEMP/aab-libs"
@@ -446,7 +515,7 @@ jobs:
       # it. Reported from a Galaxy A70 (Snapdragon 675, ARMv8.2-A without
       # FEAT_SHA3). This asserts the opcodes are absent from what actually ships,
       # so re-enabling the feature fails the build instead of the user's phone.
-      - name: Verify no SHA3-extension instructions in arm64 libraries
+      - name: Verify no ungated extended-ISA instructions in shipped libraries
         run: |
           chmod +x scripts/check_no_sha3_ext.sh
           rm -rf "$RUNNER_TEMP/aab-libs-sha3"
@@ -455,6 +524,14 @@ jobs:
 
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
+
+      # The AAB is what reaches Play, and it is built by a SEPARATE Gradle
+      # invocation (`bundleRelease -PplayBuild=true`). Checking only the APK is
+      # the "guard on some of N parallel paths" shape: the two artifacts share
+      # abiFilters today, but nothing enforced that they share a native payload.
+      - name: Verify release AAB native engine set
+        run: |
+          python3 scripts/verify_android_release_apk.py --native-libs-only             app/build/outputs/bundle/release/*.aab
 
       - name: Clean up keystore
         if: always()

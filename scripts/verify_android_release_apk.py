@@ -14,16 +14,40 @@ import sys
 import zipfile
 
 
-# Only arm64-v8a and x86_64 are shipped (see app/build.gradle.kts abiFilters).
-# armeabi-v7a is intentionally excluded: the Xray Reality engine is not built
-# for 32-bit, so a partial armv7 native set must never reach a shipped APK.
-REQUIRED_NATIVE_LIBS = (
-    "lib/arm64-v8a/libwg-go.so",
-    "lib/arm64-v8a/libxray.so",
-    "lib/x86_64/libxray.so",
-    "lib/arm64-v8a/librosenpass_jni.so",
-    "lib/x86_64/librosenpass_jni.so",
-)
+# ---------------------------------------------------------------------------
+# ABI / native-engine contract.
+#
+# SHIPPED_ABIS must equal the abiFilters allow-list in app/build.gradle.kts, and
+# every ABI in it must carry the COMPLETE engine set. Both directions are
+# enforced on purpose:
+#
+#   * every (abi x engine) pair must be present -- a shipped ABI missing an
+#     engine installs fine and then fails on first connect, dropping the user
+#     into the kill switch, which is worse than not shipping that ABI at all;
+#   * no lib/<abi>/ directory outside SHIPPED_ABIS may appear -- that is how a
+#     partial ABI sneaks in, since native/build.sh cross-compiles
+#     librosenpass_jni.so for every ABI whether or not an Xray engine exists
+#     for it.
+#
+# Deriving the required set as a cross product rather than hand-listing it is
+# deliberate: the previous hand-written list omitted lib/x86_64/libwg-go.so, so
+# an x86_64 build with no WireGuard engine at all would have passed this gate.
+# ---------------------------------------------------------------------------
+SHIPPED_ABIS = ("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
+# Engines without which the VPN cannot establish a tunnel on a given ABI.
+REQUIRED_ENGINES = ("libwg-go.so", "libxray.so", "librosenpass_jni.so")
+
+# An APK stores native libraries under lib/<abi>/; an app bundle stores exactly
+# the same tree under base/lib/<abi>/. Both are checked -- the AAB is what
+# reaches Play, and checking only the APK is the "guard on some of N parallel
+# paths" shape this repo keeps getting bitten by.
+def required_native_libs(prefix: str) -> tuple[str, ...]:
+    return tuple(
+        f"{prefix}{abi}/{engine}"
+        for abi in SHIPPED_ABIS
+        for engine in REQUIRED_ENGINES
+    )
 
 
 def read_uleb128(data: bytes, offset: int) -> tuple[int, int]:
@@ -80,24 +104,67 @@ def fail(message: str) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        fail("usage: verify_android_release_apk.py <release-apk>")
+    # --native-libs-only checks the ABI x engine contract and nothing else, so
+    # the same gate can run against artifacts that legitimately carry no signing
+    # fingerprint constant: the debug APK a pull request builds, and the release
+    # AAB. Without it the contract was enforced only in the release job, which
+    # does not run on a pull request at all -- an ABI could be added, merged, and
+    # only then found to be missing an engine.
+    args = [a for a in sys.argv[1:] if a != "--native-libs-only"]
+    native_libs_only = len(args) != len(sys.argv[1:])
 
-    apk_path = sys.argv[1]
-    expected_fingerprint = os.environ.get("BIRDO_SIGNING_CERT_FINGERPRINT", "").strip()
-    if not expected_fingerprint:
-        fail("BIRDO_SIGNING_CERT_FINGERPRINT is not set")
+    if len(args) != 1:
+        fail("usage: verify_android_release_apk.py [--native-libs-only] <apk-or-aab>")
+
+    apk_path = args[0]
+    expected_fingerprint = ""
+    if not native_libs_only:
+        expected_fingerprint = os.environ.get("BIRDO_SIGNING_CERT_FINGERPRINT", "").strip()
+        if not expected_fingerprint:
+            fail("BIRDO_SIGNING_CERT_FINGERPRINT is not set")
 
     with zipfile.ZipFile(apk_path) as apk:
         names = set(apk.namelist())
-        missing_libs = [name for name in REQUIRED_NATIVE_LIBS if name not in names]
+
+        # AAB (base/lib/<abi>/) vs APK (lib/<abi>/). Decided from the archive
+        # rather than the filename so a renamed artifact cannot silently make
+        # the walk find nothing and pass.
+        lib_prefix = "base/lib/" if any(n.startswith("base/lib/") for n in names) else "lib/"
+
+        missing_libs = [name for name in required_native_libs(lib_prefix) if name not in names]
         if missing_libs:
-            fail("release APK is missing required native libraries: " + ", ".join(missing_libs))
+            fail("artifact is missing required native libraries: " + ", ".join(missing_libs))
+
+        # Reverse direction: an ABI we never provisioned engines for must not be
+        # packaged. Such a build installs on devices whose VPN can never start.
+        packaged_abis = {
+            name[len(lib_prefix):].split("/")[0]
+            for name in names
+            if name.startswith(lib_prefix) and "/" in name[len(lib_prefix):]
+        }
+        unexpected_abis = sorted(packaged_abis - set(SHIPPED_ABIS))
+        if unexpected_abis:
+            fail(
+                "artifact packages ABI(s) with no provisioned VPN engine set: "
+                + ", ".join(unexpected_abis)
+                + ". Every shipped ABI needs "
+                + ", ".join(REQUIRED_ENGINES)
+                + ". Provision the engines for that ABI, or restore the abiFilters "
+                "allow-list in app/build.gradle.kts."
+            )
 
         all_strings: list[str] = []
-        for name in names:
-            if name.startswith("classes") and name.endswith(".dex"):
-                all_strings.extend(dex_strings(apk.read(name)))
+        if not native_libs_only:
+            for name in names:
+                if name.startswith("classes") and name.endswith(".dex"):
+                    all_strings.extend(dex_strings(apk.read(name)))
+
+    if native_libs_only:
+        print(
+            f"Native engine set verified in {apk_path} "
+            f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines under {lib_prefix})"
+        )
+        return
 
     expected_variants = {
         expected_fingerprint,
@@ -111,7 +178,10 @@ def main() -> None:
     if not found_fingerprint:
         fail("release APK does not contain the expected signing fingerprint constant")
 
-    print("Release APK payload verification passed")
+    print(
+        "Release APK payload verification passed "
+        f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines)"
+    )
 
 
 if __name__ == "__main__":

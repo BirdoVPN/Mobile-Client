@@ -7,7 +7,8 @@
 #   - cargo-ndk: cargo install cargo-ndk
 #   - Android NDK r26+ via $ANDROID_NDK_HOME
 #   - Rust Android targets:
-#       rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+#       rustup target add aarch64-linux-android armv7-linux-androideabi \
+#                         x86_64-linux-android i686-linux-android
 #
 # Usage: native/build.sh [release|debug]      (default: release)
 
@@ -46,11 +47,14 @@ cd "$CRATE_DIR"
 PROFILE_FLAG=""
 [[ "$PROFILE" == "release" ]] && PROFILE_FLAG="--release"
 
-echo ">>> cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build $PROFILE_FLAG"
+# All four live Android ABIs. cargo-ndk names its targets exactly as the
+# jniLibs subdirectories are named, so the output lands where AGP expects it.
+echo ">>> cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 build $PROFILE_FLAG"
 cargo ndk \
   -t arm64-v8a \
   -t armeabi-v7a \
   -t x86_64 \
+  -t x86 \
   -o "$JNI_LIBS_DIR" \
   build $PROFILE_FLAG
 
