@@ -499,6 +499,26 @@ jobs:
           cp app/build/outputs/mapping/release/mapping.txt "$RUNNER_TEMP/mapping-apk.txt"
           ./gradlew bundleRelease -PplayBuild=true
 
+      # The engine-integrity counterpart to the 16 KB check below: that one asks
+      # whether the shipped .so files LOAD, this one asks whether the app can
+      # RECOGNISE them. NativeLibraryVerifier compares the BuildConfig
+      # NATIVE_HASH_* constants against the .so files it finds in
+      # ApplicationInfo.nativeLibraryDir, and every way that comparison can be
+      # wrong is silent -- decide() falls back to the APK-signature check and the
+      # build, the upload and the app all stay green.
+      #
+      # This is the only place the REAL artifact exists, so it is the only place
+      # the constants can be checked against the bytes a user actually installs.
+      # It runs against app-release.apk from assembleRelease above; bundleRelease
+      # re-runs R8 with -PplayBuild=true but does not touch the native libs, so
+      # the same hashes cover the AAB.
+      #
+      # Strict about absence as well as mismatch: a blank or malformed constant
+      # fails, and an ABI inside the APK with no entry fails. "Nothing to check"
+      # must never read as "check passed".
+      - name: Verify native integrity hashes match the shipped .so files
+        run: python3 scripts/check_native_hashes.py
+
       # Google Play requires 16 KB page-size support for apps targeting API 35+.
       # Assert every shipped native .so has 16 KB-aligned LOAD segments BEFORE we
       # sign/upload — a non-aligned lib is rejected by the Play Console. We check
