@@ -1,5 +1,6 @@
 import java.util.Properties
 import java.security.MessageDigest
+import java.io.File
 
 plugins {
     id("com.android.application")
@@ -8,6 +9,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.dagger.hilt.android")
     id("com.google.devtools.ksp")
+    // Baseline-profile CONSUMER. Its only job in this module is to take the
+    // profile recorded by :baselineprofile and hand it to AGP, which compiles it
+    // into the release artifact as assets/dexopt/baseline.prof(m).
+    //
+    // Defaults that matter and are deliberately left alone:
+    //   saveInSrc = true                      -> the profile is a COMMITTED file
+    //   automaticGenerationDuringBuild = false -> a release build never boots an
+    //                                            emulator; it reads the file
+    // Both together are what make the release build reproducible and offline.
+    id("androidx.baselineprofile")
 }
 
 // Load signing properties from local.properties (not committed to VCS)
@@ -127,6 +138,11 @@ val allowScreenshots = ((project.findProperty("allowScreenshots") as String?)
 // Default false; CI release builds never pass it.
 val perfOverlay = ((project.findProperty("perfOverlay") as String?)
     ?: System.getenv("BIRDO_PERF_OVERLAY"))?.toBoolean() ?: false
+
+// The two build types `androidx.baselineprofile` adds to this module. Named by
+// string in the finalizeDsl block below, which both re-signs them and repairs
+// their source sets, so they are spelled out once here.
+val profilingBuildTypes = setOf("nonMinifiedRelease", "benchmarkRelease")
 
 android {
     namespace = "app.birdo.vpn"
@@ -276,6 +292,14 @@ android {
                 debugSymbolLevel = "FULL"
             }
         }
+
+        // The two build types androidx.baselineprofile adds -- nonMinifiedRelease
+        // (the profile is RECORDED against this one, un-obfuscated, so the
+        // recorded class names are real) and benchmarkRelease (minified, used to
+        // MEASURE the result) -- are created by the plugin, not here. Everything
+        // this project needs to do to them happens in the finalizeDsl block below
+        // the android { } block, which is the last hook before variants are made.
+        // Neither is ever distributed: no upload task references them.
     }
 
     compileOptions {
@@ -307,6 +331,113 @@ android {
         abortOnError = true
         checkReleaseBuilds = true
         warningsAsErrors = false
+    }
+}
+
+// ── THE TWO BUILD TYPES androidx.baselineprofile CREATES ─────────────────────
+//
+// finalizeDsl is the last hook that runs before AGP creates variants, and both
+// of the things done here have to land before that: a signingConfig is read at
+// variant creation, and so are the source directories the Kotlin compilations
+// and KSP get. An afterEvaluate block would be too late for either.
+//
+// (1) SIGNING -- see the comment inside.
+// (2) SOURCE SETS:
+//
+// WITHOUT THIS, `:app:kspNonMinifiedReleaseKotlin` AND
+// `:app:kspBenchmarkReleaseKotlin` FAIL OUTRIGHT:
+//
+//   Could not determine the dependencies of task ':app:kspNonMinifiedReleaseKotlin'.
+//   > Illegal char <?> at index 40: <project>/app/provider(?)
+//
+// Cause, established by dumping getSrcDirs() on each source set rather than
+// guessing. When androidx.baselineprofile 1.5.0-rc02 creates its two build
+// types it copies the `release` source set into each new one through
+// AndroidSourceDirectorySet.addAllDirectories, which reflectively calls
+// getSrcDirs() and re-adds whatever comes back. Under AGP 9 the `kotlin`
+// convention directory is still an UNRESOLVED Provider at that moment, so what
+// gets copied is the Provider object itself, not a File. Nothing notices until
+// KSP resolves the source roots to real paths, does File(entry.toString()) and
+// gets the literal string "provider(?)".
+//
+// Observed exactly (execution-time dump, this project, AGP 9.4.0):
+//   release.kotlin            src/release/kotlin, src/release/java
+//   nonMinifiedRelease.kotlin src/nonMinifiedRelease/kotlin,
+//                             src/nonMinifiedRelease/java,
+//                             src/release/java,
+//                             provider(?)          <- src/release/kotlin, unresolved
+//
+// So the fix is to state the four directories explicitly, in finalizeDsl --
+// the last hook that runs before variants are created and therefore the last
+// point at which a source set edit still reaches the Kotlin compilations.
+//
+// The assertion is the important half. Overwriting a source set is exactly the
+// kind of repair that turns into silent source loss when the upstream bug is
+// fixed and the plugin starts copying something real: this fails the build if
+// it is about to discard a directory it did not expect, so a future
+// androidx.baselineprofile release cannot quietly lose sources here.
+androidComponents.finalizeDsl { extension ->
+    // The debug signing key, applied to both profiling build types.
+    //
+    // They are clones of `release`, so they inherit the PRODUCTION keystore.
+    // Re-pointing them is what makes the profile reproducible by anyone:
+    // otherwise only the holder of the upload key could re-record it, which is
+    // exactly how the previous profile became unreproducible and then a guess.
+    // Signing identity has no effect on which classes ART compiles, so the
+    // recording itself is unchanged.
+    val debugSigningConfig = extension.signingConfigs.getByName("debug")
+
+    for (buildType in profilingBuildTypes) {
+        // Hard failure, not a skip. These build types are created unconditionally
+        // by a plugin this module always applies, so their absence means the
+        // plugin renamed them -- and a silent skip would leave profile generation
+        // quietly requiring the production keystore, and the source-set repair
+        // below quietly not happening.
+        val buildTypeDsl = extension.buildTypes.findByName(buildType)
+            ?: error(
+                "androidx.baselineprofile did not create the `$buildType` build type. " +
+                    "Expected $profilingBuildTypes. It has most likely renamed them; " +
+                    "update profilingBuildTypes in app/build.gradle.kts."
+            )
+        buildTypeDsl.signingConfig = debugSigningConfig
+
+        val sourceSet = extension.sourceSets.findByName(buildType)
+            ?: error("no `$buildType` source set to repair")
+        // `kotlin` covers .java too (AGP puts both roots in the Kotlin set);
+        // `java` and `resources` were already correct but are restated so the
+        // whole copied surface is deterministic rather than half-repaired.
+        val expected = mapOf(
+            "java" to listOf("src/$buildType/java", "src/release/java"),
+            "kotlin" to listOf(
+                "src/$buildType/kotlin",
+                "src/$buildType/java",
+                "src/release/kotlin",
+                "src/release/java",
+            ),
+            "resources" to listOf("src/$buildType/resources", "src/release/resources"),
+        )
+        for ((kind, dirs) in expected) {
+            val set = when (kind) {
+                "java" -> sourceSet.java
+                "kotlin" -> sourceSet.kotlin
+                else -> sourceSet.resources
+            }
+            val wanted = dirs.map { project.file(it) }.toSet()
+            val unexpected = set.directories
+                .filterNot { it.contains("provider(") }
+                .map { project.file(it) }
+                .filterNot { it in wanted }
+            check(unexpected.isEmpty()) {
+                "androidx.baselineprofile put source directories on " +
+                    "$buildType.$kind that this repair does not know about: " +
+                    "$unexpected. Overwriting the set would silently drop them. " +
+                    "Update the `expected` map in app/build.gradle.kts (and check " +
+                    "whether the Provider bug this works around is fixed, in which " +
+                    "case delete the whole block)."
+            }
+            set.directories.clear()
+            set.directories.addAll(dirs)
+        }
     }
 }
 
@@ -929,4 +1060,20 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+
+    // ── Baseline profile ────────────────────────────────────────
+    //
+    // profileinstaller is what actually APPLIES the shipped profile on devices
+    // that do not get it from Play's cloud profile aggregation (sideloads,
+    // F-Droid, the first launch after an install). It was already reaching
+    // releaseRuntimeClasspath transitively via Glance/Activity, which means the
+    // whole feature hung on a transitive nobody declared: a Dependabot bump that
+    // dropped it would have silently disarmed the profile with no build failure
+    // and no test. Declared directly so that cannot happen quietly.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.0")
+
+    // The producer. This is NOT a code dependency -- `baselineProfile` is a
+    // dedicated configuration the plugin adds, and nothing from :baselineprofile
+    // is compiled into or packaged with the app.
+    baselineProfile(project(":baselineprofile"))
 }

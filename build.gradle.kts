@@ -32,4 +32,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization") version "2.2.21" apply false
     id("com.google.dagger.hilt.android") version "2.59" apply false
     id("com.google.devtools.ksp") version "2.2.21-2.0.5" apply false
+    // BASELINE PROFILE -- 1.5.0-rc02 IS THE FLOOR ON THIS TOOLCHAIN, and the
+    // version is not a matter of taste. The plugin hard-checks the AGP version
+    // it was built against:
+    //
+    //   1.4.1        MIN_AGP_VERSION_REQUIRED_INCLUSIVE   = 8.0.0
+    //                MAX_AGP_VERSION_RECOMMENDED_EXCLUSIVE = 9.0.0-alpha01
+    //   1.5.0-rc02   MIN_AGP_VERSION_REQUIRED_INCLUSIVE   = 8.0.0
+    //                MAX_AGP_VERSION_RECOMMENDED_EXCLUSIVE = 10.0.0-alpha01
+    //
+    // (read out of ConstantsKt in each published
+    //  benchmark-baseline-profile-gradle-plugin jar, not from documentation).
+    // AGP 9.4.0 is past 1.4.1's ceiling, so 1.4.1 warns and then trips over the
+    // AGP 9 variant API. 1.5.0-rc02 is the first release that declares AGP 9.
+    // It is an rc because there is no 1.5.0 final yet -- Google Maven's
+    // <release> tag for this artifact IS 1.5.0-rc02.
+    //
+    // KEEP IN SYNC with androidx.benchmark:benchmark-macro-junit4 in
+    // baselineprofile/build.gradle.kts: the Gradle plugin and the on-device
+    // library are released in lockstep and a mismatch fails at run time, on the
+    // emulator, after the boot.
+    id("androidx.baselineprofile") version "1.5.0-rc02" apply false
 }

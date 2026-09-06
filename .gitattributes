@@ -3,3 +3,11 @@
 gradlew     text eol=lf
 *.bat       text eol=crlf
 gradlew.bat text eol=crlf
+
+# The recorded baseline profile. AGP writes it with the recording HOST's line
+# endings, so a run on Windows lands as CRLF and one on a Linux runner as LF.
+# Pinning it to LF keeps the file reviewable: .github/workflows/baseline-profile.yml
+# re-records it monthly, and without this every one of its 22,700 lines would
+# show as changed on any run from a different platform, burying the handful of
+# rules that actually moved.
+app/src/release/generated/baselineProfiles/*.txt text eol=lf
