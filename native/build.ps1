@@ -9,7 +9,8 @@
      - cargo-ndk (`cargo install cargo-ndk`)
      - Android NDK r26 or newer (path via $env:ANDROID_NDK_HOME)
      - Rust Android targets:
-         rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+         rustup target add aarch64-linux-android armv7-linux-androideabi `
+                           x86_64-linux-android i686-linux-android
 
  .PARAMETER Profile
    "release" (default) or "debug".
@@ -52,10 +53,11 @@ $env:ANDROID_NDK_ROOT = $env:ANDROID_NDK_HOME
 Push-Location $crateDir
 try {
     $profileFlag = if ($Profile -eq "release") { "--release" } else { "" }
-    $abis = @("arm64-v8a", "armeabi-v7a", "x86_64")
+    # All four live Android ABIs.
+    $abis = @("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
     Write-Host ">>> cargo ndk -t $($abis -join ' -t ') build $profileFlag" -ForegroundColor Cyan
-    & cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o $jniLibsDir build $profileFlag
+    & cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o $jniLibsDir build $profileFlag
     if ($LASTEXITCODE -ne 0) {
         throw "cargo ndk build failed (exit $LASTEXITCODE)"
     }

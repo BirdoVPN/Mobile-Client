@@ -134,3 +134,10 @@ __pycache__/
 # iosApp/Vendor/wireguard-apple sources, which ARE tracked).
 iosApp/Vendor/BirdoPQNative.xcframework/
 iosApp/.build-wg/
+
+# Android native engines, all built or downloaded at build time by
+# native/build.sh (librosenpass_jni.so) and
+# scripts/provision_xray_engines.sh (libxray.so). Never commit them: a single
+# libxray.so is ~35 MB per ABI, and a stale one silently overrides what the
+# build just produced.
+app/src/main/jniLibs/*/*.so
