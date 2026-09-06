@@ -150,20 +150,56 @@ def main():
     if "_http" in existing:
         fail("could not list existing versions", existing)
 
+    # App Store Connect permits at most ONE version in an editable state and
+    # refuses to create another while one exists:
+    #   "You cannot create a new version of the App in the current state."
+    # A REJECTED version IS editable, so the correct move after a rejection is to
+    # RENAME that version and resubmit it, not to add a second one. Getting this
+    # wrong leaves the App Store tab apparently stuck on the rejected version
+    # with no way forward -- which is exactly how this was found.
+    EDITABLE = {
+        "PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED",
+        "METADATA_REJECTED", "INVALID_BINARY", "WAITING_FOR_EXPORT_COMPLIANCE",
+    }
+
     print(f"existing {args.platform} versions:")
     version_id = None
+    editable_id = editable_str = editable_state = None
     for v in existing.get("data", []):
         a = v["attributes"]
-        marker = "  <- target" if a.get("versionString") == args.version else ""
-        print(f"  {a.get('versionString'):12} {a.get('appStoreState')}{marker}")
-        if a.get("versionString") == args.version:
+        vs, st = a.get("versionString"), a.get("appStoreState")
+        marker = "  <- target" if vs == args.version else (
+            "  <- editable" if st in EDITABLE else "")
+        print(f"  {vs:12} {st}{marker}")
+        if vs == args.version:
             version_id = v["id"]
+        elif st in EDITABLE and editable_id is None:
+            editable_id, editable_str, editable_state = v["id"], vs, st
 
     if version_id:
         print(f"\nversion {args.version} already exists ({version_id})")
     elif args.dry_run:
-        print(f"\nDRY RUN: would create {args.platform} version {args.version}")
+        if editable_id:
+            print(f"\nDRY RUN: would RENAME {editable_str} ({editable_state}) "
+                  f"-> {args.version}")
+        else:
+            print(f"\nDRY RUN: would create {args.platform} version {args.version}")
         return
+    elif editable_id:
+        # Reuse rather than create. Renaming keeps the review history, the
+        # Resolution Center thread and the existing metadata attached, which is
+        # what Apple expects for a resubmission after a rejection.
+        print(f"\nan editable version already exists: {editable_str} "
+              f"({editable_state}). Apple allows only one, so RENAMING it to "
+              f"{args.version} rather than creating a second.")
+        res = api(tok, f"appStoreVersions/{editable_id}", method="PATCH", payload={
+            "data": {"type": "appStoreVersions", "id": editable_id,
+                     "attributes": {"versionString": args.version}}})
+        if "_http" in res:
+            fail(f"could not rename {editable_str} to {args.version}", res)
+        version_id = editable_id
+        print(f"RENAMED {editable_str} -> {args.version} (id {version_id}, "
+              f"state {res['data']['attributes'].get('appStoreState')})")
     else:
         print(f"\ncreating {args.platform} version {args.version} ...")
         res = api(tok, "appStoreVersions", method="POST", payload={
