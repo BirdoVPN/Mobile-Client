@@ -42,11 +42,18 @@ winget install Rustlang.Rust.MSVC      # or use rustup-init.exe
 # Install Android cross-compilation helper
 cargo install cargo-ndk
 
-# Add Android targets to your toolchain
+# Add Android targets to your toolchain.
+# ONE PER SHIPPED ABI. app/build.gradle.kts abiFilters ships four --
+# arm64-v8a, armeabi-v7a, x86_64, x86 -- and build.ps1 / build.sh pass all four
+# to cargo-ndk, so i686-linux-android is required to build what CI builds.
+# A missing target does NOT fail the Rust build: it silently yields one fewer
+# librosenpass_jni.so, which only surfaces much later in
+# scripts/verify_android_release_apk.py.
 rustup target add `
     aarch64-linux-android `
     armv7-linux-androideabi `
-    x86_64-linux-android
+    x86_64-linux-android `
+    i686-linux-android
 
 # Set NDK path (auto-detected on Windows from %LOCALAPPDATA%\Android\Sdk\ndk)
 $env:ANDROID_NDK_HOME = "$env:LOCALAPPDATA\Android\Sdk\ndk\26.3.11579264"
@@ -55,13 +62,22 @@ $env:ANDROID_NDK_HOME = "$env:LOCALAPPDATA\Android\Sdk\ndk\26.3.11579264"
 ### 2. Build the .so files
 
 ```pwsh
-pwsh native/build.ps1            # release (~3 MB per ABI, stripped)
+pwsh native/build.ps1            # release, all four ABIs (0.34-0.45 MB each)
 pwsh native/build.ps1 -Profile debug
 ```
 
 Output is written directly to `app/src/main/jniLibs/<abi>/librosenpass_jni.so`,
 which Gradle picks up automatically on the next `:app:assembleRelease` /
 `:app:bundleRelease`.
+
+These files keep their symbol table -- `native/rosenpass-jni/Cargo.toml` sets
+`strip = "debuginfo"` so that AGP's `debugSymbolLevel = "FULL"` can bundle the
+symbols into the AAB for Play Console native crash symbolication. AGP strips
+them again on the way into the APK, so the packaged library is smaller than the
+one written here (0.45 MB -> 0.32 MB on arm64-v8a). That is why the
+`NATIVE_HASH_*` integrity constants are computed from AGP's
+`strip<Variant>DebugSymbols` output rather than from these files or from the
+merge stage -- see the comment on `stripTask` in `app/build.gradle.kts`.
 
 ### 3. Verify
 

@@ -58,21 +58,72 @@ object NativeLibraryVerifier {
     }
 
     /**
+     * The trust decision, with no Android dependencies, so that every branch of
+     * it can be unit-tested. [verifyLibrary] gathers the facts; this decides.
+     *
+     * THE PACKAGE-SIGNATURE CHECK IS REQUIRED ON EVERY RELEASE PATH.
+     *
+     * That has to be spelled out because it was briefly true by accident and is
+     * now true on purpose. While NATIVE_HASH_* shipped blank (see the
+     * `androidComponents.onVariants` block in app/build.gradle.kts for why they
+     * did), `expectedHash` was always null, so every release load fell into the
+     * no-hash branch and every release load ran the signature check. Arming the
+     * hashes makes the hash-match branch reachable for the first time -- and a
+     * hash-match-only `return true` would have silently REMOVED the signature
+     * check from the path almost every user takes, letting a repackaged APK
+     * carrying genuine, unmodified engine binaries verify clean. A hash proves
+     * the .so was not swapped; only the signature proves the APK around it was
+     * not. Neither substitutes for the other.
+     *
+     * ANDing them costs nothing that is not already being paid: the identical
+     * check runs today on every release connect, for wg-go, xray and
+     * rosenpass_jni, and a failure aborts the connect and arms the kill switch
+     * (BirdoVpnService.kt, XrayManager.kt, RosenpassNative.kt). A signing
+     * allow-list that could not satisfy it would already be bricking every
+     * install.
+     *
+     * | Build   | Hash registered | File present | Hash matches | Signature trusted | Result |
+     * |---------|-----------------|--------------|--------------|-------------------|--------|
+     * | debug   | any             | any          | any          | any               | true   |
+     * | release | any             | no           | -            | any               | false  |
+     * | release | yes             | yes          | yes          | yes               | true   |
+     * | release | yes             | yes          | yes          | no                | FALSE  |
+     * | release | yes             | yes          | no           | yes               | true   |
+     * | release | yes             | yes          | no           | no                | false  |
+     * | release | no              | yes          | -            | yes               | true   |
+     * | release | no              | yes          | -            | no                | false  |
+     *
+     * The hash-MISMATCH row still accepts a signature-trusted package. That is
+     * deliberate and unchanged: a stale baked hash is a build-system regression,
+     * and failing closed on it would brick a correctly signed release for a
+     * reason no user can act on. An attacker cannot swap the .so AND keep a
+     * trusted Birdo signature.
+     */
+    internal fun decide(
+        isDebugBuild: Boolean,
+        libraryPresent: Boolean,
+        expectedHash: String?,
+        actualHash: String?,
+        signatureTrusted: Boolean,
+    ): Boolean {
+        if (isDebugBuild) return true
+        if (!libraryPresent) return false
+        if (expectedHash.isNullOrBlank()) return signatureTrusted
+        if (actualHash == null) return false
+        // A hash match is necessary but NOT sufficient -- see above.
+        if (actualHash.equals(expectedHash, ignoreCase = true)) return signatureTrusted
+        // Mismatch: almost always a stale baked hash, so fall back to the
+        // signature rather than bricking a legitimate release.
+        return signatureTrusted
+    }
+
+    /**
      * Verify a native library's SHA-256 hash before loading.
      *
-     * Returns true if the library is trusted. Behaviour matrix:
-     *
-     * | Build   | Hash registered | File present | Hash matches | Result |
-     * |---------|-----------------|--------------|--------------|--------|
-     * | debug   | any             | any          | any          | true   |
-     * | release | yes             | yes          | yes          | true   |
-     * | release | yes             | yes          | no           | false  |
-      * | release | yes             | no           | -            | false  |
-      * | release | no              | any          | -            | trusted signing cert required |
-     *
-      * The signed-APK fallback avoids bricking a release if a build-system
-      * regression fails to register native hashes, while still refusing
-      * repackaged APKs and unsigned local release builds.
+     * Returns true if the library is trusted. See [decide] for the full
+     * behaviour matrix; the short version is that a release build needs a
+     * trusted package signature on EVERY path, and additionally needs the .so
+     * to hash to the value baked in at build time whenever one was registered.
      */
     fun verifyLibrary(context: Context, libraryName: String): Boolean {
         if (app.birdo.vpn.BuildConfig.DEBUG) {
@@ -93,24 +144,35 @@ object NativeLibraryVerifier {
         // registered no hashes for this ABI we drop to the signature fallback.
         val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
         val expectedHash = KNOWN_HASHES["$libraryName@$abi"]
+
+        // Computed ONCE, for every release path, because every release path
+        // needs it now. Both operands are cheap and neither touches the network.
+        val signatureTrusted =
+            RootDetector.hasSigningFingerprintConfigured(context) &&
+                RootDetector.isPackageSignatureTrusted(context)
+
         if (expectedHash.isNullOrBlank()) {
-            if (!RootDetector.hasSigningFingerprintConfigured(context)) {
-                Log.e(TAG, "INTEGRITY FAILURE: no hash and no release signing fingerprint for $libraryName")
-                return false
-            }
-            if (!RootDetector.isPackageSignatureTrusted(context)) {
-                Log.e(TAG, "INTEGRITY FAILURE: package signature is not trusted for $libraryName")
-                return false
+            if (!signatureTrusted) {
+                Log.e(TAG, "INTEGRITY FAILURE: no registered hash and no trusted package signature for $libraryName")
+                return decide(false, true, null, null, false)
             }
             Log.w(TAG, "No registered hash for $libraryName; package signature check passed")
-            return true
+            return decide(false, true, null, null, true)
         }
 
         return try {
             val actualHash = sha256Hex(libFile)
             if (actualHash.equals(expectedHash, ignoreCase = true)) {
-                Log.i(TAG, "Library $libraryName integrity verified (hash match)")
-                true
+                // NOT a bare `true`. See [decide]: a matching hash proves the
+                // .so was not swapped, and says nothing about the APK it came
+                // in. Arming the hashes must not quietly retire the signature
+                // check that every release build has been running until now.
+                if (signatureTrusted) {
+                    Log.i(TAG, "Library $libraryName integrity verified (hash match + trusted signature)")
+                } else {
+                    Log.e(TAG, "INTEGRITY FAILURE: $libraryName hash matches but the package signature is not trusted - repackaged APK")
+                }
+                decide(false, true, expectedHash, actualHash, signatureTrusted)
             } else {
                 // The baked-in BuildConfig hash didn't match the packaged .so.
                 // This is most commonly a BUILD bug: the gradle task that injects
@@ -122,15 +184,12 @@ object NativeLibraryVerifier {
                 // cannot swap the .so AND keep a trusted Birdo signature, so a
                 // signature-trusted package is safe even on a hash mismatch.
                 Log.w(TAG, "INTEGRITY: $libraryName hash mismatch (expected=$expectedHash actual=$actualHash) — falling back to package-signature verification")
-                if (RootDetector.hasSigningFingerprintConfigured(context) &&
-                    RootDetector.isPackageSignatureTrusted(context)
-                ) {
+                if (signatureTrusted) {
                     Log.w(TAG, "INTEGRITY: $libraryName accepted via trusted package signature (hash injection likely stale in build)")
-                    true
                 } else {
                     Log.e(TAG, "INTEGRITY FAILURE: $libraryName hash mismatch AND untrusted signature — rejecting")
-                    false
                 }
+                decide(false, true, expectedHash, actualHash, signatureTrusted)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to verify $libraryName", e)
