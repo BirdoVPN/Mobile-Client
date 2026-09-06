@@ -80,16 +80,20 @@ def main() -> int:
         "",
         f"- committed: {len(before)} rules",
         f"- fresh recording: {len(after)} rules",
-        f"- {len(added)} added, {len(removed)} removed = {churn:.3f}% churn "
-        f"(threshold {args.max_churn_percent}%)",
+        (
+            f"- {len(added)} added, {len(removed)} removed = {churn:.3f}% churn "
+            f"(threshold {args.max_churn_percent}%)"
+        ),
         "",
     ]
     if drifted:
         report += [
-            "**The startup path has moved and the committed profile is stale.** "
-            "Download the `baseline-profile` artifact from this run and commit it, "
-            "or re-record locally with `scripts/generate-baseline-profile.sh`. "
-            "Do not hand-edit the file.",
+            (
+                "**The startup path has moved and the committed profile is stale.** "
+                "Download the `baseline-profile` artifact from this run and commit it, "
+                "or re-record locally with `scripts/generate-baseline-profile.sh`. "
+                "Do not hand-edit the file."
+            ),
             "",
         ]
         for label, entries in (("added", added), ("removed", removed)):
