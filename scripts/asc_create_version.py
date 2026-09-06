@@ -70,10 +70,16 @@ def make_token(key_pem: str, key_id: str, issuer: str) -> str:
             input=signing_input, capture_output=True, check=True,
         ).stdout
     finally:
+        # This temp file held the .p8 PRIVATE KEY, so a failed removal is not a
+        # tidy-up nuisance — it leaves key material on the runner's disk. Do not
+        # swallow it: warn loudly with the path so it is visible in the job log
+        # and can be cleaned up. Still non-fatal, because the signature already
+        # succeeded and aborting here would fail a job that did its work.
         try:
             os.remove(path)
-        except OSError:
-            pass
+        except OSError as e:
+            print(f"::warning::could not remove the temporary key file {path}: {e}. "
+                  f"Private key material may remain on this runner.")
     return (signing_input + b"." + b64u(_der_to_raw(der))).decode()
 
 
