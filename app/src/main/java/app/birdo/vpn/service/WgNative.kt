@@ -1,6 +1,6 @@
 package app.birdo.vpn.service
 
-import android.util.Log
+import app.birdo.vpn.utils.FaultReporter
 import java.lang.reflect.Method
 
 /**
@@ -15,6 +15,17 @@ import java.lang.reflect.Method
  * loaded and methods are resolved exactly once. All public functions are safe
  * to call from any thread.
  *
+ * Reporting: every function here converts a failure into a sentinel return
+ * (`false` / `-1` / `null`) so that a broken engine surfaces as a
+ * [VpnState.Error] instead of crashing the VPN service. That is correct
+ * behaviour and must stay — but it means the exception is the ONLY evidence
+ * the failure happened, and `android.util.Log` is stripped from release builds
+ * (see app/proguard-rules.pro). Every catch below therefore goes through
+ * [app.birdo.vpn.utils.FaultReporter], which is the only channel that survives
+ * R8. An anonymous, unbound catch in this file is a blind spot by
+ * construction, so DataplaneFaultReportingTest scans this file and fails the
+ * build if one reappears or if a catch stops reporting.
+ *
  * Method signatures (from wg-go JNI):
  * - wgTurnOn(ifName: String, tunFd: Int, settings: String): Int
  * - wgTurnOff(handle: Int): Void
@@ -23,8 +34,6 @@ import java.lang.reflect.Method
  * - wgGetConfig(handle: Int): String   (optional — may not exist in all builds)
  */
 internal object WgNative {
-
-    private const val TAG = "WgNative"
 
     @Volatile
     private var initialized = false
@@ -45,8 +54,17 @@ internal object WgNative {
             try {
                 try {
                     System.loadLibrary("wg-go")
-                } catch (_: UnsatisfiedLinkError) {
-                    Log.w(TAG, "System.loadLibrary(wg-go) failed, trying class loading")
+                } catch (e: UnsatisfiedLinkError) {
+                    // Not fatal on its own — Class.forName below can still pull
+                    // the library in through GoBackend's own static init — but
+                    // it is the first symptom of a bad ABI split or a stripped
+                    // APK, and it is worth having when the next line fails too.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "wg_loadlibrary_failed",
+                        "System.loadLibrary(wg-go) failed, falling back to class loading",
+                        e,
+                    )
                 }
 
                 val cls = Class.forName("com.wireguard.android.backend.GoBackend")
@@ -78,15 +96,33 @@ internal object WgNative {
                         "wgGetConfig",
                         Int::class.javaPrimitiveType,
                     ).apply { isAccessible = true }
-                } catch (_: NoSuchMethodException) {
-                    Log.w(TAG, "wgGetConfig not available — traffic stats disabled")
+                } catch (e: NoSuchMethodException) {
+                    // Degraded, not broken: the tunnel still runs, but traffic
+                    // stats and handshake-stall detection go dark
+                    // (TunnelMonitor gates both on canReadConfig()). Losing
+                    // stall detection across a wireguard-android bump is
+                    // exactly the silent regression this reporter exists for.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "wg_get_config_unavailable",
+                        "wgGetConfig not available — traffic stats and stall detection disabled",
+                        e,
+                    )
                 }
 
                 initialized = true
-                Log.i(TAG, "WireGuard native initialized successfully")
                 return true
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to initialize WireGuard native", e)
+                // The whole engine is unusable on this device/build — the
+                // single loudest failure the client has. It is reported here
+                // rather than at the BirdoVpnService call site because THIS is
+                // where the throwable still exists; the caller only sees false.
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "wg_native_init_failed",
+                    "Failed to initialize WireGuard native bridge",
+                    e,
+                )
                 initialized = true
                 return false
             }
@@ -96,9 +132,30 @@ internal object WgNative {
     /** Start a WireGuard tunnel. Returns a handle >= 0 on success, or -1 on failure. */
     fun turnOn(ifName: String, tunFd: Int, settings: String): Int {
         return try {
-            turnOnMethod?.invoke(null, ifName, tunFd, settings) as? Int ?: -1
+            val result = turnOnMethod?.invoke(null, ifName, tunFd, settings) as? Int
+            if (result == null) {
+                // The silent branch the elvis operator used to hide: either
+                // init() never resolved the method, or wg-go returned something
+                // that is not an Int. Both produce a -1 that is indistinguishable
+                // from a genuine wg-go refusal, and neither throws — so without
+                // this there is nothing to report at all. NOTE: `settings` is
+                // the WireGuard UAPI config (keys, endpoint) and must never be
+                // put in a report.
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "wg_turn_on_no_result",
+                    "wgTurnOn returned no handle (bridge not initialised or unexpected return type)",
+                )
+                return -1
+            }
+            result
         } catch (e: Exception) {
-            Log.e(TAG, "wgTurnOn failed", e)
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "wg_turn_on_failed",
+                "wgTurnOn threw for interface $ifName",
+                e,
+            )
             -1
         }
     }
@@ -108,19 +165,54 @@ internal object WgNative {
         try {
             turnOffMethod?.invoke(null, handle)
         } catch (e: Exception) {
-            Log.e(TAG, "wgTurnOff failed", e)
+            // A tunnel that will not stop is a leak of the previous session's
+            // route, not a cosmetic teardown warning.
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "wg_turn_off_failed",
+                "wgTurnOff threw — the tunnel may still be up",
+                e,
+            )
         }
     }
 
-    /** Get the IPv4 UDP socket fd for the tunnel, or -1 if unavailable. */
+    /**
+     * Get the IPv4 UDP socket fd for the tunnel, or -1 if unavailable.
+     *
+     * A -1 return is NOT reported: callers poll this during bring-up and a
+     * not-yet-open socket is the normal answer for the first few hundred
+     * milliseconds. A *throw* is reported, because it means the reflection
+     * handle itself is wrong and the socket will never be protected — which
+     * routes wg-go's own traffic back into the tunnel.
+     */
     fun getSocketV4(handle: Int): Int =
-        try { getSocketV4Method?.invoke(null, handle) as? Int ?: -1 }
-        catch (_: Exception) { -1 }
+        try {
+            getSocketV4Method?.invoke(null, handle) as? Int ?: -1
+        } catch (e: Exception) {
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "wg_get_socket_v4_failed",
+                "wgGetSocketV4 threw — tunnel socket cannot be protected",
+                e,
+            )
+            -1
+        }
 
     /** Get the IPv6 UDP socket fd for the tunnel, or -1 if unavailable. */
     fun getSocketV6(handle: Int): Int =
-        try { getSocketV6Method?.invoke(null, handle) as? Int ?: -1 }
-        catch (_: Exception) { -1 }
+        try {
+            getSocketV6Method?.invoke(null, handle) as? Int ?: -1
+        } catch (e: Exception) {
+            // Same reasoning as getSocketV4 — kept as a twin on purpose: the v6
+            // half going unreported is how a v6-only leak stays invisible.
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "wg_get_socket_v6_failed",
+                "wgGetSocketV6 threw — tunnel socket cannot be protected",
+                e,
+            )
+            -1
+        }
 
     /**
      * Get the UAPI config string from a running tunnel.
@@ -128,8 +220,20 @@ internal object WgNative {
      * Returns `null` if the method is unavailable or the call fails.
      */
     fun getConfig(handle: Int): String? =
-        try { getConfigMethod?.invoke(null, handle) as? String }
-        catch (_: Exception) { null }
+        try {
+            getConfigMethod?.invoke(null, handle) as? String
+        } catch (e: Exception) {
+            // Throttled in FaultReporter — this is called from a polling loop.
+            // Worth reporting because stall detection silently stops working
+            // when it fails, and the tunnel then looks healthy while dead.
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "wg_get_config_failed",
+                "wgGetConfig threw — stats and stall detection unavailable",
+                e,
+            )
+            null
+        }
 
     fun canReadConfig(): Boolean = getConfigMethod != null
 }
