@@ -108,6 +108,60 @@ def fail(msg, obj=None):
     sys.exit(1)
 
 
+def audit_account(tok, bundle_id):
+    """Print every app on the account and every version record on each.
+
+    WHY: the App Store Connect web UI caches aggressively, and a version that was
+    RENAMED after a rejection (see the EDITABLE note in main) can keep showing its
+    old number in a stale tab for a long time. When the dashboard and the API
+    disagree, this is the tie-breaker -- it reads the account itself, so it also
+    catches the other explanation, which is that the platform you are looking at
+    lives on a DIFFERENT app record entirely.
+
+    Prints identifiers and states only. No key material, no user data.
+    """
+    print("\n" + "=" * 68)
+    print("ACCOUNT AUDIT - what App Store Connect actually holds right now")
+    print("=" * 68)
+
+    allapps = api(tok, "apps?limit=100")
+    if "_http" in allapps:
+        print("::warning::could not list apps for the audit")
+        return
+    rows = allapps.get("data", [])
+    print("\napps on this account: %d" % len(rows))
+    for a in rows:
+        at = a["attributes"]
+        mark = "  <- targeted by this run" if at.get("bundleId") == bundle_id else ""
+        print("  %-12s %-30s %s%s" % (a["id"], at.get("bundleId", "?"),
+                                      at.get("name", "?"), mark))
+
+    for a in rows:
+        at = a["attributes"]
+        print("\n--- %s (%s) ---" % (at.get("name", "?"), at.get("bundleId", "?")))
+        vers = api(tok, "apps/%s/appStoreVersions?limit=50" % a["id"])
+        if "_http" in vers:
+            print("    could not list versions")
+            continue
+        data = vers.get("data", [])
+        if not data:
+            print("    (no version records at all)")
+            continue
+        for v in data:
+            va = v["attributes"]
+            # appStoreState is the legacy field and appVersionState the current
+            # one; they are not both populated across API versions, and reading
+            # only one of them is how you get a confidently wrong answer.
+            state = va.get("appStoreState") or va.get("appVersionState") or "?"
+            b = api(tok, "appStoreVersions/%s/build" % v["id"])
+            bv = "no build attached"
+            if "_http" not in b and b.get("data"):
+                bv = "build " + str((b["data"].get("attributes") or {}).get("version", "?"))
+            print("    %-8s %-10s %-26s %s" % (va.get("platform", "?"),
+                                               va.get("versionString", "?"), state, bv))
+    print("\n" + "=" * 68)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bundle-id", default="app.birdo.vpn")
@@ -116,6 +170,8 @@ def main():
     ap.add_argument("--whats-new", default="")
     ap.add_argument("--build", default="", help="CFBundleVersion to attach, e.g. 10427")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--audit", action="store_true",
+                    help="dump every app and version record on the account")
     args = ap.parse_args()
 
     key_b64 = os.environ.get("APPSTORE_API_KEY_BASE64", "")
@@ -144,6 +200,9 @@ def main():
         fail(f"no app found for bundle id {args.bundle_id}")
     app_id = apps["data"][0]["id"]
     print(f"app: {apps['data'][0]['attributes'].get('name')} ({app_id})")
+
+    if args.dry_run or args.audit:
+        audit_account(tok, args.bundle_id)
 
     existing = api(tok, f"apps/{app_id}/appStoreVersions"
                         f"?filter[platform]={args.platform}&limit=20")
