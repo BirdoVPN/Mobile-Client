@@ -326,6 +326,23 @@ jobs:
     permissions:
       contents: read
       id-token: write  # Required for both Sigstore (Fulcio OIDC) and Azure AD OIDC
+    # Declared at JOB level, not on the single build step, deliberately.
+    # Issue #357: `SENTRY_DSN` was read by app/build.gradle.kts and supplied by
+    # nothing, so every artifact this job has ever produced shipped an inert
+    # crash reporter — green build, no signal. A step-level env: would put us
+    # one added gradle step away from that state again; at job level every
+    # gradle invocation in this job inherits it.
+    #
+    # This job is the ONLY place in the repo that builds a release Android
+    # artifact (assembleRelease + bundleRelease, both below). fdroid.yml does
+    # not build — it re-signs the app-release.apk this job published — and
+    # ios.yml / macos.yml build the :shared KMP framework, which has no
+    # BuildConfig and no Sentry dependency.
+    #
+    # The build FAILS if the secret is unset (:app:validateSentryDsn). That is
+    # intentional: see docs/SENTRY-SETUP.md.
+    env:
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -456,6 +473,9 @@ jobs:
       - name: Build Release APK and AAB
         # RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD
         # are set as GITHUB_ENV by the Azure Key Vault step above.
+        #
+        # SENTRY_DSN comes from the job-level env: above (repo secret). Both
+        # gradle invocations below refuse to run without it.
         #
         # Two distribution targets from one source tree:
         #   • APK  (assembleRelease, default IS_PLAY_BUILD=false) → GitHub release,

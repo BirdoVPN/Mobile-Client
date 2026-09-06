@@ -33,6 +33,51 @@ val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint"
     ?: System.getenv("BIRDO_SIGNING_CERT_FINGERPRINT")
     ?: ""
 
+// ── Sentry DSN (crash reporting) ────────────────────────────────────────────
+//
+// Resolution order: -PsentryDsn=… > local.properties > SENTRY_DSN env var.
+// CI supplies the env var from the SENTRY_DSN repo secret — see the `release`
+// job in .github/workflows/android.yml and docs/SENTRY-SETUP.md.
+//
+// Resolved HERE, once, at the top level rather than inside defaultConfig,
+// because the release-build gate below has to read the same value. Two
+// distinct not-configured states have to collapse to one:
+//
+//   • absent            → BuildConfig.SENTRY_DSN = "" → the SDK stays disabled.
+//   • the text "null"   → what `"$sentryDsn"` interpolated into BuildConfig
+//                         before the `?: ""` fallback existed (issue #357).
+//                         "null" is NOT blank, so Sentry would accept it as a
+//                         DSN and throw on every cold start instead of quietly
+//                         disabling. Treat it as absent.
+//
+// A blank DSN is fine for debug and for anyone building from a clean checkout;
+// it is NOT fine for a release, which is what validateSentryDsn enforces.
+val sentryDsn = ((project.findProperty("sentryDsn") as String?)
+    ?: localProperties.getProperty("SENTRY_DSN")
+    ?: System.getenv("SENTRY_DSN"))
+    ?.trim()
+    ?.takeUnless { it.isEmpty() || it.equals("null", ignoreCase = true) }
+    ?: ""
+
+// A usable DSN is exactly `https://<publicKey>@<host>/<projectId>`. Anything
+// else — a placeholder, a project slug, an accidentally pasted auth token —
+// either initialises into a permanent no-op or throws, so "non-empty" is not
+// a strong enough test to ship on.
+val sentryDsnIsUsable = Regex("""^https://[^@/\s]+@[^/\s]+/\d+$""").matches(sentryDsn)
+
+// Escaped for embedding as a Java string literal in generated BuildConfig.java.
+// A DSN contains none of these today; doing it anyway means a malformed value
+// produces a build-gate failure (below) rather than a Java syntax error with a
+// stack trace that quotes the secret.
+val sentryDsnLiteral = sentryDsn.replace("\\", "\\\\").replace("\"", "\\\"")
+
+// Deliberate, explicit escape hatch: build a RELEASE artifact with no Sentry
+// account at all (reproducible/F-Droid-style source builds, a contributor
+// checking that minification still works). It has to be typed on the command
+// line — it is never set in CI, and the build shouts when it is used.
+val allowMissingSentryDsn = ((project.findProperty("allowMissingSentryDsn") as String?)
+    ?: System.getenv("BIRDO_ALLOW_MISSING_SENTRY_DSN"))?.toBoolean() ?: false
+
 // Google Play distribution flag. When true (CI builds the AAB with
 // -PplayBuild=true) the app sells subscriptions through GOOGLE PLAY BILLING and
 // steers nowhere else, per Google Play's Payments policy. When false (the
@@ -120,11 +165,11 @@ android {
         // the exchange goes to the API host (api.birdo.app).
         buildConfigField("String", "WEB_BASE_URL", "\"https://birdo.app\"")
         buildConfigField("String", "APP_VERSION", "\"$computedVersionName\"")
-        // Sentry DSN — loaded from local.properties (dev) or CI environment variable
-        val sentryDsn = localProperties.getProperty("SENTRY_DSN")
-            ?: System.getenv("SENTRY_DSN")
-            ?: ""
-        buildConfigField("String", "SENTRY_DSN", "\"$sentryDsn\"")
+        // Sentry DSN — resolved by the block above local.properties/env/-P.
+        // Empty in debug and in any build that was not given one; a RELEASE
+        // build with an empty or malformed value is refused outright by
+        // :app:validateSentryDsn, which preReleaseBuild depends on.
+        buildConfigField("String", "SENTRY_DSN", "\"$sentryDsnLiteral\"")
 
         // Native library integrity: populated by computeNativeHashes task for release builds
         buildConfigField("String", "NATIVE_HASH_WG_GO", "\"\"")
@@ -276,6 +321,68 @@ val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfi
     }
 }
 
+// ── Release gate: a shipped build must be able to report its own crashes ────
+//
+// Issue #357: `SENTRY_DSN` was read from local.properties/env and nothing ever
+// supplied it — no repo secret, no `env:` on the workflow — so every artifact
+// CI has ever produced compiled an empty (originally: the literal "null") DSN
+// and every Sentry call in the app was inert. Nothing failed; the build was
+// green and the crash reporter simply did not exist.
+//
+// That is the estate's recurring defect shape: a control that reports healthy
+// while doing nothing. The only fix that stays fixed is refusing to produce
+// the artifact, so a missing DSN is a build failure and not a warning.
+//
+// Debug builds are deliberately unaffected: BirdoApp.initSentry() returns
+// early on BuildConfig.DEBUG, so local development never needs the secret.
+val validateSentryDsn = tasks.register("validateSentryDsn") {
+    group = "verification"
+    description = "Fails release builds when no usable Sentry DSN was supplied."
+
+    doLast {
+        if (sentryDsnIsUsable) {
+            logger.lifecycle("Sentry: release build has a DSN — crash reporting is ARMED.")
+            return@doLast
+        }
+        if (allowMissingSentryDsn) {
+            logger.warn(
+                "\n" +
+                    "*********************************************************************\n" +
+                    "  WARNING: building a RELEASE artifact with NO Sentry DSN.\n" +
+                    "  This build cannot report a single crash. It must never be the\n" +
+                    "  artifact that reaches the Play Store or a GitHub release.\n" +
+                    "  (-PallowMissingSentryDsn=true was passed.)\n" +
+                    "*********************************************************************\n"
+            )
+            return@doLast
+        }
+        throw GradleException(
+            buildString {
+                appendLine("No usable SENTRY_DSN — refusing to build a release artifact that cannot report crashes.")
+                appendLine()
+                appendLine(
+                    if (sentryDsn.isEmpty()) "  resolved value: <empty / absent / the literal \"null\">"
+                    else "  resolved value: present but not a valid DSN " +
+                        "(expected https://<publicKey>@<host>/<projectId>)"
+                )
+                appendLine()
+                appendLine("Supply it in ONE of these ways:")
+                appendLine("  • CI      — set the SENTRY_DSN repo secret; the release job already")
+                appendLine("              passes it through as an env var.")
+                appendLine("              gh secret set SENTRY_DSN --repo BirdoVPN/Mobile-Client")
+                appendLine("  • local   — add SENTRY_DSN=… to local.properties (gitignored)")
+                appendLine("  • one-off — ./gradlew assembleRelease -PsentryDsn=…")
+                appendLine()
+                appendLine("To build a release deliberately WITHOUT crash reporting (source/F-Droid")
+                appendLine("style builds only, never for a shipped artifact):")
+                appendLine("  ./gradlew assembleRelease -PallowMissingSentryDsn=true")
+                appendLine()
+                appendLine("Full setup: docs/SENTRY-SETUP.md")
+            }
+        )
+    }
+}
+
 // ── Rosenpass JNI native build ──────────────────────────────────────────────
 //
 // Cross-compiles `native/rosenpass-jni/` (Rust) for all four live Android
@@ -410,7 +517,17 @@ afterEvaluate {
         }
     }
 
-    tasks.findByName("preReleaseBuild")?.dependsOn(validateReleaseSecurityConfig, buildRustLibs)
+    // Every release-build gate hangs off this ONE task. `findByName(...)?.` used
+    // to swallow a rename: if AGP ever stopped creating preReleaseBuild the
+    // safe-call would silently detach all three gates and the build would stay
+    // green with the checks gone — the exact failure mode #357 documents.
+    // Fail instead, so a toolchain change surfaces as a build error.
+    val preRelease = tasks.findByName("preReleaseBuild") ?: throw GradleException(
+        "AGP no longer creates :app:preReleaseBuild, so the release gates " +
+            "(validateReleaseSecurityConfig, validateSentryDsn, buildRustLibs) are " +
+            "wired to nothing. Re-point them at the replacement task before shipping."
+    )
+    preRelease.dependsOn(validateReleaseSecurityConfig, buildRustLibs, validateSentryDsn)
 }
 
 dependencies {

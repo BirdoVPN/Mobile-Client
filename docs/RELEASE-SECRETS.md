@@ -39,6 +39,19 @@ linked from the website. There is no Google Play Store / AAB upload pipeline.
 > The package name (`app.birdo.vpn`) is hard-coded in `android.yml` and
 > `app/build.gradle.kts`.
 
+### GitHub secrets (Settings -> Secrets and variables -> Actions)
+
+| Secret        | Required | Source                                                                 |
+| ------------- | -------- | ---------------------------------------------------------------------- |
+| `SENTRY_DSN`  | **Yes**  | Sentry -> Settings -> Projects -> *project* -> Client Keys (DSN).      |
+
+> **The release job FAILS without `SENTRY_DSN`.** `:app:validateSentryDsn`
+> refuses to build a release artifact whose crash reporter would be inert
+> (issue #357) — previously this produced a green build and a silent app.
+> Consumed by the `release` job's job-level `env:` in `android.yml`; both
+> `assembleRelease` and `bundleRelease` inherit it. Debug builds do not need it.
+> Full click path: [`docs/SENTRY-SETUP.md`](./SENTRY-SETUP.md).
+
 ---
 
 ## iOS — TestFlight upload

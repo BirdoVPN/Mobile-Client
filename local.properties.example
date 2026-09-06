@@ -1,7 +1,19 @@
 sdk.dir=C\:\\Users\\${USER}\\AppData\\Local\\Android\\Sdk
 
 # ── Sentry ───────────────────────────────────────────────────────
-# For crash reporting. Get your DSN from https://sentry.io
+# Crash reporting DSN. Format:
+#   https://<publicKey>@o<orgId>.ingest.de.sentry.io/<projectId>
+#
+# NOT needed for debug builds — BirdoApp.initSentry() returns early on
+# BuildConfig.DEBUG, so local development never requires this value.
+#
+# REQUIRED for a release build: :app:validateSentryDsn fails the build if it is
+# missing or malformed, rather than silently producing an artifact whose crash
+# reporter does nothing (issue #357). To build a release without one anyway:
+#   ./gradlew assembleRelease -PallowMissingSentryDsn=true
+#
+# In CI this comes from the SENTRY_DSN repo secret, not from this file.
+# Full setup + the exact click path: docs/SENTRY-SETUP.md
 SENTRY_DSN=
 
 # ── Release signing ──────────────────────────────────────────────
