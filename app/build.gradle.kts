@@ -130,7 +130,23 @@ val perfOverlay = ((project.findProperty("perfOverlay") as String?)
 
 android {
     namespace = "app.birdo.vpn"
-    compileSdk = 36
+    // compileSdk 37 + compileSdkMinor 0 -> platforms;android-37.0.
+    //
+    // The SDK repository publishes NO bare `platforms;android-37`; the only
+    // API-37 platforms are android-37.0, 37.1 and 37.2. Selecting a
+    // minor-versioned platform is an AGP 9 feature, so this line is a second,
+    // independent reason the toolchain bump had to be atomic -- AGP 8 cannot
+    // resolve any API-37 platform at all.
+    //
+    // Pinned to the .0 minor deliberately rather than tracking the newest: a
+    // compileSdk minor bump is an API-surface change and belongs in its own PR
+    // with its own lint run, not implicit in a toolchain migration.
+    //
+    // targetSdk stays 36 (see defaultConfig): compiling against 37 is required
+    // by the androidx AARs, but RAISING targetSdk changes runtime behaviour for
+    // users and needs a device test, which this change does not carry.
+    compileSdk = 37
+    compileSdkMinor = 0
 
     defaultConfig {
         applicationId = "app.birdo.vpn"
@@ -296,8 +312,44 @@ android {
 
 // PFA-M3: pin every dependency resolution to a generated lockfile so a
 // compromised upstream proxy or transitive version drift cannot silently
-// substitute artifacts. Run `./gradlew :app:dependencies --write-locks`
-// to (re)generate gradle.lockfile after deliberate dependency bumps.
+// substitute artifacts.
+//
+// REGENERATE WITH BOTH OF THESE, IN ORDER (verified during the AGP 9 bump):
+//
+//   rm app/gradle.lockfile
+//   ./gradlew :app:resolveAndLockAll --write-locks
+//   ./gradlew :app:assembleDebug :app:testDebugUnitTest --write-locks
+//
+// BOTH steps are required and neither is sufficient alone:
+//
+//   * resolveAndLockAll walks the configuration container, so it covers
+//     configurations no single build touches -- but it cannot see ones AGP
+//     creates during task EXECUTION. `:app:androidApis` is the one that bites:
+//     it is created by parseDebugLocalResources, so a lockfile built only from
+//     resolveAndLockAll fails the very next build with
+//     "Configuration ':app:androidApis' is locked but does not have lock state".
+//   * the build step covers androidApis and the real task classpaths, but only
+//     the ones those tasks resolve.
+//
+// Delete the lockfile first. --write-locks UPDATES the configurations it
+// resolves and LEAVES THE REST, so stale entries survive a "regeneration"
+// silently. That is not cosmetic under LockMode.STRICT.
+//
+// NOT with `./gradlew :app:dependencies --write-locks`, which this comment used
+// to recommend and which is NOT sufficient. Measured during the AGP 9 bump: the
+// `dependencies` report does not resolve releaseUnitTestCompileClasspath or
+// releaseUnitTestRuntimeClasspath, so --write-locks leaves their entries
+// untouched. After bumping appcompat 1.7.1 -> 1.8.0 the lockfile still held
+//
+//   androidx.appcompat:appcompat:1.7.1=releaseUnitTestCompileClasspath,
+//   androidx.appcompat:appcompat:1.7.1=releaseUnitTestRuntimeClasspath
+//
+// alongside the new 1.8.0 line -- pinning a version the build no longer
+// declares. (Under AGP 9 those two configurations no longer exist at all:
+// AGP 9 creates unit tests only for the testBuildType, so there is no
+// testReleaseUnitTest task and no releaseUnitTest* classpath. The entries were
+// pure stale garbage, which is exactly why the lockfile must be DELETED rather
+// than updated in place.)
 dependencyLocking {
     lockAllConfigurations()
     lockMode = LockMode.STRICT
@@ -305,6 +357,30 @@ dependencyLocking {
     // the Kotlin 2.2 compiler plugin classpaths vs the app; locking it causes a
     // STRICT-mode resolution conflict, so exclude it from the lock.
     ignoredDependencies.add("org.jetbrains.kotlin:kotlin-stdlib-common")
+}
+
+// Resolve EVERY resolvable configuration so --write-locks refreshes all of them.
+// See the note above dependencyLocking for why the `dependencies` report is not
+// a substitute. Refuses to run without --write-locks so it cannot be mistaken
+// for a verification task.
+tasks.register("resolveAndLockAll") {
+    notCompatibleWithConfigurationCache("Resolves every configuration to write lock state")
+    doFirst {
+        require(gradle.startParameter.isWriteDependencyLocks) {
+            "resolveAndLockAll does nothing useful without --write-locks. " +
+                "Run: ./gradlew :app:resolveAndLockAll --write-locks"
+        }
+    }
+    doLast {
+        // Resolve the dependency GRAPH, not the artifacts. Dependency locking
+        // records the graph, and `Configuration.resolve()` additionally forces
+        // artifact selection -- which fails on the androidTest classpaths
+        // ("cannot choose between the following variants of project ':app'",
+        // artifactType unmatched) even though their graph resolves fine.
+        configurations
+            .filter { it.isCanBeResolved }
+            .forEach { it.incoming.resolutionResult.root }
+    }
 }
 
 // Kotlin 2.2: jvmTarget via the compilerOptions DSL (kotlinOptions{} inside
@@ -416,7 +492,12 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
     val nativeDir = rootProject.file("native")
     workingDir = nativeDir
 
-    val isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows
+    // Plain JDK property, not org.gradle.internal.os.OperatingSystem. That class
+    // is a Gradle INTERNAL API; it survived into Gradle 9.7.1 but moved jars
+    // (lib/gradle-stdlib-java-extensions-9.7.1.jar), and an internal API that
+    // relocates under us is one toolchain bump away from vanishing. No behaviour
+    // change, one fewer thing that can break on the next wrapper bump.
+    val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
     if (isWindows) {
         commandLine("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                     "-File", "build.ps1", "-Profile", "release")
@@ -449,6 +530,28 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
             )
         }
     }
+}
+
+// buildRustLibs writes librosenpass_jni.so into app/src/main/jniLibs/<abi>/,
+// which is ALSO a source directory AGP's merge*JniLibFolders tasks read. Gradle
+// 9 promotes that undeclared producer/consumer pair from a warning to a build
+// FAILURE:
+//
+//   Task ':app:mergeDebugJniLibFolders' uses this output of task
+//   ':app:buildRustLibs' without declaring an explicit or implicit dependency.
+//
+// It only bites when both tasks are in ONE task graph. CI never hit it because
+// it invokes `./gradlew :app:buildRustLibs` as a separate step -- but the
+// command this file documents a few lines above, `./gradlew :app:buildRustLibs
+// bundleRelease`, is exactly the failing shape.
+//
+// mustRunAfter, not dependsOn, on purpose: dependsOn would drag a cargo-ndk
+// cross-compile into every debug build (and into CI jobs that deliberately do
+// not install the Rust toolchain). mustRunAfter only ORDERS the two when both
+// are already in the graph, which is precisely the ambiguity being fixed. It is
+// Gradle's own suggestion #3 for this diagnostic.
+tasks.matching { it.name.endsWith("JniLibFolders") }.configureEach {
+    mustRunAfter(buildRustLibs)
 }
 
 // Compute SHA-256 hashes of the SHIPPED native .so libraries for runtime
@@ -490,9 +593,29 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
 val nativeIntegrityHashes: MapProperty<String, String> =
     objects.mapProperty(String::class.java, String::class.java)
 
+// Release variant names, collected by the onVariants callback below and consumed
+// by the producer block in afterEvaluate.
+//
+// This list is how the producer learns which variants exist now that
+// `android.applicationVariants` is gone (REMOVED in AGP 9 -- it was the legacy
+// AppExtension API, and under AGP 9's default `android.newDsl=true` the android
+// extension is ApplicationExtension, which never had it).
+//
+// ORDERING, which this depends on: AGP registers its variant-creation
+// afterEvaluate callback when the plugin is applied, at the very top of this
+// script, so it runs BEFORE the afterEvaluate registered further down -- Gradle
+// runs afterEvaluate callbacks in registration order. The onVariants callbacks
+// have therefore all fired, and this list is fully populated, by the time the
+// producer reads it. The producer block already depended on exactly this
+// ordering to find AGP's strip/generateBuildConfig tasks by name, so this
+// introduces no new assumption -- but it is now asserted rather than assumed
+// (see the isNotEmpty check in afterEvaluate).
+val releaseVariantNames = mutableListOf<String>()
+
 androidComponents.onVariants(
     androidComponents.selector().withBuildType("release")
 ) { variant ->
+    releaseVariantNames += variant.name
     // Nullable when buildFeatures.buildConfig is off. Asserting rather than
     // null-safe-calling is deliberate: silently skipping is exactly how these
     // constants came to be blank in the first place.
@@ -509,10 +632,9 @@ androidComponents.onVariants(
                 // that can actually produce this constant.
                 //
                 // Everything that computes these hashes lives in the
-                // `afterEvaluate { android.applicationVariants.all { ... } }`
-                // block below, which uses the DEPRECATED applicationVariants
-                // API that AGP 9 removes. If that block stops running -- an AGP
-                // task rename, the API's removal, a variant filter -- the
+                // `afterEvaluate { for (rawName in releaseVariantNames) ... }`
+                // block below. If that block stops running -- an AGP task
+                // rename, a variant filter, an empty variant list -- the
                 // MapProperty keeps its default EMPTY MAP, every `check(...)`
                 // inside it is skipped along with the block, and the old code
                 // here shipped `""`. That is precisely the disarmed-but-green
@@ -525,7 +647,7 @@ androidComponents.onVariants(
                 check(!value.isNullOrBlank()) {
                     "$field is blank or absent: the native-integrity hashes were " +
                         "never computed for this release variant. The producer block " +
-                        "(afterEvaluate/applicationVariants in app/build.gradle.kts) " +
+                        "(afterEvaluate/releaseVariantNames in app/build.gradle.kts) " +
                         "did not run, or AGP renamed the tasks it looks up. Refusing " +
                         "to ship a release with NativeLibraryVerifier disarmed."
                 }
@@ -542,9 +664,28 @@ androidComponents.onVariants(
 }
 
 afterEvaluate {
-    android.applicationVariants.all {
-        if (buildType.name == "release") {
-            val variantName = name.replaceFirstChar { it.uppercase() }
+    // THE NEW FAILURE MODE THIS PORT INTRODUCES, ASSERTED AWAY.
+    //
+    // The old `applicationVariants.all { if (buildType.name == "release") }`
+    // could fail by never running its body. The replacement can fail by
+    // iterating an EMPTY list -- if onVariants matched no variant, this loop is
+    // a no-op, nativeIntegrityHashes keeps its default empty map, every
+    // check(...) inside the loop is skipped along with the loop, and the only
+    // thing left between that and a disarmed release is the
+    // check(!value.isNullOrBlank()) in the consumer above.
+    //
+    // That is one guard too few for a control that has already shipped
+    // disarmed once (#362). Fail here, on the empty list itself.
+    check(releaseVariantNames.isNotEmpty()) {
+        "No release variant was reported by androidComponents.onVariants, so the " +
+            "native integrity hashes were never computed. Either AGP stopped " +
+            "creating a `release` build type, or the onVariants callback did not " +
+            "run before this afterEvaluate block. Refusing to configure a build " +
+            "that could ship with NativeLibraryVerifier disarmed."
+    }
+    for (rawName in releaseVariantNames) {
+        run {
+            val variantName = rawName.replaceFirstChar { it.uppercase() }
             // HASH THE BYTES THAT ACTUALLY SHIP.
             //
             // This used to read merge${variantName}NativeLibs. AGP runs
@@ -718,11 +859,11 @@ dependencies {
 
     // ── Core Android ─────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation("androidx.fragment:fragment-ktx:1.8.9")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
+    implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("androidx.fragment:fragment-ktx:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.datastore:datastore-preferences:1.2.1")
 
@@ -741,7 +882,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.navigation:navigation-compose:2.9.8")
+    implementation("androidx.navigation:navigation-compose:2.10.0")
     implementation("androidx.compose.material3:material3-window-size-class")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
@@ -749,9 +890,9 @@ dependencies {
     // ── Hilt DI ──────────────────────────────────────────────────
     // Must match the Hilt Gradle plugin version (2.57.2) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
-    implementation("com.google.dagger:hilt-android:2.57.2")
-    ksp("com.google.dagger:hilt-compiler:2.57.2")
-    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
+    implementation("com.google.dagger:hilt-android:2.59")
+    ksp("com.google.dagger:hilt-compiler:2.59")
+    implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
 
     // ── Networking ───────────────────────────────────────────────
     implementation("com.squareup.retrofit2:retrofit:2.12.0")
