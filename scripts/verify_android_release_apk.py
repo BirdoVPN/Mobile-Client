@@ -8,6 +8,7 @@ fail closed into the kill switch on first connect.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sys
@@ -37,6 +38,40 @@ SHIPPED_ABIS = ("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
 # Engines without which the VPN cannot establish a tunnel on a given ABI.
 REQUIRED_ENGINES = ("libwg-go.so", "libxray.so", "librosenpass_jni.so")
+
+# ---------------------------------------------------------------------------
+# Native-integrity hash contract, checked against the DEX string pool.
+#
+# app/build.gradle.kts bakes the SHA-256 of every shipped .so into BuildConfig
+# as NATIVE_HASH_WG_GO / NATIVE_HASH_XRAY / NATIVE_HASH_ROSENPASS_JNI, encoded
+# "<abi>=<sha256>;<abi>=<sha256>", and NativeLibraryVerifier compares the
+# running device's ABI entry against the file in nativeLibraryDir.
+#
+# WHY THIS IS CHECKED FROM THE ARTIFACT AND NOT FROM THE BUILD SCRIPT.
+# That mechanism has already shipped disarmed once: before #362 a
+# `if (task != null)` with no else left the hashes empty, every guard that
+# would have caught it lived INSIDE the block that never ran, and a DEX scan of
+# a signed release APK found ZERO <abi>=<sha256> strings while CI was green.
+# Reading the Gradle source cannot detect that; reading the shipped DEX can.
+#
+# The check is stronger than "some hash-shaped string is present": the expected
+# values are recomputed from the .so entries in THIS artifact, so a stale,
+# truncated, wrong-ABI or pre-strip hash fails too. Hashing the APK entry is
+# equivalent to what the device does -- packaging copies the stripped .so in
+# verbatim, so the entry bytes are the bytes that land in nativeLibraryDir.
+# ---------------------------------------------------------------------------
+NATIVE_HASH_ENCODING = re.compile(r"^[A-Za-z0-9_-]+=[0-9a-f]{64}(?:;[A-Za-z0-9_-]+=[0-9a-f]{64})*$")
+
+
+def parse_hash_encoding(value: str) -> dict[str, str]:
+    """Parse "<abi>=<sha256>;..." into {abi: sha256}, or {} if not that shape."""
+    if not NATIVE_HASH_ENCODING.match(value):
+        return {}
+    pairs = {}
+    for chunk in value.split(";"):
+        abi, _, digest = chunk.partition("=")
+        pairs[abi] = digest
+    return pairs
 
 # An APK stores native libraries under lib/<abi>/; an app bundle stores exactly
 # the same tree under base/lib/<abi>/. Both are checked -- the AAB is what
@@ -154,10 +189,28 @@ def main() -> None:
             )
 
         all_strings: list[str] = []
+        engine_hashes: dict[str, dict[str, str]] = {}
         if not native_libs_only:
             for name in names:
                 if name.startswith("classes") and name.endswith(".dex"):
                     all_strings.extend(dex_strings(apk.read(name)))
+
+            # {engine: {abi: sha256}} recomputed from the artifact's own bytes.
+            for engine in REQUIRED_ENGINES:
+                per_abi = {}
+                for abi in SHIPPED_ABIS:
+                    entry = f"{lib_prefix}{abi}/{engine}"
+                    if entry in names:
+                        per_abi[abi] = hashlib.sha256(apk.read(entry)).hexdigest()
+                # The missing-libs check above already guarantees completeness;
+                # this is belt and braces so a future edit there cannot silently
+                # reduce what gets hash-checked.
+                if len(per_abi) != len(SHIPPED_ABIS):
+                    fail(
+                        f"cannot hash {engine} for every shipped ABI: got "
+                        f"{sorted(per_abi)} want {sorted(SHIPPED_ABIS)}"
+                    )
+                engine_hashes[engine] = per_abi
 
     if native_libs_only:
         print(
@@ -178,9 +231,36 @@ def main() -> None:
     if not found_fingerprint:
         fail("release APK does not contain the expected signing fingerprint constant")
 
+    # --- native-integrity hashes, proven from the artifact ------------------
+    baked = [parsed for parsed in (parse_hash_encoding(v) for v in all_strings) if parsed]
+    if not baked:
+        fail(
+            "release APK contains NO <abi>=<sha256> native-integrity string. The "
+            "hashes were never baked into BuildConfig, so NativeLibraryVerifier "
+            "ships disarmed and falls back to signature-only verification. This is "
+            "the exact defect #362 closed; see the producer block in "
+            "app/build.gradle.kts."
+        )
+
+    for engine, expected in sorted(engine_hashes.items()):
+        if expected not in baked:
+            want = ";".join(f"{a}={h}" for a, h in sorted(expected.items()))
+            got = " | ".join(
+                ";".join(f"{a}={h[:12]}.." for a, h in sorted(p.items())) for p in baked
+            ) or "<none>"
+            fail(
+                f"no baked native-integrity constant matches the {engine} bytes in "
+                f"this artifact. expected [{want}] but the DEX carries [{got}]. "
+                "NativeLibraryVerifier would reject (or silently skip) this engine "
+                "on device. A hash computed from the pre-strip merge output, from a "
+                "different ABI set, or from a stale build produces exactly this."
+            )
+
     print(
         "Release APK payload verification passed "
-        f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines)"
+        f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines; "
+        f"native-integrity hashes verified against the shipped .so bytes for "
+        f"{', '.join(sorted(engine_hashes))})"
     )
 
 

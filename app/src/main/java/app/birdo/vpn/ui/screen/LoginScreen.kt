@@ -848,6 +848,13 @@ private fun AnonymousIdSavedDialog(
     onAcknowledge: () -> Unit,
 ) {
     val context = LocalContext.current
+    // Read at composable scope, not inside the click lambda. context.getString()
+    // on LocalContext.current is not invalidated when the Configuration changes,
+    // so a locale switch while this dialog is open would toast the OLD language.
+    // stringResource() recomposes correctly. (Flagged by the
+    // LocalContextGetResourceValueCall lint check, which arrived with the
+    // androidx.compose bump in this change.)
+    val copiedMessage = stringResource(R.string.anon_created_copied)
     val grouped = formatAnonymousId(anonymousId)
 
     AlertDialog(
@@ -897,7 +904,7 @@ private fun AnonymousIdSavedDialog(
                             copySensitiveToClipboard(context, "Birdo account", anonymousId)
                             Toast.makeText(
                                 context,
-                                context.getString(R.string.anon_created_copied),
+                                copiedMessage,
                                 Toast.LENGTH_SHORT,
                             ).show()
                         }
