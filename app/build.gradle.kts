@@ -73,8 +73,20 @@ val sentryDsnLiteral = sentryDsn.replace("\\", "\\\\").replace("\"", "\\\"")
 
 // Deliberate, explicit escape hatch: build a RELEASE artifact with no Sentry
 // account at all (reproducible/F-Droid-style source builds, a contributor
-// checking that minification still works). It has to be typed on the command
-// line — it is never set in CI, and the build shouts when it is used.
+// checking that minification still works). The build shouts whenever it is used.
+//
+// CI DOES SET THIS, in exactly one place. .github/workflows/android.yml runs
+// `:app:minifyReleaseWithR8 -PallowMissingSentryDsn=true` in the `build` job, so
+// it is passed on EVERY pull request. That is deliberate and safe: the R8-on-PR
+// step runs the shrinker only — it never reaches packageRelease, produces no
+// APK or AAB, and a fork or dependabot PR has neither the Azure keystore nor the
+// Sentry DSN secret. Nothing built there is distributable, so no artifact with a
+// blank DSN can escape.
+//
+// The jobs that DO package and distribute — `release` and `release-aab` — never
+// pass it, so a shipped artifact still cannot have an inert crash reporter; that
+// is the invariant #357 established and it is unchanged. If a future workflow
+// adds this flag to a job that uploads anything, that job is the bug.
 val allowMissingSentryDsn = ((project.findProperty("allowMissingSentryDsn") as String?)
     ?: System.getenv("BIRDO_ALLOW_MISSING_SENTRY_DSN"))?.toBoolean() ?: false
 
@@ -420,7 +432,10 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
     }
 }
 
-// Compute SHA-256 hashes of native .so libraries for runtime integrity verification.
+// Compute SHA-256 hashes of the SHIPPED native .so libraries for runtime
+// integrity verification. "Shipped" means the strip-stage output, not the
+// merge-stage output -- see the comment on `stripTask` below for the measured
+// byte difference between the two.
 // NativeLibraryVerifier reads these BuildConfig fields to validate binaries at load time.
 //
 // WHY THIS NO LONGER WRITES THROUGH `android.defaultConfig`
@@ -471,11 +486,35 @@ androidComponents.onVariants(
         buildConfigFields.put(
             field,
             nativeIntegrityHashes.map { hashes ->
+                // LAST LINE OF DEFENCE, and the only guard on the one code path
+                // that can actually produce this constant.
+                //
+                // Everything that computes these hashes lives in the
+                // `afterEvaluate { android.applicationVariants.all { ... } }`
+                // block below, which uses the DEPRECATED applicationVariants
+                // API that AGP 9 removes. If that block stops running -- an AGP
+                // task rename, the API's removal, a variant filter -- the
+                // MapProperty keeps its default EMPTY MAP, every `check(...)`
+                // inside it is skipped along with the block, and the old code
+                // here shipped `""`. That is precisely the disarmed-but-green
+                // release this whole mechanism exists to prevent.
+                //
+                // This check cannot be skipped that way: it runs inside the
+                // Provider that generateReleaseBuildConfig resolves, so it
+                // executes on every release build by construction.
+                val value = hashes[field]
+                check(!value.isNullOrBlank()) {
+                    "$field is blank or absent: the native-integrity hashes were " +
+                        "never computed for this release variant. The producer block " +
+                        "(afterEvaluate/applicationVariants in app/build.gradle.kts) " +
+                        "did not run, or AGP renamed the tasks it looks up. Refusing " +
+                        "to ship a release with NativeLibraryVerifier disarmed."
+                }
                 com.android.build.api.variant.BuildConfigField(
                     "String",
                     // AGP writes the value verbatim into the generated Java, so a
                     // String constant has to arrive already quoted.
-                    "\"" + (hashes[field] ?: "") + "\"",
+                    "\"" + value + "\"",
                     "SHA-256 of each shipped ABI .so, encoded abi=hash;abi=hash",
                 )
             },
@@ -487,13 +526,55 @@ afterEvaluate {
     android.applicationVariants.all {
         if (buildType.name == "release") {
             val variantName = name.replaceFirstChar { it.uppercase() }
-            val mergeTask = tasks.findByName("merge${variantName}NativeLibs")
-            if (mergeTask != null) {
+            // HASH THE BYTES THAT ACTUALLY SHIP.
+            //
+            // This used to read merge${variantName}NativeLibs. AGP runs
+            // strip${variantName}DebugSymbols AFTER the merge, and it is the
+            // STRIPPED output that packaging consumes and that therefore lands in
+            // ApplicationInfo.nativeLibraryDir -- the directory
+            // NativeLibraryVerifier.verifyLibrary hashes on device
+            // (NativeLibraryVerifier.kt:134). Hashing the merge stage bakes a
+            // pre-strip hash the device can never reproduce.
+            //
+            // MEASURED on this branch, NDK 29.0.13846066, arm64-v8a:
+            //   librosenpass_jni.so  merge a2c339ed.. 469480 B
+            //                        strip c8f38575.. 325280 B    DIFFERENT
+            //   libxray.so           merge d3dab5cf.. / strip aeca5c53..  DIFFERENT
+            //   libwg-go.so          68730e8c.. unchanged (already stripped upstream)
+            // x86_64 behaves identically. Two of the three engines therefore had a
+            // permanently unmatchable hash and fell through to signature-only
+            // verification on every device.
+            //
+            // librosenpass_jni.so is the worst case BY DESIGN: it is built with
+            // `strip = "debuginfo"` (native/rosenpass-jni/Cargo.toml) to KEEP the
+            // symbol table for debugSymbolLevel = "FULL", and AGP's strip step is
+            // exactly what removes it again -- 469480 -> 325280 bytes.
+            //
+            // A machine with no NDK visible to AGP HIDES this: the strip task then
+            // logs "Unable to strip library ... missing strip tool for ABI ..." and
+            // copies the file through unchanged, so merge and strip bytes match and
+            // the bug does not reproduce locally. Reading the strip output is
+            // correct in both cases, which is the point -- the baked hash must not
+            // depend on whether the build machine happened to have a strip tool.
+            //
+            // findByName plus a hard failure, never a silent skip: an `if (task !=
+            // null)` with no else left the MapProperty at its default empty map and
+            // shipped blank constants, with all three check(...) guards below
+            // skipped along with the block that holds them.
+            val stripTask = tasks.findByName("strip${variantName}DebugSymbols")
+                ?: throw GradleException(
+                    "AGP no longer creates :app:strip${variantName}DebugSymbols, so the " +
+                        "native integrity hashes cannot be computed from the bytes that " +
+                        "ship. Re-point this block at the replacement task before " +
+                        "shipping; do NOT fall back to merge${variantName}NativeLibs, " +
+                        "whose bytes differ from the packaged .so files."
+                )
+            run {
                 nativeIntegrityHashes.set(
                     // A Provider read at execution time, after the .so files are
-                    // in place -- generateBuildConfig depends on mergeTask below.
+                    // stripped -- generateBuildConfig depends on stripTask below.
                     provider {
-                        val nativeDirs = mergeTask.outputs.files.files
+                        val nativeDirs = stripTask.outputs.files.files
                         fun hashSo(name: String): String {
                             val candidates = nativeDirs.flatMap { dir ->
                                 fileTree(dir) { include("**/lib$name.so") }.files
@@ -505,12 +586,11 @@ afterEvaluate {
                             // to signature-only verification. The verifier now looks up
                             // the hash for the device's actual ABI.
                             //
-                            // Hashing the MERGE output is sound because nothing
-                            // downstream rewrites these files: verified by SHA-256 that
-                            // the packaged lib/arm64-v8a/libxray.so equals the `xray`
-                            // binary inside the pinned upstream release zip byte for
-                            // byte, and that all three engines are identical between the
-                            // debug and release APKs of the same commit.
+                            // Hashing the STRIP output is sound because nothing
+                            // downstream rewrites these files -- packaging copies the
+                            // stripped .so into the APK and only filters ABIs. Verified
+                            // by SHA-256 that every lib/<abi>/lib*.so inside the built
+                            // release APK equals the stripped intermediate byte for byte.
                             val knownAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
                             return candidates.mapNotNull { f ->
                                 val normalized = f.path.replace('\\', '/')
@@ -535,17 +615,17 @@ afterEvaluate {
                         // the installer/signature check.
                         check(wgHash.isNotBlank()) {
                             "NATIVE_HASH_WG_GO is blank - libwg-go.so was not found in " +
-                                "${mergeTask.name} outputs; refusing to ship a release " +
+                                "${stripTask.name} outputs; refusing to ship a release " +
                                 "with the native integrity check disarmed."
                         }
                         check(xrayHash.isNotBlank()) {
                             "NATIVE_HASH_XRAY is blank - libxray.so was not found in " +
-                                "${mergeTask.name} outputs; refusing to ship a release " +
+                                "${stripTask.name} outputs; refusing to ship a release " +
                                 "with the native integrity check disarmed."
                         }
                         check(rosenpassJniHash.isNotBlank()) {
                             "NATIVE_HASH_ROSENPASS_JNI is blank - librosenpass_jni.so was not " +
-                                "found in ${mergeTask.name} outputs; refusing to ship a release " +
+                                "found in ${stripTask.name} outputs; refusing to ship a release " +
                                 "with the native integrity check disarmed."
                         }
                         mapOf(
@@ -555,14 +635,25 @@ afterEvaluate {
                         )
                     }
                 )
-                // Belt and braces on top of the provider wiring: keep the explicit
-                // dependency and the declared input so generateBuildConfig also
-                // re-runs whenever a shipped .so changes, rather than being skipped
-                // UP-TO-DATE with stale hashes.
+                // Belt and braces on top of the provider wiring: the explicit
+                // dependency guarantees the .so files are stripped before the
+                // provider reads them, and the declared input makes
+                // generateBuildConfig re-run whenever a shipped .so changes rather
+                // than being skipped UP-TO-DATE with stale hashes.
+                //
+                // Not a safe call. `generateBuildConfig?.dependsOn(...)` on a miss
+                // would leave the provider free to read the strip directory before
+                // it is populated, with nothing to say so.
                 val generateBuildConfig = tasks.findByName("generate${variantName}BuildConfig")
-                generateBuildConfig?.dependsOn(mergeTask)
-                generateBuildConfig?.inputs?.files(mergeTask.outputs.files)
-                    ?.withPropertyName("nativeLibsForIntegrityHash")
+                    ?: throw GradleException(
+                        "AGP no longer creates :app:generate${variantName}BuildConfig, " +
+                            "so the native integrity hashes are not ordered after " +
+                            "${stripTask.name} and could be read before the .so files " +
+                            "are stripped. Re-point this block before shipping."
+                    )
+                generateBuildConfig.dependsOn(stripTask)
+                generateBuildConfig.inputs.files(stripTask.outputs.files)
+                    .withPropertyName("nativeLibsForIntegrityHash")
             }
         }
     }

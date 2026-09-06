@@ -289,6 +289,29 @@ jobs:
       - name: Verify R8 keeps
         run: python3 scripts/check_r8_keeps.py
 
+      # Asserts the baked NATIVE_HASH_* constants equal the SHA-256 of the .so
+      # files that actually ship, so NativeLibraryVerifier can match them on a
+      # device instead of silently degrading to the signature-only check.
+      #
+      # Two disarmed-but-green releases motivated this. The constants were first
+      # written through `android.defaultConfig.buildConfigField` from a task
+      # doFirst and shipped as "" for every release; then they were computed from
+      # merge<Variant>NativeLibs, which is the wrong stage -- AGP's
+      # strip<Variant>DebugSymbols runs afterwards and is what packaging copies
+      # into the APK. Measured with NDK 29.0.13846066, librosenpass_jni.so goes
+      # 469480 -> 325280 bytes across that step and libxray.so changes hash at
+      # the same size, so two of the three engines could never match.
+      #
+      # Neither failure was visible in a build log: the build succeeded both
+      # times. This step is the only thing that looks at the values themselves.
+      #
+      # :app:generateReleaseBuildConfig depends on :app:stripReleaseDebugSymbols
+      # (app/build.gradle.kts), and minifyReleaseWithR8 above needs BuildConfig,
+      # so both artifacts this script reads already exist by now -- it needs no
+      # signing material and no extra Gradle invocation.
+      - name: Verify native integrity hashes match the shipped .so files
+        run: python3 scripts/check_native_hashes.py
+
       # seeds.txt / usage.txt / configuration.txt are written by AGP next to
       # mapping.txt on every minified build, with no extra ProGuard directives
       # needed. They are how the next person measures a rule change instead of
