@@ -2,6 +2,7 @@
 /build/
 /app/build/
 /shared/build/
+/baselineprofile/build/
 /dist/
 *.apk
 *.aab

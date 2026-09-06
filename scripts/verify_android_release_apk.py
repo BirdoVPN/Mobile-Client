@@ -62,6 +62,50 @@ REQUIRED_ENGINES = ("libwg-go.so", "libxray.so", "librosenpass_jni.so")
 # ---------------------------------------------------------------------------
 NATIVE_HASH_ENCODING = re.compile(r"^[A-Za-z0-9_-]+=[0-9a-f]{64}(?:;[A-Za-z0-9_-]+=[0-9a-f]{64})*$")
 
+# ---------------------------------------------------------------------------
+# Baseline-profile contract.
+#
+# AGP compiles app/src/release/generated/baselineProfiles/baseline-prof.txt into
+# a binary ART profile and packages it. WHERE it packages it differs by artifact
+# and is not interchangeable:
+#
+#   APK  assets/dexopt/baseline.prof
+#   AAB  BUNDLE-METADATA/com.android.tools.build.profiles/baseline.prof
+#
+# CHECKED FROM THE ARTIFACT, for the same reason the native hashes are. The
+# profile is applied by the platform, silently, at install and first run: if it
+# never reaches the artifact, cold start is simply slower and NOTHING reports
+# it -- not the build, not a crash, not a metric this app collects. The APK and
+# the AAB are produced by two separate Gradle invocations, so "the APK has it"
+# is not evidence about the artifact Play actually serves.
+#
+# The size floor exists because AGP writes a well-formed but EMPTY .prof when
+# the source profile is missing or filtered to nothing, and an empty profile is
+# indistinguishable from a working one by presence alone. A real recording of
+# this app compiles to roughly 15 KB.
+# ---------------------------------------------------------------------------
+BASELINE_PROFILE_ENTRIES = (
+    "assets/dexopt/baseline.prof",                                    # APK
+    "BUNDLE-METADATA/com.android.tools.build.profiles/baseline.prof",  # AAB
+)
+MIN_BASELINE_PROFILE_BYTES = 1024
+
+# The profile in assets is inert without the component that applies it.
+#
+# On installs Play has not yet built a cloud profile for -- and on every sideload
+# and F-Droid install, which this app ships to -- androidx.profileinstaller's
+# broadcast receiver is what writes the bundled profile into the ART profile
+# directory on first run. If it is absent from the merged manifest the profile
+# is packaged, shipped, and never applied: the app is correct, is fast to build,
+# and is permanently slower to start, with nothing to say so.
+#
+# Both halves are therefore checked from the artifact. The manifest is stored
+# differently in each: binary AXML (UTF-16 string pool) in an APK, protobuf
+# (UTF-8) in an AAB, so the string is looked for under both decodings rather
+# than parsing either format.
+PROFILE_INSTALL_RECEIVER = "androidx.profileinstaller.ProfileInstallReceiver"
+MANIFEST_ENTRIES = ("AndroidManifest.xml", "base/manifest/AndroidManifest.xml")
+
 
 def parse_hash_encoding(value: str) -> dict[str, str]:
     """Parse "<abi>=<sha256>;..." into {abi: sha256}, or {} if not that shape."""
@@ -145,11 +189,21 @@ def main() -> None:
     # AAB. Without it the contract was enforced only in the release job, which
     # does not run on a pull request at all -- an ABI could be added, merged, and
     # only then found to be missing an engine.
-    args = [a for a in sys.argv[1:] if a != "--native-libs-only"]
-    native_libs_only = len(args) != len(sys.argv[1:])
+    argv = sys.argv[1:]
+    native_libs_only = "--native-libs-only" in argv
+    # Separate flag rather than a mode, because the AAB needs the profile check
+    # WITHOUT the fingerprint/hash checks: it is verified with
+    # --native-libs-only (it carries no signing-fingerprint constant of its
+    # own), and leaving the profile unchecked there would gate the sideload APK
+    # while the artifact every Play user installs went unexamined.
+    require_baseline_profile = "--require-baseline-profile" in argv
+    args = [a for a in argv if a not in ("--native-libs-only", "--require-baseline-profile")]
 
     if len(args) != 1:
-        fail("usage: verify_android_release_apk.py [--native-libs-only] <apk-or-aab>")
+        fail(
+            "usage: verify_android_release_apk.py [--native-libs-only] "
+            "[--require-baseline-profile] <apk-or-aab>"
+        )
 
     apk_path = args[0]
     expected_fingerprint = ""
@@ -165,6 +219,47 @@ def main() -> None:
         # rather than the filename so a renamed artifact cannot silently make
         # the walk find nothing and pass.
         lib_prefix = "base/lib/" if any(n.startswith("base/lib/") for n in names) else "lib/"
+
+        # A full release verification always requires the profile; the
+        # --native-libs-only callers (the debug APK on a PR, which legitimately
+        # has none, and the release AAB, which does) opt in explicitly.
+        if require_baseline_profile or not native_libs_only:
+            profile_entry = next((n for n in BASELINE_PROFILE_ENTRIES if n in names), None)
+            if profile_entry is None:
+                fail(
+                    "artifact carries NO compiled baseline profile (looked for "
+                    + " and ".join(BASELINE_PROFILE_ENTRIES)
+                    + "). Cold start then runs fully interpreted on every first "
+                    "launch and nothing anywhere reports it. Either the recorded "
+                    "profile at app/src/release/generated/baselineProfiles/ is "
+                    "missing -- regenerate with scripts/generate-baseline-profile.sh, "
+                    "never by hand -- or the androidx.baselineprofile consumer "
+                    "plugin came off app/build.gradle.kts."
+                )
+            profile_size = apk.getinfo(profile_entry).file_size
+            if profile_size < MIN_BASELINE_PROFILE_BYTES:
+                fail(
+                    f"{profile_entry} is only {profile_size} bytes. AGP writes a "
+                    "well-formed but empty ART profile when the source profile is "
+                    "absent or matched nothing after R8, which looks identical to a "
+                    "working one from the outside. Re-record the profile."
+                )
+
+            manifest_entry = next((n for n in MANIFEST_ENTRIES if n in names), None)
+            if manifest_entry is None:
+                fail("artifact contains no AndroidManifest.xml")
+            manifest = apk.read(manifest_entry)
+            decoded = (
+                manifest.decode("utf-16-le", "ignore") + manifest.decode("utf-8", "ignore")
+            )
+            if PROFILE_INSTALL_RECEIVER not in decoded:
+                fail(
+                    f"{manifest_entry} does not declare {PROFILE_INSTALL_RECEIVER}, so the "
+                    "packaged baseline profile is never applied on installs that do not "
+                    "receive a cloud profile from Play -- every sideload and every "
+                    "F-Droid install. androidx.profileinstaller has come off the release "
+                    "runtime classpath, or its manifest entry was merged away."
+                )
 
         missing_libs = [name for name in required_native_libs(lib_prefix) if name not in names]
         if missing_libs:
@@ -213,9 +308,11 @@ def main() -> None:
                 engine_hashes[engine] = per_abi
 
     if native_libs_only:
+        extra = " + compiled baseline profile" if require_baseline_profile else ""
         print(
             f"Native engine set verified in {apk_path} "
-            f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines under {lib_prefix})"
+            f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines under "
+            f"{lib_prefix}){extra}"
         )
         return
 
@@ -260,7 +357,7 @@ def main() -> None:
         "Release APK payload verification passed "
         f"({len(SHIPPED_ABIS)} ABIs x {len(REQUIRED_ENGINES)} engines; "
         f"native-integrity hashes verified against the shipped .so bytes for "
-        f"{', '.join(sorted(engine_hashes))})"
+        f"{', '.join(sorted(engine_hashes))}; compiled baseline profile present)"
     )
 
 

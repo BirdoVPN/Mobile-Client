@@ -624,9 +624,18 @@ jobs:
       # invocation (`bundleRelease -PplayBuild=true`). Checking only the APK is
       # the "guard on some of N parallel paths" shape: the two artifacts share
       # abiFilters today, but nothing enforced that they share a native payload.
-      - name: Verify release AAB native engine set
+      # --require-baseline-profile is passed HERE and not only on the APK
+      # because the AAB is the artifact Play actually serves. AGP packages the
+      # compiled profile under BUNDLE-METADATA/ for a bundle and under
+      # assets/dexopt/ for an APK, and the two artifacts come out of two
+      # separate Gradle invocations -- so the APK carrying a profile says
+      # nothing about the bundle. A missing profile has no symptom: the app
+      # installs, runs, and is simply slower to start, forever, silently.
+      - name: Verify release AAB native engine set and baseline profile
         run: |
-          python3 scripts/verify_android_release_apk.py --native-libs-only             app/build/outputs/bundle/release/*.aab
+          python3 scripts/verify_android_release_apk.py \
+            --native-libs-only --require-baseline-profile \
+            app/build/outputs/bundle/release/*.aab
 
       # The same assertions the PR path runs, but against the artifacts that are
       # about to be signed and shipped.

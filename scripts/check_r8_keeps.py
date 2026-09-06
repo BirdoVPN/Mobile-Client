@@ -90,6 +90,31 @@ DEFAULT_ARTIFACT_GLOBS = (
 )
 
 DEFAULT_MAPPING = "app/build/outputs/mapping/release/mapping.txt"
+# NOT where the shipped profile lives, and deliberately so.
+#
+# The profile that ships is RECORDED, by :app:generateReleaseBaselineProfile, to
+# app/src/release/generated/baselineProfiles/baseline-prof.txt. The per-rule
+# check below -- every rule must match a class that survived R8 -- is the right
+# check for a HAND-WRITTEN profile and the wrong one for a recorded profile: a
+# recording is taken against the nonMinifiedRelease build, so it legitimately
+# names classes R8 later removes or inlines, and AGP drops those when it rewrites
+# the profile through mapping.txt. Measured on the profile committed with #358:
+# 16,547 of 22,696 entries still match a surviving class. Pointing this default
+# at it would fail the build on 6,149 entries that are working exactly as
+# designed.
+#
+# So this path stays as it is, and it is still load-bearing: app/src/main/
+# baseline-prof.txt is precisely where a future hand-written guess would be
+# dropped, and if one ever appears there this gate will hold it to the standard
+# a hand-written profile deserves.
+#
+# What guards the RECORDED profile instead:
+#   * app/src/test/.../BaselineProfileIntegrityTest.kt -- shape and scale, so a
+#     hand-written file cannot masquerade as a recording;
+#   * scripts/verify_android_release_apk.py -- that the compiled profile is
+#     actually inside the shipped APK and AAB;
+#   * .github/workflows/baseline-profile.yml -- that a fresh recording still
+#     matches the committed one, monthly.
 DEFAULT_BASELINE_PROFILE = "app/src/main/baseline-prof.txt"
 
 

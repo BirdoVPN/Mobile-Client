@@ -1,0 +1,164 @@
+# Regenerate the shipped baseline profile by RUNNING the app.
+#
+# WHY THIS WORKFLOW EXISTS (issue #358)
+#
+# A baseline profile is a recording of the classes and methods the app actually
+# touches on cold start. Two earlier attempts committed a HAND-WRITTEN one. That
+# is worse than shipping none: the platform AOT-compiles and pages in exactly
+# what the profile lists, so a guess spends the startup budget on the wrong
+# classes and makes launches slower, and no build check anywhere can see it. The
+# only defence is that the file be produced by a machine that ran the app.
+#
+# It also has to keep being produced. A profile recorded once goes stale silently
+# as the startup path moves -- a new library on the Application path, a changed
+# first screen -- and a stale profile decays back towards the guess it replaced.
+# Hence the monthly schedule, and hence this job FAILS on a materially different
+# recording instead of quietly regenerating one.
+#
+# WHY A THRESHOLD AND NOT AN EXACT MATCH. Two back-to-back recordings on the same
+# emulator are not identical: measured on this app, run 2 against run 1 was 28
+# rules added, 9 removed, 22,687 unchanged -- 0.163% churn, all of it in
+# timing-dependent background work (Sentry queue draining, a Compose paint
+# helper). An exact-match gate would therefore fail every month, and a check that
+# always fails is a check nobody reads. Only the same-machine figure is measured;
+# host-to-host churn is NOT, so the threshold below is deliberately an order of
+# magnitude looser. Its job is to catch a startup path that MOVED -- a new
+# library on the Application path shifts tens of percent -- not to police noise.
+#
+# HARDWARE: this needs a full x86_64 emulator, so it needs KVM.
+# GitHub's ubuntu-latest runners expose /dev/kvm, but only to the `kvm` group,
+# which the runner user is not in by default -- hence the udev step below. That
+# step is not decoration: without it the emulator falls back to software
+# emulation and the boot times out. macOS runners are NOT an alternative here
+# (no KVM, and HVF is unavailable on the hosted images); a self-hosted Linux box
+# with /dev/kvm would work unchanged.
+name: Baseline Profile
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 04:20 UTC on the 3rd of each month. Off the hour and off the 1st, so it
+    # does not pile onto the same runner minute as every other cron in the org.
+    - cron: '20 4 3 * *'
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  generate:
+    name: Record baseline profile on a managed device
+    runs-on: ubuntu-latest
+    # An emulator boot plus 12 recording iterations plus a nonMinifiedRelease
+    # build. The default 360 minutes would let a hung emulator burn an entire
+    # billing afternoon.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # Hardware acceleration. Assert it rather than hope for it: a missing
+      # /dev/kvm does not fail here, it fails 40 minutes later as an emulator
+      # boot timeout that reads like flakiness.
+      - name: Enable KVM
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -w /dev/kvm || { echo "::error::/dev/kvm is not writable — this runner cannot host an emulator, so no profile can be recorded on it."; exit 1; }
+          echo "/dev/kvm OK"
+
+      # ── The app has to be the REAL app ────────────────────────────────────
+      #
+      # The profile is recorded from whatever actually runs, so the recording
+      # build must carry the same native engines the shipped build does. An APK
+      # with an empty jniLibs/ still installs and still launches, and would
+      # produce a plausible-looking profile of an app that is missing its VPN
+      # stack -- another silently-wrong profile, which is the whole failure mode
+      # this workflow exists to avoid. Same provisioning as the `build` job in
+      # android.yml.
+      - name: Install Rust Android toolchain
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi \
+                            x86_64-linux-android i686-linux-android
+          cargo install cargo-ndk --locked --version 4.1.2
+
+      - name: Set up Go (the 32-bit Xray engines are built from source)
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Cache Go build for the Xray engines
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+          restore-keys: xray-go-${{ runner.os }}-
+
+      - name: Provision Xray Reality engines for every shipped ABI
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x scripts/provision_xray_engines.sh
+          scripts/provision_xray_engines.sh
+
+      - name: Build the Rosenpass JNI engine for every shipped ABI
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:buildRustLibs
+
+      # No signing secrets are needed: app/build.gradle.kts re-points the
+      # nonMinifiedRelease/benchmarkRelease build types at the debug key
+      # precisely so that recording a profile never depends on holding the
+      # upload key.
+      - name: Record the profile
+        run: ./gradlew :app:generateReleaseBaselineProfile --no-daemon
+
+      # THE ACTUAL ASSERTION. Everything above is setup.
+      #
+      # Read from HEAD rather than from the working tree, because the recording
+      # has already overwritten the working-tree copy by this point -- comparing
+      # the file against itself is the shape of check that passes forever.
+      - name: Compare the fresh recording against the committed profile
+        run: |
+          set -euo pipefail
+          profile=app/src/release/generated/baselineProfiles/baseline-prof.txt
+          test -s "$profile" || {
+            echo "::error::$profile is missing or empty after generation."
+            exit 1
+          }
+          git show "HEAD:$profile" > "$RUNNER_TEMP/committed-prof.txt"
+          python3 scripts/compare_baseline_profiles.py "$RUNNER_TEMP/committed-prof.txt" "$profile"
+
+      # Uploaded even on failure -- when the profile HAS drifted, this artifact
+      # is the fix, and re-running the whole 40-minute job to obtain it would be
+      # absurd.
+      - name: Upload the recorded profile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: baseline-profile
+          path: app/src/release/generated/baselineProfiles/
+          if-no-files-found: warn
