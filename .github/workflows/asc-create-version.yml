@@ -1,0 +1,75 @@
+# Create an App Store version record (and optionally attach a build).
+#
+# WHY THIS EXISTS
+#
+# Uploading a build and creating a version are two different operations in App
+# Store Connect, and only the first was ever automated. `altool --upload-app` in
+# macos.yml / ios.yml puts a binary in TestFlight; it does NOT create the version
+# record the App Store tab shows, and nothing else did either.
+#
+# That gap cost a full review round. macOS 1.4.27 was built, signed and uploaded
+# successfully — "No errors uploading archive" — while the App Store tab still
+# read 1.4.23, because no 1.4.27 version existed for the build to attach to. Every
+# signal was green and the submission could not proceed.
+#
+# Uses the same three secrets altool already uses, so nothing new is stored.
+name: ASC — create version
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Which store record to create
+        required: true
+        type: choice
+        options: [MAC_OS, IOS]
+        default: MAC_OS
+      version:
+        description: Marketing version, e.g. 1.4.27
+        required: true
+        type: string
+      build:
+        description: CFBundleVersion to attach, e.g. 10427 (optional; skipped if still processing)
+        required: false
+        type: string
+        default: ""
+      whats_new:
+        description: What's New text (optional; left unchanged if empty)
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: List existing versions and stop without creating
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # One at a time per platform. Two concurrent creates of the same version race
+  # into a 409 that reads like a permissions problem and is not.
+  group: asc-create-version-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  create:
+    name: Create ${{ inputs.platform }} version ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Create the version
+        env:
+          APPSTORE_API_KEY_BASE64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          python3 scripts/asc_create_version.py \
+            --platform "${{ inputs.platform }}" \
+            --version "${{ inputs.version }}" \
+            --build "${{ inputs.build }}" \
+            --whats-new "${{ inputs.whats_new }}" \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
