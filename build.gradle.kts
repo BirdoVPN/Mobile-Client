@@ -30,7 +30,7 @@ plugins {
     id("org.jetbrains.kotlin.multiplatform") version "2.2.21" apply false
     id("org.jetbrains.kotlin.plugin.compose") version "2.2.21" apply false
     id("org.jetbrains.kotlin.plugin.serialization") version "2.2.21" apply false
-    id("com.google.dagger.hilt.android") version "2.59" apply false
+    id("com.google.dagger.hilt.android") version "2.59.2" apply false
     id("com.google.devtools.ksp") version "2.2.21-2.0.5" apply false
     // BASELINE PROFILE -- 1.5.0-rc02 IS THE FLOOR ON THIS TOOLCHAIN, and the
     // version is not a matter of taste. The plugin hard-checks the AGP version
