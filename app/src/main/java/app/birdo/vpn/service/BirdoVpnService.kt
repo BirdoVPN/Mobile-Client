@@ -348,7 +348,11 @@ class BirdoVpnService : VpnService() {
 
     private val connectTimeoutRunnable = Runnable {
         if (currentState.isConnectingPhase) {
-            Log.e(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
+            // Routine (a dead zone, a captive portal): Log.w plus the
+            // VpnState.Error breadcrumb from updateState, not an event. Error
+            // severity in this file means FaultReporter — a bare Log.e is
+            // banned here by DataplaneFaultReportingTest.
+            Log.w(TAG, "Connection timed out after ${CONNECT_TIMEOUT_MS}ms")
             // Fail closed on timeout, matching every startTunnel failure path.
             // The old cleanupTunnel() closed the blocking vpnInterface with NO
             // re-arm, so a >30s stall during a reconnect (e.g. PQ key exchange
@@ -411,7 +415,16 @@ class BirdoVpnService : VpnService() {
             val rearm = try {
                 appPrefs.killSwitchEnabled
             } catch (e: Exception) {
-                Log.w(TAG, "Could not read kill-switch preference on restart", e)
+                // An unreadable preference decides "do not block" below —
+                // fail-open — for a user who may have asked for fail-closed.
+                // The decision stands (a fail-closed default would block a
+                // user who never enabled it), but it must not be silent.
+                FaultReporter.report(
+                    FaultReporter.PATH_KILL_SWITCH,
+                    "kill_switch_pref_unreadable_restart",
+                    "Kill-switch preference unreadable on system restart — defaulting to NOT blocking",
+                    e,
+                )
                 false
             }
             startForeground(
@@ -908,7 +921,13 @@ class BirdoVpnService : VpnService() {
             config.serverPublicKey == null || config.endpoint == null ||
             config.assignedIp == null
         ) {
-            Log.e(TAG, "No VPN config available or config is incomplete")
+            // A contract violation — the service was asked to start with no
+            // usable config — not a network outcome, so it is an event.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "connect_no_config",
+                "Tunnel start requested with no or an incomplete VPN configuration",
+            )
             updateState(VpnState.Error("No VPN configuration"))
             mainHandler.removeCallbacks(connectTimeoutRunnable)
             mainHandler.post { updateNotification("Error: No VPN configuration") }
@@ -918,7 +937,11 @@ class BirdoVpnService : VpnService() {
         // H-06 FIX: Reject tunnel establishment if debugger is attached in release.
         // A debugger can extract WireGuard private keys from memory.
         if (!BuildConfig.DEBUG && RootDetector.isDebuggerConnected()) {
-            Log.e(TAG, "Debugger detected — refusing to start tunnel with key material in memory")
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "connect_refused_debugger",
+                "Refused to start the tunnel: a debugger is attached to a release build",
+            )
             updateState(VpnState.Error("Security check failed"))
             mainHandler.removeCallbacks(connectTimeoutRunnable)
             mainHandler.post { updateNotification("Error: Security check failed") }
@@ -948,7 +971,15 @@ class BirdoVpnService : VpnService() {
         // way back. Silently connecting with weaker protection than advertised is
         // the one outcome that must not happen.
         if (appPrefs.quantumProtectionEnabled && !config.quantumEnabled) {
-            Log.e(TAG, "Quantum protection requested but not granted by the server — refusing to connect")
+            // These two guards fire only on a backend regression, a partial
+            // rollout or a MitM stripping fields — precisely the fleet-wide
+            // events an operator needs to see, and precisely the ones a user
+            // cannot describe.
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "connect_refused_quantum_not_granted",
+                "Refused to connect: quantum protection was requested but the server did not grant it",
+            )
             cleanupStealthAndQuantum()
             if (isKillSwitchEnabled) activateKillSwitch()
             updateState(
@@ -961,7 +992,11 @@ class BirdoVpnService : VpnService() {
             return
         }
         if (appPrefs.stealthModeEnabled && !config.stealthEnabled) {
-            Log.e(TAG, "Stealth mode requested but not granted by the server — refusing to connect")
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "connect_refused_stealth_not_granted",
+                "Refused to connect: stealth mode was requested but the server did not grant it",
+            )
             cleanupStealthAndQuantum()
             if (isKillSwitchEnabled) activateKillSwitch()
             updateState(
@@ -987,7 +1022,11 @@ class BirdoVpnService : VpnService() {
                 mainHandler.post { updateNotification("Starting stealth tunnel…") }
 
                 if (!XrayManager.isAvailable(applicationContext)) {
-                    Log.e(TAG, "Stealth mode requested but Xray runtime is unavailable")
+                    FaultReporter.report(
+                        FaultReporter.PATH_STEALTH,
+                        "connect_refused_stealth_unavailable",
+                        "Refused to connect: stealth was requested and no Xray runtime is packaged",
+                    )
                     cleanupStealthAndQuantum()
                     if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Stealth engine unavailable"))
@@ -1007,7 +1046,13 @@ class BirdoVpnService : VpnService() {
                     _stealthActiveFlow.value = true
                     Log.i(TAG, "Xray Reality active — WireGuard will connect via 127.0.0.1:$xrayPort")
                 } else {
-                    Log.e(TAG, "Xray failed to start — refusing direct fallback because stealth was requested")
+                    // XrayManager reports WHY it failed; this counts the users
+                    // who were refused a connection because of it.
+                    FaultReporter.report(
+                        FaultReporter.PATH_STEALTH,
+                        "connect_refused_stealth_start_failed",
+                        "Refused to connect: the Xray stealth tunnel failed to start and a direct fallback would downgrade protection",
+                    )
                     _stealthActiveFlow.value = false
                     cleanupStealthAndQuantum()
                     if (isKillSwitchEnabled) activateKillSwitch()
@@ -1029,7 +1074,11 @@ class BirdoVpnService : VpnService() {
             var quantumPsk: String? = null
             if (config.quantumEnabled) {
                 if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) {
-                    Log.e(TAG, "Quantum protection was enabled by server but PQ payload is missing")
+                    FaultReporter.report(
+                        FaultReporter.PATH_QUANTUM,
+                        "connect_refused_pq_payload_missing",
+                        "Refused to connect: the server enabled quantum protection but sent no PQ payload",
+                    )
                     _quantumActiveFlow.value = false
                     cleanupStealthAndQuantum()
                     if (isKillSwitchEnabled) activateKillSwitch()
@@ -1051,7 +1100,13 @@ class BirdoVpnService : VpnService() {
                     Log.i(TAG, "PQ-PSK derived — quantum protection active")
                 } else {
                     _quantumActiveFlow.value = false
-                    Log.e(TAG, "PQ key exchange failed — refusing non-PQ fallback")
+                    // RosenpassManager reports the specific cause; this is the
+                    // refusal count.
+                    FaultReporter.report(
+                        FaultReporter.PATH_QUANTUM,
+                        "connect_refused_pq_exchange_failed",
+                        "Refused to connect: the PQ key exchange failed and a classical fallback would downgrade protection",
+                    )
                     cleanupStealthAndQuantum()
                     if (isKillSwitchEnabled) activateKillSwitch()
                     updateState(VpnState.Error("Quantum key exchange failed"))
@@ -1116,7 +1171,16 @@ class BirdoVpnService : VpnService() {
 
             val wgConfig = buildWireGuardConfig(effectiveConfig)
             val vpnFd = buildVpnInterface(effectiveConfig) ?: run {
-                Log.e(TAG, "Failed to establish VPN interface")
+                // Twin of activateKillSwitch's kill_switch_establish_refused:
+                // establish() returns null rather than throwing (VPN consent
+                // revoked, another VPN holding the interface, a route the
+                // Builder rejected), so without this the refusal is invisible
+                // in every channel.
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "connect_establish_refused",
+                    "VpnService.Builder.establish() returned null for the tunnel interface",
+                )
                 cleanupStealthAndQuantum()
                 if (isKillSwitchEnabled) activateKillSwitch()
                 updateState(VpnState.Error("VPN permission denied"))
@@ -1389,7 +1453,15 @@ class BirdoVpnService : VpnService() {
             // throws IllegalArgumentException on duplicate routes).
             if (!hasV6Default) {
                 try { builder.addRoute("::", 0) } catch (e: Exception) {
-                    Log.w(TAG, "Failed to add IPv6 blackhole route: ${e.message}")
+                    // Leak-shaped: without ::/0 captured, IPv6 egresses on the
+                    // physical adapter below the tunnel. The connect proceeds
+                    // (unchanged here), so this report is the only witness.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "connect_v6_blackhole_route_failed",
+                        "Could not add the ::/0 blackhole route — IPv6 may egress outside the tunnel",
+                        e,
+                    )
                 }
             }
             // The IPv4 twin of the check above, which did not exist. Every
@@ -1418,7 +1490,15 @@ class BirdoVpnService : VpnService() {
                     builder.addRoute("0.0.0.0", 0)
                     Log.w(TAG, "allowedIps carried no IPv4 default route - added one")
                 } catch (e: Exception) {
-                    Log.e(TAG, "No IPv4 default route and none could be added: ${e.message}")
+                    // Fails closed (null → kill switch + error), which is the
+                    // right outcome for the user and a blind spot for us
+                    // unless it is reported.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "connect_v4_default_route_failed",
+                        "allowedIps carried no IPv4 default route and one could not be added",
+                        e,
+                    )
                     return null
                 }
             }
@@ -1539,7 +1619,16 @@ class BirdoVpnService : VpnService() {
                 // Never strand the connect on an unexpected probe failure: with
                 // no evidence either way, fall back to the pre-gate behaviour
                 // and let TunnelMonitor's stall detection own the tunnel.
-                Log.e(TAG, "Transport probe failed — publishing Connected unverified", t)
+                // Reported, not only logged: this is the one branch that tells
+                // the user "Connected" with no evidence, and because it
+                // publishes Connected rather than Error the updateState
+                // breadcrumb never fires for it.
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "transport_probe_threw",
+                    "Transport probe threw — publishing Connected unverified",
+                    t,
+                )
                 TransportProbe.Result.HANDSHAKE_OK
             }
             when (verdict) {
@@ -1742,7 +1831,15 @@ class BirdoVpnService : VpnService() {
             cm.registerDefaultNetworkCallback(cb)
             defaultNetworkCallback = cb
         } catch (e: Exception) {
-            Log.w(TAG, "registerDefaultNetworkCallback failed", e)
+            // Without the callback the tunnel never re-protects its sockets or
+            // updates its underlying network on a roam: it works until the
+            // first network change, then stalls with no cause recorded.
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "network_callback_register_failed",
+                "registerDefaultNetworkCallback threw — no re-protect on network change",
+                e,
+            )
         }
     }
 
@@ -1766,7 +1863,15 @@ class BirdoVpnService : VpnService() {
             val v6 = WgNative.getSocketV6(handle)
             if (v6 >= 0) protect(v6)
         } catch (e: Exception) {
-            Log.w(TAG, "reprotectTunnelSockets failed", e)
+            // A protect() that throws means wg-go's own UDP socket is routed
+            // back into the tunnel — a leak-shaped failure, not a warning.
+            // Throttled: this runs on every network change.
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "socket_reprotect_failed",
+                "Re-protecting the tunnel sockets after a network change threw",
+                e,
+            )
         }
     }
 

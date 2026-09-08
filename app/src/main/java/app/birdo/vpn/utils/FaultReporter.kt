@@ -48,7 +48,17 @@ import java.util.concurrent.ConcurrentHashMap
  * [report] therefore sends the FIRST occurrence of a given `code` immediately
  * and then at most one more per [THROTTLE_WINDOW_MS]. The window is
  * per-process: a restart re-reports, which is what you want — a restart is
- * itself a new data point.
+ * itself a new data point. The window is only spent when Sentry is actually
+ * enabled — a capture that would be a no-op must not mute the next real one.
+ *
+ * SCOPE. Every error-severity log on the data plane goes through [report]: the
+ * files that make up the connect, kill-switch, stealth, PQ and native-integrity
+ * paths carry NO bare `Log.e`/`Log.wtf` at all (DataplaneFaultReportingTest
+ * enforces the list), because on the shipped artifact a bare one is not a
+ * weaker signal, it is no signal. Routine outcomes — a timeout, a network
+ * refusing the handshake — are `Log.w` plus the breadcrumb every
+ * `VpnState.Error` leaves through the two state funnels
+ * (`BirdoVpnService.updateState`, `VpnManager.publishError`).
  */
 internal object FaultReporter {
 
@@ -66,10 +76,36 @@ internal object FaultReporter {
     /** A live tunnel's socket protection, stats and teardown. */
     const val PATH_TUNNEL = "tunnel"
 
+    /** The Xray Reality stealth transport: parameter validation, start, stop. */
+    const val PATH_STEALTH = "stealth"
+
+    /** BirdoPQ (ML-KEM) key exchange and the rosenpass JNI bridge. */
+    const val PATH_QUANTUM = "quantum"
+
     /** One event per fault code immediately, then at most one per window. */
     private const val THROTTLE_WINDOW_MS = 5L * 60L * 1000L
 
     private const val NANOS_PER_MS = 1_000_000L
+
+    /**
+     * Identical breadcrumbs closer together than this are collapsed. The ring
+     * buffer holds 100 crumbs (Sentry's default maxBreadcrumbs) and a reconnect
+     * loop publishes the same VpnState.Error every few seconds; left unbounded,
+     * [trail] evicted the auto-instrumented lifecycle and connectivity crumbs
+     * that give an event its context — the opposite of what it is for.
+     * Distinct messages are never collapsed.
+     */
+    private const val TRAIL_DEDUPE_WINDOW_MS = 60L * 1000L
+
+    /**
+     * Upper bound on distinct (path, message) keys the dedupe map remembers.
+     * Fault codes are literals (a test enforces it) so [lastSentNanos] is
+     * bounded by construction; trail messages are not — a few interpolate
+     * server or exception text — so this map is bounded here instead. Past
+     * the cap it is simply forgotten, which at worst lets one identical
+     * crumb through early.
+     */
+    private const val MAX_TRAIL_KEYS = 256
 
     /**
      * Last send time per fault code, in [System.nanoTime] units.
@@ -79,6 +115,9 @@ internal object FaultReporter {
      * currentTimeMillis would mute the reporter for the size of the jump.
      */
     private val lastSentNanos = ConcurrentHashMap<String, Long>()
+
+    /** Last [trail] time per (path, message); same units, same reasoning. */
+    private val lastTrailedNanos = ConcurrentHashMap<String, Long>()
 
     /**
      * Report a data-plane failure.
@@ -104,6 +143,11 @@ internal object FaultReporter {
         // convenience. Everything below it is the signal.
         Log.e(TAG, "[$path/$code] $message", error)
 
+        // Checked BEFORE the throttle so a no-op capture cannot spend the
+        // window: Sentry is disabled in debug builds, before SentryAndroid.init
+        // has run, and after shutdown. Burning the slot then would mute the
+        // first REAL occurrence after init for five minutes.
+        if (!sentryEnabled()) return
         if (!shouldSend(code)) return
 
         // A reporter must never break the thing it reports on. This runs inside
@@ -133,11 +177,14 @@ internal object FaultReporter {
      * For transitions that are individually unremarkable (a connection timing
      * out, a network refusing the handshake) but are the context you want
      * attached to the event that IS raised. A breadcrumb costs a ring-buffer
-     * slot and never a network request, so this is not throttled — and it means
+     * slot and never a network request, so this is never throttled against
+     * quota — only an IDENTICAL crumb repeated inside [TRAIL_DEDUPE_WINDOW_MS]
+     * is collapsed, so a reconnect loop cannot flush the ring buffer. It means
      * a data-plane error state added in the future leaves a trace even if
      * whoever adds it never calls [report].
      */
     fun trail(path: String, message: String) {
+        if (!shouldTrail(path, message)) return
         try {
             Sentry.addBreadcrumb(
                 Breadcrumb().apply {
@@ -158,22 +205,47 @@ internal object FaultReporter {
      * the behaviour: a throttle that silently degenerated into "send once, ever"
      * would turn a fleet-wide regression back into a single mystery event.
      */
-    internal fun shouldSend(code: String): Boolean {
+    internal fun shouldSend(code: String): Boolean =
+        firstOrAfterWindow(lastSentNanos, code, THROTTLE_WINDOW_MS)
+
+    /**
+     * Same window logic as [shouldSend], keyed by path AND message: the same
+     * text on two paths is two different facts.
+     */
+    internal fun shouldTrail(path: String, message: String): Boolean {
+        if (lastTrailedNanos.size > MAX_TRAIL_KEYS) lastTrailedNanos.clear()
+        return firstOrAfterWindow(lastTrailedNanos, "$path|$message", TRAIL_DEDUPE_WINDOW_MS)
+    }
+
+    private fun firstOrAfterWindow(map: ConcurrentHashMap<String, Long>, key: String, windowMs: Long): Boolean {
         val now = System.nanoTime()
-        val windowNanos = THROTTLE_WINDOW_MS * NANOS_PER_MS
+        val windowNanos = windowMs * NANOS_PER_MS
         while (true) {
-            val previous = lastSentNanos[code]
+            val previous = map[key]
             if (previous == null) {
-                if (lastSentNanos.putIfAbsent(code, now) == null) return true
+                if (map.putIfAbsent(key, now) == null) return true
                 continue
             }
             // Subtraction, not `<`: nanoTime is allowed to wrap, and the
             // difference stays correct across a wrap while a comparison does not.
             if (now - previous < windowNanos) return false
-            if (lastSentNanos.replace(code, previous, now)) return true
+            if (map.replace(key, previous, now)) return true
         }
     }
 
-    /** Test seam: forget every throttle window. Not called by shipped code. */
-    internal fun resetThrottleForTest() = lastSentNanos.clear()
+    /**
+     * Wrapped because the reporter must never throw into the data plane, and a
+     * static on a half-initialised SDK is exactly the kind of call that can.
+     */
+    private fun sentryEnabled(): Boolean = try {
+        Sentry.isEnabled()
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** Test seam: forget every throttle and dedupe window. Not called by shipped code. */
+    internal fun resetThrottleForTest() {
+        lastSentNanos.clear()
+        lastTrailedNanos.clear()
+    }
 }

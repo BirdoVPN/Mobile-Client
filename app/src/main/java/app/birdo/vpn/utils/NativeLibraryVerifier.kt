@@ -137,8 +137,10 @@ object NativeLibraryVerifier {
         if (!libFile.exists()) {
             // Path deliberately NOT reported: it is an absolute filesystem path
             // that carries the package and user id. The library name is enough
-            // to identify a bad ABI split or a stripped APK.
-            Log.e(TAG, "Native library not found: ${libFile.absolutePath}")
+            // to identify a bad ABI split or a stripped APK. The path is kept
+            // for debug logcat only, at warning level: the report below is the
+            // signal and does its own error-level log.
+            Log.w(TAG, "Native library not found: ${libFile.absolutePath}")
             FaultReporter.report(
                 FaultReporter.PATH_INTEGRITY,
                 "native_lib_missing",
@@ -161,7 +163,6 @@ object NativeLibraryVerifier {
 
         if (expectedHash.isNullOrBlank()) {
             if (!signatureTrusted) {
-                Log.e(TAG, "INTEGRITY FAILURE: no registered hash and no trusted package signature for $libraryName")
                 FaultReporter.report(
                     FaultReporter.PATH_INTEGRITY,
                     "integrity_no_hash_no_signature",
@@ -169,7 +170,18 @@ object NativeLibraryVerifier {
                 )
                 return decide(false, true, null, null, false)
             }
-            Log.w(TAG, "No registered hash for $libraryName; package signature check passed")
+            // The twin of integrity_hash_stale_accepted_by_signature below,
+            // and until now the half that was silent: a BLANK NATIVE_HASH_* on
+            // a release build means the injection task never ran, and the pin
+            // has stopped pinning. Accepted because the signature is trusted,
+            // designed to be invisible to the user — so this is the only
+            // witness. Never reached in a debug build (verifyLibrary returns
+            // early above), so it cannot spam a developer's logcat.
+            FaultReporter.report(
+                FaultReporter.PATH_INTEGRITY,
+                "integrity_no_hash_accepted_by_signature",
+                "INTEGRITY: no registered hash for $libraryName on this build, accepted via trusted package signature (hash injection missing in build)",
+            )
             return decide(false, true, null, null, true)
         }
 
@@ -183,7 +195,6 @@ object NativeLibraryVerifier {
                 if (signatureTrusted) {
                     Log.i(TAG, "Library $libraryName integrity verified (hash match + trusted signature)")
                 } else {
-                    Log.e(TAG, "INTEGRITY FAILURE: $libraryName hash matches but the package signature is not trusted - repackaged APK")
                     // The strongest tamper signal the client has: our exact .so
                     // inside somebody else's package. It is also, by
                     // definition, only ever seen on a build we did not ship, so
@@ -222,7 +233,6 @@ object NativeLibraryVerifier {
                         "INTEGRITY: $libraryName hash mismatch on abi=$abi, accepted via trusted package signature (hash injection likely stale in build)",
                     )
                 } else {
-                    Log.e(TAG, "INTEGRITY FAILURE: $libraryName hash mismatch AND untrusted signature — rejecting")
                     FaultReporter.report(
                         FaultReporter.PATH_INTEGRITY,
                         "integrity_hash_mismatch_untrusted",

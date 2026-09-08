@@ -179,15 +179,29 @@ internal object WgNative {
     /**
      * Get the IPv4 UDP socket fd for the tunnel, or -1 if unavailable.
      *
-     * A -1 return is NOT reported: callers poll this during bring-up and a
-     * not-yet-open socket is the normal answer for the first few hundred
-     * milliseconds. A *throw* is reported, because it means the reflection
-     * handle itself is wrong and the socket will never be protected — which
-     * routes wg-go's own traffic back into the tunnel.
+     * A -1 that wg-go itself returns is NOT reported: callers poll this during
+     * bring-up and a not-yet-open socket is the normal answer for the first
+     * few hundred milliseconds. Two other things used to produce the SAME -1
+     * through `as? Int ?: -1` and were indistinguishable from it: an
+     * unresolved method handle and an unexpected return type. Both mean the
+     * socket will never be protected — wg-go's own traffic routes back into
+     * the tunnel — so both are reported, as is a *throw*. Throttled, because
+     * the callers poll. That elvis shape is banned in this file by
+     * DataplaneFaultReportingTest.
      */
     fun getSocketV4(handle: Int): Int =
         try {
-            getSocketV4Method?.invoke(null, handle) as? Int ?: -1
+            val result = getSocketV4Method?.invoke(null, handle) as? Int
+            if (result == null) {
+                FaultReporter.report(
+                    FaultReporter.PATH_TUNNEL,
+                    "wg_get_socket_v4_no_result",
+                    "wgGetSocketV4 returned no fd (bridge not initialised or unexpected return type) — tunnel socket cannot be protected",
+                )
+                -1
+            } else {
+                result
+            }
         } catch (e: Exception) {
             FaultReporter.report(
                 FaultReporter.PATH_TUNNEL,
@@ -198,10 +212,20 @@ internal object WgNative {
             -1
         }
 
-    /** Get the IPv6 UDP socket fd for the tunnel, or -1 if unavailable. */
+    /** Get the IPv6 UDP socket fd for the tunnel, or -1 if unavailable. Twin of [getSocketV4]. */
     fun getSocketV6(handle: Int): Int =
         try {
-            getSocketV6Method?.invoke(null, handle) as? Int ?: -1
+            val result = getSocketV6Method?.invoke(null, handle) as? Int
+            if (result == null) {
+                FaultReporter.report(
+                    FaultReporter.PATH_TUNNEL,
+                    "wg_get_socket_v6_no_result",
+                    "wgGetSocketV6 returned no fd (bridge not initialised or unexpected return type) — tunnel socket cannot be protected",
+                )
+                -1
+            } else {
+                result
+            }
         } catch (e: Exception) {
             // Same reasoning as getSocketV4 — kept as a twin on purpose: the v6
             // half going unreported is how a v6-only leak stays invisible.
@@ -219,9 +243,36 @@ internal object WgNative {
      * Contains per-peer `rx_bytes` and `tx_bytes` stats.
      * Returns `null` if the method is unavailable or the call fails.
      */
-    fun getConfig(handle: Int): String? =
-        try {
-            getConfigMethod?.invoke(null, handle) as? String
+    fun getConfig(handle: Int): String? {
+        // Absent by design on some wireguard-android builds: reported ONCE at
+        // init (wg_get_config_unavailable) and gated by canReadConfig() at
+        // every caller, so a null here is deliberately not a second event.
+        // Explicit, not folded into a `?.` chain, so it cannot be mistaken
+        // for the case below.
+        val method = getConfigMethod ?: return null
+        return try {
+            when (val raw = method.invoke(null, handle)) {
+                // wg-go answers null for a handle it no longer owns or when
+                // its IPC read fails. TunnelMonitor turns that into a stall
+                // verdict after the grace period, which publishes a
+                // VpnState.Error and so leaves a breadcrumb; a stall is
+                // usually the network, not the client, so it is deliberately
+                // not an event of its own.
+                null -> null
+                is String -> raw
+                else -> {
+                    // The handle resolved but its return type is not what the
+                    // bridge was written against (a wireguard-android bump).
+                    // `as? String` used to fold this into the null above,
+                    // where it read as a stall. Throttled — polling loop.
+                    FaultReporter.report(
+                        FaultReporter.PATH_TUNNEL,
+                        "wg_get_config_unexpected_type",
+                        "wgGetConfig returned an unexpected type — stats and stall detection unavailable",
+                    )
+                    null
+                }
+            }
         } catch (e: Exception) {
             // Throttled in FaultReporter — this is called from a polling loop.
             // Worth reporting because stall detection silently stops working
@@ -234,6 +285,7 @@ internal object WgNative {
             )
             null
         }
+    }
 
     fun canReadConfig(): Boolean = getConfigMethod != null
 }
