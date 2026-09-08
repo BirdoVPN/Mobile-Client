@@ -1021,8 +1021,8 @@ dependencies {
     // ── Hilt DI ──────────────────────────────────────────────────
     // Must match the Hilt Gradle plugin version (2.57.2) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
-    implementation("com.google.dagger:hilt-android:2.59")
-    ksp("com.google.dagger:hilt-compiler:2.59")
+    implementation("com.google.dagger:hilt-android:2.59.2")
+    ksp("com.google.dagger:hilt-compiler:2.59.2")
     implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
 
     // ── Networking ───────────────────────────────────────────────
@@ -1045,7 +1045,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0") // no stable 1.1.x available
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.54.0")
+    implementation("io.sentry:sentry-android:8.55.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
