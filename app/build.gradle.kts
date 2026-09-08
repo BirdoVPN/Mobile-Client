@@ -1070,7 +1070,7 @@ dependencies {
     // whole feature hung on a transitive nobody declared: a Dependabot bump that
     // dropped it would have silently disarmed the profile with no build failure
     // and no test. Declared directly so that cannot happen quietly.
-    implementation("androidx.profileinstaller:profileinstaller:1.4.0")
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
 
     // The producer. This is NOT a code dependency -- `baselineProfile` is a
     // dedicated configuration the plugin adds, and nothing from :baselineprofile
