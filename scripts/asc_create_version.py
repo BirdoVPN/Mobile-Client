@@ -161,6 +161,51 @@ def audit_account(tok, bundle_id):
                                                va.get("versionString", "?"), state, bv))
     print("\n" + "=" * 68)
 
+    # SUBSCRIPTIONS. Apple keeps in-app purchases and subscriptions on the APP
+    # record, not on a platform, so a subscription created "for iOS" is the same
+    # product for macOS. What IS per-version is the attachment: each App Store
+    # version submission carries its own list of IAPs to review with it. That is
+    # what guideline 2.1(b) complained about on macOS -- the products existed,
+    # the macOS version submission did not include them. This section prints the
+    # products, their review state, and what each version has attached, so the
+    # web-UI click can be checked rather than assumed.
+    for a in rows:
+        at = a["attributes"]
+        print("\n--- subscriptions on %s ---" % at.get("name", "?"))
+        groups = api(tok, "apps/%s/subscriptionGroups?limit=50" % a["id"])
+        if "_http" in groups:
+            print("    could not list subscription groups (HTTP %s)" % groups["_http"])
+        for g in groups.get("data", []):
+            ga = g["attributes"]
+            print("    group %-28s id=%s" % (ga.get("referenceName", "?"), g["id"]))
+            subs = api(tok, "subscriptionGroups/%s/subscriptions?limit=50" % g["id"])
+            for sb in subs.get("data", []):
+                sa = sb["attributes"]
+                print("      %-30s %-24s state=%s" % (sa.get("productId", "?"),
+                                                    sa.get("name", "?"), sa.get("state", "?")))
+        iaps = api(tok, "apps/%s/inAppPurchasesV2?limit=50" % a["id"])
+        for it in iaps.get("data", []):
+            ia = it["attributes"]
+            print("    iap   %-30s %-24s state=%s" % (ia.get("productId", "?"),
+                                                    ia.get("name", "?"), ia.get("state", "?")))
+
+        vers = api(tok, "apps/%s/appStoreVersions?limit=50" % a["id"])
+        for v in vers.get("data", []):
+            va = v["attributes"]
+            # The attachment relationship. If Apple refuses to list it for this
+            # version, print the HTTP code rather than guessing.
+            att = api(tok, "appStoreVersions/%s/inAppPurchases?limit=50" % v["id"])
+            if "_http" in att:
+                shown = "attachment list refused (HTTP %s)" % att["_http"]
+            else:
+                names = [(x.get("attributes") or {}).get("productId")
+                         or (x.get("attributes") or {}).get("name") or x.get("id")
+                         for x in att.get("data", [])]
+                shown = "%d attached: %s" % (len(names), ", ".join(str(n) for n in names) or "-")
+            print("    version %-8s %-10s %s" % (va.get("platform", "?"),
+                                                va.get("versionString", "?"), shown))
+    print("\n" + "=" * 68)
+
 
 def main():
     ap = argparse.ArgumentParser()
