@@ -11,6 +11,7 @@ import android.util.Log
 import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.repository.ApiResult
+import app.birdo.vpn.utils.FaultReporter
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import javax.inject.Inject
@@ -100,14 +101,10 @@ class BirdoTileService : TileService() {
 
                 // Need to check VPN permission
                 if (!vpnManager.isVpnPermissionGranted()) {
-                    // Can't request permission from tile — open app instead
-                    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (launchIntent == null) {
-                        Log.e(TAG, "Failed to get launch intent for $packageName")
-                        return
-                    }
-                    openAppAndCollapse(launchIntent)
+                    // Can't request permission from tile — open app instead.
+                    // Same shape as every other tile hand-off, so it goes
+                    // through the one helper that reports the dead end.
+                    openAppOrLog("Tile connect needs VPN permission")
                     return
                 }
 
@@ -163,22 +160,47 @@ class BirdoTileService : TileService() {
                                     // chosen multi-hop route is indistinguishable
                                     // from success and leaks the jurisdiction the
                                     // user paid to hide. Staying disconnected is
-                                    // the honest result -- but it must be VISIBLE,
-                                    // so the returned ApiResult is logged rather
-                                    // than discarded. connectMultiHop RETURNS an
-                                    // error, it does not throw, so the catch below
-                                    // would never have fired on a refusal.
+                                    // the honest result -- but it must be VISIBLE.
+                                    // connectMultiHop RETURNS an error, it does
+                                    // not throw, so the catch below would never
+                                    // have fired on a refusal.
+                                    //
+                                    // The visibility does NOT come from the line
+                                    // below: R8 strips android.util.Log entirely
+                                    // from the release artifact, so on a shipped
+                                    // build this Log.w reaches nobody, exactly as
+                                    // the Log.e it replaced did. It comes from
+                                    // VpnManager, where every non-success return
+                                    // publishes a VpnState.Error (a breadcrumb via
+                                    // publishError) and the two jurisdiction-leak
+                                    // refusals report at their root as
+                                    // multihop_route_unconfirmed / _mismatch. This
+                                    // line is the `adb logcat` convenience only; a
+                                    // report here would just add a second throttle
+                                    // bucket for one fact.
                                     when (val r = vpnManager.connectMultiHop(entry, exit)) {
                                         is ApiResult.Success ->
                                             if (!r.data.success) {
-                                                Log.e(TAG, "Tile multi-hop refused: " + r.data.message)
+                                                Log.w(TAG, "Tile multi-hop refused: " + r.data.message)
                                             }
                                         is ApiResult.Error ->
-                                            Log.e(TAG, "Tile multi-hop failed: " + r.message)
+                                            Log.w(TAG, "Tile multi-hop failed: " + r.message)
                                     }
                                     withContext(Dispatchers.Main) { updateTile() }
                                 } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to connect multi-hop via tile", e)
+                                    // A THROW, unlike a refusal, never reaches
+                                    // publishError — it unwinds past VpnManager
+                                    // entirely, so there is no state change and
+                                    // no breadcrumb. Multi-hop is armed and the
+                                    // user's tap did nothing: staying
+                                    // disconnected is correct, being silent
+                                    // about it is not.
+                                    FaultReporter.report(
+                                        FaultReporter.PATH_CONNECT,
+                                        "tile_multihop_threw",
+                                        "Quick Settings multi-hop connect threw — the tap did nothing",
+                                        e,
+                                    )
                                 }
                             }
                             return
@@ -191,7 +213,12 @@ class BirdoTileService : TileService() {
                         vpnManager.quickConnect()
                         withContext(Dispatchers.Main) { updateTile() }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to connect via tile", e)
+                        FaultReporter.report(
+                            FaultReporter.PATH_CONNECT,
+                            "tile_connect_threw",
+                            "Quick Settings connect threw — the tap did nothing",
+                            e,
+                        )
                     }
                 }
             }
@@ -209,7 +236,14 @@ class BirdoTileService : TileService() {
         if (launchIntent != null) {
             openAppAndCollapse(launchIntent)
         } else {
-            Log.e(TAG, reason + ", and no launch intent is available")
+            // The tile cannot act and cannot hand off: the user's tap is a
+            // no-op with no UI anywhere to explain it. `reason` is one of this
+            // file's own literals, never user or server text.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "tile_no_launch_intent",
+                "Quick Settings tile could not hand off to the app: " + reason,
+            )
         }
     }
 
@@ -219,7 +253,14 @@ class BirdoTileService : TileService() {
                 vpnManager.disconnect()
                 withContext(Dispatchers.Main) { updateTile() }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to disconnect via tile", e)
+                // The tunnel may still be up while the tile redraws to
+                // Disconnected — the user believes they are off the VPN.
+                FaultReporter.report(
+                    FaultReporter.PATH_TUNNEL,
+                    "tile_disconnect_threw",
+                    "Quick Settings disconnect threw — the tunnel may still be up",
+                    e,
+                )
             }
         }
     }

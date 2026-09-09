@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.utils.FaultReporter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -137,7 +138,15 @@ object RosenpassManager {
             currentPsk?.fill(0)
             currentPsk = null
             _modeFlow.value = Mode.DISABLED
-            Log.e(TAG, "BirdoPQ was enabled by server but client could not decapsulate; aborting")
+            // tryDecapsulate reported the specific cause (or logged at debug
+            // level for the two by-design nulls: lib not loaded, no
+            // ciphertext); this is the abort itself. The service then refuses
+            // the connect and reports that refusal.
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_abort_no_bilateral_psk",
+                "Server enabled BirdoPQ but no bilateral PSK could be derived — aborting",
+            )
             return@withContext null
         }
         return@withContext fallbackToServerPsk(config)
@@ -196,7 +205,9 @@ object RosenpassManager {
         // PFA-H7: integrity-verify FIRST (which also performs the hash-then-load
         // sequence). isLoaded only becomes true after the hash matches.
         if (!RosenpassNative.verifyIntegrity(context)) {
-            Log.e(TAG, "rosenpass-jni integrity unverified — bilateral PQ DISABLED")
+            // Reported at the root, RosenpassNative.verifyIntegrity
+            // (pq_disabled_integrity), which all three callers share.
+            Log.w(TAG, "rosenpass-jni integrity unverified — bilateral PQ DISABLED")
             return null
         }
         if (!RosenpassNative.isLoaded) {
@@ -219,29 +230,51 @@ object RosenpassManager {
         // modeFlow) instead.
         val nonceB64 = config.rosenpassEndpoint
         if (nonceB64.isNullOrBlank()) {
-            Log.e(TAG, "server omitted per-connect PQ nonce — bilateral PQ aborted (PFA-M5)")
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_nonce_missing",
+                "Server omitted the per-connect PQ nonce — bilateral PQ aborted (PFA-M5)",
+            )
             return null
         }
         val nonce = try { Base64.decode(nonceB64, Base64.NO_WRAP) }
         catch (e: Exception) {
-            Log.e(TAG, "malformed PQ nonce — bilateral PQ aborted", e)
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_nonce_malformed",
+                "Malformed PQ nonce — bilateral PQ aborted",
+                e,
+            )
             return null
         }
         // Bound the server-supplied nonce before it crosses the JNI boundary —
         // an empty or arbitrarily large buffer must not rely on Rust-side
         // validation alone.
         if (nonce.isEmpty() || nonce.size > MAX_NONCE_BYTES) {
-            Log.e(TAG, "PQ nonce out of bounds (${nonce.size} B) — bilateral PQ aborted")
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_nonce_out_of_bounds",
+                "PQ nonce out of bounds (${nonce.size} B) — bilateral PQ aborted",
+            )
             return null
         }
         val ciphertext = try {
             Base64.decode(ctB64, Base64.NO_WRAP)
         } catch (e: Exception) {
-            Log.e(TAG, "malformed PQ ciphertext", e)
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_ciphertext_malformed",
+                "Malformed PQ ciphertext — bilateral PQ aborted",
+                e,
+            )
             return null
         }
         if (ciphertext.size != RosenpassNative.CIPHERTEXT_BYTES) {
-            Log.e(TAG, "PQ ciphertext has wrong size: ${ciphertext.size} != ${RosenpassNative.CIPHERTEXT_BYTES}")
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_ciphertext_wrong_size",
+                "PQ ciphertext has the wrong size (${ciphertext.size} B) — bilateral PQ aborted",
+            )
             return null
         }
 
@@ -252,22 +285,41 @@ object RosenpassManager {
             // truncated/corrupted file would reach the JNI boundary unvalidated.
             // Enforce the same invariant on both paths.
             if (keypair.secretKey.size != RosenpassNative.SECRET_KEY_BYTES) {
-                Log.e(TAG, "persisted ML-KEM secret key has wrong size (${keypair.secretKey.size} B) — bilateral PQ aborted")
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_secret_key_wrong_size",
+                    "Persisted ML-KEM secret key has the wrong size (${keypair.secretKey.size} B) — bilateral PQ aborted",
+                )
                 return null
             }
 
             val psk = try {
                 RosenpassNative.deriveSharedPsk(keypair.secretKey, ciphertext, nonce)
             } catch (e: Throwable) {
-                Log.e(TAG, "native deriveSharedPsk threw", e)
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_derive_threw",
+                    "Native deriveSharedPsk threw — bilateral PQ aborted",
+                    e,
+                )
                 return null
             }
             if (psk == null) {
-                Log.w(TAG, "deriveSharedPsk returned null — falling back")
+                // The native side rejected the input it was given: a server
+                // ciphertext that does not decapsulate against our key.
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_derive_no_result",
+                    "Native deriveSharedPsk returned null — bilateral PQ aborted",
+                )
                 return null
             }
             if (psk.size != PSK_LENGTH_BYTES) {
-                Log.e(TAG, "deriveSharedPsk returned wrong-sized PSK (${psk.size} != $PSK_LENGTH_BYTES)")
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_derived_psk_wrong_size",
+                    "Native deriveSharedPsk returned a wrong-sized PSK (${psk.size} B) — bilateral PQ aborted",
+                )
                 psk.fill(0)
                 return null
             }
@@ -293,13 +345,25 @@ object RosenpassManager {
         val fresh = try {
             RosenpassNative.generateKeypair()
         } catch (e: Throwable) {
-            Log.e(TAG, "native generateKeypair failed", e)
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_generate_keypair_threw",
+                "Native generateKeypair threw — no client keypair, BirdoPQ unavailable",
+                e,
+            )
             return null
         }
         try {
             store.save(fresh)
         } catch (e: Exception) {
-            Log.e(TAG, "failed to persist new keypair — not caching, will regenerate next time", e)
+            // Not fatal for this connect, but every connect will pay the
+            // generation cost and the server sees a new client key each time.
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_keypair_persist_failed",
+                "Failed to persist the new ML-KEM keypair — regenerating on every connect",
+                e,
+            )
         }
         return fresh
     }
