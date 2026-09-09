@@ -1,6 +1,7 @@
 package app.birdo.vpn.service
 
 import android.util.Log
+import app.birdo.vpn.utils.FaultReporter
 
 /**
  * Decides, quickly, whether a freshly-established WireGuard tunnel is actually
@@ -111,7 +112,19 @@ class TransportProbe(
         // not trigger a fallback, because a false BLOCKED costs every user on
         // that build an unnecessary reconnect onto the slower transport.
         if (!canReadConfig()) {
-            Log.i(TAG, "wg config unreadable — skipping transport probe")
+            // FAIL-OPEN, and deliberately so — but it must not be silent. The
+            // caller treats HANDSHAKE_OK as evidence and publishes Connected;
+            // here there is no evidence at all, only the absence of a way to
+            // look. That is the same "Connected with nothing behind it" state
+            // as transport_probe_threw, so it gets the same visibility. If this
+            // ever fires in the field it means the wg-go config bridge is gone
+            // on that build and Adaptive Transport is dead fleet-wide on it.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "transport_probe_unavailable",
+                "wg-go config is unreadable — the transport probe was skipped and Connected " +
+                    "is published unverified",
+            )
             return Result.HANDSHAKE_OK
         }
 

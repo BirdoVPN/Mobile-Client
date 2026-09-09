@@ -52,12 +52,21 @@ class DataplaneFaultReportingTest {
 
     /**
      * The files that make up the connect, kill-switch, stealth, PQ and
-     * native-integrity paths — the scope of the finding, stated as a list so
-     * the invariants below have an exact domain. Not "everything under
-     * service/": BirdoTileService is the Quick Settings tile (UI),
-     * VpnNotificationManager is the notification, and RosenpassKeyStore and
-     * WireGuardConfigBuilder carry no error-level logging of their own. A new
-     * data-plane file must be added here to be covered.
+     * native-integrity paths — the domain of the per-file report pins below.
+     *
+     * This list used to carry the whole Log.e invariant, with a note saying "a
+     * new data-plane file must be added here to be covered". That note was
+     * prose, not a check, and it was already wrong: BirdoTileService was
+     * excluded as "the Quick Settings tile (UI)" while carrying SEVEN
+     * error-severity logs on the connect path — including the multi-hop
+     * refusal whose own comment says the result "must be VISIBLE" — and
+     * SettingsHmac was not considered at all though it is the integrity gate
+     * on `kill_switch_enabled` and the Multi-Hop route.
+     *
+     * So the Log.e invariant is now app-wide with a named allowlist (see
+     * `no file logs at error severity outside a named exception`): a new file
+     * cannot escape by being absent from a list. This list only decides WHICH
+     * fault codes are pinned per file, which is a judgement no scan can make.
      */
     private val dataPlaneFiles = listOf(
         "app/src/main/java/app/birdo/vpn/service/WgNative.kt",
@@ -68,7 +77,28 @@ class DataplaneFaultReportingTest {
         "app/src/main/java/app/birdo/vpn/service/RosenpassNative.kt",
         "app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt",
         "app/src/main/java/app/birdo/vpn/service/XrayManager.kt",
+        "app/src/main/java/app/birdo/vpn/service/BirdoTileService.kt",
+        "app/src/main/java/app/birdo/vpn/service/WireGuardConfigBuilder.kt",
         "app/src/main/java/app/birdo/vpn/utils/NativeLibraryVerifier.kt",
+        "app/src/main/java/app/birdo/vpn/utils/SettingsHmac.kt",
+    )
+
+    /**
+     * The other files under `service/`, each with the reason it is NOT on the
+     * data plane. Stated here rather than in prose so
+     * `every file under service is classified` can hold the two sets to the
+     * directory: a new file must be put in one of them before the build is
+     * green, which is what the old "must be added here to be covered" note
+     * only asked for politely.
+     */
+    private val notDataPlaneFiles = mapOf(
+        "VpnNotificationManager.kt" to
+            "builds and posts notifications; its one catch is a failed notification post, " +
+            "which changes nothing about whether traffic is protected",
+        "RosenpassKeyStore.kt" to
+            "PQ key persistence. Both catches recover locally (keep on-disk state / delete " +
+            "partial state) and the PQ VERDICT that results is reported by RosenpassManager, " +
+            "so reporting here would double-count one outcome",
     )
 
     private fun source(path: String): String {
@@ -353,6 +383,178 @@ class DataplaneFaultReportingTest {
     }
 
     /**
+     * Holds both lists to the directory. `dataPlaneFiles` had become
+     * decorative — after the Log.e rule went app-wide nothing read it, so its
+     * KDoc described a job it no longer did. These two assertions give it one:
+     * classification is mandatory, and a file declared to be on the data plane
+     * must actually report something.
+     *
+     * That second half covers what the Log.e rule cannot. The app-wide scan
+     * catches "logged at error severity instead of reported"; it is blind to a
+     * failure swallowed with NO log at all, which is how
+     * `catch (_: Exception) {}` on the DNS loop in WireGuardConfigBuilder
+     * survived every scan in round two.
+     */
+    @Test
+    fun `every file under service is classified, and each data-plane file reports`() {
+        val dir = File(repoRoot, "app/src/main/java/app/birdo/vpn/service")
+        val onDisk = (dir.listFiles() ?: emptyArray())
+            .filter { it.isFile && it.extension == "kt" }
+            .map { it.name }
+            .toSet()
+        assertTrue("no sources found under service/ — the scan is vacuous", onDisk.size >= 10)
+
+        val declaredInService = dataPlaneFiles
+            .filter { it.contains("/service/") }
+            .map { it.substringAfterLast('/') }
+            .toSet()
+        assertEquals(
+            "file(s) under service/ that are neither declared data-plane nor listed in " +
+                "notDataPlaneFiles with a reason. Decide which it is: if a failure there can " +
+                "leave the user unprotected, unconnected or leaking, add it to dataPlaneFiles " +
+                "and pin its fault codes; if not, say why in notDataPlaneFiles",
+            emptySet<String>(),
+            onDisk - declaredInService - notDataPlaneFiles.keys,
+        )
+        assertEquals(
+            "declared under service/ but no longer on disk — renamed or deleted; update " +
+                "dataPlaneFiles so it keeps describing the tree",
+            emptySet<String>(),
+            declaredInService - onDisk,
+        )
+        assertEquals(
+            "stale entries in notDataPlaneFiles — the file is gone",
+            emptySet<String>(),
+            notDataPlaneFiles.keys - onDisk,
+        )
+
+        // Declared data-plane, reports nothing: either it has no failure branch
+        // (so it does not belong on the list) or it has one that reaches nobody.
+        val silent = dataPlaneFiles.filter { reportedCodes(strippedSource(it)).isEmpty() }
+        assertEquals(
+            "declared data-plane files that call FaultReporter.report ZERO times: $silent",
+            emptyList<String>(),
+            silent,
+        )
+    }
+
+    /**
+     * The connect path builds its config here, and three failures were folded
+     * into silence — two of them into `catch (_: Exception) {}`, which logs
+     * nothing at all and so is invisible to every Log-based scan.
+     *
+     * `config_dns_all_rejected` is the leak: with no DNS server accepted the
+     * interface carries none, the handset falls back to the network-provided
+     * resolver, and the user's queries leave outside the tunnel — precisely
+     * what a custom DNS setting exists to prevent. `config_allowed_ip_skipped`
+     * is the other one: a PARTIAL skip (::/0 dropped, 0.0.0.0/0 kept) leaves
+     * IPv6 routing outside the tunnel, and the `check()` below it only catches
+     * a TOTAL skip.
+     *
+     * The file's remaining `catch (_: Exception)` sites are the three
+     * validators (isValidDnsAddress, isValidWireGuardKey, isValidCidr) where an
+     * exception IS the answer "invalid" and the caller acts on the returned
+     * boolean — deliberately left alone.
+     */
+    /**
+     * The probe's own fail-open. `canReadConfig() == false` returns
+     * HANDSHAKE_OK — correct behaviour (a false BLOCKED would cost every user
+     * on that build a needless reconnect onto the slow transport) but it is
+     * the SAME "Connected with nothing behind it" state as
+     * transport_probe_threw, and it was Log.i: below even the severity the
+     * app-wide Log.e rule looks at. Found by the classification test above,
+     * which noticed TransportProbe was declared data-plane and reported
+     * nothing at all.
+     *
+     * BLOCKED stays Log.w: it is a measured outcome that drives the Adaptive
+     * Transport fallback, not a failure of the client.
+     */
+    @Test
+    fun `the transport probe reports when it cannot probe`() {
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/TransportProbe.kt",
+            listOf("transport_probe_unavailable"),
+        )
+    }
+
+    @Test
+    fun `the tunnel config builder reports what it silently dropped`() {
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/WireGuardConfigBuilder.kt",
+            listOf(
+                "config_ipv6_address_rejected",
+                "config_dns_server_rejected",
+                "config_dns_all_rejected",
+                "config_mtu_rejected",
+                "config_allowed_ip_skipped",
+            ),
+        )
+    }
+
+    /**
+     * The Quick Settings tile is a THIRD connect entry point. It injects
+     * VpnManager directly and never passes through VpnViewModel, so nothing
+     * upstream covers it — and a throw out of quickConnect / connectMultiHop /
+     * disconnect unwinds past VpnManager entirely, which means no
+     * publishError, no VpnState.Error and therefore no breadcrumb either. The
+     * user's tap does nothing and every channel stays quiet.
+     *
+     * The multi-hop REFUSAL logs are deliberately Log.w, not reports: each
+     * non-success return from connectMultiHop already publishes a
+     * VpnState.Error, and the two jurisdiction-leak refusals report at their
+     * root as multihop_route_unconfirmed / _mismatch. A second code here would
+     * be a duplicate throttle bucket, not extra coverage.
+     */
+    @Test
+    fun `the Quick Settings tile reports the taps that do nothing`() {
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/BirdoTileService.kt",
+            listOf(
+                "tile_connect_threw",
+                "tile_multihop_threw",
+                "tile_disconnect_threw",
+                // Cannot act and cannot hand off: a no-op tap with no UI anywhere.
+                "tile_no_launch_intent",
+            ),
+        )
+    }
+
+    /**
+     * SettingsHmac is the integrity gate on `kill_switch_enabled`,
+     * `local_network_sharing` and the Multi-Hop route — the settings that
+     * decide whether traffic is blocked and where it leaves the network. Its
+     * verdicts and both of its fail-open branches were Log.e only.
+     *
+     * `settings_sign_failed` is the sharp one: the settings are left unsigned,
+     * so the NEXT launch reads that as tampering and wipes the user's kill
+     * switch — a self-inflicted reset indistinguishable from an attack, with
+     * nothing recording which it was. `settings_reset_failed` is the other
+     * direction: settings already judged untrustworthy stay in force.
+     *
+     * MainActivity's own mismatch line stays Log.w for the same reason the
+     * tile's refusals do — verify() reports the cause at its root — but the
+     * catch AROUND the whole check reports, because a throw there means
+     * nothing was verified and nothing was reset.
+     */
+    @Test
+    fun `the settings integrity gate reports its verdicts and its fail-opens`() {
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/utils/SettingsHmac.kt",
+            listOf(
+                "settings_hmac_missing",
+                "settings_hmac_mismatch",
+                "settings_hmac_verify_threw",
+                "settings_sign_failed",
+                "settings_reset_failed",
+            ),
+        )
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/MainActivity.kt",
+            listOf("settings_integrity_check_threw"),
+        )
+    }
+
+    /**
      * FaultReporter's own throttle exists because "socket protect runs every
      * cycle" — yet only WgNative's JNI *getter* throw was reported. These are
      * the two actual protect() call sites; when protect() itself throws,
@@ -521,31 +723,74 @@ class DataplaneFaultReportingTest {
 
     /**
      * On the shipped artifact a bare `Log.e` is not a quieter channel, it is
-     * no channel. So the data-plane files carry NONE: error severity means
-     * FaultReporter.report (which does its own Log.e for debug builds), and a
-     * routine outcome is Log.w plus the breadcrumb the state funnels leave.
-     * This is the rule every per-code pin above is an instance of, and it is
-     * what stops the NEXT silent branch — the one nobody has thought to pin.
+     * no channel. Error severity means FaultReporter.report (which does its
+     * own Log.e for debug builds); a routine outcome is Log.w plus the
+     * breadcrumb the state funnels leave. This is the rule every per-code pin
+     * above is an instance of, and it is what stops the NEXT silent branch —
+     * the one nobody has thought to pin.
+     *
+     * Scoped to the whole of app/src/main, NOT to [dataPlaneFiles]. When this
+     * scan owned only a nine-file list, a file could stay silent simply by not
+     * being on it, and two already had: BirdoTileService (seven error logs on
+     * the connect path, excluded as "UI") and SettingsHmac (five, the
+     * integrity gate on `kill_switch_enabled` and the Multi-Hop route). The
+     * list said a new data-plane file "must be added here to be covered" —
+     * prose, checked by nothing. An allowlist inverts that: absence from it is
+     * the failing state, so the next file is covered on the day it is written.
      */
     @Test
-    fun `the data plane has no bare Log e`() {
+    fun `no file logs at error severity outside a named exception`() {
+        // Every entry is a path that MAY keep android.util.Log.e/wtf, with the
+        // reason. Anything else under app/src/main fails this test, so a NEW
+        // file cannot escape the rule by being absent from a list. A stale
+        // entry fails it too (below), so the allowlist cannot rot into a claim
+        // about a file that no longer logs.
+        val allowed = mapOf(
+            "utils/FaultReporter.kt" to
+                "the reporter's own line — what every other error routes THROUGH; it is the " +
+                    "convenience half, and the Sentry capture below it is the signal half",
+            "BirdoApp.kt" to
+                "Sentry and Play Billing initialisation: FaultReporter cannot report that " +
+                    "Sentry itself failed to initialise, and billing is not a data-plane path",
+            "data/auth/TokenManager.kt" to
+                "the auth / Keystore-recovery path — a different finding, deliberately not " +
+                    "reworked here. TokenManager is the one file that already talks to Sentry " +
+                    "directly. Named so this is a DISCLOSED exclusion, not an invisible one",
+        )
         var logCalls = 0
-        val offenders = dataPlaneFiles.flatMap { path ->
-            val text = strippedSource(path)
+        val offenders = mutableListOf<String>()
+        val allowedHits = mutableSetOf<String>()
+        shippedSources().forEach { file ->
+            val rel = file.absolutePath.replace(File.separatorChar, '/')
+                .substringAfter("app/src/main/java/app/birdo/vpn/")
+            val text = stripComments(file.readText())
             logCalls += Regex("""\bLog\.[a-z]+\(""").findAll(text).count()
-            Regex("""\bLog\.(e|wtf)\(""").findAll(text).map { m ->
-                val line = text.substring(0, m.range.first).count { it == '\n' } + 1
-                "$path:~$line: " + text.substring(m.range.first).lineSequence().first().trim()
-            }.toList()
+            Regex("""\bLog\.(e|wtf)\(""").findAll(text).forEach { m ->
+                if (rel in allowed) {
+                    allowedHits += rel
+                } else {
+                    val line = text.substring(0, m.range.first).count { it == '\n' } + 1
+                    offenders += "$rel:~$line: " + text.substring(m.range.first).lineSequence().first().trim()
+                }
+            }
         }
-        assertTrue("found only $logCalls Log calls across the data plane — the scan is vacuous", logCalls >= 40)
+        assertTrue("found only $logCalls Log calls under app/src/main — the scan is vacuous", logCalls >= 40)
         assertEquals(
-            "Bare android.util.Log.e/wtf in a data-plane file. R8 deletes it from the release " +
-                "build, so on the artifact users run it reports to nobody. If it is an error, " +
-                "call FaultReporter.report (it logs too); if it is a routine outcome, Log.w it " +
-                "and let the VpnState.Error breadcrumb carry it. Offending: $offenders",
+            "android.util.Log.e/wtf outside the named exceptions. R8 deletes it from the " +
+                "release build (-assumenosideeffects in proguard-rules.pro), so on the artifact " +
+                "users run it reports to NOBODY. If it is an error, call FaultReporter.report " +
+                "(it logs too); if it is a routine outcome, Log.w it and let the VpnState.Error " +
+                "breadcrumb carry it; if it genuinely cannot use the reporter, add it to " +
+                "`allowed` above WITH the reason. Offending: $offenders",
             emptyList<String>(),
             offenders,
+        )
+        // An allowlist nobody prunes becomes a false statement about coverage.
+        assertEquals(
+            "allowlisted for Log.e/wtf but no longer containing one — remove the entry so the " +
+                "list keeps meaning what it says",
+            emptySet<String>(),
+            allowed.keys - allowedHits,
         )
     }
 

@@ -49,6 +49,7 @@ import app.birdo.vpn.ui.navigation.BirdoNavGraph
 import app.birdo.vpn.ui.navigation.Screen
 import app.birdo.vpn.ui.theme.BirdoTheme
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
+import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.RootDetector
 import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.AndroidEntryPoint
@@ -356,14 +357,26 @@ class MainActivity : FragmentActivity() {
             // tampered settings in the real file are never detected.
             val prefs = getSharedPreferences("birdo_vpn_prefs", MODE_PRIVATE)
             if (!SettingsHmac.verify(prefs)) {
-                Log.e("BirdoSecurity", "Settings HMAC mismatch — resetting ALL protected settings to safe defaults")
+                // Log.w, not report: verify() reports the CAUSE at its root
+                // (settings_hmac_missing / _mismatch / _verify_threw) and
+                // returning false is exactly what makes the reset run, so a
+                // code here would be a second bucket for one fact.
+                Log.w("BirdoSecurity", "Settings HMAC mismatch — resetting ALL protected settings to safe defaults")
                 // Reset EVERY protected key, not just the four booleans: a tampered
                 // custom_dns_* (DNS hijack) or split_tunnel_apps (VPN bypass) would
                 // otherwise survive and be re-signed with a valid HMAC.
                 SettingsHmac.resetToSafeDefaults(prefs)
             }
         } catch (e: Exception) {
-            Log.e("BirdoSecurity", "Settings integrity check failed", e)
+            // Neither verify() nor resetToSafeDefaults() reports this one: it
+            // is thrown before or between them, so nothing was verified and
+            // nothing was reset. Tampered settings stay live, unnoticed.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "settings_integrity_check_threw",
+                "Settings integrity check threw — settings were neither verified nor reset",
+                e,
+            )
         }
     }
 

@@ -155,7 +155,15 @@ object SettingsHmac {
                 .commit()
             sign(prefs)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to reset settings to safe defaults", e)
+            // FAIL-OPEN: the tamper response did NOT run, so the settings that
+            // were just judged untrustworthy are still live — kill switch,
+            // split tunnel and the Multi-Hop route among them.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "settings_reset_failed",
+                "Tampered settings could not be reset to safe defaults — they are still in force",
+                e,
+            )
         }
     }
 
@@ -174,7 +182,15 @@ object SettingsHmac {
             // protected setting, indistinguishable from tampering.
             prefs.edit().putString(HMAC_PREF_KEY, hmac).commit()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to sign settings", e)
+            // The settings are now unsigned. The NEXT launch reads that as
+            // tampering and wipes every protected setting, so the user loses
+            // their kill switch for a reason nothing records.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "settings_sign_failed",
+                "Protected settings could not be signed — the next launch will read them as tampered",
+                e,
+            )
         }
     }
 
@@ -195,7 +211,11 @@ object SettingsHmac {
             // If settings are already present without an HMAC, the HMAC was likely deleted.
             val hasProtectedSettings = PROTECTED_KEYS.any { key -> prefs.contains(key) }
             if (hasProtectedSettings) {
-                Log.e(TAG, "Protected settings exist without HMAC — treating as tampered")
+                FaultReporter.report(
+                    FaultReporter.PATH_KILL_SWITCH,
+                    "settings_hmac_missing",
+                    "Protected settings exist with no HMAC — treating as tampered",
+                )
                 return false
             }
             return true // Genuine first run
@@ -220,10 +240,21 @@ object SettingsHmac {
                 }
             }
 
-            Log.e(TAG, "Settings HMAC verification FAILED — possible tampering")
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "settings_hmac_mismatch",
+                "Protected settings HMAC did not match under the current or any legacy key set",
+            )
             false
         } catch (e: Exception) {
-            Log.e(TAG, "HMAC verification error", e)
+            // Keystore unavailable / key evicted. Indistinguishable from
+            // tampering to the caller, and it wipes the same settings.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "settings_hmac_verify_threw",
+                "Protected settings HMAC verification threw — treated as tampered",
+                e,
+            )
             false
         }
     }
