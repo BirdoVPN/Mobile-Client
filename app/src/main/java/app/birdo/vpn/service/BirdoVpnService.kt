@@ -1796,7 +1796,20 @@ class BirdoVpnService : VpnService() {
      */
     private fun registerDefaultNetworkCallback(handle: Int) {
         unregisterDefaultNetworkCallback()
-        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        // `as? ConnectivityManager ?: return` folded a missing manager into
+        // exactly the outcome the catch below reports — no callback, so the
+        // tunnel never re-protects its sockets or updates its underlying
+        // network on a roam — but silently. Same branch, same consequence, so
+        // the same channel: an elvis here hid the twin of a reported failure.
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        if (cm == null) {
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "network_callback_no_manager",
+                "ConnectivityManager unavailable — no re-protect on network change",
+            )
+            return
+        }
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (tunnelHandle != handle) return

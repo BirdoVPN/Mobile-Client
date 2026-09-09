@@ -110,21 +110,186 @@ class DataplaneFaultReportingTest {
     }
 
     /**
-     * Kotlin source with comments removed, so a scan cannot be fooled — in
-     * either direction — by prose that quotes the pattern it is looking for.
+     * Index just past the string or character literal that starts at [from].
+     *
+     * Knows about escapes, raw `"""` strings and `${…}` template expressions
+     * (which may themselves contain strings and braces: `"${m["k"]}"`), so the
+     * scanners below can tell a brace that is CODE from a brace that is just
+     * message text. Getting that wrong is not cosmetic — see
+     * `a brace inside a message string cannot extend a catch block`.
      */
-    private fun stripComments(text: String): String =
-        text
-            .replace(Regex("""/\*.*?\*/""", RegexOption.DOT_MATCHES_ALL), "")
-            .replace(Regex("""//[^\n]*"""), "")
+    private fun literalEnd(text: String, from: Int): Int {
+        if (text.startsWith("\"\"\"", from)) {
+            val end = text.indexOf("\"\"\"", from + 3)
+            return if (end < 0) text.length else end + 3
+        }
+        val quote = text[from]
+        var i = from + 1
+        while (i < text.length) {
+            val c = text[i]
+            when {
+                c == '\\' -> i += 2
+                c == quote -> return i + 1
+                // An unterminated literal would otherwise swallow the rest of
+                // the file; a newline ends it and the scan carries on.
+                c == '\n' -> return i
+                c == '$' && quote == '"' && i + 1 < text.length && text[i + 1] == '{' -> {
+                    var depth = 0
+                    var j = i + 1
+                    while (j < text.length) {
+                        val d = text[j]
+                        when {
+                            d == '"' || d == '\'' -> {
+                                j = literalEnd(text, j)
+                                continue
+                            }
+                            d == '{' -> depth++
+                            d == '}' -> {
+                                depth--
+                                if (depth == 0) {
+                                    j++
+                                    break
+                                }
+                            }
+                        }
+                        j++
+                    }
+                    i = j
+                }
+                else -> i++
+            }
+        }
+        return text.length
+    }
+
+    /**
+     * Kotlin source with comments blanked, so a scan cannot be fooled — in
+     * either direction — by prose that quotes the pattern it is looking for.
+     *
+     * Literal-aware, and that is the point rather than a refinement. The
+     * previous version was a bare `//[^\n]*` replace, so an ordinary
+     * `Log.w(TAG, "see https://birdo.app/x")` had everything from the `//`
+     * onwards deleted, closing brace included; ten Kotlin files under
+     * `app/src/main` carry `://` inside a string literal.
+     *
+     * Comment characters are replaced by spaces rather than removed, so every
+     * offset and line number still matches the file on disk.
+     */
+    private fun stripComments(text: String): String {
+        val out = StringBuilder(text.length)
+        var i = 0
+        fun blank(from: Int, to: Int) {
+            for (k in from until to) out.append(if (text[k] == '\n') '\n' else ' ')
+        }
+        while (i < text.length) {
+            when {
+                text.startsWith("/*", i) -> {
+                    val end = text.indexOf("*/", i + 2)
+                    val stop = if (end < 0) text.length else end + 2
+                    blank(i, stop)
+                    i = stop
+                }
+                text.startsWith("//", i) -> {
+                    var stop = i
+                    while (stop < text.length && text[stop] != '\n') stop++
+                    blank(i, stop)
+                    i = stop
+                }
+                text[i] == '"' || text[i] == '\'' -> {
+                    val stop = literalEnd(text, i)
+                    out.append(text, i, stop)
+                    i = stop
+                }
+                else -> {
+                    out.append(text[i])
+                    i++
+                }
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * [text] with the CONTENT of every string and character literal replaced by
+     * spaces — same length, newlines kept — so brace and paren matching can run
+     * over it while every offset still points at the real file.
+     */
+    private fun blankLiterals(text: String): String {
+        val out = StringBuilder(text.length)
+        var i = 0
+        while (i < text.length) {
+            if (text[i] == '"' || text[i] == '\'') {
+                val stop = literalEnd(text, i)
+                out.append(text[i])
+                for (k in i + 1 until stop - 1) out.append(if (text[k] == '\n') '\n' else ' ')
+                if (stop - 1 > i) out.append(text[stop - 1])
+                i = stop
+            } else {
+                out.append(text[i])
+                i++
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * Index of the [close] matching the [open] at [from], or -1 if the source
+     * is unbalanced. Runs over [blankLiterals] so a brace or paren inside a
+     * message cannot move the boundary.
+     */
+    private fun matchingClose(text: String, from: Int, open: Char, close: Char): Int {
+        val code = blankLiterals(text)
+        var depth = 0
+        var i = from
+        while (i < code.length) {
+            when (code[i]) {
+                open -> depth++
+                close -> {
+                    depth--
+                    if (depth == 0) return i
+                }
+            }
+            i++
+        }
+        return -1
+    }
 
     private fun strippedSource(path: String): String = stripComments(source(path))
 
-    /** Every shipped Kotlin file under app/src/main. */
+    /** [file] as a repo-relative, forward-slashed path. */
+    private fun repoRelative(file: File): String =
+        file.absolutePath.replace(File.separatorChar, '/')
+            .removePrefix(repoRoot.absolutePath.replace(File.separatorChar, '/') + "/")
+
+    /**
+     * Every Kotlin file that ends up in the Android artifact.
+     *
+     * `app/src/main` AND the `shared` module's Android-visible source sets.
+     * `shared` is an `implementation(project(":shared"))` dependency of `:app`,
+     * so R8 shrinks it with `app/proguard-rules.pro` and the
+     * `-assumenosideeffects class android.util.Log` there deletes its logging
+     * exactly as it deletes the app module's. Scoping the rule to one of the
+     * two modules would have re-created, one directory up, the same "absence
+     * from a list is invisible" shape this file exists to stop. `appleMain` is
+     * excluded: it is not in this artifact.
+     *
+     * `commonMain` cannot reference `android.util.Log` at all — adding one
+     * there fails to compile, measured — so for the Log rule specifically it is
+     * `androidMain` that carries the risk. The other app-wide scans (fault-code
+     * uniqueness, report-call scannability, message interpolation) are
+     * meaningful in both. There are no `Log.*` calls anywhere under
+     * `shared/src` today, so this is prevention, not a repair.
+     */
     private fun shippedSources(): List<File> {
-        val files = File(repoRoot, "app/src/main").walkTopDown()
-            .filter { it.isFile && it.extension == "kt" }
-            .toList()
+        val roots = listOf(
+            "app/src/main",
+            "shared/src/commonMain",
+            "shared/src/androidMain",
+        ).map { File(repoRoot, it) }
+        roots.forEach { assertTrue("source root is missing: $it", it.isDirectory) }
+        val files = roots.flatMap { root ->
+            root.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        }
         // Vacuity guard: an empty walk would make the scans below pass for free.
         assertTrue(
             "source walk found only ${files.size} files — the walker is broken",
@@ -146,23 +311,12 @@ class DataplaneFaultReportingTest {
     private fun catchBlocks(text: String): List<Pair<Int, String>> =
         Regex("""catch\s*\(\s*\w+\s*:[^)]*\)\s*\{""").findAll(text).map { m ->
             val open = m.range.last
-            var depth = 0
-            var end = -1
-            var i = open
-            scan@ while (i < text.length) {
-                when (text[i]) {
-                    '{' -> depth++
-                    '}' -> {
-                        depth--
-                        if (depth == 0) {
-                            end = i
-                            break@scan
-                        }
-                    }
-                }
-                i++
-            }
-            assertTrue("unbalanced braces after the catch at offset ${m.range.first}", end > open)
+            val end = matchingClose(text, open, '{', '}')
+            assertTrue(
+                "unbalanced braces after the catch at offset ${m.range.first} — the scanner " +
+                    "cannot bound this block, so it must not pretend to have judged it",
+                end > open,
+            )
             m.range.first to text.substring(open, end + 1)
         }.toList()
 
@@ -205,7 +359,7 @@ class DataplaneFaultReportingTest {
             assertTrue(
                 "$path: the catch block at offset $start does not call FaultReporter.report. " +
                     "A swallowed exception here is silent in the release artifact.\n---\n" +
-                    "${body.take(300)}\n---",
+                    "${body.replace(Regex("\\s+"), " ").trim().take(300)}\n---",
                 body.contains("FaultReporter.report("),
             )
         }
@@ -252,31 +406,118 @@ class DataplaneFaultReportingTest {
     }
 
     /**
+     * Tests the test, second shape. Bounding each catch by brace matching
+     * closed the fixed-900-character window, but the matcher counted braces in
+     * the raw text, so a single `{` inside a MESSAGE re-opened the identical
+     * hole: the block ran past its own `}` into the next function and borrowed
+     * that function's report.
+     *
+     * Measured on the real file before this fix: delete the
+     * `wg_get_socket_v6_failed` report from WgNative.kt and leave behind a
+     * statement holding `"… expected { in the UAPI reply"` — 8 catch blocks
+     * found, 0 failing, build green. (WgNative imports no `Log`, so the
+     * mutation used a local `val`; the shape is the string, not the call.)
+     * Exactly the regression the twin comment in `getSocketV6` was
+     * written to prevent ("the v6 half going unreported is how a v6-only leak
+     * stays invisible"), and that code is pinned by nothing else: it appears
+     * in no `assertReports` list.
+     */
+    @Test
+    fun `a brace inside a message string cannot extend a catch block`() {
+        val snippet = """
+            fun a(): Int =
+                try { x() } catch (e: Exception) {
+                    Log.w(TAG, "a threw; expected { in the reply")
+                    -1
+                }
+            fun b(): Int =
+                try { y() } catch (e: Exception) {
+                    FaultReporter.report(FaultReporter.PATH_TUNNEL, "b_failed", "b threw", e)
+                    -1
+                }
+        """.trimIndent()
+        val blocks = catchBlocks(snippet)
+        assertEquals(2, blocks.size)
+        assertFalse(
+            "a `{` inside a message string must not extend the block into the next function, " +
+                "which would let it borrow that function's report — the false PASS this file " +
+                "already fixed once, by another route",
+            blocks[0].second.contains("FaultReporter.report("),
+        )
+        assertTrue(blocks[1].second.contains("FaultReporter.report("))
+    }
+
+    /**
+     * The comment stripper used to be a bare `//[^\n]*` replace, so it deleted
+     * the rest of any line holding a URL — `Log.w(TAG, "see https://x")` lost
+     * its closing paren AND brace, which unbalances everything downstream. Ten
+     * Kotlin files under `app/src/main` contain `://` inside a string literal.
+     */
+    @Test
+    fun `a URL in a string is not mistaken for a comment`() {
+        val snippet = """
+            fun a() {
+                Log.w(TAG, "see https://birdo.app/docs") // a real comment
+            }
+        """.trimIndent()
+        val stripped = stripComments(snippet)
+        assertTrue(
+            "the URL's string must survive: $stripped",
+            stripped.contains("\"see https://birdo.app/docs\""),
+        )
+        assertFalse("the real comment must be gone: $stripped", stripped.contains("a real comment"))
+        assertEquals(
+            "stripping must preserve offsets so reported line numbers stay true",
+            snippet.length,
+            stripped.length,
+        )
+    }
+
+    /**
      * `as? Int ?: -1` returned the same -1 for "socket not open yet" (normal)
      * and for "the reflection handle was never resolved" (the socket will
      * never be protected) — an elvis that hid a branch. turnOn was fixed in
      * round one; the two socket getters kept the shape, and getConfig's bare
      * `as? String` folded a changed return type into "stall".
+     *
+     * Round four widened the rule past the file it was written for, because
+     * the shape had already escaped: see the message below.
      */
     @Test
-    fun `WgNative never folds a missing bridge result into a sentinel`() {
-        val path = "app/src/main/java/app/birdo/vpn/service/WgNative.kt"
-        val elvisAfterCast = Regex("""as\?\s*\w+\s*\?:""").findAll(strippedSource(path)).map { it.value }.toList()
+    fun `no data-plane file folds a missing result into a sentinel`() {
+        val wgNative = "app/src/main/java/app/birdo/vpn/service/WgNative.kt"
+        // Scoped to every DECLARED data-plane file, not to WgNative alone. The
+        // rule was written for the JNI bridge and left there, so the identical
+        // shape survived one function away from a site this PR had already
+        // fixed: BirdoVpnService's `getSystemService(…) as? ConnectivityManager
+        // ?: return` produced exactly the outcome the catch three lines below
+        // it REPORTS — no default-network callback, so no socket re-protect on
+        // a roam — and produced it silently.
+        val elvisAfterCast = dataPlaneFiles.flatMap { path ->
+            Regex("""as\?\s*[\w.]+\s*\?:""").findAll(strippedSource(path))
+                .map { "$path: ${it.value}" }
+                .toList()
+        }
         assertEquals(
-            "$path folds a failed cast into a default with `as? T ?:`, which makes an " +
-                "unresolved JNI handle indistinguishable from a normal sentinel. Test for null " +
-                "and report: $elvisAfterCast",
+            "a data-plane file folds a failed cast into a default with `as? T ?:`. That makes " +
+                "an unavailable service or an unresolved JNI handle indistinguishable from a " +
+                "normal sentinel, and the branch reaches nobody. Test for null and report, the " +
+                "way registerDefaultNetworkCallback does: $elvisAfterCast",
             emptyList<String>(),
             elvisAfterCast,
         )
         assertReports(
-            path,
+            wgNative,
             listOf(
                 "wg_turn_on_no_result",
                 "wg_get_socket_v4_no_result",
                 "wg_get_socket_v6_no_result",
                 "wg_get_config_unexpected_type",
             ),
+        )
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt",
+            listOf("network_callback_no_manager"),
         )
     }
 
@@ -746,13 +987,13 @@ class DataplaneFaultReportingTest {
         // entry fails it too (below), so the allowlist cannot rot into a claim
         // about a file that no longer logs.
         val allowed = mapOf(
-            "utils/FaultReporter.kt" to
+            "app/src/main/java/app/birdo/vpn/utils/FaultReporter.kt" to
                 "the reporter's own line — what every other error routes THROUGH; it is the " +
                     "convenience half, and the Sentry capture below it is the signal half",
-            "BirdoApp.kt" to
+            "app/src/main/java/app/birdo/vpn/BirdoApp.kt" to
                 "Sentry and Play Billing initialisation: FaultReporter cannot report that " +
                     "Sentry itself failed to initialise, and billing is not a data-plane path",
-            "data/auth/TokenManager.kt" to
+            "app/src/main/java/app/birdo/vpn/data/auth/TokenManager.kt" to
                 "the auth / Keystore-recovery path — a different finding, deliberately not " +
                     "reworked here. TokenManager is the one file that already talks to Sentry " +
                     "directly. Named so this is a DISCLOSED exclusion, not an invisible one",
@@ -761,10 +1002,19 @@ class DataplaneFaultReportingTest {
         val offenders = mutableListOf<String>()
         val allowedHits = mutableSetOf<String>()
         shippedSources().forEach { file ->
-            val rel = file.absolutePath.replace(File.separatorChar, '/')
-                .substringAfter("app/src/main/java/app/birdo/vpn/")
+            // Repo-relative, not app-module-relative: the walk now covers the
+            // shared module too, and a path that silently fell back to an
+            // absolute one would not match any allowlist key.
+            val rel = repoRelative(file)
             val text = stripComments(file.readText())
             logCalls += Regex("""\bLog\.[a-z]+\(""").findAll(text).count()
+            // An alias would evade the scan below and be stripped by R8 just
+            // the same, so the import spelling is pinned rather than trusted.
+            assertFalse(
+                "$rel imports android.util.Log under an alias. The rule below matches `Log.e(`, " +
+                    "and R8 strips the call whatever it is spelled — keep the plain import.",
+                Regex("""import\s+android\.util\.Log\s+as\s+""").containsMatchIn(text),
+            )
             Regex("""\bLog\.(e|wtf)\(""").findAll(text).forEach { m ->
                 if (rel in allowed) {
                     allowedHits += rel
@@ -847,23 +1097,11 @@ class DataplaneFaultReportingTest {
         val offenders = shippedSources().flatMap { file ->
             val text = stripComments(file.readText())
             Regex("""FaultReporter\.report\(""").findAll(text).mapNotNull { m ->
-                // The call's argument text, up to its matching close paren.
-                var depth = 0
-                var i = m.range.last
-                var end = -1
-                args@ while (i < text.length) {
-                    when (text[i]) {
-                        '(' -> depth++
-                        ')' -> {
-                            depth--
-                            if (depth == 0) {
-                                end = i
-                                break@args
-                            }
-                        }
-                    }
-                    i++
-                }
+                // The call's argument text, up to its matching close paren —
+                // matched literal-aware, because a report message legitimately
+                // contains parens ("returned no fd (bridge not initialised)")
+                // and an unbalanced one would otherwise move the boundary.
+                val end = matchingClose(text, m.range.last, '(', ')')
                 val call = text.substring(m.range.first, if (end > 0) end + 1 else text.length)
                 forbidden.find(call)?.let { "${file.name}: ${it.value} in ${call.take(160).replace('\n', ' ')}" }
             }.toList()
