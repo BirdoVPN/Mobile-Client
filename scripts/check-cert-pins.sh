@@ -282,7 +282,85 @@ connect_addr() {
 }
 sni_for() { [ "$1" = "birdo.app" ] && echo "api.birdo.app" || echo "$1"; }
 
-HOSTS=$("$PY" -c "import json,sys;print(' '.join(json.load(open(sys.argv[1]))['hosts']))" "$SSOT")
+# WHICH HOSTS TO DIAL. Not every host in the SSOT -- only the ones THIS repo
+# actually pins.
+#
+# The SSOT carries four hosts because it is shared. This app enforces two:
+# birdo.app and cloudflare-dns.com. Android dropped dns.google (P6-CLI-A-06) and
+# never shipped dns.quad9.net, and they are kept in the vendored copy purely so
+# the file stays byte-identical to the SSOT for the vendor check.
+#
+# Dialling all four made this check fail on any runner that could not reach those
+# two -- a daily red for hosts this app does not pin and cannot be harmed by. A
+# check that cries wolf every day is worse than no check: it is how a real failure
+# gets scrolled past. (This estate has already lost two alert channels to exactly
+# that.)
+#
+# The list is DERIVED, not hand-maintained: a host counts as pinned here if any of
+# its SSOT pins appears in a source file of this repo. Add a provider to the app
+# and it starts being dialled automatically; drop one and it stops. A hardcoded
+# list would drift the moment someone did either.
+HOSTS=$("$PY" - "$SSOT" "$REPO_ROOT" <<'PYEOF'
+import io, json, os, sys
+
+ssot = json.load(open(sys.argv[1]))
+root = sys.argv[2]
+
+# The files that can carry a pin. Same surface check 2 walks.
+SRC_EXT = (".kt", ".swift", ".xml", ".java")
+SKIP_DIRS = {".git", "build", ".gradle", "node_modules", "third_party", "scripts"}
+
+blob = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+    for fn in filenames:
+        if fn.endswith(SRC_EXT):
+            try:
+                blob.append(io.open(os.path.join(dirpath, fn), encoding="utf-8",
+                                    errors="replace").read())
+            except Exception:
+                pass
+text = "\n".join(blob)
+
+# A hash can belong to MORE THAN ONE host: GTS Root R4 is pinned for birdo.app
+# AND for dns.google. Counting any matching pin would mark dns.google as pinned
+# here purely because a birdo.app file carries R4 -- the same host-scoping trap
+# that makes a _removed lookup by hash alone a false positive. So only pins that
+# are EXCLUSIVE to a host count as evidence that this repo pins that host.
+owners = {}
+for host, entry in (ssot.get("hosts") or {}).items():
+    for p in (entry.get("pins") or []):
+        h = p.get("hash")
+        if h:
+            owners.setdefault(h, set()).add(host)
+
+pinned = []
+for host, entry in (ssot.get("hosts") or {}).items():
+    exclusive = [p.get("hash") for p in (entry.get("pins") or [])
+                 if p.get("hash") and len(owners.get(p["hash"], ())) == 1]
+    # A host whose every pin is shared cannot be told apart this way; fall back to
+    # all of its pins rather than silently dropping it from the dialled set.
+    candidates = exclusive or [p.get("hash") for p in (entry.get("pins") or []) if p.get("hash")]
+    if any(h in text for h in candidates):
+        pinned.append(host)
+
+if not pinned:
+    sys.stderr.write("no pinned host found in any source file -- the extractor is broken\n")
+    sys.exit(1)
+
+print(" ".join(sorted(pinned)))
+PYEOF
+) || { fail "could not determine which hosts this repo pins"; echo; }
+
+# Say out loud what is NOT being dialled, so a silently narrowed check can never
+# read as full coverage.
+ALL_HOSTS=$("$PY" -c "import json,sys;print(' '.join(sorted(json.load(open(sys.argv[1]))['hosts'])))" "$SSOT")
+for _h in $ALL_HOSTS; do
+  case " $HOSTS " in
+    *" $_h "*) ;;
+    *) info "$_h: not pinned by this repo — not dialled (it is carried in the vendored copy only so the file matches the SSOT)" ;;
+  esac
+done
 
 for host in $HOSTS; do
   addr=$(connect_addr "$host"); sni=$(sni_for "$host")
