@@ -3,6 +3,7 @@ package app.birdo.vpn.service
 import android.util.Log
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.utils.FaultReporter
 import com.wireguard.config.*
 import com.wireguard.crypto.Key
 import java.net.InetAddress
@@ -67,17 +68,60 @@ object WireGuardConfigBuilder {
                 interfaceBuilder.addAddress(InetNetwork.parse(it))
                 Log.i(TAG, "Dual-stack: assigned tunnel IPv6 address")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to add clientIpv6 to interface: ${e.message}")
+                // The tunnel comes up v4-only while the server still believes
+                // this client is dual-stack. Address text deliberately not sent.
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "config_ipv6_address_rejected",
+                    "wg-go rejected the assigned tunnel IPv6 address — the tunnel is v4-only",
+                    e,
+                )
             }
         }
 
-        for (dns in resolveDnsServers(response, prefs)) {
-            try { interfaceBuilder.addDnsServer(InetAddress.getByName(dns)) } catch (_: Exception) {}
+        // A DNS server that fails to parse is DROPPED. Silently, until now: if
+        // every one of them fails the interface carries no DNS at all and the
+        // handset falls back to its network-provided resolver, so the user's
+        // queries leave outside the tunnel — the single thing a custom DNS
+        // setting exists to prevent. Neither report names a server.
+        val requestedDns = resolveDnsServers(response, prefs)
+        var dnsAdded = 0
+        for (dns in requestedDns) {
+            try {
+                interfaceBuilder.addDnsServer(InetAddress.getByName(dns))
+                dnsAdded++
+            } catch (e: Exception) {
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "config_dns_server_rejected",
+                    "A resolved DNS server was rejected and dropped from the tunnel config",
+                    e,
+                )
+            }
+        }
+        if (requestedDns.isNotEmpty() && dnsAdded == 0) {
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "config_dns_all_rejected",
+                "Every DNS server was rejected — the tunnel carries none and the system " +
+                    "resolver will be used outside it",
+            )
         }
 
         val userMtu = prefs.wireGuardMtu
         val effectiveMtu = (if (userMtu > 0) userMtu else (response.mtu ?: 1420)).coerceIn(1280, 1500)
-        try { interfaceBuilder.parseMtu(effectiveMtu.toString()) } catch (_: Exception) {}
+        try {
+            interfaceBuilder.parseMtu(effectiveMtu.toString())
+        } catch (e: Exception) {
+            // Falls back to wg-go's default MTU: a silent cause of the
+            // "connects but nothing loads" reports that look like a dead node.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "config_mtu_rejected",
+                "wg-go rejected the computed MTU — the tunnel keeps the engine default",
+                e,
+            )
+        }
 
         val effectiveEndpoint = applyPortOverride(response.endpoint!!, prefs)
 
@@ -96,10 +140,20 @@ object WireGuardConfigBuilder {
                 peerBuilder.addAllowedIp(InetNetwork.parse(cidr))
                 allowedIpCount++
             } catch (e: Exception) {
-                // Each cidr is pre-validated by require(isValidCidr) above, so this
-                // only fires on a validator/parser divergence. Log rather than drop
-                // silently so that divergence is observable.
-                Log.w(TAG, "Skipping unparseable allowedIp '$cidr': ${e.message}")
+                // Each cidr is pre-validated by require(isValidCidr) above, so
+                // this only fires on a validator/parser divergence. The comment
+                // here used to say a Log.w made that divergence "observable".
+                // It does not: R8 strips android.util.Log from the release
+                // artifact. A PARTIAL skip is the dangerous one — check() below
+                // catches a total one — because dropping ::/0 while keeping
+                // 0.0.0.0/0 leaves IPv6 routing outside the tunnel. The cidr
+                // itself is not sent.
+                FaultReporter.report(
+                    FaultReporter.PATH_CONNECT,
+                    "config_allowed_ip_skipped",
+                    "An allowed-IP failed to parse after validation and was dropped from the route set",
+                    e,
+                )
             }
         }
         // A peer with no allowed-IPs routes no traffic — a broken tunnel. Fail

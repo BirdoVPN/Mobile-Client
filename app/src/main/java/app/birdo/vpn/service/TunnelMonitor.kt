@@ -2,6 +2,7 @@ package app.birdo.vpn.service
 
 import android.net.VpnService
 import android.util.Log
+import app.birdo.vpn.utils.FaultReporter
 
 /**
  * Monitors a wg-go WireGuard tunnel.
@@ -90,20 +91,33 @@ class TunnelMonitor(
                         if (v6 >= 0) service.protect(v6)
                     } catch (e: Exception) {
                         // protect() can throw if the socket/service is torn down
-                        // mid-cycle. Log for visibility and keep monitoring — a
-                        // genuine dead tunnel is caught by stall detection below.
-                        Log.w(TAG, "Socket protect failed this cycle", e)
+                        // mid-cycle. Keep monitoring — a genuine dead tunnel is
+                        // caught by stall detection below — but report it: a
+                        // protect() that keeps failing on a LIVE tunnel routes
+                        // wg-go's own socket back into the tunnel, and this loop
+                        // is the reason FaultReporter has a throttle at all.
+                        FaultReporter.report(
+                            FaultReporter.PATH_TUNNEL,
+                            "socket_protect_failed",
+                            "Periodic tunnel socket protect threw",
+                            e,
+                        )
                     }
 
                     // Handshake-stall detection (after grace period)
                     if (WgNative.canReadConfig() && System.currentTimeMillis() - startTime > STALL_GRACE_MS) {
                         val ageSec = lastHandshakeAgeSeconds()
+                        // Stalls are breadcrumbs, not events: usually the
+                        // network, not the client. onUnexpectedExit publishes
+                        // the Error; these record WHICH stall it was.
                         if (ageSec == null) {
                             Log.w(TAG, "Tunnel stalled — no WireGuard handshake after grace period")
+                            FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall: no handshake after grace period")
                             break
                         }
                         if (ageSec > STALL_THRESHOLD_SEC) {
                             Log.w(TAG, "Tunnel stalled — last handshake ${ageSec}s ago, declaring dead")
+                            FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall: last handshake older than threshold")
                             // Break out so onUnexpectedExit fires below
                             break
                         }

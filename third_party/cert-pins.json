@@ -1,29 +1,58 @@
 {
   "_comment": "SINGLE SOURCE OF TRUTH for TLS certificate pins across all Birdo clients. Every pin below is base64(SHA-256(DER SubjectPublicKeyInfo)) - the same value OkHttp writes as `sha256/...`, Android's <pin digest=\"SHA-256\">, the rustls verifiers in the desktop app, and the iOS URLSession PinningDelegate. Pins are on the CA CHAIN (intermediate/root), never the leaf, so a ~90-day leaf renewal never needs a client release.",
-  "_schema": 2,
-  "_generated": "2026-08-22",
-  "_generated_by": "measured with openssl against the live chains; see _verification on each pin",
-  "_enforcement_rule": "A connection is accepted if ANY certificate in the PRESENTED chain matches ANY pin for that host. A pin whose certificate the server does not send is dormant: it protects a future migration but can never satisfy today's handshake. Therefore every host MUST keep at least one pin that is present in the live chain.",
-  "_rotation_rule": "ADD, NEVER SWAP. Add the new pin, ship it, wait for the fleet to adopt it, and only then remove the old one in a later release. Removing a pin that installed clients still rely on is unrecoverable - there is no remote kill switch for a bricked pin.",
-  "_ci": "scripts/check-cert-pins.sh in birdo-client-desktop and birdo-client-mobile parses every pin file in that repo, asserts it matches this SSOT exactly, and asserts each host's live chain still satisfies its pins. This file is vendored into both client repos as third_party/cert-pins.json; the checker fails if a vendored copy drifts from this one.",
-
+  "_schema": 3,
+  "_generated": "2026-09-08",
+  "_generated_by": "measured with openssl against the live chains from FIVE independent vantage points on 2026-09-06 - a UK consumer ISP (the measuring workstation, 20:36Z), the production hub 46.225.112.237 (Hetzner, 20:38Z), GitHub Actions ubuntu-24.04 in Azure northcentralus (Mobile-Client Cert Pins run 34028683100, 10:53Z) and in Azure centralus (Desktop-Client Cert Pins run 34028720220, 10:54Z, whose log quotes the full chain it got) and this repository's own live job in Azure westus2 (run 34059860524, 2026-09-06 21:03Z, every chain printed in full) - with every host dialled under three client offers (default, RSA-only signature_algorithms, ECDSA-only) from the first two, and every pin cross-checked against the CA's published certificate. Each pin's own _verification names where it was seen; each host's chain_shape.vantages says what every vantage returned. NOT measured: the VPN nodes - their sshd was unreachable from the measuring workstation. RE-MEASURED 2026-09-08 23:26Z, read-only openssl from two of those vantages (the UK ISP workstation and the production hub) for dns.google (three offers, both addresses) and cloudflare-dns.com (six client offers; four IPv4 addresses from both networks and both IPv6 addresses from the hub): the same chains and the same lineages as on 2026-09-06, recorded per host in chain_shape.vantages, together with this PR's own live job from Azure westus (run 34291599337, 23:39Z). scripts/check-cert-pins.sh --structure and scripts/test_check_cert_pins.py run on every push to every branch and on every pull request here.",
+  "_enforcement_rule": "A connection is accepted if ANY certificate in the PRESENTED chain matches ANY pin for that host. A pin whose certificate the server does not send is dormant: it protects a future migration but can never satisfy today's handshake. Therefore every host MUST keep at least one pin that is present in the live chain. CHECKED: check-cert-pins.sh, rule E1.",
+  "_rotation_rule": "ADD, NEVER SWAP. Add the new pin, ship it, wait for the fleet to adopt it, and only then remove the old one in a later release. Removing a pin that installed clients still rely on is unrecoverable - there is no remote kill switch for a bricked pin. Corollary: a pin added speculatively is effectively PERMANENT and must be transcribed identically into every enforcing client under an exact-set-equality gate, so do not add pins you have not measured. Retiring a pin is not machine-checkable on its own, which is why every removed hash must be recorded in _removed[] - CHECKED: check-cert-pins.sh, rule S5.",
+  "_overlap_rule": "An intermediate and the root that signed it are ONE lineage: when a CA serves a host out of a different hierarchy BOTH die in the same handshake, so `intermediate + its own root` buys no migration safety at all - it only looks like two pins. Every pin therefore carries a machine-readable `lineage`, and every host must EITHER (a) declare >=2 distinct lineages AND (b) have >=2 lineages MEASURED LIVE - pins with in_live_chain: true from two different hierarchies, each actually seen presented by the server from some vantage or client offer - OR carry an explicit, dated `_overlap_risk` saying why not. Clause (b) counts LINEAGES, not live pins: dns.google's pre-outage set had TWO live pins (WR2 + GTS Root R1) in ONE lineage and nothing from GTS Root R4, and every user reaching an R4 edge lost the provider outright. A dormant pin from a second lineage does not satisfy (b): dormant means never yet seen presented, so it proves nothing about what the CA serves today. CHECKED: check-cert-pins.sh rules E2 (declared lineages) and E3 (live lineages); the exact pre-outage shape - WR2 + R1 live plus one dormant foreign-lineage pin - is a fixture in scripts/test_check_cert_pins.py and must keep failing.",
+  "_selection_rule": "WHICH LINEAGE YOU ARE SERVED DEPENDS ON THE EDGE YOU REACH AND ON WHAT YOUR CLIENT OFFERS, SO ONE PROBE PROVES ONE LINEAGE. Every pinned host here is anycast. Measured 2026-09-06 for dns.google over the same addresses (8.8.8.8 and 8.8.4.4, SNI dns.google): a UK consumer ISP got leaf -> WR2 -> GTS Root R1 on 14 of 14 samples whatever the client offered (default, RSA-only and ECDSA-only signature_algorithms); the production hub 46.225.112.237 got leaf -> WE2 -> GTS Root R4 on 12 of 12 default and ECDSA-only samples, and leaf (*.google.com) -> WR2 -> GTS Root R1 on 2 of 2 RSA-only samples; GitHub Actions in Azure northcentralus matched WR2 (Mobile-Client run 34028683100, 10:53Z) while Azure centralus got WE2 / GTS Root R4 and FAILED against the old set (Desktop-Client run 34028720220, 10:54Z, chain hashes in its log), and Azure westus2 got WR2 / GTS Root R1 under both a default and an RSA-only offer (this repository's live job, run 34059860524). So selection is deterministic per (edge, client offer) - per-connection randomness has NOT been observed - and a rustls client, which offers ECDSA, gets R4 from an R4-serving edge every time. Three consequences: (a) `in_live_chain: true` means 'measured present from the vantage points named in _verification', never 'present everywhere'; (b) one network cannot certify a host - the UK vantage alone returned one lineage 14 times running and would have graded the pre-outage set green; (c) the rule is MEASURE EVERY LINEAGE FROM MORE THAN ONE NETWORK AND MORE THAN ONE CLIENT OFFER, AND PIN ONLY WHAT WAS MEASURED. Pinning a CA's whole published issuing set instead (ten dns.google pins, this file at commit 5515868) was considered and rejected by the owner on 2026-09-06: _rotation_rule makes every pin effectively permanent and transcribed into every client, and a pin no server has been seen to present is a guess with a blast radius. The six unmeasured GTS siblings are recorded in _removed with never_shipped: true; re-adding one requires a measured chain and the vantage that saw it. CHECKED: check-cert-pins.sh --live dials every host with a default AND an RSA-only offer, prints the chain it got, names which declared lineage each chain belongs to and lists the declared lineages it did not observe; structure rule E3 requires two lineages measured live or a dated waiver.",
+  "_ci": "WHAT ACTUALLY RUNS, and what does not. (1) birdo-shared/.github/workflows/cert-pins.yml job `structure` runs scripts/check-cert-pins.sh --structure AND scripts/test_check_cert_pins.py (the checker against known-bad fixtures, including the pre-outage dns.google shape) on every push to every branch and on every pull request here, with no path filter. Rule S7 additionally holds every 'CHECKED:' clause in THIS file to the set of rules the checker actually implements, and test_check_cert_pins.py holds that set to the rule tags check-cert-pins.sh really emits - so a control cannot be deleted while its advertisement here survives, which is the failure this _ci key itself used to be an example of. (2) The same workflow's `vendor` job - push to main, daily 06:47 UTC, manual - fetches every copy listed in _consumers and fails if any has drifted from this file. It is the only control anywhere that can see 'SSOT ahead of the shipped clients', it is deliberately allowed to go RED while a fix is in flight, and it IS red today on two counts: Desktop-Client, Mobile-Client and birdo-web all still carry the pre-fix schema-2 copy, and birdo-web is private so the job also fails on auth until the CONSUMER_READ_TOKEN secret is set. (3) The `live` job - pull requests that change cert-pins.json, the checker, its tests or the workflow, plus daily and manual - dials every host with two client offers from the runner's vantage and prints the chain it got, so a runner log is a measurement record. It grades a host it could not dial at all as UNMEASURED and exits 3, not 1: a pin that no longer matches means an installed population cannot connect, while an unreachable third-party anycast address from one runner says nothing about the pins either way, and grading them the same is how the one check whose red matters becomes background noise. Both are still non-zero - an unmeasured host is not evidence the pins are good. (4) Desktop-Client and Mobile-Client each run their own scripts/check-cert-pins.sh: its check 2 (per-platform pin files vs that repo's OWN vendored copy) and check 3 (live chain) do run, but its check 1 (vendored copy vs this file) is SKIPPED on every CI runner, because those workflows check out a single repo and ../birdo-shared never exists there. So a green client run does NOT mean that repo agrees with this file - only control (2) tests that.",
   "hosts": {
     "birdo.app": {
       "include_subdomains": true,
-      "note": "Apex + api.birdo.app + admin.birdo.app. Live chain: leaf CN=birdo.app -> CN=WE1 -> CN=GTS Root R4.",
+      "note": "Apex + api.birdo.app + admin.birdo.app. Live chain: leaf CN=birdo.app -> CN=WE1 -> CN=GTS Root R4, root presented, from every vantage and every client offer measured 2026-09-06. ONE live lineage: this is a Cloudflare edge certificate and Cloudflare chooses the issuing CA at each renewal - see _overlap_risk.",
       "leaf_expires": "2026-11-27",
       "leaf_expires_measured": "2026-09-04",
+      "chain_shape": {
+        "presented": [
+          "leaf",
+          "WE1",
+          "GTS Root R4"
+        ],
+        "root_presented": true,
+        "measured": "2026-09-06",
+        "vantages": [
+          "UK consumer ISP, 2026-09-06 20:36Z: api.birdo.app:443, default, RSA-only and ECDSA-only offers -> WE1 / GTS Root R4",
+          "Production hub 46.225.112.237, 2026-09-06 20:38Z: same three offers -> WE1 / GTS Root R4",
+          "GitHub Actions ubuntu-24.04, Azure northcentralus (Mobile-Client run 34028683100) and Azure centralus (Desktop-Client run 34028720220) -> matched WE1",
+          "GitHub Actions ubuntu-24.04, Azure westus2 (this repository's live job, run 34059860524): default and RSA-only offers -> WE1 / GTS Root R4"
+        ],
+        "_note": "The served WE1 certificate is issued by GTS Root R4. The copy Google publishes at https://i.pki.goog/we1.crt is the GlobalSign ECC Root CA - R4 CROSS-SIGN of the same key: same SPKI, so one pin covers both, but they are different certificates with different issuers. Do not read an issuer off i.pki.goog and record it as the live hierarchy - the whole WE family is published there as GlobalSign cross-signs."
+      },
       "enforced_by": [
         "birdo-client-desktop:src-tauri/src/api/cert_pin.rs",
         "birdo-client-mobile:app/src/main/java/app/birdo/vpn/di/NetworkModule.kt",
         "birdo-client-mobile:app/src/main/res/xml/network_security_config.xml",
         "birdo-client-mobile:iosApp/iosApp/Services/APIClient.swift"
       ],
+      "_overlap_risk": {
+        "id": "birdo-app-single-live-lineage",
+        "accepted": true,
+        "measured": "2026-09-06",
+        "matchable_pins": 2,
+        "live_lineages": 1,
+        "why": "Only the GTS Root R4 lineage is measured live (WE1 + GTS Root R4, both presented). The isrg-x1 pins are dormant: real Let's Encrypt certificates, never yet seen serving this host, and the GlobalSign cross-sign anchor is never sent. That is the same shape that took dns.google dark, and it is graded here as a risk, not OK. The certificate is issued through Cloudflare, which selects the CA at each ~90-day renewal (leaf_expires 2026-11-27) from the pool it publishes for Universal SSL - Google Trust Services (pinned, live), Let's Encrypt (pinned, dormant) and SSL.com (NOT pinned). A renewal that lands on SSL.com bricks every installed client's API access with no remote recovery path. The zone's current CA setting was NOT checked (it needs the Cloudflare credential, which was not read).",
+        "mitigation": "Before the next renewal window (Cloudflare renews roughly 30 days before expiry, so from about 2026-10-28): either restrict the zone's Universal SSL certificate authority at Cloudflare so it cannot move to a CA this file does not pin, or measure and pin the SSL.com lineage. Neither is done as of 2026-09-06 - this waiver exists so that fact is in the file, not in someone's head. Daily check 3 in both client repos and --live here dial api.birdo.app and fail the day the chain changes: detection, not protection.",
+        "review_by": "2026-10-21"
+      },
       "pins": [
         {
           "hash": "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
           "label": "WE1 - Google Trust Services intermediate",
           "role": "active-intermediate",
+          "lineage": "gts-r4",
+          "lineage_evidence": "measured",
           "in_live_chain": true,
           "_verification": "2026-08-22 measured in the live api.birdo.app chain"
         },
@@ -31,6 +60,8 @@
           "hash": "mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=",
           "label": "GTS Root R4 - Google Trust Services LLC, the live trust anchor",
           "role": "active-root",
+          "lineage": "gts-r4",
+          "lineage_evidence": "measured",
           "in_live_chain": true,
           "_verification": "2026-08-22 measured in the live api.birdo.app chain AND independently against https://i.pki.goog/r4.crt"
         },
@@ -38,6 +69,8 @@
           "hash": "CLOmM1/OXvSPjw5UOYbAf9GKOxImEp9hhku9W90fHMk=",
           "label": "GlobalSign ECC Root CA - R4 - alternate Google cross-sign anchor",
           "role": "dormant-backup",
+          "lineage": "globalsign-ecc-r4",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against the Mozilla CA bundle; genuine certificate, but NOT sent in today's chain"
         },
@@ -45,6 +78,8 @@
           "hash": "C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=",
           "label": "ISRG Root X1 - Let's Encrypt root",
           "role": "dormant-backup",
+          "lineage": "isrg-x1",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/isrgrootx1.pem",
           "_note": "A default Let's Encrypt server sends the leaf + ONE issuing intermediate, never this root. The root pin alone cannot rescue a migration, which is why the four issuing intermediates below are pinned too."
@@ -53,6 +88,8 @@
           "hash": "K7rZOrXHknnsEhUH8nLL4MZkejquUuIvOIr6tCa0rbo=",
           "label": "Let's Encrypt R10 - RSA issuing intermediate",
           "role": "dormant-backup",
+          "lineage": "isrg-x1",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/r10.pem"
         },
@@ -60,6 +97,8 @@
           "hash": "bdrBhpj38ffhxpubzkINl0rG+UyossdhcBYj+Zx2fcc=",
           "label": "Let's Encrypt R11 - RSA issuing intermediate",
           "role": "dormant-backup",
+          "lineage": "isrg-x1",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/r11.pem"
         },
@@ -67,6 +106,8 @@
           "hash": "NYbU7PBwV4y9J67c4guWTki8FJ+uudrXL0a4V4aRcrg=",
           "label": "Let's Encrypt E5 - ECDSA issuing intermediate",
           "role": "dormant-backup",
+          "lineage": "isrg-x1",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/e5.pem"
         },
@@ -74,75 +115,182 @@
           "hash": "0Bbh/jEZSKymTy3kTOhsmlHKBB32EDu1KojrP3YfV9c=",
           "label": "Let's Encrypt E6 - ECDSA issuing intermediate",
           "role": "dormant-backup",
+          "lineage": "isrg-x1",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against https://letsencrypt.org/certs/2024/e6.pem"
         }
       ]
     },
-
     "cloudflare-dns.com": {
       "include_subdomains": false,
-      "note": "DoH resolver. Live chain: leaf -> SSL.com SSL Intermediate CA ECC R2 -> SSL.com Root Certification Authority ECC. Cloudflare has MIGRATED OFF DigiCert; any DigiCert pin here is dormant.",
+      "note": "DoH resolver, and the ONLY DoH provider Android has left (P6-CLI-A-06). Measured 2026-09-06 from three networks (a UK consumer ISP, the production hub 46.225.112.237 and a GitHub Actions runner in Azure westus2) against 1.1.1.1 and 1.0.0.1 under three client offers, and RE-MEASURED 2026-09-08 23:26Z from the UK ISP and the hub against 1.1.1.1, 1.0.0.1, 104.16.248.249 and 104.16.249.249 - plus 2606:4700:4700::1111 and 2606:4700:4700::1001 from the hub; the workstation has no IPv6 route - under six client offers (default, TLS 1.2-only, RSA-only signature_algorithms, ECDSA-only signature_algorithms, h2 ALPN, and TLS 1.2 with RSA-authenticated ciphers only): 50 of 50 handshakes that produced a certificate presented the SAME two certificates - leaf + SSL.com SSL Intermediate CA ECC R2 - and nothing else; the RSA-cipher-only offer was refused with alert 40 (handshake_failure) from both networks on every address, so there is no RSA certificate on the edge; SNI one.one.one.one gets the same chain and no SNI gets no certificate. The root is NOT presented. Consequence, stated plainly: exactly ONE of the three pins below is ever in the presented chain, and there is no MEASURED second pin to add. WHAT CERTIFICATE TRANSPARENCY SAYS CLOUDFLARE HOLDS for this exact name (crt.sh, queried 2026-09-08, unexpired, subject cloudflare-dns.com + *.cloudflare-dns.com): three certificates from SSL.com SSL Intermediate CA ECC R2 (the presented lineage, the latest expiring 2026-12-22), one from SSL.com RSA SSL subCA (2026-01-15 to 2027-01-15), and one each from Google Trust Services WE1 and WR1 (2026-07-08 to 2026-10-06). None of the last three has been seen on the wire from any vantage or offer. They are the lineages a Cloudflare CA switch for this host would land on, and each becomes a pin here on the day --live or any other measurement sees it presented - not before: under _rotation_rule a pin is permanent and transcribed into every client, and a CT entry proves a certificate exists, not that an edge serves it. WHAT 'MATCHABLE' MEANS PER CLIENT: the desktop rustls verifier (doh.rs) hashes only end_entity + intermediates, so for it only the presented intermediate can match. Android's DohResolver pins through OkHttp's CertificatePinner, which checks the CLEANED chain - OkHttp's chain cleaner appends the trusted root from the device store when the server did not send it ('Add the trusted certificate to the end of the chain unless it's already present', BasicCertificateChainCleaner) - so on Android the SSL.com Root Certification Authority ECC pin is expected to match today (read from OkHttp's source, NOT device-tested). That root is the same lineage as the intermediate, dies in the same hierarchy switch and adds no overlap; it does mean an SSL.com re-issue under a NEW ECC intermediate keeps Android connected while it drops the desktop. The leaf (expires 2026-12-21) is deliberately not pinned: it is re-issued whenever the intermediate changes and so cannot protect against the rotation that matters. See _overlap_risk.",
+      "chain_shape": {
+        "presented": [
+          "leaf",
+          "SSL.com SSL Intermediate CA ECC R2"
+        ],
+        "root_presented": false,
+        "measured": "2026-09-08",
+        "vantages": [
+          "UK consumer ISP, 2026-09-06 20:36Z: 1.1.1.1 and 1.0.0.1, 3 default + RSA-only + ECDSA-only samples each -> leaf + SSL.com SSL Intermediate CA ECC R2, no root; TLS 1.2 RSA-only cipher offer -> no certificate",
+          "Production hub 46.225.112.237, 2026-09-06 20:38Z: identical on every address and offer",
+          "GitHub Actions ubuntu-24.04, Azure northcentralus (Mobile-Client run 34028683100) and Azure centralus (Desktop-Client run 34028720220) -> matched the ECC R2 intermediate (those logs do not show whether a root was sent)",
+          "GitHub Actions ubuntu-24.04, Azure westus2 (this repository's live job, run 34059860524): default and RSA-only offers -> leaf + SSL.com SSL Intermediate CA ECC R2, no root - the first runner log that shows the full chain",
+          "UK consumer ISP, 2026-09-08 23:26Z: 1.1.1.1, 1.0.0.1, 104.16.248.249, 104.16.249.249 under default, TLS 1.2-only, RSA-only sigalgs, ECDSA-only sigalgs and h2 ALPN offers -> 20/20 leaf + SSL.com SSL Intermediate CA ECC R2, no root; TLS 1.2 RSA-cipher-only offer -> alert 40 on all four; IPv6 not reachable from this network",
+          "Production hub 46.225.112.237, 2026-09-08 23:26Z: the same four IPv4 addresses plus 2606:4700:4700::1111 and 2606:4700:4700::1001, same five offers -> 30/30 identical, no root; RSA-cipher-only -> alert 40 on all six; SNI one.one.one.one -> same chain; no SNI -> no certificate",
+          "GitHub Actions ubuntu-24.04, Azure westus, 2026-09-08 23:39Z (this repository's live job on this PR, run 34291599337): default and RSA-only offers -> leaf + SSL.com SSL Intermediate CA ECC R2, no root - a third network on 2026-09-08, same single chain"
+        ]
+      },
       "enforced_by": [
         "birdo-client-desktop:src-tauri/src/vpn/doh.rs",
         "birdo-client-mobile:app/src/main/java/app/birdo/vpn/data/network/DohResolver.kt"
       ],
+      "_overlap_risk": {
+        "id": "cloudflare-single-matchable-pin",
+        "accepted": true,
+        "measured": "2026-09-08",
+        "matchable_pins": 1,
+        "live_lineages": 1,
+        "why": "Three networks on 2026-09-06 and two again on 2026-09-08 - six addresses including IPv6, six client offers, 50 of 50 chains: Cloudflare presents leaf + SSL.com SSL Intermediate CA ECC R2 and never a root or a second CA certificate. Only that intermediate is in the presented chain. The two dormant pins are real certificates and correctly recorded, but neither is presented. Certificate Transparency shows Cloudflare also holds GTS WE1, GTS WR1 and SSL.com RSA certificates for this name (see note); none is served from any vantage, so none is pinned - under _rotation_rule a speculative pin is permanent and must be transcribed into every enforcing client - and the leaf is not pinned (see note).",
+        "mitigation": "check-cert-pins.sh --live here (pull requests touching pins, daily) and check 3 in both client repos (daily) dial 1.1.1.1 and fail the moment the presented intermediate stops matching. That is detection, not protection: recovery still needs a client release. Android is less exposed than the desktop: OkHttp pins against the cleaned chain, so the SSL.com root pin also matches there and an SSL.com re-issue under a new ECC intermediate would not take Android down; it would take the desktop down (presented-chain hashing). Durable options, none taken yet: pin one of the CT-logged lineages (GTS WE1/WR1, SSL.com RSA subCA) the day a measurement shows it on the wire; get Cloudflare's issuing set for this host stated; or give Android a second DoH provider so this host is not its single point of failure.",
+        "review_by": "2026-12-06"
+      },
       "pins": [
         {
           "hash": "zGgA4OU4DjJdvpRYUqbi5Vh2g9W5Oc/PgKihy9mkLsE=",
           "label": "SSL.com SSL Intermediate CA ECC R2",
           "role": "active-intermediate",
+          "lineage": "sslcom-ecc",
+          "lineage_evidence": "measured",
           "in_live_chain": true,
-          "_verification": "2026-08-22 measured against 1.1.1.1 with SNI cloudflare-dns.com"
+          "_verification": "2026-08-22 measured against 1.1.1.1 with SNI cloudflare-dns.com; 2026-09-06 from three networks; 2026-09-08 23:26Z from a UK consumer ISP and the production hub on 1.1.1.1, 1.0.0.1, 104.16.248.249, 104.16.249.249 and (hub only) 2606:4700:4700::1111 and 2606:4700:4700::1001 under five certificate-producing client offers - 50 of 50 chains, always the second and last certificate"
         },
         {
           "hash": "oyD01TTXvpfBro3QSZc1vIlcMjrdLTiL/M9mLCPX+Zo=",
           "label": "SSL.com Root Certification Authority ECC - trust anchor",
           "role": "dormant-backup",
+          "lineage": "sslcom-ecc",
+          "lineage_evidence": "published",
           "in_live_chain": false,
-          "_verification": "2026-08-22 verified against the Mozilla CA bundle; not sent in the chain"
+          "_verification": "2026-08-22 verified against the Mozilla CA bundle; not sent in the chain from any vantage or offer measured on 2026-09-06 or 2026-09-08. Expected to match on Android regardless - OkHttp pins against the cleaned chain, which ends at this trust anchor (not device-tested) - and NOT matchable by the desktop rustls verifier, which hashes only what the server sent. Same lineage as the intermediate, so it is overlap against nothing."
         },
         {
           "hash": "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=",
           "label": "DigiCert High Assurance EV Root CA - legacy Cloudflare anchor",
           "role": "dormant-backup",
+          "lineage": "digicert-ha-ev",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against the Mozilla CA bundle. NOTE: the Android source mislabelled this as 'DigiCert ECC Secure Global Root G3'; the hash is genuine but the label was wrong. Kept as overlap only - it matches nothing Cloudflare serves today."
         }
       ]
     },
-
     "dns.google": {
       "include_subdomains": false,
-      "note": "DoH resolver, desktop only. Android dropped this provider (P6-CLI-A-06). Live chain: leaf -> WR2 -> GTS Root R1.",
-      "enforced_by": ["birdo-client-desktop:src-tauri/src/vpn/doh.rs"],
+      "note": "DoH resolver, desktop only. Android dropped this provider (P6-CLI-A-06). TWO HIERARCHIES, NOT ONE: Google Trust Services serves dns.google out of both an RSA hierarchy (leaf -> WR2 -> GTS Root R1) and an ECDSA one (leaf -> WE2 -> GTS Root R4), and which one a client gets depends on the anycast edge it reaches and on the signature algorithms it offers (_selection_rule). Measured 2026-09-06 over 8.8.8.8 and 8.8.4.4: a UK consumer ISP got WR2 / R1 on every sample and every offer; the production hub got WE2 / R4 for default and ECDSA-only offers and WR2 / R1 for RSA-only; Azure centralus got WE2 / R4 and FAILED against the old set. Re-measured 2026-09-08 23:26Z from the same two networks: identical - the hub is still an R4 edge for a default or ECDSA-only client (4 of 4) and an R1 edge for an RSA-only one (2 of 2), the UK ISP is still an R1 edge under every offer (6 of 6). Until 2026-09-06 only the RSA lineage was pinned, so every user reaching an R4 edge got a hard pin failure and dns.google silently dropped out of the DoH pool. Both MEASURED lineages are now pinned - four pins, the intermediate and root of each - and nothing else: the sibling issuing CAs Google publishes (WR1/WR3/WR4, WE1/WE3/WE4) have never been seen serving this host and are recorded in _removed as never shipped. Read _security_note before changing this list in either direction.",
+      "_security_note": "WHAT THIS PIN SET BUYS AND WHAT IT COSTS, stated because a posture change in a security file must not be silent. Pinning GTS Root R1 and GTS Root R4 means: any certificate for dns.google issued anywhere under either Google root is accepted. That is close to plain WebPKI for this host, and it is the availability trade the outage forced - a narrower set went dark for a whole population with no remote recovery path. The two ROOTS are what widen acceptance, and both are presented in a measured live chain, so they are not optional. Sibling intermediates under those roots would add NO acceptance surface (a chain through WR3 is accepted by the R1 pin anyway); they would only matter if Google started sending a SHORTENED chain (leaf + intermediate, no root), which it has never been observed to do for this host. The owner decided on 2026-09-06 NOT to pin them: under _rotation_rule a pin is effectively permanent and transcribed into every client, and a pin nobody has measured is a guess. If a shortened chain or a sibling intermediate is ever measured for this host, add THAT pin with its measurement. This is the only host here with two live lineages; do not copy its four-pin shape to a provider you have not measured serving two hierarchies.",
+      "chain_shape": {
+        "presented": [
+          "leaf",
+          "WR2 | WE2",
+          "GTS Root R1 | GTS Root R4"
+        ],
+        "root_presented": true,
+        "measured": "2026-09-08",
+        "vantages": [
+          "UK consumer ISP, 2026-09-06 20:36Z: 8.8.8.8 and 8.8.4.4, 14/14 samples (5 default + RSA-only + ECDSA-only per address) -> WR2 / GTS Root R1",
+          "Production hub 46.225.112.237, 2026-09-06 20:38Z: 8.8.8.8 and 8.8.4.4, default and ECDSA-only offers 12/12 -> WE2 / GTS Root R4; RSA-only offer 2/2 -> leaf *.google.com, WR2 / GTS Root R1",
+          "GitHub Actions ubuntu-24.04, Azure northcentralus, 10:53Z (Mobile-Client run 34028683100) -> WR2 / GTS Root R1",
+          "GitHub Actions ubuntu-24.04, Azure centralus, 10:54Z (Desktop-Client run 34028720220) -> WE2 / GTS Root R4, chain hashes quoted in the log",
+          "GitHub Actions ubuntu-24.04, Azure westus2, 21:03Z (this repository's live job, run 34059860524): default and RSA-only offers -> WR2 / GTS Root R1, chains printed in the log",
+          "UK consumer ISP, 2026-09-08 23:26Z: 8.8.8.8 and 8.8.4.4, default, RSA-only and ECDSA-only offers, 6/6 -> WR2 / GTS Root R1 (RSA-only: leaf *.google.com)",
+          "Production hub 46.225.112.237, 2026-09-08 23:26Z: 8.8.8.8 and 8.8.4.4, default and ECDSA-only offers 4/4 -> WE2 / GTS Root R4; RSA-only offer 2/2 -> leaf *.google.com, WR2 / GTS Root R1 - the 2026-09-06 result reproduced two days later",
+          "GitHub Actions ubuntu-24.04, Azure westus, 2026-09-08 23:39Z (this repository's live job on this PR, run 34291599337): default and RSA-only offers -> WR2 / GTS Root R1 (an R1 edge; adds nothing to the R4 story)",
+          "NOT measured: the VPN nodes - their sshd was unreachable from the measuring workstation on 2026-09-06"
+        ]
+      },
+      "enforced_by": [
+        "birdo-client-desktop:src-tauri/src/vpn/doh.rs"
+      ],
       "pins": [
         {
           "hash": "YPtHaftLw6/0vnc2BnNKGF54xiCA28WFcccjkA4ypCM=",
-          "label": "WR2 - Google Trust Services intermediate",
+          "label": "WR2 - Google Trust Services issuing intermediate, GTS Root R1 hierarchy (presented)",
           "role": "active-intermediate",
+          "lineage": "gts-r1",
+          "lineage_evidence": "measured",
           "in_live_chain": true,
-          "_verification": "2026-08-22 measured in the live dns.google chain"
+          "_verification": "2026-09-06 measured in the live dns.google chain from a UK consumer ISP (8.8.8.8 and 8.8.4.4, 14 of 14 samples across default, RSA-only and ECDSA-only client offers, chain leaf -> WR2 -> GTS Root R1), from the production hub 46.225.112.237 under an RSA-only offer (2 of 2, chain leaf *.google.com -> WR2 -> GTS Root R1) and from GitHub Actions in Azure northcentralus (Mobile-Client run 34028683100), AND independently against https://i.pki.goog/wr2.crt, whose issuer is CN=GTS Root R1. Re-measured 2026-09-08 23:26Z: UK ISP 6 of 6 (both addresses, three offers), production hub RSA-only offer 2 of 2.",
+          "_note": "DO NOT TRIM THIS SET BACK to 'the chain I just measured'. That edit is what caused the outage: a liveness probe from one network sees ONE lineage and goes green as soon as any single pin matches, so it cannot tell you the other lineage is missing, and there is no remote kill switch for a bricked pin (_rotation_rule). Both lineages here were measured live on the same day from different networks; rule E3 fails this file if either is ever dropped without a dated waiver."
         },
         {
           "hash": "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=",
-          "label": "GTS Root R1 - Google Trust Services LLC",
+          "label": "GTS Root R1 - trust anchor of the RSA hierarchy (presented)",
           "role": "active-root",
+          "lineage": "gts-r1",
+          "lineage_evidence": "measured",
           "in_live_chain": true,
-          "_verification": "2026-08-22 measured in the live dns.google chain AND independently against https://i.pki.goog/r1.crt"
+          "_verification": "2026-09-06 measured in those same live chains (UK consumer ISP 14/14; production hub RSA-only offer 2/2; Azure northcentralus, Mobile-Client run 34028683100) AND independently against https://i.pki.goog/r1.crt. Re-measured 2026-09-08 23:26Z in those same chains (UK ISP 6/6; hub RSA-only 2/2)."
+        },
+        {
+          "hash": "vh78KSg1Ry4NaqGDV10w/cTb9VH3BQUZoCWNa93W/EY=",
+          "label": "WE2 - Google Trust Services issuing intermediate, GTS Root R4 hierarchy (presented)",
+          "role": "active-intermediate",
+          "lineage": "gts-r4",
+          "lineage_evidence": "measured",
+          "in_live_chain": true,
+          "_verification": "2026-09-06 measured in the live dns.google chain from the production hub 46.225.112.237 (8.8.8.8 and 8.8.4.4, 12 of 12 samples across default and ECDSA-only client offers, 20:38Z, chain leaf -> WE2 -> GTS Root R4) and from GitHub Actions ubuntu-24.04 in Azure centralus (Desktop-Client Cert Pins run 34028720220, 10:54Z - the run that failed and exposed this; its log quotes the chain wyib/Zb8Q... vh78KSg1... mEflZT5e...). Also fetched from https://i.pki.goog/we2.crt. Re-measured 2026-09-08 23:26Z from the production hub: 4 of 4 (default and ECDSA-only offers, 8.8.8.8 and 8.8.4.4) -> leaf -> WE2 -> GTS Root R4 - the 2026-09-06 result reproduced two days later.",
+          "_note": "The certificate published at i.pki.goog/we2.crt is the GlobalSign ECC Root CA - R4 CROSS-SIGN (its issuer field says GlobalSign, not GTS); the certificate actually served in the measured chain is issued by GTS Root R4. Same subject public key, so this one hash covers both - but they are different certificates and the published one's issuer must not be recorded as the live hierarchy."
+        },
+        {
+          "hash": "mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=",
+          "label": "GTS Root R4 - trust anchor of the ECDSA hierarchy (presented)",
+          "role": "active-root",
+          "lineage": "gts-r4",
+          "lineage_evidence": "measured",
+          "in_live_chain": true,
+          "_verification": "2026-09-06 measured in those same live chains (production hub 12/12; Azure centralus, Desktop-Client run 34028720220) AND independently against https://i.pki.goog/r4.crt. Same value already pinned for birdo.app, where it is the live anchor too. Re-measured 2026-09-08 23:26Z from the hub in those same chains, 4 of 4."
         }
       ]
     },
-
     "dns.quad9.net": {
       "include_subdomains": false,
-      "note": "DoH resolver, desktop only. Android dropped this provider (P6-CLI-A-06). Live chain: leaf -> DigiCert Global G3 TLS ECC SHA384 2020 CA1 (root NOT sent).",
-      "enforced_by": ["birdo-client-desktop:src-tauri/src/vpn/doh.rs"],
+      "note": "DoH resolver, desktop only. Android dropped this provider (P6-CLI-A-06). Measured 2026-09-06 from a UK consumer ISP and the production hub against 9.9.9.9: the server sends leaf + DigiCert Global G3 TLS ECC SHA384 2020 CA1 and NOTHING ELSE - the root is NOT presented, and an RSA-only offer gets no certificate at all (ECDSA-only service). Both pins below are the DigiCert Global Root G3 lineage (an intermediate and the root that signed it), which is exactly the single-lineage shape that took dns.google dark, and only one of them is matchable at all. See _overlap_risk.",
+      "chain_shape": {
+        "presented": [
+          "leaf",
+          "DigiCert Global G3 TLS ECC SHA384 2020 CA1"
+        ],
+        "root_presented": false,
+        "measured": "2026-09-06",
+        "vantages": [
+          "UK consumer ISP, 2026-09-06 20:36Z: 9.9.9.9, default and ECDSA-only offers -> leaf + DigiCert Global G3 TLS ECC SHA384 2020 CA1, no root; RSA-only offer -> no certificate",
+          "Production hub 46.225.112.237, 2026-09-06 20:38Z: identical",
+          "GitHub Actions ubuntu-24.04, Azure centralus (Desktop-Client run 34028720220) -> matched the 2020 CA1 intermediate",
+          "GitHub Actions ubuntu-24.04, Azure westus2 (this repository's live job, run 34059860524): default -> leaf + DigiCert Global G3 TLS ECC SHA384 2020 CA1, no root; RSA-only -> no certificate"
+        ]
+      },
+      "enforced_by": [
+        "birdo-client-desktop:src-tauri/src/vpn/doh.rs"
+      ],
+      "_overlap_risk": {
+        "id": "quad9-single-lineage",
+        "accepted": true,
+        "measured": "2026-09-06",
+        "matchable_pins": 1,
+        "live_lineages": 1,
+        "why": "Only one lineage is pinned and only its intermediate is ever sent. No Quad9 CA rotation has been measured, and under _rotation_rule a speculative pin is permanent and must be transcribed into every enforcing client, so nothing is added on a guess. Recorded as an accepted, dated risk rather than graded OK.",
+        "mitigation": "check-cert-pins.sh --live here (pull requests touching pins, daily) and check 3 in Desktop-Client (daily) dial 9.9.9.9 and fail on the day the intermediate changes. Detection, not protection - recovery needs a client release. The durable fix is to measure a DigiCert sibling G3 issuing CA actually serving this host and pin it, or to drop the provider.",
+        "review_by": "2026-12-06"
+      },
       "pins": [
         {
           "hash": "qBRjZmOmkSNJL0p70zek7odSIzqs/muR4Jk9xYyCP+E=",
           "label": "DigiCert Global G3 TLS ECC SHA384 2020 CA1",
           "role": "active-intermediate",
+          "lineage": "digicert-global-g3",
+          "lineage_evidence": "measured",
           "in_live_chain": true,
           "_verification": "2026-08-22 measured in the live dns.quad9.net chain"
         },
@@ -150,13 +298,14 @@
           "hash": "uUwZgwDOxcBXrQcntwu+kYFpkiVkOaezL0WYEZ3anJc=",
           "label": "DigiCert Global Root G3 - trust anchor",
           "role": "dormant-backup",
+          "lineage": "digicert-global-g3",
+          "lineage_evidence": "published",
           "in_live_chain": false,
           "_verification": "2026-08-22 verified against https://cacerts.digicert.com/DigiCertGlobalRootG3.crt.pem; not sent in the chain"
         }
       ]
     }
   },
-
   "_removed": [
     {
       "hash": "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Vg=",
@@ -176,6 +325,99 @@
       "was_labelled": "previous leaf DER hash (expired ~2026-05)",
       "removed": "2026-08-22",
       "reason": "Same as above - dead leaf-DER pinning scheme."
+    },
+    {
+      "hash": "yDu9og255NN5GEf+Bwa9rTrqFQ0EydZ0r1FCh9TdAW4=",
+      "host": "dns.google",
+      "was_labelled": "WR1 - Google Trust Services sibling issuing intermediate, GTS Root R1 hierarchy",
+      "was_in": "birdo-shared PR #3 branch only (commits c526aed and 5515868, 2026-09-06), and Desktop-Client PR #125's vendored copy of it; never on main and never in a shipped client",
+      "removed": "2026-09-06",
+      "never_shipped": true,
+      "reason": "Never measured serving dns.google. Pinned speculatively for a few hours as 'enumerate the CA's published issuing set'; removed by owner decision - pin only lineages measured live (_selection_rule). Removing it cannot brick anything because no shipped client ever carried it. Re-adding it requires a measured dns.google chain and the vantage that saw it. Scoped to dns.google: rule S5 fails this file if it reappears in that host's set without an explicit un-retirement."
+    },
+    {
+      "hash": "OdSlmQD9NWJh4EbcOHBxkhygPwNSwA9Q91eounfbcoE=",
+      "host": "dns.google",
+      "was_labelled": "WR3 - Google Trust Services sibling issuing intermediate, GTS Root R1 hierarchy",
+      "was_in": "birdo-shared PR #3 branch only (commits c526aed and 5515868, 2026-09-06), and Desktop-Client PR #125's vendored copy of it; never on main and never in a shipped client",
+      "removed": "2026-09-06",
+      "never_shipped": true,
+      "reason": "Never measured serving dns.google. Pinned speculatively for a few hours as 'enumerate the CA's published issuing set'; removed by owner decision - pin only lineages measured live (_selection_rule). Removing it cannot brick anything because no shipped client ever carried it. Re-adding it requires a measured dns.google chain and the vantage that saw it. Scoped to dns.google: rule S5 fails this file if it reappears in that host's set without an explicit un-retirement."
+    },
+    {
+      "hash": "hZe1OerqJ1Pnq6F4N0gVjjpHqm037Ndf4aLLVpZZdAE=",
+      "host": "dns.google",
+      "was_labelled": "WR4 - Google Trust Services sibling issuing intermediate, GTS Root R1 hierarchy",
+      "was_in": "birdo-shared PR #3 branch only (commits c526aed and 5515868, 2026-09-06), and Desktop-Client PR #125's vendored copy of it; never on main and never in a shipped client",
+      "removed": "2026-09-06",
+      "never_shipped": true,
+      "reason": "Never measured serving dns.google. Pinned speculatively for a few hours as 'enumerate the CA's published issuing set'; removed by owner decision - pin only lineages measured live (_selection_rule). Removing it cannot brick anything because no shipped client ever carried it. Re-adding it requires a measured dns.google chain and the vantage that saw it. Scoped to dns.google: rule S5 fails this file if it reappears in that host's set without an explicit un-retirement."
+    },
+    {
+      "hash": "kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=",
+      "host": "dns.google",
+      "was_labelled": "WE1 - Google Trust Services sibling issuing intermediate, GTS Root R4 hierarchy (still live-pinned for birdo.app, where it IS measured)",
+      "was_in": "birdo-shared PR #3 branch only (commits c526aed and 5515868, 2026-09-06), and Desktop-Client PR #125's vendored copy of it; never on main and never in a shipped client",
+      "removed": "2026-09-06",
+      "never_shipped": true,
+      "reason": "Never measured serving dns.google. Pinned speculatively for a few hours as 'enumerate the CA's published issuing set'; removed by owner decision - pin only lineages measured live (_selection_rule). Removing it cannot brick anything because no shipped client ever carried it. Re-adding it requires a measured dns.google chain and the vantage that saw it. Scoped to dns.google: rule S5 fails this file if it reappears in that host's set without an explicit un-retirement."
+    },
+    {
+      "hash": "daBIAnKdRIX3bqM85I6We7wBUh0DPycNFBMvYkXGX2Q=",
+      "host": "dns.google",
+      "was_labelled": "WE3 - Google Trust Services sibling issuing intermediate, GTS Root R4 hierarchy",
+      "was_in": "birdo-shared PR #3 branch only (commits c526aed and 5515868, 2026-09-06), and Desktop-Client PR #125's vendored copy of it; never on main and never in a shipped client",
+      "removed": "2026-09-06",
+      "never_shipped": true,
+      "reason": "Never measured serving dns.google. Pinned speculatively for a few hours as 'enumerate the CA's published issuing set'; removed by owner decision - pin only lineages measured live (_selection_rule). Removing it cannot brick anything because no shipped client ever carried it. Re-adding it requires a measured dns.google chain and the vantage that saw it. Scoped to dns.google: rule S5 fails this file if it reappears in that host's set without an explicit un-retirement."
+    },
+    {
+      "hash": "O5TQDB/wa4SkRjBrQL2Aq9CG317H9MDDgpTVcrpJDa4=",
+      "host": "dns.google",
+      "was_labelled": "WE4 - Google Trust Services sibling issuing intermediate, GTS Root R4 hierarchy",
+      "was_in": "birdo-shared PR #3 branch only (commits c526aed and 5515868, 2026-09-06), and Desktop-Client PR #125's vendored copy of it; never on main and never in a shipped client",
+      "removed": "2026-09-06",
+      "never_shipped": true,
+      "reason": "Never measured serving dns.google. Pinned speculatively for a few hours as 'enumerate the CA's published issuing set'; removed by owner decision - pin only lineages measured live (_selection_rule). Removing it cannot brick anything because no shipped client ever carried it. Re-adding it requires a measured dns.google chain and the vantage that saw it. Scoped to dns.google: rule S5 fails this file if it reappears in that host's set without an explicit un-retirement."
+    }
+  ],
+  "_consumers": [
+    {
+      "repo": "BirdoVPN/Desktop-Client",
+      "path": "third_party/cert-pins.json",
+      "local_sibling": "../birdo-client-desktop",
+      "visibility": "public",
+      "enforces": true,
+      "verify": true,
+      "note": "Vendored copy. src-tauri/src/vpn/doh.rs and src-tauri/src/api/cert_pin.rs must declare exactly the pin sets in this file; that repo's check-cert-pins.sh compares them for EXACT SET EQUALITY, so this file and that repo have to change together. Desktop-Client PR #125 carries this file's four-pin dns.google set; its third_party/cert-pins.provenance.json records which birdo-shared commit it vendored, and that repo's check 1b FAILS on every run - by design - while that commit is not on THIS repo's main. So #125 re-vendors and re-stamps from main after this file merges, and until #125 itself merges Desktop-Client main is stale and the vendor job here says so."
+    },
+    {
+      "repo": "BirdoVPN/Mobile-Client",
+      "path": "third_party/cert-pins.json",
+      "local_sibling": "../birdo-client-mobile",
+      "visibility": "public",
+      "enforces": true,
+      "verify": true,
+      "note": "Vendored copy. Enforces birdo.app and cloudflare-dns.com only; it still carries the dns.google and dns.quad9.net entries because its liveness check iterates every host here."
+    },
+    {
+      "repo": "BirdoVPN/birdo-web",
+      "path": "third_party/cert-pins.json",
+      "local_sibling": "../birdo-web",
+      "visibility": "private",
+      "enforces": false,
+      "verify": true,
+      "requires_token": true,
+      "note": "FOURTH COPY, AND THE ONLY PUBLICLY SERVED ONE. app/api/client-config/route.ts imports it at BUILD time and publishes it to the internet as `certPins` on GET /api/client-config. It enforces nothing (no client reads that endpoint today), so a stale copy here is a public advertisement of a pin set we already know is wrong. Private repo: the vendor job needs a read token in CONSUMER_READ_TOKEN and FAILS rather than skipping when it has none."
+    },
+    {
+      "repo": "BirdoVPN/birdo-infra",
+      "path": "birdo-shared/cert-pins.json",
+      "local_sibling": "../birdo-infra",
+      "visibility": "private",
+      "enforces": false,
+      "verify": false,
+      "note": "FIFTH COPY AND NOT A CONSUMER: a stale schema-1 fork (_generated 2026-05-04) with no `hosts` key at all. Nothing reads it. Deliberately excluded from the vendor check - it cannot be made equal to this file without a rewrite - and recorded here so the next sweep finds it listed instead of rediscovering it. It should be deleted in birdo-infra."
     }
   ]
 }

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.PlayIntegrityManager
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.model.MultiHopConnectResponse
@@ -49,6 +50,25 @@ class VpnManager @Inject constructor(
 ) {
     private val _state = MutableStateFlow<VpnState>(VpnState.Disconnected)
     val state: StateFlow<VpnState> = _state.asStateFlow()
+
+    /**
+     * The ONLY place this class constructs a [VpnState.Error].
+     *
+     * The same drift guard as BirdoVpnService.updateState, for the same
+     * reason: this class is a second, independent state funnel, and its error
+     * branches (seventeen of them) assigned `_state.value = VpnState.Error(…)`
+     * directly — published to the UI and to nobody else. Routing every one
+     * through here leaves a breadcrumb for each present and future branch;
+     * the branches that are FAILURES rather than outcomes (a service intent
+     * that would not dispatch, a multi-hop route the server did not confirm)
+     * also call FaultReporter.report at the site. DataplaneFaultReportingTest
+     * fails the build if a `VpnState.Error(` construction reappears anywhere
+     * else in this file.
+     */
+    private fun publishError(message: String) {
+        FaultReporter.trail(FaultReporter.PATH_CONNECT, "manager state=Error: $message")
+        _state.value = VpnState.Error(message)
+    }
 
     private val _connectedServer = MutableStateFlow<String?>(null)
     val connectedServer: StateFlow<String?> = _connectedServer.asStateFlow()
@@ -202,7 +222,16 @@ class VpnManager @Inject constructor(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("VpnManager", "State collector failed", e)
+                    // This collector is the sole pipeline from the service to
+                    // the UI; an emission it drops is a state the user never
+                    // sees. Reported — every Log.e in this file was deleted
+                    // from the release build by R8.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "manager_state_collector_threw",
+                        "VpnManager state collector threw while applying a service state",
+                        e,
+                    )
                 }
             }
         }
@@ -246,7 +275,12 @@ class VpnManager @Inject constructor(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("VpnManager", "Reconnect collector failed", e)
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "manager_reconnect_collector_threw",
+                        "VpnManager reconnect collector threw",
+                        e,
+                    )
                 }
             }
         }
@@ -267,7 +301,12 @@ class VpnManager @Inject constructor(
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        android.util.Log.e("VpnManager", "Settings reapply failed", e)
+                        FaultReporter.report(
+                            FaultReporter.PATH_CONNECT,
+                            "manager_settings_reapply_collector_threw",
+                            "VpnManager settings-reapply collector threw",
+                            e,
+                        )
                     }
                 }
         }
@@ -288,7 +327,12 @@ class VpnManager @Inject constructor(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    android.util.Log.e("VpnManager", "Transport fallback failed", e)
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "manager_transport_fallback_threw",
+                        "VpnManager adaptive-transport fallback threw",
+                        e,
+                    )
                 }
             }
         }
@@ -308,7 +352,12 @@ class VpnManager @Inject constructor(
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        android.util.Log.e("VpnManager", "Network collector failed", e)
+                        FaultReporter.report(
+                            FaultReporter.PATH_CONNECT,
+                            "manager_network_collector_threw",
+                            "VpnManager network-online collector threw",
+                            e,
+                        )
                     }
                 }
         }
@@ -400,7 +449,14 @@ class VpnManager @Inject constructor(
         // enabled so the server can encapsulate against it (BirdoPQ v1).
         val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
             RosenpassManager.getClientPublicKeyB64(context) ?: run {
-                _state.value = VpnState.Error("Quantum engine unavailable")
+                // RosenpassNative/RosenpassManager report the cause; this is
+                // the count of users refused a connection because of it.
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "connect_refused_pq_engine_unavailable",
+                    "Refused to connect: quantum protection is on and the PQ engine could not supply a client public key",
+                )
+                publishError("Quantum engine unavailable")
                 return ApiResult.Error("Quantum engine unavailable")
             }
         } else null
@@ -432,7 +488,7 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    _state.value = VpnState.Error(config.message ?: "Invalid server response")
+                    publishError(config.message ?: "Invalid server response")
                     return ApiResult.Error(config.message ?: "Invalid server response")
                 }
 
@@ -465,8 +521,13 @@ class VpnManager @Inject constructor(
                 try {
                     context.startForegroundService(intent)
                 } catch (e: Exception) {
-                    android.util.Log.e("VpnManager", "startForegroundService(START) failed", e)
-                    _state.value = VpnState.Error("Couldn't start the VPN service — please try again.")
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "service_start_dispatch_failed",
+                        "startForegroundService(START) threw — the connect never reached the service",
+                        e,
+                    )
+                    publishError("Couldn't start the VPN service — please try again.")
                     return ApiResult.Error("Couldn't start the VPN service: ${e.message}")
                 }
 
@@ -480,7 +541,7 @@ class VpnManager @Inject constructor(
                 return result
             }
             is ApiResult.Error -> {
-                _state.value = VpnState.Error(result.message)
+                publishError(result.message)
                 return result
             }
         }
@@ -641,7 +702,13 @@ class VpnManager @Inject constructor(
 
         val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
             RosenpassManager.getClientPublicKeyB64(context) ?: run {
-                _state.value = VpnState.Error("Quantum engine unavailable")
+                // Twin of the single-hop connect_refused_pq_engine_unavailable.
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "multihop_refused_pq_engine_unavailable",
+                    "Refused to connect multi-hop: quantum protection is on and the PQ engine could not supply a client public key",
+                )
+                publishError("Quantum engine unavailable")
                 return ApiResult.Error("Quantum engine unavailable")
             }
         } else null
@@ -672,7 +739,7 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    _state.value = VpnState.Error(config.message ?: "Invalid multi-hop config")
+                    publishError(config.message ?: "Invalid multi-hop config")
                     return ApiResult.Error(config.message ?: "Invalid multi-hop config")
                 }
 
@@ -694,19 +761,32 @@ class VpnManager @Inject constructor(
                 val mh = config.multiHop
                 if (mh == null) {
                     val msg = "The server did not confirm the Multi-Hop route. Not connecting."
-                    android.util.Log.e("VpnManager", "multi-hop: success but no route block; refusing")
-                    _state.value = VpnState.Error(msg)
+                    // The jurisdiction-leak guard. A refusal here is a backend
+                    // contract violation, and the user cannot observe their own
+                    // egress country — this client is the only witness.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "multihop_route_unconfirmed",
+                        "Refused multi-hop: the server reported success without a route block",
+                    )
+                    publishError(msg)
                     return ApiResult.Error(msg)
                 }
                 if (mh.entryNode.id != entryNodeId || mh.exitNode.id != exitNodeId) {
                     val msg = "The server established a different Multi-Hop route (${mh.route}) " +
                         "than the one selected. Not connecting."
-                    android.util.Log.e(
+                    // Node ids deliberately not sent — the fact is the signal.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "multihop_route_mismatch",
+                        "Refused multi-hop: the server established a different route than the one requested",
+                    )
+                    android.util.Log.d(
                         "VpnManager",
                         "multi-hop route mismatch: asked ${entryNodeId}->${exitNodeId}, " +
                             "got ${mh.entryNode.id}->${mh.exitNode.id}",
                     )
-                    _state.value = VpnState.Error(msg)
+                    publishError(msg)
                     return ApiResult.Error(msg)
                 }
 
@@ -720,7 +800,7 @@ class VpnManager @Inject constructor(
                 return result
             }
             is ApiResult.Error -> {
-                _state.value = VpnState.Error(result.message)
+                publishError(result.message)
                 return result
             }
         }
@@ -734,7 +814,7 @@ class VpnManager @Inject constructor(
         if (config.privateKey == null || config.serverPublicKey == null ||
             config.endpoint == null || config.assignedIp == null
         ) {
-            _state.value = VpnState.Error(config.message ?: "Invalid multi-hop config")
+            publishError(config.message ?: "Invalid multi-hop config")
             return
         }
 
@@ -797,8 +877,13 @@ class VpnManager @Inject constructor(
         try {
             context.startForegroundService(intent)
         } catch (e: Exception) {
-            android.util.Log.e("VpnManager", "startForegroundService(START multihop) failed", e)
-            _state.value = VpnState.Error("Couldn't start the VPN service — please try again.")
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "service_start_dispatch_failed_multihop",
+                "startForegroundService(START multi-hop) threw — the connect never reached the service",
+                e,
+            )
+            publishError("Couldn't start the VPN service — please try again.")
             return
         }
 
@@ -820,7 +905,7 @@ class VpnManager @Inject constructor(
 
         val serversResult = repository.getServers()
         if (serversResult is ApiResult.Error) {
-            _state.value = VpnState.Error(serversResult.message)
+            publishError(serversResult.message)
             return ApiResult.Error(serversResult.message)
         }
 
@@ -835,7 +920,7 @@ class VpnManager @Inject constructor(
             .minByOrNull { it.load }
 
         if (bestServer == null) {
-            _state.value = VpnState.Error("No servers available")
+            publishError("No servers available")
             return ApiResult.Error("No servers available")
         }
 
@@ -936,7 +1021,7 @@ class VpnManager @Inject constructor(
                 // before publishing the Error the collector reacts to, or a
                 // multi-hop user gets no retry at all.
                 if (!permanent) activeMultiHop = route
-                _state.value = VpnState.Error(reason)
+                publishError(reason)
                 return@withContext
             }
 
@@ -955,7 +1040,16 @@ class VpnManager @Inject constructor(
             try {
                 context.startForegroundService(intent)
             } catch (e: Exception) {
-                android.util.Log.e("VpnManager", "startForegroundService(KILL_SWITCH_BLOCK) failed", e)
+                // If this throws the kill switch is never armed AND the
+                // service is never reached, so none of its own kill-switch
+                // reports can fire. The outermost failure of the kill-switch
+                // path is reported here or nowhere.
+                FaultReporter.report(
+                    FaultReporter.PATH_KILL_SWITCH,
+                    "kill_switch_block_dispatch_failed",
+                    "startForegroundService(KILL_SWITCH_BLOCK) threw — the block was never requested, traffic is NOT protected",
+                    e,
+                )
             }
 
             // Unregister the dead peer and drop the stale keyId so no later
@@ -979,7 +1073,19 @@ class VpnManager @Inject constructor(
             // loud: silent failure of a security control is worse than a loud
             // one, the same rule the service's restart re-arm follows. Never
             // render reassurance we have not confirmed.
-            _state.value = VpnState.Error(
+            if (!blocked) {
+                // Third way the block can fail, after establish() refusing
+                // (reported at its root in the service) and the intent not
+                // dispatching (reported just above): the intent was accepted
+                // and the block never came up in time. The verdict the user
+                // sees is the one the operator must see too.
+                FaultReporter.report(
+                    FaultReporter.PATH_KILL_SWITCH,
+                    "kill_switch_block_unconfirmed",
+                    "Kill switch block was not confirmed within 5s of dispatch — traffic is NOT protected",
+                )
+            }
+            publishError(
                 if (blocked) reason
                 else "$reason — kill switch could NOT be armed, traffic is NOT protected",
             )
@@ -1016,7 +1122,12 @@ class VpnManager @Inject constructor(
         try {
             context.startForegroundService(intent)
         } catch (e: Exception) {
-            android.util.Log.e("VpnManager", "startForegroundService(STOP) failed", e)
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "service_stop_dispatch_failed",
+                "startForegroundService(STOP) threw — the tunnel may still be up",
+                e,
+            )
         }
 
         // Notify backend (best effort)
@@ -1050,7 +1161,14 @@ class VpnManager @Inject constructor(
         try {
             context.startForegroundService(intent)
         } catch (e: Exception) {
-            android.util.Log.e("VpnManager", "startForegroundService(SWITCH_TEARDOWN) failed", e)
+            // The fail-closed teardown: if this does not dispatch, the block
+            // is not held across the rebuild window it exists for.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "switch_teardown_dispatch_failed",
+                "startForegroundService(SWITCH_TEARDOWN) threw — the block may not be held across the rebuild",
+                e,
+            )
         }
 
         // Unregister the old peer server-side (best effort) before the new /connect
@@ -1127,7 +1245,7 @@ class VpnManager @Inject constructor(
         if ((localState.isConnectingPhase || serviceState.isConnectingPhase) &&
             elapsed > CONNECT_STUCK_TIMEOUT_MS
         ) {
-            _state.value = VpnState.Error("Connection timed out — server may be unreachable")
+            publishError("Connection timed out — server may be unreachable")
             return
         }
 
@@ -1169,7 +1287,14 @@ class VpnManager @Inject constructor(
             // handler decides to quietly stopSelf on a stale push.
             context.startService(intent)
         } catch (e: Exception) {
-            android.util.Log.e("VpnManager", "startService(UPDATE_SETTINGS) failed", e)
+            // Carries the kill-switch preference: a push that does not
+            // dispatch leaves the service on the previous setting.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "settings_push_dispatch_failed",
+                "startService(UPDATE_SETTINGS) threw — the running service keeps its previous kill-switch setting",
+                e,
+            )
         }
     }
 
@@ -1266,9 +1391,14 @@ class VpnManager @Inject constructor(
             // Error so a fail-closed session auto-reconnects (block held); the
             // finally then releases the forced block for a fail-open user so an
             // exception can never leave them stuck behind a total block.
-            android.util.Log.e("VpnManager", "reapply rebuild threw", e)
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "settings_reapply_threw",
+                "Settings reapply rebuild threw",
+                e,
+            )
             if (_state.value.isConnectingPhase) {
-                _state.value = VpnState.Error("Couldn't apply settings")
+                publishError("Couldn't apply settings")
             }
         } finally {
             reapplyInProgress = false
