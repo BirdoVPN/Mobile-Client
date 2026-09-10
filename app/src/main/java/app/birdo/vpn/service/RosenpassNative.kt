@@ -2,6 +2,7 @@ package app.birdo.vpn.service
 
 import android.content.Context
 import android.util.Log
+import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.NativeLibraryVerifier
 
 /**
@@ -81,7 +82,15 @@ object RosenpassNative {
         // touch System.load and leave isLoaded=false so PQ stays disabled.
         val ok = NativeLibraryVerifier.verifyLibrary(context, LIB_NAME)
         if (!ok) {
-            Log.e(TAG, "$LIB_NAME integrity check FAILED — BirdoPQ disabled (hash mismatch or missing)")
+            // The verifier reports WHY; this is the consequence — BirdoPQ
+            // silently off — and the twin of the service's
+            // connect_refused_integrity. Reported here at the root rather than
+            // at the callers (there are three).
+            FaultReporter.report(
+                FaultReporter.PATH_INTEGRITY,
+                "pq_disabled_integrity",
+                "librosenpass_jni integrity check failed — BirdoPQ disabled",
+            )
             return false
         }
         if (!isLoaded) {
@@ -99,11 +108,28 @@ object RosenpassNative {
                 Log.i(TAG, "loaded $LIB_NAME (verified) — version=${runCatching { nativeVersion() }.getOrDefault("<error>")}")
             } catch (e: UnsatisfiedLinkError) {
                 isLoaded = false
-                Log.w(TAG, "native lib $LIB_NAME not present — falling back to server-provided PSK path", e)
+                // The structural twin of WgNative.init and its
+                // wg_loadlibrary_failed: a JNI bridge converting failure into a
+                // silent capability downgrade (BirdoPQ off).
+                // scripts/check_r8_keeps.py names this exact outcome as reason
+                // #2 it exists. Reported, and every catch in this file must
+                // report — the scan DataplaneFaultReportingTest runs over
+                // WgNative runs here too.
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_native_load_failed",
+                    "librosenpass_jni failed to load — BirdoPQ downgraded to the server-provided PSK path",
+                    e,
+                )
                 return false
             } catch (t: Throwable) {
                 isLoaded = false
-                Log.e(TAG, "unexpected failure loading $LIB_NAME", t)
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_native_load_threw",
+                    "Unexpected failure loading librosenpass_jni — BirdoPQ disabled",
+                    t,
+                )
                 return false
             }
         }

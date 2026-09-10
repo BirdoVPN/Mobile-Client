@@ -135,7 +135,17 @@ object NativeLibraryVerifier {
         val libFile = File(nativeLibDir, "lib${libraryName}.so")
 
         if (!libFile.exists()) {
-            Log.e(TAG, "Native library not found: ${libFile.absolutePath}")
+            // Path deliberately NOT reported: it is an absolute filesystem path
+            // that carries the package and user id. The library name is enough
+            // to identify a bad ABI split or a stripped APK. The path is kept
+            // for debug logcat only, at warning level: the report below is the
+            // signal and does its own error-level log.
+            Log.w(TAG, "Native library not found: ${libFile.absolutePath}")
+            FaultReporter.report(
+                FaultReporter.PATH_INTEGRITY,
+                "native_lib_missing",
+                "Native library lib$libraryName.so is not in the APK's native lib dir",
+            )
             return false
         }
 
@@ -153,10 +163,25 @@ object NativeLibraryVerifier {
 
         if (expectedHash.isNullOrBlank()) {
             if (!signatureTrusted) {
-                Log.e(TAG, "INTEGRITY FAILURE: no registered hash and no trusted package signature for $libraryName")
+                FaultReporter.report(
+                    FaultReporter.PATH_INTEGRITY,
+                    "integrity_no_hash_no_signature",
+                    "INTEGRITY FAILURE: no registered hash and no trusted package signature for $libraryName",
+                )
                 return decide(false, true, null, null, false)
             }
-            Log.w(TAG, "No registered hash for $libraryName; package signature check passed")
+            // The twin of integrity_hash_stale_accepted_by_signature below,
+            // and until now the half that was silent: a BLANK NATIVE_HASH_* on
+            // a release build means the injection task never ran, and the pin
+            // has stopped pinning. Accepted because the signature is trusted,
+            // designed to be invisible to the user — so this is the only
+            // witness. Never reached in a debug build (verifyLibrary returns
+            // early above), so it cannot spam a developer's logcat.
+            FaultReporter.report(
+                FaultReporter.PATH_INTEGRITY,
+                "integrity_no_hash_accepted_by_signature",
+                "INTEGRITY: no registered hash for $libraryName on this build, accepted via trusted package signature (hash injection missing in build)",
+            )
             return decide(false, true, null, null, true)
         }
 
@@ -170,7 +195,15 @@ object NativeLibraryVerifier {
                 if (signatureTrusted) {
                     Log.i(TAG, "Library $libraryName integrity verified (hash match + trusted signature)")
                 } else {
-                    Log.e(TAG, "INTEGRITY FAILURE: $libraryName hash matches but the package signature is not trusted - repackaged APK")
+                    // The strongest tamper signal the client has: our exact .so
+                    // inside somebody else's package. It is also, by
+                    // definition, only ever seen on a build we did not ship, so
+                    // logcat was never going to reach us.
+                    FaultReporter.report(
+                        FaultReporter.PATH_INTEGRITY,
+                        "integrity_repackaged_apk",
+                        "INTEGRITY FAILURE: $libraryName hash matches but the package signature is not trusted - repackaged APK",
+                    )
                 }
                 decide(false, true, expectedHash, actualHash, signatureTrusted)
             } else {
@@ -186,13 +219,38 @@ object NativeLibraryVerifier {
                 Log.w(TAG, "INTEGRITY: $libraryName hash mismatch (expected=$expectedHash actual=$actualHash) — falling back to package-signature verification")
                 if (signatureTrusted) {
                     Log.w(TAG, "INTEGRITY: $libraryName accepted via trusted package signature (hash injection likely stale in build)")
+                    // Reported even though it is ACCEPTED: this is the branch
+                    // that means our own build pipeline injected a stale or
+                    // empty NATIVE_HASH_*, and it is designed to be invisible
+                    // to the user. Nothing else would ever tell us the pin
+                    // stopped pinning. Hash values are not sent — they are
+                    // 64-hex and the Sentry scrubber rewrites them to [KEY]
+                    // anyway; the ABI is the part that identifies the bad
+                    // build.
+                    FaultReporter.report(
+                        FaultReporter.PATH_INTEGRITY,
+                        "integrity_hash_stale_accepted_by_signature",
+                        "INTEGRITY: $libraryName hash mismatch on abi=$abi, accepted via trusted package signature (hash injection likely stale in build)",
+                    )
                 } else {
-                    Log.e(TAG, "INTEGRITY FAILURE: $libraryName hash mismatch AND untrusted signature — rejecting")
+                    FaultReporter.report(
+                        FaultReporter.PATH_INTEGRITY,
+                        "integrity_hash_mismatch_untrusted",
+                        "INTEGRITY FAILURE: $libraryName hash mismatch on abi=$abi AND untrusted signature — rejecting",
+                    )
                 }
                 decide(false, true, expectedHash, actualHash, signatureTrusted)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to verify $libraryName", e)
+            // Fails CLOSED (returns false), so the user is refused a tunnel.
+            // An I/O error reading our own .so is not something a user can
+            // act on or report usefully — it has to reach us directly.
+            FaultReporter.report(
+                FaultReporter.PATH_INTEGRITY,
+                "integrity_verify_threw",
+                "Failed to verify $libraryName — refusing to load it",
+                e,
+            )
             false
         }
     }

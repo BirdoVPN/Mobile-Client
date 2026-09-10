@@ -5,6 +5,7 @@ import android.net.VpnService
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.NativeLibraryVerifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -103,7 +104,14 @@ object XrayManager {
         val xraySni = config.xraySni ?: "www.microsoft.com"
 
         if (xrayEndpoint == null || xrayUuid == null || xrayPublicKey == null || xrayShortId == null) {
-            Log.e(TAG, "Missing Xray configuration parameters")
+            // Everything below that rejects the server's Xray parameters is a
+            // backend contract violation or a MitM — fleet-shaped, and the
+            // user cannot describe it. All reported; none carries a value.
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_config_incomplete",
+                "Server granted stealth but omitted one or more Xray parameters",
+            )
             return@withContext false
         }
 
@@ -113,15 +121,27 @@ object XrayManager {
         val publicKeyRegex = Regex("^([A-Za-z0-9_-]{43,44}|[0-9a-fA-F]{64})$") // Xray x25519 emits base64url; legacy hex accepted
         val shortIdRegex = Regex("^[0-9a-fA-F]{0,16}$")   // Reality shortId: 0–8 bytes hex
         if (!uuidRegex.matches(xrayUuid)) {
-            Log.e(TAG, "Invalid Xray UUID format — rejecting connection")
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_uuid_invalid",
+                "Server sent an Xray UUID in an invalid format — rejecting",
+            )
             return@withContext false
         }
         if (!publicKeyRegex.matches(xrayPublicKey)) {
-            Log.e(TAG, "Invalid Xray public key format — rejecting")
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_public_key_invalid",
+                "Server sent an Xray public key in an invalid format — rejecting",
+            )
             return@withContext false
         }
         if (!shortIdRegex.matches(xrayShortId)) {
-            Log.e(TAG, "Invalid Xray shortId format (expected ≤16 hex chars) — rejecting")
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_short_id_invalid",
+                "Server sent an Xray shortId in an invalid format (expected ≤16 hex chars) — rejecting",
+            )
             return@withContext false
         }
         // SNI was the one server-supplied Xray field with no validation: a
@@ -132,14 +152,23 @@ object XrayManager {
             "^(?=.{4,253}\$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,63}\$",
         )
         if (!hostnameRegex.matches(xraySni)) {
-            Log.e(TAG, "Invalid Xray SNI (not a plausible public hostname) — rejecting")
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_sni_invalid",
+                "Server sent an Xray SNI that is not a plausible public hostname — rejecting",
+            )
             return@withContext false
         }
 
         // Parse server endpoint
         val endpoint = parseEndpoint(xrayEndpoint)
         if (endpoint == null) {
-            Log.e(TAG, "Invalid Xray endpoint: $xrayEndpoint")
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_endpoint_invalid",
+                "Server sent an Xray endpoint that does not parse as host:port — rejecting",
+            )
+            Log.d(TAG, "rejected Xray endpoint: $xrayEndpoint")
             return@withContext false
         }
         val (serverHost, serverPort) = endpoint
@@ -169,11 +198,22 @@ object XrayManager {
                 Log.i(TAG, "Xray Reality tunnel started — listening on 127.0.0.1:$localPort")
                 return@withContext true
             } else {
-                Log.e(TAG, "Failed to start Xray — both libXray and binary methods failed")
+                // Each method reported its own failure; this is the verdict
+                // the service acts on.
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "stealth_start_failed_all_methods",
+                    "Failed to start Xray — both the libXray binding and the binary fallback failed",
+                )
                 return@withContext false
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting Xray", e)
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_start_threw",
+                "Starting Xray threw",
+                e,
+            )
             return@withContext false
         }
     }
@@ -200,7 +240,14 @@ object XrayManager {
             }
             xrayProcess = null
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping Xray", e)
+            // A stop that fails can leave a Reality client running after the
+            // tunnel is gone.
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_stop_failed",
+                "Stopping Xray threw — the stealth client may still be running",
+                e,
+            )
         } finally {
             // The binary-fallback config carries the VLESS UUID (a stealth
             // credential) — never leave it on disk past the session.
@@ -241,6 +288,7 @@ object XrayManager {
                 initMethod.invoke(null, dataDir.absolutePath)
             } catch (_: NoSuchMethodException) {
                 Log.w(TAG, "initXrayEnv not available, continuing without init")
+                FaultReporter.trail(FaultReporter.PATH_STEALTH, "libXray has no initXrayEnv — started without asset init")
             }
 
             // Start Xray with config
@@ -255,14 +303,26 @@ object XrayManager {
                 Thread.sleep(300)
                 true
             } else {
-                Log.e(TAG, "libXray.startXray returned: $resultStr")
+                // The result string is libXray's own error text and can quote
+                // the config (SNI, host) — kept out of the report on purpose.
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "stealth_libxray_rejected_config",
+                    "libXray.startXray returned an error",
+                )
+                Log.d(TAG, "libXray.startXray result: $resultStr")
                 false
             }
         } catch (e: ClassNotFoundException) {
             Log.i(TAG, "libXray not available, will try binary fallback")
             false
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start Xray via libXray", e)
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_libxray_start_threw",
+                "Starting Xray via libXray threw",
+                e,
+            )
             false
         }
     }
@@ -284,12 +344,22 @@ object XrayManager {
         return try {
             // Look for xray binary in native libs or extracted assets
             val xrayBinary = findXrayBinary(context) ?: run {
-                Log.e(TAG, "Xray binary not found")
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "stealth_binary_missing",
+                    "No Xray binary is packaged and libXray was unavailable",
+                )
                 return false
             }
             val verifierName = if (xrayBinary.name == "libXray.so") "Xray" else "xray"
             if (!NativeLibraryVerifier.verifyLibrary(context, verifierName)) {
-                Log.e(TAG, "Xray binary integrity check failed")
+                // The verifier reports WHY; this is the stealth-side
+                // consequence, the twin of connect_refused_integrity.
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "stealth_binary_integrity_failed",
+                    "Refused to run the Xray binary: integrity verification failed",
+                )
                 return false
             }
 
@@ -331,14 +401,23 @@ object XrayManager {
                 Log.i(TAG, "Xray started as external process (pid=${getProcessPid(process)})")
                 true
             } else {
-                Log.e(TAG, "Xray process exited immediately with code: ${process.exitValue()}")
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "stealth_binary_exited",
+                    "Xray process exited immediately (exit code ${process.exitValue()})",
+                )
                 xrayProcess = null
                 configFile.delete()
                 xrayConfigFile = null
                 false
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start Xray binary", e)
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_binary_start_threw",
+                "Starting the Xray binary threw",
+                e,
+            )
             false
         }
     }
@@ -454,7 +533,13 @@ object XrayManager {
                 Pair(host, port)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse endpoint: $endpoint", e)
+            // The endpoint value is a server address: not sent.
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_endpoint_parse_threw",
+                "Parsing the Xray endpoint threw",
+                e,
+            )
             null
         }
     }
