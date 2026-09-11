@@ -77,6 +77,8 @@ internal object FaultReporter {
     const val PATH_TUNNEL = "tunnel"
 
     /** The Xray Reality stealth transport: parameter validation, start, stop. */
+    const val PATH_DNS = "dns"
+
     const val PATH_STEALTH = "stealth"
 
     /** BirdoPQ (ML-KEM) key exchange and the rosenpass JNI bridge. */

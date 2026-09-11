@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
 import java.net.UnknownHostException
+import app.birdo.vpn.utils.FaultReporter
 import java.util.concurrent.TimeUnit
 
 /**
@@ -151,9 +152,42 @@ object DohResolver {
         }
         return try {
             cloudflare.lookup(hostname)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             // Fail open: system resolver. Cert pinning on the actual API
             // connection still protects against DNS-spoofing MITM.
+            //
+            // But failing open SILENTLY is the defect. When this path is taken the
+            // lookup leaves the device in cleartext to whatever resolver the
+            // network hands us — precisely the leak this class exists to prevent —
+            // and nothing visible changes, so nobody notices. That shape has
+            // already bitten once: a dead pin set meant every release-build
+            // handshake failed the pinner, resolve() caught it, and DNS fell
+            // through for everyone, quietly.
+            //
+            // The two causes are NOT equally interesting and must not be reported
+            // at the same weight:
+            //
+            //  * A PINNER failure means the pin set no longer matches the live
+            //    chain. Leak protection is off for every user on this build and
+            //    only a release can restore it. That is worth waking up for.
+            //  * Anything else is usually DoH blocked or unreachable on this
+            //    network — expected, exactly what the system fallback is for, and
+            //    it would fire on every lookup behind a captive portal. Reporting
+            //    that as loudly would train everyone to ignore the one that counts.
+            if (e is javax.net.ssl.SSLPeerUnverifiedException) {
+                FaultReporter.report(
+                    FaultReporter.PATH_DNS,
+                    "doh_pin_rejected",
+                    "DoH certificate pinning rejected cloudflare-dns.com — DNS-leak " +
+                        "protection has fallen back to the system resolver for every lookup",
+                    e,
+                )
+            } else {
+                FaultReporter.trail(
+                    FaultReporter.PATH_DNS,
+                    "DoH lookup failed (${e.javaClass.simpleName}) — using the system resolver",
+                )
+            }
             okhttp3.Dns.SYSTEM.lookup(hostname)
         }
     }
