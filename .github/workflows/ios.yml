@@ -968,12 +968,33 @@ jobs:
           API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
         run: |
           IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -1)
-          xcrun altool --upload-app \
+          # A re-run of this job (the documented recovery for the release-attach
+          # race is `gh run rerun --failed`) used to fail here with
+          # ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE, because App Store Connect
+          # already holds this CFBundleVersion from the first run (android-v1.4.27,
+          # 2026-09-05: previousBundleVersion 10427 == ours). That is not a
+          # failure: the build is uploaded. Treat DUPLICATE as success ONLY when
+          # the version ASC reports as already present is exactly ours — a
+          # DUPLICATE against a HIGHER previous version means the numbering is
+          # broken and must still fail.
+          OUT="$RUNNER_TEMP/altool-upload.log"
+          if xcrun altool --upload-app \
             --type ios \
             --file "$IPA" \
             --apiKey "$API_KEY_ID" \
             --apiIssuer "$API_ISSUER_ID" \
-            --output-format xml
+            --output-format xml > "$OUT" 2>&1; then
+            cat "$OUT"
+            exit 0
+          fi
+          if grep -q 'ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE' "$OUT" \
+             && grep -Eq "previousBundleVersion : ${BIRDO_PROJECT_VERSION}\b" "$OUT"; then
+            echo "::notice::Build ${BIRDO_PROJECT_VERSION} is already on App Store Connect — an earlier run of this tag uploaded it. Nothing to do."
+            exit 0
+          fi
+          cat "$OUT"
+          echo "::error::altool upload failed (see log above)"
+          exit 1
 
       - name: Upload signed IPA artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

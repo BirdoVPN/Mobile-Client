@@ -87,13 +87,6 @@ def main():
         save(rs(rnd, px), f"app/src/main/res/mipmap-{density}/ic_launcher.png")
         save(rs(circ, px), f"app/src/main/res/mipmap-{density}/ic_launcher_round.png")
 
-    # Vestigial copies written by scripts/generate-store-assets.ps1. The Play upload
-    # (scripts/play_listing.py) reads store-assets/, not this directory — but the files are
-    # committed, so keep them in step rather than letting them rot into the old brand.
-    print("Legacy duplicates (screenshots/play/store-assets):")
-    save(rs(full, 512), "screenshots/play/store-assets/icon-512.png")
-    save(feat, "screenshots/play/store-assets/feature-1024x500.png", "RGB")
-
     print("\nDone.")
 
 

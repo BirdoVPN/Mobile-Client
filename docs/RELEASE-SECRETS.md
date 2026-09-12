@@ -6,10 +6,14 @@
 
 ---
 
-## Android — APK release (no Play Store)
+## Android — APK release AND Play AAB
 
-Birdo VPN for Android is distributed as a **signed APK from GitHub Releases**
-linked from the website. There is no Google Play Store / AAB upload pipeline.
+Birdo VPN for Android ships two ways from the same `android-v*` tag: a **signed
+APK on the GitHub Release** (sideload, linked from the website, with a GPG
+`.asc` verifiable against `https://birdo.app/.well-known/birdo-release.asc`)
+and a **signed AAB uploaded to Google Play** (`android.yml` → "Upload AAB to
+Google Play"; the release workflow uploads DIRECTLY to production — see
+`docs/PLAY-APP-SIGNING.md` and the whatsnew/versionCode chores there).
 
 ### One-time setup
 
@@ -56,8 +60,12 @@ linked from the website. There is no Google Play Store / AAB upload pipeline.
 
 ## iOS — TestFlight upload
 
-The workflow `release-ios` job codesigns the `.ipa` and pushes it to App Store
-Connect / TestFlight on every `ios-v*` tag.
+The `release-ios` job in `ios.yml` codesigns the `.ipa` and pushes it to App
+Store Connect / TestFlight. It fires on every **`android-v*`** tag (the mobile
+release train is one tag for both platforms) and on `workflow_dispatch` —
+there is no `ios-v*` trigger. The Mac App Store train is separate:
+`macos.yml` on `mac-v*` tags, with its own "3rd Party Mac Developer
+Application" identity and "Birdo VPN Mac AppStore" provisioning profile.
 
 ### One-time setup
 
@@ -116,11 +124,13 @@ base64 -i AuthKey_ABC123XYZ.p8 -o api.b64
 
 ---
 
-## Linux — GPG release signing
+## GPG release signing (the key is shared with Desktop)
 
-The desktop workflow `build-linux.yml` produces `.asc` detached signatures for
-`.deb`, `.AppImage`, and `SHA256SUMS.txt` alongside the existing Sigstore
-bundles.
+`android.yml` produces a `.asc` detached signature for the sideload APK with
+the same GPG release key the desktop repo uses for its Linux artefacts
+(`birdo-client-desktop/.github/workflows/release.yml`). The key-publication
+step below is what makes `gpg --verify` possible for users; the desktop-side
+usage is documented in that repo, not here.
 
 ### One-time setup
 
