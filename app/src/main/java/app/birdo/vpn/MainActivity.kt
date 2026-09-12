@@ -232,6 +232,29 @@ class MainActivity : FragmentActivity() {
         super.onDestroy()
     }
 
+    /**
+     * The app lock is a PRIVACY SCREEN, not a key-release gate — and that is a
+     * decision, not an omission (CodeQL `insecure-local-authentication`, alert
+     * #35, dismissed with this rationale):
+     *
+     * - What it protects against is a person holding the unlocked phone seeing
+     *   or changing VPN state. It does not protect stored credentials; those are
+     *   in EncryptedSharedPreferences under a Keystore master key regardless of
+     *   this screen.
+     * - Binding the prompt to a Keystore `CryptoObject` would only defeat a
+     *   hooked callback, which needs root/instrumentation on the device — where
+     *   the encrypted store is readable anyway, so the extra binding buys
+     *   nothing against that attacker.
+     * - It would also cost the fail-open behaviour below (no enrolled
+     *   credential → unlock, so nobody is locked out of their own VPN), and on
+     *   API 29 (minSdk) BiometricPrompt refuses CryptoObject together with
+     *   DEVICE_CREDENTIAL, so it would need an API branch and a device test.
+     *
+     * If the lock ever has to guard a secret rather than the screen, the change
+     * is: auth-required Keystore key, decrypt a stored nonce in
+     * [onAuthenticationSucceeded] via `result.cryptoObject`, DEVICE_CREDENTIAL
+     * only on API 30+.
+     */
     private fun promptBiometric() {
         val biometricManager = BiometricManager.from(this)
         val canAuth = biometricManager.canAuthenticate(
