@@ -1,7 +1,6 @@
 package app.birdo.vpn.ui.screen
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,6 +19,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.theme.*
@@ -109,7 +109,7 @@ fun ConsentScreen(
         // Privacy policy link
         TextButton(
             onClick = {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://birdo.app/privacy"))
+                val intent = Intent(Intent.ACTION_VIEW, "https://birdo.app/privacy".toUri())
                 context.startActivity(intent)
             },
         ) {

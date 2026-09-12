@@ -1,32 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="birdo_black">#FF000000</color>
-    <color name="birdo_surface">#FF111111</color>
-    <color name="birdo_card">#FF141414</color>
-    <color name="birdo_green">#FF10B981</color>
-    <color name="birdo_green_bg">#1A10B981</color>
-    <color name="birdo_red">#FFEF4444</color>
-    <color name="birdo_red_bg">#1AEF4444</color>
-    <color name="birdo_yellow">#FFFBBF24</color>
-    <color name="birdo_yellow_bg">#1AFBBF24</color>
-    <color name="birdo_blue">#FF3B82F6</color>
-    <color name="birdo_blue_bg">#1A3B82F6</color>
-    <color name="birdo_white">#FFFFFFFF</color>
-    <color name="birdo_white_70">#B3FFFFFF</color>
-    <color name="birdo_white_50">#80FFFFFF</color>
-    <color name="birdo_white_30">#4DFFFFFF</color>
-    <color name="birdo_white_10">#1AFFFFFF</color>
-    <color name="birdo_border">#FF222222</color>
 
     <!-- Widget colors -->
     <color name="widget_bg">#FF0A0A0A</color>
-    <color name="widget_surface">#FF141414</color>
-    <color name="widget_connected_bg">#FF0A0A0A</color>
-    <color name="widget_disconnected_bg">#FF0A0A0A</color>
-    <color name="widget_connected_accent">#FF34D399</color>
-    <color name="widget_disconnected_accent">#FF6B7280</color>
     <color name="widget_text">#FFF2F2F2</color>
     <color name="widget_text_dim">#99FFFFFF</color>
-    <color name="widget_green_bg">#1A34D399</color>
-    <color name="widget_red_bg">#1AEF4444</color>
 </resources>

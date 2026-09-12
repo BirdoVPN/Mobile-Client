@@ -43,7 +43,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class VpnManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val repository: BirdoRepository,
     private val prefs: AppPreferences,
     private val networkMonitor: NetworkMonitor,
@@ -210,8 +210,8 @@ class VpnManager @Inject constructor(
 
     init {
         // FIX-2-12: Reactively collect state from BirdoVpnService's StateFlow.
-        // Applies the same transition guards as the old syncState() polling, but
-        // fires immediately on every state change instead of with ≤1s delay.
+        // Applies the transition guards below; fires immediately on every
+        // state change instead of with the ≤1s delay of the old polling.
         scope.launch {
             BirdoVpnService.stateFlow.collect { serviceState ->
                 // Guard each emission so an unexpected exception in the guard
@@ -532,7 +532,7 @@ class VpnManager @Inject constructor(
                 }
 
                 // Don't set Connected here — the service sets currentState = Connected
-                // once the tunnel is actually up. syncState() will pick it up.
+                // once the tunnel is actually up. the state collector will pick it up.
                 // We stay in Connecting until the service confirms.
                 _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
                 prefs.lastServerId = serverId
@@ -1134,7 +1134,7 @@ class VpnManager @Inject constructor(
         repository.disconnectVpn()
 
         // Don't set Disconnected here — the service sets currentState = Disconnected
-        // after the tunnel is actually stopped. syncState() will pick it up.
+        // after the tunnel is actually stopped. the state collector will pick it up.
         // We stay in Disconnecting until the service confirms.
     }
 
@@ -1191,25 +1191,9 @@ class VpnManager @Inject constructor(
     }
 
     /**
-     * Sync state from the VPN service.
-     *
-     * FIX-2-12: Now also called reactively from the init{} StateFlow collector.
-     * Kept as a public method for backward compatibility with any remaining
-     * callers (e.g. VpnViewModel stats polling for rxBytes/txBytes).
-     *
-     * @deprecated Prefer collecting [state] StateFlow, which propagates
-     *   state changes immediately. This method is retained only for
-     *   non-reactive call-sites and will be removed in a future release.
-     */
-    @Deprecated("Collect state StateFlow instead", ReplaceWith("state"))
-    fun syncState() {
-        applyStateWithGuards(BirdoVpnService.currentState)
-    }
-
-    /**
      * FIX-2-12: Core state transition logic with guards.
-     * Extracted from syncState() so both the reactive StateFlow collector and
-     * the legacy polling path share the same rules.
+     * Shared by every path that applies a service state, so they all follow
+     * the same rules.
      *
      * Guards against race conditions:
      * - When Connecting, don't let stale Disconnected from the service reset us

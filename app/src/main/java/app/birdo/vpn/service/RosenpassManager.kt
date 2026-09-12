@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Base64
 import android.util.Log
@@ -71,6 +72,9 @@ object RosenpassManager {
     @Volatile
     private var currentPsk: ByteArray? = null
 
+    // RosenpassKeyStore keeps context.applicationContext only (see its
+    // constructor), which lives as long as the process: nothing to leak.
+    @SuppressLint("StaticFieldLeak")
     @Volatile
     private var keyStore: RosenpassKeyStore? = null
 

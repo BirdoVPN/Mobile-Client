@@ -1,3 +1,11 @@
+// androidx.security:security-crypto 1.1.0 deprecates the whole library (no
+// successor artifact; Google's guidance is "encrypt with Keystore-backed keys
+// yourself"). It still ships, still works, and every install has data at rest
+// in its format: replacing it is a key-migration of live credentials that
+// needs a device-tested upgrade path, not a warning fix. Tracked in the repo's
+// OPEN-WORK register; until then the deprecation is acknowledged, not hidden.
+@file:Suppress("DEPRECATION")
+
 package app.birdo.vpn.service
 
 import android.content.Context

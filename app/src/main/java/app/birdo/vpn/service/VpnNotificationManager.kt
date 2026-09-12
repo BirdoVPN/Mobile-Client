@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.net.toUri
 import app.birdo.vpn.MainActivity
 import app.birdo.vpn.R
 import app.birdo.vpn.utils.FormatUtils
@@ -85,7 +86,7 @@ internal class VpnNotificationManager(private val context: Context) {
                 .setPackage(context.packageName),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val connectIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("birdo://connect"))
+        val connectIntent = Intent(Intent.ACTION_VIEW, "birdo://connect".toUri())
             .setClassName(context.packageName, MainActivity::class.java.name)
             .setPackage(context.packageName)
             .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -222,7 +223,7 @@ internal class VpnNotificationManager(private val context: Context) {
                 context, 0, openIntent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val connectIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("birdo://connect"))
+            val connectIntent = Intent(Intent.ACTION_VIEW, "birdo://connect".toUri())
                 .setClassName(context.packageName, MainActivity::class.java.name)
                 .setPackage(context.packageName)
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

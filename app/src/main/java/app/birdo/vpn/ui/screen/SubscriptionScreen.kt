@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -166,7 +167,7 @@ fun SubscriptionScreen(
                     // No web-billing steering in an unenrolled Play build.
                     if (showWebManageAction) {
                         BirdoIconAction(
-                            icon = Icons.Default.OpenInNew,
+                            icon = Icons.AutoMirrored.Filled.OpenInNew,
                             contentDescription = stringResource(R.string.subscription_manage_web),
                             onClick = onManageOnWeb,
                         )
@@ -576,7 +577,7 @@ private fun PlanCard(
                     text = stringResource(R.string.subscription_manage_web),
                     onClick = onSelect,
                     variant = app.birdo.vpn.ui.components.BirdoButtonVariant.Secondary,
-                    icon = Icons.Default.OpenInNew,
+                    icon = Icons.AutoMirrored.Filled.OpenInNew,
                     isLoading = isPurchasing,
                     enabled = !isPurchasing,
                     modifier = Modifier.fillMaxWidth(),

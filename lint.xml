@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lint policy for every module (app and shared both point here).
+  warningsAsErrors is on in both, so every entry is a documented decision,
+  not a silenced finding.
+-->
+<lint>
+    <!-- Dependency bumps are Dependabot's: each one needs the write-locks flag and
+         its own PR/CI run (see the AGP 9 notes in build.gradle.kts). A lint
+         warning for "a newer version exists" would turn every unrelated PR red
+         the day a library releases. -->
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+
+    <!-- targetSdk stays one behind compileSdk on purpose: raising it changes
+         runtime behaviour for users and needs a device test (build.gradle.kts
+         documents this next to compileSdk). -->
+    <issue id="OldTargetApi" severity="ignore" />
+</lint>

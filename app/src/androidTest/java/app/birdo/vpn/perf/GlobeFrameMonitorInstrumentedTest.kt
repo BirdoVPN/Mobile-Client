@@ -31,7 +31,7 @@ import org.junit.runner.RunWith
  * proves the reduction. What it cannot reach is the one part that would fail
  * SILENTLY: JankStats has no live `PerformanceMetricsState` until it is tracking
  * a Window, and the globe composes BEFORE the HUD attaches. If the
- * flush-on-attach ordering in [trackGlobeFrames] were wrong, everything would
+ * flush-on-attach ordering in [TrackGlobeFrames] were wrong, everything would
  * still build, every JVM test would still pass, and every frame would be
  * labelled `off` — the HUD would confidently report the globe costing nothing.
  *
@@ -107,7 +107,7 @@ class GlobeFrameMonitorInstrumentedTest {
                         GlobePerfState.set(view, GlobePerf.STATE_FULL)
                         onDispose { GlobePerfState.set(view, GlobePerf.STATE_OFF) }
                     }
-                    trackGlobeFrames(monitor)
+                    TrackGlobeFrames(monitor)
                     FiniteFrameDriver()
                 }
             }
@@ -156,7 +156,7 @@ class GlobeFrameMonitorInstrumentedTest {
                             onDispose { GlobePerfState.set(view, GlobePerf.STATE_OFF) }
                         }
                     }
-                    trackGlobeFrames(monitor)
+                    TrackGlobeFrames(monitor)
                     FiniteFrameDriver(frames = LONG_RUN_FRAMES)
                 }
             }

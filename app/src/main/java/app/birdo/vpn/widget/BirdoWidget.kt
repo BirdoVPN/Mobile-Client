@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import androidx.glance.*
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
@@ -79,7 +80,7 @@ private fun BirdoWidgetContent(
 
     val intent = Intent(LocalContext.current, MainActivity::class.java).apply {
         action = Intent.ACTION_VIEW
-        data = android.net.Uri.parse("birdo://connect")
+        data = "birdo://connect".toUri()
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
     }
 

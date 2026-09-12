@@ -30,6 +30,7 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,7 +61,7 @@ import app.birdo.vpn.utils.countryCodeToFlag
  * high-throughput node, and inbound port forwarding. Birdo does not offer
  * streaming-unblocking or P2P servers, so a pill must not imply it does.
  */
-enum class ServerFilter(@StringRes val labelRes: Int, val icon: String) {
+enum class ServerFilter(@param:StringRes val labelRes: Int, val icon: String) {
     All(R.string.filter_all, ""),
     Favorites(R.string.filter_favorites, "★"),
     HighSpeed(R.string.filter_high_speed, "⚡"),
@@ -123,7 +124,7 @@ fun ServerListScreen(
         // ── Header ──
         BirdoTopBar(
             title = stringResource(R.string.servers_title),
-            subtitle = stringResource(R.string.servers_count, filteredServers.size),
+            subtitle = pluralStringResource(R.plurals.servers_count, filteredServers.size, filteredServers.size),
             onBack = onBack,
             actions = {
                 BirdoIconAction(

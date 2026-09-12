@@ -14,10 +14,12 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.service.quicksettings.TileService
 import android.util.Log
+import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.FaultReporter
+import app.birdo.vpn.utils.FormatUtils
 import app.birdo.vpn.utils.RootDetector
 import com.wireguard.config.*
 import com.wireguard.crypto.Key
@@ -712,12 +714,9 @@ class BirdoVpnService : VpnService() {
             parts.add(connectedServer ?: "Server")
         }
         if (connectedSince > 0) {
-            val secs = (System.currentTimeMillis() - connectedSince) / 1000
-            val h = secs / 3600; val m = (secs % 3600) / 60; val s = secs % 60
-            parts.add(
-                if (h > 0) String.format("%d:%02d:%02d", h, m, s)
-                else String.format("%02d:%02d", m, s)
-            )
+            // Same formatter as the home screen's clock (shared module), so
+            // the notification and the UI can never disagree on the format.
+            parts.add(FormatUtils.formatDuration(connectedSince))
         }
         if (appPrefs.showIpInNotification) {
             val ip = publicIp ?: activeConfig?.assignedIp
@@ -1898,10 +1897,10 @@ class BirdoVpnService : VpnService() {
 
     private fun updateWidgetState(connected: Boolean, serverName: String?) {
         try {
-            getSharedPreferences("birdo_widget", MODE_PRIVATE).edit()
-                .putBoolean("vpn_connected", connected)
-                .putString("server_name", serverName)
-                .apply()
+            getSharedPreferences("birdo_widget", MODE_PRIVATE).edit {
+                putBoolean("vpn_connected", connected)
+                putString("server_name", serverName)
+            }
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     app.birdo.vpn.widget.BirdoWidget().updateAll(this@BirdoVpnService)

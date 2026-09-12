@@ -3,6 +3,7 @@ package app.birdo.vpn.utils
 import android.content.Context
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
 import com.google.android.play.core.integrity.IntegrityManagerFactory
 import com.google.android.play.core.integrity.IntegrityTokenRequest
@@ -117,10 +118,10 @@ object PlayIntegrityManager {
 
     private fun recordAttempt(context: Context, ok: Boolean) {
         try {
-            prefs(context).edit()
-                .putLong(KEY_LAST_ATTEMPT_MS, System.currentTimeMillis())
-                .putBoolean(KEY_LAST_OK, ok)
-                .apply()
+            prefs(context).edit {
+                putLong(KEY_LAST_ATTEMPT_MS, System.currentTimeMillis())
+                putBoolean(KEY_LAST_OK, ok)
+            }
         } catch (e: Throwable) {
             // Never fail a connect over bookkeeping. Worst case the next connect
             // attests again — the pre-P6-CLI-A-03 behaviour, not a new failure.

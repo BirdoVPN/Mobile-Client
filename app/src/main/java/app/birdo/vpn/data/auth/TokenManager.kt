@@ -1,9 +1,18 @@
+// androidx.security:security-crypto 1.1.0 deprecates the whole library (no
+// successor artifact; Google's guidance is "encrypt with Keystore-backed keys
+// yourself"). It still ships, still works, and every install has data at rest
+// in its format: replacing it is a key-migration of live credentials that
+// needs a device-tested upgrade path, not a warning fix. Tracked in the repo's
+// OPEN-WORK register; until then the deprecation is acknowledged, not hidden.
+@file:Suppress("DEPRECATION")
+
 package app.birdo.vpn.data.auth
 
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
 import android.util.Log
+import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -24,7 +33,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class TokenManager @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
 ) {
     companion object {
         private const val TAG = "TokenManager"
@@ -135,7 +144,7 @@ class TokenManager @Inject constructor(
 
     fun setAccessToken(token: String) {
         require(token.length <= MAX_TOKEN_LENGTH) { "Access token exceeds max length" }
-        prefs.edit().putString(KEY_ACCESS_TOKEN, token).apply()
+        prefs.edit { putString(KEY_ACCESS_TOKEN, token) }
     }
 
     // ── Refresh Token ────────────────────────────────────────────
@@ -146,7 +155,7 @@ class TokenManager @Inject constructor(
         require(token.length <= MAX_TOKEN_LENGTH) { "Refresh token exceeds max length" }
         // commit(): a refresh token is single-use server-side — losing this write
         // to a process kill replays the consumed token and trips theft detection.
-        prefs.edit().putString(KEY_REFRESH_TOKEN, token).commit()
+        prefs.edit(commit = true) { putString(KEY_REFRESH_TOKEN, token) }
     }
 
     // ── Token Pair ───────────────────────────────────────────────
@@ -161,10 +170,10 @@ class TokenManager @Inject constructor(
         // commit() (synchronous) instead of apply() — the caller reads tokens
         // immediately after this call (e.g. fetchProfileAfterLogin), so the
         // write must be visible before we return.
-        prefs.edit()
-            .putString(KEY_ACCESS_TOKEN, accessToken)
-            .putString(KEY_REFRESH_TOKEN, refreshToken)
-            .commit()
+        prefs.edit(commit = true) {
+            putString(KEY_ACCESS_TOKEN, accessToken)
+            putString(KEY_REFRESH_TOKEN, refreshToken)
+        }
     }
 
     // ── WireGuard Key ────────────────────────────────────────────
@@ -172,7 +181,7 @@ class TokenManager @Inject constructor(
     fun getWireGuardPrivateKey(): String? = prefs.getString(KEY_WG_PRIVATE_KEY, null)
 
     fun setWireGuardPrivateKey(key: String) {
-        prefs.edit().putString(KEY_WG_PRIVATE_KEY, key).apply()
+        prefs.edit { putString(KEY_WG_PRIVATE_KEY, key) }
     }
 
     /**
@@ -181,7 +190,7 @@ class TokenManager @Inject constructor(
      * after the VPN session ends.
      */
     fun clearWireGuardPrivateKey() {
-        prefs.edit().remove(KEY_WG_PRIVATE_KEY).apply()
+        prefs.edit { remove(KEY_WG_PRIVATE_KEY) }
     }
 
     // NOTE: the "last server" concept lives in AppPreferences.lastServerId
@@ -194,12 +203,12 @@ class TokenManager @Inject constructor(
     fun getLastKeyId(): String? = prefs.getString(KEY_LAST_KEY_ID, null)
 
     fun setLastKeyId(keyId: String) {
-        prefs.edit().putString(KEY_LAST_KEY_ID, keyId).apply()
+        prefs.edit { putString(KEY_LAST_KEY_ID, keyId) }
     }
 
     /** Clear after disconnect so heartbeats stop carrying a stale key id. */
     fun clearLastKeyId() {
-        prefs.edit().remove(KEY_LAST_KEY_ID).apply()
+        prefs.edit { remove(KEY_LAST_KEY_ID) }
     }
 
     // ── Pending anonymous ID (created, not yet acknowledged) ─────
@@ -229,18 +238,18 @@ class TokenManager @Inject constructor(
      * on disk — an async apply() could still be in flight.
      */
     fun setPendingAnonymousId(anonymousId: String) {
-        prefs.edit().putString(KEY_PENDING_ANON_ID, anonymousId).commit()
+        prefs.edit(commit = true) { putString(KEY_PENDING_ANON_ID, anonymousId) }
     }
 
     /** Called once the user has confirmed they saved the ID. */
     fun clearPendingAnonymousId() {
-        prefs.edit().remove(KEY_PENDING_ANON_ID).commit()
+        prefs.edit(commit = true) { remove(KEY_PENDING_ANON_ID) }
     }
 
     // ── Clear All ────────────────────────────────────────────────
 
     fun clearAll() {
-        prefs.edit().clear().apply()
+        prefs.edit { clear() }
     }
 
     fun isLoggedIn(): Boolean {

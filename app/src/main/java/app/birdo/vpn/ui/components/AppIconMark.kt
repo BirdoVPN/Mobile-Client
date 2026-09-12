@@ -41,13 +41,13 @@ import app.birdo.vpn.R
  */
 @Composable
 fun AppIconMark(
+    modifier: Modifier = Modifier,
     size: Dp = 40.dp,
     cornerRadius: Dp = 12.dp,
     // When true, load the SQUARE launcher (`ic_launcher`) and show it whole
     // (Fit, no crop) instead of the round-masked variant whose square artwork
     // gets its corners clipped. Used by the login header.
     square: Boolean = false,
-    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current

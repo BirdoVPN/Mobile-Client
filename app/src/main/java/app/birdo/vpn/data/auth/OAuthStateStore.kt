@@ -1,6 +1,7 @@
 package app.birdo.vpn.data.auth
 
 import android.content.Context
+import androidx.core.content.edit
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,11 +28,11 @@ class OAuthStateStore @Inject constructor(
 
     /** Persist the verifier + state for the in-flight attempt. */
     fun save(verifier: String, state: String) {
-        prefs.edit()
-            .putString(KEY_VERIFIER, verifier)
-            .putString(KEY_STATE, state)
-            .putLong(KEY_SAVED_AT, System.currentTimeMillis())
-            .commit()
+        prefs.edit(commit = true) {
+            putString(KEY_VERIFIER, verifier)
+            putString(KEY_STATE, state)
+            putLong(KEY_SAVED_AT, System.currentTimeMillis())
+        }
     }
 
     /**
@@ -58,7 +59,11 @@ class OAuthStateStore @Inject constructor(
 
     /** Clear after the exchange completes or the attempt is abandoned. */
     fun clear() {
-        prefs.edit().remove(KEY_VERIFIER).remove(KEY_STATE).remove(KEY_SAVED_AT).commit()
+        prefs.edit(commit = true) {
+            remove(KEY_VERIFIER)
+            remove(KEY_STATE)
+            remove(KEY_SAVED_AT)
+        }
     }
 
     private companion object {

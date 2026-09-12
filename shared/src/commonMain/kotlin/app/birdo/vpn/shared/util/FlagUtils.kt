@@ -11,6 +11,10 @@ package app.birdo.vpn.shared.util
 fun countryCodeToFlag(countryCode: String): String {
     if (countryCode.length != 2) return "\uD83C\uDF10" // 🌐
     val upper = countryCode.uppercase()
+    // Only A..Z have a regional indicator; arithmetic on anything else lands
+    // on an unrelated code point (e.g. "12" -> two enclosed alphanumerics),
+    // which would render as a wrong glyph rather than "unknown".
+    if (upper.any { it !in 'A'..'Z' }) return "\uD83C\uDF10"
     val first = 0x1F1E6 + (upper[0].code - 'A'.code)
     val second = 0x1F1E6 + (upper[1].code - 'A'.code)
     return buildString(4) {
