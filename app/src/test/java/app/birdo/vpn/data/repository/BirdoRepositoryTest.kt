@@ -7,6 +7,7 @@ import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.shared.model.LoginResult
 import io.mockk.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
@@ -323,6 +324,7 @@ class BirdoRepositoryTest {
      * just "it eventually returned". Remove the withTimeout and this test hangs
      * until the suite times out instead of passing.
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `logout gives up on a server that never answers and still signs out`() = runTest {
         coEvery { api.logout() } coAnswers {

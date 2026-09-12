@@ -3,6 +3,7 @@ package app.birdo.vpn.ui.viewmodel
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
@@ -233,7 +234,7 @@ class AuthViewModel @Inject constructor(
         try {
             // System browser (ACTION_VIEW), NOT a WebView — the redirect returns
             // via the birdo://auth intent-filter to MainActivity.
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            val intent = Intent(Intent.ACTION_VIEW, url.toUri())
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
             _uiState.value = _uiState.value.copy(error = null)

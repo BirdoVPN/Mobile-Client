@@ -540,10 +540,7 @@ class BirdoRepository @Inject constructor(
             val raw = response.errorBody()?.string()
             val parsed = raw?.let {
                 runCatching {
-                    kotlinx.serialization.json.Json {
-                        ignoreUnknownKeys = true
-                        coerceInputValues = true
-                    }.decodeFromString(RedeemVoucherResponse.serializer(), it)
+                    storeErrorJson.decodeFromString(RedeemVoucherResponse.serializer(), it)
                 }.getOrNull()
             }
             if (parsed?.error != null) {
@@ -915,6 +912,7 @@ class BirdoRepository @Inject constructor(
 
     private data class ParsedStoreError(val code: String?, val message: String?)
 
+    /** Lenient parser for server error bodies (store and voucher endpoints). */
     private val storeErrorJson = kotlinx.serialization.json.Json {
         ignoreUnknownKeys = true
         coerceInputValues = true

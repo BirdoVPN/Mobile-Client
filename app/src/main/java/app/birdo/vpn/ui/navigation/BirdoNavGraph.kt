@@ -19,7 +19,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.core.net.toUri
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -55,7 +56,7 @@ import app.birdo.vpn.ui.viewmodel.VpnViewModel
  */
 private data class BottomNavItem(
     val screen: Screen,
-    @StringRes val labelRes: Int,
+    @param:StringRes val labelRes: Int,
     val icon: ImageVector,
 )
 
@@ -392,7 +393,7 @@ fun BirdoNavGraph(
                         onSignUp = {
                             val intent = android.content.Intent(
                                 android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://birdo.app/login"),
+                                "https://birdo.app/login".toUri(),
                             )
                             context.startActivity(intent)
                         },
@@ -452,7 +453,7 @@ fun BirdoNavGraph(
                             // F-Droid installs to the release APK.
                             val intent = android.content.Intent(
                                 android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse(updateViewModel.updateTargetUrl()),
+                                updateViewModel.updateTargetUrl().toUri(),
                             )
                             runCatching { context.startActivity(intent) }
                         },

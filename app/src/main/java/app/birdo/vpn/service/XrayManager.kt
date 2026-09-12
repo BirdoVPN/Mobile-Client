@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.VpnService
 import android.util.Log
@@ -36,7 +37,11 @@ import java.net.DatagramSocket
  *
  * If libXray is not available, falls back to managing xray-core binary directly
  * via ProcessBuilder.
+ *
+ * StaticFieldLeak: the singleton holds [vpnService] only between [start] and
+ * [stop] (see the field), so nothing outlives the service that owns it.
  */
+@SuppressLint("StaticFieldLeak")
 object XrayManager {
 
     private const val TAG = "XrayManager"
@@ -59,7 +64,12 @@ object XrayManager {
     /** Config file written for the binary-fallback path; deleted in [stop]. */
     private var xrayConfigFile: File? = null
 
-    /** Reference to VpnService for socket protection */
+    /**
+     * Reference to VpnService for socket protection. Set in [start], cleared
+     * in [stop]; the service outlives every tunnel it protects, so this holds
+     * nothing past the service's own lifetime.
+     */
+    @SuppressLint("StaticFieldLeak")
     private var vpnService: VpnService? = null
 
     /**

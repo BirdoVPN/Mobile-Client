@@ -2,6 +2,7 @@ package app.birdo.vpn.data.auth
 
 import android.content.Context
 import android.os.Build
+import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
@@ -114,7 +115,7 @@ class DeviceInfoProvider @Inject constructor(
         // UUID.randomUUID() is SecureRandom-backed — a v4 UUID, not a hash of
         // anything, so it carries no information about the handset or the user.
         val id = "android_${UUID.randomUUID().toString().replace("-", "")}"
-        prefs.edit().putString(KEY_DEVICE_ID, id).commit()
+        prefs.edit(commit = true) { putString(KEY_DEVICE_ID, id) }
         return id
     }
 

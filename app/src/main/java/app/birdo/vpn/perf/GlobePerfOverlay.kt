@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.metrics.performance.JankStats
+import java.util.Locale
 import kotlinx.coroutines.delay
 
 /**
@@ -56,7 +57,7 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
 
     val view = LocalView.current
     val monitor = remember { GlobeFrameMonitor() }
-    trackGlobeFrames(monitor)
+    TrackGlobeFrames(monitor)
 
     val refreshHz = view.display?.refreshRate ?: 60f
     var snapshot by remember { mutableStateOf(monitor.snapshot(refreshHz)) }
@@ -109,7 +110,7 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
             Hud(
                 text = tag.label + " " + pad(t.frames.toString(), 6) +
                     ms(t.p50Us) + ms(t.p90Us) + ms(t.p99Us) +
-                    pad(String.format("%.1f%%", t.jankPercent), 7),
+                    pad(String.format(Locale.ROOT, "%.1f%%", t.jankPercent), 7),
                 color = if (t.frames == 0L) Color(0xFF5A6580) else Color(0xFFE4EAF4),
             )
         }
@@ -164,7 +165,7 @@ fun GlobePerfOverlay(modifier: Modifier = Modifier) {
  * the part that would otherwise fail silently by labelling every frame `off`.
  */
 @Composable
-internal fun trackGlobeFrames(monitor: GlobeFrameMonitor) {
+internal fun TrackGlobeFrames(monitor: GlobeFrameMonitor) {
     val view = LocalView.current
     DisposableEffect(view, monitor) {
         val window = view.context.findWindow()
@@ -186,8 +187,8 @@ private fun Btn(label: String, onClick: () -> Unit) {
 private fun Hud(
     text: String,
     color: Color,
-    bold: Boolean = false,
     modifier: Modifier = Modifier,
+    bold: Boolean = false,
 ) {
     Text(
         text = text,
@@ -202,7 +203,7 @@ private fun Hud(
 
 /** Right-aligned millisecond column, one decimal. `-1 µs` means "no samples". */
 private fun ms(us: Int): String =
-    if (us < 0) pad("-", 7) else pad(String.format("%.1f", us / 1000f), 7)
+    if (us < 0) pad("-", 7) else pad(String.format(Locale.ROOT, "%.1f", us / 1000f), 7)
 
 /**
  * Right-aligned millisecond column for a DIFFERENCE, always signed.
@@ -214,7 +215,7 @@ private fun ms(us: Int): String =
  * investigation.
  */
 private fun delta(us: Int): String =
-    pad(String.format("%+.1f", us / 1000f), 7)
+    pad(String.format(Locale.ROOT, "%+.1f", us / 1000f), 7)
 
 private fun pad(s: String, width: Int): String =
     if (s.length >= width) s else " ".repeat(width - s.length) + s

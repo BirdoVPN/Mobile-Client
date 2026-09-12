@@ -32,8 +32,13 @@ kotlin {
         }
     }
 
+    // Typed source-set accessors (commonMain, appleMain, ...) instead of
+    // `val x by getting`: Gradle 9.6 deprecates the delegate form, and the
+    // template-created sets (appleMain) are not yet registered when the
+    // delegate would resolve them, so the provider form is also the one that
+    // works.
     sourceSets {
-        val commonMain by getting {
+        commonMain {
             dependencies {
                 // PINNED to 1.9.0 — must match the Kotlin 2.2.21 pin in the root
                 // build.gradle.kts. 1.10.0/1.11.0 ship Kotlin/Native klibs with ABI
@@ -57,35 +62,26 @@ kotlin {
                 implementation("io.ktor:ktor-client-logging:3.3.3")
             }
         }
-        val commonTest by getting {
+        commonTest {
             dependencies {
                 implementation(kotlin("test"))
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
             }
         }
 
-        val androidMain by getting {
+        androidMain {
             dependencies {
                 implementation("io.ktor:ktor-client-okhttp:3.3.3")
             }
         }
 
-        val iosX64Main by getting
-        val iosArm64Main by getting
-        val iosSimulatorArm64Main by getting
-        val macosArm64Main by getting
-        val macosX64Main by getting
-        // Named appleMain, not iosMain: it now feeds macOS too. The Darwin ktor
-        // engine is correct for every Apple platform, so the macOS targets share
-        // this source set rather than duplicating it — which also means the
-        // shared Kotlin cannot drift between iOS and macOS.
-        val appleMain by creating {
-            dependsOn(commonMain)
-            iosX64Main.dependsOn(this)
-            iosArm64Main.dependsOn(this)
-            iosSimulatorArm64Main.dependsOn(this)
-            macosArm64Main.dependsOn(this)
-            macosX64Main.dependsOn(this)
+        // appleMain comes from Kotlin's default hierarchy template: it sits
+        // over every Apple target declared above (iOS device, both
+        // simulators, both macOS), so the Darwin ktor engine and the shared
+        // Kotlin are written once and cannot drift between iOS and macOS.
+        // Wiring the same edges by hand (`by creating` + dependsOn) made the
+        // plugin skip the template and warn on every build.
+        appleMain {
             dependencies {
                 implementation("io.ktor:ktor-client-darwin:3.3.3")
             }
@@ -93,7 +89,10 @@ kotlin {
     }
 }
 
-android {
+// The generated `android {}` accessor for a KMP + com.android.library module
+// still targets AGP's legacy LibraryExtension type, which AGP 9 deprecates;
+// configuring the public DSL type by name is the supported form.
+configure<com.android.build.api.dsl.LibraryExtension> {
     namespace = "app.birdo.vpn.shared"
     compileSdk = 35
     compileOptions {
@@ -102,5 +101,12 @@ android {
     }
     defaultConfig {
         minSdk = 29
+    }
+    lint {
+        // Same bar as the app module; the shared policy file explains the
+        // few ignored checks (dependency bumps are Dependabot's).
+        abortOnError = true
+        warningsAsErrors = true
+        lintConfig = rootProject.file("lint.xml")
     }
 }

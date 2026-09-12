@@ -446,8 +446,8 @@ private fun MultiHopTopAction(
         label = "multiHopBorder",
     )
     val label = stringResource(if (unlocked) R.string.cd_multihop else R.string.cd_multihop_locked)
-    val onState = stringResource(R.string.state_on)
-    val offState = stringResource(R.string.state_off)
+    val onState = stringResource(R.string.cd_state_on)
+    val offState = stringResource(R.string.cd_state_off)
 
     Box(
         modifier = Modifier

@@ -1,11 +1,12 @@
 package app.birdo.vpn.ui.viewmodel
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
-import android.net.Uri
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -57,7 +58,7 @@ data class SettingsUiState(
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val prefs: AppPreferences,
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     // Apply-on-change: tunnel-affecting settings rebuild the LIVE tunnel
     // (debounced brief reconnect) instead of silently waiting for the next
     // connect; the kill switch is pushed into the running service directly.
@@ -163,6 +164,12 @@ class SettingsViewModel @Inject constructor(
         )
     }
 
+    // QueryPermissionsNeeded: on Android 11+ getInstalledApplications returns
+    // only the apps the manifest's <queries> makes visible, and that is the
+    // set wanted here. The filter keeps launcher apps; the manifest declares
+    // the MAIN/LAUNCHER intent for exactly this picker. An app the user cannot
+    // launch is not one they would split-tunnel.
+    @SuppressLint("QueryPermissionsNeeded")
     fun loadInstalledApps() {
         _uiState.value = _uiState.value.copy(isLoadingApps = true)
 
@@ -278,7 +285,7 @@ class SettingsViewModel @Inject constructor(
         // Only allow HTTPS URLs to prevent intent redirection attacks
         if (!url.startsWith("https://")) return
         try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            val intent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             context.startActivity(intent)

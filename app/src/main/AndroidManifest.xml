@@ -58,7 +58,6 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.BirdoVPN"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
@@ -82,14 +81,10 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="birdo.app"
-                    android:pathPrefix="/connect" />
-                <data
-                    android:scheme="https"
-                    android:host="birdo.app"
-                    android:pathPrefix="/dashboard" />
+                <data android:scheme="https" />
+                <data android:host="birdo.app" />
+                <data android:pathPrefix="/connect" />
+                <data android:pathPrefix="/dashboard" />
             </intent-filter>
         </activity>
 

@@ -2,6 +2,7 @@ package app.birdo.vpn.data.preferences
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
@@ -32,34 +33,34 @@ class AppPreferences @Inject constructor(
      *  value is durably persisted before the tunnel is (re)built. */
     var killSwitchEnabled: Boolean
         get() = prefs.getBoolean(KEY_KILL_SWITCH, true)
-        set(value) { prefs.edit().putBoolean(KEY_KILL_SWITCH, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_KILL_SWITCH, value) }; signSettings() }
 
     // ── Privacy / GDPR Consent ───────────────────────────────────
     var hasAcceptedPrivacyPolicy: Boolean
         get() = prefs.getBoolean(KEY_PRIVACY_ACCEPTED, false)
-        set(value) = prefs.edit().putBoolean(KEY_PRIVACY_ACCEPTED, value).apply()
+        set(value) = prefs.edit { putBoolean(KEY_PRIVACY_ACCEPTED, value) }
 
     var privacyConsentTimestamp: Long
         get() = prefs.getLong(KEY_PRIVACY_TIMESTAMP, 0L)
-        set(value) = prefs.edit().putLong(KEY_PRIVACY_TIMESTAMP, value).apply()
+        set(value) = prefs.edit { putLong(KEY_PRIVACY_TIMESTAMP, value) }
 
     // ── Auto-Connect ─────────────────────────────────────────────
     var autoConnect: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CONNECT, false)
-        set(value) = prefs.edit().putBoolean(KEY_AUTO_CONNECT, value).apply()
+        set(value) = prefs.edit { putBoolean(KEY_AUTO_CONNECT, value) }
 
     // ── Notifications ────────────────────────────────────────────
     var notificationsEnabled: Boolean
         get() = prefs.getBoolean(KEY_NOTIFICATIONS, true)
-        set(value) = prefs.edit().putBoolean(KEY_NOTIFICATIONS, value).apply()
+        set(value) = prefs.edit { putBoolean(KEY_NOTIFICATIONS, value) }
 
     var showIpInNotification: Boolean
         get() = prefs.getBoolean(KEY_NOTIF_SHOW_IP, true)
-        set(value) = prefs.edit().putBoolean(KEY_NOTIF_SHOW_IP, value).apply()
+        set(value) = prefs.edit { putBoolean(KEY_NOTIF_SHOW_IP, value) }
 
     var showLocationInNotification: Boolean
         get() = prefs.getBoolean(KEY_NOTIF_SHOW_LOCATION, true)
-        set(value) = prefs.edit().putBoolean(KEY_NOTIF_SHOW_LOCATION, value).apply()
+        set(value) = prefs.edit { putBoolean(KEY_NOTIF_SHOW_LOCATION, value) }
 
     // ── VPN Protocol Settings ────────────────────────────────────
     /** HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS): rewrites the tunnel route
@@ -67,7 +68,7 @@ class AppPreferences @Inject constructor(
      *  like split_tunnel_apps. */
     var localNetworkSharing: Boolean
         get() = prefs.getBoolean(KEY_LOCAL_NETWORK_SHARING, false)
-        set(value) { prefs.edit().putBoolean(KEY_LOCAL_NETWORK_SHARING, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_LOCAL_NETWORK_SHARING, value) }; signSettings() }
 
     // ── Stealth Mode (Xray Reality) ──────────────────────────────
     /** When enabled, WireGuard traffic is wrapped in Xray VLESS+Reality TLS tunnel
@@ -77,7 +78,7 @@ class AppPreferences @Inject constructor(
         // commit() (synchronous) for security-critical settings so the value is durably
         // persisted before returning — apply() can lose the write if the process is killed
         // before its async flush, silently reverting to the unsafe default.
-        set(value) { prefs.edit().putBoolean(KEY_STEALTH_MODE, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_STEALTH_MODE, value) }; signSettings() }
 
     // ── Adaptive Transport (automatic stealth fallback) ──────────
     /**
@@ -103,7 +104,7 @@ class AppPreferences @Inject constructor(
      */
     var stealthPreferredSince: Long
         get() = prefs.getLong(KEY_STEALTH_PREFERRED_SINCE, 0L)
-        set(value) = prefs.edit().putLong(KEY_STEALTH_PREFERRED_SINCE, value).apply()
+        set(value) = prefs.edit { putLong(KEY_STEALTH_PREFERRED_SINCE, value) }
 
     /**
      * True when a recent fallback tells us to start on the stealth transport.
@@ -138,11 +139,11 @@ class AppPreferences @Inject constructor(
         // commit() (synchronous) like the other security-critical settings so the
         // value is durably persisted before returning.
         get() = prefs.getBoolean(KEY_QUANTUM_PROTECTION, true)
-        set(value) { prefs.edit().putBoolean(KEY_QUANTUM_PROTECTION, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_QUANTUM_PROTECTION, value) }; signSettings() }
 
     var customDnsEnabled: Boolean
         get() = prefs.getBoolean(KEY_CUSTOM_DNS_ENABLED, false)
-        set(value) { prefs.edit().putBoolean(KEY_CUSTOM_DNS_ENABLED, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_CUSTOM_DNS_ENABLED, value) }; signSettings() }
 
     // These keys are HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS), so every setter
     // must .commit() synchronously AND re-sign — otherwise the stored HMAC goes
@@ -150,30 +151,30 @@ class AppPreferences @Inject constructor(
     // user's DNS / port / MTU / split-tunnel settings to defaults.
     var customDnsPrimary: String
         get() = prefs.getString(KEY_CUSTOM_DNS_PRIMARY, "") ?: ""
-        set(value) { prefs.edit().putString(KEY_CUSTOM_DNS_PRIMARY, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putString(KEY_CUSTOM_DNS_PRIMARY, value) }; signSettings() }
 
     var customDnsSecondary: String
         get() = prefs.getString(KEY_CUSTOM_DNS_SECONDARY, "") ?: ""
-        set(value) { prefs.edit().putString(KEY_CUSTOM_DNS_SECONDARY, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putString(KEY_CUSTOM_DNS_SECONDARY, value) }; signSettings() }
 
     /** "auto", "51820", "53", or a custom port number as string */
     var wireGuardPort: String
         get() = prefs.getString(KEY_WG_PORT, "auto") ?: "auto"
-        set(value) { prefs.edit().putString(KEY_WG_PORT, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putString(KEY_WG_PORT, value) }; signSettings() }
 
     /** 0 = automatic (use server default) */
     var wireGuardMtu: Int
         get() = prefs.getInt(KEY_WG_MTU, 0)
-        set(value) { prefs.edit().putInt(KEY_WG_MTU, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putInt(KEY_WG_MTU, value) }; signSettings() }
 
     // ── Split Tunneling ──────────────────────────────────────────
     var splitTunnelingEnabled: Boolean
         get() = prefs.getBoolean(KEY_SPLIT_TUNNELING, false)
-        set(value) { prefs.edit().putBoolean(KEY_SPLIT_TUNNELING, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_SPLIT_TUNNELING, value) }; signSettings() }
     // ── Biometric Lock ──────────────────────────────────────
     var biometricLockEnabled: Boolean
         get() = prefs.getBoolean(KEY_BIOMETRIC_LOCK, false)
-        set(value) { prefs.edit().putBoolean(KEY_BIOMETRIC_LOCK, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_BIOMETRIC_LOCK, value) }; signSettings() }
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
     // HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS) — .commit() synchronously and
     // re-sign, exactly like the DNS/port/MTU setters above. These were `.apply()`
@@ -184,30 +185,30 @@ class AppPreferences @Inject constructor(
     // egress country to notice.
     var multiHopEnabled: Boolean
         get() = prefs.getBoolean(KEY_MULTI_HOP, false)
-        set(value) { prefs.edit().putBoolean(KEY_MULTI_HOP, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putBoolean(KEY_MULTI_HOP, value) }; signSettings() }
 
     var multiHopEntryNodeId: String?
         get() = prefs.getString(KEY_MULTI_HOP_ENTRY, null)
-        set(value) { prefs.edit().putString(KEY_MULTI_HOP_ENTRY, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putString(KEY_MULTI_HOP_ENTRY, value) }; signSettings() }
 
     var multiHopExitNodeId: String?
         get() = prefs.getString(KEY_MULTI_HOP_EXIT, null)
-        set(value) { prefs.edit().putString(KEY_MULTI_HOP_EXIT, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putString(KEY_MULTI_HOP_EXIT, value) }; signSettings() }
 
     /** Package names excluded from VPN (bypass VPN). HMAC-protected — must re-sign. */
     var splitTunnelApps: Set<String>
         get() = prefs.getStringSet(KEY_SPLIT_TUNNEL_APPS, emptySet()) ?: emptySet()
-        set(value) { prefs.edit().putStringSet(KEY_SPLIT_TUNNEL_APPS, value).commit(); signSettings() }
+        set(value) { prefs.edit(commit = true) { putStringSet(KEY_SPLIT_TUNNEL_APPS, value) }; signSettings() }
 
     // ── Favorite Servers ─────────────────────────────────────────
     var favoriteServers: Set<String>
         get() = prefs.getStringSet(KEY_FAVORITES, emptySet()) ?: emptySet()
-        set(value) = prefs.edit().putStringSet(KEY_FAVORITES, value).apply()
+        set(value) = prefs.edit { putStringSet(KEY_FAVORITES, value) }
 
     // ── Theme Mode (dark / light / system) ───────────────────────
     var themeMode: String
         get() = prefs.getString(KEY_THEME_MODE, "system") ?: "system"
-        set(value) = prefs.edit().putString(KEY_THEME_MODE, value).apply()
+        set(value) = prefs.edit { putString(KEY_THEME_MODE, value) }
 
     /**
      * Reactive themeMode flow — emits the current value immediately and
@@ -243,7 +244,7 @@ class AppPreferences @Inject constructor(
     // ── Last Connected Server ────────────────────────────────────
     var lastServerId: String?
         get() = prefs.getString(KEY_LAST_SERVER, null)
-        set(value) = prefs.edit().putString(KEY_LAST_SERVER, value).apply()
+        set(value) = prefs.edit { putString(KEY_LAST_SERVER, value) }
 
     companion object {
         private const val KEY_KILL_SWITCH = "kill_switch_enabled"

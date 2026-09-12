@@ -1,6 +1,8 @@
 package app.birdo.vpn.ui.viewmodel
 
 import android.content.Context
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
@@ -29,7 +31,7 @@ import javax.inject.Inject
 @HiltViewModel
 class UpdateViewModel @Inject constructor(
     private val repository: BirdoRepository,
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     data class UpdateUiState(
@@ -77,7 +79,7 @@ class UpdateViewModel @Inject constructor(
         // it mirrors the backend refusing connects.
         if (current.updateRequired) return
         current.info?.latestVersion?.let {
-            prefs.edit().putString(KEY_DISMISSED_VERSION, it).apply()
+            prefs.edit { putString(KEY_DISMISSED_VERSION, it) }
         }
         _state.value = current.copy(showBanner = false)
     }
@@ -105,7 +107,7 @@ class UpdateViewModel @Inject constructor(
      */
     private fun safeHttpsUrl(url: String?): String? {
         if (url.isNullOrBlank()) return null
-        val uri = runCatching { android.net.Uri.parse(url) }.getOrNull() ?: return null
+        val uri = runCatching { url.toUri() }.getOrNull() ?: return null
         if (uri.scheme != "https") return null
         val host = uri.host?.lowercase() ?: return null
         val allowed = host == "birdo.app" || host.endsWith(".birdo.app") ||

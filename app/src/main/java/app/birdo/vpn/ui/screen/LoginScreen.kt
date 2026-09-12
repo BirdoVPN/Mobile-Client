@@ -292,7 +292,7 @@ fun LoginScreen(
                                 // autoCorrect off so the IME can't mangle/compose the code
                                 // (the value is filtered char-by-char in onValueChange anyway).
                                 keyboardType = KeyboardType.Text,
-                                autoCorrect = false,
+                                autoCorrectEnabled = false,
                                 imeAction = ImeAction.Done,
                             ),
                             keyboardActions = KeyboardActions(

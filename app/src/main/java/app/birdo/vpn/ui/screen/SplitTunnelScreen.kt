@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -88,7 +89,7 @@ fun SplitTunnelScreen(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = stringResource(R.string.split_tunnel_info, excludedCount),
+                        text = pluralStringResource(R.plurals.split_tunnel_info, excludedCount, excludedCount),
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.accent,
                     )

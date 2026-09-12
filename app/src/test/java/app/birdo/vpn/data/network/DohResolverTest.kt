@@ -19,9 +19,11 @@ class DohResolverTest {
     }
 
     @Test
-    fun `dns property implements okhttp3 Dns`() {
-        val dns = DohResolver.dns
-        assertTrue(dns is okhttp3.Dns)
+    fun `dns property is not the system resolver`() {
+        // The type is fixed by the declaration; what a caller must never get is
+        // OkHttp's plain system resolver, which would leak every hostname to
+        // the local DNS.
+        assertNotSame(okhttp3.Dns.SYSTEM, DohResolver.dns)
     }
 
     @Test

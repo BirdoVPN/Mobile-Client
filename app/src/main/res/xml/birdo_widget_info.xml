@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- targetCellWidth/Height and previewLayout are API 31+ attributes on a
+     minSdk 29 app: launchers below 31 ignore them and fall back to
+     minWidth/minHeight and the static preview, which is the intended
+     degradation, so UnusedAttribute is ignored rather than the attributes
+     dropped. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:description="@string/widget_description"
     android:initialLayout="@layout/widget_loading"
     android:minWidth="110dp"
@@ -9,4 +15,5 @@
     android:targetCellHeight="2"
     android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen"
-    android:previewLayout="@layout/widget_loading" />
+    android:previewLayout="@layout/widget_loading"
+    tools:ignore="UnusedAttribute" />

@@ -330,7 +330,12 @@ android {
     lint {
         abortOnError = true
         checkReleaseBuilds = true
-        warningsAsErrors = false
+        // The report reached zero on 2026-09-12 (178 warnings: 64 unused
+        // resources, 58 SharedPreferences/Uri KTX sites, 3 plurals, the rest
+        // one-offs). A new warning is a red build; policy exceptions live in
+        // lint.xml with their reasons.
+        warningsAsErrors = true
+        lintConfig = rootProject.file("lint.xml")
     }
 }
 

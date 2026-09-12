@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import androidx.core.content.edit
 import java.security.KeyStore
 import javax.crypto.KeyGenerator
 import javax.crypto.Mac
@@ -124,35 +125,34 @@ object SettingsHmac {
      */
     fun resetToSafeDefaults(prefs: SharedPreferences) {
         try {
-            val editor = prefs.edit()
-            PROTECTED_KEYS.forEach { editor.remove(it) }
-            editor
-                .putBoolean("kill_switch_enabled", true)
+            prefs.edit(commit = true) {
+                PROTECTED_KEYS.forEach { remove(it) }
+                putBoolean("kill_switch_enabled", true)
                 // false MATCHES THE SHIPPED DEFAULT (AppPreferences KEY_STEALTH_MODE
                 // defaults to false). Pinning true here silently moved reset users
                 // onto the slower Xray transport they never selected, and showed
                 // unentitled users an upgrade prompt triggered by an integrity
                 // reset rather than anything they did.
-                .putBoolean("stealth_mode_enabled", false)
-                .putBoolean("quantum_protection_enabled", true)
-                .putBoolean("split_tunneling_enabled", false)
-                .putStringSet("split_tunnel_apps", emptySet())
-                .putBoolean("custom_dns_enabled", false)
-                .putString("custom_dns_primary", "")
-                .putString("custom_dns_secondary", "")
-                .putString("wireguard_port", "auto")
-                .putInt("wireguard_mtu", 0)
-                .putBoolean("biometric_lock_enabled", false)
+                putBoolean("stealth_mode_enabled", false)
+                putBoolean("quantum_protection_enabled", true)
+                putBoolean("split_tunneling_enabled", false)
+                putStringSet("split_tunnel_apps", emptySet())
+                putBoolean("custom_dns_enabled", false)
+                putString("custom_dns_primary", "")
+                putString("custom_dns_secondary", "")
+                putString("wireguard_port", "auto")
+                putInt("wireguard_mtu", 0)
+                putBoolean("biometric_lock_enabled", false)
                 // Multi-Hop disarms to an EMPTY route rather than keeping a pair
                 // we can no longer vouch for. A tampered exit node silently
                 // relocates the user's egress; making them re-pick is the safe
                 // default, and the removal loop above already cleared the ids.
-                .putBoolean("multi_hop_enabled", false)
+                putBoolean("multi_hop_enabled", false)
                 // LAN bypass OFF: a tampered value here routes all private-range
                 // traffic outside the tunnel. The removal loop already cleared the
                 // key; pin it for defense-in-depth like the others.
-                .putBoolean("local_network_sharing", false)
-                .commit()
+                putBoolean("local_network_sharing", false)
+            }
             sign(prefs)
         } catch (e: Exception) {
             // FAIL-OPEN: the tamper response did NOT run, so the settings that
@@ -180,7 +180,7 @@ object SettingsHmac {
             // window where a process kill persisted the value but not its
             // signature — next launch then failed verify() and wiped every
             // protected setting, indistinguishable from tampering.
-            prefs.edit().putString(HMAC_PREF_KEY, hmac).commit()
+            prefs.edit(commit = true) { putString(HMAC_PREF_KEY, hmac) }
         } catch (e: Exception) {
             // The settings are now unsigned. The NEXT launch reads that as
             // tampering and wipes every protected setting, so the user loses

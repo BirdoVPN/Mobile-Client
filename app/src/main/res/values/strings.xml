@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">BirdoVPN</string>
 
     <!-- Login Screen -->
@@ -8,7 +8,6 @@
     <string name="email_label">Email</string>
     <string name="email_placeholder">you@example.com</string>
     <string name="password_label">Password</string>
-    <string name="cd_toggle_password">Toggle password</string>
     <string name="login_connecting">Connecting…</string>
     <string name="login_button">Initialize Uplink</string>
     <string name="login_no_account">Don\'t have an account? </string>
@@ -20,8 +19,6 @@
     <string name="login_2fa_verifying">Verifying…</string>
     <string name="login_2fa_back">Back to login</string>
 
-    <!-- Native SSO -->
-    <string name="login_sso_divider">or continue with</string>
     <string name="login_sso_google">Continue with Google</string>
     <string name="login_sso_github">Continue with GitHub</string>
 
@@ -33,18 +30,10 @@
     <string name="login_anonymous_caption_inline">Enter the 24-digit ID from your anonymous account</string>
     <string name="login_anonymous_create">Create a new anonymous account</string>
 
-    <!-- Anonymous Login -->
-    <string name="login_anonymous_button">Login with Anonymous ID</string>
-    <string name="login_anonymous_signing_in">Signing in…</string>
-    <string name="login_anonymous_caption">For anonymous accounts created on the website. Don\'t have one? <a href="https://birdo.app/login">Create one here</a>.</string>
-    <string name="login_anonymous_dialog_title">Anonymous Sign In</string>
-    <string name="login_anonymous_dialog_subtitle">Enter your 24-digit account ID. If you set a password on the website, enter that too.</string>
     <string name="login_anonymous_id_label">Account ID</string>
     <string name="login_anonymous_id_placeholder">XXXX XXXX XXXX XXXX XXXX XXXX</string>
     <string name="login_anonymous_password_label">Password (optional)</string>
     <string name="login_anonymous_submit">Sign In</string>
-    <string name="login_anonymous_cancel">Cancel</string>
-    <string name="login_anonymous_no_account_link">Don\'t have an Anonymous ID? Create one on the website.</string>
 
     <!-- Shown ONCE, right after an anonymous account is created in-app. The
          24-digit ID is the account's only credential: no email, no password,
@@ -63,7 +52,6 @@
     <string name="stats_duration">Duration</string>
     <string name="stats_download">⬇ Download</string>
     <string name="stats_upload">⬆ Upload</string>
-    <string name="kill_switch_active">Kill Switch Active</string>
     <string name="kill_switch_blocking">Kill Switch — All traffic blocked</string>
     <!-- Shown when Adaptive Transport has switched the live connection to the
          stealth transport. Deliberately states the CAUSE ("this network blocks
@@ -71,7 +59,6 @@
          WireGuard handshake is, but they do need to know why their connection
          is slower than usual, or it just reads as a bad VPN. -->
     <string name="stealth_fallback_active">Stealth active — this network blocks standard VPN traffic</string>
-    <string name="cd_kill_switch">Kill Switch</string>
     <string name="select_server">Select Server</string>
     <string name="cd_select_server">Select server</string>
     <string name="status_protected">Protected</string>
@@ -81,8 +68,6 @@
     <string name="disconnect">Disconnect</string>
     <string name="connecting">Connecting…</string>
     <string name="disconnecting">Disconnecting…</string>
-    <string name="connected">Connected</string>
-    <string name="disconnected">Disconnected</string>
 
     <!-- Server List Screen -->
     <string name="filter_all">All</string>
@@ -91,12 +76,12 @@
     <string name="filter_port_forwarding">Port Forwarding</string>
     <string name="servers_title">Servers</string>
     <string name="cd_refresh">Refresh</string>
-    <string name="cd_search">Search</string>
     <string name="servers_search_placeholder">Search servers…</string>
     <string name="cd_clear">Clear</string>
-    <string name="servers_count">%d servers</string>
-    <string name="servers_count_one">1 server</string>
-    <string name="cd_no_servers">No servers</string>
+    <plurals name="servers_count">
+        <item quantity="one">%d server</item>
+        <item quantity="other">%d servers</item>
+    </plurals>
     <string name="servers_no_favorites">No favorite servers yet</string>
     <string name="servers_no_match">No servers match \"%s\"</string>
     <string name="no_servers">No servers available</string>
@@ -104,7 +89,6 @@
     <string name="retry">Retry</string>
     <string name="cd_remove_favorite">Remove from favorites</string>
     <string name="cd_add_favorite">Add to favorites</string>
-    <string name="server_list">Server List</string>
 
     <!-- Settings Screen -->
     <string name="settings_title">Settings</string>
@@ -120,21 +104,17 @@
     <string name="settings_notif_show_ip">Show IP Address</string>
     <string name="settings_notif_show_location">Show Server Location</string>
     <string name="settings_notif_system">Notification Settings</string>
-    <string name="settings_section_split_tunnel">Split Tunneling</string>
     <string name="settings_split_tunnel">Split Tunneling</string>
     <string name="settings_manage_apps">Manage Apps</string>
-    <string name="settings_apps_bypassing">%d apps bypassing VPN</string>
-    <string name="settings_section_advanced">Advanced</string>
-    <string name="settings_multi_hop">Multi-Hop (Double VPN)</string>
-    <string name="settings_multi_hop_desc">Route traffic through two servers for extra privacy</string>
+    <plurals name="settings_apps_bypassing">
+        <item quantity="one">%d app bypassing VPN</item>
+        <item quantity="other">%d apps bypassing VPN</item>
+    </plurals>
     <string name="settings_port_forward">Port Forwarding</string>
-    <string name="settings_section_account">Account</string>
-    <string name="settings_manage_subscription">Manage Subscription</string>
     <string name="settings_privacy_policy">Privacy Policy</string>
     <string name="settings_terms_of_service">Terms of Service</string>
     <string name="settings_delete_account">Delete Account</string>
     <string name="settings_section_about">About</string>
-    <string name="cd_about">About</string>
 
     <!-- App update nudge -->
     <string name="update_available_title">Update available</string>
@@ -175,7 +155,7 @@
     <string name="vpn_settings_mtu">WireGuard MTU</string>
     <string name="vpn_settings_mtu_auto">Automatic (server default)</string>
     <string name="vpn_settings_mtu_hint">e.g. 1420</string>
-    <string name="vpn_settings_mtu_range">Valid range: 1280-1500</string>
+    <string name="vpn_settings_mtu_range">Valid range: 1280–1500</string>
     <string name="vpn_settings_changes_note">Changes apply when you leave this screen — if you’re connected, the VPN reconnects for a moment (still protected) to apply them</string>
     <string name="vpn_settings_section_security">Security</string>
     <string name="vpn_settings_stealth_title">Stealth Mode · Premium</string>
@@ -191,8 +171,8 @@
     <string name="home_entry_exit_must_differ">Entry and exit must be different servers.</string>
     <string name="cd_multihop">Multi-Hop</string>
     <string name="cd_multihop_locked">Multi-Hop — SOVEREIGN plan required</string>
-    <string name="state_on">On</string>
-    <string name="state_off">Off</string>
+    <string name="cd_state_on">On</string>
+    <string name="cd_state_off">Off</string>
     <string name="cd_show_password">Show password</string>
     <string name="cd_hide_password">Hide password</string>
     <string name="cd_widget_connected">BirdoVPN — protected via %1$s. Double-tap to open the app.</string>
@@ -215,13 +195,14 @@
     <string name="port_forward_active_rules">Active rules</string>
     <string name="port_forward_internal_port">Internal port</string>
     <string name="port_forward_port_hint">e.g. 8080</string>
-    <string name="port_forward_port_range">Port must be 1-65535</string>
+    <string name="port_forward_port_range">Port must be 1–65535</string>
     <string name="port_forward_protocol">Protocol</string>
     <string name="port_forward_add_rule">Add rule</string>
     <string name="port_forward_empty">No port forwarding rules yet. Add one above to get started.</string>
     <string name="port_forward_delete_rule">Delete rule</string>
     <string name="port_forward_delete_title">Delete this rule?</string>
-    <string name="port_forward_delete_message">Port %1$d \u2192 %2$d will stop being forwarded. Any service relying on it becomes unreachable.</string>
+    <!-- %1$d and %2$d are port numbers, not a quantity: nothing to pluralise. -->
+    <string name="port_forward_delete_message" tools:ignore="PluralsCandidate">Port %1$d \u2192 %2$d will stop being forwarded. Any service relying on it becomes unreachable.</string>
     <string name="port_forward_delete_confirm">Delete</string>
     <!-- Subscription -->
     <string name="subscription_title">Manage Subscription</string>
@@ -272,7 +253,10 @@
     <string name="split_tunnel_title">Split Tunneling</string>
     <string name="cd_back">Back</string>
     <string name="cd_info">Info</string>
-    <string name="split_tunnel_info">Selected apps will bypass VPN and use your regular internet connection. %d apps excluded.</string>
+    <plurals name="split_tunnel_info">
+        <item quantity="one">Selected apps will bypass VPN and use your regular internet connection. %d app excluded.</item>
+        <item quantity="other">Selected apps will bypass VPN and use your regular internet connection. %d apps excluded.</item>
+    </plurals>
     <string name="split_tunnel_search_placeholder">Search apps…</string>
     <string name="cd_app">App</string>
     <string name="split_tunnel_bypass_badge">BYPASS</string>
@@ -294,37 +278,17 @@
     <string name="consent_decline">Decline</string>
     <string name="consent_required_notice">You must accept the privacy policy to use BirdoVPN.</string>
 
-    <!-- Navigation -->
-    <string name="nav_connect">Connect</string>
-    <string name="nav_servers">Servers</string>
-    <string name="nav_settings">Settings</string>
     <string name="offline_banner">No internet connection</string>
 
-    <!-- VPN Notifications -->
-    <string name="vpn_notification_title">BirdoVPN</string>
-    <string name="vpn_notification_connected">Connected to %s</string>
-    <string name="vpn_notification_connecting">Connecting…</string>
-    <string name="vpn_permission_title">VPN Permission Required</string>
-    <string name="vpn_permission_message">BirdoVPN needs permission to create a VPN connection to protect your traffic.</string>
 
-    <!-- Errors -->
-    <string name="error_credentials">Invalid email or password</string>
-    <string name="error_network">Network error. Check your connection.</string>
-    <string name="error_rate_limit">Too many attempts. Try again later.</string>
-    <string name="error_unknown">Something went wrong. Try again.</string>
 
-    <!-- Misc -->
-    <string name="sign_in">Sign In</string>
-    <string name="signing_in">Signing in…</string>
-    <string name="quick_connect">Quick Connect</string>
-    <string name="premium">PRO</string>
     <!-- Server access: a node the current plan cannot reach (server-computed
          `accessible: false`). Shown locked rather than offered and refused. -->
     <string name="cd_server_locked">Locked — requires the %1$s plan</string>
     <string name="servers_no_high_speed">No high-speed servers right now</string>
     <string name="servers_no_port_forwarding">No port-forwarding servers right now</string>
-    <string name="servers_online" formatted="false">%d of %d online</string>
 
     <!-- Widget -->
     <string name="widget_description">Quick VPN status and toggle</string>
+    <string name="widget_loading">Loading\u2026</string>
 </resources>

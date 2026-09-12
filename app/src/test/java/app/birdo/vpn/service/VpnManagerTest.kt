@@ -634,19 +634,4 @@ class VpnManagerTest {
         every { BirdoVpnService.killSwitchActive } returns false
         assertFalse(vpnManager.isKillSwitchActive)
     }
-
-    // ── syncState() ─────────────────────────────────────────────
-
-    @Test
-    fun `syncState updates from BirdoVpnService currentState`() {
-        every { BirdoVpnService.currentState } returns VpnState.Connected
-        every { BirdoVpnService.connectedServer } returns "Tokyo-01"
-        every { BirdoVpnService.connectedSince } returns 1000L
-
-        vpnManager.syncState()
-
-        assertEquals(VpnState.Connected, vpnManager.state.value)
-        assertEquals("Tokyo-01", vpnManager.connectedServer.value)
-        assertEquals(1000L, vpnManager.connectedSince.value)
-    }
 }

@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -301,7 +302,7 @@ fun SettingsScreen(
                         icon = Icons.Default.Apps,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_manage_apps),
-                        description = stringResource(R.string.settings_apps_bypassing, state.splitTunnelApps.size),
+                        description = pluralStringResource(R.plurals.settings_apps_bypassing, state.splitTunnelApps.size, state.splitTunnelApps.size),
                         onClick = onOpenSplitTunnelApps,
                     )
                 }

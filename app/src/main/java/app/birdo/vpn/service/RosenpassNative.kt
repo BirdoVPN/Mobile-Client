@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
 import app.birdo.vpn.utils.FaultReporter
@@ -76,6 +77,7 @@ object RosenpassNative {
      * and then check [isLoaded] before invoking any `native*` method.
      */
     @Synchronized
+    @SuppressLint("UnsafeDynamicallyLoadedCode") // see the System.load comment below
     fun verifyIntegrity(context: Context): Boolean {
         if (isVerified && isLoaded) return true
         // Hash first — if the file is missing/tampered/unregistered, do not
@@ -98,6 +100,10 @@ object RosenpassNative {
                 val nativeLibDir = context.applicationInfo.nativeLibraryDir
                 val libFile = java.io.File(nativeLibDir, "lib$LIB_NAME.so")
                 if (libFile.exists()) {
+                    // load(path), not loadLibrary(name), on purpose: the verifier
+                    // above hashed THIS file. loadLibrary resolves the name through
+                    // the library search path and could bind a different file from
+                    // the one whose bytes were just checked.
                     System.load(libFile.absolutePath)
                 } else {
                     // Debug builds may have the .so on the standard search
