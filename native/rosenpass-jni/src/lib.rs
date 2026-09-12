@@ -184,7 +184,7 @@ pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeGenerate
 /// WireGuard PSK. Returns null on any failure (caller falls back gracefully).
 #[no_mangle]
 pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeDeriveSharedPsk<'a>(
-    mut env: JNIEnv<'a>,
+    env: JNIEnv<'a>,
     _class: JClass<'a>,
     client_secret_key: JByteArray<'a>,
     server_ciphertext: JByteArray<'a>,

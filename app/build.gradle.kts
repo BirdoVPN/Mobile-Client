@@ -144,7 +144,11 @@ val perfOverlay = ((project.findProperty("perfOverlay") as String?)
 // their source sets, so they are spelled out once here.
 val profilingBuildTypes = setOf("nonMinifiedRelease", "benchmarkRelease")
 
-android {
+// The generated `android {}` accessor targets AGP's legacy
+// BaseAppModuleExtension (deprecated in AGP 9, and the build script warns on
+// every recompile); the public ApplicationExtension DSL type is the same
+// block, configured by name.
+configure<com.android.build.api.dsl.ApplicationExtension> {
     namespace = "app.birdo.vpn"
     // compileSdk 37 + compileSdkMinor 0 -> platforms;android-37.0.
     //
@@ -529,6 +533,12 @@ kotlin {
 
 tasks.withType<Test>().configureEach {
     ignoreFailures = false
+    // MockK's inline agent appends to the test JVM's bootstrap classpath, and
+    // the JVM then prints "Sharing is only supported for boot loader classes
+    // because bootstrap classpath has been appended" on every test run. CDS
+    // buys nothing for a short-lived test worker; turn it off so the test
+    // output is the test output.
+    jvmArgs("-Xshare:off")
 }
 
 val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfig") {
