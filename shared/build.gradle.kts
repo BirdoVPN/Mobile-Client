@@ -3,7 +3,8 @@ plugins {
     // AGP's KMP library plugin (OPEN-WORK G4, 2026-09-13): KGP 2.4 deprecates
     // org.jetbrains.kotlin.multiplatform + com.android.library in one project,
     // and AGP 9's new DSL does not support that pairing at all. The Android
-    // target is configured in kotlin { androidLibrary { } } below; there is no
+    // target is configured in kotlin { android { } } below (KGP 2.4 deprecates the
+    // older `androidLibrary { }` spelling of the same block); there is no
     // android { } block any more.
     id("com.android.kotlin.multiplatform.library")
     id("org.jetbrains.kotlin.plugin.serialization")
@@ -11,7 +12,7 @@ plugins {
 
 kotlin {
     // ── Android target ───────────────────────────────────────────
-    androidLibrary {
+    android {
         namespace = "app.birdo.vpn.shared"
         compileSdk = 35
         minSdk = 29
@@ -36,12 +37,15 @@ kotlin {
     // macOS app needs its own Kotlin/Native slices, and both arches ship
     // because the Mac App Store serves one universal binary to Apple Silicon
     // and Intel alike.
+    // No macosX64: Kotlin 2.4 deprecates the target for removal (kotl.in/
+    // native-targets-tiers) and nothing ever linked it — macos.yml builds
+    // linkReleaseFrameworkMacosArm64 only, so the Intel-Mac framework was a
+    // declared-but-unshipped target (removed 2026-09-13, OPEN-WORK G4).
     listOf(
         iosX64(),           // Intel simulator
         iosArm64(),         // Device (arm64)
         iosSimulatorArm64(),// Apple Silicon simulator
-        macosArm64(),       // Apple Silicon Macs
-        macosX64()          // Intel Macs
+        macosArm64()        // Apple Silicon Macs
     ).forEach { appleTarget ->
         appleTarget.binaries.framework {
             baseName = "BirdoShared"
@@ -62,7 +66,7 @@ kotlin {
                 // ABI 2.3.0, which the 2.2.x compiler cannot read — the JVM/Android
                 // path tolerates the skew, so only `compileKotlinIosArm64` ever
                 // broke ("KLIB resolver: could not find …serialization-json-
-                // iosArm64…1.11.0.klib"). Kotlin 2.4.20 (2026-09-13, OPEN-WORK G4)
+                // iosArm64…1.11.0.klib"). Kotlin 2.4 (2026-09-13, OPEN-WORK G4)
                 // reads it. Keep this and the root Kotlin version moving together;
                 // the iOS workflow is the only build that exercises the K/N side.
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")

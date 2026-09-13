@@ -30,10 +30,14 @@ plugins {
     id("com.android.application") version "9.4.0" apply false
     id("com.android.library") version "9.4.0" apply false
     id("com.android.kotlin.multiplatform.library") version "9.4.0" apply false
-    id("org.jetbrains.kotlin.multiplatform") version "2.4.20" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.4.20" apply false
+    id("org.jetbrains.kotlin.multiplatform") version "2.4.10" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.10" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.4.10" apply false
     id("com.google.dagger.hilt.android") version "2.60.1" apply false
+    // Kotlin 2.4.10, not 2.4.20: CodeQL 2.27.0 (the codeql.yml analyser) refuses
+    // "Kotlin version 2.4.20 is too recent" — it supports versions below 2.4.20.
+    // Move to 2.4.20 only after github/codeql-action ships an extractor that
+    // accepts it; the Analyze (java-kotlin) check is the proof.
     // KSP 2.3.x is versioned independently of Kotlin (KSP2); 2.3.10+ handles the
     // Kotlin 2.4 default module names.
     id("com.google.devtools.ksp") version "2.3.12" apply false

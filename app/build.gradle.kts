@@ -537,7 +537,7 @@ kotlin {
 // (`BirdoWidget.provideGlance(Context, GlanceId, Continuation)`) and
 // reportReleaseComposeMappingErrors prints a build warning for it on every
 // release build ("Please report to Google", 2026-09-13, compose-compiler
-// 2.4.20). Off for now: this is exactly what shipped before 2.4 (the feature
+// 2.4.x). Off for now: this is exactly what shipped before 2.4 (the feature
 // did not exist), and the zero-warning release gate stays honest. Re-enable
 // once compose-group-mapping tokenizes Glance signatures — OPEN-WORK G4b.
 composeCompiler {

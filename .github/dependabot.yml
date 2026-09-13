@@ -35,7 +35,7 @@ updates:
       - dependency-name: "gradle"
         versions: [">=9.0.0"]
       # Kotlin moves as ONE coordinated set (KGP, Compose compiler plugin,
-      # serialization plugin, KSP, Hilt — 2.4.20 / 2.3.12 / 2.60.1 since
+      # serialization plugin, KSP, Hilt — 2.4.10 / 2.3.12 / 2.60.1 since
       # OPEN-WORK G4, 2026-09-13) and the iOS Kotlin/Native side only builds in
       # ios.yml, never in PR CI. Hold minor+ so a single-line bump cannot land.
       - dependency-name: "org.jetbrains.kotlin:*"
@@ -57,7 +57,7 @@ updates:
       - dependency-name: "org.jetbrains.kotlinx:*"
         update-types: ["version-update:semver-major"]
       # (The kotlinx-serialization-json ">=1.10.0" ceiling that lived here was
-      # lifted with the Kotlin 2.4.20 move: its Kotlin/Native klibs are readable
+      # lifted with the Kotlin 2.4 move: its Kotlin/Native klibs are readable
       # again and :shared is on 1.11.0 like the app. The semver-major hold above
       # still applies.)
       - dependency-name: "com.google.devtools.ksp"
