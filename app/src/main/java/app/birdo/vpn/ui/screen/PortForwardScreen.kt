@@ -155,7 +155,7 @@ fun PortForwardScreen(
                             text = stringResource(R.string.port_forward_add_rule),
                             onClick = {
                                 if (isPortValid) {
-                                    onCreate(portValue!!, selectedProtocol)
+                                    onCreate(portValue, selectedProtocol)
                                     portText = ""
                                 }
                             },

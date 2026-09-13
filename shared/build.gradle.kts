@@ -1,14 +1,32 @@
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
-    id("com.android.library")
+    // AGP's KMP library plugin (OPEN-WORK G4, 2026-09-13): KGP 2.4 deprecates
+    // org.jetbrains.kotlin.multiplatform + com.android.library in one project,
+    // and AGP 9's new DSL does not support that pairing at all. The Android
+    // target is configured in kotlin { android { } } below (KGP 2.4 deprecates the
+    // older `androidLibrary { }` spelling of the same block); there is no
+    // android { } block any more.
+    id("com.android.kotlin.multiplatform.library")
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 kotlin {
     // ── Android target ───────────────────────────────────────────
-    androidTarget {
+    android {
+        namespace = "app.birdo.vpn.shared"
+        compileSdk = 35
+        minSdk = 29
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+        // commonTest (FlagUtils/FormatUtils/InputValidator, 29 tests) runs on
+        // the JVM as the Android host test; this is what `:shared:allTests`
+        // executes in CI.
+        withHostTestBuilder { }
+        lint {
+            abortOnError = true
+            warningsAsErrors = true
+            lintConfig = rootProject.file("lint.xml")
         }
     }
 
@@ -19,12 +37,15 @@ kotlin {
     // macOS app needs its own Kotlin/Native slices, and both arches ship
     // because the Mac App Store serves one universal binary to Apple Silicon
     // and Intel alike.
+    // No macosX64: Kotlin 2.4 deprecates the target for removal (kotl.in/
+    // native-targets-tiers) and nothing ever linked it — macos.yml builds
+    // linkReleaseFrameworkMacosArm64 only, so the Intel-Mac framework was a
+    // declared-but-unshipped target (removed 2026-09-13, OPEN-WORK G4).
     listOf(
         iosX64(),           // Intel simulator
         iosArm64(),         // Device (arm64)
         iosSimulatorArm64(),// Apple Silicon simulator
-        macosArm64(),       // Apple Silicon Macs
-        macosX64()          // Intel Macs
+        macosArm64()        // Apple Silicon Macs
     ).forEach { appleTarget ->
         appleTarget.binaries.framework {
             baseName = "BirdoShared"
@@ -40,21 +61,15 @@ kotlin {
     sourceSets {
         commonMain {
             dependencies {
-                // PINNED to 1.9.0 — must match the Kotlin 2.2.21 pin in the root
-                // build.gradle.kts. 1.10.0/1.11.0 ship Kotlin/Native klibs with ABI
-                // 2.3.0 (built by the 2.3.x compiler), which Kotlin 2.2.21 cannot
-                // read: the iOS framework fails with "incompatible ABI version".
-                // The JVM/Android path tolerates the skew, which is why this only
-                // ever broke the iOS build. Bump this ONLY together with Kotlin
-                // (and KSP/Hilt/Compose, which are version-locked to it).
-                // Pinned to 1.9.0: 1.11.0's iOS Kotlin/Native klib is built
-                // against a newer Kotlin/Native ABI than the project's 2.2.21,
-                // so `compileKotlinIosArm64` fails "KLIB resolver: could not find
-                // …serialization-json-iosArm64…1.11.0.klib". (This is a KMP
-                // module; the Android-only app module can and does use 1.11.0.)
-                // Bumping this needs the same Kotlin/AGP-9 toolchain move the
-                // other deferred dependency upgrades need.
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+                // Same 1.11.0 as the app module. This sat on 1.9.0 while the root
+                // Kotlin pin was 2.2.21: 1.10+/1.11 ship Kotlin/Native klibs with
+                // ABI 2.3.0, which the 2.2.x compiler cannot read — the JVM/Android
+                // path tolerates the skew, so only `compileKotlinIosArm64` ever
+                // broke ("KLIB resolver: could not find …serialization-json-
+                // iosArm64…1.11.0.klib"). Kotlin 2.4 (2026-09-13, OPEN-WORK G4)
+                // reads it. Keep this and the root Kotlin version moving together;
+                // the iOS workflow is the only build that exercises the K/N side.
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
                 implementation("io.ktor:ktor-client-core:3.3.3")
                 implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
@@ -86,27 +101,5 @@ kotlin {
                 implementation("io.ktor:ktor-client-darwin:3.3.3")
             }
         }
-    }
-}
-
-// The generated `android {}` accessor for a KMP + com.android.library module
-// still targets AGP's legacy LibraryExtension type, which AGP 9 deprecates;
-// configuring the public DSL type by name is the supported form.
-configure<com.android.build.api.dsl.LibraryExtension> {
-    namespace = "app.birdo.vpn.shared"
-    compileSdk = 35
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-    defaultConfig {
-        minSdk = 29
-    }
-    lint {
-        // Same bar as the app module; the shared policy file explains the
-        // few ignored checks (dependency bumps are Dependabot's).
-        abortOnError = true
-        warningsAsErrors = true
-        lintConfig = rootProject.file("lint.xml")
     }
 }

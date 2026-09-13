@@ -4,7 +4,6 @@ import java.io.File
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.dagger.hilt.android")
@@ -523,12 +522,26 @@ tasks.register("resolveAndLockAll") {
     }
 }
 
-// Kotlin 2.2: jvmTarget via the compilerOptions DSL (kotlinOptions{} inside
-// android{} is removed). Top-level kotlin{} extension applies to all compilations.
+// AGP built-in Kotlin (since OPEN-WORK G4, 2026-09-13): jvmTarget defaults to
+// android.compileOptions.targetCompatibility (17 above), so no kotlin{} block
+// is needed for it. Kept explicit so the two cannot drift apart silently.
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
+}
+
+// Compose compiler 2.4 adds a "Compose mapping file" (compose-group-mapping):
+// a second mapping next to R8's that de-obfuscates Compose group names in
+// crash traces. Its tokenizer cannot parse Glance's suspend entry point
+// (`BirdoWidget.provideGlance(Context, GlanceId, Continuation)`) and
+// reportReleaseComposeMappingErrors prints a build warning for it on every
+// release build ("Please report to Google", 2026-09-13, compose-compiler
+// 2.4.x). Off for now: this is exactly what shipped before 2.4 (the feature
+// did not exist), and the zero-warning release gate stays honest. Re-enable
+// once compose-group-mapping tokenizes Glance signatures — OPEN-WORK G4b.
+composeCompiler {
+    includeComposeMappingFile.set(false)
 }
 
 tasks.withType<Test>().configureEach {
@@ -1036,8 +1049,8 @@ dependencies {
     // ── Hilt DI ──────────────────────────────────────────────────
     // Must match the Hilt Gradle plugin version (2.57.2) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
-    implementation("com.google.dagger:hilt-android:2.59.2")
-    ksp("com.google.dagger:hilt-compiler:2.59.2")
+    implementation("com.google.dagger:hilt-android:2.60.1")
+    ksp("com.google.dagger:hilt-compiler:2.60.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
 
     // ── Networking ───────────────────────────────────────────────

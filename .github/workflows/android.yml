@@ -196,7 +196,7 @@ jobs:
       - name: Build Android for CodeQL
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:compileDebugKotlin :shared:compileDebugKotlinAndroid \
+          ./gradlew :app:compileDebugKotlin :shared:compileAndroidMain \
             -Pkotlin.native.ignoreDisabledTargets=true \
             --no-daemon
 

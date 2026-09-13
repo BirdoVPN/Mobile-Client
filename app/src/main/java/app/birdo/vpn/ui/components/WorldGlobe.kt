@@ -252,7 +252,7 @@ fun WorldGlobe(
     var focusLatTarget = 0f
     var focusLonTarget = 0f
     if (hasFocus) {
-        val sLat = selectedCoord!!.first.toFloat()
+        val sLat = selectedCoord.first.toFloat()
         val sLon = selectedCoord.second.toFloat()
         val uLat = userLat.toFloat()
         val uLon = userLon.toFloat()

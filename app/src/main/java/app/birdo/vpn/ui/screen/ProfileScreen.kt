@@ -222,7 +222,7 @@ private fun ProfileIdentityCard(
     val isAnon = rawEmail.startsWith("anon_") && rawEmail.endsWith("@anonymous.local")
     val accountNumber = if (isAnon) rawEmail.removePrefix("anon_").removeSuffix("@anonymous.local") else null
     val displayName = when {
-        !user?.name.isNullOrBlank() -> user!!.name!!
+        !user?.name.isNullOrBlank() -> user.name!!
         isAnon -> "Anonymous account"
         rawEmail.isNotBlank() -> rawEmail.substringBefore('@')
         else -> "Account"
@@ -416,7 +416,7 @@ private fun SubscriptionCard(
             if (subscription != null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     BenefitChip(
-                        label = if (subscription.maxConnections.toInt() == 1) "1 device"
+                        label = if (subscription.maxConnections == 1) "1 device"
                         else "${subscription.maxConnections} devices",
                     )
                     BenefitChip(
