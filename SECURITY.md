@@ -67,8 +67,8 @@ Out of scope (please report to the appropriate vendor):
     uploaded to TestFlight via App Store Connect API.
 - TLS to Birdo backends is **certificate-pinned** on both platforms; pin
   expiry is enforced as a CI gate.
-- Tunnel secrets (WireGuard private key, PSK) are stored in
-  `EncryptedSharedPreferences` (Android) / Keychain with
+- Tunnel secrets (WireGuard private key, PSK) are stored sealed with an
+  Android Keystore AES-256-GCM key (`KeystoreSecureStore`; Android) / Keychain with
   `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` + the App Group access
   group (iOS), and zeroed/deleted as soon as the wg-go runtime consumes
   them.

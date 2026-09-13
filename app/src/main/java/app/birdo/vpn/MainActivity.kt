@@ -239,7 +239,7 @@ class MainActivity : FragmentActivity() {
      *
      * - What it protects against is a person holding the unlocked phone seeing
      *   or changing VPN state. It does not protect stored credentials; those are
-     *   in EncryptedSharedPreferences under a Keystore master key regardless of
+     *   sealed under an Android Keystore AES-GCM key regardless of
      *   this screen.
      * - Binding the prompt to a Keystore `CryptoObject` would only defeat a
      *   hooked callback, which needs root/instrumentation on the device — where

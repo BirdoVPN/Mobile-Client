@@ -1,220 +1,356 @@
 package app.birdo.vpn.data.auth
 
-import android.content.Context
-import android.content.SharedPreferences
-import io.mockk.*
+import android.util.Base64
+import app.birdo.vpn.security.AesGcmSealer
+import app.birdo.vpn.security.FakeSharedPreferences
+import app.birdo.vpn.security.JceKeySource
+import app.birdo.vpn.security.KeystoreSecureStore
+import app.birdo.vpn.security.LegacySecretSource
+import app.birdo.vpn.security.SecureStore
+import io.mockk.every
+import io.mockk.mockkStatic
+import io.mockk.unmockkAll
+import org.json.JSONObject
 import org.junit.After
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
- * Unit tests for TokenManager.
- *
- * Since EncryptedSharedPreferences requires Android Keystore (not available in
- * unit tests), we test via the InMemorySharedPreferences fallback path which
- * has the same API contract.
- *
- * Covers:
- *  - Token CRUD (access, refresh, WireGuard private key, last server, key ID)
- *  - setTokens() with length validation (MAX_TOKEN_LENGTH = 4096)
- *  - clearAll() resets all stored values
- *  - clearWireGuardPrivateKey() (FIX-1-8)
- *  - isLoggedIn() logic
- *  - InMemorySharedPreferences behavior (no-disk fallback F-15)
+ * TokenManager over the real [KeystoreSecureStore] (with a JCE key standing
+ * in for the Android Keystore) and a scripted legacy source, so every path —
+ * CRUD, commit discipline, the EncryptedSharedPreferences → v2 migration,
+ * and Keystore-corruption recovery — is asserted, not merely "did not crash".
  */
 class TokenManagerTest {
 
-    private lateinit var context: Context
+    /** Scripted [LegacySecretSource]: what the old EncryptedSharedPreferences would yield. */
+    private class FakeLegacy(var values: Map<String, String>?, var throws: Boolean = false) : LegacySecretSource {
+        var destroyed = 0
+        var reads = 0
+        override fun readAll(): Map<String, String>? {
+            reads++
+            if (throws) throw IllegalStateException("Tink keyset unreadable")
+            return values
+        }
+        override fun destroy() {
+            destroyed++
+            values = null
+        }
+    }
+
+    private class FakeBackend(
+        override val legacy: LegacySecretSource,
+        /** Number of open() calls that must fail before one succeeds. */
+        var failuresBeforeOpen: Int = 0,
+        private val storeFactory: () -> SecureStore = {
+            KeystoreSecureStore(FakeSharedPreferences(), AesGcmSealer(JceKeySource()))
+        },
+    ) : TokenManager.Backend {
+        var opens = 0
+        var resets = 0
+        var lastStore: SecureStore? = null
+
+        override fun open(): SecureStore {
+            opens++
+            if (failuresBeforeOpen > 0) {
+                failuresBeforeOpen--
+                throw java.security.KeyStoreException("Keystore corrupted")
+            }
+            return storeFactory().also { lastStore = it }
+        }
+
+        override fun reset() {
+            resets++
+        }
+    }
+
+    private lateinit var legacy: FakeLegacy
+    private lateinit var backend: FakeBackend
     private lateinit var tokenManager: TokenManager
 
-    /**
-     * We construct TokenManager and force it through the Keystore corruption recovery
-     * path so it ends up using InMemorySharedPreferences. This lets us test all
-     * business logic without Android Keystore availability.
-     */
     @Before
     fun setup() {
-        context = mockk(relaxed = true)
-
-        // Make EncryptedSharedPreferences creation fail so TokenManager falls back
-        // to InMemorySharedPreferences (the F-15 safe fallback)
-        mockkStatic(
-            "androidx.security.crypto.MasterKey\$Builder",
-            "androidx.security.crypto.EncryptedSharedPreferences",
-        )
-
-        // We can't easily mock MasterKey.Builder in unit tests, so we use a different
-        // approach: provide a real TokenManager with a test-only accessible prefs field.
-        // Since TokenManager's prefs is lazy and calls createEncryptedPrefs() which
-        // needs the Android Keystore, we instead create a wrapper approach.
-        //
-        // Actually, let's just test the InMemorySharedPreferences directly and verify
-        // TokenManager's business logic through a testable wrapper.
-        unmockkAll()
-
-        // Create a token manager that will use InMemorySharedPreferences by default
-        // We use reflection to inject a test SharedPreferences
-        context = mockk(relaxed = true)
-        tokenManager = TokenManager(context)
-
-        // Force the lazy prefs to be initialized with InMemorySharedPreferences
-        // by making the Keystore unavailable (this happens naturally in JUnit tests
-        // since there is no Android Keystore)
+        // android.util.Base64 is a stub on the JVM (returns null); delegate the
+        // URL-safe decode TokenManager.isTokenExpired uses to java.util.Base64.
+        mockkStatic(Base64::class)
+        every { Base64.decode(any<String>(), any()) } answers {
+            java.util.Base64.getUrlDecoder().decode(firstArg<String>())
+        }
+        legacy = FakeLegacy(values = null)
+        backend = FakeBackend(legacy)
+        tokenManager = TokenManager(backend)
     }
 
     @After
-    fun tearDown() {
-        unmockkAll()
+    fun tearDown() = unmockkAll()
+
+    private fun jwt(expEpochSeconds: Long): String {
+        val enc = java.util.Base64.getUrlEncoder().withoutPadding()
+        val header = enc.encodeToString("""{"alg":"HS256","typ":"JWT"}""".toByteArray())
+        val payload = enc.encodeToString(JSONObject().put("exp", expEpochSeconds).put("sub", "u1").toString().toByteArray())
+        return "$header.$payload.sig"
     }
 
-    // ── InMemorySharedPreferences contract tests ─────────────────
-    // Since unit tests can't access Android Keystore, TokenManager falls back
-    // to InMemorySharedPreferences. We verify that fallback works correctly.
+    private val now get() = System.currentTimeMillis() / 1000
+
+    // ── CRUD ─────────────────────────────────────────────────────
 
     @Test
-    fun `InMemorySharedPreferences stores and retrieves strings`() {
-        // Directly test the InMemorySharedPreferences class
-        // (it's private but we can verify through TokenManager's behavior)
-        // When Keystore is unavailable, calling any token method should not crash
-        try {
-            tokenManager.getAccessToken()
-            // If this doesn't crash, the fallback is working
-        } catch (_: Exception) {
-            // Expected in pure unit test environment without Android Keystore
-            // The important thing is it doesn't crash the app
-        }
-    }
-
-    // ── Tests via a test-friendly shared preferences implementation ──
-
-    /**
-     * Since we can't easily construct TokenManager in a pure JUnit test
-     * (it requires Android EncryptedSharedPreferences), we test the business logic
-     * by verifying the InMemorySharedPreferences contract directly.
-     */
-    @Test
-    fun `InMemorySharedPreferences getString returns null for missing key`() {
-        val prefs = createInMemoryPrefs()
-        assertNull(prefs.getString("nonexistent", null))
+    fun `access and refresh tokens round-trip and are persisted sealed`() {
+        tokenManager.setTokens("access-1", "refresh-1")
+        assertEquals("access-1", tokenManager.getAccessToken())
+        assertEquals("refresh-1", tokenManager.getRefreshToken())
+        val store = backend.lastStore!!
+        assertTrue(store.contains("access_token"))
+        assertTrue(store.contains("refresh_token"))
     }
 
     @Test
-    fun `InMemorySharedPreferences putString then getString round-trips`() {
-        val prefs = createInMemoryPrefs()
-        prefs.edit().putString("key", "value").apply()
-        assertEquals("value", prefs.getString("key", null))
+    fun `individual setters overwrite only their own key`() {
+        tokenManager.setTokens("a1", "r1")
+        tokenManager.setAccessToken("a2")
+        assertEquals("a2", tokenManager.getAccessToken())
+        assertEquals("r1", tokenManager.getRefreshToken())
+        tokenManager.setRefreshToken("r2")
+        assertEquals("a2", tokenManager.getAccessToken())
+        assertEquals("r2", tokenManager.getRefreshToken())
     }
 
     @Test
-    fun `InMemorySharedPreferences remove clears specific key`() {
-        val prefs = createInMemoryPrefs()
-        prefs.edit().putString("key1", "val1").putString("key2", "val2").apply()
-        prefs.edit().remove("key1").apply()
-        assertNull(prefs.getString("key1", null))
-        assertEquals("val2", prefs.getString("key2", null))
+    fun `WireGuard private key, last key id and pending anonymous id round-trip and clear`() {
+        tokenManager.setWireGuardPrivateKey("wg-priv")
+        tokenManager.setLastKeyId("key-42")
+        tokenManager.setPendingAnonymousId("123456789012345678901234")
+        assertEquals("wg-priv", tokenManager.getWireGuardPrivateKey())
+        assertEquals("key-42", tokenManager.getLastKeyId())
+        assertEquals("123456789012345678901234", tokenManager.getPendingAnonymousId())
+
+        tokenManager.clearWireGuardPrivateKey()
+        tokenManager.clearLastKeyId()
+        tokenManager.clearPendingAnonymousId()
+        assertNull(tokenManager.getWireGuardPrivateKey())
+        assertNull(tokenManager.getLastKeyId())
+        assertNull(tokenManager.getPendingAnonymousId())
     }
 
     @Test
-    fun `InMemorySharedPreferences clear removes all keys`() {
-        val prefs = createInMemoryPrefs()
-        prefs.edit().putString("a", "1").putString("b", "2").apply()
-        prefs.edit().clear().apply()
-        assertNull(prefs.getString("a", null))
-        assertNull(prefs.getString("b", null))
+    fun `clearAll wipes every value`() {
+        tokenManager.setTokens("a", "r")
+        tokenManager.setWireGuardPrivateKey("wg")
+        tokenManager.setLastKeyId("k")
+        tokenManager.setPendingAnonymousId("id")
+        tokenManager.clearAll()
+        assertNull(tokenManager.getAccessToken())
+        assertNull(tokenManager.getRefreshToken())
+        assertNull(tokenManager.getWireGuardPrivateKey())
+        assertNull(tokenManager.getLastKeyId())
+        assertNull(tokenManager.getPendingAnonymousId())
+        assertFalse(tokenManager.isLoggedIn())
     }
 
+    // ── Commit discipline ────────────────────────────────────────
+
     @Test
-    fun `InMemorySharedPreferences commit returns true`() {
-        val prefs = createInMemoryPrefs()
-        assertTrue(prefs.edit().putString("k", "v").commit())
+    fun `single-use and must-be-on-disk values are committed synchronously`() {
+        val prefs = FakeSharedPreferences()
+        backend = FakeBackend(legacy) { KeystoreSecureStore(prefs, AesGcmSealer(JceKeySource())) }
+        tokenManager = TokenManager(backend)
+
+        tokenManager.setRefreshToken("r")
+        assertEquals(1, prefs.commits)
+        tokenManager.setTokens("a", "r2")
+        assertEquals(3, prefs.commits)
+        tokenManager.setPendingAnonymousId("id")
+        tokenManager.clearPendingAnonymousId()
+        assertEquals(5, prefs.commits)
+        assertEquals(0, prefs.applies)
+
+        tokenManager.setAccessToken("a2")
+        tokenManager.setWireGuardPrivateKey("wg")
+        tokenManager.setLastKeyId("k")
+        assertEquals(3, prefs.applies)
+        assertEquals(5, prefs.commits)
     }
 
-    @Test
-    fun `InMemorySharedPreferences getAll returns current data`() {
-        val prefs = createInMemoryPrefs()
-        prefs.edit().putString("key", "value").putInt("num", 42).apply()
-        val all = prefs.all
-        assertEquals("value", all["key"])
-        assertEquals(42, all["num"])
-    }
+    // ── Length validation ────────────────────────────────────────
 
     @Test
-    fun `InMemorySharedPreferences contains checks key existence`() {
-        val prefs = createInMemoryPrefs()
-        assertFalse(prefs.contains("missing"))
-        prefs.edit().putString("present", "yes").apply()
-        assertTrue(prefs.contains("present"))
-    }
-
-    @Test
-    fun `InMemorySharedPreferences supports all primitive types`() {
-        val prefs = createInMemoryPrefs()
-        prefs.edit()
-            .putString("s", "hello")
-            .putInt("i", 42)
-            .putLong("l", 123456789L)
-            .putFloat("f", 3.14f)
-            .putBoolean("b", true)
-            .apply()
-
-        assertEquals("hello", prefs.getString("s", null))
-        assertEquals(42, prefs.getInt("i", 0))
-        assertEquals(123456789L, prefs.getLong("l", 0L))
-        assertEquals(3.14f, prefs.getFloat("f", 0f), 0.001f)
-        assertTrue(prefs.getBoolean("b", false))
-    }
-
-    // ── Token length validation ──────────────────────────────────
-
-    @Test
-    fun `setTokens rejects access token exceeding max length`() {
-        val oversized = "a".repeat(4097) // MAX_TOKEN_LENGTH = 4096
-        try {
-            tokenManager.setTokens(oversized, "valid-refresh")
-            // If it didn't throw, the EncryptedSharedPreferences init failed first
-        } catch (e: IllegalArgumentException) {
-            assertTrue(e.message!!.contains("Access token"))
-        } catch (_: Exception) {
-            // EncryptedSharedPreferences initialization failure in unit test
-        }
-    }
-
-    @Test
-    fun `setTokens rejects refresh token exceeding max length`() {
+    fun `tokens over 4096 chars are rejected before anything is stored`() {
         val oversized = "a".repeat(4097)
-        try {
-            tokenManager.setTokens("valid-access", oversized)
-        } catch (e: IllegalArgumentException) {
-            assertTrue(e.message!!.contains("Refresh token"))
-        } catch (_: Exception) {
-            // EncryptedSharedPreferences initialization failure
-        }
+        var e = assertThrows(IllegalArgumentException::class.java) { tokenManager.setTokens(oversized, "ok") }
+        assertTrue(e.message!!.contains("Access token"))
+        e = assertThrows(IllegalArgumentException::class.java) { tokenManager.setTokens("ok", oversized) }
+        assertTrue(e.message!!.contains("Refresh token"))
+        assertThrows(IllegalArgumentException::class.java) { tokenManager.setAccessToken(oversized) }
+        assertThrows(IllegalArgumentException::class.java) { tokenManager.setRefreshToken(oversized) }
+        assertNull(tokenManager.getAccessToken())
+        assertNull(tokenManager.getRefreshToken())
     }
 
     @Test
-    fun `setTokens accepts tokens at exactly max length`() {
-        val maxToken = "a".repeat(4096)
-        try {
-            tokenManager.setTokens(maxToken, maxToken)
-            // Should not throw IllegalArgumentException
-        } catch (e: IllegalArgumentException) {
-            fail("Should accept tokens at exactly 4096 chars: ${e.message}")
-        } catch (_: Exception) {
-            // EncryptedSharedPreferences unavailable in unit tests - that's fine
-        }
+    fun `tokens at exactly 4096 chars are accepted`() {
+        val max = "a".repeat(4096)
+        tokenManager.setTokens(max, max)
+        assertEquals(max, tokenManager.getAccessToken())
+        assertEquals(max, tokenManager.getRefreshToken())
     }
 
-    // ── Helper: create InMemorySharedPreferences via reflection ──
+    // ── isLoggedIn ───────────────────────────────────────────────
 
-    /**
-     * Creates an instance of InMemorySharedPreferences for contract testing.
-     * Uses reflection since the class is private.
-     */
-    private fun createInMemoryPrefs(): SharedPreferences {
-        val clazz = Class.forName("app.birdo.vpn.data.auth.InMemorySharedPreferences")
-        val constructor = clazz.getDeclaredConstructor()
-        constructor.isAccessible = true
-        return constructor.newInstance() as SharedPreferences
+    @Test
+    fun `isLoggedIn is true with a live access token`() {
+        tokenManager.setTokens(jwt(now + 600), jwt(now - 10))
+        assertTrue(tokenManager.isLoggedIn())
+    }
+
+    @Test
+    fun `isLoggedIn falls through to a live refresh token when the access token expired`() {
+        tokenManager.setTokens(jwt(now - 10), jwt(now + 3600))
+        assertTrue(tokenManager.isLoggedIn())
+    }
+
+    @Test
+    fun `isLoggedIn is false when both expired, absent, malformed or without exp`() {
+        assertFalse(tokenManager.isLoggedIn())
+        tokenManager.setTokens(jwt(now - 10), jwt(now - 10))
+        assertFalse(tokenManager.isLoggedIn())
+        tokenManager.setTokens("not.a", "jwt")
+        assertFalse(tokenManager.isLoggedIn())
+        val noExp = "h." + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("""{"sub":"x"}""".toByteArray()) + ".s"
+        tokenManager.setTokens(noExp, noExp)
+        assertFalse(tokenManager.isLoggedIn())
+    }
+
+    // ── Legacy migration ─────────────────────────────────────────
+
+    @Test
+    fun `legacy EncryptedSharedPreferences values are copied in, verified and the legacy store destroyed`() {
+        legacy = FakeLegacy(
+            mapOf(
+                "access_token" to "legacy-access",
+                "refresh_token" to "legacy-refresh",
+                "wireguard_private_key" to "legacy-wg",
+                "pending_anonymous_id" to "legacy-anon",
+            ),
+        )
+        backend = FakeBackend(legacy)
+        tokenManager = TokenManager(backend)
+
+        assertEquals("legacy-access", tokenManager.getAccessToken())
+        assertEquals("legacy-refresh", tokenManager.getRefreshToken())
+        assertEquals("legacy-wg", tokenManager.getWireGuardPrivateKey())
+        assertEquals("legacy-anon", tokenManager.getPendingAnonymousId())
+        assertEquals(1, legacy.destroyed)
+        assertEquals(1, legacy.reads)
+    }
+
+    @Test
+    fun `no legacy store means nothing is read or destroyed`() {
+        assertEquals(1, legacy.reads)
+        assertEquals(0, legacy.destroyed)
+        assertNull(tokenManager.getAccessToken())
+    }
+
+    @Test
+    fun `an unreadable legacy store is destroyed and the user starts logged out`() {
+        legacy = FakeLegacy(values = mapOf("access_token" to "x"), throws = true)
+        backend = FakeBackend(legacy)
+        tokenManager = TokenManager(backend)
+        assertNull(tokenManager.getAccessToken())
+        assertEquals(1, legacy.destroyed)
+    }
+
+    @Test
+    fun `a populated v2 store is never overwritten by a lingering legacy copy`() {
+        val prefs = FakeSharedPreferences()
+        val sealer = AesGcmSealer(JceKeySource())
+        KeystoreSecureStore(prefs, sealer).put("refresh_token", "fresh-rotated", commit = true)
+        legacy = FakeLegacy(mapOf("access_token" to "stale-access", "refresh_token" to "stale-consumed"))
+        backend = FakeBackend(legacy) { KeystoreSecureStore(prefs, sealer) }
+        tokenManager = TokenManager(backend)
+
+        assertEquals("fresh-rotated", tokenManager.getRefreshToken())
+        assertNull("nothing from the stale copy leaks in", tokenManager.getAccessToken())
+        assertEquals(1, legacy.destroyed)
+    }
+
+    @Test
+    fun `a copy that does not read back is rolled back and the legacy store kept`() {
+        // A store that silently loses one key — the migration must notice.
+        val lossy = object : SecureStore {
+            val inner = KeystoreSecureStore(FakeSharedPreferences(), AesGcmSealer(JceKeySource()))
+            override fun get(key: String) = if (key == "refresh_token") null else inner.get(key)
+            override fun put(key: String, value: String, commit: Boolean) = inner.put(key, value, commit)
+            override fun remove(key: String, commit: Boolean) = inner.remove(key, commit)
+            override fun contains(key: String) = inner.contains(key)
+            override fun clear() = inner.clear()
+        }
+        legacy = FakeLegacy(mapOf("access_token" to "a", "refresh_token" to "r"))
+        val result = TokenManager.migrateLegacyStore(lossy, legacy)
+        assertEquals(TokenManager.Migration.VERIFY_FAILED, result)
+        assertEquals(0, legacy.destroyed)
+        assertFalse("copies undone", lossy.inner.contains("access_token"))
+        assertFalse(lossy.inner.contains("refresh_token"))
+    }
+
+    @Test
+    fun `migration outcomes are reported`() {
+        val store = KeystoreSecureStore(FakeSharedPreferences(), AesGcmSealer(JceKeySource()))
+        assertEquals(TokenManager.Migration.NOTHING_TO_DO, TokenManager.migrateLegacyStore(store, FakeLegacy(null)))
+        assertEquals(TokenManager.Migration.MIGRATED, TokenManager.migrateLegacyStore(store, FakeLegacy(mapOf("k" to "v"))))
+        assertEquals("v", store.get("k"))
+        assertEquals(TokenManager.Migration.ALREADY_MIGRATED, TokenManager.migrateLegacyStore(store, FakeLegacy(mapOf("k" to "old"))))
+        assertEquals("v", store.get("k"))
+        assertEquals(TokenManager.Migration.LEGACY_UNREADABLE, TokenManager.migrateLegacyStore(store, FakeLegacy(mapOf("k" to "x"), throws = true)))
+    }
+
+    // ── Keystore corruption recovery ─────────────────────────────
+
+    @Test
+    fun `a Keystore that fails once is reset and reopened`() {
+        backend = FakeBackend(legacy, failuresBeforeOpen = 1)
+        tokenManager = TokenManager(backend)
+        assertEquals(2, backend.opens)
+        assertEquals(1, backend.resets)
+        tokenManager.setTokens("a", "r")
+        assertEquals("a", tokenManager.getAccessToken())
+        assertTrue("persisted in the reopened store", backend.lastStore!!.contains("access_token"))
+    }
+
+    @Test
+    fun `a Keystore that fails twice falls back to memory and recovers on the next setTokens`() {
+        backend = FakeBackend(legacy, failuresBeforeOpen = 3)
+        tokenManager = TokenManager(backend)
+        assertEquals(2, backend.opens)
+        assertEquals(1, backend.resets)
+        assertNull(backend.lastStore)
+        assertNull(tokenManager.getAccessToken())
+
+        // Still broken on the third attempt: tokens are held in memory only.
+        tokenManager.setTokens("a1", "r1")
+        assertEquals(3, backend.opens)
+        assertNull(backend.lastStore)
+        assertEquals("a1", tokenManager.getAccessToken())
+
+        // Keystore healthy again: the next login lands in the persistent store.
+        tokenManager.setTokens("a2", "r2")
+        assertEquals(4, backend.opens)
+        assertEquals("a2", tokenManager.getAccessToken())
+        assertTrue(backend.lastStore!!.contains("refresh_token"))
+        assertEquals("r2", backend.lastStore!!.get("refresh_token"))
+    }
+
+    @Test
+    fun `legacy migration is skipped while on the in-memory fallback`() {
+        legacy = FakeLegacy(mapOf("access_token" to "x"))
+        backend = FakeBackend(legacy, failuresBeforeOpen = 2)
+        tokenManager = TokenManager(backend)
+        assertEquals(0, legacy.reads)
+        assertEquals(0, legacy.destroyed)
     }
 }
