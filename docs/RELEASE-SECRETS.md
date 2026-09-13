@@ -67,6 +67,26 @@ there is no `ios-v*` trigger. The Mac App Store train is separate:
 `macos.yml` on `mac-v*` tags, with its own "3rd Party Mac Developer
 Application" identity and "Birdo VPN Mac AppStore" provisioning profile.
 
+#### The Mac App Store identity — separate material, separate expiry (OPEN-WORK J8)
+
+This is easy to miss because the iOS section above reads like it covers
+"Apple". It does not. `mac-v*` builds use **their own** certificate and
+profile, and until 2026-09-14 neither appeared in any document — so nobody
+was watching their renewal, and the first sign of expiry would have been a
+failed Mac App Store submission.
+
+| Material | Identity | Renews |
+| -------- | -------- | ------ |
+| Signing certificate | `3rd Party Mac Developer Application: …` | **yearly**, like the iOS Apple Distribution certificate |
+| Provisioning profile | `Birdo VPN Mac AppStore` | **yearly**, and again whenever the certificate is replaced |
+| App Store Connect API key | shared with the iOS train | no expiry — revoke on any staff change |
+
+Both are stored as repository secrets for `macos.yml` in the same shape as
+the iOS pair (base64 `.p12` + password, base64 `.mobileprovision`). Renew
+them on the same day as the iOS certificate — one calendar entry, two trains
+— and re-run a `mac-v*` `workflow_dispatch` afterwards to prove the new
+material signs before a real submission depends on it.
+
 ### One-time setup
 
 1. **Apple Distribution certificate** (Xcode -> Settings -> Accounts -> "Manage
