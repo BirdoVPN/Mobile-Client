@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BirdoVPN — F-Droid repository</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: #0a0a10; color: #e8e8f0;
+      font: 16px/1.6 -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+    header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+    header img { width: 64px; height: 64px; border-radius: 14px; }
+    h1 { font-size: 1.7rem; margin: 0; letter-spacing: -0.02em; }
+    .tag { color: #9aa; margin: 4px 0 32px; }
+    h2 { font-size: 1.1rem; margin: 36px 0 12px; color: #a7f3d0; }
+    a { color: #6ee7b7; }
+    .btn {
+      display: inline-block; background: #10b981; color: #fff; text-decoration: none;
+      padding: 14px 22px; border-radius: 12px; font-weight: 600; margin: 8px 0;
+    }
+    .btn.secondary { background: #1a1a26; color: #e8e8f0; border: 1px solid #2a2a3a; }
+    code, .mono {
+      font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+      background: #14141e; border: 1px solid #24243a; border-radius: 8px;
+      padding: 2px 7px; font-size: 0.9em; word-break: break-all;
+    }
+    .field { background: #14141e; border: 1px solid #24243a; border-radius: 10px; padding: 14px 16px; margin: 10px 0; }
+    .field .label { color: #8a8aa0; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    ol { padding-left: 20px; } ol li { margin: 8px 0; }
+    footer { margin-top: 56px; color: #66667a; font-size: 0.85rem; border-top: 1px solid #1e1e2c; padding-top: 20px; }
+    .qr { text-align: center; margin: 24px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="https://birdovpn.github.io/Mobile-Client/fdroid/repo/icons/icon.png" alt="BirdoVPN" onerror="this.style.display='none'">
+      <div>
+        <h1>BirdoVPN — F-Droid repository</h1>
+        <div class="tag">Fast, private, quantum-resistant VPN · installs &amp; updates via F-Droid, no Google Play required</div>
+      </div>
+    </header>
+
+    <p>This is BirdoVPN's <strong>self-hosted F-Droid repository</strong>. Add it to your
+    F-Droid client to install BirdoVPN and receive automatic updates. Every APK here is the
+    same developer-signed build published on
+    <a href="https://github.com/BirdoVPN/Mobile-Client/releases">GitHub Releases</a>.</p>
+
+    <h2>1. Install an F-Droid client</h2>
+    <p>If you don't have one yet, get <a href="https://f-droid.org/">F-Droid</a> or a
+    compatible client (Neo Store, Droid-ify).</p>
+
+    <h2>2. Add this repository</h2>
+    <p>Open your F-Droid client → <em>Settings → Repositories → +</em> and paste the URL
+    below (it includes the signing fingerprint so the client can verify it):</p>
+
+    <div class="field">
+      <div class="label">Repository URL (tap to add)</div>
+      <a class="btn" id="addlink" href="#">Add BirdoVPN repo to F-Droid</a>
+    </div>
+    <div class="field">
+      <div class="label">Repository address</div>
+      <span class="mono">https://birdovpn.github.io/Mobile-Client/fdroid/repo</span>
+    </div>
+    <div class="field">
+      <div class="label">Signing fingerprint (SHA-256)</div>
+      <span class="mono">128D 87BF 001C 1137 0D8A 67FD 6EC0 D9AF 548A EBBD 8E94 13A0 5946 279D 5179 1D85</span>
+    </div>
+
+    <h2>3. Install BirdoVPN</h2>
+    <p>Search for <strong>BirdoVPN</strong> in your F-Droid client, install it, and future
+    releases will update automatically.</p>
+
+    <h2>Prefer a plain APK?</h2>
+    <p>You can also
+    <a href="https://birdo.app/download/android">download the APK directly</a> or grab it
+    from <a href="https://github.com/BirdoVPN/Mobile-Client/releases/latest">GitHub Releases</a>.
+    A BirdoVPN account is required to connect.</p>
+
+    <footer>
+      © Birdo Networks Ltd · <a href="https://birdo.app">birdo.app</a> ·
+      This repository is not affiliated with or hosted by f-droid.org.
+    </footer>
+  </div>
+  <script>
+    // fdroidrepos: deep link so tapping the button adds the repo directly in F-Droid.
+    var repo = "https://birdovpn.github.io/Mobile-Client/fdroid/repo";
+    var fp = "128d87bf001c11370d8a67fd6ec0d9af548aebbd8e9413a05946279d51791d85";
+    document.getElementById("addlink").href =
+      "fdroidrepos://" + repo.replace(/^https?:\/\//, "") + "?fingerprint=" + fp;
+  </script>
+</body>
+</html>
