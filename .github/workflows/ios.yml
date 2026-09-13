@@ -405,22 +405,29 @@ jobs:
         # resolve the id there and upload against the id instead.
         #
         # The retry loop is for the genuine, separate race: iOS can finish before
-        # the Android job has cut the draft at all.
+        # the Android job has cut the draft at all. Budget it from the tag push,
+        # not from "a moment": the Android side runs lint + unit tests (~4 min)
+        # and THEN the four-ABI release build (~15 min) before it cuts the
+        # draft, while this job reaches here in ~9 min. android-v1.4.28
+        # (2026-09-13) hit exactly that — draft at T+19 min, this loop gave up
+        # at T+14 — so the window is 30 minutes (180 x 10 s), and the message
+        # says how long it actually waited.
         run: |
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
 
           REL_ID=""
-          for attempt in $(seq 1 30); do
+          MAX_ATTEMPTS=180   # x 10 s = 30 minutes
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
             REL_ID="$(gh api --paginate "repos/$REPO/releases" \
               --jq ".[] | select(.tag_name == \"$TAG\") | .id" 2>/dev/null | head -1 || true)"
             [ -n "$REL_ID" ] && break
-            echo "No release for $TAG yet (attempt $attempt/30) — waiting for the Android job to cut it…"
+            echo "No release for $TAG yet (attempt $attempt/$MAX_ATTEMPTS) — waiting for the Android job to cut it…"
             sleep 10
           done
 
           if [ -z "$REL_ID" ]; then
-            echo "::error::No release (draft or published) found for tag $TAG after 5 minutes."
+            echo "::error::No release (draft or published) found for tag $TAG after $((MAX_ATTEMPTS * 10 / 60)) minutes."
             exit 1
           fi
           echo "Resolved release id $REL_ID for $TAG"
