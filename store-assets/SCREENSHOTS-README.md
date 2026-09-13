@@ -1,6 +1,18 @@
 # Play Store phone screenshots
 
-**Status: captured (2026-07-07), valid 1080×2400 PNGs, ready to upload.**
+> 🔴 **STALE — do not upload these as-is (OPEN-WORK M10).** The five PNGs in
+> this directory were captured on **2026-07-07** and are what the live Play
+> listing still shows. They predate #345, so they still show the removed
+> real-time server-load display and the pre-rename app name. Re-capture with
+> the procedure below, review each frame for identifiers, then run
+> `Play Store Listing → mode=apply`.
+>
+> Re-capture needs a device or emulator with USB debugging **authorised** —
+> it cannot be done from CI, because `FLAG_SECURE` is only lifted by a local
+> debug build (`-PallowScreenshots=true`) and the flow needs a real login.
+> Everything else about this file is current.
+
+**Status: captured 2026-07-07 — superseded by the 1.4.28 UX, awaiting re-capture.**
 
 | File | Screen |
 |---|---|
