@@ -37,7 +37,9 @@ not internal effort.
 * **Why:** networks that block UDP entirely (corporate, hotel, mobile carriers).
 * **How:** wrap the WireGuard UDP frames in a length-prefixed TCP stream. Use
   the existing `userspace-wireguard` crate as the data plane.
-* **Status:** spec drafted, prototype on `wgtcp/` branch.
+* **Status:** spec drafted. The `wgtcp/` prototype branch this used to cite
+  exists in no clone or remote (checked 2026-09-13); treat the prototype as
+  lost and restart from the spec if the work is picked up.
 * **Targets:** desktop first, then mobile via the KMP shared module.
 
 ### 1.2 WireGuard-over-Shadowsocks (`wgss`)
@@ -120,7 +122,16 @@ not internal effort.
 
 1. *Should DAITA be on by default for paying users?* — Mullvad ships it off; we
    would prefer on-by-default on mobile where battery cost is lower. RFC open.
-2. *Should we replace altool with notarytool's `--upload`?* Apple has begun
-   deprecating altool's app upload mode; expect breakage in late 2026.
+2. *Should we replace altool with notarytool's `--upload`?* — **Audited
+   2026-09-13.** Both Apple release jobs (`ios.yml` `release-ios`, `macos.yml`
+   `release-macos`) upload with `xcrun altool --upload-app` + an App Store
+   Connect API key, and it works on the current runners (mac-v1.4.27 uploaded
+   2026-09-06 with Xcode 26.6). `notarytool` is a notarization tool, not an
+   upload path; the only CLI alternative Apple offers for uploads is
+   Transporter (`iTMSTransporter`). Nothing to migrate to today — re-check the
+   Xcode release notes on every runner/Xcode bump, and if altool's upload
+   mode is removed, switch both jobs to Transporter in one PR. (The upload
+   step is idempotent on re-runs since 2026-09-13: a DUPLICATE for our own
+   CFBundleVersion is treated as already uploaded.)
 3. *F-Droid distribution* — F-Droid requires reproducible builds and rejects
    Sentry. Tracking issue separately.

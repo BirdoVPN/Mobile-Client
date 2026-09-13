@@ -25,16 +25,24 @@ GitHub Actions triggers
     -> .sigstore bundle uploaded as CI artifact
 ```
 
-Android APKs require a standard Android signing key (stored as a GitHub secret).
+Android APKs and AABs are signed with the upload keystore (`birdo-release.jks`),
+which CI fetches from **Azure Key Vault over OIDC** (`azure/login` +
+`az keyvault secret show` in `android.yml`) — it is NOT a GitHub secret. Play
+App Signing re-signs the AAB with the app signing key on Google's side
+(`docs/PLAY-APP-SIGNING.md`).
 Sigstore is layered **on top** of Android signing to provide independent provenance
 verification -- you can verify which repo and workflow produced the APK, not just
 that it was signed with our key.
 
-### iOS
+### iOS / macOS
 
-iOS builds are currently unsigned (no Apple Developer Program enrollment yet).
-The shared KMP framework and iOS app binary are built and tested in CI, but
-distribution signing will be added when App Store submission begins.
+Apple Developer Program enrolment is complete and both Apple trains are
+signed: on every `android-v*` tag `ios.yml`'s `release-ios` job codesigns the
+`.ipa` and uploads it to App Store Connect / TestFlight (live since
+2026-07-31), and `macos.yml`'s `release-macos` job does the same for the Mac
+App Store `.pkg` on `mac-v*` tags. The *unsigned* `.ipa` is still attached to
+the GitHub release alongside, for sideload verification. Which identities and
+profiles each job uses is in `docs/RELEASE-SECRETS.md`.
 
 ## Two Layers of Signing (Android)
 
@@ -74,7 +82,7 @@ cosign verify-blob \
 | Workflow | Artifacts Signed |
 |----------|-----------------|
 | `android.yml` (push to main) | Release APK + Release AAB + SHA256SUMS.txt |
-| `ios.yml` | Build artifacts uploaded (unsigned -- Sigstore signing planned) |
+| `ios.yml` | Unsigned `.ipa` + SHA256SUMS attached to the release with Sigstore bundles; a separately codesigned `.ipa` goes to TestFlight |
 
 Both workflows use pinned action SHAs and minimal permissions.
 The `id-token: write` permission is required for Sigstore's Fulcio OIDC flow.

@@ -14,8 +14,8 @@ v1** — a Mullvad-style ML-KEM-1024 KEM-only construction. End-to-end status:
 | API schema (request + response) |  done | `shared/.../model/Models.kt` |
 | Server-side encap binary |  done, 3/3 unit tests pass | `birdo-pq-server/` |
 | Backend `/connect` integration (NestJS) |  done, 4/4 unit tests pass | `birdo-web/backend/src/vpn/birdo-pq.service.ts` |
-| Cryptographer audit | ⏳ pending — required before flipping default-on |
-| Staged rollout (1% -> 100%) | ⏳ pending — requires audit + telemetry counters |
+| Cryptographer audit | ⏳ **not commissioned** — the gate it guarded was crossed: PQ ships default-ON to every user (`SettingsViewModel.kt`, `quantumProtectionEnabled = true`; owner decision, 2026-07). Recorded as an open external-review item (OPEN-WORK K12), not a blocker. |
+| Staged rollout (1% -> 100%) | ✗ **did not happen** — default-on shipped fleet-wide with the 2026-07 release; the counters exist but no staged gate was used. |
 
 ### Threat model
 

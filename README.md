@@ -58,7 +58,12 @@ Compiled to:
 - **WireGuard Protocol** -- ChaCha20-Poly1305 encryption with Curve25519 + Post-Quantum key exchange
 - **Kill Switch** -- Blocks all traffic if the tunnel drops
 - **Split Tunneling** -- Per-app VPN routing (Android)
-- **Always-On VPN** -- System-level persistent connection with auto-reconnect
+- **Auto-reconnect** -- the tunnel re-establishes itself after network changes
+  while the app's service is running. (Android's system "Always-on VPN" toggle
+  is deliberately NOT offered: the service cannot yet self-establish a tunnel
+  from a headless boot start, so lockdown would strand users after every
+  reboot — `SUPPORTS_ALWAYS_ON=false` in the manifest, with the TODO to flip
+  it once headless reconnect exists.)
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widgets** -- Glanceable status with one-tap connect (iOS)

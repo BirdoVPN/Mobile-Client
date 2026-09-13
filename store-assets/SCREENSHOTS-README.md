@@ -39,3 +39,25 @@ adb exec-out screencap -p > store-assets/screenshot-XX.png
 ```
 
 Tablet variants (optional): `python store-assets/generate_tablet_screenshots.py`.
+
+## History: the second pipeline, and the credential leak it carried
+
+Until 2026-09-13 this repo also had `scripts/capture-screenshots.ps1` (an
+emulator/uiautomator driver) writing to `screenshots/play/phone/*.png`, a
+directory nothing consumed — `scripts/play_listing.py` uploads ONLY the
+`store-assets/screenshot-0*.png` set documented above. Both were deleted (an
+archive is kept off-repo); this file is the single screenshot procedure.
+
+**Credential-leak record — keep this paragraph.** `screenshots/README.md`
+committed a plaintext password for `owner@birdo.app` (role OWNER, 2FA
+disabled at the time) to this PUBLIC repository from `ce1f059` (2026-05-04)
+until #314 removed it on 2026-08-21. The credential was rotated and every
+session revoked; the audit trail showed 4 failed logins from one IP over
+three months and no unfamiliar device registrations. Deleting the line did
+not un-leak it — the history is public and already cloned; rotation was the
+fix. The twelve screenshots captured from that account were reviewed pixel by
+pixel on 2026-09-13 before deletion: none showed an email, account ID or
+other identifier (three were emulator home-screen captures, not the app).
+Rules that follow from it: screenshots come from a throwaway test account
+with an active plan (see above), never a real or staff account; secrets are
+never in this repository, and the OWNER account must have 2FA on.
