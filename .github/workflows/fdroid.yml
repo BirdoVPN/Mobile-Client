@@ -119,8 +119,21 @@ jobs:
               # Verify BEFORE the APK gets anywhere near the indexed repo dir.
               # A mismatch is an incident (a substituted binary on a published
               # release), not a skippable asset — fail the whole job loudly.
+              # apksigner's line prefix depends on the build-tools version the
+              # runner has: <= 36 prints "Signer #1 certificate SHA-256 digest:",
+              # 37 prints "V2 Signer: certificate SHA-256 digest:" (one block per
+              # signature scheme, same certificate). Match on the digest label
+              # only and take the first one; every scheme block carries the same
+              # cert. android-v1.4.28 (2026-09-13) failed here with an EMPTY
+              # digest when the runner moved to 37 — an empty value must read as
+              # "parser broke", never be compared as if it were a signer.
               actual=$(apksigner verify --print-certs "/tmp/dl-$t/app-release.apk" \
-                        | awk -F': ' '/^Signer #1 certificate SHA-256 digest/{print $2; exit}')
+                        | awk '/certificate SHA-256 digest:/{print $NF; exit}')
+              if [ -z "$actual" ]; then
+                echo "::error::$t: could not read a signer SHA-256 from apksigner --print-certs (output format changed?) — refusing to index."
+                apksigner verify --print-certs "/tmp/dl-$t/app-release.apk" | head -20 || true
+                exit 1
+              fi
               if [ "$actual" != "$EXPECTED_SIGNER_SHA256" ]; then
                 echo "::error::$t: app-release.apk signer SHA-256 '$actual' does not match the pinned Birdo release certificate — refusing to index."
                 exit 1
