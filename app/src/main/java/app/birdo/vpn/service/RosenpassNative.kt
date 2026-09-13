@@ -152,8 +152,8 @@ object RosenpassNative {
      * Generates a long-lived ML-KEM-1024 keypair.
      *
      * @return 2-element array `[publicKey (~1568 B), secretKey (~3168 B)]`.
-     *         Caller MUST persist via [RosenpassKeyStore] (Keystore-wrapped
-     *         EncryptedFile) and zeroize the in-memory secret key copy after
+     *         Caller MUST persist via [RosenpassKeyStore] (sealed under an
+     *         Android Keystore key) and zeroize the in-memory secret key copy after
      *         writing it to encrypted storage.
      * @throws RuntimeException if the underlying KEM call fails.
      */
@@ -205,8 +205,8 @@ object RosenpassNative {
 
     /**
      * Long-lived ML-KEM-1024 keypair. The secret key half is sensitive
-     * material — callers MUST persist via [RosenpassKeyStore] (Keystore-
-     * wrapped EncryptedFile) and zeroize the in-memory copy as soon as it's
+     * material — callers MUST persist via [RosenpassKeyStore] (sealed under
+     * an Android Keystore key) and zeroize the in-memory copy as soon as it's
      * been handed to the native derive call.
      */
     data class StaticKeypair(val publicKey: ByteArray, val secretKey: ByteArray) {

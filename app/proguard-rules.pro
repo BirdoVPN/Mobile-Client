@@ -212,7 +212,8 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 
-# Google Tink / Security-Crypto (used by EncryptedSharedPreferences)
+# Google Tink / Security-Crypto — kept only for the one-shot legacy migration
+# in security/LegacySecurityCrypto.kt; drop these with that file.
 -dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
 -dontwarn com.google.errorprone.annotations.CheckReturnValue
 -dontwarn com.google.errorprone.annotations.Immutable

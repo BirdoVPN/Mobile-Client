@@ -77,7 +77,7 @@ The app was already hardened across previous work; verified this pass:
 | **Payments policy** |  Play build (`IS_PLAY_BUILD=true`) compiles out **all** external-purchase steering — no buy buttons, no web-billing links, no "buy on birdo.app" copy. Premium tiers show as an informational feature comparison. (Sideload APK keeps the links; it's not on Play.) |
 | **Permissions** |  `QUERY_ALL_PACKAGES` already replaced with a targeted `<queries>` (launcher intent) for the split-tunnel app picker. No sensitive-permission over-ask. |
 | **Foreground service** |  `specialUse` FGS with a written `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` justification + `SUPPORTS_ALWAYS_ON`. `BIND_VPN_SERVICE` declared. |
-| **Data at rest** |  Auth tokens in `EncryptedSharedPreferences` (Keystore-backed, with corruption recovery). |
+| **Data at rest** |  Auth tokens sealed with an Android Keystore AES-256-GCM key (`KeystoreSecureStore`, with corruption recovery). |
 | **Transport** |  Cleartext blocked (`networkSecurityConfig`), SPKI cert-pinning (OkHttp + manifest pin-set, ISRG backup pin, expiry 2027-06-01). |
 | **Native integrity** |  SHA-256 hash-gate on wg-go/xray/rosenpass-jni; signing-cert fingerprint runtime tamper check. |
 | **Crash reporting** |  Sentry with `isSendDefaultPii = false` + `beforeSend` scrubber; no analytics or ad SDKs. |

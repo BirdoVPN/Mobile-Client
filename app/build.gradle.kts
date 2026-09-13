@@ -1057,7 +1057,9 @@ dependencies {
     // XrayManager falls back to bundled xray binary if library is absent.
 
     // ── Security ─────────────────────────────────────────────────
-    implementation("androidx.security:security-crypto:1.1.0") // no stable 1.1.x available
+    // Deprecated upstream; kept ONLY for the one-shot migration in
+    // security/LegacySecurityCrypto.kt (see its header for the removal plan).
+    implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
     implementation("io.sentry:sentry-android:8.55.0")
@@ -1071,6 +1073,9 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("app.cash.turbine:turbine:1.2.1")
+    // The android.jar test stub returns null/0 from org.json; the real
+    // implementation lets TokenManagerTest build JWTs and exercise isLoggedIn.
+    testImplementation("org.json:json:20250517")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
