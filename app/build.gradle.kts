@@ -1075,7 +1075,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.55.0")
+    implementation("io.sentry:sentry-android:8.56.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
