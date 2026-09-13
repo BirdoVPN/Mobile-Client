@@ -117,10 +117,16 @@ class LegacyEncryptedFileSource(
         runCatching { if (file.exists()) file.delete() }
             .onFailure { Log.w(TAG, "could not delete legacy file ${file.name}", it) }
         deleteKeystoreAlias(masterKeyAlias)
+        // EncryptedFile kept its Tink keyset in a prefs file of its own,
+        // wrapped by the master key just deleted — dead bytes now (seen left
+        // behind on the S25 device test). The app has no other EncryptedFile.
+        runCatching { context.deleteSharedPreferences(KEYSET_PREFS) }
+            .onFailure { Log.w(TAG, "could not delete $KEYSET_PREFS", it) }
     }
 
     private companion object {
         const val TAG = "LegacyFile"
+        const val KEYSET_PREFS = "__androidx_security_crypto_encrypted_file_pref__"
     }
 }
 
