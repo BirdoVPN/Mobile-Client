@@ -17,21 +17,26 @@
 // backwards ("<2.59 to stay off AGP 9"). Dagger 2.57.2's HiltGradlePlugin does
 //   project.extensions.findByType(com.android.build.gradle.BaseExtension::class)
 //     ?: error("Android BaseExtension not found.")
-// on its default path. Under AGP 9 `android.newDsl` defaults to true, so the
-// extension is ApplicationExtension and BaseExtension is never registered --
-// configuration fails outright. Verified empirically: see the PR body. 2.59 is
-// the first release with zero BaseExtension/BaseVariant references, and its POM
-// still sits on kotlin-bom 2.2.0, matching Kotlin 2.2.21 (2.60.x moves to
-// kotlin-bom 2.3.21 and would skew the STRICT lock against the 2.2.21 compiler).
+// on its default path. Under AGP 9 `android.newDsl` defaults to true (and this
+// project runs the default since OPEN-WORK G4, 2026-09-13), so the extension is
+// ApplicationExtension and BaseExtension is never registered -- configuration
+// fails outright. Verified empirically: see the PR body. 2.59 is
+// the first release with zero BaseExtension/BaseVariant references. 2.60.1 is
+// the floor for Kotlin 2.4: 2.59.x's shaded kotlin-metadata-jvm reads metadata
+// up to 2.3.0 and hiltJavaCompile fails outright on 2.4.0 class files
+// ("Provided Metadata instance has version 2.4.0"); 2.60 moved to kotlin 2.3.21,
+// whose reader accepts one version ahead. Bump Hilt together with Kotlin.
 plugins {
     id("com.android.application") version "9.4.0" apply false
     id("com.android.library") version "9.4.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.2.21" apply false
-    id("org.jetbrains.kotlin.multiplatform") version "2.2.21" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.2.21" apply false
-    id("org.jetbrains.kotlin.plugin.serialization") version "2.2.21" apply false
-    id("com.google.dagger.hilt.android") version "2.59.2" apply false
-    id("com.google.devtools.ksp") version "2.2.21-2.0.5" apply false
+    id("com.android.kotlin.multiplatform.library") version "9.4.0" apply false
+    id("org.jetbrains.kotlin.multiplatform") version "2.4.20" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.4.20" apply false
+    id("com.google.dagger.hilt.android") version "2.60.1" apply false
+    // KSP 2.3.x is versioned independently of Kotlin (KSP2); 2.3.10+ handles the
+    // Kotlin 2.4 default module names.
+    id("com.google.devtools.ksp") version "2.3.12" apply false
     // BASELINE PROFILE -- 1.5.0-rc02 IS THE FLOOR ON THIS TOOLCHAIN, and the
     // version is not a matter of taste. The plugin hard-checks the AGP version
     // it was built against:

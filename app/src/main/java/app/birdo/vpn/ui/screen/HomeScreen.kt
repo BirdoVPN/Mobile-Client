@@ -294,7 +294,7 @@ fun HomeScreen(
                     if (isError) {
                         HomeBanner(
                             icon = Icons.Default.ErrorOutline,
-                            message = (state.vpnState as VpnState.Error).message,
+                            message = state.vpnState.message,
                         )
                     }
                     if (state.error != null) {
