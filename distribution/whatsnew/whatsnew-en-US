@@ -1,9 +1,10 @@
 BirdoVPN — fast, private WireGuard VPN with post-quantum encryption.
 
 What's new:
-- Refreshed look: new emerald design, smoother animations and haptics
-- Better battery life — background animations no longer run while the app is closed
-- Accessibility: connection changes announced by TalkBack, larger touch targets
-- Fixed a bug that could prevent connecting
+- Stronger on-device encryption for your sign-in and BirdoPQ keys (migrates automatically, no re-login)
+- Faster app start
+- Runs on every Android CPU type, including 32-bit and Intel devices
+- Clearer diagnostics when DNS falls back to your system resolver
+- Security hardening and dependency updates
 
 Global server network • no activity logs • kill switch • DNS leak protection • split tunnelling.
