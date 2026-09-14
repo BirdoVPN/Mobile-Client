@@ -964,3 +964,8 @@ struct ServerInfo: Identifiable, Decodable, Equatable, Sendable {
         // deliberately NOT decoded here: nothing may read them again.
     }
 }
+
+/// The pre-select rule (`QuickSelect.bestServer(in:)`) reads these four
+/// fields; the conformance lives here, not in QuickSelect.swift, because that
+/// file is compiled into the un-hosted test bundle without this view file.
+extension ServerInfo: QuickSelectCandidate {}

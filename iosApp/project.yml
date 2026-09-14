@@ -236,6 +236,11 @@ targets:
       # here — the bug they guard needs a peer removed by hand on a node to
       # observe.
       - path: iosApp/Services/LiveRebuild.swift
+      # OPEN-WORK K10 quick-select. Foundation-only by design: the "which node
+      # does a user who chose none get" rule is a pure function over four
+      # fields precisely so QuickSelectTests can pin it here. VpnViewModel.swift
+      # (its only caller) cannot be compiled into this bundle.
+      - path: iosApp/Services/QuickSelect.swift
       # The StoreKit testing configuration, carried as a RESOURCE of the test
       # bundle so a test can read it as JSON and prove it still declares exactly
       # the four product ids BirdoStoreProduct expects. A .storekit file that

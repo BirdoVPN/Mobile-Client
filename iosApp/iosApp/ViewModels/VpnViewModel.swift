@@ -257,8 +257,12 @@ final class VpnViewModel: ObservableObject {
                 // fresh install's first Connect tap always failed with
                 // "Select a server first". Never auto-select an out-of-plan or
                 // offline node — the backend would refuse the connect anyway.
+                // Lowest load, not first-in-list: the list is name-sorted, so
+                // `.first` sent every user to Amsterdam (K10). TWIN of the
+                // auto-connect-on-launch path below; QuickSelectGuardTest
+                // fails if either site stops using QuickSelect.
                 if selectedServer == nil {
-                    selectedServer = list.first { $0.isOnline && $0.accessible }
+                    selectedServer = QuickSelect.bestServer(in: list)
                 }
             } catch {
                 serversError = error.localizedDescription
@@ -792,7 +796,8 @@ final class VpnViewModel: ObservableObject {
                                               isTearingDownForRedial: self.isTearingDownForRedial) else { return }
             guard self.breakerTrip == nil else { return }
             if self.selectedServer == nil {
-                self.selectedServer = self.servers.first { $0.isOnline && $0.accessible }
+                // Same rule as loadServers() — the twin site (K10).
+                self.selectedServer = QuickSelect.bestServer(in: self.servers)
             }
             guard self.selectedServer != nil else { return }
             self.connect(userInitiated: false)
