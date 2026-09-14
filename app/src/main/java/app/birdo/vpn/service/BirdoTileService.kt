@@ -117,9 +117,19 @@ class BirdoTileService : TileService() {
                 // built one hop while the app kept drawing the entry -> exit
                 // route the user chose, which is the silent downgrade the other
                 // entry points exist to prevent.
-                if (appPreferences.multiHopEnabled) {
-                    val entry = appPreferences.multiHopEntryNodeId
-                    val exit = appPreferences.multiHopExitNodeId
+                //
+                // The armed/incomplete decision itself comes from
+                // MultiHopPolicy (Mobile-Client#336) so this surface cannot
+                // drift from auto-connect and quick-connect again. The
+                // entitlement branch below stays local: it is a tile-specific
+                // concern (no UI to show an error on, and a cached plan that
+                // can be absent), not part of the multi-hop policy.
+                val decision = MultiHopPolicy.forNewConnection(
+                    appPreferences.multiHopEnabled,
+                    appPreferences.multiHopEntryNodeId,
+                    appPreferences.multiHopExitNodeId,
+                )
+                if (decision !is MultiHopPolicy.NewConnection.SingleHop) {
                     // The pref alone is NOT the armed state. HomeScreen renders
                     // `multiHop.enabled && isSovereign`, and nothing clears the
                     // pref when a plan lapses -- so an ex-SOVEREIGN account keeps
@@ -148,11 +158,11 @@ class BirdoTileService : TileService() {
                         // Armed but incomplete (a node was retired, or prefs are
                         // half-written). Quietly substituting a single hop is the
                         // failure this branch exists to prevent.
-                        entry.isNullOrBlank() || exit.isNullOrBlank() -> {
+                        decision is MultiHopPolicy.NewConnection.RefuseIncompletePair -> {
                             openAppOrLog("Multi-hop armed but entry/exit incomplete")
                             return
                         }
-                        else -> {
+                        decision is MultiHopPolicy.NewConnection.MultiHop -> {
                             scope.launch {
                                 try {
                                     // Deliberately NO fallback to quickConnect()
@@ -178,7 +188,7 @@ class BirdoTileService : TileService() {
                                     // line is the `adb logcat` convenience only; a
                                     // report here would just add a second throttle
                                     // bucket for one fact.
-                                    when (val r = vpnManager.connectMultiHop(entry, exit)) {
+                                    when (val r = vpnManager.connectMultiHop(decision.entryNodeId, decision.exitNodeId)) {
                                         is ApiResult.Success ->
                                             if (!r.data.success) {
                                                 Log.w(TAG, "Tile multi-hop refused: " + r.data.message)
@@ -205,6 +215,12 @@ class BirdoTileService : TileService() {
                             }
                             return
                         }
+                        // Unreachable: the enclosing `if` already excluded
+                        // SingleHop, and the two branches above cover the rest
+                        // of MultiHopPolicy.NewConnection. Spelled out so that
+                        // adding a fourth case to that sealed type surfaces
+                        // here as a decision to make, not as a silent no-op.
+                        else -> Unit
                     }
                 }
 
