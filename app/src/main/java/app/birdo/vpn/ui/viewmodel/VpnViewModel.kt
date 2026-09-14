@@ -12,6 +12,7 @@ import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.isConnectingPhase
@@ -169,26 +170,33 @@ class VpnViewModel @Inject constructor(
             // the client is the only thing that could have said otherwise. For a
             // feature bought for jurisdictional separation, silently serving the
             // other thing is the worst available failure.
-            val entry = prefs.multiHopEntryNodeId
-            val exit = prefs.multiHopExitNodeId
-            if (prefs.multiHopEnabled) {
-                if (!entry.isNullOrBlank() && !exit.isNullOrBlank()) {
-                    tracing("Auto-connect: multi-hop armed, connecting $entry -> $exit")
-                    when (val result = vpnManager.connectMultiHop(entry, exit)) {
+            when (
+                val decision = MultiHopPolicy.forNewConnection(
+                    prefs.multiHopEnabled,
+                    prefs.multiHopEntryNodeId,
+                    prefs.multiHopExitNodeId,
+                )
+            ) {
+                is MultiHopPolicy.NewConnection.MultiHop -> {
+                    tracing("Auto-connect: multi-hop armed, connecting ${decision.entryNodeId} -> ${decision.exitNodeId}")
+                    when (val result = vpnManager.connectMultiHop(decision.entryNodeId, decision.exitNodeId)) {
                         is ApiResult.Success -> { /* state syncs via startStateSync */ }
                         is ApiResult.Error ->
                             // Do NOT fall back to a single hop. That is the exact
-                            // silent downgrade this branch exists to prevent, and
+                            // silent downgrade the policy exists to prevent, and
                             // it would look identical to success to the user.
                             tracing("Auto-connect multi-hop failed: ${result.message}")
                     }
-                } else {
+                    return@launch
+                }
+                MultiHopPolicy.NewConnection.RefuseIncompletePair -> {
                     // Armed but incomplete — a node was destroyed, or prefs were
                     // half-written. Stay disconnected rather than quietly
                     // substituting a single hop.
                     tracing("Auto-connect: multi-hop enabled but entry/exit incomplete; not connecting")
+                    return@launch
                 }
-                return@launch
+                MultiHopPolicy.NewConnection.SingleHop -> Unit
             }
 
             if (lastServerId != null) {
@@ -454,12 +462,12 @@ class VpnViewModel @Inject constructor(
         // the live route at all -- so exempting `prev?.id == server.id` let a tap
         // on the highlighted row fall through to the `error = null` below and
         // silently wipe the refusal the previous tap had just raised.
-        if (onTunnel && vpnManager.activeMultiHopRoute != null) {
-            _uiState.value = _uiState.value.copy(
-                error = "Switching servers would replace your Multi-Hop route with " +
-                    "a single hop. Disconnect first if you meant to switch.",
-            )
-            return
+        when (val change = MultiHopPolicy.forRouteChange(onTunnel, vpnManager.activeMultiHopRoute)) {
+            is MultiHopPolicy.RouteChange.RefuseWouldDowngrade -> {
+                _uiState.value = _uiState.value.copy(error = change.message)
+                return
+            }
+            MultiHopPolicy.RouteChange.Allowed -> Unit
         }
 
         // Clear the refusal (and any stale connect error) once a selection is
@@ -544,10 +552,14 @@ class VpnViewModel @Inject constructor(
             // reached from the home-screen widget and the quick-settings tile,
             // neither of which has UI to gate on. Without this they build a
             // single hop while the app keeps displaying the chosen route.
-            val entry = prefs.multiHopEntryNodeId
-            val exit = prefs.multiHopExitNodeId
-            if (prefs.multiHopEnabled) {
-                if (entry.isNullOrBlank() || exit.isNullOrBlank()) {
+            when (
+                val decision = MultiHopPolicy.forNewConnection(
+                    prefs.multiHopEnabled,
+                    prefs.multiHopEntryNodeId,
+                    prefs.multiHopExitNodeId,
+                )
+            ) {
+                MultiHopPolicy.NewConnection.RefuseIncompletePair -> {
                     // Refuse rather than silently downgrade — see below.
                     _uiState.value = _uiState.value.copy(
                         error = "Multi-Hop is on but no entry/exit pair is selected. " +
@@ -555,17 +567,20 @@ class VpnViewModel @Inject constructor(
                     )
                     return@launch
                 }
-                when (val result = vpnManager.connectMultiHop(entry, exit)) {
-                    is ApiResult.Success -> {}
-                    is ApiResult.Error ->
-                        // NOT falling back to vpnManager.quickConnect(): a
-                        // single-hop tunnel presented as the user's chosen
-                        // multi-hop route is indistinguishable from success to
-                        // them, and leaks the jurisdiction they paid to hide.
-                        _uiState.value =
-                            _uiState.value.copy(error = connectErrorMessage(result))
+                MultiHopPolicy.NewConnection.SingleHop -> Unit
+                is MultiHopPolicy.NewConnection.MultiHop -> {
+                    when (val result = vpnManager.connectMultiHop(decision.entryNodeId, decision.exitNodeId)) {
+                        is ApiResult.Success -> {}
+                        is ApiResult.Error ->
+                            // NOT falling back to vpnManager.quickConnect(): a
+                            // single-hop tunnel presented as the user's chosen
+                            // multi-hop route is indistinguishable from success to
+                            // them, and leaks the jurisdiction they paid to hide.
+                            _uiState.value =
+                                _uiState.value.copy(error = connectErrorMessage(result))
+                    }
+                    return@launch
                 }
-                return@launch
             }
 
             when (val result = vpnManager.quickConnect()) {

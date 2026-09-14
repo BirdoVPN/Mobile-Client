@@ -99,6 +99,11 @@ class DataplaneFaultReportingTest {
             "PQ key persistence. Both catches recover locally (keep on-disk state / delete " +
             "partial state) and the PQ VERDICT that results is reported by RosenpassManager, " +
             "so reporting here would double-count one outcome",
+        "MultiHopPolicy.kt" to
+            "a pure decision table: no Android, no coroutines, no I/O, and nothing to catch. " +
+            "It returns what SHOULD happen; every caller reports what DID. Reporting here " +
+            "would fire on a correct refusal and double-count the callers' outcomes " +
+            "(Mobile-Client#336)",
     )
 
     private fun source(path: String): String {
