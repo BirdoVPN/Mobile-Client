@@ -498,7 +498,7 @@ final class VpnViewModel: ObservableObject {
             // Also fixes the pre-existing shape here, where `vpnManager.connect`
             // overwrote the profile (on-demand OFF) under a still-running
             // session that the server had just evicted mid-request.
-            NSLog("[VpnViewModel] multi-hop dial over a live session — using the disconnect-first path (one-exit-per-entry guard)")
+            debugLog("[VpnViewModel] multi-hop dial over a live session — using the disconnect-first path (one-exit-per-entry guard)")
             isSwitching = true
             // #351: hold the gate across the wait. Nothing else can. The
             // teardown below drives the session through `.disconnecting` and
@@ -607,7 +607,7 @@ final class VpnViewModel: ObservableObject {
         isReapplyingSettings = true
         error = nil
         if vpnManager.liveProfileNeedsRestart {
-            NSLog("[VpnViewModel] reapply: a tunnel-start-only flag changed — using the disconnect-first path")
+            debugLog("[VpnViewModel] reapply: a tunnel-start-only flag changed — using the disconnect-first path")
             legacyRebuild(target)
             return
         }
@@ -716,7 +716,7 @@ final class VpnViewModel: ObservableObject {
             // The loop came back without spending its window, so it has proved
             // nothing about this peer. Decide nothing: no teardown, and no
             // message claiming a verdict. Whatever cancelled it owns the state.
-            NSLog("[VpnViewModel] handshake arm ended before its window — no verdict, session left alone")
+            debugLog("[VpnViewModel] handshake arm ended before its window — no verdict, session left alone")
 
         case .keepSessionFailClosed:
             // #351. This is the OLD peer a revert put back on a session that
@@ -729,7 +729,7 @@ final class VpnViewModel: ObservableObject {
             // and if that never comes up the breaker trips and
             // `checkCircuitBreaker` performs the counted, user-visible
             // fail-open. Same recovery `.stayFailedClosed` relies on.
-            NSLog("[VpnViewModel] restored peer has not re-handshaked — staying fail-closed under the armed rule")
+            debugLog("[VpnViewModel] restored peer has not re-handshaked — staying fail-closed under the armed rule")
             error = "Your previous location hasn't answered yet. Traffic stays blocked "
                 + "until Birdo recovers the connection — or tap Disconnect."
 
@@ -782,7 +782,7 @@ final class VpnViewModel: ObservableObject {
         // and the trip lapses after `TunnelCircuitBreaker.tripCooldown` so
         // auto-connect resumes on its own without anyone doing anything.
         guard breakerTrip == nil else {
-            NSLog("[VpnViewModel] auto-connect suppressed: circuit breaker is tripped")
+            debugLog("[VpnViewModel] auto-connect suppressed: circuit breaker is tripped")
             return
         }
         Task { [weak self] in
@@ -864,8 +864,8 @@ final class VpnViewModel: ObservableObject {
         // manager, so `failOpenAndStop()` has nothing to act on) could never try
         // again — a fail-open that silently does not happen is the whole bug.
         guard failOpenAppliedFor != record else { return }
-        NSLog("[VpnViewModel] circuit breaker tripped (%@ x%ld) — failing open",
-              record.kind.rawValue, record.consecutiveFailures)
+        debugLog("[VpnViewModel] circuit breaker tripped (%@ x%ld) — failing open",
+                 record.kind.rawValue, record.consecutiveFailures)
         guard vpnManager.failOpenAndStop() else { return }   // retried next tick
         failOpenAppliedFor = record
         // Best-effort, exactly like every other call site: the DELETE may well
@@ -1191,7 +1191,7 @@ final class VpnViewModel: ObservableObject {
             // No server handle for the live session (an install upgraded under a
             // live tunnel from a build that never stored one): nothing the server
             // could defer against — today's path.
-            NSLog("[VpnViewModel] rebuild: live session has no connection handle — using the disconnect-first path")
+            debugLog("[VpnViewModel] rebuild: live session has no connection handle — using the disconnect-first path")
             legacyRebuild(target)
             return
         }
@@ -1199,7 +1199,7 @@ final class VpnViewModel: ObservableObject {
         do {
             snapshot = try vpnManager.snapshotRunningProfile()
         } catch {
-            NSLog("[VpnViewModel] rebuild: could not snapshot the live profile — using the disconnect-first path")
+            debugLog("[VpnViewModel] rebuild: could not snapshot the live profile — using the disconnect-first path")
             legacyRebuild(target)
             return
         }
@@ -1229,7 +1229,7 @@ final class VpnViewModel: ObservableObject {
             // error's own words, never from a bare 400. It would evict our own
             // peer mid-request, so use the pre-#159 path (leaks the gap as
             // today; never a blackhole).
-            NSLog("[VpnViewModel] rebuild: server does not know the rebuild fields — using the disconnect-first path")
+            debugLog("[VpnViewModel] rebuild: server does not know the rebuild fields — using the disconnect-first path")
             flagsOwnedElsewhere = await finishRebuild(.serverDoesNotKnowRebuild, ctx)
             return
         } catch let refusal as RebuildRefusedError {
@@ -1242,7 +1242,7 @@ final class VpnViewModel: ObservableObject {
             // keep the session and show the server's words. The log names the
             // classified event, never the server's string.
             let event = RebuildRefusal.event(forCode: refusal.code)
-            NSLog("[VpnViewModel] rebuild: refused by the server — %@", String(describing: event))
+            debugLog("[VpnViewModel] rebuild: refused by the server — %@", String(describing: event))
             if !LiveRebuildPolicy.directive(for: event).stopsTheTunnel {
                 self.error = refusal.message
             }
@@ -1280,7 +1280,7 @@ final class VpnViewModel: ObservableObject {
             // did not defer it (a backend that knows the field but not the echo,
             // or a handle it no longer holds), so the old peer may already be
             // gone. Today's path, minus the key this attempt minted.
-            NSLog("[VpnViewModel] rebuild: server did not defer this device's current key — using the disconnect-first path")
+            debugLog("[VpnViewModel] rebuild: server did not defer this device's current key — using the disconnect-first path")
             flagsOwnedElsewhere = await finishRebuild(.deferralNotHonoured, ctx)
             return
         }
@@ -1298,12 +1298,12 @@ final class VpnViewModel: ObservableObject {
             // on a NEW key nothing rides (the host heartbeat then tears the
             // re-dialled OLD tunnel down once the sweeper retires that key) and
             // telling a user who just disconnected that traffic is blocked.
-            NSLog("[VpnViewModel] rebuild: session gone before the swap — releasing the minted key")
+            debugLog("[VpnViewModel] rebuild: session gone before the swap — releasing the minted key")
             flagsOwnedElsewhere = await finishRebuild(.sessionGoneBeforeSwap, ctx)
             return
         } catch let swapError {
-            NSLog("[VpnViewModel] rebuild: in-place swap refused — reverting to the previous profile: %@",
-                  swapError.localizedDescription)
+            debugLog("[VpnViewModel] rebuild: in-place swap refused — reverting to the previous profile: %@",
+                     swapError.localizedDescription)
             // Deliberately NO restore here. `.swapFailed` → `.revertToOld` runs
             // the ONE revert path in `finishRebuild`: restore the snapshot so
             // the keychain, the persisted profile, the running tunnel and both
@@ -1330,7 +1330,7 @@ final class VpnViewModel: ObservableObject {
         let directive = LiveRebuildPolicy.directive(for: event)
         // No identifiers in this line: no key ids, no hosts (node-agent privacy
         // guard convention, applied to client logs too).
-        NSLog("[VpnViewModel] rebuild outcome: %@ -> %@", String(describing: event), String(describing: directive))
+        debugLog("[VpnViewModel] rebuild outcome: %@ -> %@", String(describing: event), String(describing: directive))
         switch directive {
         case .legacyDisconnectFirst(let releaseNewKeyFirst):
             if releaseNewKeyFirst, let newId = ctx.newConfig?.keyId { release(keyId: newId) }
@@ -1537,7 +1537,7 @@ final class VpnViewModel: ObservableObject {
             do {
                 try await api.disconnect(keyId: keyId)
             } catch {
-                NSLog("[VpnViewModel] rebuild: key release failed: %@", error.localizedDescription)
+                debugLog("[VpnViewModel] rebuild: key release failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1617,8 +1617,8 @@ final class VpnViewModel: ObservableObject {
             do {
                 try await api.disconnect(keyId: keyId)
             } catch {
-                NSLog("[VpnViewModel] connection slot release failed: %@",
-                      error.localizedDescription)
+                debugLog("[VpnViewModel] connection slot release failed: %@",
+                         error.localizedDescription)
             }
         }
     }
@@ -1655,7 +1655,7 @@ final class VpnViewModel: ObservableObject {
         } catch {
             // Transient network/API failure — NEVER tear down a live tunnel
             // over a missed heartbeat (Android logs and moves on too).
-            NSLog("[VpnViewModel] heartbeat failed: %@", error.localizedDescription)
+            debugLog("[VpnViewModel] heartbeat failed: %@", error.localizedDescription)
             return
         }
         if !result.valid {
@@ -1671,7 +1671,7 @@ final class VpnViewModel: ObservableObject {
         } else if result.serverOnline == false {
             // Android parity: log only. The node may flap during maintenance;
             // the session stays valid and the message repeats if it persists.
-            NSLog("[VpnViewModel] heartbeat: current server reports offline")
+            debugLog("[VpnViewModel] heartbeat: current server reports offline")
         }
     }
 

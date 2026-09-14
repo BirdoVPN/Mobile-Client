@@ -508,7 +508,7 @@ final class VPNManager: @unchecked Sendable {
                 // Persisting the on-demand-disabled state failed; the rule may
                 // still be live and re-dial after the stop below. Surface it
                 // instead of swallowing silently.
-                NSLog("[VPNManager] disconnect saveToPreferences failed: %@", error.localizedDescription)
+                debugLog("[VPNManager] disconnect saveToPreferences failed: %@", error.localizedDescription)
             }
             // Stop on BOTH paths — a failed save must never leave the tunnel up.
             self?.manager?.connection.stopVPNTunnel()
@@ -555,8 +555,8 @@ final class VPNManager: @unchecked Sendable {
         }
         mgr.saveToPreferences { error in
             if let error {
-                NSLog("[VPNManager] applyKillSwitchFlag saveToPreferences failed: %@",
-                      error.localizedDescription)
+                debugLog("[VPNManager] applyKillSwitchFlag saveToPreferences failed: %@",
+                         error.localizedDescription)
             }
         }
     }
@@ -587,10 +587,10 @@ final class VPNManager: @unchecked Sendable {
     @discardableResult
     func failOpenAndStop() -> Bool {
         guard let mgr = manager else {
-            NSLog("[VPNManager] failOpenAndStop: no manager loaded yet — caller must retry")
+            debugLog("[VPNManager] failOpenAndStop: no manager loaded yet — caller must retry")
             return false
         }
-        NSLog("[VPNManager] circuit breaker tripped — failing OPEN (disarming on-demand, clearing kill-switch flags, stopping)")
+        debugLog("[VPNManager] circuit breaker tripped — failing OPEN (disarming on-demand, clearing kill-switch flags, stopping)")
         if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
             proto.includeAllNetworks = false
             proto.enforceRoutes = false
@@ -601,8 +601,8 @@ final class VPNManager: @unchecked Sendable {
         TunnelBreakerStore.shared.setOnDemandArmed(false)
         mgr.saveToPreferences { [weak self] error in
             if let error {
-                NSLog("[VPNManager] failOpenAndStop saveToPreferences failed: %@",
-                      error.localizedDescription)
+                debugLog("[VPNManager] failOpenAndStop saveToPreferences failed: %@",
+                         error.localizedDescription)
             }
             // Stop on BOTH paths — a failed save must never leave a dead tunnel
             // up, which is the state that was blackholing traffic.
@@ -635,7 +635,7 @@ final class VPNManager: @unchecked Sendable {
                 // IPC to the tunnel extension failed even though the session
                 // reported .connected. Log so a transient tunnel/permission
                 // failure isn't silently indistinguishable from zero traffic.
-                NSLog("[VPNManager] currentStats sendProviderMessage failed: %@", error.localizedDescription)
+                debugLog("[VPNManager] currentStats sendProviderMessage failed: %@", error.localizedDescription)
                 cont.resume(returning: (0, 0))
             }
         }
@@ -738,13 +738,13 @@ final class VPNManager: @unchecked Sendable {
         let status = mgr.connection.status
         let sessionLive = status == .connected || status == .connecting || status == .reasserting
         guard !sessionLive, mgr.isOnDemandEnabled else { return }
-        NSLog("[VPNManager] clearing a stale on-demand rule from a previous session")
+        debugLog("[VPNManager] clearing a stale on-demand rule from a previous session")
         mgr.isOnDemandEnabled = false
         mgr.onDemandRules = nil
         TunnelBreakerStore.shared.setOnDemandArmed(false)
         mgr.saveToPreferences { error in
             if let error {
-                NSLog("[VPNManager] failed clearing stale on-demand: %@", error.localizedDescription)
+                debugLog("[VPNManager] failed clearing stale on-demand: %@", error.localizedDescription)
             }
         }
     }
@@ -805,8 +805,8 @@ final class VPNManager: @unchecked Sendable {
             // a silent re-dial loop.
             if connection.status == .disconnected {
                 if let err = connection.value(forKey: "lastDisconnectError") as? NSError {
-                    NSLog("[VPNManager] tunnel disconnected: %@ (domain=%@ code=%ld)",
-                          err.localizedDescription, err.domain, err.code)
+                    debugLog("[VPNManager] tunnel disconnected: %@ (domain=%@ code=%ld)",
+                             err.localizedDescription, err.domain, err.code)
                     self?.lastDisconnectReason = err.localizedDescription
                 } else {
                     self?.lastDisconnectReason = nil
