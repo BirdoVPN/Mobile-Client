@@ -1,0 +1,184 @@
+# CodeQL — Swift (iOS app + PacketTunnel extension)
+#
+# OPEN-WORK G7: the estate's CodeQL coverage was java-kotlin ONLY. Every line
+# of Swift in this repo — the iOS app and, more importantly, the PacketTunnel
+# network extension that terminates the tunnel — was scanned by nothing, and
+# `.github/codeql/codeql-config.yml` explicitly lists `iosApp/**` under
+# paths-ignore. macOS ships from the same sources, so the gap covered two
+# products.
+#
+# WHY THIS IS ITS OWN WORKFLOW, and not a job in ios.yml
+# ------------------------------------------------------
+# ios.yml fires on `android-v*` tags: its jobs assume a release is happening
+# (TestFlight upload, release-asset attach). Adding a pull_request trigger
+# there to get PR coverage would arm the release path on every PR. This file
+# borrows only the BUILD half.
+#
+# WHY THE BUILD CHAIN IS REPEATED HERE
+# ------------------------------------
+# CodeQL's Swift extractor observes a real compile — there is no build-mode
+# `none` for Swift — and `BirdoVPN.xcodeproj` does not exist in git: XcodeGen
+# generates it, and the project links two artefacts that are also generated
+# (BirdoPQNative.xcframework from Rust, libwg-go.a from Go). So the four
+# prerequisite steps below mirror ios.yml's `build-ios` job. **If that job's
+# build chain changes, change it here too** — the failure mode is this scan
+# going red, not a silent gap, because a broken chain cannot produce a
+# database.
+#
+# COST
+# ----
+# A macOS runner for ~20 minutes. Triggered only on PRs that touch Swift or
+# the shared framework, plus a weekly sweep and on demand — not on every PR.
+name: CodeQL Swift
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'iosApp/**'
+      - 'shared/**'
+      - '.github/workflows/codeql-swift.yml'
+      - '.github/codeql/codeql-config-swift.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'iosApp/**'
+      - 'shared/**'
+  schedule:
+    - cron: '0 7 * * 1'   # Mondays 07:00 UTC — same slot the retired codeql.yml used
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-swift-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  analyze:
+    name: Analyze (swift)
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-ios-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-ios-${{ runner.os }}-
+
+      # ── prerequisites: mirror of ios.yml's build-ios job ──────────────────
+      - name: Build shared framework for iOS
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :shared:linkReleaseFrameworkIosArm64
+
+      # Xcode 26+ for the same reason ios.yml pins it: the iOS 26 SDK. Here it
+      # also keeps the Swift version the extractor sees identical to the one
+      # that ships.
+      - name: Select Xcode 26+
+        run: |
+          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::No Xcode 26+ on this runner; available:"
+            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build BirdoPQNative.xcframework
+        run: |
+          rustc --version
+          bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Build libwg-go.a (device)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphoneos"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS=arm64 PLATFORM_NAME=iphoneos \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mios-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=IPHONEOS_DEPLOYMENT_TARGET \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+            SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
+      - name: Derive version from version.properties
+        # project.yml reads these; a scan build with no version still has to
+        # produce the same target settings as the release build.
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      # ── the scan ──────────────────────────────────────────────────────────
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: swift
+          build-mode: manual
+          config-file: ./.github/codeql/codeql-config-swift.yml
+
+      - name: Build iOS app for CodeQL (no signing)
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            SYMROOT="$PWD/build" \
+            MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
+            ARCHS=arm64 \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: '/language:swift'
