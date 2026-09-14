@@ -61,5 +61,5 @@ plugins {
     // baselineprofile/build.gradle.kts: the Gradle plugin and the on-device
     // library are released in lockstep and a mismatch fails at run time, on the
     // emulator, after the boot.
-    id("androidx.baselineprofile") version "1.5.0-rc02" apply false
+    id("androidx.baselineprofile") version "1.5.0" apply false
 }
