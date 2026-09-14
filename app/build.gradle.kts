@@ -359,7 +359,7 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
 //   > Illegal char <?> at index 40: <project>/app/provider(?)
 //
 // Cause, established by dumping getSrcDirs() on each source set rather than
-// guessing. When androidx.baselineprofile 1.5.0-rc02 creates its two build
+// guessing. When androidx.baselineprofile 1.5.x (seen on rc02) creates its two build
 // types it copies the `release` source set into each new one through
 // AndroidSourceDirectorySet.addAllDirectories, which reflectively calls
 // getSrcDirs() and re-adds whatever comes back. Under AGP 9 the `kotlin`
@@ -1041,7 +1041,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.navigation:navigation-compose:2.10.0")
+    implementation("androidx.navigation:navigation-compose:2.10.1")
     implementation("androidx.compose.material3:material3-window-size-class")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
@@ -1075,7 +1075,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.biometric:biometric:1.1.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.55.0")
+    implementation("io.sentry:sentry-android:8.56.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
@@ -1088,7 +1088,7 @@ dependencies {
     testImplementation("app.cash.turbine:turbine:1.2.1")
     // The android.jar test stub returns null/0 from org.json; the real
     // implementation lets TokenManagerTest build JWTs and exercise isLoggedIn.
-    testImplementation("org.json:json:20250517")
+    testImplementation("org.json:json:20260814")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
