@@ -25,7 +25,11 @@ final class ConnectContractTests: XCTestCase {
 
     private static let schemaId = "https://birdo.app/contract/vpn-protocol.schema.json"
 
-    private static let schema: [String: Any] = {
+    /// COMPUTED, not a stored `static let`: `[String: Any]` is not Sendable, and
+    /// a static stored property of a non-Sendable type is an error under Swift 6
+    /// strict concurrency ("static property 'schema' is not concurrency-safe").
+    /// Re-reading a 14 KB resource per access costs nothing at this test count.
+    private static var schema: [String: Any] {
         let bundle = Bundle(for: ConnectContractTests.self)
         guard let url = bundle.url(forResource: "vpn-protocol.schema", withExtension: "json") else {
             fatalError("contract/vpn-protocol.schema.json is not in the test bundle — it is listed "
@@ -37,7 +41,7 @@ final class ConnectContractTests: XCTestCase {
             fatalError("contract/vpn-protocol.schema.json is not a JSON object")
         }
         return dict
-    }()
+    }
 
     private static func definition(_ name: String) -> [String: Any] {
         guard let defs = schema["$defs"] as? [String: Any],
