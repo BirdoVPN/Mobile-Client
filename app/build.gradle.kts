@@ -1089,6 +1089,11 @@ dependencies {
     // The android.jar test stub returns null/0 from org.json; the real
     // implementation lets TokenManagerTest build JWTs and exercise isLoggedIn.
     testImplementation("org.json:json:20260814")
+    // K5 connect contract: validates the SERIALIZED ConnectRequest /
+    // MultiHopConnectRequest bytes against contract/vpn-protocol.schema.json
+    // (Draft 2020-12, vendored byte-for-byte from birdo-web). Test-only; the
+    // app never validates JSON Schema at runtime.
+    testImplementation("com.networknt:json-schema-validator:3.0.7")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))

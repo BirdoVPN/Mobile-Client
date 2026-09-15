@@ -575,17 +575,37 @@ jobs:
         working-directory: iosApp
         run: xcodegen generate
 
-      # Destination is NOT pinned to a specific OS version: the runner's
-      # installed simulator runtime moves (it is currently iOS 18.6), and a
-      # hard-coded OS=18.0 fails with "Unable to find a destination".
-      # ARCHS/EXCLUDED_ARCHS: the KMP framework is iosSimulatorArm64 only.
+      # The simulator is RESOLVED, not named. A hard-coded `name=iPhone 16`
+      # silently stopped matching when the macos-26 image dropped that device
+      # (it now ships iPhone 17 / 17 Pro / Air / 16e), and xcodebuild died with
+      # "Unable to find a device matching the provided destination specifier" —
+      # which this step REPORTED AS SUCCESS, for lack of `set -o pipefail`:
+      # xcpretty exits 0 on the failure output, and its status is the
+      # pipeline's. Every other xcodebuild step in this file already sets
+      # pipefail; the one step that runs the tests did not, so the iOS suite
+      # was green while running zero tests.
+      #
+      # The OS version is still NOT pinned (the installed runtime moves), and
+      # ARCHS/EXCLUDED_ARCHS stay because the KMP framework is
+      # iosSimulatorArm64 only.
       - name: Run iOS tests
         working-directory: iosApp
         run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json | python3 "$GITHUB_WORKSPACE/.github/scripts/pick-simulator.py")
+          if [ -z "$UDID" ]; then
+            echo "::error::No available iPhone simulator on this runner"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Testing on simulator $UDID"
+          # Raw output is tee'd before xcpretty so a compile error stays
+          # readable; pipefail makes the step's status xcodebuild's, not
+          # xcpretty's.
           xcodebuild test \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "platform=iOS Simulator,id=$UDID" \
             -configuration Debug \
             ARCHS=arm64 \
             EXCLUDED_ARCHS=x86_64 \
@@ -593,7 +613,22 @@ jobs:
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
-            | xcpretty
+            2>&1 | tee "$RUNNER_TEMP/iostest.log" | xcpretty
+
+      # A green xcodebuild proves the run did not FAIL; it does not prove a
+      # single test EXECUTED — the destination bug above is exactly that shape.
+      # Assert the suites the bundle is supposed to contain actually reported.
+      - name: Assert the test bundle actually ran
+        run: |
+          set -euo pipefail
+          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests; do
+            if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
+              echo "::error::$suite never reported — the test bundle did not run"
+              exit 1
+            fi
+          done
+          echo "Suites that reported:"
+          grep -oE "Test Suite '[A-Za-z]+Tests'" "$RUNNER_TEMP/iostest.log" | sort -u
 
   # -- Signed Release & TestFlight Upload ---------------------------
   # ENABLED 2026-07-31: the pause is deliberately lifted — code signing is
