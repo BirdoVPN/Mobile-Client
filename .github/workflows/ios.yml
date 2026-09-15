@@ -602,9 +602,17 @@ jobs:
           # Raw output is tee'd before xcpretty so a compile error stays
           # readable; pipefail makes the step's status xcodebuild's, not
           # xcpretty's.
+          # -only-testing the UNIT bundle. The scheme also carries
+          # BirdoVPNUITests, whose only test captures App Store screenshots and
+          # asserts on BIRDO_ANON_ID — a secret that is deliberately supplied
+          # ONLY by the screenshots job in macos.yml (-only-testing:BirdoVPNUITests,
+          # TEST_RUNNER_BIRDO_ANON_ID), never on a PR. Running the whole scheme
+          # here therefore always fails that test; nobody noticed because the
+          # missing pipefail swallowed it too.
           xcodebuild test \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
+            -only-testing:BirdoVPNTests \
             -destination "platform=iOS Simulator,id=$UDID" \
             -configuration Debug \
             ARCHS=arm64 \
