@@ -84,7 +84,7 @@ final class BirdoPQManager: @unchecked Sendable {
             return nil
         }
         guard let ct = Data(base64Encoded: ctB64), ct.count == BIRDO_PQ_CIPHERTEXT_LEN else {
-            NSLog("BirdoPQ: malformed/missing ciphertext")
+            debugLog("BirdoPQ: malformed/missing ciphertext")
             return nil
         }
         // PFA-M5 parity with Android RosenpassManager: refuse to derive a PSK
@@ -96,11 +96,11 @@ final class BirdoPQManager: @unchecked Sendable {
         // throws quantumHandshakeFailed when quantum protection is enabled.
         guard let nonceB64 = rosenpassEndpointBase64, !nonceB64.isEmpty,
               let nonce = Data(base64Encoded: nonceB64) else {
-            NSLog("BirdoPQ: server omitted/malformed per-connect nonce — bilateral PQ aborted (PFA-M5)")
+            debugLog("BirdoPQ: server omitted/malformed per-connect nonce — bilateral PQ aborted (PFA-M5)")
             return nil
         }
         guard let kp = loadOrGenerateKeypair() else {
-            NSLog("BirdoPQ: no client keypair available")
+            debugLog("BirdoPQ: no client keypair available")
             return nil
         }
 
@@ -122,7 +122,7 @@ final class BirdoPQManager: @unchecked Sendable {
             }
         }
         if rc != BIRDO_PQ_OK {
-            NSLog("BirdoPQ: derive_psk failed rc=\(rc)")
+            debugLog("BirdoPQ: derive_psk failed rc=\(rc)")
             // Wipe partial output before bailing.
             psk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
             return nil
@@ -131,7 +131,7 @@ final class BirdoPQManager: @unchecked Sendable {
         // Wipe the local copy now that we've encoded it.
         psk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
         queue.sync { currentMode = .bilateral }
-        NSLog("BirdoPQ v1 BILATERAL — quantum-resistant PSK derived (32 B, mode=bilateral)")
+        debugLog("BirdoPQ v1 BILATERAL — quantum-resistant PSK derived (32 B, mode=bilateral)")
         return pskData.base64EncodedString()
     }
 
@@ -170,12 +170,12 @@ final class BirdoPQManager: @unchecked Sendable {
                 cachedKeypair = kp
                 return kp
             }
-            NSLog("BirdoPQ: no persisted ML-KEM keypair — generating fresh (~10–50 ms)")
+            debugLog("BirdoPQ: no persisted ML-KEM keypair — generating fresh (~10–50 ms)")
             guard let kp = generateKeypair() else { return nil }
             // Best-effort persist; if it fails we still return the in-memory
             // pair so the connect attempt isn't blocked.
             if !writeKeypairToKeychain(pk: kp.pk, sk: kp.sk) {
-                NSLog("BirdoPQ: failed to persist keypair to Keychain — will regenerate next launch")
+                debugLog("BirdoPQ: failed to persist keypair to Keychain — will regenerate next launch")
             }
             cachedKeypair = kp
             return kp
@@ -187,7 +187,7 @@ final class BirdoPQManager: @unchecked Sendable {
         var sk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_SECRET_KEY_LEN))
         let rc = birdo_pq_generate_keypair(&pk, pk.count, &sk, sk.count)
         if rc != BIRDO_PQ_OK {
-            NSLog("BirdoPQ: generate_keypair failed rc=\(rc)")
+            debugLog("BirdoPQ: generate_keypair failed rc=\(rc)")
             sk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
             return nil
         }
@@ -212,7 +212,7 @@ final class BirdoPQManager: @unchecked Sendable {
         // Layout: pk (1568) || sk (3168).
         let expected = BIRDO_PQ_PUBLIC_KEY_LEN + BIRDO_PQ_SECRET_KEY_LEN
         guard data.count == expected else {
-            NSLog("BirdoPQ: stored keypair has wrong size \(data.count); discarding")
+            debugLog("BirdoPQ: stored keypair has wrong size \(data.count); discarding")
             // Self-heal: drop the corrupt blob so the next call regenerates.
             let del: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
