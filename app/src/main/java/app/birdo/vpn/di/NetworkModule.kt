@@ -22,7 +22,14 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    private val json = Json {
+    /**
+     * THE wire serializer: every Retrofit request body and response goes through
+     * this instance. `internal` (not private) so ConnectContractTest validates
+     * the bytes THIS configuration produces against the vendored backend
+     * schema — a test with its own `Json {}` would pass while the real encoder
+     * (explicitNulls, encodeDefaults, ...) drifted underneath it.
+     */
+    internal val json = Json {
         ignoreUnknownKeys = true
         coerceInputValues = true
         isLenient = false // Strict JSON parsing — reject malformed responses

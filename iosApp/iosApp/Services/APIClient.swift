@@ -83,7 +83,9 @@ final class APIClient: @unchecked Sendable {
         self.baseURL = baseURL
         self.keychain = keychain
         self.decoder = JSONDecoder()
-        self.encoder = JSONEncoder()
+        // One factory for the encoder so ConnectContractTests encodes the
+        // connect bodies with EXACTLY this configuration (K5).
+        self.encoder = ConnectWire.makeEncoder()
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
@@ -1596,50 +1598,8 @@ private struct DeleteAccountBody: Encodable {
     let password: String?
 }
 
-private struct ConnectBody: Encodable {
-    let serverNodeId: String
-    /// SSOT stable device identity — reclaims this device's own slot.
-    let deviceId: String?
-    /// On-device WireGuard (Curve25519) public key. Sending it makes the backend
-    /// use it as the peer key and omit `privateKey` from the response, so the
-    /// tunnel private key never leaves the device (parity with Android).
-    let clientPublicKey: String?
-    /// AUDIT-C1: opt the user into bilateral PQ when we have a client pk to
-    /// send. Server interprets this together with `pqClientPublicKey`.
-    let quantumProtection: Bool?
-    /// AUDIT-C1: BirdoPQ v1 ML-KEM-1024 client public key (Base64).
-    let pqClientPublicKey: String?
-    /// BirdoPQ v1 HNDL opt-in: we decapsulate the ciphertext and derive the
-    /// PSK on-device (BirdoPQManager), so the server WITHHOLDS the PSK from
-    /// the response — it never crosses the wire under classical TLS. Only ever
-    /// true alongside `pqClientPublicKey`; VPNManager fails closed if
-    /// decapsulation then fails, so this can never silently downgrade.
-    let pqClientCanDecapsulate: Bool?
-    /// REBUILD (Mobile-Client #159): this request rides the live tunnel it is
-    /// replacing — see `APIClient.getConnectConfig(serverId:rebuildOf:)`.
-    /// Twin of birdo-web `ConnectDto.rebuild` / `.currentKeyId`.
-    let rebuild: Bool?
-    /// The server-side key the live tunnel is riding; the ONE key the server
-    /// defers. Sent only together with `rebuild`.
-    let currentKeyId: String?
-}
-
-private struct MultiHopBody: Encodable {
-    let entryNodeId: String
-    let exitNodeId: String
-    let deviceId: String?
-    /// On-device WireGuard (Curve25519) public key — see ConnectBody.
-    let clientPublicKey: String?
-    let quantumProtection: Bool?
-    let pqClientPublicKey: String?
-    /// HNDL opt-in — see ConnectBody. Declared on BOTH bodies (the duplicated
-    /// wire-model twin) so the double-hop path keeps the PSK off the wire too.
-    let pqClientCanDecapsulate: Bool?
-    /// REBUILD (#159) — declared on BOTH bodies (the wire-model twin); the
-    /// backend's `multiHopConnectSchema` is `.strict()`.
-    let rebuild: Bool?
-    let currentKeyId: String?
-}
+// ConnectBody / MultiHopBody live in ConnectWire.swift: they are the K5 wire
+// contract and are compiled into BirdoVPNTests (which cannot host this file).
 
 private struct PortForwardBody: Encodable {
     let internalPort: Int

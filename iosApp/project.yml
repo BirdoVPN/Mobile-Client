@@ -241,6 +241,16 @@ targets:
       # fields precisely so QuickSelectTests can pin it here. VpnViewModel.swift
       # (its only caller) cannot be compiled into this bundle.
       - path: iosApp/Services/QuickSelect.swift
+      # K5 connect contract. Foundation-only by design: the two connect request
+      # bodies and the encoder factory APIClient serialises them with live here
+      # so ConnectContractTests can encode the REAL structs — APIClient.swift
+      # itself (keychain, KMP framework) cannot be compiled into this bundle.
+      - path: iosApp/Services/ConnectWire.swift
+      # The backend's generated connect schema, vendored byte-for-byte at the
+      # repo root (shared with the Android test) and carried as a RESOURCE so
+      # ConnectContractTests reads the same file the Android side validates.
+      - path: ../contract/vpn-protocol.schema.json
+        buildPhase: resources
       # The StoreKit testing configuration, carried as a RESOURCE of the test
       # bundle so a test can read it as JSON and prove it still declares exactly
       # the four product ids BirdoStoreProduct expects. A .storekit file that
