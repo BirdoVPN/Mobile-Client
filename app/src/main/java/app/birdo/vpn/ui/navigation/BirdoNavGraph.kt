@@ -648,6 +648,10 @@ fun BirdoNavGraph(
                         onDnsFilteringChange = { settingsViewModel.setDnsFiltering(it) },
                         onBack = { navController.popBackStack() },
                         stealthUnlocked = isOperativeOrAbove,
+                        // BirdoShield fleet gate (see VpnUiState). Same shape as
+                        // the plan gate above — server-side state, resolved
+                        // here, passed down. `null` = not known yet = available.
+                        dnsFilteringAvailable = vpnState.dnsFilteringAvailable,
                         onUpgradeRequired = {
                             vpnViewModel.fetchSubscription()
                             navController.navigate(Screen.Subscription.route)

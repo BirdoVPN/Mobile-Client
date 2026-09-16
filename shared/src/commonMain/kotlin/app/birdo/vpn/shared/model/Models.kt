@@ -233,6 +233,38 @@ data class AppUpdateInfo(
     val publishedAt: String? = null,
 )
 
+// ─── Client configuration ────────────────────────────────────────────────────
+
+/**
+ * `GET /api/client-config` — only the fields this client acts on.
+ *
+ * NOT a full mirror of the payload. The endpoint also serves cert pins,
+ * per-plan feature entitlements and consent copy; pins are vendored into
+ * `third_party/` and enforced from there, and the plan entitlements already
+ * arrive with the subscription, so modelling them here would create a second
+ * source of truth for each. Unknown keys are ignored by the shared `Json`
+ * (NetworkModule.json, `ignoreUnknownKeys = true`), so web-side additions never
+ * break a shipped client.
+ *
+ * The field is NULLABLE and defaulted, and the difference between `false` and
+ * absent is load-bearing — see [dnsFilteringAvailable].
+ */
+@Serializable
+data class ClientConfigResponse(
+    /**
+     * BirdoShield (D18) fleet gate: is `DNS_FILTERING_ENABLED` on for the fleet
+     * this account dials? The per-device opt-in is the `dnsFiltering` connect
+     * flag; this says whether that flag can do anything at all.
+     *
+     * `null` (key absent — a web deploy older than birdo-web#465) means UNKNOWN,
+     * which callers must treat as AVAILABLE, not as off. The asymmetry is the
+     * point: a wrongly-`false` value hides a feature that works, while a
+     * wrongly-available one costs a greyed-out row appearing a moment late.
+     * Only an explicit `false` disables the toggle.
+     */
+    val dnsFilteringAvailable: Boolean? = null,
+)
+
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────
 
 @Serializable

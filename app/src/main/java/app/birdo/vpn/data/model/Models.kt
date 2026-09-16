@@ -24,6 +24,7 @@ typealias NativeOAuthExchangeRequest = app.birdo.vpn.shared.model.NativeOAuthExc
 // ─── User ────────────────────────────────────────────────────────────────────
 typealias UserProfile = app.birdo.vpn.shared.model.UserProfile
 typealias AppUpdateInfo = app.birdo.vpn.shared.model.AppUpdateInfo
+typealias ClientConfigResponse = app.birdo.vpn.shared.model.ClientConfigResponse
 typealias SubscriptionStatus = app.birdo.vpn.shared.model.SubscriptionStatus
 
 // ─── Anonymous Login ─────────────────────────────────────────────────────────

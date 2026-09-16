@@ -45,6 +45,15 @@ final class APIClient: @unchecked Sendable {
     static let shared = APIClient()
 
     private let baseURL: URL
+    /// The Next.js WEB origin.
+    ///
+    /// `/api/client-config` is served by the web app, NOT by the NestJS backend
+    /// behind `api.birdo.app` (Caddy maps that subdomain straight to the API
+    /// with no `/api` prefix), so it cannot be built relative to `baseURL`.
+    /// It rides the SAME pinned `session`: `PinningDelegate`'s set IS the
+    /// `birdo.app` pin set, so this host is protected by the same verifier as
+    /// every other request.
+    private let webBaseURL: URL
     private let session: URLSession
     private let keychain: KeychainService
     private let decoder: JSONDecoder
@@ -78,9 +87,11 @@ final class APIClient: @unchecked Sendable {
 
     init(
         baseURL: URL = URL(string: "https://api.birdo.app")!,
+        webBaseURL: URL = URL(string: "https://birdo.app")!,
         keychain: KeychainService = .shared
     ) {
         self.baseURL = baseURL
+        self.webBaseURL = webBaseURL
         self.keychain = keychain
         self.decoder = JSONDecoder()
         // One factory for the encoder so ConnectContractTests encodes the
@@ -102,6 +113,37 @@ final class APIClient: @unchecked Sendable {
 
         let delegate = PinningDelegate()
         self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }
+
+    // MARK: - Client configuration
+
+    /// Fetch the public client configuration from the WEB origin.
+    ///
+    /// Bypasses the `request(...)` helper deliberately: that builds every URL
+    /// relative to `baseURL` and threads the 401-refresh machinery, neither of
+    /// which applies here. This endpoint takes NO token — the payload is
+    /// identical for every user — so it is safe before sign-in, and a 401 on it
+    /// could not be fixed by refreshing anything. It reuses `session`, which is
+    /// the part that matters: the pinning delegate, the timeouts and the
+    /// no-cookie/no-cache configuration all still apply.
+    ///
+    /// Throws on any failure. The CALLER owns the fallback, and the fallback
+    /// for the BirdoShield gate is "available" — see
+    /// `BirdoShieldGate.row(preference:available:)`. Returning a synthesized
+    /// `dnsFilteringAvailable: false` here would hide a working feature on
+    /// every offline device.
+    func fetchClientConfig() async throws -> ClientConfigResponse {
+        let url = webBaseURL.appendingPathComponent("api/client-config")
+        guard url.scheme?.lowercased() == "https" else { throw APIError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw Self.error(status: http.statusCode, body: data, structured: false)
+        }
+        return try decoder.decode(ClientConfigResponse.self, from: data)
     }
 
     // MARK: - Auth

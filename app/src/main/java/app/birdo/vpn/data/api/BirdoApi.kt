@@ -82,6 +82,25 @@ interface BirdoApi {
     @GET("updates/android/{version}")
     suspend fun checkAppUpdate(@Path("version") version: String): Response<AppUpdateInfo>
 
+    // ── Client configuration ─────────────────────────────────────
+
+    /**
+     * Public client configuration — cert pins, per-plan features, consent copy
+     * and the BirdoShield fleet gate (`dnsFilteringAvailable`).
+     *
+     * Takes an absolute [Url] because this endpoint is NOT on the Retrofit base
+     * URL: it is served by the Next.js WEB app (birdo.app), while the base URL
+     * is the NestJS backend (api.birdo.app), which has no `/api` prefix at all.
+     * The caller passes `BuildConfig.WEB_BASE_URL + "/api/client-config"` — see
+     * BirdoRepository.getClientConfig.
+     *
+     * Unauthenticated: the payload is identical for every user, and
+     * AuthInterceptor deliberately withholds the bearer token from non-API
+     * hosts. Safe to call before sign-in and cheap to repeat (ETag + CDN).
+     */
+    @GET
+    suspend fun getClientConfig(@Url url: String): Response<ClientConfigResponse>
+
     // ── User ─────────────────────────────────────────────────────
 
     @GET("auth/me")
