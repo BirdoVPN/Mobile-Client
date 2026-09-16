@@ -246,6 +246,14 @@ targets:
       # so ConnectContractTests can encode the REAL structs — APIClient.swift
       # itself (keychain, KMP framework) cannot be compiled into this bundle.
       - path: iosApp/Services/ConnectWire.swift
+      # D18 BirdoShield, response side. Foundation-only by design: the
+      # predicates that decide which resolver the wg-quick config carries —
+      # and in particular that the node's own 10.13.13.1 filtering resolver
+      # survives the RFC1918 rejection while a LAN 10.0.0.53 does not — are
+      # pure functions precisely so TunnelDnsTests can pin them here.
+      # VPNManager.swift (their only caller) cannot be compiled into this bundle,
+      # which is how #403 shipped a toggle whose response was silently discarded.
+      - path: iosApp/Services/TunnelDns.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.

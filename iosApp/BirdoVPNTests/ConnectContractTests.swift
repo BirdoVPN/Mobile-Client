@@ -364,4 +364,14 @@ final class ConnectContractTests: XCTestCase {
         let def: [String: Any] = ["properties": ["mtu": ["type": "number"]], "additionalProperties": false]
         assertRefused(["mtu": 1280], def, containing: "checker does not understand type number")
     }
+
+    // MARK: - D18 persisted key
+
+    func testTheBirdoShieldDefaultsKeyIsStable() {
+        // The toggle is persisted under this key on every installed device.
+        // SettingsViewModel writes it and APIClient reads it through the ONE
+        // constant; renaming the constant's VALUE would silently read every
+        // existing user's toggle as OFF. Change this only with a migration.
+        XCTAssertEqual(ConnectWire.dnsFilteringDefaultsKey, "dns_filtering")
+    }
 }

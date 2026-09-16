@@ -1363,7 +1363,11 @@ class BirdoVpnService : VpnService() {
         // also filters out addresses unreachable through the tunnel's routes
         // (RFC1918/link-local/ULA): depending on localNetworkSharing those
         // either leak queries onto the LAN or blackhole all name resolution.
-        for (dns in WireGuardConfigBuilder.resolveDnsServers(config, appPrefs)) {
+        // The one private address it admits — the node's own BirdoShield
+        // resolver, 10.13.13.1 — is pinned back into the tunnel below when
+        // local network sharing would otherwise leave it to the LAN.
+        val tunnelDns = WireGuardConfigBuilder.resolveDnsServers(config, appPrefs)
+        for (dns in tunnelDns) {
             try { builder.addDnsServer(InetAddress.getByName(dns)) }
             catch (e: Exception) { Log.w(TAG, "Invalid DNS: $dns") }
         }
@@ -1419,6 +1423,17 @@ class BirdoVpnService : VpnService() {
                     "224.0.0.0/3",
                 )
                 for (cidr in nonLanRoutes) {
+                    val parts = cidr.split("/")
+                    builder.addRoute(parts[0], parts[1].toInt())
+                }
+                // BirdoShield (D18): the filtering resolver (10.13.13.1) sits
+                // inside the 10.0.0.0/8 hole this set leaves for the LAN.
+                // Without a more specific route every query to it would egress
+                // on the physical network in cleartext — a DNS leak — and never
+                // reach the node. A /32 wins on longest prefix, so only the
+                // resolver is pulled back into the tunnel; the LAN stays local.
+                // Empty unless the resolved DNS holds a tunnel-gateway address.
+                for (cidr in WireGuardConfigBuilder.pinnedResolverRoutes(tunnelDns, config.assignedIp)) {
                     val parts = cidr.split("/")
                     builder.addRoute(parts[0], parts[1].toInt())
                 }

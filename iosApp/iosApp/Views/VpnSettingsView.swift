@@ -58,7 +58,7 @@ struct VpnSettingsView: View {
                         // 1200 ms debounced reapply blip as Local Network Sharing.
                         VpnToggleRow(icon: "shield.fill", iconColor: BirdoTheme.green,
                                      title: "BirdoShield",
-                                     description: "Blocks ads, trackers and malware domains at the VPN's DNS resolver. Applies on your next connection.",
+                                     description: "Blocks ads, trackers and malware domains at the VPN's DNS resolver.",
                                      isOn: $settingsVM.dnsFilteringEnabled)
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",

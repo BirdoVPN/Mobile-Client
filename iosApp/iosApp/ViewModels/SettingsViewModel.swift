@@ -63,13 +63,13 @@ final class SettingsViewModel: ObservableObject {
     /// BirdoShield (D18): per-device DNS filtering (ads, trackers, malware
     /// domains blocked at the node's resolver). OFF by default — no
     /// `register(defaults:)` entry, so an absent key reads `false`. The flag
-    /// only travels on the connect body (`APIClient` reads "dns_filtering" at
+    /// only travels on the connect body (`APIClient` reads the same key at
     /// dial time), which is why it is a tunnel-shape toggle: a flip while
     /// connected takes the same debounced reconnect as Local Network Sharing.
     @Published var dnsFilteringEnabled: Bool {
         didSet {
             guard dnsFilteringEnabled != oldValue else { return }
-            persist("dns_filtering", dnsFilteringEnabled)
+            persist(ConnectWire.dnsFilteringDefaultsKey, dnsFilteringEnabled)
             requestSettingsReapply()
         }
     }
@@ -172,7 +172,7 @@ final class SettingsViewModel: ObservableObject {
         biometricLockEnabled = d.bool(forKey: "biometric_lock")
         quantumProtectionEnabled = d.bool(forKey: "quantum_protection")
         localNetworkSharing = d.bool(forKey: "local_network_sharing")
-        dnsFilteringEnabled = d.bool(forKey: "dns_filtering")
+        dnsFilteringEnabled = d.bool(forKey: ConnectWire.dnsFilteringDefaultsKey)
         customDnsEnabled = d.bool(forKey: "custom_dns")
         customDnsPrimary = d.string(forKey: "custom_dns_primary") ?? ""
         customDnsSecondary = d.string(forKey: "custom_dns_secondary") ?? ""
@@ -291,7 +291,7 @@ final class SettingsViewModel: ObservableObject {
     /// exposed for the DNS fields' inline error state — UI feedback and the
     /// build-time gate can never drift.
     static func isValidDnsAddress(_ text: String) -> Bool {
-        VPNManager.isUsableDnsAddress(text)
+        TunnelDns.isUsableDnsAddress(text)
     }
 
     // MARK: - Reapply Plumbing (§0.6 paths 2 & 3)

@@ -323,11 +323,12 @@ final class APIClient: @unchecked Sendable {
     // MARK: - VPN Config
 
     /// BirdoShield (D18): the persisted per-device DNS-filtering opt-in.
-    /// UserDefaults key "dns_filtering", written by SettingsViewModel; an
-    /// absent key is OFF (the opt-in default), so a fresh install and a user
-    /// who never touched the toggle both send the pre-D18 connect body.
+    /// UserDefaults key `ConnectWire.dnsFilteringDefaultsKey`, written by
+    /// SettingsViewModel; an absent key is OFF (the opt-in default), so a
+    /// fresh install and a user who never touched the toggle both send the
+    /// pre-D18 connect body.
     private static var dnsFilteringEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "dns_filtering")
+        UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringDefaultsKey)
     }
 
     /// `rebuildOf`: the server-side key the LIVE tunnel is riding (Mobile-Client
@@ -358,7 +359,7 @@ final class APIClient: @unchecked Sendable {
             throw APIError.quantumKeyUnavailable
         }
         // BirdoShield (D18): per-device DNS filtering, OFF unless the user
-        // switched it on (SettingsViewModel persists "dns_filtering"). Read
+        // switched it on (SettingsViewModel persists the same key). Read
         // the raw store at dial time, like quantum above, so the flag a
         // reconnect carries is the one the user set — not a stale VM copy.
         let dnsFilteringEnabled = Self.dnsFilteringEnabled

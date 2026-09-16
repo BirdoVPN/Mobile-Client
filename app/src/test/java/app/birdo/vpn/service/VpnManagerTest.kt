@@ -283,6 +283,60 @@ class VpnManagerTest {
         }
     }
 
+    // ── BirdoShield (D18): pref → dial-time flag ───────────────────────────
+    //
+    // The review of #403 removed both `dnsFiltering = prefs.dnsFilteringEnabled`
+    // lines and the suite stayed green: the repository and serializer tests see
+    // the flag once it is a parameter, but nothing proved the PREF reaches the
+    // parameter. These four are that proof, one per dial path per state.
+
+    @Test
+    fun `connect sends dnsFiltering when the BirdoShield pref is on`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        } returns ApiResult.Success(makeConnectResponse())
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
+    @Test
+    fun `connect leaves dnsFiltering off when the BirdoShield pref is off`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns false
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = false,
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
     @Test
     fun `connect refuses quantum downgrade when PQ public key is unavailable`() = runTest {
         every { prefs.quantumProtectionEnabled } returns true
@@ -386,6 +440,55 @@ class VpnManagerTest {
 
         assertTrue(result is ApiResult.Error)
         assertTrue(vpnManager.state.value is VpnState.Error)
+    }
+
+    @Test
+    fun `connectMultiHop sends dnsFiltering when the BirdoShield pref is on`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        coEvery {
+            repository.connectMultiHop(
+                entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        } returns ApiResult.Success(makeMultiHopResponse())
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectMultiHop(
+                entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
+    @Test
+    fun `connectMultiHop leaves dnsFiltering off when the BirdoShield pref is off`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns false
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectMultiHop(
+                entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = false,
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectMultiHop(
+                entryNodeId = any(), exitNodeId = any(), deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
     }
 
     @Test

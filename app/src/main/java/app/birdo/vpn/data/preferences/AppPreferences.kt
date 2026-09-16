@@ -88,10 +88,15 @@ class AppPreferences @Inject constructor(
      *
      *  commit() like stealth so the value is durable before the connect that
      *  reads it can start. Deliberately NOT in SettingsHmac.PROTECTED_KEYS: a
-     *  rewrite can only swap which public resolver the server hands out (both
-     *  are inside the tunnel — no route, leak or kill-switch surface), and adding
-     *  a protected key forces a LEGACY_PROTECTED_KEY_SETS migration for every
-     *  installed user; the risk does not buy that. */
+     *  rewrite can only swap which resolver the server hands out — Cloudflare
+     *  or the node's own 10.13.13.1 — and both are reached THROUGH the tunnel.
+     *  The only route this pref can influence is the /32 BirdoVpnService pins
+     *  for that gateway resolver under local network sharing, and that route
+     *  pulls traffic INTO the tunnel (it is derived from the server's response,
+     *  not from the pref) — there is no leak or kill-switch surface a forged
+     *  value could open. Adding a protected key forces a
+     *  LEGACY_PROTECTED_KEY_SETS migration for every installed user; the risk
+     *  does not buy that. */
     var dnsFilteringEnabled: Boolean
         get() = prefs.getBoolean(KEY_DNS_FILTERING_ENABLED, false)
         set(value) = prefs.edit(commit = true) { putBoolean(KEY_DNS_FILTERING_ENABLED, value) }

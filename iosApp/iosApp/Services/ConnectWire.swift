@@ -28,6 +28,15 @@ enum ConnectWire {
     static func makeEncoder() -> JSONEncoder {
         JSONEncoder()
     }
+
+    /// BirdoShield (D18): the ONE UserDefaults key the toggle is persisted
+    /// under. `SettingsViewModel` writes it, `APIClient` reads it at dial time
+    /// to decide whether the connect bodies carry `dnsFiltering: true`. It is
+    /// a constant so a rename can never split the writer from the reader —
+    /// which would silently turn every installed user's toggle OFF — and it
+    /// lives here (not in either of them) because this file is the only one
+    /// of the three the test bundle can compile.
+    static let dnsFilteringDefaultsKey = "dns_filtering"
 }
 
 /// POST /vpn/connect — twin of birdo-web `ConnectDto`.

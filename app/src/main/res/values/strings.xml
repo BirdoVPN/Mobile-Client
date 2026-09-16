@@ -160,7 +160,7 @@
     <string name="vpn_settings_section_security">Security</string>
     <string name="vpn_settings_stealth_title">Stealth Mode · Premium</string>
     <string name="vpn_settings_birdoshield_title">BirdoShield</string>
-    <string name="vpn_settings_birdoshield_desc">Blocks ads, trackers and malware domains at the VPN\'s DNS resolver. Applies on your next connection.</string>
+    <string name="vpn_settings_birdoshield_desc">Blocks ads, trackers and malware domains at the VPN\'s DNS resolver.</string>
     <string name="vpn_settings_quantum_title">Quantum Protection</string>
     <string name="cd_locked_feature">Premium feature — upgrade to unlock</string>
     <!-- Home / Connect -->
