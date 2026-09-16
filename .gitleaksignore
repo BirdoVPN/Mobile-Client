@@ -5,3 +5,30 @@
 # False positive: PQ Keychain account-name constant, not a credential.
 73a6887e8595642fd6534306d03802afb41e3853:iosApp/iosApp/Services/BirdoPQManager.swift:generic-api-key:52
 27cf152d50213202d5b7fedde09d868c7bd437b3:iosApp/iosApp/Services/BirdoPQManager.swift:generic-api-key:52
+
+# False positives: BirdoPQ v1 known-answer test vectors, not credentials.
+#
+# native/testdata/ holds two committed ML-KEM-1024 fixtures that the native
+# Rust crates assert against. Both are synthetic, generated for this purpose,
+# and neither has ever been on a device, a server or a wire:
+#
+#   birdo-pq-ml-kem-1024.kat.json      a byte-for-byte copy of birdo-web
+#                                      backend/src/vpn/__fixtures__/birdo-pq-ml-kem-1024.kat.json,
+#                                      generated with @noble/post-quantum. It is
+#                                      the ONLY thing in this repo that can
+#                                      detect byte-incompatibility with the
+#                                      production server's KEM.
+#   birdo-pq-pqclean-stored-key.json   a keypair generated on a workstation with
+#                                      pqcrypto-mlkem 0.1.1 (PQClean CLEAN) so
+#                                      that the install-base guard test has a
+#                                      real pre-1.4.30 stored key to read.
+#
+# The flagged values are a shared secret and two derived preshared keys -- the
+# outputs a KAT exists to pin. Rotating them would mean regenerating the test,
+# which is the opposite of what a known-answer test is for. gitleaks fires on
+# the field NAMES (secret/key) plus the entropy of a hex digest.
+#
+# Format: <commit>:<file>:<rule>:<line>
+cc4546816bddb76cdf170ebdbc1b1cad5f8cca40:native/testdata/birdo-pq-pqclean-stored-key.json:generic-api-key:10
+cc4546816bddb76cdf170ebdbc1b1cad5f8cca40:native/testdata/birdo-pq-pqclean-stored-key.json:generic-api-key:12
+cc4546816bddb76cdf170ebdbc1b1cad5f8cca40:native/testdata/birdo-pq-ml-kem-1024.kat.json:generic-api-key:15
