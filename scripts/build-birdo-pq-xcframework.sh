@@ -146,26 +146,55 @@ isa_census "target/aarch64-apple-ios/release/libbirdo_pq_ios.a"     "aarch64-app
 isa_census "target/aarch64-apple-ios-sim/release/libbirdo_pq_ios.a" "aarch64-apple-ios-sim"
 isa_census "target/aarch64-apple-darwin/release/libbirdo_pq_ios.a"  "aarch64-apple-darwin"
 
-# birdo_pq_impl_name must be in every slice, or an Apple crash report cannot say
-# which KEM was running -- the exact gap that made the 1.4.25 attribution rest
-# on a human reading docs. Mach-O prefixes C symbols with an underscore.
+# Every #[no_mangle] extern "C" export must be present in every slice.
+#
+# birdo_pq_impl_name in particular: without it an Apple crash report cannot say
+# which KEM was running, which is the exact gap that made the 1.4.25
+# attribution rest on a human reading docs.
+#
+# Mach-O prefixes C symbols with an underscore. The symbol list is PRINTED, not
+# just tested: when this check first ran it claimed birdo_pq_impl_name was
+# missing while counting nine birdo_pq_* symbols, and there was no way to tell
+# from CI which nine it had actually seen. A check whose failure you cannot
+# diagnose is barely better than no check.
+EXPECTED_EXPORTS=(
+    birdo_pq_public_key_len
+    birdo_pq_secret_key_len
+    birdo_pq_ciphertext_len
+    birdo_pq_psk_len
+    birdo_pq_generate_keypair
+    birdo_pq_derive_psk
+    birdo_pq_impl_name
+    birdo_pq_stored_key_usable
+    birdo_pq_test_encapsulate
+)
+
 for slice in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
              aarch64-apple-darwin x86_64-apple-darwin; do
-    syms="$(nm -g "target/${slice}/release/libbirdo_pq_ios.a" 2>&1 || true)"
-    found="$(printf '%s\n' "${syms}" | grep -c '_birdo_pq_' || true)"
-    if [[ "${found}" -eq 0 ]]; then
-        echo "ERROR: read no birdo_pq_* symbols at all out of ${slice}, not even birdo_pq_derive_psk," >&2
-        echo "       which the app links against and therefore must be there. The SYMBOL CHECK is" >&2
-        echo "       broken, not the export. First lines of nm output:" >&2
-        printf '%s\n' "${syms}" | head -5 | sed 's/^/       /' >&2
-        exit 1
+    archive="target/${slice}/release/libbirdo_pq_ios.a"
+    # --defined-only so an undefined reference cannot be mistaken for an export;
+    # -j so the output is bare symbol names with no addresses or member headers.
+    syms="$(nm -g --defined-only -j "${archive}" 2>/dev/null || true)"
+    if [[ -z "$(printf '%s\n' "${syms}" | grep '^_birdo_pq_' || true)" ]]; then
+        # Fall back to plain `nm -g` for older cctools that lack the long flags.
+        syms="$(nm -g "${archive}" 2>/dev/null || true)"
     fi
-    if ! printf '%s\n' "${syms}" | grep -q '_birdo_pq_impl_name'; then
-        echo "ERROR: ${slice} exports ${found} birdo_pq_* symbol(s) but not birdo_pq_impl_name." >&2
+    seen="$(printf '%s\n' "${syms}" | grep -o 'birdo_pq_[a-z_]*' | sort -u || true)"
+    echo "  ${slice} exports: $(printf '%s' "${seen}" | tr '\n' ' ')"
+    missing=""
+    for want in "${EXPECTED_EXPORTS[@]}"; do
+        printf '%s\n' "${seen}" | grep -qx "${want}" || missing="${missing} ${want}"
+    done
+    if [[ -n "${missing}" ]]; then
+        echo "ERROR: ${slice} is missing C export(s):${missing}" >&2
+        echo "       Raw nm output (first 30 lines) follows. If NOTHING is listed, the symbol" >&2
+        echo "       scan is broken rather than the export -- birdo_pq_derive_psk must be there," >&2
+        echo "       the app links against it." >&2
+        printf '%s\n' "${syms}" | head -30 | sed 's/^/       /' >&2
         exit 1
     fi
 done
-echo "  ok: birdo_pq_impl_name exported by all five slices"
+echo "  ok: all ${#EXPECTED_EXPORTS[@]} C exports present in all five slices"
 
 # Lipo the simulator slices into a single fat archive (xcframework wants
 # one archive per platform-variant).
