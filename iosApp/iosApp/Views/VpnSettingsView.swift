@@ -56,10 +56,25 @@ struct VpnSettingsView: View {
                         // flag only rides the connect body — the description
                         // says so — and a flip while connected takes the same
                         // 1200 ms debounced reapply blip as Local Network Sharing.
-                        VpnToggleRow(icon: "shield.fill", iconColor: BirdoTheme.green,
+                        // Disabled, not hidden, when the FLEET gate is off:
+                        // there is nothing for the user to buy or change, so
+                        // the row simply states why. Their stored preference is
+                        // untouched and returns on its own when the gate does.
+                        // Twin of Android's `birdoShieldRowState`.
+                        let shield = BirdoShieldGate.row(
+                            preference: settingsVM.dnsFilteringEnabled,
+                            available: settingsVM.dnsFilteringAvailable
+                        )
+                        VpnToggleRow(icon: "shield.fill",
+                                     iconColor: shield.isEnabled
+                                         ? BirdoTheme.green : BirdoTheme.onSurfaceFaint,
                                      title: "BirdoShield",
-                                     description: "Blocks ads, trackers and malware domains at the VPN's DNS resolver.",
-                                     isOn: $settingsVM.dnsFilteringEnabled)
+                                     description: shield.unavailable
+                                         ? BirdoShieldGate.unavailableReason
+                                         : "Blocks ads, trackers and malware domains at the VPN's DNS resolver.",
+                                     isOn: $settingsVM.dnsFilteringEnabled,
+                                     isEnabled: shield.isEnabled,
+                                     displayOn: shield.isOn)
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",
                                      description: "Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN",
@@ -82,6 +97,10 @@ struct VpnSettingsView: View {
         // Android parity: sub-screens hide the bottom tab bar too.
         .modifier(HideNavigationAndTabBar())
         .onAppear { syncFromStore() }
+        // The fleet gate is public and cheap (ETag + CDN), so it is refreshed
+        // every time this screen opens rather than cached for the session: the
+        // one screen that renders it is the one place it has to be current.
+        .task { await settingsVM.refreshClientConfig() }
         .onDisappear {
             // §0.6 path 3: one blip with the FINAL field values (port/MTU).
             settingsVM.commitPendingReapply()
@@ -398,9 +417,43 @@ private struct VpnToggleRow: View {
     let title: String
     let description: String
     @Binding var isOn: Bool
+    /// When false the row is inert: no tap, no toggle gesture, muted styling.
+    /// Defaults to true so every existing call site is unchanged.
+    var isEnabled: Bool = true
+    /// What the switch SHOWS, when that differs from the stored binding.
+    ///
+    /// A disabled row must read OFF even though the user's persisted preference
+    /// is ON — the point is that the preference is kept, not applied. Binding
+    /// the switch straight to `isOn` would either show the lie or require
+    /// clearing the preference to hide it, and clearing it is the one thing
+    /// this must not do. `nil` means "show the binding", the normal case.
+    var displayOn: Bool? = nil
+
+    /// The binding BOTH switches use: it reads what the row shows and writes to
+    /// the real preference.
+    ///
+    /// The write half is load-bearing, and only on the accessibility side.
+    /// `.accessibilityRepresentation` REPLACES this row's accessibility, so
+    /// VoiceOver activates the representation's own Toggle and never reaches
+    /// the enclosing Button's action. A `.constant` binding's setter is a
+    /// no-op, so binding the representation to one makes the row impossible to
+    /// toggle under VoiceOver — for Local Network Sharing, which has no gate at
+    /// all, permanently. The visible Toggle is `allowsHitTesting(false)` and
+    /// never writes, but it shares this binding so the two cannot drift.
+    /// The `isEnabled` guard mirrors the Button's own.
+    private var shownBinding: Binding<Bool> {
+        Binding(
+            get: { self.displayOn ?? self.isOn },
+            set: { newValue in
+                guard self.isEnabled else { return }
+                self.isOn = newValue
+            }
+        )
+    }
 
     var body: some View {
         Button {
+            guard isEnabled else { return }
             withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
                 isOn.toggle()
             }
@@ -413,7 +466,7 @@ private struct VpnToggleRow: View {
                         .frame(width: 24)
                     VpnRowText(title: title, description: description)
                     Spacer(minLength: 8)
-                    Toggle("", isOn: $isOn)
+                    Toggle("", isOn: shownBinding)
                         .labelsHidden()
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
@@ -421,8 +474,12 @@ private struct VpnToggleRow: View {
             }
         }
         .buttonStyle(PressScaleButtonStyle())
+        .disabled(!isEnabled)
         .accessibilityRepresentation {
-            Toggle(isOn: $isOn) { Text(title) }
+            // VoiceOver must hear the same thing the screen shows: a disabled
+            // row reads OFF and is not actionable, whatever is persisted.
+            Toggle(isOn: shownBinding) { Text(title) }
+                .disabled(!isEnabled)
         }
     }
 }
