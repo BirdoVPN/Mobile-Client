@@ -391,6 +391,19 @@ data class ConnectRequest(
      * can obtain a peer. Null on non-Play builds / when integrity is unavailable.
      */
     val integrityToken: String? = null,
+    /**
+     * BirdoShield (D18): per-DEVICE opt-in to the filtering DNS resolver
+     * (ads, trackers, malware domains blocked at the node's Blocky). Sent at
+     * connect time exactly like [stealthMode] — the server decides, from this
+     * flag plus its fleet gate, which `dns` array the returned config carries,
+     * so the choice takes effect on the NEXT connection, never mid-session.
+     *
+     * Default false, and NetworkModule.json keeps defaults off the wire, so an
+     * untouched toggle sends exactly the pre-D18 body: a backend that predates
+     * the field (its ConnectDto is forbidNonWhitelisted) only ever sees the key
+     * when the user has switched it on. Not plan-gated. Twin: [MultiHopConnectRequest].
+     */
+    val dnsFiltering: Boolean = false,
 )
 
 @Serializable
@@ -519,6 +532,13 @@ data class MultiHopConnectRequest(
      * MUST attach the same token single-hop does.
      */
     val integrityToken: String? = null,
+    /**
+     * BirdoShield (D18) — see [ConnectRequest.dnsFiltering]. Declared on BOTH
+     * request types (the duplicated wire-model twin): the backend's
+     * multiHopConnectSchema carries the same optional boolean, so a double-hop
+     * user gets the filtering resolver exactly as a single-hop one does.
+     */
+    val dnsFiltering: Boolean = false,
 )
 
 @Serializable

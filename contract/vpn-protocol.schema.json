@@ -99,6 +99,9 @@
         "pqClientCanDecapsulate": {
           "type": "boolean"
         },
+        "dnsFiltering": {
+          "type": "boolean"
+        },
         "rebuild": {
           "type": "boolean"
         },
@@ -162,6 +165,9 @@
           "maxLength": 2200
         },
         "pqClientCanDecapsulate": {
+          "type": "boolean"
+        },
+        "dnsFiltering": {
           "type": "boolean"
         },
         "rebuild": {
