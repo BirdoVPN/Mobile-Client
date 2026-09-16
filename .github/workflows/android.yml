@@ -159,6 +159,130 @@ jobs:
           name: test-results
           path: app/build/reports/tests/testDebugUnitTest/
 
+  pq-cpu-proof:
+    name: PQ KEM on a CPU without FEAT_SHA3 (QEMU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # WHY A WHOLE JOB FOR THIS
+    #
+    # Every other PQ control in this workflow reads bytes: resolved Cargo
+    # features, a --cfg in a config file, a disassembly census. None of them can
+    # answer the only question that actually killed users in 1.4.25 -- does this
+    # code run on a core that lacks ARMv8.2 FEAT_SHA3?
+    #
+    # The KEM is RustCrypto ml-kem, whose Keccak backend (keccak 0.2.2,
+    # backends/aarch64_sha3.rs) carries the SAME four mnemonics PQClean's
+    # keccak2x/feat.S did -- eor3/rax1/xar/bcax -- behind a runtime check on
+    # cpufeatures' getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). That check is
+    # now a single point of failure whose wrong answer is an instant SIGILL on
+    # seven device models. So it gets EXECUTED here, on a core that does not have
+    # the extension, exactly the way the 1.4.25 fix was proved.
+    #
+    # Target note: aarch64-unknown-linux-gnu, not aarch64-linux-android. The
+    # instruction selection, the keccak backend and the cpufeatures HWCAP path
+    # are identical (cpufeatures reads AT_HWCAP through getauxval on both); what
+    # differs is the libc, which is not what is under test, and gnu runs under
+    # plain qemu-user with no bionic loader to stage.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install QEMU user-mode and an aarch64 cross toolchain
+        run: |
+          sudo apt-get update
+          # libc6-dev-arm64-cross is NOT optional and is NOT pulled in by
+          # gcc-aarch64-linux-gnu under --no-install-recommends: without it the
+          # link dies on "cannot find Scrt1.o". It is also what provides the
+          # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
+          # to find the dynamic loader.
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
+          qemu-aarch64 --version | head -1
+          ls /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
+
+      - name: Add the aarch64 Rust target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: Build birdo-pq-smoke for aarch64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          cd native/birdo-pq-server
+          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
+          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-gated"
+
+      # If the binary has no FEAT_SHA3 instructions at all, every run below
+      # passes for the wrong reason and proves nothing. Assert the thing we are
+      # testing is present BEFORE testing it.
+      - name: Assert the gated build really contains FEAT_SHA3 instructions
+        run: |
+          set -euo pipefail
+          n=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" \
+                | awk '{print $3}' | grep -cE '^(eor3|rax1|xar|bcax)$' || true)
+          echo "FEAT_SHA3 instructions in the gated build: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::the aarch64 smoke binary contains no eor3/rax1/xar/bcax, so running it on a core without FEAT_SHA3 proves nothing. Either keccak stopped shipping its aarch64 backend (good news, but this job must be rewritten) or the build picked up the soft-backend cfg."
+            exit 1
+          fi
+          g=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" | grep -c getauxval || true)
+          echo "getauxval call sites: $g"
+          if [ "$g" -eq 0 ]; then
+            echo "::error::no getauxval in the gated build: the FEAT_SHA3 instructions above are present with NO runtime CPU check. That is the exact shape of the 1.4.25 SIGILL."
+            exit 1
+          fi
+
+      - name: Run on a core WITHOUT FEAT_SHA3 (cortex-a53) — must exit 0
+        run: |
+          set -euo pipefail
+          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 \
+            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-a53.txt"
+
+      - name: Run on a core WITH FEAT_SHA3 (max) — must exit 0 and agree
+        run: |
+          set -euo pipefail
+          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu max \
+            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-max.txt"
+          # The random round trip differs per run by design, so compare the
+          # deterministic lines: same KEM answer on both dispatch paths.
+          for key in KAT_PSK STORED_PQCLEAN_PSK; do
+            a=$(grep "^$key=" "$RUNNER_TEMP/out-a53.txt")
+            b=$(grep "^$key=" "$RUNNER_TEMP/out-max.txt")
+            if [ "$a" != "$b" ]; then
+              echo "::error::$key differs between the soft and FEAT_SHA3 Keccak backends: '$a' vs '$b'. The fast path computes a DIFFERENT answer, which would mean half the fleet cannot complete a handshake."
+              exit 1
+            fi
+            echo "  ok: $a (identical on cortex-a53 and max)"
+          done
+
+      # THE NEGATIVE CASE. Without it, the three runs above could all be
+      # passing because the harness never reaches Keccak at all.
+      #
+      # -C target-feature=+sha3 makes cpufeatures' __unless_target_features!
+      # macro elide the HWCAP check and return a constant true, so the fast
+      # backend runs unconditionally. On cortex-a53 the first eor3 must SIGILL
+      # (exit 132 = 128 + SIGILL(4)).
+      - name: A +sha3 build MUST SIGILL on cortex-a53 (negative case)
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
+        run: |
+          set -euo pipefail
+          cd native/birdo-pq-server
+          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
+          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-ungated"
+          cd "$GITHUB_WORKSPACE"
+          set +e
+          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 "$RUNNER_TEMP/smoke-ungated"
+          rc=$?
+          set -e
+          echo "exit code: $rc"
+          if [ "$rc" -ne 132 ]; then
+            echo "::error::a build with -C target-feature=+sha3 did NOT SIGILL (exit 132) on cortex-a53; it exited $rc. Either QEMU is not enforcing the ISA of the core it was told to emulate, or this binary never reaches Keccak -- in which case the positive runs above prove nothing and this job is worthless as written."
+            exit 1
+          fi
+          echo "  ok: exit 132 (SIGILL), as it must be — the harness does reach Keccak"
+
   codeql-java-kotlin:
     name: Analyze (java-kotlin)
     runs-on: ubuntu-latest
@@ -281,29 +405,162 @@ jobs:
       # that was discovered only by the release job, i.e. after merge to the
       # branch that deploys. Building it here costs a cargo-ndk cross-compile
       # and buys a real artifact to gate on.
-      # Two controls that run BEFORE the cross-compile, in seconds:
+      # Four controls that run BEFORE the cross-compile, in seconds:
       #
-      #   1. check_pq_features.sh asks Cargo which features pqcrypto-mlkem
-      #      actually resolves to, per crate and target. `neon` is the feature
-      #      that shipped the 1.4.25 SIGILL, and Cargo feature unification can
-      #      turn it back on from ANY crate in the graph while our own
+      #   1. check_pq_features.sh asks Cargo what the KEM dependency actually
+      #      resolves to, per crate and target: pqcrypto-* absent, ml-kem at
+      #      the exact pinned version with exactly the reviewed features, and
+      #      -- because it is a --cfg and not a feature, so cargo tree cannot
+      #      see it -- the soft-Keccak backend flag present in
+      #      .cargo/config.toml and nowhere else. Cargo feature unification can
+      #      turn a feature back on from ANY crate in the graph while our own
       #      Cargo.toml line still reads `default-features = false`. The
-      #      disassembly gate below would catch that too -- after a full
-      #      cargo-ndk build, with a less specific error.
-      #   2. The gate's own self-test proves, on this runner with this
+      #      disassembly gate below would catch the consequence too -- after a
+      #      full cargo-ndk build, with a less specific error.
+      #   2. check_pq_docs.sh fails if any file still claims the post-migration
+      #      build is CLEAN-only (PQ-DOCS-OK: named, not claimed), that the
+      #      C/asm path is "removed entirely", or that the crash class is
+      #      "structurally impossible" (PQ-DOCS-OK: named, not claimed). The 1.4.25
+      #      SIGILL was attributed by a human reading docs/SENTRY-SETUP.md;
+      #      wrong docs mis-attribute the next incident.
+      #   3. cargo test/clippy/fmt for all three native crates. Until 2026-09
+      #      no cargo test EVER ran in this workflow, so the KAT that proves
+      #      byte-compatibility with the @noble server would have been
+      #      decoration. The minimum test count is part of the assertion:
+      #      deleting a #[cfg(test)] module reports "0 tests" and would
+      #      otherwise be a silent pass.
+      #   4. The gate's own self-test proves, on this runner with this
       #      disassembler, that scripts/check_no_sha3_ext.sh fails on a
       #      hand-assembled eor3 and passes a HWCAP-gated LSE helper. A gate
       #      that is never shown to bite is a gate nobody can trust green.
-      - name: Assert pqcrypto-mlkem resolves to CLEAN-only features
+      - name: Assert the PQ KEM dependency graph is exactly what was reviewed
         run: |
           chmod +x scripts/check_pq_features.sh
           scripts/check_pq_features.sh
+
+      - name: Assert no falsified PQ claims survive in the tree
+        run: |
+          chmod +x scripts/check_pq_docs.sh
+          scripts/check_pq_docs.sh
+
+      # Two gates over the parts of the migration that a library-side check
+      # cannot see, both added because the first cut of this PR failed them:
+      #
+      #   check_pq_rng_panics.sh -- the migration was sold as removing "an FFI
+      #     panic on RNG failure". `DecapsulationKey::generate()` is
+      #     `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common 0.2.2
+      #     src/generate.rs:42) under a literal "# Panics" doc, and both native
+      #     crates set panic = "abort": the panic had been MOVED, not removed.
+      #     Production code must call try_generate().
+      #
+      #   check_pq_ios_wiring.sh -- birdo_pq_stored_key_usable was written,
+      #     declared, exported and symbol-checked in all three Apple slices,
+      #     and called from nowhere. iosApp/ was not touched at all. Every
+      #     existing check looked at the LIBRARY; none asked whether the app
+      #     used it. An export nobody calls is not a mitigation, and on iOS
+      #     that one would have meant quantumHandshakeFailed on every connect,
+      #     forever, for any install with a stored key ml-kem now rejects.
+      #     Runs here, on ubuntu, because ios.yml fires only on android-v*
+      #     tags -- a gate that cannot run on a PR does not gate the PR.
+      - name: Assert the PQ mitigations are wired, not merely exported
+        run: |
+          chmod +x scripts/check_pq_rng_panics.sh scripts/check_pq_ios_wiring.sh
+          scripts/check_pq_rng_panics.sh
+          scripts/check_pq_ios_wiring.sh
+
+      # Host-target, so no NDK is involved and the crypto actually executes.
+      # MIN_TESTS is per crate and is the point of the step: `cargo test` on a
+      # crate whose test module was deleted exits 0 with "0 tests".
+      - name: Native crates — fmt, clippy and tests
+        run: |
+          set -euo pipefail
+          declare -A MIN_TESTS=(
+            [rosenpass-jni]=12
+            [birdo-pq-ios]=13
+            [birdo-pq-server]=10
+          )
+          rustup component add rustfmt clippy
+          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+            echo "::group::native/$crate"
+            (
+              cd "native/$crate"
+              cargo fmt --check
+              cargo clippy --all-targets --locked -- -D warnings
+              cargo test --locked 2>&1 | tee "$RUNNER_TEMP/$crate-tests.log"
+            )
+            passed=$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/$crate-tests.log" | awk '{s+=$1} END {print s+0}')
+            want="${MIN_TESTS[$crate]}"
+            if [ "$passed" -lt "$want" ]; then
+              echo "::error::native/$crate ran $passed test(s), expected at least $want. A deleted #[cfg(test)] module exits 0 with '0 tests'; that is why this number is pinned. If tests were deliberately removed, say which and why, and lower the number in the same commit."
+              exit 1
+            fi
+            echo "  ok: native/$crate ran $passed test(s) (minimum $want)"
+            echo "::endgroup::"
+          done
+
+      # The advisory check the migration was FOR. pqcrypto-mlkem,
+      # pqcrypto-traits and pqcrypto-internals are unmaintained by advisory
+      # (RUSTSEC-2026-0161/-0162/-0163, 2026-06-04) because PQClean upstream was
+      # archived read-only on 2026-08-04; RUSTSEC-2026-0161's own remediation
+      # text says "Users should migrate to the `ml-kem` crate." Running the
+      # check is what stops the same thing accumulating silently again.
+      #
+      # `--deny warnings` on purpose: "unmaintained" is a warning, not a
+      # vulnerability, and it was a warning for three months before anyone
+      # noticed. A crypto dependency nobody maintains is a build failure here.
+      - name: cargo audit for every native crate
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked --version 0.22.0
+          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+            echo "::group::cargo audit native/$crate"
+            ( cd "native/$crate" && cargo audit --deny warnings -f Cargo.lock )
+            echo "::endgroup::"
+          done
 
       - name: ISA gate self-test against committed fixtures
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
           chmod +x scripts/check_no_sha3_ext.sh scripts/tests/check_no_sha3_ext_test.sh
           scripts/tests/check_no_sha3_ext_test.sh
+
+      # THE NEGATIVE CASE. This is the only step that catches the one known way
+      # to silently re-arm the 1.4.25 crash class.
+      #
+      # ml-kem's Keccak backend is gated at runtime on cpufeatures'
+      # getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). But cpufeatures'
+      # internal __unless_target_features! macro ELIDES that check and returns a
+      # constant `true` when the feature is statically enabled -- so
+      # RUSTFLAGS='-C target-feature=+sha3' (or any -C target-cpu above the
+      # fleet floor) produces a library that executes eor3/rax1/xar/bcax
+      # unconditionally, on every device, with no check left to fail.
+      #
+      # So we build exactly that configuration on purpose and assert the ISA
+      # gate FAILS on it. A gate that has never been shown to bite on the real
+      # library -- as opposed to a hand-assembled fixture -- is a gate nobody
+      # can trust green. If this step starts PASSING, the gate has stopped
+      # reading the shipped library and every green run above it is worthless.
+      - name: ISA gate must FAIL a deliberately +sha3 build (negative case)
+        env:
+          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x scripts/check_no_sha3_ext.sh
+          out="$RUNNER_TEMP/sha3-negative/arm64-v8a"
+          mkdir -p "$out"
+          # RUSTFLAGS as an env var REPLACES .cargo/config.toml's target
+          # rustflags, so this build has neither the soft-Keccak cfg nor the
+          # 16 KB alignment flag -- which is the point: it is the shape a
+          # careless RUSTFLAGS export actually produces.
+          ( cd native/rosenpass-jni && cargo ndk -t arm64-v8a -o "$out/.." build --release )
+          test -f "$out/librosenpass_jni.so" || {
+            echo "::error::the negative-case build produced no library, so nothing was tested"; exit 1; }
+          if scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/sha3-negative"; then
+            echo "::error::check_no_sha3_ext PASSED a library built with -C target-feature=+sha3. That build statically enables FEAT_SHA3, which makes cpufeatures elide the HWCAP check entirely -- the exact shape of the 1.4.25 SIGILL. The gate is not reading the shipped library, or its rule table no longer covers eor3/rax1/xar/bcax. Every green ISA-gate run is worthless until this is fixed."
+            exit 1
+          fi
+          echo "  ok: the ISA gate rejects a +sha3 build, as it must"
 
       # native/build.sh runs scripts/check_no_sha3_ext.sh on its own output
       # (app/src/main/jniLibs) when it can find a disassembler; on this runner
@@ -604,9 +861,12 @@ jobs:
           ROSENPASS_ISA_GATE_REQUIRED: "1"
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x ./gradlew scripts/check_pq_features.sh
-          # Same pre-build feature assertion as the PR path (see the build job).
+          chmod +x ./gradlew scripts/check_pq_features.sh scripts/check_pq_docs.sh scripts/check_pq_rng_panics.sh scripts/check_pq_ios_wiring.sh
+          # Same pre-build assertions as the PR path (see the build job).
           scripts/check_pq_features.sh
+          scripts/check_pq_docs.sh
+          scripts/check_pq_rng_panics.sh
+          scripts/check_pq_ios_wiring.sh
           ./gradlew :app:buildRustLibs
           ./gradlew assembleRelease
           # -PplayBuild flips BuildConfig.IS_PLAY_BUILD, so the bundle is a
@@ -655,13 +915,19 @@ jobs:
           scripts/check_16kb_alignment.sh "$RUNNER_TEMP/aab-libs/base/lib"
 
       # A SIGILL crash shipped in 1.4.25: pqcrypto-mlkem's default `neon` feature
-      # compiles PQClean's AArch64 ML-KEM, which reaches 64 ARMv8.2 SHA3-extension
+      # compiled PQClean's AArch64 ML-KEM, which reaches 64 ARMv8.2 SHA3-extension
       # instructions with no runtime CPU check. FEAT_SHA3 is OPTIONAL, so on any
       # arm64 device without it the first `eor3` killed the process inside
       # nativeGenerateKeypair -- and with PQ default-ON, took the connection with
       # it. Reported from a Galaxy A70 (Snapdragon 675, ARMv8.2-A without
-      # FEAT_SHA3). This asserts the opcodes are absent from what actually ships,
-      # so re-enabling the feature fails the build instead of the user's phone.
+      # FEAT_SHA3).
+      #
+      # The KEM is now RustCrypto ml-kem, which does NOT remove those mnemonics
+      # -- keccak 0.2.2 ships the same four, from the same XKCP source -- but
+      # gates them on getauxval(AT_HWCAP), and .cargo/config.toml additionally
+      # pins --cfg keccak_backend="soft" so the linker drops them. This step
+      # asserts the opcodes are absent from what actually ships, so a dropped
+      # cfg or a stray RUSTFLAGS fails the build instead of the user's phone.
       #
       # BOTH shipped artifacts, each from its own bytes. The AAB is what Play
       # serves and the sideload APK is what the GitHub release serves; they

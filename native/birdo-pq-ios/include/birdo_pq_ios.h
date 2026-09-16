@@ -1,7 +1,9 @@
 // BirdoPQ v1 — ML-KEM-1024 PSK derivation (C ABI for iOS / Swift).
 //
-// Auto-checked against the Rust definitions by `cargo test` in
-// birdo-pq-ios. If you change a signature here, change it in
+// `c_header_declares_every_export` in src/lib.rs asserts that every
+// #[no_mangle] extern "C" symbol in the Rust source is declared here (it did
+// NOT before 2026-09, despite this comment claiming so). Signatures
+// themselves are still on you: if you change one here, change it in
 // `src/lib.rs` and re-run `scripts/build-birdo-pq-xcframework.sh`.
 
 #ifndef BIRDO_PQ_IOS_H
@@ -47,13 +49,37 @@ int32_t birdo_pq_derive_psk(
     const uint8_t* nonce, size_t nonce_len,
     uint8_t* out_psk, size_t out_psk_len);
 
-// Test-only encapsulator — used by Swift unit tests for round-trip
-// validation. Do not call from production code.
+// Test-only encapsulator. Exported so a round trip can be exercised without
+// the backend. NOTE: no Swift code calls it -- the round trip is exercised by
+// `cargo test` in this crate instead, and scripts/check_pq_ios_wiring.sh lists
+// it (with the four *_len accessors) as the only exports allowed to have no
+// Swift call site. Do not call from production code.
 int32_t birdo_pq_test_encapsulate(
     const uint8_t* pk, size_t pk_len,
     uint8_t* out_ct, size_t out_ct_len,
     uint8_t* out_psk, size_t out_psk_len,
     const uint8_t* nonce, size_t nonce_len);
+
+// Which ML-KEM implementation this library was built with, as a
+// NUL-terminated static C string: "mlkem1024-rustcrypto" for RustCrypto
+// ml-kem, "mlkem1024-clean" for the PQClean CLEAN C it replaced. Never null;
+// the caller must not free it. Android has had the equivalent
+// (nativeImplName) since the 1.4.25 SIGILL post-mortem; without this, an
+// Apple-side crash in the same class could not name the implementation.
+// Attach it to crash metadata.
+const char* birdo_pq_impl_name(void);
+
+// Is a Keychain-persisted 3168-byte secret key still loadable by the linked
+// KEM? Returns 1 for yes, 0 for no.
+//
+// ml-kem enforces FIPS 203 section 7.3 -- the expanded key embeds H(ek),
+// which is recomputed on load and compared -- where the previous
+// implementation checked only the length. A key that fails this is NOT
+// recoverable, so a 0 here (and likewise BIRDO_PQ_ERR_BAD_SECRET_KEY from
+// birdo_pq_derive_psk on a correctly-sized key) means "delete the Keychain
+// item and generate a fresh keypair", not "retry". The server re-pins the new
+// public key on the next handshake.
+int32_t birdo_pq_stored_key_usable(const uint8_t* sk, size_t sk_len);
 
 #ifdef __cplusplus
 }

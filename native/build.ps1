@@ -76,7 +76,7 @@ finally {
 #
 # The same bash script CI runs on the packaged APK/AAB (scripts/
 # check_no_sha3_ext.sh), run here on the jniLibs output so a re-enabled
-# pqcrypto-mlkem `neon`/`avx2` feature (the 1.4.25 SIGILL) fails on the
+# Keccak/SHA-NI backend reaching an optional extension (the 1.4.25 SIGILL) fails on the
 # developer's machine. It needs bash (Git for Windows ships one) and a
 # disassembler: the NDK's llvm-objdump.exe (via ANDROID_NDK_HOME) or
 # `rustup component add llvm-tools`. Missing either is a LOUD warning locally

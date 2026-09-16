@@ -2,6 +2,11 @@
 name = "rosenpass-jni"
 version = "0.2.1"
 edition = "2021"
+# ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
+# edition 2024 with rust-version = "1.85". Declared here so an older toolchain
+# fails with a message that names the requirement instead of an edition error
+# inside a dependency. See rust-toolchain.toml.
+rust-version = "1.85"
 publish = false
 description = "BirdoPQ post-quantum WireGuard PSK derivation — JNI bindings for the Birdo Android client."
 license = "Apache-2.0"
@@ -24,87 +29,89 @@ hmac = "0.12"
 hkdf = "0.12"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 
-# Random for ephemeral material (uses the OS CSPRNG via getrandom)
-rand_core = { version = "0.6", features = ["getrandom"] }
-getrandom = { version = "0.2", features = ["std"] }
-
 # Post-quantum primitive: ML-KEM-1024 (FIPS 203), the strongest standardised
-# NIST PQ KEM. Public key ~1568 B, ciphertext ~1568 B, shared secret 32 B.
-# This is the same KEM Mullvad uses in their PQ-PSK product.
-# NO DEFAULT FEATURES -- this is a crash fix, not a preference.
+# NIST PQ KEM. Public key 1568 B, secret key 3168 B, shared secret 32 B.
 #
-# pqcrypto-mlkem's defaults are ["avx2", "neon", "std"]. With `neon` on, build.rs
-# compiles PQClean's AArch64 ML-KEM and sets `enable_aarch64_neon`, which switches
-# the FFI bindings from PQCLEAN_MLKEM1024_CLEAN_* to PQCLEAN_MLKEM1024_AARCH64_*.
-# That path pulls in pqclean/common/keccak2x/feat.S, which uses 64 ARMv8.2 SHA3
-# instructions -- eor3 x10, rax1 x5, xar x24, bcax x25 -- with no `.arch` guard
-# and, critically, NO RUNTIME CPU DETECTION. The selection is compile-time only:
+# ── DECISION RECORD: RustCrypto ml-kem, exact-pinned ───────────────────────
 #
-#     if target_arch == "aarch64" && neon_enabled { build_aarch64!("ml-kem-1024"); }
+# Status 2026-09-16. This replaced `pqcrypto-mlkem` (PQClean's portable CLEAN
+# C) after the 1.4.25 SIGILL post-mortem. Read all four points before changing
+# this line; three of them are counter-intuitive.
 #
-# FEAT_SHA3 is OPTIONAL in ARMv8.2-A. On any arm64 device without it, the first
-# `eor3` executed raises SIGILL and the process dies. That is a hard crash in
-# nativeGenerateKeypair, i.e. before a tunnel can be established at all, and with
-# PQ default-ON it takes the whole connection with it. Reported in production on
-# 1.4.25 from a Galaxy A70 (Snapdragon 675 / Kryo 460 -- ARMv8.2-A WITHOUT
-# FEAT_SHA3), and it applies to every mid-range SoC that omits the extension.
+# 1. WHY WE LEFT pqcrypto-mlkem.
+#    Not because it was wrong — it was correct, and its bytes are what is
+#    sealed on every existing device. Because it is DEAD. PQClean upstream was
+#    archived read-only on 2026-08-04 (PQClean/PQClean#604), so no further
+#    security patch will ever land on the C we shipped, and RustSec filed
+#    three unmaintained advisories on 2026-06-04: RUSTSEC-2026-0161
+#    (pqcrypto-mlkem), -0162 (pqcrypto-traits), -0163 (pqcrypto-internals).
+#    RUSTSEC-2026-0161's own remediation text reads "Users should migrate to
+#    the `ml-kem` crate."
 #
-# The portable CLEAN implementation is plain C and runs on every arm64. ML-KEM
-# keygen there is on the order of a few hundred microseconds and happens once per
-# handshake, so the cost is not measurable next to the network round trip -- and
-# a slower handshake beats a SIGILL for every affected user.
+# 2. WHAT THIS DOES *NOT* FIX: the FEAT_SHA3 opcodes.
+#    The 1.4.25 crash was PQClean's AArch64 ML-KEM reaching ARMv8.2 FEAT_SHA3
+#    instructions (eor3/rax1/xar/bcax in pqclean/common/keccak2x/feat.S) with
+#    a compile-time-only selection — the estate's own note recorded the gate
+#    as a literal `if true`. A DEFAULT aarch64 build of ml-kem contains the
+#    SAME FOUR MNEMONICS: ml-kem 0.3.2 -> sha3 0.11 -> keccak 0.2.2 ships
+#    src/backends/aarch64_sha3.rs, adapted from the same XKCP/K12
+#    KeccakP-1600-ARMv8Asha3.S PQClean vendored. Measured: 64 instructions,
+#    eor3=10, rax1=5, xar=24, bcax=25.
 #
-# Restoring the optimised path needs runtime dispatch on getauxval(AT_HWCAP) &
-# HWCAP_SHA3, which this crate does not offer. Do not re-enable `neon` without it.
+#    What changed is the GATE, not the absence of opcodes:
+#      keccak-0.2.2/src/lib.rs:17     cpufeatures::new!(armv8_sha3_intrinsics, "sha3")
+#      keccak-0.2.2/src/lib.rs:81-91  if self.armv8_sha3.get() { ...fast... } else { soft }
+#      cpufeatures-0.3.1/src/aarch64.rs  getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512)
+#    That is exactly the runtime dispatch PQClean's aarch64 path lacked.
+#    Anyone who writes "the pure-Rust crate removes the C/asm path so the
+#    crash class is structurally impossible" is wrong (PQ-DOCS-OK: quoted to
+#    scripts/check_pq_docs.sh fails the build for saying it.
 #
-# ── DECISION RECORD: portable CLEAN only, deliberately ─────────────────────
+# 3. HOW THE ANDROID BUILD GETS TO ZERO ANYWAY.
+#    `--cfg keccak_backend="soft"` in native/rosenpass-jni/.cargo/config.toml
+#    takes the early-return arm in keccak's with_backend(), after which the
+#    aarch64_sha3 module is unreferenced and lto + gc-sections drop it at LINK
+#    time. The shipped .so then carries 0 extended-ISA instructions and
+#    scripts/check_no_sha3_ext.sh stays STRICT with no per-site exception.
+#    It MUST live in .cargo/config.toml and nowhere else: app/build.gradle.kts
+#    lists that file as a buildRustLibs input, so a cfg set in a workflow
+#    RUSTFLAGS or a shell env var would not invalidate the Gradle task and
+#    could ship a stale UP-TO-DATE .so. scripts/check_pq_features.sh asserts
+#    both the presence here and the absence elsewhere.
 #
-# Status (2026-09-16, post-mortem of the 1.3.25..1.4.25 SIGILL): the shipped
-# configuration is PQClean's portable CLEAN C on every ABI. No runtime dispatch,
-# no vendored asm. This is a choice, not a stopgap:
+#    The known way to re-arm the crash is RUSTFLAGS='-C target-feature=+sha3'
+#    (or any -C target-cpu above the fleet floor): cpufeatures' internal
+#    __unless_target_features! macro ELIDES the HWCAP check and returns a
+#    constant true when the feature is statically enabled. android.yml builds
+#    that configuration on purpose and asserts the ISA gate FAILS on it.
 #
-#   * One code path means one thing to audit and one thing the gates have to
-#     reason about. CLEAN is the reference the optimised implementations are
-#     validated against; under QEMU the CLEAN, AArch64 and plain-NEON builds
-#     produced bit-identical derandomised keypairs on every core model tried.
-#   * The failure mode of a wrong dispatch is exactly the crash we shipped.
-#   * Cost, measured under QEMU TCG on an x86 host (EMULATED, relative only --
-#     no physical-device timing exists): keypair CLEAN ~0.33 ms vs ~0.21 ms for
-#     the AArch64+SHA3 path; full keypair+enc+dec ~1.25 ms vs ~0.68 ms. Keygen
-#     runs once per connect, next to a network round trip. Invisible.
+# 4. THE PIN IS A CRYPTO DECISION, NOT A DEPENDENCY ONE.
+#    ml-kem is pre-1.0 and fast-moving: 0.3.0 removed the Kem struct and
+#    KemCore trait; the FIPS 203 input validations did not exist until April
+#    2026; DecapsulationKey's Zeroize was wrong until May 2026; and its
+#    changelog permits MSRV bumps in patch releases. Hence `=0.3.2`. Treat any
+#    bump as a crypto change: re-run the KAT (handshake.rs `kat_vs_noble`),
+#    the install-base guard (`stored_pqclean_dk_loads_and_derives_same_psk`)
+#    and the ISA gate before merging.
 #
-# Controls that keep it this way (all fail the build, none are advisory):
-#   scripts/check_pq_features.sh   -- resolved feature set must be exactly {std}
-#                                     in every native crate, every target
-#   scripts/check_no_sha3_ext.sh   -- every shipped .so disassembled; any
-#                                     optional-extension opcode outside a
-#                                     verified runtime guard fails (PR debug
-#                                     APK, release APK, release AAB, and the
-#                                     local native/build.sh|ps1 output)
-#   scripts/tests/check_no_sha3_ext_test.sh -- proves the gate bites on
-#                                     hand-assembled eor3/LSE/AVX2 fixtures
-#   nativeCpuFeatures()/nativeImplName() -- HWCAP words and the impl name are
-#                                     logged at load and tagged on Sentry, so
-#                                     the next native crash says which feature
-#                                     the device lacked
+#    It is also UNAUDITED — its README says so in as many words. So was
+#    PQClean. The audited implementation in this system is
+#    @noble/post-quantum on the SERVER, and the tests in handshake.rs assert
+#    byte-equality against a fixture that implementation generated.
 #
-# To re-evaluate (owner decision, not a follow-up): needs (a) a keygen cost
-# measured on a real device that moves a user-visible metric, (b) an upstream
-# pqcrypto-mlkem that dispatches on getauxval(AT_HWCAP) & HWCAP_SHA3 -- or a
-# vendored PQClean aarch64 tree built WITHOUT +sha3 (the plain-NEON fallback in
-# fips202x2.c) -- and (c) a QEMU matrix run plus at least one SHA3-less
-# physical device (Snapdragon 6xx/7xx/888, Helio G8x/G9x) in the acceptance
-# test. Any such change must also update EXPECTED_FEATURES in
-# scripts/check_pq_features.sh; the disassembly gate will then be the thing
-# that proves the dispatch is real.
-#
-# Upstream: the real fix is in rustpq/pqcrypto (gate keccak2x's +sha3 behind a
-# feature in pqcrypto-internals' build.rs; add HWCAP dispatch in
-# pqcrypto-mlkem). Not filed as of 2026-09-16 -- owner decision; record the
-# issue/PR link here when it exists. Until it is merged, the three controls
-# above are the protection.
-pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
-pqcrypto-traits = "0.3"
+# Features, deliberately minimal:
+#   alloc     — required by module-lattice's MaybeBox heap offload (default).
+#   zeroize   — NOT on by default (ml-kem's default = ["alloc"] only). Without
+#               it DecapsulationKey's ZeroizeOnDrop is #[cfg]'d out and key
+#               material is never wiped.
+#   getrandom — the OS CSPRNG, i.e. getrandom(2) on Android. This is the same
+#               entropy source pqcrypto used (pqcrypto-internals routed
+#               PQClean's randombytes through the getrandom crate). The
+#               alternative is a hand-written rand_core 0.10 adapter in the
+#               crypto path, which is worse.
+#   hazmat    — dev-dependencies ONLY, for encapsulate_deterministic() in the
+#               KAT test. Never in a shipped build.
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # Encoding for keys / handshake messages on the wire
 base64 = "0.22"
@@ -118,6 +125,10 @@ libc = "0.2"
 
 [dev-dependencies]
 hex = "0.4"
+# `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
+# cross-implementation KAT needs to reproduce the server's exact ciphertext
+# from the fixture's encapsulation randomness. Test profiles only.
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = "z"

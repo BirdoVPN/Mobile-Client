@@ -7,7 +7,7 @@
 use jni::JNIEnv;
 use std::fmt;
 
-/// BirdoPQ v1 is a single ML-KEM exchange (see lib.rs), so the only failure
+/// `BirdoPQ` v1 is a single ML-KEM exchange (see lib.rs), so the only failure
 /// the JNI surface can report is a KEM one. The `NotImplemented` (M2-gated
 /// entry points) and `Protocol` (Rosenpass frame errors) variants that used to
 /// sit here were never constructed by anything and are gone; add a variant

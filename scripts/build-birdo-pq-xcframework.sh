@@ -52,6 +52,150 @@ cargo build --release --target x86_64-apple-ios        --lib
 cargo build --release --target aarch64-apple-darwin    --lib
 cargo build --release --target x86_64-apple-darwin     --lib
 
+# -- ISA census for every Apple aarch64 slice -------------------------------
+#
+# Android has had scripts/check_no_sha3_ext.sh since the 1.4.25 SIGILL. The
+# Apple side had NOTHING: ios.yml just called this script, so the Apple arm64
+# slices could carry the same Keccak FEAT_SHA3 code with no build-time check at
+# all, and there was no iOS equivalent of nativeImplName to attribute a crash
+# with either. (birdo_pq_impl_name() closes the second half of that gap.)
+#
+# The policy here is the same as the Android gate's, resolved for Apple:
+#
+#   * ml-kem -> sha3 0.11 -> keccak 0.2.2 ships backends/aarch64_sha3.rs. On
+#     Apple targets it is gated at runtime by cpufeatures-0.3.1/src/aarch64.rs,
+#     which calls sysctlbyname("hw.optional.armv8_2_sha3") -- NOT getauxval, so
+#     the Apple slices need their own evidence rather than inheriting Android's.
+#   * So: FEAT_SHA3 instructions are permitted ONLY when that sysctl name is
+#     still present in the archive. Building with -C target-feature=+sha3 makes
+#     cpufeatures' __unless_target_features! macro elide the check entirely and
+#     return a constant true -- at which point the opcodes execute
+#     unconditionally AND the string disappears. That is exactly the shape of
+#     the crash 1.4.25 shipped on Android, and it is what this census catches.
+#   * Zero instructions is also fine, and is what an Apple build with the
+#     soft-Keccak cfg would produce. Both outcomes pass; only "opcodes with no
+#     check" fails.
+#
+# Note the asymmetry with Android, which is deliberate: Android pins
+# --cfg keccak_backend="soft" in native/rosenpass-jni/.cargo/config.toml and
+# ships zero, because the Android fleet genuinely contains ARMv8.2 cores without
+# FEAT_SHA3. Every Apple device the app supports has it (A12 / M1 and later), so
+# the Apple slices keep the fast path and rely on the runtime gate -- which this
+# census is here to prove is actually present.
+SHA3_MNEMONICS='^(eor3|rax1|xar|bcax)$'
+CPUFEATURES_SYSCTL='hw.optional.armv8_2_sha3'
+
+# Every check below captures its tool's output into a variable FIRST and greps
+# the variable afterwards. `set -o pipefail` is on, and both otool and nm exit
+# non-zero on a Rust staticlib (empty archive members produce "no symbols"),
+# which in a `tool | grep -q` pipeline silently turns "found it" into "failed".
+# The first version of this census did exactly that and reported a symbol as
+# missing when it was present.
+#
+# Each check also proves its own tooling worked before it is allowed to pass.
+# A census that decodes nothing, or a symbol scan that reads no symbols, is a
+# FAILURE -- not a clean bill of health. That is the whole lesson of
+# scripts/check_pq_features.sh: a check that found nothing is not a pass.
+
+isa_census() {
+    archive="$1"
+    label="$2"
+    if [[ ! -f "${archive}" ]]; then
+        echo "ERROR: ISA census: ${archive} does not exist" >&2
+        exit 1
+    fi
+
+    # otool -tvV prints "<address><tab><mnemonic><tab><operands>", so the
+    # mnemonic is the SECOND field, not the first. Getting that wrong is how
+    # the first version of this census reported 0 for every slice and passed.
+    # Matching $1 against a hex address also skips otool's archive-member and
+    # section headers, and works whether it separates with tabs or spaces.
+    dis="$(otool -tvV "${archive}" 2>&1 || true)"
+    mnemonics="$(printf '%s\n' "${dis}" | awk '$1 ~ /^[0-9a-f]+$/ { print $2 }')"
+    total="$(printf '%s\n' "${mnemonics}" | grep -cE '^[a-z][a-z0-9._]*$' || true)"
+    if [[ "${total}" -lt 1000 ]]; then
+        echo "ERROR: ISA census: otool decoded only ${total} instruction(s) out of ${label}." >&2
+        echo "       A ML-KEM-1024 implementation is tens of thousands of instructions, so this" >&2
+        echo "       census examined nothing and must not be reported as clean. First lines of" >&2
+        echo "       otool output:" >&2
+        printf '%s\n' "${dis}" | head -5 | sed 's/^/       /' >&2
+        exit 1
+    fi
+
+    count="$(printf '%s\n' "${mnemonics}" | grep -cE "${SHA3_MNEMONICS}" || true)"
+    if [[ "${count}" -eq 0 ]]; then
+        echo "  ok: ${label}: 0 FEAT_SHA3 instructions (of ${total} decoded)"
+        return 0
+    fi
+
+    strs="$(strings -a "${archive}" 2>&1 || true)"
+    if printf '%s\n' "${strs}" | grep -qF "${CPUFEATURES_SYSCTL}"; then
+        echo "  ok: ${label}: ${count} FEAT_SHA3 instruction(s) of ${total} decoded, gated on sysctlbyname"
+        return 0
+    fi
+    echo "ERROR: ${label} contains ${count} FEAT_SHA3 instruction(s) (eor3/rax1/xar/bcax) but NO reference to" >&2
+    echo "       a sysctlbyname on ${CPUFEATURES_SYSCTL}, so nothing checks the CPU before executing them." >&2
+    echo "       The usual cause is RUSTFLAGS enabling the sha3 target feature (or -C target-cpu above the" >&2
+    echo "       fleet floor), which makes cpufeatures elide its runtime check and return a constant true." >&2
+    echo "       That is the 1.4.25 SIGILL shape. Do not silence this by widening the rule." >&2
+    exit 1
+}
+
+echo "ISA census (Apple aarch64 slices):"
+isa_census "target/aarch64-apple-ios/release/libbirdo_pq_ios.a"     "aarch64-apple-ios"
+isa_census "target/aarch64-apple-ios-sim/release/libbirdo_pq_ios.a" "aarch64-apple-ios-sim"
+isa_census "target/aarch64-apple-darwin/release/libbirdo_pq_ios.a"  "aarch64-apple-darwin"
+
+# Every #[no_mangle] extern "C" export must be present in every slice.
+#
+# birdo_pq_impl_name in particular: without it an Apple crash report cannot say
+# which KEM was running, which is the exact gap that made the 1.4.25
+# attribution rest on a human reading docs.
+#
+# Mach-O prefixes C symbols with an underscore. The symbol list is PRINTED, not
+# just tested: when this check first ran it claimed birdo_pq_impl_name was
+# missing while counting nine birdo_pq_* symbols, and there was no way to tell
+# from CI which nine it had actually seen. A check whose failure you cannot
+# diagnose is barely better than no check.
+EXPECTED_EXPORTS=(
+    birdo_pq_public_key_len
+    birdo_pq_secret_key_len
+    birdo_pq_ciphertext_len
+    birdo_pq_psk_len
+    birdo_pq_generate_keypair
+    birdo_pq_derive_psk
+    birdo_pq_impl_name
+    birdo_pq_stored_key_usable
+    birdo_pq_test_encapsulate
+)
+
+for slice in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+             aarch64-apple-darwin x86_64-apple-darwin; do
+    archive="target/${slice}/release/libbirdo_pq_ios.a"
+    # --defined-only so an undefined reference cannot be mistaken for an export;
+    # -j so the output is bare symbol names with no addresses or member headers.
+    syms="$(nm -g --defined-only -j "${archive}" 2>/dev/null || true)"
+    if [[ -z "$(printf '%s\n' "${syms}" | grep '^_birdo_pq_' || true)" ]]; then
+        # Fall back to plain `nm -g` for older cctools that lack the long flags.
+        syms="$(nm -g "${archive}" 2>/dev/null || true)"
+    fi
+    seen="$(printf '%s\n' "${syms}" | grep -o 'birdo_pq_[a-z_]*' | sort -u || true)"
+    echo "  ${slice} exports: $(printf '%s' "${seen}" | tr '\n' ' ')"
+    missing=""
+    for want in "${EXPECTED_EXPORTS[@]}"; do
+        printf '%s\n' "${seen}" | grep -qx "${want}" || missing="${missing} ${want}"
+    done
+    if [[ -n "${missing}" ]]; then
+        echo "ERROR: ${slice} is missing C export(s):${missing}" >&2
+        echo "       Raw nm output (first 30 lines) follows. If NOTHING is listed, the symbol" >&2
+        echo "       scan is broken rather than the export -- birdo_pq_derive_psk must be there," >&2
+        echo "       the app links against it." >&2
+        printf '%s\n' "${syms}" | head -30 | sed 's/^/       /' >&2
+        exit 1
+    fi
+done
+echo "  ok: all ${#EXPECTED_EXPORTS[@]} C exports present in all five slices"
+
 # Lipo the simulator slices into a single fat archive (xcframework wants
 # one archive per platform-variant).
 SIM_FAT_DIR="$(mktemp -d)"

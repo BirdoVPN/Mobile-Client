@@ -1,0 +1,79 @@
+# gitleaks configuration for BirdoVPN/Mobile-Client.
+#
+# WHY THIS FILE EXISTS RATHER THAN MORE .gitleaksignore ENTRIES
+#
+# A .gitleaksignore entry is `<commit>:<file>:<rule>:<line>` -- pinned to a
+# commit sha. This repo is squash-only (`gh api repos/BirdoVPN/Mobile-Client`
+# reports allow_merge_commit=false, allow_rebase_merge=false,
+# allow_squash_merge=true), so every branch commit is replaced by a NEW sha
+# when the PR lands. Any fingerprint pinned to a branch commit therefore stops
+# matching AT MERGE, and secret-scan.yml -- which runs on push to main with
+# fetch-depth: 0 -- goes red on main rather than on the PR that introduced it.
+#
+# The old .gitleaksignore showed that having already happened: the same
+# BirdoPQManager.swift:generic-api-key:52 finding was listed twice under two
+# different shas, once per commit that touched the file.
+#
+# Path and regex allowlists are sha-independent. They keep matching after a
+# squash, after a rebase, and after the line moves.
+#
+# Everything the upstream ruleset finds is still reported; this file only adds
+# exemptions, each of which has to say what it is and why it is not a secret.
+
+title = "BirdoVPN Mobile-Client"
+
+[extend]
+# Keep every default gitleaks rule. This file adds exemptions, never rules.
+useDefault = true
+
+[allowlist]
+description = "BirdoPQ known-answer fixtures, and the PQ Keychain account name"
+
+# ── Committed ML-KEM-1024 test vectors ───────────────────────────────────
+#
+# native/testdata/ holds two synthetic fixtures the native Rust crates assert
+# against. Neither has ever been on a device, a server or a wire:
+#
+#   birdo-pq-ml-kem-1024.kat.json     a byte-for-byte copy of birdo-web
+#                                     backend/src/vpn/__fixtures__/birdo-pq-ml-kem-1024.kat.json,
+#                                     generated with @noble/post-quantum. It is
+#                                     the only thing in this repo that can
+#                                     detect byte-incompatibility with the
+#                                     production server's KEM.
+#   birdo-pq-pqclean-stored-key.json  a keypair generated on a workstation with
+#                                     pqcrypto-mlkem 0.1.1 (PQClean CLEAN) so
+#                                     the install-base guard test has a real
+#                                     pre-1.4.30 stored key to read.
+#
+# The flagged values are a shared secret and two derived preshared keys -- the
+# outputs a known-answer test exists to pin. "Rotating" them would mean
+# regenerating the test, which is the opposite of what a KAT is for. gitleaks
+# fires on the field NAMES (secret/key) plus the entropy of a hex digest.
+#
+# Scoped to these two filenames, NOT to native/testdata/ as a directory: a
+# future file dropped in that directory should be looked at, not inherited
+# into an exemption written for these two.
+# `[/\\]` rather than `/`: gitleaks reports git-mode paths with forward
+# slashes (what CI sees) and --no-git paths with the host separator, so a
+# forward-slash-only regex silently stops matching when someone reproduces a
+# scan on Windows -- and a reviewer then "confirms" a finding that CI does not
+# have.
+paths = [
+  '''^native[/\\]testdata[/\\]birdo-pq-ml-kem-1024\.kat\.json$''',
+  '''^native[/\\]testdata[/\\]birdo-pq-pqclean-stored-key\.json$''',
+]
+
+# ── The PQ Keychain account name ─────────────────────────────────────────
+#
+# `private static let keypairAccount = "birdo_pq_v1_keypair"` in
+# BirdoPQManager.swift. A kSecAttrAccount value: the NAME of the Keychain item
+# the ML-KEM keypair is stored under, identical in every install, and useless
+# to anyone who does not already have code execution on the device. It reads
+# as `name = "value"` with an underscore-heavy literal, which is what the
+# generic-api-key rule looks for.
+#
+# Matched on the SECRET (gitleaks' default regexTarget), anchored, so it
+# exempts this exact string and nothing else -- not the file, not the rule.
+regexes = [
+  '''^birdo_pq_v1_keypair$''',
+]

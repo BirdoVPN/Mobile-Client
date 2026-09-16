@@ -343,7 +343,25 @@ object RosenpassManager {
         if (!RosenpassNative.isLoaded) return null
         val store = ensureKeyStore(context)
         val existing = store.load()
-        if (existing != null) return existing
+        if (existing != null) {
+            // The KEM validates stored keys now. `ml-kem` enforces FIPS 203
+            // 7.3 -- the 3168-byte expanded decapsulation key embeds H(ek),
+            // recomputed on load and compared -- where the implementation that
+            // shipped up to 1.4.29 checked only the length. A key that fails
+            // that check is NOT recoverable, so retrying it would fail every
+            // connect forever; discard it and re-key instead. The server
+            // re-pins the new public key on the next handshake, so the only
+            // cost is one extra keygen.
+            if (RosenpassNative.storedKeyUsable(existing.secretKey)) return existing
+
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "pq_stored_key_unusable_rekeyed",
+                "Persisted ML-KEM secret key failed FIPS 203 validation — discarded and re-keying",
+            )
+            existing.secretKey.fill(0)
+            store.clear()
+        }
 
         Log.i(TAG, "no persisted ML-KEM keypair — generating new (~10–50 ms)")
         val fresh = try {

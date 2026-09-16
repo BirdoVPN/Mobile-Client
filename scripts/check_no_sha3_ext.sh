@@ -15,12 +15,32 @@
 #
 # WHY THIS GATE EXISTS
 #
-# pqcrypto-mlkem's default features include `neon`. With it on, build.rs
-# compiles PQClean's AArch64 ML-KEM and flips the FFI bindings from
-# PQCLEAN_MLKEM1024_CLEAN_* to PQCLEAN_MLKEM1024_AARCH64_*, which reaches
-# pqclean/common/keccak2x/feat.S -- 64 SHA3-extension instructions (eor3 x10,
-# rax1 x5, xar x24, bcax x25, all in one 24-round loop), no `.arch` guard, and
-# NO RUNTIME CPU DETECTION. The choice is compile-time only.
+# HISTORY (1.3.25 .. 1.4.25): pqcrypto-mlkem's default features include `neon`.
+# With it on, build.rs compiles PQClean's AArch64 ML-KEM and flips the FFI
+# bindings from PQCLEAN_MLKEM1024_CLEAN_* to PQCLEAN_MLKEM1024_AARCH64_*, which
+# reaches pqclean/common/keccak2x/feat.S -- 64 SHA3-extension instructions
+# (eor3 x10, rax1 x5, xar x24, bcax x25, all in one 24-round loop), no `.arch`
+# guard, and NO RUNTIME CPU DETECTION. The choice is compile-time only.
+#
+# TODAY (1.4.30+): the KEM is RustCrypto ml-kem, and pqcrypto is gone. That did
+# NOT remove the mnemonics: ml-kem -> sha3 0.11 -> keccak 0.2.2 ships
+# src/backends/aarch64_sha3.rs, adapted from the same XKCP/K12 source PQClean
+# vendored, and a DEFAULT aarch64 build contains the same 64 instructions with
+# the same split. Two things keep this gate green rather than one:
+#
+#   1. keccak dispatches at RUNTIME on cpufeatures' getauxval(AT_HWCAP) &
+#      (HWCAP_SHA3|HWCAP_SHA512) -- the check PQClean's aarch64 path did not
+#      have; and
+#   2. native/rosenpass-jni/.cargo/config.toml pins --cfg keccak_backend="soft"
+#      on every shipped ABI, which makes the fast backend unreferenced so the
+#      linker drops it entirely.
+#
+# (2) is what this gate measures, because this gate judges PRESENCE. (1) is
+# what makes (2) a safety margin rather than the only thing standing between
+# the fleet and a SIGILL. The known way to defeat both at once is
+# RUSTFLAGS='-C target-feature=+sha3', which additionally makes cpufeatures'
+# __unless_target_features! elide the HWCAP check and return a constant true;
+# android.yml builds exactly that and asserts THIS SCRIPT FAILS on it.
 #
 # FEAT_SHA3 is OPTIONAL in ARMv8.2-A. On an arm64 device without it the first
 # `eor3` raises SIGILL and the process dies. That crash shipped in every Android
@@ -30,11 +50,14 @@
 # devices. It fires inside nativeGenerateKeypair, so with PQ default-ON the user
 # cannot connect at all.
 #
-# The fix is `default-features = false` in native/rosenpass-jni/Cargo.toml
-# (#353). This script exists so that re-enabling `neon` -- directly, or by a
-# transitive dependency turning it back on -- fails the build instead of
-# shipping a crash to every mid-range Android device. scripts/check_pq_features.sh
-# asserts the same thing one layer earlier, on the resolved Cargo feature set.
+# The 2026-09 fix was `default-features = false` in
+# native/rosenpass-jni/Cargo.toml (#353); the current configuration is the
+# soft-Keccak cfg described above. This script exists so that any route back to
+# an ungated optional-extension opcode -- a re-enabled feature, a transitive
+# dependency, a dropped cfg, a stray RUSTFLAGS -- fails the build instead of
+# shipping a crash to every mid-range Android device.
+# scripts/check_pq_features.sh asserts the dependency and cfg shape one layer
+# earlier, before anything is compiled.
 #
 # Verified on real aarch64 before this gate was written: with the fix, the LINKED
 # library contains 0 SHA3-ext instructions, 0 PQCLEAN_*_AARCH64_* symbols and 0
@@ -114,7 +137,18 @@ if [ -z "$OBJDUMP" ]; then
     done
 fi
 if [ -z "$OBJDUMP" ] || ! command -v "$OBJDUMP" >/dev/null 2>&1; then
-    echo "::error::check_no_sha3_ext: no capable objdump found (tried \$OBJDUMP, \$ANDROID_NDK_HOME, rustup llvm-tools, llvm-objdump, aarch64-linux-gnu-objdump, objdump). Install the NDK or run: rustup component add llvm-tools" >&2
+    # Name the exact command, with the toolchain this repo pins. A missing
+    # disassembler is a FAILURE and not a skip -- a gate that cannot look at
+    # the library must never report clean -- but the person who hits it is
+    # usually a reviewer running scripts/tests/check_no_sha3_ext_test.sh
+    # locally, where 15 of 16 fixtures fail with this one line and the fix is
+    # a single rustup command. The channel is read from rust-toolchain.toml so
+    # this hint cannot go stale when the pin moves.
+    _pinned_channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$(dirname -- "${BASH_SOURCE[0]}")/../rust-toolchain.toml" 2>/dev/null | head -1)
+    _hint="rustup component add llvm-tools"
+    [ -n "$_pinned_channel" ] && _hint="$_hint --toolchain $_pinned_channel"
+    echo "::error::check_no_sha3_ext: no capable objdump found (tried \$OBJDUMP, \$ANDROID_NDK_HOME, rustup llvm-tools, llvm-objdump, aarch64-linux-gnu-objdump, objdump). Install the NDK, or run: $_hint" >&2
     exit 1
 fi
 
@@ -647,7 +681,7 @@ for abi_dir in "${ABI_DIRS[@]}"; do
 done
 
 if [ "$FAILED" -ne 0 ]; then
-    echo "::error::check_no_sha3_ext FAILED. If the offender is librosenpass_jni.so on arm64-v8a, the most likely cause is a dependency re-enabling pqcrypto-mlkem's 'neon' feature (scripts/check_pq_features.sh names the culprit). Restoring the optimised path needs runtime dispatch on getauxval(AT_HWCAP) & HWCAP_SHA3, which the crate does not provide -- it hardcodes 'if true'. See native/README.md § ISA baseline." >&2
+    echo "::error::check_no_sha3_ext FAILED. If the offender is librosenpass_jni.so on arm64-v8a with eor3/rax1/xar/bcax, the most likely cause is that --cfg keccak_backend=\"soft\" was dropped from native/rosenpass-jni/.cargo/config.toml, or that RUSTFLAGS enabled the sha3 target feature (which ALSO elides cpufeatures' HWCAP check -- that is the dangerous case, not the noisy one). scripts/check_pq_features.sh names the cfg problem; see native/README.md § ISA baseline." >&2
     exit 1
 fi
 

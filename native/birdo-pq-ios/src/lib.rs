@@ -32,13 +32,22 @@
 #![allow(clippy::missing_safety_doc)]
 
 use hkdf::Hkdf;
-use pqcrypto_mlkem::mlkem1024;
-use pqcrypto_traits::kem::{
-    Ciphertext as KemCiphertext, PublicKey as KemPublicKey,
-    SecretKey as KemSecretKey, SharedSecret as KemSharedSecret,
-};
+use ml_kem::array::Array;
+use ml_kem::kem::{Decapsulate, Encapsulate, Generate, KeyExport};
+use ml_kem::ml_kem_1024::{DecapsulationKey, EncapsulationKey};
+use ml_kem::{ExpandedDecapsulationKey, MlKem1024};
+// The 3168-byte expanded encoding is what is already in every device's
+// Keychain (service "app.birdo.vpn.pq", 1568 + 3168 = 4736 B). ml-kem 0.3
+// deprecated it in favour of a 64-byte seed, but the seed cannot be recovered
+// from an expanded key, so adopting the seed form would make every existing
+// install unreadable. Deliberate, reviewed, pinned.
+#[allow(deprecated)]
+use ml_kem::ExpandedKeyEncoding;
 use sha2::Sha256;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+/// The expanded (legacy, on-Keychain) decapsulation-key array type.
+type StoredDk = ExpandedDecapsulationKey<MlKem1024>;
 
 /// FIPS 203 ML-KEM-1024 sizes — must match every other BirdoPQ impl.
 pub const BIRDO_PQ_PUBLIC_KEY_LEN: usize = 1568;
@@ -105,9 +114,28 @@ pub unsafe extern "C" fn birdo_pq_generate_keypair(
         return BirdoPqStatus::BufferSizeMismatch as i32;
     }
 
-    let (pk, sk) = mlkem1024::keypair();
-    let pk_bytes = pk.as_bytes();
-    let sk_bytes = sk.as_bytes();
+    // `try_generate()`, NOT `generate()`. `Generate::generate()` is
+    // `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common
+    // `src/generate.rs`), documented "will panic in the event the system's
+    // ambient RNG experiences an internal failure" -- and this crate sets
+    // panic = "abort", so on iOS that panic is an abort inside a Swift call
+    // with no status code to return. `pqcrypto-internals` had the identical
+    // defect (`getrandom::fill(buf).expect("RNG Failed")`); migrating to
+    // ml-kem moved that panic, it did not remove it. BIRDO_PQ_ERR_INTERNAL is
+    // a status Swift already handles.
+    let Ok(dk) = DecapsulationKey::try_generate() else {
+        return BirdoPqStatus::Internal as i32;
+    };
+    let pk_bytes = dk.encapsulation_key().to_bytes();
+    // NOT `KeyExport::to_bytes()`: that returns the 64-byte seed and PANICS for
+    // keys loaded from the expanded form. The Keychain blob is the 3168-byte
+    // expanded encoding, and the assertion below is what makes a wrong call
+    // loud instead of silently changing every stored key.
+    #[allow(deprecated)]
+    let sk_bytes = Zeroizing::new(dk.to_expanded_bytes());
+    if pk_bytes.len() != BIRDO_PQ_PUBLIC_KEY_LEN || sk_bytes.len() != BIRDO_PQ_SECRET_KEY_LEN {
+        return BirdoPqStatus::Internal as i32;
+    }
 
     // Wrap caller buffers as slices for the copy.
     // SAFETY: caller asserts `out_pk` / `out_sk` are valid for the declared
@@ -169,31 +197,93 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
         unsafe { std::slice::from_raw_parts(nonce, nonce_len) }
     };
 
-    let sk_obj = match mlkem1024::SecretKey::from_bytes(sk_slice) {
-        Ok(s) => s,
+    // ml-kem enforces FIPS 203 §7.3 here (the expanded key embeds H(ek), which
+    // is recomputed and compared) where pqcrypto's from_bytes was a length
+    // check only. A stored key that fails this is not recoverable, so Swift
+    // MUST treat BAD_SECRET_KEY as "discard the Keychain item and re-key"
+    // rather than retrying it on every connect. See birdo_pq_stored_key_usable.
+    let sk_obj = match StoredDk::try_from(sk_slice) {
+        Ok(enc) =>
+        {
+            #[allow(deprecated)]
+            match DecapsulationKey::from_expanded_bytes(&enc) {
+                Ok(dk) => dk,
+                Err(_) => return BirdoPqStatus::BadSecretKey as i32,
+            }
+        }
         Err(_) => return BirdoPqStatus::BadSecretKey as i32,
     };
-    let ct_obj = match mlkem1024::Ciphertext::from_bytes(ct_slice) {
+    let ct_obj = match Array::try_from(ct_slice) {
         Ok(c) => c,
         Err(_) => return BirdoPqStatus::BadCiphertext as i32,
     };
 
-    let ss = mlkem1024::decapsulate(&ct_obj, &sk_obj);
-    let mut ss_bytes = Zeroizing::new(ss.as_bytes().to_vec());
+    let mut ss = sk_obj.decapsulate(&ct_obj);
+    // `SharedKey` is a plain `Array<u8, U32>` with no Drop impl of its own, so
+    // BOTH copies have to be wiped by hand: the `Vec` below (via `Zeroizing`)
+    // and `ss` itself, which would otherwise be left on the stack holding the
+    // raw shared secret. `hybrid-array`'s `zeroize` feature is enabled in the
+    // resolved graph (pulled in by `ml-kem/zeroize`), which is what makes
+    // `Array: Zeroize` available.
+    let mut ss_bytes = Zeroizing::new(ss.to_vec());
 
     let mut psk = Zeroizing::new([0u8; BIRDO_PQ_PSK_LEN]);
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ss_bytes);
     if hk.expand(nonce_slice, psk.as_mut_slice()).is_err() {
         ss_bytes.fill(0);
+        ss.zeroize();
         return BirdoPqStatus::Internal as i32;
     }
     ss_bytes.fill(0);
+    ss.zeroize();
 
     // SAFETY: out_psk validated above.
     unsafe {
         std::ptr::copy_nonoverlapping(psk.as_ptr(), out_psk, BIRDO_PQ_PSK_LEN);
     }
     BirdoPqStatus::Ok as i32
+}
+
+// -- Implementation identity + stored-key triage --------------------------
+
+/// Which ML-KEM implementation this library was built with, as a NUL-terminated
+/// C string with static lifetime. Never null, never freed by the caller.
+///
+/// Android has had `nativeImplName` since the 1.4.25 SIGILL post-mortem and it
+/// is the only field signal that attributes a native crash to an
+/// implementation. iOS had no equivalent, so an Apple-side crash in the same
+/// class was invisible in crash reports. It is `"mlkem1024-rustcrypto"` for
+/// `RustCrypto` `ml-kem`; it was `"mlkem1024-clean"` when this crate linked
+/// `PQClean`'s portable CLEAN C. Swift should attach it to crash metadata.
+#[no_mangle]
+pub extern "C" fn birdo_pq_impl_name() -> *const core::ffi::c_char {
+    PQ_IMPL_NAME.as_ptr().cast::<core::ffi::c_char>()
+}
+
+/// Build-time implementation name, NUL-terminated for the C ABI.
+const PQ_IMPL_NAME: &str = "mlkem1024-rustcrypto\0";
+
+/// Is this Keychain-persisted secret key still loadable by the linked KEM?
+///
+/// Returns 1 for yes, 0 for no. `ml-kem` enforces FIPS 203 §7.3, where
+/// `pqcrypto-mlkem` checked only the length, so a stored key that is corrupted
+/// in a way that survives the length check is now a hard rejection rather than
+/// a decapsulation to garbage. On 0 the Swift caller MUST delete the Keychain
+/// item and generate a fresh keypair; otherwise the same unusable key is
+/// retried on every connect forever.
+#[no_mangle]
+pub unsafe extern "C" fn birdo_pq_stored_key_usable(sk: *const u8, sk_len: usize) -> i32 {
+    if sk.is_null() || sk_len != BIRDO_PQ_SECRET_KEY_LEN {
+        return 0;
+    }
+    // SAFETY: caller asserts `sk` is valid for `sk_len` bytes; length checked.
+    let sk_slice = unsafe { std::slice::from_raw_parts(sk, sk_len) };
+    let Ok(enc) = StoredDk::try_from(sk_slice) else {
+        return 0;
+    };
+    #[allow(deprecated)]
+    let ok = DecapsulationKey::from_expanded_bytes(&enc).is_ok();
+    i32::from(ok)
 }
 
 // ── Test helpers (compiled out of release) ────────────────────────────────
@@ -235,21 +325,33 @@ pub unsafe extern "C" fn birdo_pq_test_encapsulate(
         unsafe { std::slice::from_raw_parts(nonce, nonce_len) }
     };
 
-    let pk_obj = match mlkem1024::PublicKey::from_bytes(pk_slice) {
-        Ok(p) => p,
+    let pk_obj = match Array::try_from(pk_slice) {
+        Ok(enc) => match EncapsulationKey::new(&enc) {
+            Ok(ek) => ek,
+            // FIPS 203 §7.2: non-canonical coefficients are rejected, which
+            // pqcrypto's length-only from_bytes accepted.
+            Err(_) => return BirdoPqStatus::BadCiphertext as i32,
+        },
         Err(_) => return BirdoPqStatus::BadCiphertext as i32,
     };
-    let (ss, ct) = mlkem1024::encapsulate(&pk_obj);
-    let mut ss_bytes = Zeroizing::new(ss.as_bytes().to_vec());
-    let ct_bytes = ct.as_bytes();
+    // `encapsulate()` DOES still use the ambient-RNG unwrap: `kem` 0.3.0
+    // declares no `TryEncapsulate`, and the only fallible door is
+    // `encapsulate_deterministic`, behind the `hazmat` feature this crate
+    // keeps out of its non-dev dependencies. This export is test-only (see the
+    // doc comment above) and no shipped Swift path reaches it.
+    let (ct, mut ss) = pk_obj.encapsulate();
+    let mut ss_bytes = Zeroizing::new(ss.to_vec());
+    let ct_bytes = ct;
 
     let mut psk = Zeroizing::new([0u8; BIRDO_PQ_PSK_LEN]);
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ss_bytes);
     if hk.expand(nonce_slice, psk.as_mut_slice()).is_err() {
         ss_bytes.fill(0);
+        ss.zeroize();
         return BirdoPqStatus::Internal as i32;
     }
     ss_bytes.fill(0);
+    ss.zeroize();
 
     // SAFETY: caller buffers validated above.
     unsafe {
@@ -262,6 +364,238 @@ pub unsafe extern "C" fn birdo_pq_test_encapsulate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("../../testdata/birdo_pq_kat_vectors.rs");
+
+    fn unhex(s: &str) -> Vec<u8> {
+        hex::decode(s).expect("fixture hex")
+    }
+
+    fn psk_via_c_abi(sk: &[u8], ct: &[u8], nonce: &[u8]) -> Result<Vec<u8>, i32> {
+        let mut psk = vec![0u8; BIRDO_PQ_PSK_LEN];
+        let r = unsafe {
+            birdo_pq_derive_psk(
+                sk.as_ptr(),
+                sk.len(),
+                ct.as_ptr(),
+                ct.len(),
+                nonce.as_ptr(),
+                nonce.len(),
+                psk.as_mut_ptr(),
+                psk.len(),
+            )
+        };
+        if r == 0 {
+            Ok(psk)
+        } else {
+            Err(r)
+        }
+    }
+
+    /// The only test in this crate that can detect byte-incompatibility with
+    /// the PRODUCTION server, which encapsulates with `@noble/post-quantum` and
+    /// not with Rust. Vectors: `native/testdata/birdo-pq-ml-kem-1024.kat.json`,
+    /// a byte-for-byte copy of the backend's own fixture.
+    #[test]
+    fn kat_vs_noble() {
+        let seed = Array::try_from(&unhex(NOBLE_KEYGEN_SEED_HEX)[..]).expect("64-byte seed");
+        let dk = DecapsulationKey::from_seed(seed);
+
+        assert_eq!(
+            dk.encapsulation_key().to_bytes().as_slice(),
+            &unhex(NOBLE_EK_HEX)[..],
+            "ek from the KAT seed must equal publicKeyB64"
+        );
+        #[allow(deprecated)]
+        let dk_bytes = dk.to_expanded_bytes();
+        assert_eq!(
+            dk_bytes.as_slice(),
+            &unhex(NOBLE_DK_HEX)[..],
+            "expanded dk must equal secretKeyB64"
+        );
+
+        let m = Array::try_from(&unhex(NOBLE_ENCAPS_RANDOMNESS_HEX)[..]).expect("32-byte m");
+        let (ct, ss) = dk.encapsulation_key().encapsulate_deterministic(&m);
+        assert_eq!(
+            ct.as_slice(),
+            &unhex(NOBLE_CT_HEX)[..],
+            "ct must equal cipherTextB64"
+        );
+        assert_eq!(
+            ss.as_slice(),
+            &unhex(NOBLE_SS_HEX)[..],
+            "ss must equal sharedSecretB64"
+        );
+
+        // The production C-ABI path, on the server's own stored key.
+        let psk = psk_via_c_abi(
+            &unhex(NOBLE_DK_HEX),
+            &unhex(NOBLE_CT_HEX),
+            &unhex(NOBLE_NONCE_HEX),
+        )
+        .expect("derive_psk on the server fixture");
+        assert_eq!(psk, unhex(NOBLE_PSK_HEX), "psk must equal presharedKeyB64");
+    }
+
+    /// The install-base guard: a real `PQClean`-produced 3168-byte key, which is
+    /// what sits in the Keychain of every device that installed 1.4.29 or
+    /// earlier. Never delete this test.
+    #[test]
+    fn stored_pqclean_dk_loads_and_derives_same_psk() {
+        let sk = unhex(PQCLEAN_DK_HEX);
+        assert_eq!(sk.len(), BIRDO_PQ_SECRET_KEY_LEN);
+        assert_eq!(
+            unsafe { birdo_pq_stored_key_usable(sk.as_ptr(), sk.len()) },
+            1,
+            "a PQClean-produced stored key must still be usable"
+        );
+        let psk = psk_via_c_abi(&sk, &unhex(PQCLEAN_CT_HEX), &unhex(PQCLEAN_NONCE_HEX))
+            .expect("derive_psk on a PQClean-stored key");
+        assert_eq!(psk, unhex(PQCLEAN_PSK_HEX), "the PSK must be unchanged");
+    }
+
+    /// `KeyExport::to_bytes()` returns a 64-byte Seed and panics for
+    /// expanded-loaded keys. This is the assertion that makes either loud.
+    #[test]
+    fn stored_key_length_is_3168() {
+        let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
+        let mut sk = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
+        let r = unsafe {
+            birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len())
+        };
+        assert_eq!(r, 0);
+        assert_eq!(sk.len(), 3168);
+        // A 64-byte seed written into a 3168-byte buffer would leave the tail
+        // zeroed; a real expanded key never is.
+        assert_ne!(
+            &sk[64..128],
+            &[0u8; 64][..],
+            "the store path wrote a seed, not an expanded key"
+        );
+        assert_eq!(
+            unsafe { birdo_pq_stored_key_usable(sk.as_ptr(), sk.len()) },
+            1
+        );
+    }
+
+    /// FIPS 203 §7.3 is a NEW hard error on an existing install base, so it has
+    /// to lead to a re-key rather than a connect-failure loop.
+    #[test]
+    fn corrupt_dk_returns_invalid_key_and_rekeys() {
+        let mut corrupt = unhex(PQCLEAN_DK_HEX);
+        corrupt[3100] ^= 0xff;
+        assert_eq!(
+            corrupt.len(),
+            BIRDO_PQ_SECRET_KEY_LEN,
+            "right length, wrong content"
+        );
+        assert_eq!(
+            unsafe { birdo_pq_stored_key_usable(corrupt.as_ptr(), corrupt.len()) },
+            0
+        );
+        assert_eq!(
+            psk_via_c_abi(&corrupt, &unhex(PQCLEAN_CT_HEX), b"n"),
+            Err(BirdoPqStatus::BadSecretKey as i32)
+        );
+
+        // Re-key: the caller discards and regenerates, and the fresh key works.
+        let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
+        let mut sk = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
+        assert_eq!(
+            unsafe {
+                birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len())
+            },
+            0
+        );
+        assert_eq!(
+            unsafe { birdo_pq_stored_key_usable(sk.as_ptr(), sk.len()) },
+            1
+        );
+    }
+
+    /// Implicit rejection is protocol behaviour: a wrong-but-valid key yields a
+    /// stable, different PSK with no error and no panic.
+    #[test]
+    fn implicit_rejection_is_deterministic_and_silent() {
+        let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
+        let mut wrong = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
+        unsafe {
+            birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), wrong.as_mut_ptr(), wrong.len())
+        };
+        let ct = unhex(PQCLEAN_CT_HEX);
+
+        let a = psk_via_c_abi(&wrong, &ct, b"n").expect("no error on a wrong key");
+        let b = psk_via_c_abi(&wrong, &ct, b"n").expect("no error on a wrong key");
+        assert_eq!(a, b, "implicit rejection must be deterministic");
+
+        let good = psk_via_c_abi(&unhex(PQCLEAN_DK_HEX), &ct, b"n").expect("real key");
+        assert_ne!(a, good, "and must differ from the true PSK");
+    }
+
+    /// iOS had no equivalent of Android's `nativeImplName`, so an Apple-side
+    /// crash in the `FEAT_SHA3` class could not name the implementation. It does
+    /// now, and this asserts the name tracks the crate actually linked.
+    #[test]
+    fn pq_impl_name_matches_linked_crate() {
+        let ptr = birdo_pq_impl_name();
+        assert!(!ptr.is_null());
+        let name = unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_str()
+            .expect("impl name is UTF-8");
+        assert_eq!(name, "mlkem1024-rustcrypto");
+        assert_ne!(
+            name, "mlkem1024-clean",
+            "\"mlkem1024-clean\" means PQClean CLEAN C; this build links RustCrypto ml-kem"
+        );
+
+        // Exercised, not just named: only the linked KEM produces these.
+        let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
+        let mut sk = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
+        assert_eq!(
+            unsafe {
+                birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len())
+            },
+            0
+        );
+    }
+
+    /// `include/birdo_pq_ios.h` claimed to be "auto-checked against the Rust
+    /// definitions by `cargo test`". It was not -- nothing read the header.
+    /// Now something does: every `#[no_mangle] extern "C"` symbol in this file
+    /// must be declared in the header the XCFramework ships, or Swift cannot
+    /// call it and nobody finds out until link time on a Mac.
+    #[test]
+    fn c_header_declares_every_export() {
+        let source = include_str!("lib.rs");
+        let header = include_str!("../include/birdo_pq_ios.h");
+
+        let mut exports: Vec<&str> = Vec::new();
+        for line in source.lines() {
+            let line = line.trim_start();
+            let Some(rest) = line.strip_prefix("pub ") else {
+                continue;
+            };
+            let rest = rest.strip_prefix("unsafe ").unwrap_or(rest);
+            let Some(rest) = rest.strip_prefix("extern \"C\" fn ") else {
+                continue;
+            };
+            let name = rest.split('(').next().expect("fn name");
+            exports.push(name);
+        }
+
+        assert!(
+            exports.len() >= 8,
+            "expected the full C ABI surface, found {exports:?}"
+        );
+        for name in &exports {
+            assert!(
+                header.contains(name),
+                "{name} is exported from lib.rs but not declared in birdo_pq_ios.h"
+            );
+        }
+        assert!(exports.contains(&"birdo_pq_impl_name"));
+        assert!(exports.contains(&"birdo_pq_stored_key_usable"));
+    }
 
     #[test]
     fn sizes_match_fips_203() {
@@ -285,10 +619,14 @@ mod tests {
         let mut server_psk = vec![0u8; BIRDO_PQ_PSK_LEN];
         let r = unsafe {
             birdo_pq_test_encapsulate(
-                pk.as_ptr(), pk.len(),
-                ct.as_mut_ptr(), ct.len(),
-                server_psk.as_mut_ptr(), server_psk.len(),
-                nonce.as_ptr(), nonce.len(),
+                pk.as_ptr(),
+                pk.len(),
+                ct.as_mut_ptr(),
+                ct.len(),
+                server_psk.as_mut_ptr(),
+                server_psk.len(),
+                nonce.as_ptr(),
+                nonce.len(),
             )
         };
         assert_eq!(r, 0);
@@ -296,10 +634,14 @@ mod tests {
         let mut client_psk = vec![0u8; BIRDO_PQ_PSK_LEN];
         let r = unsafe {
             birdo_pq_derive_psk(
-                sk.as_ptr(), sk.len(),
-                ct.as_ptr(), ct.len(),
-                nonce.as_ptr(), nonce.len(),
-                client_psk.as_mut_ptr(), client_psk.len(),
+                sk.as_ptr(),
+                sk.len(),
+                ct.as_ptr(),
+                ct.len(),
+                nonce.as_ptr(),
+                nonce.len(),
+                client_psk.as_mut_ptr(),
+                client_psk.len(),
             )
         };
         assert_eq!(r, 0);
@@ -309,15 +651,19 @@ mod tests {
 
     #[test]
     fn rejects_wrong_sk_size() {
-        let bad_sk = vec![0u8; 32];
+        let bad_sk = [0u8; 32];
         let ct = vec![0u8; BIRDO_PQ_CIPHERTEXT_LEN];
         let mut psk = vec![0u8; BIRDO_PQ_PSK_LEN];
         let r = unsafe {
             birdo_pq_derive_psk(
-                bad_sk.as_ptr(), bad_sk.len(),
-                ct.as_ptr(), ct.len(),
-                std::ptr::null(), 0,
-                psk.as_mut_ptr(), psk.len(),
+                bad_sk.as_ptr(),
+                bad_sk.len(),
+                ct.as_ptr(),
+                ct.len(),
+                std::ptr::null(),
+                0,
+                psk.as_mut_ptr(),
+                psk.len(),
             )
         };
         assert_eq!(r, BirdoPqStatus::BadSecretKey as i32);
@@ -327,17 +673,19 @@ mod tests {
     fn rejects_wrong_ct_size() {
         let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
         let mut sk = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
-        unsafe {
-            birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len())
-        };
-        let bad_ct = vec![0u8; 16];
+        unsafe { birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len()) };
+        let bad_ct = [0u8; 16];
         let mut psk = vec![0u8; BIRDO_PQ_PSK_LEN];
         let r = unsafe {
             birdo_pq_derive_psk(
-                sk.as_ptr(), sk.len(),
-                bad_ct.as_ptr(), bad_ct.len(),
-                std::ptr::null(), 0,
-                psk.as_mut_ptr(), psk.len(),
+                sk.as_ptr(),
+                sk.len(),
+                bad_ct.as_ptr(),
+                bad_ct.len(),
+                std::ptr::null(),
+                0,
+                psk.as_mut_ptr(),
+                psk.len(),
             )
         };
         assert_eq!(r, BirdoPqStatus::BadCiphertext as i32);
@@ -347,8 +695,10 @@ mod tests {
     fn null_pointer_rejected() {
         let r = unsafe {
             birdo_pq_generate_keypair(
-                std::ptr::null_mut(), BIRDO_PQ_PUBLIC_KEY_LEN,
-                std::ptr::null_mut(), BIRDO_PQ_SECRET_KEY_LEN,
+                std::ptr::null_mut(),
+                BIRDO_PQ_PUBLIC_KEY_LEN,
+                std::ptr::null_mut(),
+                BIRDO_PQ_SECRET_KEY_LEN,
             )
         };
         assert_eq!(r, BirdoPqStatus::NullPointer as i32);
