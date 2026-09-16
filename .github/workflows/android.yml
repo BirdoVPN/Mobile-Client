@@ -189,9 +189,16 @@ jobs:
       - name: Install QEMU user-mode and an aarch64 cross toolchain
         run: |
           sudo apt-get update
+          # libc6-dev-arm64-cross is NOT optional and is NOT pulled in by
+          # gcc-aarch64-linux-gnu under --no-install-recommends: without it the
+          # link dies on "cannot find Scrt1.o". It is also what provides the
+          # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
+          # to find the dynamic loader.
           sudo apt-get install -y --no-install-recommends \
-            qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu
+            qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
           qemu-aarch64 --version | head -1
+          ls /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
 
       - name: Add the aarch64 Rust target
         run: rustup target add aarch64-unknown-linux-gnu
