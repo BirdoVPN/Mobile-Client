@@ -470,6 +470,22 @@ class BirdoRepositoryTest {
     }
 
     @Test
+    fun `connectVpn forwards the BirdoShield flag and leaves it off by default`() = runTest {
+        // D18: the per-device opt-in only exists on the connect body, so the
+        // repository must pass it through verbatim on the single-hop path.
+        val request = slot<ConnectRequest>()
+        coEvery { api.connect(capture(request)) } returns Response.success(
+            ConnectResponse(success = true, keyId = "key123")
+        )
+
+        repository.connectVpn(serverNodeId = "server_1", dnsFiltering = true)
+        assertEquals(true, request.captured.dnsFiltering)
+
+        repository.connectVpn(serverNodeId = "server_1")
+        assertEquals(false, request.captured.dnsFiltering)
+    }
+
+    @Test
     fun `connectVpn does not claim decapsulation without an ML-KEM key`() = runTest {
         val request = slot<ConnectRequest>()
         coEvery { api.connect(capture(request)) } returns Response.success(
@@ -574,6 +590,22 @@ class BirdoRepositoryTest {
         assertEquals("pq-public-key", request.captured.pqClientPublicKey)
         // The multi-hop twin must carry the HNDL opt-in exactly like single-hop.
         assertEquals(true, request.captured.pqClientCanDecapsulate)
+    }
+
+    @Test
+    fun `connectMultiHop forwards the BirdoShield flag and leaves it off by default`() = runTest {
+        // D18 twin of the single-hop case: a double-hop user must be able to
+        // opt into the filtering resolver exactly like a single-hop one.
+        val request = slot<MultiHopConnectRequest>()
+        coEvery { api.connectMultiHop(capture(request)) } returns Response.success(
+            MultiHopConnectResponse(success = true, keyId = "mh-key")
+        )
+
+        repository.connectMultiHop(entryNodeId = "de-1", exitNodeId = "nl-1", dnsFiltering = true)
+        assertEquals(true, request.captured.dnsFiltering)
+
+        repository.connectMultiHop(entryNodeId = "de-1", exitNodeId = "nl-1")
+        assertEquals(false, request.captured.dnsFiltering)
     }
 
     @Test

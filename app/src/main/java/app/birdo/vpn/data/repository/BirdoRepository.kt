@@ -605,6 +605,8 @@ class BirdoRepository @Inject constructor(
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
+        /** BirdoShield (D18): per-device DNS-filtering opt-in — see ConnectRequest.dnsFiltering. */
+        dnsFiltering: Boolean = false,
     ): ApiResult<ConnectResponse> {
         // FIX-1-1: Generate X25519 keypair locally — private key never leaves the device.
         // Uses wireguard-android's crypto module which wraps Curve25519.
@@ -641,6 +643,7 @@ class BirdoRepository @Inject constructor(
                     // silently downgrade.
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
+                    dnsFiltering = dnsFiltering,
                 ))
             }
             if (result is ApiResult.Success) {
@@ -738,6 +741,8 @@ class BirdoRepository @Inject constructor(
         quantumProtection: Boolean = false,
         pqClientPublicKey: String? = null,
         integrityToken: String? = null,
+        /** BirdoShield (D18) — the twin of [connectVpn]'s dnsFiltering; both dial paths carry it. */
+        dnsFiltering: Boolean = false,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
@@ -762,6 +767,7 @@ class BirdoRepository @Inject constructor(
                     // must always change together. See ConnectRequest above.
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
+                    dnsFiltering = dnsFiltering,
                 ))
             }
             if (result is ApiResult.Success) {

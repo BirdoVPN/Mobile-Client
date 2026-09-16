@@ -2,7 +2,8 @@
 
 `vpn-protocol.schema.json` is a **byte-identical copy** of
 `birdo-web/backend/contract/vpn-protocol.schema.json` (BirdoVPN/birdo-web,
-PR #459). It is GENERATED there (`cd backend && npm run contract:generate`)
+PR #459; refreshed for the BirdoShield `dnsFiltering` flag in PR #465). It is
+GENERATED there (`cd backend && npm run contract:generate`)
 from the code that enforces the wire contract — class-validator on
 `ConnectDto` for `POST /vpn/connect`, the `.strict()` zod schema for
 `POST /vpn/multi-hop/connect` — and pinned by `protocol-schema.spec.ts`, so a

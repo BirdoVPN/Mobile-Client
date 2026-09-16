@@ -322,6 +322,14 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - VPN Config
 
+    /// BirdoShield (D18): the persisted per-device DNS-filtering opt-in.
+    /// UserDefaults key "dns_filtering", written by SettingsViewModel; an
+    /// absent key is OFF (the opt-in default), so a fresh install and a user
+    /// who never touched the toggle both send the pre-D18 connect body.
+    private static var dnsFilteringEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "dns_filtering")
+    }
+
     /// `rebuildOf`: the server-side key the LIVE tunnel is riding (Mobile-Client
     /// #159). When set, the body carries `rebuild: true` + `currentKeyId` and
     /// the request is travelling THROUGH the tunnel it is about to replace, so
@@ -349,6 +357,11 @@ final class APIClient: @unchecked Sendable {
         if quantumEnabled && pqPk == nil {
             throw APIError.quantumKeyUnavailable
         }
+        // BirdoShield (D18): per-device DNS filtering, OFF unless the user
+        // switched it on (SettingsViewModel persists "dns_filtering"). Read
+        // the raw store at dial time, like quantum above, so the flag a
+        // reconnect carries is the one the user set — not a stale VM copy.
+        let dnsFilteringEnabled = Self.dnsFilteringEnabled
         // Generate the WireGuard keypair on-device; send only the public key.
         let wg = WireGuardKeypair.generate()
         // AUDIT-M-DRIFT: the field is `serverNodeId` (ConnectDto), not `serverId`.
@@ -365,7 +378,9 @@ final class APIClient: @unchecked Sendable {
                 pqClientPublicKey: pqPk,
                 pqClientCanDecapsulate: pqPk == nil ? nil : true,
                 rebuild: currentKeyId == nil ? nil : true,
-                currentKeyId: currentKeyId
+                currentKeyId: currentKeyId,
+                // Off is ABSENT, never `false` — see ConnectBody.dnsFiltering.
+                dnsFiltering: dnsFilteringEnabled ? true : nil
             )
         )
         let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
@@ -393,6 +408,8 @@ final class APIClient: @unchecked Sendable {
         if quantumEnabled && pqPk == nil {
             throw APIError.quantumKeyUnavailable
         }
+        // BirdoShield (D18) — the multi-hop twin of getConnectConfig's read.
+        let dnsFilteringEnabled = Self.dnsFilteringEnabled
         // Generate the WireGuard keypair on-device; send only the public key.
         let wg = WireGuardKeypair.generate()
         let body = try encoder.encode(
@@ -405,7 +422,8 @@ final class APIClient: @unchecked Sendable {
                 pqClientPublicKey: pqPk,
                 pqClientCanDecapsulate: pqPk == nil ? nil : true,
                 rebuild: currentKeyId == nil ? nil : true,
-                currentKeyId: currentKeyId
+                currentKeyId: currentKeyId,
+                dnsFiltering: dnsFilteringEnabled ? true : nil
             )
         )
         let data = try await post(path: "/vpn/multi-hop/connect", body: body, authenticated: true)

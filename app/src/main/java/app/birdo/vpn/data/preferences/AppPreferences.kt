@@ -80,6 +80,22 @@ class AppPreferences @Inject constructor(
         // before its async flush, silently reverting to the unsafe default.
         set(value) { prefs.edit(commit = true) { putBoolean(KEY_STEALTH_MODE, value) }; signSettings() }
 
+    // ── BirdoShield (D18 — per-device DNS filtering) ─────────────
+    /** When enabled, the NEXT connect asks the server (ConnectRequest.dnsFiltering)
+     *  for the node's filtering resolver, which blocks ads, trackers and malware
+     *  domains. OFF by default. Per device, never account-wide: the flag rides
+     *  every connect body, so nothing is stored server-side between sessions.
+     *
+     *  commit() like stealth so the value is durable before the connect that
+     *  reads it can start. Deliberately NOT in SettingsHmac.PROTECTED_KEYS: a
+     *  rewrite can only swap which public resolver the server hands out (both
+     *  are inside the tunnel — no route, leak or kill-switch surface), and adding
+     *  a protected key forces a LEGACY_PROTECTED_KEY_SETS migration for every
+     *  installed user; the risk does not buy that. */
+    var dnsFilteringEnabled: Boolean
+        get() = prefs.getBoolean(KEY_DNS_FILTERING_ENABLED, false)
+        set(value) = prefs.edit(commit = true) { putBoolean(KEY_DNS_FILTERING_ENABLED, value) }
+
     // ── Adaptive Transport (automatic stealth fallback) ──────────
     /**
      * When the last automatic fallback succeeded, the epoch-millis at which it
@@ -260,6 +276,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
         private const val KEY_LOCAL_NETWORK_SHARING = "local_network_sharing"
         private const val KEY_STEALTH_MODE = "stealth_mode_enabled"
+        private const val KEY_DNS_FILTERING_ENABLED = "dns_filtering_enabled"
         private const val KEY_STEALTH_PREFERRED_SINCE = "stealth_preferred_since"
 
         /**

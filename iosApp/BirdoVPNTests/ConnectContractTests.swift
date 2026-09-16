@@ -153,7 +153,8 @@ final class ConnectContractTests: XCTestCase {
             pqClientPublicKey: pqPublicKey,
             pqClientCanDecapsulate: true,
             rebuild: true,
-            currentKeyId: "k-0000000001"
+            currentKeyId: "k-0000000001",
+            dnsFiltering: true
         )
     }
 
@@ -167,7 +168,8 @@ final class ConnectContractTests: XCTestCase {
             pqClientPublicKey: pqPublicKey,
             pqClientCanDecapsulate: true,
             rebuild: true,
-            currentKeyId: "k-0000000001"
+            currentKeyId: "k-0000000001",
+            dnsFiltering: true
         )
     }
 
@@ -199,7 +201,8 @@ final class ConnectContractTests: XCTestCase {
         // Every stored property reached the wire (a `private` or computed
         // field that silently drops out would pass the subset check alone).
         XCTAssertEqual(keys, ["serverNodeId", "deviceId", "clientPublicKey", "quantumProtection",
-                              "pqClientPublicKey", "pqClientCanDecapsulate", "rebuild", "currentKeyId"])
+                              "pqClientPublicKey", "pqClientCanDecapsulate", "rebuild", "currentKeyId",
+                              "dnsFiltering"])
         assertValid(body, connectDef)
     }
 
@@ -210,7 +213,7 @@ final class ConnectContractTests: XCTestCase {
         let body = try encode(ConnectBody(
             serverNodeId: "node-nl-1", deviceId: deviceId, clientPublicKey: wgPublicKey,
             quantumProtection: nil, pqClientPublicKey: nil, pqClientCanDecapsulate: nil,
-            rebuild: nil, currentKeyId: nil))
+            rebuild: nil, currentKeyId: nil, dnsFiltering: nil))
         XCTAssertEqual(Set(body.keys), ["serverNodeId", "deviceId", "clientPublicKey"])
         XCTAssertFalse(body.values.contains { $0 is NSNull }, "an explicit null reached the wire: \(body)")
         assertValid(body, connectDef)
@@ -222,7 +225,8 @@ final class ConnectContractTests: XCTestCase {
         let known = Set(Self.properties(of: multiHopDef).keys)
         XCTAssertTrue(keys.isSubset(of: known), "keys the backend does not know: \(keys.subtracting(known))")
         XCTAssertEqual(keys, ["entryNodeId", "exitNodeId", "deviceId", "clientPublicKey", "quantumProtection",
-                              "pqClientPublicKey", "pqClientCanDecapsulate", "rebuild", "currentKeyId"])
+                              "pqClientPublicKey", "pqClientCanDecapsulate", "rebuild", "currentKeyId",
+                              "dnsFiltering"])
         // The required pair, by the names the zod schema declares.
         XCTAssertEqual(body["entryNodeId"] as? String, "node-nl-1")
         XCTAssertEqual(body["exitNodeId"] as? String, "node-de-2")
@@ -233,10 +237,60 @@ final class ConnectContractTests: XCTestCase {
         let body = try encode(MultiHopBody(
             entryNodeId: "node-nl-1", exitNodeId: "node-de-2", deviceId: deviceId,
             clientPublicKey: wgPublicKey, quantumProtection: nil, pqClientPublicKey: nil,
-            pqClientCanDecapsulate: nil, rebuild: nil, currentKeyId: nil))
+            pqClientCanDecapsulate: nil, rebuild: nil, currentKeyId: nil, dnsFiltering: nil))
         XCTAssertEqual(Set(body.keys), ["entryNodeId", "exitNodeId", "deviceId", "clientPublicKey"])
         XCTAssertFalse(body.values.contains { $0 is NSNull })
         assertValid(body, multiHopDef)
+    }
+
+    // MARK: - BirdoShield (D18): dnsFiltering on both routes
+
+    func testDnsFilteringIsASchemaBooleanPresentWhenOnAndAbsentWhenOff() throws {
+        // birdo-web PR #465: `dnsFiltering` is an optional boolean on BOTH
+        // routes. APIClient sends `true` when the toggle is on and `nil` when
+        // it is off, and the encoder drops nil — so an untouched device sends
+        // the pre-D18 body, the only one a backend without the field accepts.
+        for def in [connectDef, multiHopDef] {
+            XCTAssertEqual(Self.properties(of: def)["dnsFiltering"]?["type"] as? String, "boolean")
+        }
+
+        let singleOn = try encode(ConnectBody(
+            serverNodeId: "node-nl-1", deviceId: deviceId, clientPublicKey: wgPublicKey,
+            quantumProtection: nil, pqClientPublicKey: nil, pqClientCanDecapsulate: nil,
+            rebuild: nil, currentKeyId: nil, dnsFiltering: true))
+        XCTAssertEqual(singleOn["dnsFiltering"] as? Bool, true)
+        assertValid(singleOn, connectDef)
+
+        let singleOff = try encode(ConnectBody(
+            serverNodeId: "node-nl-1", deviceId: deviceId, clientPublicKey: wgPublicKey,
+            quantumProtection: nil, pqClientPublicKey: nil, pqClientCanDecapsulate: nil,
+            rebuild: nil, currentKeyId: nil, dnsFiltering: nil))
+        XCTAssertNil(singleOff["dnsFiltering"], "off must be ABSENT, got: \(singleOff)")
+        assertValid(singleOff, connectDef)
+
+        let multiOn = try encode(MultiHopBody(
+            entryNodeId: "node-nl-1", exitNodeId: "node-de-2", deviceId: deviceId,
+            clientPublicKey: wgPublicKey, quantumProtection: nil, pqClientPublicKey: nil,
+            pqClientCanDecapsulate: nil, rebuild: nil, currentKeyId: nil, dnsFiltering: true))
+        XCTAssertEqual(multiOn["dnsFiltering"] as? Bool, true)
+        assertValid(multiOn, multiHopDef)
+
+        let multiOff = try encode(MultiHopBody(
+            entryNodeId: "node-nl-1", exitNodeId: "node-de-2", deviceId: deviceId,
+            clientPublicKey: wgPublicKey, quantumProtection: nil, pqClientPublicKey: nil,
+            pqClientCanDecapsulate: nil, rebuild: nil, currentKeyId: nil, dnsFiltering: nil))
+        XCTAssertNil(multiOff["dnsFiltering"], "off must be ABSENT, got: \(multiOff)")
+        assertValid(multiOff, multiHopDef)
+    }
+
+    func testDnsFilteringSentAsAStringIsRefusedOnBothRoutes() throws {
+        var single = try encode(fullConnect)
+        single["dnsFiltering"] = "true"
+        assertRefused(single, connectDef, containing: "dnsFiltering: String is not a boolean")
+
+        var multi = try encode(fullMultiHop)
+        multi["dnsFiltering"] = "true"
+        assertRefused(multi, multiHopDef, containing: "dnsFiltering: String is not a boolean")
     }
 
     // MARK: - Negative: the checker bites (run before trusting the green above)

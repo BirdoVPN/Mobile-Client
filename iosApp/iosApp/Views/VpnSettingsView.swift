@@ -11,8 +11,8 @@ import SwiftUI
 ///   - Custom WireGuard port persists per valid keystroke (T3). The radio
 ///     selection is LOCAL UI state — deriving it from the persisted port is
 ///     the exact bug that made "Custom" unreachable.
-///   - Apply-on-change (§0.6): the Local Network Sharing flip blips via the
-///     ViewModel's 1200 ms debounce; field edits (port/MTU) persist
+///   - Apply-on-change (§0.6): the BirdoShield and Local Network Sharing
+///     flips blip via the ViewModel's 1200 ms debounce; field edits (port/MTU) persist
 ///     immediately but re-apply ONCE on screen exit via
 ///     `commitPendingReapply()` in `.onDisappear`.
 ///
@@ -49,6 +49,17 @@ struct VpnSettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         SectionHeader("Network")
+                        // BirdoShield (D18): per-device DNS filtering, OFF by
+                        // default and on every plan. Android carries it under
+                        // Security next to Stealth; iOS has no Stealth row (see
+                        // the header note), so it leads the Network section. The
+                        // flag only rides the connect body — the description
+                        // says so — and a flip while connected takes the same
+                        // 1200 ms debounced reapply blip as Local Network Sharing.
+                        VpnToggleRow(icon: "shield.fill", iconColor: BirdoTheme.green,
+                                     title: "BirdoShield",
+                                     description: "Blocks ads, trackers and malware domains at the VPN's DNS resolver. Applies on your next connection.",
+                                     isOn: $settingsVM.dnsFilteringEnabled)
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",
                                      description: "Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN",

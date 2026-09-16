@@ -12,7 +12,7 @@ import SwiftUI
 ///    `killSwitchToggleBinding` — it echoes "off" while the confirm is
 ///    pending so the switch neither bounces nor lies (T2 fix).
 /// 2. **Tunnel-shape toggles** (quantum protection, local network sharing,
-///    custom DNS on/off) → 1200 ms debounced `onSettingsReapplyNeeded` so a
+///    BirdoShield, custom DNS on/off) → 1200 ms debounced `onSettingsReapplyNeeded` so a
 ///    burst of toggles produces ONE reconnect "blip". The app root wires the
 ///    callback to `VpnViewModel.reapplySettings()` (no-op unless connected).
 /// 3. **Text fields** (DNS addresses, WireGuard port, MTU) → persist
@@ -57,6 +57,19 @@ final class SettingsViewModel: ObservableObject {
         didSet {
             guard localNetworkSharing != oldValue else { return }
             persist("local_network_sharing", localNetworkSharing)
+            requestSettingsReapply()
+        }
+    }
+    /// BirdoShield (D18): per-device DNS filtering (ads, trackers, malware
+    /// domains blocked at the node's resolver). OFF by default — no
+    /// `register(defaults:)` entry, so an absent key reads `false`. The flag
+    /// only travels on the connect body (`APIClient` reads "dns_filtering" at
+    /// dial time), which is why it is a tunnel-shape toggle: a flip while
+    /// connected takes the same debounced reconnect as Local Network Sharing.
+    @Published var dnsFilteringEnabled: Bool {
+        didSet {
+            guard dnsFilteringEnabled != oldValue else { return }
+            persist("dns_filtering", dnsFilteringEnabled)
             requestSettingsReapply()
         }
     }
@@ -159,6 +172,7 @@ final class SettingsViewModel: ObservableObject {
         biometricLockEnabled = d.bool(forKey: "biometric_lock")
         quantumProtectionEnabled = d.bool(forKey: "quantum_protection")
         localNetworkSharing = d.bool(forKey: "local_network_sharing")
+        dnsFilteringEnabled = d.bool(forKey: "dns_filtering")
         customDnsEnabled = d.bool(forKey: "custom_dns")
         customDnsPrimary = d.string(forKey: "custom_dns_primary") ?? ""
         customDnsSecondary = d.string(forKey: "custom_dns_secondary") ?? ""
