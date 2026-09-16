@@ -645,6 +645,7 @@ fun BirdoNavGraph(
                         onWireGuardPortChange = { settingsViewModel.setWireGuardPort(it) },
                         onWireGuardMtuChange = { settingsViewModel.setWireGuardMtu(it) },
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
+                        onDnsFilteringChange = { settingsViewModel.setDnsFiltering(it) },
                         onBack = { navController.popBackStack() },
                         stealthUnlocked = isOperativeOrAbove,
                         onUpgradeRequired = {

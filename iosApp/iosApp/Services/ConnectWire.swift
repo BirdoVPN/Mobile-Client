@@ -28,6 +28,15 @@ enum ConnectWire {
     static func makeEncoder() -> JSONEncoder {
         JSONEncoder()
     }
+
+    /// BirdoShield (D18): the ONE UserDefaults key the toggle is persisted
+    /// under. `SettingsViewModel` writes it, `APIClient` reads it at dial time
+    /// to decide whether the connect bodies carry `dnsFiltering: true`. It is
+    /// a constant so a rename can never split the writer from the reader —
+    /// which would silently turn every installed user's toggle OFF — and it
+    /// lives here (not in either of them) because this file is the only one
+    /// of the three the test bundle can compile.
+    static let dnsFilteringDefaultsKey = "dns_filtering"
 }
 
 /// POST /vpn/connect — twin of birdo-web `ConnectDto`.
@@ -57,6 +66,12 @@ struct ConnectBody: Encodable {
     /// The server-side key the live tunnel is riding; the ONE key the server
     /// defers. Sent only together with `rebuild`.
     let currentKeyId: String?
+    /// BirdoShield (D18): per-DEVICE opt-in to the node's filtering DNS
+    /// resolver (ads, trackers, malware domains). `true` when the toggle is
+    /// on, `nil` — ABSENT — when it is off, so an untouched device sends the
+    /// pre-D18 body, the only one a backend that predates the field accepts
+    /// (forbidNonWhitelisted). Twin of birdo-web `ConnectDto.dnsFiltering`.
+    let dnsFiltering: Bool?
 }
 
 /// POST /vpn/multi-hop/connect — twin of birdo-web `multiHopConnectSchema`
@@ -76,4 +91,8 @@ struct MultiHopBody: Encodable {
     /// backend's `multiHopConnectSchema` is `.strict()`.
     let rebuild: Bool?
     let currentKeyId: String?
+    /// BirdoShield (D18) — see ConnectBody. Declared on BOTH bodies (the
+    /// wire-model twin): `multiHopConnectSchema` carries the same optional
+    /// boolean, so a double-hop user gets the filtering resolver too.
+    let dnsFiltering: Bool?
 }

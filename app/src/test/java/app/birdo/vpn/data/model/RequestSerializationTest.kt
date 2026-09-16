@@ -119,6 +119,42 @@ class RequestSerializationTest {
     }
 
     @Test
+    fun `both connect requests carry dnsFiltering when the BirdoShield toggle is on`() {
+        // BirdoShield (D18) is a per-device flag on the connect body; the
+        // double-hop route must carry it too or a multi-hop user could never
+        // get the filtering resolver.
+        val single = json.encodeToString(
+            serializer<ConnectRequest>(),
+            ConnectRequest(serverNodeId = "node-1", dnsFiltering = true),
+        )
+        assertTrue("dnsFiltering missing from ConnectRequest", single.contains("\"dnsFiltering\":true"))
+
+        val multi = json.encodeToString(
+            serializer<MultiHopConnectRequest>(),
+            MultiHopConnectRequest(entryNodeId = "entry-1", exitNodeId = "exit-1", dnsFiltering = true),
+        )
+        assertTrue("dnsFiltering missing from MultiHopConnectRequest", multi.contains("\"dnsFiltering\":true"))
+    }
+
+    @Test
+    fun `dnsFiltering is omitted at its default on both connect requests`() {
+        // Off is ABSENT, never `false`: an untouched toggle must produce the
+        // pre-D18 body so a backend without the field (forbidNonWhitelisted /
+        // zod .strict()) keeps accepting every connect.
+        val single = json.encodeToString(
+            serializer<ConnectRequest>(),
+            ConnectRequest(serverNodeId = "node-1"),
+        )
+        assertTrue("default dnsFiltering must not be encoded", !single.contains("dnsFiltering"))
+
+        val multi = json.encodeToString(
+            serializer<MultiHopConnectRequest>(),
+            MultiHopConnectRequest(entryNodeId = "entry-1", exitNodeId = "exit-1"),
+        )
+        assertTrue("default dnsFiltering must not be encoded", !multi.contains("dnsFiltering"))
+    }
+
+    @Test
     fun `AttestationNonceResponse deserializes`() {
         val decoded = json.decodeFromString(
             serializer<AttestationNonceResponse>(),

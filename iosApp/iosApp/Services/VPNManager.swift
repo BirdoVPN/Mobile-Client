@@ -874,56 +874,20 @@ final class VPNManager: @unchecked Sendable {
     }
 
     /// Resolve DNS servers, preferring the user's custom entries.
-    /// Mirrors Android's `WireGuardConfigBuilder.resolveDnsServers`.
+    /// Mirrors Android's `WireGuardConfigBuilder.resolveDnsServers`. The
+    /// predicates live in `TunnelDns` (Foundation-only, unit tested): the
+    /// BirdoShield resolver the server hands out is the node's own
+    /// tunnel-gateway address, 10.13.13.1, which the RFC1918 rejection used
+    /// to discard — so ON resolved through 1.1.1.1 exactly like OFF.
     private func resolveDnsServers(_ config: VPNConnectionConfig) -> [String] {
-        let fallback = ["1.1.1.1", "1.0.0.1"]
         let defaults = UserDefaults.standard
-        if defaults.bool(forKey: "custom_dns") {
-            let custom = [
-                defaults.string(forKey: "custom_dns_primary") ?? "",
-                defaults.string(forKey: "custom_dns_secondary") ?? "",
-            ]
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { Self.isUsableDnsAddress($0) }
-            return custom.isEmpty ? fallback : custom
-        }
-        let serverDns = config.dns.filter { Self.isUsableDnsAddress($0) }
-        return serverDns.isEmpty ? fallback : serverDns
-    }
-
-    /// A DNS entry must be an IP literal (a hostname would have to be resolved
-    /// by the resolver we are configuring) and must not be loopback or
-    /// unspecified. This also stops user-typed text in the custom-DNS fields
-    /// from injecting extra lines into the generated wg-quick config.
-    /// Internal (not private): `SettingsViewModel` runs the SAME check on the
-    /// custom-DNS fields so the UI's validity feedback and the persisted-value
-    /// gate can never drift from what the tunnel builder actually accepts.
-    static func isUsableDnsAddress(_ s: String) -> Bool {
-        var v4 = in_addr()
-        var v6 = in6_addr()
-        if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
-            let host = UInt32(bigEndian: v4.s_addr)
-            if host == 0 || (host >> 24) == 127 { return false }   // 0.0.0.0, 127/8
-            // Tunnel-reachability (Android WireGuardConfigBuilder parity): a
-            // private or link-scoped resolver either leaks DNS onto the LAN
-            // (excludeLocalNetworks on) or blackholes all resolution inside a
-            // public-egress tunnel (off). Never usable either way.
-            if (host >> 24) == 10 { return false }                 // 10/8
-            if (host >> 20) == 0xAC1 { return false }              // 172.16/12
-            if (host >> 16) == 0xC0A8 { return false }             // 192.168/16
-            if (host >> 16) == 0xA9FE { return false }             // 169.254/16
-            return true
-        }
-        if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
-            let bytes = withUnsafeBytes(of: &v6) { Array($0) }
-            if bytes.allSatisfy({ $0 == 0 }) { return false }                        // ::
-            if bytes.dropLast().allSatisfy({ $0 == 0 }) && bytes.last == 1 { return false } // ::1
-            if (bytes[0] & 0xFE) == 0xFC { return false }          // ULA fc00::/7
-            if bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80 { return false } // fe80::/10
-            if bytes[0] == 0xFF { return false }                   // multicast ff00::/8
-            return true
-        }
-        return false
+        return TunnelDns.resolve(
+            serverDns: config.dns,
+            tunnelAddresses: config.addresses,
+            customDnsEnabled: defaults.bool(forKey: "custom_dns"),
+            customPrimary: defaults.string(forKey: "custom_dns_primary") ?? "",
+            customSecondary: defaults.string(forKey: "custom_dns_secondary") ?? ""
+        )
     }
 
     /// True if an AllowedIPs entry is the IPv6 default route (`::/0`), tolerating
