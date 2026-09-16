@@ -45,6 +45,7 @@ fun VpnSettingsScreen(
     onWireGuardPortChange: (String) -> Unit,
     onWireGuardMtuChange: (Int) -> Unit,
     onStealthModeChange: (Boolean) -> Unit,
+    onDnsFilteringChange: (Boolean) -> Unit,
     onBack: () -> Unit,
     // ── Plan gating ──────────────────────────────────────────────
     // Premium toggles mirror the Multi-Hop pattern on the Connect screen:
@@ -102,6 +103,23 @@ fun VpnSettingsScreen(
                     onCheckedChange = onStealthModeChange,
                     locked = !stealthUnlocked,
                     onLockedTap = { onUpgradeRequired("Stealth Mode") },
+                )
+            }
+
+            item {
+                // BirdoShield (D18): per-device DNS filtering, OFF by default and
+                // available on every plan (no lock affordance). The flag only
+                // travels on the connect body, so the description says when it
+                // takes effect; a flip while connected goes through the same
+                // apply-on-change reconnect as Stealth (SettingsViewModel).
+                VpnToggle(
+                    icon = Icons.Default.Shield,
+                    iconColor = BirdoGreen,
+                    title = stringResource(R.string.vpn_settings_birdoshield_title),
+                    description = stringResource(R.string.vpn_settings_birdoshield_desc),
+                    checked = state.dnsFilteringEnabled,
+                    onCheckedChange = onDnsFilteringChange,
+                    testTag = "vpn_settings_birdoshield",
                 )
             }
 

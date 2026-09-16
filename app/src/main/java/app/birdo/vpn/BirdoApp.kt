@@ -2,6 +2,7 @@ package app.birdo.vpn
 
 import android.app.Application
 import app.birdo.vpn.billing.PlayBillingManager
+import app.birdo.vpn.utils.CpuFeatures
 import dagger.hilt.android.HiltAndroidApp
 import io.sentry.android.core.SentryAndroid
 import javax.inject.Inject
@@ -200,6 +201,22 @@ class BirdoApp : Application() {
                 event.serverName = null
                 event
             }
+        }
+
+        // CPU-feature attribution on every report from the first frame on:
+        // the process ABI and the kernel's /proc/cpuinfo Features line. Set
+        // here, not only when the PQ library loads, so a native crash in ANY
+        // library -- or before RosenpassNative ever runs -- still says which
+        // ISA extensions the device has. RosenpassNative adds the HWCAP words
+        // and the ML-KEM implementation name once the .so is up. The
+        // 1.3.25..1.4.25 SIGILL took three investigations to attribute to
+        // "no sha3"; this is what would have answered it from the first
+        // report. Scope sync to the NDK layer is on by default, so native
+        // crash envelopes carry these tags too.
+        try {
+            CpuFeatures.tagSentryBaseline()
+        } catch (e: Exception) {
+            android.util.Log.w("BirdoApp", "cpu-feature tags unavailable", e)
         }
     }
 }

@@ -235,7 +235,15 @@ object WireGuardConfigBuilder {
     fun resolveDnsServers(config: ConnectResponse, prefs: AppPreferences): List<String> {
         val fallback = listOf("1.1.1.1", "1.0.0.1")
         if (!prefs.customDnsEnabled) {
-            val serverDns = config.dns?.filter { isValidDnsAddress(it) } ?: emptyList()
+            // BirdoShield (D18): the filtering resolver the server hands out is
+            // the node's own tunnel-gateway address (10.13.13.1), which the
+            // RFC1918 rejection below used to throw away — so a device with
+            // BirdoShield ON resolved through 1.1.1.1 exactly like OFF. Only a
+            // SERVER-provided entry can be admitted this way; the gateway rule
+            // is never applied to user-typed custom DNS.
+            val serverDns = config.dns?.filter {
+                isValidDnsAddress(it) || isTunnelGatewayResolver(it, config.assignedIp)
+            } ?: emptyList()
             if (serverDns.isEmpty()) {
                 Log.w(TAG, "Server provided no valid DNS servers — falling back to defaults (1.1.1.1)")
             }
@@ -267,6 +275,10 @@ object WireGuardConfigBuilder {
      *    whole device silently loses name resolution.
      * Either way the address cannot serve DNS for this tunnel. Callers fall
      * back to 1.1.1.1/1.0.0.1 when nothing survives.
+     *
+     * The ONE private address that IS reachable through the tunnel — the
+     * node's own gateway resolver (BirdoShield) — is admitted separately by
+     * [isTunnelGatewayResolver], for server-provided entries only.
      */
     private fun isValidDnsAddress(address: String): Boolean {
         return try {
@@ -284,6 +296,66 @@ object WireGuardConfigBuilder {
     /** IPv6 ULA fc00::/7 — NOT covered by isSiteLocalAddress (fec0::/10 only). */
     private fun isUniqueLocalV6(addr: InetAddress): Boolean =
         addr is java.net.Inet6Address && (addr.address[0].toInt() and 0xfe) == 0xfc
+
+    /**
+     * BirdoShield (D18): is [address] the tunnel-gateway resolver for a client
+     * whose tunnel address is [assignedIp]?
+     *
+     * Every node allocates client addresses from one /24 (the fleet's
+     * BIRDO_AGENT_WG_SUBNET, 10.13.13.0/24) and runs the blocky filtering
+     * resolver on its own wg0 address in that /24 (10.13.13.1). That address is
+     * RFC1918, so [isValidDnsAddress] rejects it — correctly for a LAN
+     * resolver, wrongly for this one: it is reachable ONLY through the tunnel,
+     * by construction, because it shares the subnet the tunnel interface owns.
+     *
+     * The rule is therefore narrow: IPv4 literals only (no DNS lookups), the
+     * same /24 as the assigned address, not the assigned address itself and
+     * not the network/broadcast host. A LAN resolver (10.0.0.53, 192.168.1.1)
+     * never satisfies it, so the leak/blackhole reasoning in
+     * [isValidDnsAddress] still holds for everything else.
+     *
+     * With local network sharing ON the service's route set leaves 10.0.0.0/8
+     * to the LAN, so an address admitted here MUST also be pinned back into
+     * the tunnel — see [pinnedResolverRoutes].
+     */
+    fun isTunnelGatewayResolver(address: String, assignedIp: String?): Boolean {
+        val resolver = parseIpv4Literal(address) ?: return false
+        val assigned = parseIpv4Literal(assignedIp ?: return false) ?: return false
+        if (resolver == assigned) return false
+        if ((resolver ushr 8) != (assigned ushr 8)) return false
+        val host = resolver and 0xff
+        return host != 0 && host != 0xff
+    }
+
+    /**
+     * BirdoShield (D18): the `/32` routes [BirdoVpnService] must add on top of
+     * the local-network-sharing route set so the tunnel-gateway resolver is
+     * captured into the tunnel. That route set deliberately skips 10.0.0.0/8,
+     * 172.16.0.0/12 and 192.168.0.0/16; without a more specific route every
+     * query to 10.13.13.1 would leave on the physical network in cleartext —
+     * a DNS leak — and never reach the node. Longest prefix wins, so the /32
+     * pulls back just the resolver and the rest of the LAN range stays local.
+     *
+     * Empty whenever [resolvedDns] holds only public resolvers (the OFF case,
+     * custom DNS, or the fallback), so a device that never turned BirdoShield
+     * on gets exactly the pre-D18 route set.
+     */
+    fun pinnedResolverRoutes(resolvedDns: List<String>, assignedIp: String?): List<String> =
+        resolvedDns.filter { isTunnelGatewayResolver(it, assignedIp) }.map { "$it/32" }
+
+    /** Dotted-quad only — never a hostname, so no resolver is consulted. */
+    private fun parseIpv4Literal(s: String): Int? {
+        val parts = s.trim().split('.')
+        if (parts.size != 4) return null
+        var value = 0
+        for (part in parts) {
+            if (part.isEmpty() || part.length > 3 || !part.all { it.isDigit() }) return null
+            val octet = part.toInt()
+            if (octet > 255) return null
+            value = (value shl 8) or octet
+        }
+        return value
+    }
 
     // ---------- SEC: Server-Response Validators ----------
 

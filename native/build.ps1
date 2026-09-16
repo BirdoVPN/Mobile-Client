@@ -71,3 +71,36 @@ try {
 finally {
     Pop-Location
 }
+
+# -- ISA-baseline gate on what was just built --------------------------------
+#
+# The same bash script CI runs on the packaged APK/AAB (scripts/
+# check_no_sha3_ext.sh), run here on the jniLibs output so a re-enabled
+# pqcrypto-mlkem `neon`/`avx2` feature (the 1.4.25 SIGILL) fails on the
+# developer's machine. It needs bash (Git for Windows ships one) and a
+# disassembler: the NDK's llvm-objdump.exe (via ANDROID_NDK_HOME) or
+# `rustup component add llvm-tools`. Missing either is a LOUD warning locally
+# and a hard failure when ROSENPASS_ISA_GATE_REQUIRED=1 (android.yml).
+$gate = Join-Path $root "scripts\check_no_sha3_ext.sh"
+if (-not (Test-Path $gate)) {
+    throw "$gate is missing -- the ISA-baseline gate cannot run"
+}
+$bash = Get-Command bash -ErrorAction SilentlyContinue
+$gateRc = 1
+if ($bash) {
+    Write-Host ">>> ISA-baseline gate: $gate $jniLibsDir" -ForegroundColor Cyan
+    # Forward slashes: Git Bash resolves them on Windows; a backslash path is
+    # mangled by MSYS path conversion.
+    & $bash.Source ($gate.Replace('\', '/')) ($jniLibsDir.Replace('\', '/'))
+    $gateRc = $LASTEXITCODE
+} else {
+    Write-Warning "bash not found on PATH -- the ISA-baseline gate could not run"
+}
+if ($gateRc -ne 0) {
+    if ($env:ROSENPASS_ISA_GATE_REQUIRED -eq "1") {
+        throw "ISA-baseline gate failed (exit $gateRc) and ROSENPASS_ISA_GATE_REQUIRED=1"
+    }
+    Write-Warning "!!! scripts/check_no_sha3_ext.sh did NOT pass (exit $gateRc)."
+    Write-Warning "!!! If it says no disassembler was found: rustup component add llvm-tools -- CI will run this gate and fail."
+    Write-Warning "!!! If it names an instruction, the .so you just built WILL SIGILL on devices without that CPU feature. Do not ship it."
+}

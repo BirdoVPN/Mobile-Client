@@ -281,8 +281,38 @@ jobs:
       # that was discovered only by the release job, i.e. after merge to the
       # branch that deploys. Building it here costs a cargo-ndk cross-compile
       # and buys a real artifact to gate on.
-      - name: Build Rosenpass JNI engine for every shipped ABI
+      # Two controls that run BEFORE the cross-compile, in seconds:
+      #
+      #   1. check_pq_features.sh asks Cargo which features pqcrypto-mlkem
+      #      actually resolves to, per crate and target. `neon` is the feature
+      #      that shipped the 1.4.25 SIGILL, and Cargo feature unification can
+      #      turn it back on from ANY crate in the graph while our own
+      #      Cargo.toml line still reads `default-features = false`. The
+      #      disassembly gate below would catch that too -- after a full
+      #      cargo-ndk build, with a less specific error.
+      #   2. The gate's own self-test proves, on this runner with this
+      #      disassembler, that scripts/check_no_sha3_ext.sh fails on a
+      #      hand-assembled eor3 and passes a HWCAP-gated LSE helper. A gate
+      #      that is never shown to bite is a gate nobody can trust green.
+      - name: Assert pqcrypto-mlkem resolves to CLEAN-only features
         run: |
+          chmod +x scripts/check_pq_features.sh
+          scripts/check_pq_features.sh
+
+      - name: ISA gate self-test against committed fixtures
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x scripts/check_no_sha3_ext.sh scripts/tests/check_no_sha3_ext_test.sh
+          scripts/tests/check_no_sha3_ext_test.sh
+
+      # native/build.sh runs scripts/check_no_sha3_ext.sh on its own output
+      # (app/src/main/jniLibs) when it can find a disassembler; on this runner
+      # it must, so a missing tool is a build failure rather than a warning.
+      - name: Build Rosenpass JNI engine for every shipped ABI
+        env:
+          ROSENPASS_ISA_GATE_REQUIRED: "1"
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
           chmod +x ./gradlew
           ./gradlew :app:buildRustLibs
 
@@ -304,8 +334,13 @@ jobs:
       # ones the release build packages (native/build.sh builds the release
       # profile, and the Xray engines come from the same provisioning step), so
       # this is the same binary being checked, one merge earlier.
+      #
+      # The APK's lib/ is what AGP actually packaged (stripped, every ABI,
+      # every AAR-provided .so included), which the jniLibs pass inside
+      # buildRustLibs cannot see. Same script, same rule table.
       - name: Verify no ungated extended-ISA instructions in shipped libraries
         run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
           chmod +x scripts/check_no_sha3_ext.sh
           rm -rf "$RUNNER_TEMP/debug-apk-libs"
           unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*'             -d "$RUNNER_TEMP/debug-apk-libs"
@@ -565,8 +600,13 @@ jobs:
         #   • AAB  (bundleRelease -PplayBuild=true, IS_PLAY_BUILD=true) → Play
         #     Console. Strips all external-purchase steering to comply with the
         #     Play Payments policy.
+        env:
+          ROSENPASS_ISA_GATE_REQUIRED: "1"
         run: |
-          chmod +x ./gradlew
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x ./gradlew scripts/check_pq_features.sh
+          # Same pre-build feature assertion as the PR path (see the build job).
+          scripts/check_pq_features.sh
           ./gradlew :app:buildRustLibs
           ./gradlew assembleRelease
           # -PplayBuild flips BuildConfig.IS_PLAY_BUILD, so the bundle is a
@@ -622,12 +662,27 @@ jobs:
       # it. Reported from a Galaxy A70 (Snapdragon 675, ARMv8.2-A without
       # FEAT_SHA3). This asserts the opcodes are absent from what actually ships,
       # so re-enabling the feature fails the build instead of the user's phone.
-      - name: Verify no ungated extended-ISA instructions in shipped libraries
+      #
+      # BOTH shipped artifacts, each from its own bytes. The AAB is what Play
+      # serves and the sideload APK is what the GitHub release serves; they
+      # come out of two separate Gradle invocations, and "the native payload
+      # is the same by construction" is exactly the kind of sentence this gate
+      # exists to stop relying on. Same script, same rule table, twice.
+      - name: Verify no ungated extended-ISA instructions in shipped libraries (Play AAB)
         run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
           chmod +x scripts/check_no_sha3_ext.sh
           rm -rf "$RUNNER_TEMP/aab-libs-sha3"
           unzip -q -o app/build/outputs/bundle/release/*.aab 'base/lib/*' -d "$RUNNER_TEMP/aab-libs-sha3"
           scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/aab-libs-sha3/base/lib"
+
+      - name: Verify no ungated extended-ISA instructions in shipped libraries (sideload APK)
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          chmod +x scripts/check_no_sha3_ext.sh
+          rm -rf "$RUNNER_TEMP/apk-libs-sha3"
+          unzip -q -o app/build/outputs/apk/release/app-release.apk 'lib/*' -d "$RUNNER_TEMP/apk-libs-sha3"
+          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/apk-libs-sha3/lib"
 
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk

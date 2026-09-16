@@ -69,7 +69,7 @@
 #![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 
 use jni::objects::{JByteArray, JClass, JObject, JString};
-use jni::sys::{jint, jobjectArray};
+use jni::sys::{jint, jlong, jlongArray, jobjectArray};
 use jni::JNIEnv;
 use log::LevelFilter;
 use std::sync::Once;
@@ -123,6 +123,93 @@ pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeVersion<
             }
         },
     }
+}
+
+/// Which ML-KEM implementation this library was built with.
+///
+/// Returns the literal `"mlkem1024-clean"`: `PQClean`'s portable CLEAN C, on
+/// every ABI, by decision (see the record in Cargo.toml). The value is a
+/// build-time fact about this crate, not a probe -- there is deliberately no
+/// KEM self-test at load, because a SIGILL in a self-test would only move the
+/// crash from the first connect to app start. What makes the literal true is
+/// `scripts/check_pq_features.sh` (the resolved feature set must be exactly
+/// `std`, so only `PQCLEAN_MLKEM1024_CLEAN_*` is linked) and
+/// `scripts/check_no_sha3_ext.sh` (the shipped .so carries no optional-extension
+/// opcode). Kotlin puts this on Sentry as `birdo.pq.impl` so a native crash
+/// report says which implementation was running.
+#[no_mangle]
+pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeImplName<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+) -> JString<'a> {
+    match env.new_string(PQ_IMPL_NAME) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!(target: TAG, "nativeImplName: JVM string alloc failed: {e}");
+            JString::from(unsafe { JObject::from_raw(std::ptr::null_mut()) })
+        }
+    }
+}
+
+/// The kernel's view of this CPU's optional ISA extensions:
+/// `[getauxval(AT_HWCAP), getauxval(AT_HWCAP2)]`, or `[0, 0]` where there is
+/// no auxv (non-Android/Linux hosts, e.g. the JVM unit-test runner).
+///
+/// Why from native code: `getauxval` is not reachable from Java and
+/// `/proc/self/auxv` is not readable by an app. `/proc/cpuinfo` exposes the
+/// same bits as words, but the raw HWCAP is what the loader, the Go runtime
+/// (`internal/cpu`) and compiler-rt's outlined atomics all consult, so it is
+/// the value a crash should be correlated against. Read-only, no allocation
+/// beyond the 16-byte result, one call each; safe to run at library load.
+///
+/// The bit meanings are the Linux uapi `asm/hwcap.h` for the running ABI --
+/// on arm64, `HWCAP_SHA3` is bit 17 of `AT_HWCAP`, which is precisely the bit
+/// every device in the 1.4.25 crash cluster had CLEAR. The Kotlin side
+/// (`app.birdo.vpn.utils.CpuFeatures`) decodes them; this function does not
+/// interpret anything.
+#[no_mangle]
+pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeCpuFeatures<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+) -> jlongArray {
+    let (hwcap, hwcap2) = hwcap_words();
+    // AUDIT-JNI-1: never panic across the FFI boundary. A failed allocation
+    // returns null; Kotlin treats null as "unavailable" and logs nothing wrong.
+    let arr = match env.new_long_array(2) {
+        Ok(a) => a,
+        Err(e) => {
+            log::error!(target: TAG, "nativeCpuFeatures: JVM long[] alloc failed: {e}");
+            return std::ptr::null_mut();
+        }
+    };
+    // HWCAP words are unsigned; they are handed over as the same 64 bits and
+    // reinterpreted as unsigned on the Kotlin side (`toULong()`).
+    #[allow(clippy::cast_possible_wrap)]
+    let words: [jlong; 2] = [hwcap as jlong, hwcap2 as jlong];
+    if let Err(e) = env.set_long_array_region(&arr, 0, &words) {
+        log::error!(target: TAG, "nativeCpuFeatures: set_long_array_region failed: {e}");
+        return std::ptr::null_mut();
+    }
+    arr.into_raw()
+}
+
+/// Build-time implementation name reported by [`Java_app_birdo_vpn_service_RosenpassNative_nativeImplName`].
+const PQ_IMPL_NAME: &str = "mlkem1024-clean";
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn hwcap_words() -> (u64, u64) {
+    // SAFETY: getauxval takes an integer key and returns an integer; it does
+    // not touch memory we own and cannot fail in a way that needs handling
+    // (an unknown key yields 0 and sets errno, which we do not read).
+    let hwcap = unsafe { libc::getauxval(libc::AT_HWCAP) };
+    let hwcap2 = unsafe { libc::getauxval(libc::AT_HWCAP2) };
+    #[allow(clippy::unnecessary_cast)] // c_ulong is u32 on 32-bit ABIs
+    (hwcap as u64, hwcap2 as u64)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+fn hwcap_words() -> (u64, u64) {
+    (0, 0)
 }
 
 /// Generate a long-lived ML-KEM-1024 keypair for the client.

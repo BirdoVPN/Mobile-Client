@@ -479,6 +479,9 @@ class VpnManager @Inject constructor(
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
             integrityToken = integrityToken,
+            // BirdoShield (D18): read at dial time like stealth, so a flip while
+            // connected reaches the server on the reapply reconnect, not before.
+            dnsFiltering = prefs.dnsFilteringEnabled,
         )
 
         when (result) {
@@ -730,6 +733,8 @@ class VpnManager @Inject constructor(
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
             integrityToken = integrityToken,
+            // BirdoShield (D18) — the multi-hop twin of connect()'s flag.
+            dnsFiltering = prefs.dnsFilteringEnabled,
         )
 
         when (result) {

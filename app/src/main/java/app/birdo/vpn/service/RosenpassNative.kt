@@ -3,6 +3,7 @@ package app.birdo.vpn.service
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import app.birdo.vpn.utils.CpuFeatures
 import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.NativeLibraryVerifier
 
@@ -112,6 +113,22 @@ object RosenpassNative {
                 }
                 isLoaded = true
                 Log.i(TAG, "loaded $LIB_NAME (verified) — version=${runCatching { nativeVersion() }.getOrDefault("<error>")}")
+                // Attribution for the next native crash, BEFORE the first KEM
+                // call: which optional ISA extensions the kernel reports
+                // (getauxval AT_HWCAP/AT_HWCAP2 -- not reachable from Java)
+                // and which ML-KEM implementation this .so was built with.
+                // The 1.3.25..1.4.25 SIGILL (FEAT_SHA3 opcodes in a library
+                // with no runtime dispatch) took three investigations to
+                // attribute because no report carried this. Read-only, no
+                // self-test: a SIGILL here would only move the crash to
+                // library load. Failure to read is logged, never thrown --
+                // this is a load path.
+                runCatching {
+                    CpuFeatures.reportNativeLoad(
+                        hwcapWords = nativeCpuFeatures(),
+                        pqImpl = nativeImplName(),
+                    )
+                }.onFailure { Log.w(TAG, "cpu-feature attribution unavailable: ${it.javaClass.simpleName}") }
             } catch (e: UnsatisfiedLinkError) {
                 isLoaded = false
                 // The structural twin of WgNative.init and its
@@ -144,9 +161,28 @@ object RosenpassNative {
         return true
     }
 
-    /** Returns the native lib version string, e.g. `"rosenpass-jni 0.2.0 (BirdoPQ v1, ML-KEM-1024, aarch64, release)"`. */
+    /** Returns the native lib version string, e.g. `"rosenpass-jni 0.2.1 (BirdoPQ v1, ML-KEM-1024, aarch64, release)"`. */
     @JvmStatic
     external fun nativeVersion(): String
+
+    /**
+     * The ML-KEM implementation compiled into this library: the literal
+     * `"mlkem1024-clean"` (PQClean's portable CLEAN C -- see the decision
+     * record in `native/rosenpass-jni/Cargo.toml`). Tagged on Sentry as
+     * `birdo.pq.impl`. A build-time fact, not a probe.
+     */
+    @JvmStatic
+    external fun nativeImplName(): String
+
+    /**
+     * `[getauxval(AT_HWCAP), getauxval(AT_HWCAP2)]` -- the kernel's statement
+     * of this CPU's optional ISA extensions -- or `[0, 0]` off Android/Linux,
+     * or null if the JVM could not allocate the result. Decoded by
+     * [CpuFeatures]; on arm64 bit 17 of the first word is `sha3`, the one
+     * every device in the 1.4.25 crash cluster lacked. Read-only and cheap.
+     */
+    @JvmStatic
+    external fun nativeCpuFeatures(): LongArray?
 
     /**
      * Generates a long-lived ML-KEM-1024 keypair.

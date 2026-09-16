@@ -17,7 +17,7 @@ CI, and all three fail silently in production:
    logcat line, because ``-assumenosideeffects`` strips every ``Log.*`` call
    from release builds.
 
-2. ``RosenpassNative``'s five ``external fun`` are bound the same way. Losing
+2. ``RosenpassNative``'s seven ``external fun`` are bound the same way. Losing
    them silently downgrades BirdoPQ to the server-provided PSK path.
 
 3. kotlinx.serialization resolves serializers reflectively for every Retrofit
@@ -31,6 +31,11 @@ configuration, so it stays true regardless of how the rules are written.
 
 It also checks that ``app/src/main/baseline-prof.txt`` has not silently gone
 stale: every rule must still match at least one class that survived R8.
+
+For an ``.aab`` it additionally pins the Play-facing R8 facts -- the metadata
+Google reads off the upload to decide whether to show the "Improve your app's
+memory and performance with R8 optimisation" recommendation (see
+``check_play_r8_metadata``).
 
 Usage
 -----
@@ -50,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import struct
@@ -66,7 +72,10 @@ ACC_NATIVE = 0x0100
 WIREGUARD_CLASS = "Lcom/wireguard/android/backend/GoBackend;"
 WIREGUARD_METHODS = ("wgTurnOn", "wgTurnOff", "wgGetSocketV4", "wgGetSocketV6")
 
-# RosenpassNative: five @JvmStatic external fun, bound by JNI name mangling.
+# RosenpassNative: seven @JvmStatic external fun, bound by JNI name mangling.
+# nativeImplName / nativeCpuFeatures are the crash-attribution exports (Sentry
+# tags birdo.pq.impl and cpu.*); losing them is silent -- the load path
+# catches the UnsatisfiedLinkError and logs one warning.
 ROSENPASS_CLASS = "Lapp/birdo/vpn/service/RosenpassNative;"
 ROSENPASS_NATIVE_METHODS = (
     "nativeVersion",
@@ -74,6 +83,8 @@ ROSENPASS_NATIVE_METHODS = (
     "nativeDeriveSharedPsk",
     "nativeEncapsulateForServer",
     "nativePskLength",
+    "nativeImplName",
+    "nativeCpuFeatures",
 )
 
 # scripts/verify_android_release_apk.py scans the DEX string pool for
@@ -251,6 +262,92 @@ def discover_artifact() -> str:
     raise SystemExit(
         "ERROR: no release artifact found. Run ':app:minifyReleaseWithR8' (or "
         "'assembleRelease'/'bundleRelease') first, or pass the path explicitly."
+    )
+
+
+# --- Play-facing R8 metadata ----------------------------------------------
+#
+# The Play Console's "Improve your app's memory and performance with R8
+# optimisation" recommendation is computed from two files inside the uploaded
+# AAB, not from anything in this repo: R8 writes
+# BUNDLE-METADATA/com.android.tools/r8.json (what it was configured to do,
+# and how much of the app its keep rules froze) and AGP writes
+# BUNDLE-METADATA/com.android.tools.build.gradle/app-metadata.properties
+# (androidGradlePluginVersion). Read out of the two shipped bundles, not
+# assumed: android-v1.4.27 (AGP 8.11.2) carries
+# resourceOptimization.isOptimizedShrinkingEnabled=false and drew the
+# recommendation; android-v1.4.28 (AGP 9.4.0) carries true and 9.4.0.
+#
+# Nothing else in CI reads either file, so a regression -- an
+# `android.r8.optimizedResourceShrinking=false` line, `isShrinkResources` or
+# `isMinifyEnabled` flipped, an AGP downgrade -- would upload clean and be
+# reported by Google days later, on the release. This pins the facts the
+# recommendation names, on the artifact that gets uploaded.
+PLAY_R8_JSON = "BUNDLE-METADATA/com.android.tools/r8.json"
+PLAY_AGP_METADATA = "BUNDLE-METADATA/com.android.tools.build.gradle/app-metadata.properties"
+# "Upgrade your Android Gradle plug-in to version 9.0 or higher" -- the version
+# from which AGP turns optimised resource shrinking on by default.
+PLAY_R8_MIN_AGP = (9, 0)
+
+
+def check_play_r8_metadata(artifact: str, failures: list[str]) -> None:
+    """Assert the AAB carries the R8/AGP facts Play's R8 recommendation checks."""
+    if not artifact.endswith(".aab"):
+        return
+    with zipfile.ZipFile(artifact) as archive:
+        names = set(archive.namelist())
+        if PLAY_R8_JSON not in names or PLAY_AGP_METADATA not in names:
+            failures.append(
+                f"{artifact} has no {PLAY_R8_JSON} or no {PLAY_AGP_METADATA}. Every AAB "
+                "R8 has processed carries both; without them Play cannot tell this "
+                "bundle was optimised at all."
+            )
+            return
+        metadata = json.loads(archive.read(PLAY_R8_JSON))
+        properties = archive.read(PLAY_AGP_METADATA).decode("utf-8")
+
+    options = metadata.get("options", {})
+    for key in ("isShrinkingEnabled", "isOptimizationsEnabled", "isObfuscationEnabled"):
+        if options.get(key) is not True:
+            failures.append(
+                f"{PLAY_R8_JSON}: options.{key} is {options.get(key)!r}, not true. Play "
+                "reports this as \"Optimisation isn't enabled\"; check isMinifyEnabled "
+                "and the proguard files on the release build type."
+            )
+    if options.get("isProGuardCompatibilityModeEnabled") is not False:
+        failures.append(
+            f"{PLAY_R8_JSON}: options.isProGuardCompatibilityModeEnabled is "
+            f"{options.get('isProGuardCompatibilityModeEnabled')!r}. R8 full mode is the "
+            "AGP default and app/proguard-rules.pro is written for it; something set "
+            "android.enableR8.fullMode=false."
+        )
+    optimized = metadata.get("resourceOptimization", {}).get("isOptimizedShrinkingEnabled")
+    if optimized is not True:
+        failures.append(
+            f"{PLAY_R8_JSON}: resourceOptimization.isOptimizedShrinkingEnabled is "
+            f"{optimized!r}, not true. Play reports this as \"Optimised resource shrinking "
+            "isn't enabled\"; it is on by default from AGP 9.0 whenever isShrinkResources "
+            "= true, so either that flag or android.r8.optimizedResourceShrinking was "
+            "turned off."
+        )
+
+    agp_match = re.search(r"^androidGradlePluginVersion=(\S+)", properties, re.MULTILINE)
+    agp_version = agp_match.group(1) if agp_match else ""
+    agp_tuple = tuple(int(part) for part in re.findall(r"\d+", agp_version)[:2])
+    if len(agp_tuple) < 2 or agp_tuple < PLAY_R8_MIN_AGP:
+        failures.append(
+            f"{PLAY_AGP_METADATA}: androidGradlePluginVersion is {agp_version or 'missing'}; "
+            f"Play asks for {'.'.join(map(str, PLAY_R8_MIN_AGP))} or higher."
+        )
+
+    stats = metadata.get("stats", {})
+    print(
+        f"  Play R8 metadata: R8 {metadata.get('version', '?')}, AGP {agp_version or '?'}, "
+        f"optimised resource shrinking {'on' if optimized is True else 'OFF'}, "
+        f"{'full' if options.get('isProGuardCompatibilityModeEnabled') is False else 'COMPAT'} mode, "
+        f"unobfuscated {stats.get('noObfuscationPercentage', '?')}% / "
+        f"unoptimised {stats.get('noOptimizationPercentage', '?')}% / "
+        f"unshrunk {stats.get('noShrinkingPercentage', '?')}%"
     )
 
 
@@ -557,6 +654,9 @@ def main() -> int:
                         "weight and decays silently. Fix the package name or delete it."
                     )
             print(f"  baseline profile: {len(rules) - len(unmatched)}/{len(rules)} rules still match")
+
+    # 6. Play-facing R8 metadata (AAB only) --------------------------------
+    check_play_r8_metadata(artifact, failures)
 
     if failures:
         print("", file=sys.stderr)
