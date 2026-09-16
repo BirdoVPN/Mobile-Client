@@ -52,6 +52,79 @@ cargo build --release --target x86_64-apple-ios        --lib
 cargo build --release --target aarch64-apple-darwin    --lib
 cargo build --release --target x86_64-apple-darwin     --lib
 
+# -- ISA census for every Apple aarch64 slice -------------------------------
+#
+# Android has had scripts/check_no_sha3_ext.sh since the 1.4.25 SIGILL. The
+# Apple side had NOTHING: ios.yml just called this script, so the Apple arm64
+# slices could carry the same Keccak FEAT_SHA3 code with no build-time check at
+# all, and there was no iOS equivalent of nativeImplName to attribute a crash
+# with either. (birdo_pq_impl_name() closes the second half of that gap.)
+#
+# The policy here is the same as the Android gate's, resolved for Apple:
+#
+#   * ml-kem -> sha3 0.11 -> keccak 0.2.2 ships backends/aarch64_sha3.rs. On
+#     Apple targets it is gated at runtime by cpufeatures-0.3.1/src/aarch64.rs,
+#     which calls sysctlbyname("hw.optional.armv8_2_sha3") -- NOT getauxval, so
+#     the Apple slices need their own evidence rather than inheriting Android's.
+#   * So: FEAT_SHA3 instructions are permitted ONLY when that sysctl name is
+#     still present in the archive. Building with -C target-feature=+sha3 makes
+#     cpufeatures' __unless_target_features! macro elide the check entirely and
+#     return a constant true -- at which point the opcodes execute
+#     unconditionally AND the string disappears. That is exactly the shape of
+#     the crash 1.4.25 shipped on Android, and it is what this census catches.
+#   * Zero instructions is also fine, and is what an Apple build with the
+#     soft-Keccak cfg would produce. Both outcomes pass; only "opcodes with no
+#     check" fails.
+#
+# Note the asymmetry with Android, which is deliberate: Android pins
+# --cfg keccak_backend="soft" in native/rosenpass-jni/.cargo/config.toml and
+# ships zero, because the Android fleet genuinely contains ARMv8.2 cores without
+# FEAT_SHA3. Every Apple device the app supports has it (A12 / M1 and later), so
+# the Apple slices keep the fast path and rely on the runtime gate -- which this
+# census is here to prove is actually present.
+SHA3_MNEMONICS='^(eor3|rax1|xar|bcax)$'
+CPUFEATURES_SYSCTL='hw.optional.armv8_2_sha3'
+
+isa_census() {
+    local archive="$1" label="$2"
+    if [[ ! -f "${archive}" ]]; then
+        echo "ERROR: ISA census: ${archive} does not exist" >&2
+        exit 1
+    fi
+    local count
+    count=$(otool -tvV "${archive}" 2>/dev/null | awk '{print $1}'             | grep -cE "${SHA3_MNEMONICS}" || true)
+    if [[ "${count}" -eq 0 ]]; then
+        echo "  ok: ${label}: 0 FEAT_SHA3 instructions"
+        return 0
+    fi
+    if strings -a "${archive}" | grep -qF "${CPUFEATURES_SYSCTL}"; then
+        echo "  ok: ${label}: ${count} FEAT_SHA3 instruction(s), gated on sysctlbyname(\"${CPUFEATURES_SYSCTL}\")"
+        return 0
+    fi
+    echo "ERROR: ${label} contains ${count} FEAT_SHA3 instruction(s) (eor3/rax1/xar/bcax) but NO reference to" >&2
+    echo "       sysctlbyname(\"${CPUFEATURES_SYSCTL}\"), so nothing checks the CPU before executing them." >&2
+    echo "       The usual cause is RUSTFLAGS enabling the sha3 target feature (or -C target-cpu above the" >&2
+    echo "       fleet floor), which makes cpufeatures elide its runtime check and return a constant true." >&2
+    echo "       That is the 1.4.25 SIGILL shape. Do not silence this by widening the rule." >&2
+    exit 1
+}
+
+echo "ISA census (Apple aarch64 slices):"
+isa_census "target/aarch64-apple-ios/release/libbirdo_pq_ios.a"     "aarch64-apple-ios"
+isa_census "target/aarch64-apple-ios-sim/release/libbirdo_pq_ios.a" "aarch64-apple-ios-sim"
+isa_census "target/aarch64-apple-darwin/release/libbirdo_pq_ios.a"  "aarch64-apple-darwin"
+
+# The impl-name export must be in every slice, or an Apple crash report cannot
+# say which KEM was running -- the exact gap that made the 1.4.25 attribution
+# rest on a human reading docs.
+for slice in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios              aarch64-apple-darwin x86_64-apple-darwin; do
+    if ! nm "target/${slice}/release/libbirdo_pq_ios.a" 2>/dev/null          | grep -q '_birdo_pq_impl_name'; then
+        echo "ERROR: ${slice} does not export birdo_pq_impl_name" >&2
+        exit 1
+    fi
+done
+echo "  ok: birdo_pq_impl_name exported by all five slices"
+
 # Lipo the simulator slices into a single fat archive (xcframework wants
 # one archive per platform-variant).
 SIM_FAT_DIR="$(mktemp -d)"

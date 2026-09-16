@@ -23,11 +23,18 @@ crate-type = ["staticlib"]
 # why this does NOT remove the FEAT_SHA3 opcodes, and why the pin is a crypto
 # decision) is in native/rosenpass-jni/Cargo.toml; do not let the two drift.
 #
-# Apple-side note: keccak's aarch64 FEAT_SHA3 backend resolves its runtime gate
-# through cpufeatures-0.3.1/src/aarch64.rs sysctlbyname("hw.optional.armv8_2_sha3"),
-# not getauxval, so the Apple slices need their own evidence.
-# scripts/build-birdo-pq-xcframework.sh disassembles every slice it builds and
-# applies the same policy the Android gate does.
+# Apple-side note, and it differs from Android on purpose. keccak's aarch64
+# FEAT_SHA3 backend resolves its runtime gate through
+# cpufeatures-0.3.1/src/aarch64.rs sysctlbyname("hw.optional.armv8_2_sha3"), not
+# getauxval, so the Apple slices need their own evidence. This crate has no
+# .cargo/config.toml pinning the soft Keccak backend, because every Apple device
+# the app supports has FEAT_SHA3 (A12 / M1 and later) -- unlike the Android
+# fleet, which is why the Android build pins it. Instead,
+# scripts/build-birdo-pq-xcframework.sh runs an otool census over every Apple
+# aarch64 slice it builds and fails if FEAT_SHA3 instructions are present
+# WITHOUT the sysctl check that gates them (which is what a
+# -C target-feature=+sha3 build produces). It also asserts every slice exports
+# birdo_pq_impl_name.
 ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
