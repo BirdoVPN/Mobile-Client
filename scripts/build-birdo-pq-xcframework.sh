@@ -85,24 +85,56 @@ cargo build --release --target x86_64-apple-darwin     --lib
 SHA3_MNEMONICS='^(eor3|rax1|xar|bcax)$'
 CPUFEATURES_SYSCTL='hw.optional.armv8_2_sha3'
 
+# Every check below captures its tool's output into a variable FIRST and greps
+# the variable afterwards. `set -o pipefail` is on, and both otool and nm exit
+# non-zero on a Rust staticlib (empty archive members produce "no symbols"),
+# which in a `tool | grep -q` pipeline silently turns "found it" into "failed".
+# The first version of this census did exactly that and reported a symbol as
+# missing when it was present.
+#
+# Each check also proves its own tooling worked before it is allowed to pass.
+# A census that decodes nothing, or a symbol scan that reads no symbols, is a
+# FAILURE -- not a clean bill of health. That is the whole lesson of
+# scripts/check_pq_features.sh: a check that found nothing is not a pass.
+
 isa_census() {
-    local archive="$1" label="$2"
+    archive="$1"
+    label="$2"
     if [[ ! -f "${archive}" ]]; then
         echo "ERROR: ISA census: ${archive} does not exist" >&2
         exit 1
     fi
-    local count
-    count=$(otool -tvV "${archive}" 2>/dev/null | awk '{print $1}'             | grep -cE "${SHA3_MNEMONICS}" || true)
+
+    # otool -tvV prints "<address><tab><mnemonic><tab><operands>", so the
+    # mnemonic is the SECOND field, not the first. Getting that wrong is how
+    # the first version of this census reported 0 for every slice and passed.
+    # Matching $1 against a hex address also skips otool's archive-member and
+    # section headers, and works whether it separates with tabs or spaces.
+    dis="$(otool -tvV "${archive}" 2>&1 || true)"
+    mnemonics="$(printf '%s\n' "${dis}" | awk '$1 ~ /^[0-9a-f]+$/ { print $2 }')"
+    total="$(printf '%s\n' "${mnemonics}" | grep -cE '^[a-z][a-z0-9._]*$' || true)"
+    if [[ "${total}" -lt 1000 ]]; then
+        echo "ERROR: ISA census: otool decoded only ${total} instruction(s) out of ${label}." >&2
+        echo "       A ML-KEM-1024 implementation is tens of thousands of instructions, so this" >&2
+        echo "       census examined nothing and must not be reported as clean. First lines of" >&2
+        echo "       otool output:" >&2
+        printf '%s\n' "${dis}" | head -5 | sed 's/^/       /' >&2
+        exit 1
+    fi
+
+    count="$(printf '%s\n' "${mnemonics}" | grep -cE "${SHA3_MNEMONICS}" || true)"
     if [[ "${count}" -eq 0 ]]; then
-        echo "  ok: ${label}: 0 FEAT_SHA3 instructions"
+        echo "  ok: ${label}: 0 FEAT_SHA3 instructions (of ${total} decoded)"
         return 0
     fi
-    if strings -a "${archive}" | grep -qF "${CPUFEATURES_SYSCTL}"; then
-        echo "  ok: ${label}: ${count} FEAT_SHA3 instruction(s), gated on sysctlbyname(\"${CPUFEATURES_SYSCTL}\")"
+
+    strs="$(strings -a "${archive}" 2>&1 || true)"
+    if printf '%s\n' "${strs}" | grep -qF "${CPUFEATURES_SYSCTL}"; then
+        echo "  ok: ${label}: ${count} FEAT_SHA3 instruction(s) of ${total} decoded, gated on sysctlbyname"
         return 0
     fi
     echo "ERROR: ${label} contains ${count} FEAT_SHA3 instruction(s) (eor3/rax1/xar/bcax) but NO reference to" >&2
-    echo "       sysctlbyname(\"${CPUFEATURES_SYSCTL}\"), so nothing checks the CPU before executing them." >&2
+    echo "       a sysctlbyname on ${CPUFEATURES_SYSCTL}, so nothing checks the CPU before executing them." >&2
     echo "       The usual cause is RUSTFLAGS enabling the sha3 target feature (or -C target-cpu above the" >&2
     echo "       fleet floor), which makes cpufeatures elide its runtime check and return a constant true." >&2
     echo "       That is the 1.4.25 SIGILL shape. Do not silence this by widening the rule." >&2
@@ -114,12 +146,22 @@ isa_census "target/aarch64-apple-ios/release/libbirdo_pq_ios.a"     "aarch64-app
 isa_census "target/aarch64-apple-ios-sim/release/libbirdo_pq_ios.a" "aarch64-apple-ios-sim"
 isa_census "target/aarch64-apple-darwin/release/libbirdo_pq_ios.a"  "aarch64-apple-darwin"
 
-# The impl-name export must be in every slice, or an Apple crash report cannot
-# say which KEM was running -- the exact gap that made the 1.4.25 attribution
-# rest on a human reading docs.
-for slice in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios              aarch64-apple-darwin x86_64-apple-darwin; do
-    if ! nm "target/${slice}/release/libbirdo_pq_ios.a" 2>/dev/null          | grep -q '_birdo_pq_impl_name'; then
-        echo "ERROR: ${slice} does not export birdo_pq_impl_name" >&2
+# birdo_pq_impl_name must be in every slice, or an Apple crash report cannot say
+# which KEM was running -- the exact gap that made the 1.4.25 attribution rest
+# on a human reading docs. Mach-O prefixes C symbols with an underscore.
+for slice in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+             aarch64-apple-darwin x86_64-apple-darwin; do
+    syms="$(nm -g "target/${slice}/release/libbirdo_pq_ios.a" 2>&1 || true)"
+    found="$(printf '%s\n' "${syms}" | grep -c '_birdo_pq_' || true)"
+    if [[ "${found}" -eq 0 ]]; then
+        echo "ERROR: read no birdo_pq_* symbols at all out of ${slice}, not even birdo_pq_derive_psk," >&2
+        echo "       which the app links against and therefore must be there. The SYMBOL CHECK is" >&2
+        echo "       broken, not the export. First lines of nm output:" >&2
+        printf '%s\n' "${syms}" | head -5 | sed 's/^/       /' >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "${syms}" | grep -q '_birdo_pq_impl_name'; then
+        echo "ERROR: ${slice} exports ${found} birdo_pq_* symbol(s) but not birdo_pq_impl_name." >&2
         exit 1
     fi
 done
