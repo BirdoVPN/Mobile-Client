@@ -666,6 +666,14 @@ val buildRustLibs = tasks.register<Exec>("buildRustLibs") {
 
     inputs.dir("$nativeDir/rosenpass-jni/src")
     inputs.file("$nativeDir/rosenpass-jni/Cargo.toml")
+    // The lockfile and the per-target rustflags change the BINARY without
+    // touching src/ or Cargo.toml: a `cargo update` that bumps pqcrypto-mlkem,
+    // or a `-C target-feature=+lse` line in .cargo/config.toml, must not leave
+    // a stale librosenpass_jni.so marked UP-TO-DATE. The ISA gate that
+    // build.sh/build.ps1 run on the output only sees what was rebuilt.
+    inputs.file("$nativeDir/rosenpass-jni/Cargo.lock")
+    inputs.file("$nativeDir/rosenpass-jni/.cargo/config.toml")
+    inputs.file(rootProject.file("scripts/check_no_sha3_ext.sh"))
     outputs.files(
         "${project.projectDir}/src/main/jniLibs/arm64-v8a/librosenpass_jni.so",
         "${project.projectDir}/src/main/jniLibs/armeabi-v7a/librosenpass_jni.so",
