@@ -429,6 +429,28 @@ private struct VpnToggleRow: View {
     /// this must not do. `nil` means "show the binding", the normal case.
     var displayOn: Bool? = nil
 
+    /// The binding BOTH switches use: it reads what the row shows and writes to
+    /// the real preference.
+    ///
+    /// The write half is load-bearing, and only on the accessibility side.
+    /// `.accessibilityRepresentation` REPLACES this row's accessibility, so
+    /// VoiceOver activates the representation's own Toggle and never reaches
+    /// the enclosing Button's action. A `.constant` binding's setter is a
+    /// no-op, so binding the representation to one makes the row impossible to
+    /// toggle under VoiceOver — for Local Network Sharing, which has no gate at
+    /// all, permanently. The visible Toggle is `allowsHitTesting(false)` and
+    /// never writes, but it shares this binding so the two cannot drift.
+    /// The `isEnabled` guard mirrors the Button's own.
+    private var shownBinding: Binding<Bool> {
+        Binding(
+            get: { self.displayOn ?? self.isOn },
+            set: { newValue in
+                guard self.isEnabled else { return }
+                self.isOn = newValue
+            }
+        )
+    }
+
     var body: some View {
         Button {
             guard isEnabled else { return }
@@ -444,7 +466,7 @@ private struct VpnToggleRow: View {
                         .frame(width: 24)
                     VpnRowText(title: title, description: description)
                     Spacer(minLength: 8)
-                    Toggle("", isOn: .constant(displayOn ?? isOn))
+                    Toggle("", isOn: shownBinding)
                         .labelsHidden()
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
@@ -456,7 +478,7 @@ private struct VpnToggleRow: View {
         .accessibilityRepresentation {
             // VoiceOver must hear the same thing the screen shows: a disabled
             // row reads OFF and is not actionable, whatever is persisted.
-            Toggle(isOn: .constant(displayOn ?? isOn)) { Text(title) }
+            Toggle(isOn: shownBinding) { Text(title) }
                 .disabled(!isEnabled)
         }
     }

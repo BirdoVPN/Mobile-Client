@@ -36,12 +36,24 @@ class AuthInterceptor @Inject constructor(
         // for it merely because it shares an OkHttp client — the blast radius
         // of a future misrouted or redirected request should not include the
         // session. Every authenticated endpoint is on API_BASE_URL.
-        val apiHost = BuildConfig.API_BASE_URL.toHttpUrlOrNull()?.host
-        val token = if (original.url.host == apiHost) tokenManager.getAccessToken() else null
+        val token = if (original.url.host == API_HOST) tokenManager.getAccessToken() else null
         if (token != null) {
             builder.header("Authorization", "Bearer $token")
         }
 
         return chain.proceed(builder.build())
+    }
+
+    private companion object {
+        /**
+         * Parsed ONCE. `API_BASE_URL` is a compile-time constant, and this ran
+         * on every request in the app before it was hoisted.
+         *
+         * `null` here (an unparseable base URL) means no request would ever
+         * carry a token — every authenticated call 401s and the app logs
+         * itself out — so AuthInterceptorTest asserts it parses and asserts
+         * the host it resolves to.
+         */
+        val API_HOST: String? = BuildConfig.API_BASE_URL.toHttpUrlOrNull()?.host
     }
 }

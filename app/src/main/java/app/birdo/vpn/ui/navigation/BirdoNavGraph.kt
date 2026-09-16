@@ -632,6 +632,15 @@ fun BirdoNavGraph(
                     DisposableEffect(Unit) {
                         onDispose { settingsViewModel.commitPendingReapply() }
                     }
+                    // Refresh the BirdoShield fleet gate every time this screen
+                    // opens, not once per process. VpnViewModel.init fetches it
+                    // at cold start; if that fetch failed (offline launch, web
+                    // deploy mid-flight) the row would stay ungated for the
+                    // whole process lifetime — fail-open, but stale. This is the
+                    // one screen that renders the gate, so it is the one place
+                    // it has to be current. Twin of iOS's
+                    // `.task { await settingsVM.refreshClientConfig() }`.
+                    LaunchedEffect(Unit) { vpnViewModel.fetchClientConfig() }
                     // Plan gating mirrors the Multi-Hop pattern on the Connect
                     // screen. Stealth + Split tunnel are OPERATIVE-and-above,
                     // keyed on the plan string only — an anonymous account on

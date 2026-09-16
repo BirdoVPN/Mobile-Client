@@ -32,9 +32,14 @@ import java.io.File
  *     or an absent field must never produce `false`.
  *  3. The wire shape — `false` and "key absent" must stay distinguishable
  *     through the app's own Json instance.
- *  4. The WIRING — a source guard that the composable actually feeds (1) into
- *     the switch, its enabled state and its subtitle. Layers 1-3 all pass on a
- *     row left hard-coded `enabled = true`, which is the whole bug.
+ *  4. The WIRING — source guards that the composable actually feeds (1) into
+ *     the switch, its enabled state and its subtitle, AND that the two wiring
+ *     points OUTSIDE the composable exist: the nav graph passing the gate down,
+ *     and something actually fetching it. Layers 1-3 all pass on a row left
+ *     hard-coded `enabled = true`, which is the whole bug; layers 1-4a all pass
+ *     with the nav-graph argument or the fetch deleted, which kills the feature
+ *     just as dead (the screen then always sees the `null` default = always
+ *     available). Both were proved by mutation, see [the wiring tests].
  *
  * Not an instrumented Compose test: this module has no Robolectric and
  * androidTest does not run in PR CI, so layer 4 reads the source the way
@@ -225,6 +230,83 @@ class BirdoShieldAvailabilityTest {
             "the switch must not read the raw preference, which ignores the gate",
             "checked = state.dnsFilteringEnabled" in block,
         )
+    }
+
+    /**
+     * The gate must actually REACH the screen.
+     *
+     * The guard above pins three lines of one composable and nothing else.
+     * Deleting `dnsFilteringAvailable = vpnState.dnsFilteringAvailable` from the
+     * nav graph leaves the screen on its `null` default — "unknown", which this
+     * change deliberately reads as AVAILABLE, so the row is permanently
+     * ungated, the feature is entirely dead, and `compileDebugKotlin` plus
+     * every test above stays green. Verified by deleting exactly that line.
+     */
+    @Test
+    fun `the nav graph passes the gate from VpnUiState down to the screen`() {
+        val text = source("app/src/main/java/app/birdo/vpn/ui/navigation/BirdoNavGraph.kt")
+        assertTrue(
+            "BirdoNavGraph no longer passes dnsFilteringAvailable = vpnState.dnsFilteringAvailable " +
+                "to VpnSettingsScreen — the screen falls back to its null default, which means " +
+                "AVAILABLE, so the gate never disables anything",
+            "dnsFilteringAvailable = vpnState.dnsFilteringAvailable" in text,
+        )
+        assertTrue(
+            "the VPN Settings destination no longer refreshes the gate on open " +
+                "(vpnViewModel.fetchClientConfig()); a cold-start fetch that failed would " +
+                "then leave the row ungated for the whole process lifetime. iOS refreshes " +
+                "in `.task` on every appear — keep the surfaces twinned",
+            "fetchClientConfig()" in text,
+        )
+    }
+
+    /**
+     * Something must actually FETCH the gate.
+     *
+     * Deleting the `fetchClientConfig()` call from `VpnViewModel.init` leaves
+     * `dnsFilteringAvailable` at `null` forever — same dead feature, same green
+     * build, same green tests. Verified by deleting exactly that call. The
+     * assertion is scoped to the `init` block on purpose: the declaration of
+     * `fun fetchClientConfig()` lower in the file is not a caller.
+     */
+    @Test
+    fun `the ViewModel fetches the gate in init`() {
+        val text = source("app/src/main/java/app/birdo/vpn/ui/viewmodel/VpnViewModel.kt")
+        // Anchored at column 4 so this is the class's own init block, not
+        // an `init {` nested in some object declaration further down.
+        val initAt = text.indexOf("\n    init {")
+        assertTrue("VpnViewModel no longer has a top-level `init {` block", initAt >= 0)
+        val open = text.indexOf('{', initAt)
+        val body = braceBlock(text, open)
+        assertTrue(
+            "VpnViewModel.init no longer calls fetchClientConfig() — nothing fetches the " +
+                "BirdoShield gate, so dnsFilteringAvailable stays null (= available) forever " +
+                "and the row is never gated",
+            "fetchClientConfig()" in body,
+        )
+    }
+
+    private fun source(path: String): String {
+        val file = File(repoRoot, path)
+        assertTrue("scan target is missing: $path — this test would be vacuous", file.isFile)
+        val text = file.readText()
+        assertTrue("scan target $path is suspiciously small", text.length > 500)
+        return text
+    }
+
+    /** Text between `openIndex`'s brace and its match, braces excluded. */
+    private fun braceBlock(text: String, openIndex: Int): String {
+        var depth = 0
+        for (i in openIndex until text.length) {
+            when (text[i]) {
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return text.substring(openIndex + 1, i)
+                }
+            }
+        }
+        error("unbalanced braces from offset $openIndex")
     }
 
     private companion object {
