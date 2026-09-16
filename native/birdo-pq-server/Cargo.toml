@@ -11,8 +11,16 @@ name = "birdo-pq-server"
 path = "src/main.rs"
 
 [dependencies]
-# Same KEM the Android client uses.
-pqcrypto-mlkem = "0.1"
+# Same KEM the Android client uses -- and the same feature set, on purpose.
+#
+# This was the last pqcrypto-mlkem twin still on default features (avx2, neon,
+# std) after #353 fixed native/rosenpass-jni. This binary is not built or
+# deployed today, but an aarch64 build of it would carry the identical ungated
+# FEAT_SHA3 path that SIGILLed every non-SHA3 arm64 phone on 1.4.25, and a
+# server that dies in keygen is no better than a client that does. CLEAN-only
+# everywhere; scripts/check_pq_features.sh fails the build if any native crate
+# drifts back. See native/README.md § ISA baseline.
+pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 
 # PSK derivation — must match the client side bit-for-bit.
