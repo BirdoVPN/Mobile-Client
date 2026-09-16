@@ -90,11 +90,52 @@ Log.i("Rosenpass", RosenpassNative.getNativeVersion())
 If you see `<not loaded>`, the .so wasn't packaged — either you skipped step 2
 or your build variant doesn't include native libs.
 
+## ISA baseline — portable CLEAN only, and the gates that keep it so
+
+**Decision (2026-09-16):** `librosenpass_jni.so` ships PQClean's portable
+CLEAN C implementation of ML-KEM-1024 on every ABI. No optimised backend, no
+runtime dispatch. The decision record — why, the measured cost, and what it
+would take to revisit — is the comment block on the `pqcrypto-mlkem` line in
+[`rosenpass-jni/Cargo.toml`](rosenpass-jni/Cargo.toml). The short version:
+
+- Every Android build from 1.3.25 to 1.4.25 crashed with `SIGILL` on any arm64
+  device without FEAT_SHA3 (Snapdragon 6xx/7xx/888, Helio G8x/G9x). The crate's
+  default `neon` feature compiled PQClean's AArch64 path, which reaches 64
+  SHA3-extension opcodes behind a literal `if true`. Fixed in #353 by
+  `default-features = false, features = ["std"]`.
+- CLEAN is the reference implementation the optimised ones are validated
+  against; under QEMU all three produced bit-identical keypairs on every core
+  model tried. One code path, one thing to audit.
+- Cost, measured under QEMU TCG on an x86 host — **emulated, relative numbers
+  only, no physical-device timing exists**: keypair ~0.33 ms CLEAN vs ~0.21 ms
+  AArch64+SHA3; keypair+enc+dec ~1.25 ms vs ~0.68 ms. Keygen runs once per
+  connect, next to a network round trip.
+
+Three controls keep it this way; every one fails the build, none is advisory:
+
+| Control | What it proves | Where it runs |
+|---|---|---|
+| [`scripts/check_pq_features.sh`](../scripts/check_pq_features.sh) | `cargo tree -e features -i pqcrypto-mlkem` resolves to exactly `{std}` for every native crate and every target, and every dependency line under `native/**/Cargo.toml` says `default-features = false`. Catches Cargo feature unification before anything is built. | `android.yml` build + release jobs, before `cargo ndk` |
+| [`scripts/check_no_sha3_ext.sh`](../scripts/check_no_sha3_ext.sh) | Every shipped `.so` disassembled (arm64/x86_64/x86) or attribute-checked (armeabi-v7a); any optional-extension opcode outside a runtime guard the script can verify per site fails. STRICT by default; only `libwg-go.so` and `libxray.so` (Go, `internal/cpu` dispatch) are allowlisted. | `native/build.sh` / `build.ps1` on their own output (so `:app:buildRustLibs` runs it), `android.yml` on the PR debug APK, the release APK and the Play AAB |
+| [`scripts/tests/check_no_sha3_ext_test.sh`](../scripts/tests/check_no_sha3_ext_test.sh) | The gate bites: fails on a hand-assembled `eor3`/`rax1`/`xar`/`bcax`, an inline `ldadd`, an AVX2/BMI2/AES-NI x86_64 object, a v8-attributed armeabi-v7a object, a 32-bit `popcnt`; passes a stripped compiler-rt-shaped outlined-atomics helper and the sha2 crate's pinned SHA-NI count. Fixtures in [`scripts/testdata/isa-gate/`](../scripts/testdata/isa-gate/). | `android.yml` build job, before the gate is trusted |
+
+Attribution for the next incident: `nativeCpuFeatures()` returns
+`getauxval(AT_HWCAP/AT_HWCAP2)` and `nativeImplName()` returns
+`"mlkem1024-clean"`; `CpuFeatures.kt` logs one line at library load and tags
+Sentry (`cpu.sha3=true|false` etc., `birdo.pq.impl`, `birdo.abi`). The triage
+runbook is in [`docs/SENTRY-SETUP.md` § 7a](../docs/SENTRY-SETUP.md).
+
+Running the gate locally needs a disassembler that knows every Android ELF
+machine: the NDK's `llvm-objdump` (found through `ANDROID_NDK_HOME`) or
+`rustup component add llvm-tools`. Without one, `build.sh`/`build.ps1` print a
+loud warning and CI — where the tool is mandatory (`ROSENPASS_ISA_GATE_REQUIRED=1`)
+— fails.
+
 ## CI integration
 
 [`.github/workflows/android.yml`](../.github/workflows/android.yml) installs
 Rust + cargo-ndk before the Gradle build and invokes `native/build.sh release`
-so every signed AAB contains the native module for all three ABIs. This adds
+so every signed AAB contains the native module for all four ABIs. This adds
 ~3 minutes to the CI run.
 
 ## Graceful degradation

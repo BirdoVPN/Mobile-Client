@@ -17,7 +17,7 @@ CI, and all three fail silently in production:
    logcat line, because ``-assumenosideeffects`` strips every ``Log.*`` call
    from release builds.
 
-2. ``RosenpassNative``'s five ``external fun`` are bound the same way. Losing
+2. ``RosenpassNative``'s seven ``external fun`` are bound the same way. Losing
    them silently downgrades BirdoPQ to the server-provided PSK path.
 
 3. kotlinx.serialization resolves serializers reflectively for every Retrofit
@@ -72,7 +72,10 @@ ACC_NATIVE = 0x0100
 WIREGUARD_CLASS = "Lcom/wireguard/android/backend/GoBackend;"
 WIREGUARD_METHODS = ("wgTurnOn", "wgTurnOff", "wgGetSocketV4", "wgGetSocketV6")
 
-# RosenpassNative: five @JvmStatic external fun, bound by JNI name mangling.
+# RosenpassNative: seven @JvmStatic external fun, bound by JNI name mangling.
+# nativeImplName / nativeCpuFeatures are the crash-attribution exports (Sentry
+# tags birdo.pq.impl and cpu.*); losing them is silent -- the load path
+# catches the UnsatisfiedLinkError and logs one warning.
 ROSENPASS_CLASS = "Lapp/birdo/vpn/service/RosenpassNative;"
 ROSENPASS_NATIVE_METHODS = (
     "nativeVersion",
@@ -80,6 +83,8 @@ ROSENPASS_NATIVE_METHODS = (
     "nativeDeriveSharedPsk",
     "nativeEncapsulateForServer",
     "nativePskLength",
+    "nativeImplName",
+    "nativeCpuFeatures",
 )
 
 # scripts/verify_android_release_apk.py scans the DEX string pool for

@@ -1,6 +1,6 @@
 [package]
 name = "rosenpass-jni"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 publish = false
 description = "BirdoPQ post-quantum WireGuard PSK derivation — JNI bindings for the Birdo Android client."
@@ -56,11 +56,65 @@ getrandom = { version = "0.2", features = ["std"] }
 #
 # Restoring the optimised path needs runtime dispatch on getauxval(AT_HWCAP) &
 # HWCAP_SHA3, which this crate does not offer. Do not re-enable `neon` without it.
+#
+# ── DECISION RECORD: portable CLEAN only, deliberately ─────────────────────
+#
+# Status (2026-09-16, post-mortem of the 1.3.25..1.4.25 SIGILL): the shipped
+# configuration is PQClean's portable CLEAN C on every ABI. No runtime dispatch,
+# no vendored asm. This is a choice, not a stopgap:
+#
+#   * One code path means one thing to audit and one thing the gates have to
+#     reason about. CLEAN is the reference the optimised implementations are
+#     validated against; under QEMU the CLEAN, AArch64 and plain-NEON builds
+#     produced bit-identical derandomised keypairs on every core model tried.
+#   * The failure mode of a wrong dispatch is exactly the crash we shipped.
+#   * Cost, measured under QEMU TCG on an x86 host (EMULATED, relative only --
+#     no physical-device timing exists): keypair CLEAN ~0.33 ms vs ~0.21 ms for
+#     the AArch64+SHA3 path; full keypair+enc+dec ~1.25 ms vs ~0.68 ms. Keygen
+#     runs once per connect, next to a network round trip. Invisible.
+#
+# Controls that keep it this way (all fail the build, none are advisory):
+#   scripts/check_pq_features.sh   -- resolved feature set must be exactly {std}
+#                                     in every native crate, every target
+#   scripts/check_no_sha3_ext.sh   -- every shipped .so disassembled; any
+#                                     optional-extension opcode outside a
+#                                     verified runtime guard fails (PR debug
+#                                     APK, release APK, release AAB, and the
+#                                     local native/build.sh|ps1 output)
+#   scripts/tests/check_no_sha3_ext_test.sh -- proves the gate bites on
+#                                     hand-assembled eor3/LSE/AVX2 fixtures
+#   nativeCpuFeatures()/nativeImplName() -- HWCAP words and the impl name are
+#                                     logged at load and tagged on Sentry, so
+#                                     the next native crash says which feature
+#                                     the device lacked
+#
+# To re-evaluate (owner decision, not a follow-up): needs (a) a keygen cost
+# measured on a real device that moves a user-visible metric, (b) an upstream
+# pqcrypto-mlkem that dispatches on getauxval(AT_HWCAP) & HWCAP_SHA3 -- or a
+# vendored PQClean aarch64 tree built WITHOUT +sha3 (the plain-NEON fallback in
+# fips202x2.c) -- and (c) a QEMU matrix run plus at least one SHA3-less
+# physical device (Snapdragon 6xx/7xx/888, Helio G8x/G9x) in the acceptance
+# test. Any such change must also update EXPECTED_FEATURES in
+# scripts/check_pq_features.sh; the disassembly gate will then be the thing
+# that proves the dispatch is real.
+#
+# Upstream: the real fix is in rustpq/pqcrypto (gate keccak2x's +sha3 behind a
+# feature in pqcrypto-internals' build.rs; add HWCAP dispatch in
+# pqcrypto-mlkem). Not filed as of 2026-09-16 -- owner decision; record the
+# issue/PR link here when it exists. Until it is merged, the three controls
+# above are the protection.
 pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
 
 # Encoding for keys / handshake messages on the wire
 base64 = "0.22"
+
+# getauxval(AT_HWCAP / AT_HWCAP2) for nativeCpuFeatures(): the kernel's own
+# statement of which optional ISA extensions this CPU has. Read-only, one
+# syscall-free libc call, no allocation. Bionic exposes it on every API level
+# we ship to (getauxval is API 18+). Off Android/Linux the export returns zeros.
+[target.'cfg(any(target_os = "android", target_os = "linux"))'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 hex = "0.4"

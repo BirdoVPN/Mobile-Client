@@ -49,6 +49,8 @@ data class SettingsUiState(
     // Stealth & Quantum settings (post-quantum is ON by default for all users)
     val stealthModeEnabled: Boolean = false,
     val quantumProtectionEnabled: Boolean = true,
+    // BirdoShield (D18): per-device DNS filtering, OFF by default
+    val dnsFilteringEnabled: Boolean = false,
     // Biometric lock
     val biometricLockEnabled: Boolean = false,
     // Theme mode: "dark", "light", "system"
@@ -82,6 +84,7 @@ class SettingsViewModel @Inject constructor(
             wireGuardMtu = prefs.wireGuardMtu,
             stealthModeEnabled = prefs.stealthModeEnabled,
             quantumProtectionEnabled = prefs.quantumProtectionEnabled,
+            dnsFilteringEnabled = prefs.dnsFilteringEnabled,
             biometricLockEnabled = prefs.biometricLockEnabled,
             themeMode = prefs.themeMode,
         )
@@ -220,6 +223,17 @@ class SettingsViewModel @Inject constructor(
     fun setQuantumProtection(enabled: Boolean) {
         prefs.quantumProtectionEnabled = enabled
         _uiState.value = _uiState.value.copy(quantumProtectionEnabled = enabled)
+        vpnManager.requestSettingsReapply()
+    }
+
+    /**
+     * BirdoShield (D18). Same apply-on-change contract as stealth: the flag
+     * only reaches the server on a connect body, so a flip while connected
+     * asks VpnManager for the debounced reconnect that re-dials with it.
+     */
+    fun setDnsFiltering(enabled: Boolean) {
+        prefs.dnsFilteringEnabled = enabled
+        _uiState.value = _uiState.value.copy(dnsFilteringEnabled = enabled)
         vpnManager.requestSettingsReapply()
     }
 

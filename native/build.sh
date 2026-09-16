@@ -60,3 +60,39 @@ cargo ndk \
 
 echo ">>> built .so files:"
 find "$JNI_LIBS_DIR" -name "librosenpass_jni.so" -exec ls -lh {} \;
+
+# ── ISA-baseline gate on what was just built ────────────────────────────────
+#
+# The same script CI runs on the packaged APK/AAB, run here on the jniLibs
+# output so a re-enabled pqcrypto-mlkem `neon`/`avx2` feature (the 1.4.25
+# SIGILL) fails on the developer's machine, not two pushes later. It needs a
+# disassembler that knows every Android ELF machine: the NDK's llvm-objdump
+# (found through ANDROID_NDK_HOME, which this script already requires) or
+# `rustup component add llvm-tools`. The script discovers both.
+#
+# ROSENPASS_ISA_GATE_REQUIRED=1 (set by android.yml) turns "no disassembler"
+# into a hard failure; locally it is a loud warning, because a laptop without
+# the tool should still be able to build -- but never silently.
+GATE="$ROOT/scripts/check_no_sha3_ext.sh"
+if [[ -f "$GATE" ]]; then
+  echo ">>> ISA-baseline gate: $GATE $JNI_LIBS_DIR"
+  gate_rc=0
+  bash "$GATE" "$JNI_LIBS_DIR" || gate_rc=$?
+  if [[ "$gate_rc" -ne 0 ]]; then
+    if [[ "${ROSENPASS_ISA_GATE_REQUIRED:-0}" == "1" ]]; then
+      echo "ERROR: ISA-baseline gate failed (exit $gate_rc) and ROSENPASS_ISA_GATE_REQUIRED=1" >&2
+      exit "$gate_rc"
+    fi
+    echo "" >&2
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+    echo "!!! WARNING: scripts/check_no_sha3_ext.sh did NOT pass (exit $gate_rc)." >&2
+    echo "!!! If the message above says no disassembler was found, install one" >&2
+    echo "!!! (rustup component add llvm-tools) -- CI will run this gate and fail." >&2
+    echo "!!! If it names an instruction, the .so you just built WILL SIGILL on" >&2
+    echo "!!! devices without that CPU feature. Do not ship it." >&2
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >&2
+  fi
+else
+  echo "ERROR: $GATE is missing -- the ISA-baseline gate cannot run" >&2
+  exit 1
+fi

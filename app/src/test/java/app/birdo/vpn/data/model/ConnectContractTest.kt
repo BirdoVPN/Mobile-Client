@@ -119,6 +119,7 @@ class ConnectContractTest {
         pqClientPublicKey = PQ_PUBLIC_KEY,
         pqClientCanDecapsulate = true,
         integrityToken = INTEGRITY_TOKEN,
+        dnsFiltering = true,
     )
 
     /** A first attempt on a non-Play build with PQ off: defaults stay off the wire. */
@@ -143,6 +144,7 @@ class ConnectContractTest {
         pqClientPublicKey = PQ_PUBLIC_KEY,
         pqClientCanDecapsulate = true,
         integrityToken = INTEGRITY_TOKEN,
+        dnsFiltering = true,
     )
 
     private fun minimalMultiHop() = MultiHopConnectRequest(
@@ -280,6 +282,43 @@ class ConnectContractTest {
         val required = schemaDoc["\$defs"]!!.jsonObject["MultiHopConnectRequest"]!!.jsonObject["required"]!!
             .jsonArray.map { it.jsonPrimitive.content }.toSet()
         assertEquals(setOf("entryNodeId", "exitNodeId"), required)
+    }
+
+    // ── BirdoShield (D18): dnsFiltering on both routes ──────────────────
+
+    @Test
+    fun `dnsFiltering is a schema boolean on both routes and rides the wire only when on`() {
+        // The backend's ConnectDto / multiHopConnectSchema twin is an optional
+        // boolean (birdo-web PR #465). Present-and-true when the toggle is on;
+        // ABSENT (not false, not null) when it is off, so an untouched device
+        // sends the pre-D18 body — the only body a backend that predates the
+        // field accepts, since both routes refuse unknown keys.
+        for (name in listOf("ConnectRequest", "MultiHopConnectRequest")) {
+            val rule = schemaDoc["\$defs"]!!.jsonObject[name]!!.jsonObject["properties"]!!.jsonObject["dnsFiltering"]
+            assertEquals("$name.dnsFiltering must be a boolean in the vendored schema", JsonPrimitive("boolean"), rule?.jsonObject?.get("type"))
+        }
+
+        val singleOn = encode(minimalConnect().copy(dnsFiltering = true))
+        assertValid(connectSchema, singleOn)
+        assertEquals(JsonPrimitive(true), Json.parseToJsonElement(singleOn).jsonObject["dnsFiltering"])
+        val singleOff = encode(minimalConnect().copy(dnsFiltering = false))
+        assertValid(connectSchema, singleOff)
+        assertTrue("dnsFiltering=false must be ABSENT, got: $singleOff", "dnsFiltering" !in Json.parseToJsonElement(singleOff).jsonObject)
+
+        val multiOn = encode(minimalMultiHop().copy(dnsFiltering = true))
+        assertValid(multiHopSchema, multiOn)
+        assertEquals(JsonPrimitive(true), Json.parseToJsonElement(multiOn).jsonObject["dnsFiltering"])
+        val multiOff = encode(minimalMultiHop().copy(dnsFiltering = false))
+        assertValid(multiHopSchema, multiOff)
+        assertTrue("dnsFiltering=false must be ABSENT, got: $multiOff", "dnsFiltering" !in Json.parseToJsonElement(multiOff).jsonObject)
+    }
+
+    @Test
+    fun `dnsFiltering sent as a string is refused on both routes`() {
+        val single = encode(fullConnect()).mutate { it["dnsFiltering"] = JsonPrimitive("true") }
+        assertRefused(connectSchema, single, keyword = "type", property = "dnsFiltering")
+        val multi = encode(fullMultiHop()).mutate { it["dnsFiltering"] = JsonPrimitive("true") }
+        assertRefused(multiHopSchema, multi, keyword = "type", property = "dnsFiltering")
     }
 
     @Test
