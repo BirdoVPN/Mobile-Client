@@ -9,9 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.biometric.BiometricManager
@@ -453,11 +451,6 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
-    }
-
-    companion object {
-        @Suppress("unused")
-        private const val TAG = "MainActivity"
     }
 }
 

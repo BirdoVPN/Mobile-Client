@@ -1,6 +1,5 @@
 package app.birdo.vpn.utils
 
-import android.content.Context
 import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties

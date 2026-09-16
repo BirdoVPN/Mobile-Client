@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
@@ -22,7 +21,6 @@ import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.FormatUtils
 import app.birdo.vpn.utils.RootDetector
 import com.wireguard.config.*
-import com.wireguard.crypto.Key
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
