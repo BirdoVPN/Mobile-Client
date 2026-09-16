@@ -2,6 +2,11 @@
 name = "birdo-pq-server"
 version = "0.1.0"
 edition = "2021"
+# ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
+# edition 2024 with rust-version = "1.85". Declared here so an older toolchain
+# fails with a message that names the requirement instead of an edition error
+# inside a dependency. See rust-toolchain.toml.
+rust-version = "1.85"
 publish = false
 description = "Server-side BirdoPQ v1 helper — encapsulates against a client ML-KEM-1024 public key and prints (ciphertext, psk)."
 license = "Apache-2.0"
@@ -10,18 +15,28 @@ license = "Apache-2.0"
 name = "birdo-pq-server"
 path = "src/main.rs"
 
+# The QEMU CPU proof. Built for aarch64 and run under `qemu-aarch64 -cpu
+# cortex-a53` (no FEAT_SHA3) and `-cpu max` (FEAT_SHA3) in android.yml; see the
+# module docs. It lives in this crate rather than in rosenpass-jni because
+# rosenpass-jni is a cdylib with a JNI surface and cannot produce a runnable
+# binary.
+[[bin]]
+name = "birdo-pq-smoke"
+path = "src/bin/birdo-pq-smoke.rs"
+
 [dependencies]
-# Same KEM the Android client uses -- and the same feature set, on purpose.
+# Same KEM the Android and iOS clients use -- and the same version and feature
+# set, on purpose. This crate is NOT built or deployed today (it has a
+# Cargo.lock and three unit tests that had never run in CI before this change),
+# but leaving it on a different KEM is exactly the twin drift that lets a
+# defect live on in the copy nobody looks at. When the twins disagree, the one
+# that is not exercised is the one that is wrong.
 #
-# This was the last pqcrypto-mlkem twin still on default features (avx2, neon,
-# std) after #353 fixed native/rosenpass-jni. This binary is not built or
-# deployed today, but an aarch64 build of it would carry the identical ungated
-# FEAT_SHA3 path that SIGILLed every non-SHA3 arm64 phone on 1.4.25, and a
-# server that dies in keygen is no better than a client that does. CLEAN-only
-# everywhere; scripts/check_pq_features.sh fails the build if any native crate
-# drifts back. See native/README.md § ISA baseline.
-pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
-pqcrypto-traits = "0.3"
+# The full decision record -- why pqcrypto-mlkem was left, why RustCrypto
+# ml-kem does NOT remove the ARMv8.2 FEAT_SHA3 opcodes (it gates them on
+# getauxval(AT_HWCAP), which is a different and weaker claim), and why the pin
+# is exact -- is in native/rosenpass-jni/Cargo.toml. Do not let the two drift.
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match the client side bit-for-bit.
 sha2 = "0.10"
@@ -30,12 +45,23 @@ hkdf = "0.12"
 # Wire encoding.
 base64 = "0.22"
 
-# CSPRNG via getrandom (the OS entropy source). pqcrypto already pulls this
-# in transitively, but we list it explicitly so version pinning is auditable.
-getrandom = { version = "0.2", features = ["std"] }
+# Hex for the committed known-answer vectors. A normal dependency, not a dev
+# one, because birdo-pq-smoke is a real binary that CI runs under QEMU.
+hex = "0.4"
+
+# CSPRNG via getrandom (the OS entropy source), for the per-connect nonce.
+# Pinned to the same major ml-kem resolves through kem -> crypto-common, so the
+# binary has ONE OS-entropy path rather than two majors of the same crate.
+getrandom = { version = "0.4", features = ["std"] }
 
 # Defence-in-depth: wipe shared secrets from RAM after derivation.
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+# `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
+# cross-implementation KAT needs to reproduce the server's exact ciphertext
+# from the fixture's encapsulation randomness. Test profiles only.
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = 3

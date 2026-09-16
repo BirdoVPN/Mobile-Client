@@ -167,9 +167,12 @@ object RosenpassNative {
 
     /**
      * The ML-KEM implementation compiled into this library: the literal
-     * `"mlkem1024-clean"` (PQClean's portable CLEAN C -- see the decision
-     * record in `native/rosenpass-jni/Cargo.toml`). Tagged on Sentry as
-     * `birdo.pq.impl`. A build-time fact, not a probe.
+     * `"mlkem1024-rustcrypto"` (RustCrypto's pure-Rust `ml-kem`, exact-pinned
+     * -- see the decision record in `native/rosenpass-jni/Cargo.toml`). It was
+     * `"mlkem1024-clean"` (PQClean's portable CLEAN C) up to 1.4.29, which is
+     * how a native crash report is attributed to one implementation or the
+     * other. Tagged on Sentry as `birdo.pq.impl`. A build-time fact, not a
+     * probe.
      */
     @JvmStatic
     external fun nativeImplName(): String
@@ -208,6 +211,20 @@ object RosenpassNative {
      *                         connect derives a fresh PSK.
      * @return 32-byte PSK on success, `null` on any malformed input.
      */
+    /**
+     * Is a persisted ML-KEM secret key still loadable by the native KEM?
+     *
+     * `ml-kem` enforces FIPS 203 §7.3 (the 3168-byte expanded decapsulation
+     * key embeds `H(ek)`, which is recomputed on load and compared) where the
+     * previous implementation checked only the length. A stored key that fails
+     * this is not recoverable: the only correct reaction is to delete it and
+     * generate a fresh keypair, which the server re-pins on the next handshake.
+     * Without that branch an install with a damaged key would retry the same
+     * unusable key on every connect, forever.
+     */
+    @JvmStatic
+    external fun nativeStoredKeyUsable(clientSecretKey: ByteArray): Boolean
+
     @JvmStatic
     external fun nativeDeriveSharedPsk(
         clientSecretKey: ByteArray,
@@ -273,6 +290,17 @@ object RosenpassNative {
             "ML-KEM-1024 sk must be $SECRET_KEY_BYTES B, got ${raw[1].size}"
         }
         return StaticKeypair(publicKey = raw[0], secretKey = raw[1])
+    }
+
+    /**
+     * Safe wrapper around [nativeStoredKeyUsable]. Returns false when the
+     * native library is not loaded or the call throws, because the caller's
+     * reaction either way is to discard the stored key and re-key — which is
+     * always safe, just occasionally wasteful.
+     */
+    fun storedKeyUsable(clientSecretKey: ByteArray): Boolean {
+        if (!isLoaded) return false
+        return runCatching { nativeStoredKeyUsable(clientSecretKey) }.getOrDefault(false)
     }
 
     /**

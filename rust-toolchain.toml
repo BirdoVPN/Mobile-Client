@@ -1,0 +1,27 @@
+# Pin the Rust toolchain for every native crate in this repo.
+#
+# WHY THIS FILE EXISTS
+#
+# There was no toolchain pin until 2026-09: CI used whatever Rust the runner
+# image happened to ship. That was survivable while the crypto dependency was
+# PQClean C behind a 2021-edition binding. It stopped being survivable when the
+# KEM became RustCrypto `ml-kem`, whose chain (`ml-kem`, `kem`, `sha3`,
+# `keccak`, `hybrid-array`, `module-lattice`) is edition 2024 with
+# `rust-version = "1.85"`. A runner image rollback -- or a developer on an
+# older stable -- would fail the build with an edition/feature error deep
+# inside a dependency, which is a confusing way to learn that the toolchain
+# moved.
+#
+# `rust-version = "1.85"` is also set in each native crate's [package] table,
+# so the failure names the requirement even if this file is bypassed.
+#
+# Raising this is a normal change; lowering it below 1.85 cannot work.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+    "i686-linux-android",
+]

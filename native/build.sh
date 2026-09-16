@@ -64,7 +64,7 @@ find "$JNI_LIBS_DIR" -name "librosenpass_jni.so" -exec ls -lh {} \;
 # ── ISA-baseline gate on what was just built ────────────────────────────────
 #
 # The same script CI runs on the packaged APK/AAB, run here on the jniLibs
-# output so a re-enabled pqcrypto-mlkem `neon`/`avx2` feature (the 1.4.25
+# output so a Keccak/SHA-NI backend reaching an optional extension (the 1.4.25
 # SIGILL) fails on the developer's machine, not two pushes later. It needs a
 # disassembler that knows every Android ELF machine: the NDK's llvm-objdump
 # (found through ANDROID_NDK_HOME, which this script already requires) or

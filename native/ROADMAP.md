@@ -89,7 +89,7 @@ already in place). Track upstream:
       reference/CLI implementation for non-Node backends.
 - [ ] **Cryptographer audit** of the BirdoPQ v1 construction:
       - HKDF salt + info parameter choice
-      - Implicit rejection behaviour of pqcrypto-mlkem
+      - Implicit rejection behaviour of ml-kem (pqcrypto-mlkem before 1.4.30)
       - Memory zeroization coverage
       - Side-channel review of the JNI marshalling
 - [ ] **On-device integration tests** that exercise generate -> upload -> decap

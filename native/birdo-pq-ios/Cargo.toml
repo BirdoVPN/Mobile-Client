@@ -2,6 +2,11 @@
 name = "birdo-pq-ios"
 version = "0.1.0"
 edition = "2021"
+# ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
+# edition 2024 with rust-version = "1.85". Declared here so an older toolchain
+# fails with a message that names the requirement instead of an edition error
+# inside a dependency. See rust-toolchain.toml.
+rust-version = "1.85"
 publish = false
 description = "BirdoPQ v1 ML-KEM-1024 PSK derivation — C ABI for the iOS Swift client. Wire-format twin of rosenpass-jni and birdo_pq.rs (desktop)."
 license = "Apache-2.0"
@@ -13,9 +18,17 @@ name = "birdo_pq_ios"
 crate-type = ["staticlib"]
 
 [dependencies]
-# Same KEM the Android client + desktop client use.
-pqcrypto-mlkem = { version = "0.1", default-features = false, features = ["std"] }
-pqcrypto-traits = "0.3"
+# Same KEM the Android client + desktop client use -- RustCrypto's pure-Rust
+# ml-kem, exact-pinned. The full decision record (why pqcrypto-mlkem was left,
+# why this does NOT remove the FEAT_SHA3 opcodes, and why the pin is a crypto
+# decision) is in native/rosenpass-jni/Cargo.toml; do not let the two drift.
+#
+# Apple-side note: keccak's aarch64 FEAT_SHA3 backend resolves its runtime gate
+# through cpufeatures-0.3.1/src/aarch64.rs sysctlbyname("hw.optional.armv8_2_sha3"),
+# not getauxval, so the Apple slices need their own evidence.
+# scripts/build-birdo-pq-xcframework.sh disassembles every slice it builds and
+# applies the same policy the Android gate does.
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
 sha2 = "0.10"
@@ -23,6 +36,13 @@ hkdf = "0.12"
 
 # Defence-in-depth: wipe shared secrets from RAM after derivation.
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+hex = "0.4"
+# `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
+# cross-implementation KAT needs to reproduce the server's exact ciphertext
+# from the fixture's encapsulation randomness. Test profiles only.
+ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = "z"

@@ -1,3 +1,32 @@
+# -- Keccak backend: soft, on every shipped ABI -----------------------------
+#
+# `--cfg keccak_backend="soft"` takes the early-return arm in keccak 0.2.2's
+# `Keccak::with_backend()` (src/lib.rs:76-78). After that the
+# `backends::aarch64_sha3` module is unreferenced and `lto = "fat"` +
+# `--gc-sections` drop it at LINK time, so the shipped librosenpass_jni.so
+# carries ZERO ARMv8.2 FEAT_SHA3 instructions and scripts/check_no_sha3_ext.sh
+# stays STRICT with no per-site exception.
+#
+# Without this cfg, a default aarch64 build of ml-kem -> sha3 -> keccak
+# contains 64 of them (eor3=10, rax1=5, xar=24, bcax=25) -- the same four
+# mnemonics PQClean's keccak2x/feat.S contributed to the 1.4.25 SIGILL. keccak
+# gates them on getauxval(AT_HWCAP), which PQClean's aarch64 path did not, so
+# they would be SAFE -- but "safe because a runtime check says so" is a weaker
+# claim than "not present", and the estate's gate judges presence.
+#
+# THIS FILE, NOT AN ENV VAR, NOT A WORKFLOW RUSTFLAGS. app/build.gradle.kts
+# declares .cargo/config.toml as a buildRustLibs input; a cfg set anywhere else
+# would not invalidate the Gradle task and could ship a stale UP-TO-DATE .so
+# built without it. scripts/check_pq_features.sh asserts it is here and only
+# here.
+#
+# It is set for all four ABIs even though only aarch64 has a non-soft backend
+# today, so a future keccak release that adds one (x86 SHA-NI, say) cannot
+# quietly change what ships.
+#
+# Cost: the FEAT_SHA3 Keccak speedup on devices that do have the extension.
+# ML-KEM keygen runs once per connect next to a network round trip.
+
 # 16 KB page-size alignment for Android shared libraries.
 #
 # Google Play requires all apps targeting Android 15+ (API 35) to support 16 KB
@@ -10,13 +39,13 @@
 # The rustflags below are passed through cargo-ndk to the NDK clang/lld linker.
 
 [target.aarch64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "--cfg", 'keccak_backend="soft"']
 
 [target.x86_64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "--cfg", 'keccak_backend="soft"']
 
 [target.armv7-linux-androideabi]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "--cfg", 'keccak_backend="soft"']
 
 [target.i686-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "--cfg", 'keccak_backend="soft"']
