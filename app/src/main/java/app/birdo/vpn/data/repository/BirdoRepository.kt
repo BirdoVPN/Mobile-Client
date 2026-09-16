@@ -68,6 +68,13 @@ class BirdoRepository @Inject constructor(
 
     /** Server list is considered fresh for 60 seconds. */
     companion object {
+        /**
+         * Path of the public client-config route, appended to
+         * `BuildConfig.WEB_BASE_URL` — NOT to the Retrofit base URL, which is
+         * the API host. See [getClientConfig].
+         */
+        internal const val CLIENT_CONFIG_PATH = "/api/client-config"
+
         private const val SERVER_CACHE_TTL_MS = 60_000L
         /** Subscription is considered fresh for 30 seconds. */
         private const val SUBSCRIPTION_CACHE_TTL_MS = 30_000L
@@ -504,6 +511,32 @@ class BirdoRepository @Inject constructor(
         withAutoRefresh("Update check failed") {
             api.checkAppUpdate(app.birdo.vpn.BuildConfig.APP_VERSION)
         }
+
+    // ── Client configuration ─────────────────────────────────────
+
+    /**
+     * Fetch the public client configuration from the WEB origin.
+     *
+     * Not routed through [withAutoRefresh]: the endpoint takes no token, so a
+     * 401 here would mean something else entirely and a refresh could not fix
+     * it. Errors are returned, never defaulted — the CALLER owns the fallback,
+     * and the fallback for the BirdoShield gate is "available". Synthesizing a
+     * `dnsFilteringAvailable = false` on a network blip here would hide a
+     * working feature on every offline client.
+     */
+    suspend fun getClientConfig(): ApiResult<ClientConfigResponse> = try {
+        val response = api.getClientConfig(
+            app.birdo.vpn.BuildConfig.WEB_BASE_URL + CLIENT_CONFIG_PATH,
+        )
+        if (response.isSuccessful) {
+            response.body()?.let { ApiResult.Success(it) }
+                ?: ApiResult.Error("Empty client config", response.code())
+        } else {
+            ApiResult.Error("Failed to get client config", response.code())
+        }
+    } catch (e: Exception) {
+        ApiResult.Error(e.message ?: "Network error")
+    }
 
     // ── User ─────────────────────────────────────────────────────
 

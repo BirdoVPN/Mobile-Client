@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.ClientConfigResponse
 import app.birdo.vpn.data.model.PortForward
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
@@ -54,7 +55,42 @@ data class VpnUiState(
     /** Port forwards for the current connection */
     val portForwards: List<PortForward> = emptyList(),
     val isLoadingPortForwards: Boolean = false,
+    /**
+     * BirdoShield (D18) FLEET GATE from `GET /api/client-config`
+     * (`dnsFilteringAvailable` = the backend's `DNS_FILTERING_ENABLED`).
+     *
+     * Distinct from the per-device `AppPreferences.dnsFilteringEnabled` opt-in:
+     * this says whether turning that preference on can do anything. With the
+     * gate off the backend ignores the connect flag and hands out the normal
+     * resolver, so a toggle that read ON would be a lie about what the server
+     * will do.
+     *
+     * `null` means UNKNOWN — a cold start before the fetch lands, an
+     * unreachable web app, or a deploy older than birdo-web#465 — and the UI
+     * treats unknown as AVAILABLE. See [nextDnsFilteringAvailable].
+     */
+    val dnsFilteringAvailable: Boolean? = null,
 )
+
+/**
+ * The next fleet-gate value given the current one and a fetch outcome.
+ *
+ * Pure and `internal` so the defaulting rule can be tested on its own rather
+ * than through the whole VpnViewModel, and so there is exactly ONE place that
+ * decides it. Two rules, both deliberate:
+ *
+ *  - An ERROR keeps [current]. It never yields `false`. A network blip must not
+ *    hide a working feature.
+ *  - A success whose `dnsFilteringAvailable` is absent (`null`) also keeps
+ *    [current] — absent is "the server did not say", not "off".
+ */
+internal fun nextDnsFilteringAvailable(
+    current: Boolean?,
+    result: ApiResult<ClientConfigResponse>,
+): Boolean? = when (result) {
+    is ApiResult.Success -> result.data.dnsFilteringAvailable ?: current
+    is ApiResult.Error -> current
+}
 
 /** Persisted multi-hop arming + entry/exit node selection (see [VpnViewModel.multiHop]). */
 data class MultiHopSelection(
@@ -139,6 +175,10 @@ class VpnViewModel @Inject constructor(
         if (tokenManager.isLoggedIn()) {
             fetchSubscription()
         }
+        // BirdoShield fleet gate. Unauthenticated and public, so unlike the
+        // subscription fetch it runs regardless of sign-in state — the VPN
+        // Settings screen is reachable by anonymous accounts too.
+        fetchClientConfig()
         // NOTE: Heartbeat is handled by VpnManager.startHeartbeat() which includes
         // key rotation, quality reports, and session-invalid disconnect. No redundant
         // heartbeat needed here — VpnManager is the authoritative keepalive source.
@@ -380,6 +420,23 @@ class VpnViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(subscription = result.data)
                 }
                 is ApiResult.Error -> { /* silent — non-critical */ }
+            }
+        }
+    }
+
+    /**
+     * Fetch the BirdoShield fleet gate from the public client-config endpoint.
+     *
+     * Failure is silent BY DESIGN: [nextDnsFilteringAvailable] keeps the current
+     * value (initially `null` = unknown = available), so an unreachable web app
+     * leaves the toggle usable instead of greying out a feature that works.
+     */
+    fun fetchClientConfig() {
+        viewModelScope.launch {
+            val result = repository.getClientConfig()
+            val next = nextDnsFilteringAvailable(_uiState.value.dnsFilteringAvailable, result)
+            if (next != _uiState.value.dnsFilteringAvailable) {
+                _uiState.value = _uiState.value.copy(dnsFilteringAvailable = next)
             }
         }
     }

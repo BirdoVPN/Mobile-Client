@@ -37,6 +37,47 @@ import app.birdo.vpn.ui.viewmodel.SettingsUiState
 /** Ports offered as presets. Anything else means the user chose a custom port. */
 private val PORT_PRESETS = listOf("auto", "51820", "53")
 
+/**
+ * Everything the BirdoShield row renders, derived in ONE place.
+ *
+ * The switch position, the interactivity and the subtitle all have to agree
+ * about whether the feature can actually do anything; deriving them separately
+ * at three call sites is how a row ends up reading ON while disabled. Pure and
+ * `internal` so the rule is unit-testable without an instrumented Compose run.
+ */
+internal data class BirdoShieldRowState(
+    val checked: Boolean,
+    val enabled: Boolean,
+    val unavailable: Boolean,
+)
+
+/**
+ * @param dnsFilteringEnabled the user's persisted per-device preference.
+ * @param dnsFilteringAvailable the fleet gate — `true` on, `false` off,
+ *   `null` NOT KNOWN YET (cold start, failed fetch, or a web deploy older than
+ *   birdo-web#465).
+ *
+ * `== false` rather than `!available` is the whole point: unknown counts as
+ * AVAILABLE. Hiding a working feature because the client could not reach the
+ * web app is worse than showing it a moment before the gate is confirmed, and
+ * the backend refuses the flag anyway while the gate is off.
+ *
+ * Note what this does NOT do: it never writes. An unavailable gate makes the
+ * row read OFF, but [dnsFilteringEnabled] is left untouched in preferences, so
+ * the user's own choice comes back by itself when the gate does.
+ */
+internal fun birdoShieldRowState(
+    dnsFilteringEnabled: Boolean,
+    dnsFilteringAvailable: Boolean?,
+): BirdoShieldRowState {
+    val unavailable = dnsFilteringAvailable == false
+    return BirdoShieldRowState(
+        checked = dnsFilteringEnabled && !unavailable,
+        enabled = !unavailable,
+        unavailable = unavailable,
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VpnSettingsScreen(
@@ -53,6 +94,11 @@ fun VpnSettingsScreen(
     // tapping it routes the user to the upgrade flow instead of toggling.
     stealthUnlocked: Boolean = true,
     onUpgradeRequired: (feature: String) -> Unit = {},
+    // ── BirdoShield fleet gate ───────────────────────────────────
+    // NOT a plan gate: BirdoShield is on every plan. This is whether the fleet
+    // this account dials has DNS filtering switched on at all. Defaults to
+    // `null` (unknown), which reads as available — see [birdoShieldRowState].
+    dnsFilteringAvailable: Boolean? = null,
 ) {
     // The port radio's selection is LOCAL UI state, deliberately not derived from
     // the persisted port. Deriving it meant tapping "Custom" with an empty field
@@ -108,17 +154,30 @@ fun VpnSettingsScreen(
 
             item {
                 // BirdoShield (D18): per-device DNS filtering, OFF by default and
-                // available on every plan (no lock affordance). The flag only
-                // travels on the connect body, so the description says when it
-                // takes effect; a flip while connected goes through the same
+                // available on every plan (no lock affordance — it is not a paid
+                // feature, so no upgrade route). The flag only travels on the
+                // connect body; a flip while connected goes through the same
                 // apply-on-change reconnect as Stealth (SettingsViewModel).
+                //
+                // Disabled, not locked, when the FLEET gate is off: there is
+                // nothing for the user to buy or change, so the row simply
+                // states why. Their stored preference is untouched and returns
+                // on its own when the gate comes back.
+                val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable)
                 VpnToggle(
                     icon = Icons.Default.Shield,
-                    iconColor = BirdoGreen,
+                    iconColor = if (shield.enabled) BirdoGreen else palette.onSurfaceFaint,
                     title = stringResource(R.string.vpn_settings_birdoshield_title),
-                    description = stringResource(R.string.vpn_settings_birdoshield_desc),
-                    checked = state.dnsFilteringEnabled,
+                    description = stringResource(
+                        if (shield.unavailable) {
+                            R.string.vpn_settings_birdoshield_unavailable
+                        } else {
+                            R.string.vpn_settings_birdoshield_desc
+                        },
+                    ),
+                    checked = shield.checked,
                     onCheckedChange = onDnsFilteringChange,
+                    enabled = shield.enabled,
                     testTag = "vpn_settings_birdoshield",
                 )
             }

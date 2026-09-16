@@ -74,6 +74,35 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// BirdoShield FLEET GATE, from `GET /api/client-config`
+    /// (`dnsFilteringAvailable` = the backend's `DNS_FILTERING_ENABLED`).
+    ///
+    /// Distinct from `dnsFilteringEnabled` above: that is what the user asked
+    /// for, this is whether the server will honour it. `nil` means NOT KNOWN
+    /// YET, which reads as AVAILABLE — see `BirdoShieldGate`.
+    ///
+    /// Deliberately NOT persisted: it is a property of the fleet, not of this
+    /// install, and a stale `false` restored at launch would hide the feature
+    /// before the fetch could correct it. Every cold start therefore begins at
+    /// "available" and only an explicit server `false` moves it.
+    @Published private(set) var dnsFilteringAvailable: Bool?
+
+    /// Refresh the fleet gate. Called by the VPN Settings screen on appear.
+    ///
+    /// Failure is silent BY DESIGN: the value is left untouched, so an
+    /// unreachable web app leaves the toggle usable instead of greying out a
+    /// feature that works. Only a decoded, explicit boolean changes anything —
+    /// an older web deploy omits the key, which is unknown, not off.
+    func refreshClientConfig() async {
+        // Any failure — offline, 5xx, pin cancel, an undecodable body — keeps
+        // the current value rather than becoming `false`.
+        guard let config = try? await APIClient.shared.fetchClientConfig() else { return }
+        // A web deploy older than #465 omits the key. That is "the server did
+        // not say", not "off", so it must not overwrite anything either.
+        guard let available = config.dnsFilteringAvailable else { return }
+        if dnsFilteringAvailable != available { dnsFilteringAvailable = available }
+    }
+
     // MARK: - DNS
     @Published var customDnsEnabled: Bool {
         didSet {

@@ -241,6 +241,12 @@ targets:
       # fields precisely so QuickSelectTests can pin it here. VpnViewModel.swift
       # (its only caller) cannot be compiled into this bundle.
       - path: iosApp/Services/QuickSelect.swift
+      # BirdoShield (D18) fleet gate. Foundation-only by design: "may the
+      # toggle claim to work" is a pure function over the persisted preference
+      # and the server's `dnsFilteringAvailable`, precisely so the
+      # unknown-means-available rule can be pinned here. VpnSettingsView.swift
+      # (its only caller) cannot be compiled into this bundle.
+      - path: iosApp/Services/BirdoShieldGate.swift
       # K5 connect contract. Foundation-only by design: the two connect request
       # bodies and the encoder factory APIClient serialises them with live here
       # so ConnectContractTests can encode the REAL structs — APIClient.swift
