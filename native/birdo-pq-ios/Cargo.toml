@@ -18,10 +18,25 @@ name = "birdo_pq_ios"
 crate-type = ["staticlib"]
 
 [dependencies]
-# Same KEM the Android client + desktop client use -- RustCrypto's pure-Rust
-# ml-kem, exact-pinned. The full decision record (why pqcrypto-mlkem was left,
-# why this does NOT remove the FEAT_SHA3 opcodes, and why the pin is a crypto
+# Same KEM the Android client uses -- RustCrypto's pure-Rust ml-kem,
+# exact-pinned. The full decision record (why pqcrypto-mlkem was left, why
+# this does NOT remove the FEAT_SHA3 opcodes, and why the pin is a crypto
 # decision) is in native/rosenpass-jni/Cargo.toml; do not let the two drift.
+#
+# THE DESKTOP CLIENT IS NOT ON THIS CRATE YET.
+# birdo-client-desktop/src-tauri is still on pqcrypto-mlkem 0.1.1 (PQClean
+# CLEAN C) until BirdoVPN/Desktop-Client#163 lands. This comment used to say
+# "Android client + desktop client", which stopped being true the moment this
+# repo migrated -- the exact twin-drift shape the estate has been bitten by,
+# and the mirror image of the AUDIT-C1 comment in src-tauri/Cargo.toml that
+# asserts both clients use the same crate.
+#
+# Nothing breaks while they differ: the wire format, the 3168-byte stored
+# encoding and the HKDF construction are byte-identical across both KEMs, and
+# the committed PQClean fixture proves it. What differs is the audit posture
+# (desktop still ships three unmaintained-crate advisories) and the FIPS 203
+# 7.2/7.3 input validation, which only this side has. When #163 lands, restore
+# the joint claim here and in src-tauri/Cargo.toml in the same window.
 #
 # Apple-side note, and it differs from Android on purpose. keccak's aarch64
 # FEAT_SHA3 backend resolves its runtime gate through

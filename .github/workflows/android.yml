@@ -265,7 +265,7 @@ jobs:
       - name: A +sha3 build MUST SIGILL on cortex-a53 (negative case)
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          RUSTFLAGS: "-C target-feature=+sha3"
+          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
         run: |
           set -euo pipefail
           cd native/birdo-pq-server
@@ -443,6 +443,31 @@ jobs:
           chmod +x scripts/check_pq_docs.sh
           scripts/check_pq_docs.sh
 
+      # Two gates over the parts of the migration that a library-side check
+      # cannot see, both added because the first cut of this PR failed them:
+      #
+      #   check_pq_rng_panics.sh -- the migration was sold as removing "an FFI
+      #     panic on RNG failure". `DecapsulationKey::generate()` is
+      #     `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common 0.2.2
+      #     src/generate.rs:42) under a literal "# Panics" doc, and both native
+      #     crates set panic = "abort": the panic had been MOVED, not removed.
+      #     Production code must call try_generate().
+      #
+      #   check_pq_ios_wiring.sh -- birdo_pq_stored_key_usable was written,
+      #     declared, exported and symbol-checked in all three Apple slices,
+      #     and called from nowhere. iosApp/ was not touched at all. Every
+      #     existing check looked at the LIBRARY; none asked whether the app
+      #     used it. An export nobody calls is not a mitigation, and on iOS
+      #     that one would have meant quantumHandshakeFailed on every connect,
+      #     forever, for any install with a stored key ml-kem now rejects.
+      #     Runs here, on ubuntu, because ios.yml fires only on android-v*
+      #     tags -- a gate that cannot run on a PR does not gate the PR.
+      - name: Assert the PQ mitigations are wired, not merely exported
+        run: |
+          chmod +x scripts/check_pq_rng_panics.sh scripts/check_pq_ios_wiring.sh
+          scripts/check_pq_rng_panics.sh
+          scripts/check_pq_ios_wiring.sh
+
       # Host-target, so no NDK is involved and the crypto actually executes.
       # MIN_TESTS is per crate and is the point of the step: `cargo test` on a
       # crate whose test module was deleted exits 0 with "0 tests".
@@ -517,7 +542,7 @@ jobs:
       # reading the shipped library and every green run above it is worthless.
       - name: ISA gate must FAIL a deliberately +sha3 build (negative case)
         env:
-          RUSTFLAGS: "-C target-feature=+sha3"
+          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
         run: |
           set -euo pipefail
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
@@ -836,10 +861,12 @@ jobs:
           ROSENPASS_ISA_GATE_REQUIRED: "1"
         run: |
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x ./gradlew scripts/check_pq_features.sh scripts/check_pq_docs.sh
+          chmod +x ./gradlew scripts/check_pq_features.sh scripts/check_pq_docs.sh scripts/check_pq_rng_panics.sh scripts/check_pq_ios_wiring.sh
           # Same pre-build assertions as the PR path (see the build job).
           scripts/check_pq_features.sh
           scripts/check_pq_docs.sh
+          scripts/check_pq_rng_panics.sh
+          scripts/check_pq_ios_wiring.sh
           ./gradlew :app:buildRustLibs
           ./gradlew assembleRelease
           # -PplayBuild flips BuildConfig.IS_PLAY_BUILD, so the bundle is a

@@ -44,7 +44,7 @@ use ml_kem::{ExpandedDecapsulationKey, MlKem1024};
 #[allow(deprecated)]
 use ml_kem::ExpandedKeyEncoding;
 use sha2::Sha256;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The expanded (legacy, on-Keychain) decapsulation-key array type.
 type StoredDk = ExpandedDecapsulationKey<MlKem1024>;
@@ -114,7 +114,18 @@ pub unsafe extern "C" fn birdo_pq_generate_keypair(
         return BirdoPqStatus::BufferSizeMismatch as i32;
     }
 
-    let dk = DecapsulationKey::generate();
+    // `try_generate()`, NOT `generate()`. `Generate::generate()` is
+    // `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common
+    // `src/generate.rs`), documented "will panic in the event the system's
+    // ambient RNG experiences an internal failure" -- and this crate sets
+    // panic = "abort", so on iOS that panic is an abort inside a Swift call
+    // with no status code to return. `pqcrypto-internals` had the identical
+    // defect (`getrandom::fill(buf).expect("RNG Failed")`); migrating to
+    // ml-kem moved that panic, it did not remove it. BIRDO_PQ_ERR_INTERNAL is
+    // a status Swift already handles.
+    let Ok(dk) = DecapsulationKey::try_generate() else {
+        return BirdoPqStatus::Internal as i32;
+    };
     let pk_bytes = dk.encapsulation_key().to_bytes();
     // NOT `KeyExport::to_bytes()`: that returns the 64-byte seed and PANICS for
     // keys loaded from the expanded form. The Keychain blob is the 3168-byte
@@ -207,16 +218,24 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
         Err(_) => return BirdoPqStatus::BadCiphertext as i32,
     };
 
-    let ss = sk_obj.decapsulate(&ct_obj);
+    let mut ss = sk_obj.decapsulate(&ct_obj);
+    // `SharedKey` is a plain `Array<u8, U32>` with no Drop impl of its own, so
+    // BOTH copies have to be wiped by hand: the `Vec` below (via `Zeroizing`)
+    // and `ss` itself, which would otherwise be left on the stack holding the
+    // raw shared secret. `hybrid-array`'s `zeroize` feature is enabled in the
+    // resolved graph (pulled in by `ml-kem/zeroize`), which is what makes
+    // `Array: Zeroize` available.
     let mut ss_bytes = Zeroizing::new(ss.to_vec());
 
     let mut psk = Zeroizing::new([0u8; BIRDO_PQ_PSK_LEN]);
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ss_bytes);
     if hk.expand(nonce_slice, psk.as_mut_slice()).is_err() {
         ss_bytes.fill(0);
+        ss.zeroize();
         return BirdoPqStatus::Internal as i32;
     }
     ss_bytes.fill(0);
+    ss.zeroize();
 
     // SAFETY: out_psk validated above.
     unsafe {
@@ -315,7 +334,12 @@ pub unsafe extern "C" fn birdo_pq_test_encapsulate(
         },
         Err(_) => return BirdoPqStatus::BadCiphertext as i32,
     };
-    let (ct, ss) = pk_obj.encapsulate();
+    // `encapsulate()` DOES still use the ambient-RNG unwrap: `kem` 0.3.0
+    // declares no `TryEncapsulate`, and the only fallible door is
+    // `encapsulate_deterministic`, behind the `hazmat` feature this crate
+    // keeps out of its non-dev dependencies. This export is test-only (see the
+    // doc comment above) and no shipped Swift path reaches it.
+    let (ct, mut ss) = pk_obj.encapsulate();
     let mut ss_bytes = Zeroizing::new(ss.to_vec());
     let ct_bytes = ct;
 
@@ -323,9 +347,11 @@ pub unsafe extern "C" fn birdo_pq_test_encapsulate(
     let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ss_bytes);
     if hk.expand(nonce_slice, psk.as_mut_slice()).is_err() {
         ss_bytes.fill(0);
+        ss.zeroize();
         return BirdoPqStatus::Internal as i32;
     }
     ss_bytes.fill(0);
+    ss.zeroize();
 
     // SAFETY: caller buffers validated above.
     unsafe {

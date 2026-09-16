@@ -200,18 +200,6 @@ object RosenpassNative {
     external fun nativeGenerateKeypair(): Array<ByteArray>
 
     /**
-     * Decapsulates the server-supplied ML-KEM ciphertext and derives the
-     * 32-byte WireGuard PSK via HKDF-SHA-256 mixed with the per-connect nonce.
-     *
-     * @param clientSecretKey the long-lived ML-KEM-1024 sk (3168 B).
-     * @param serverCiphertext the bytes from `ConnectResponse.rosenpassPublicKey`
-     *                         (semantically repurposed — see Rust module doc).
-     * @param serverNonce      the bytes from `ConnectResponse.rosenpassEndpoint`
-     *                         (also repurposed). Mixed into HKDF so each
-     *                         connect derives a fresh PSK.
-     * @return 32-byte PSK on success, `null` on any malformed input.
-     */
-    /**
      * Is a persisted ML-KEM secret key still loadable by the native KEM?
      *
      * `ml-kem` enforces FIPS 203 §7.3 (the 3168-byte expanded decapsulation
@@ -225,6 +213,18 @@ object RosenpassNative {
     @JvmStatic
     external fun nativeStoredKeyUsable(clientSecretKey: ByteArray): Boolean
 
+    /**
+     * Decapsulates the server-supplied ML-KEM ciphertext and derives the
+     * 32-byte WireGuard PSK via HKDF-SHA-256 mixed with the per-connect nonce.
+     *
+     * @param clientSecretKey the long-lived ML-KEM-1024 sk (3168 B).
+     * @param serverCiphertext the bytes from `ConnectResponse.rosenpassPublicKey`
+     *                         (semantically repurposed — see Rust module doc).
+     * @param serverNonce      the bytes from `ConnectResponse.rosenpassEndpoint`
+     *                         (also repurposed). Mixed into HKDF so each
+     *                         connect derives a fresh PSK.
+     * @return 32-byte PSK on success, `null` on any malformed input.
+     */
     @JvmStatic
     external fun nativeDeriveSharedPsk(
         clientSecretKey: ByteArray,

@@ -141,13 +141,15 @@ short version, in the order the facts actually go:
   from the 1.4.25 post-mortem (keypair ~0.33 ms CLEAN vs ~0.21 ms AArch64+SHA3)
   are emulated and relative only.
 
-Five controls keep it this way; every one fails the build, none is advisory:
+Seven controls keep it this way; every one fails the build, none is advisory:
 
 | Control | What it proves | Where it runs |
 |---|---|---|
 | [`scripts/check_pq_features.sh`](../scripts/check_pq_features.sh) | `pqcrypto-*` is absent from every native crate's graph on every shipped target; `ml-kem` resolves to exactly the pinned version with exactly `{alloc, getrandom, zeroize}` outside dev-dependencies and `hazmat` only inside them; `keccak` and `cpufeatures` are present on aarch64; and the soft-Keccak `--cfg` — which `cargo tree` cannot see, because it is a cfg and not a feature — is in `.cargo/config.toml` and nowhere else. Catches feature unification and a dropped build flag before anything is built. | `android.yml` build + release jobs, before `cargo ndk` |
 | [`scripts/check_pq_docs.sh`](../scripts/check_pq_docs.sh) | No file in the repo still claims the post-migration build is CLEAN-only, that the C/asm path is "removed entirely", or that the crash class is "structurally impossible". Three of those were true of `pqcrypto-mlkem`; one was never true of anything. A per-line `PQ-DOCS-OK` marker exempts text that quotes a claim in order to refute it. | `android.yml` build job |
 | `cargo test` / `clippy` / `fmt` for all three native crates | The KAT against the server's own `@noble` fixture, the PQClean install-base guard, the 3168-byte store-length assertion, the implicit-rejection and re-key behaviours, and the `nativeImplName` assertion all still hold — with a minimum test count, so deleting a `#[cfg(test)]` module reports 0 tests and FAILS instead of silently passing. | `android.yml` build job |
+| [`scripts/check_pq_rng_panics.sh`](../scripts/check_pq_rng_panics.sh) | No production path generates a keypair through `DecapsulationKey::generate()`, which is `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common 0.2.2 `src/generate.rs:42`) under a literal `# Panics` doc. Both native crates set `panic = "abort"`, so that is a process abort mid-connect with no error for Kotlin or Swift to read — the same defect `pqcrypto-internals` had (`getrandom::fill(buf).expect("RNG Failed")`). The migration MOVED that panic before this gate existed; `try_generate()` removes it. `encapsulate()` is explicitly out of scope and the script says why. | `android.yml` build + release jobs |
+| [`scripts/check_pq_ios_wiring.sh`](../scripts/check_pq_ios_wiring.sh) | Every production `birdo_pq_*` export declared in `birdo_pq_ios.h` is CALLED from a non-comment line of Swift under `iosApp/`. `birdo_pq_stored_key_usable` shipped written, declared, exported and symbol-checked in all three Apple slices — and called from nowhere, because every other control looks at the LIBRARY and none asked whether the app used it. Runs on ubuntu in `android.yml` because `ios.yml` fires only on `android-v*` tags, and a gate that cannot run on a PR does not gate the PR. | `android.yml` build + release jobs, `ios.yml` test job |
 | [`scripts/check_no_sha3_ext.sh`](../scripts/check_no_sha3_ext.sh) | Every shipped `.so` disassembled (arm64/x86_64/x86) or attribute-checked (armeabi-v7a); any optional-extension opcode outside a runtime guard the script can verify per site fails. STRICT by default; only `libwg-go.so` and `libxray.so` (Go, `internal/cpu` dispatch) are allowlisted. | `native/build.sh` / `build.ps1` on their own output (so `:app:buildRustLibs` runs it), `android.yml` on the PR debug APK, the release APK and the Play AAB |
 | [`scripts/tests/check_no_sha3_ext_test.sh`](../scripts/tests/check_no_sha3_ext_test.sh) | The gate bites: fails on a hand-assembled `eor3`/`rax1`/`xar`/`bcax`, an inline `ldadd`, an AVX2/BMI2/AES-NI x86_64 object, a v8-attributed armeabi-v7a object, a 32-bit `popcnt`; passes a stripped compiler-rt-shaped outlined-atomics helper and the sha2 crate's pinned SHA-NI count. Fixtures in [`scripts/testdata/isa-gate/`](../scripts/testdata/isa-gate/). | `android.yml` build job, before the gate is trusted |
 
@@ -156,13 +158,17 @@ Attribution for the next incident: `nativeCpuFeatures()` returns
 `"mlkem1024-rustcrypto"` (it was `"mlkem1024-clean"` up to 1.4.29, which is how
 a crash report is attributed to one implementation or the other — see
 `pq_impl_name_matches_linked_crate`). The iOS twin exports the same value as
-`birdo_pq_impl_name()`. `CpuFeatures.kt` logs one line at library load and tags
+`birdo_pq_impl_name()`, which `BirdoPQManager.implementationName` reads and
+logs at first use — iOS has no crash reporter yet, so it is not attached to
+crash metadata the way Android's is; it is the value one would attach. `CpuFeatures.kt` logs one line at library load and tags
 Sentry (`cpu.sha3=true|false` etc., `birdo.pq.impl`, `birdo.abi`). The triage
 runbook is in [`docs/SENTRY-SETUP.md` § 7a](../docs/SENTRY-SETUP.md).
 
 Running the gate locally needs a disassembler that knows every Android ELF
 machine: the NDK's `llvm-objdump` (found through `ANDROID_NDK_HOME`) or
-`rustup component add llvm-tools`. Without one, `build.sh`/`build.ps1` print a
+`rustup component add llvm-tools --toolchain 1.96.0` (the channel
+`rust-toolchain.toml` pins; the gate's own error message names it, read from
+that file). Without one, `build.sh`/`build.ps1` print a
 loud warning and CI — where the tool is mandatory (`ROSENPASS_ISA_GATE_REQUIRED=1`)
 — fails.
 

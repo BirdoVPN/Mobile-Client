@@ -64,7 +64,7 @@ use ml_kem::kem::Encapsulate;
 use ml_kem::ml_kem_1024::EncapsulationKey;
 use sha2::Sha256;
 use std::process::ExitCode;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const HKDF_SALT: &[u8] = b"BirdoPQ-v1-PSK";
 const PSK_LEN: usize = 32;
@@ -128,7 +128,13 @@ fn encap(client_pk_b64: &str) -> Result<String, String> {
     let mut nonce = [0u8; NONCE_LEN];
     getrandom::fill(&mut nonce).map_err(|e| format!("CSPRNG: {e}"))?;
 
-    let (ct, ss) = pk.encapsulate();
+    // `encapsulate()` uses `kem` 0.3.0's ambient-RNG unwrap, which panics if
+    // the OS CSPRNG fails; there is no `TryEncapsulate` to call instead and
+    // `encapsulate_deterministic` is behind `hazmat`. This helper is a CLI, so
+    // an abort is a non-zero exit rather than a silent failure.
+    let (ct, mut ss) = pk.encapsulate();
+    // `SharedKey` is a plain `Array<u8, U32>` with no Drop impl of its own, so
+    // `ss` is wiped explicitly alongside the `Zeroizing` copy.
     let mut ss_bytes = Zeroizing::new(ss.to_vec());
 
     let mut psk = Zeroizing::new(vec![0u8; PSK_LEN]);
@@ -136,6 +142,7 @@ fn encap(client_pk_b64: &str) -> Result<String, String> {
         .expand(&nonce, psk.as_mut_slice())
         .map_err(|e| format!("HKDF expand: {e}"))?;
     ss_bytes.fill(0);
+    ss.zeroize();
 
     let json = format!(
         r#"{{"ciphertext_b64":"{}","nonce_b64":"{}","psk_b64":"{}"}}"#,

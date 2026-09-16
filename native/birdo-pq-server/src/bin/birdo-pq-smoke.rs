@@ -126,7 +126,10 @@ fn main() -> ExitCode {
     // This half is what makes the run a CPU test rather than a vector replay:
     // it takes entropy from the OS, runs keygen (the call that SIGILLed in
     // 1.4.25) and both KEM directions.
-    let fresh = DecapsulationKey::generate();
+    // `try_generate()`, not `generate()`: the latter is the ambient-RNG
+    // unwrap that aborts the process. Same call the two shipped crates make,
+    // so this binary exercises the real keygen path.
+    let fresh = DecapsulationKey::try_generate().expect("system RNG");
     let ek = EncapsulationKey::new(&fresh.encapsulation_key().to_bytes())
         .expect("our own encapsulation key round-trips");
     let (ct2, ss_enc) = ek.encapsulate();

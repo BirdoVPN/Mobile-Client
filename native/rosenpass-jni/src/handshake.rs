@@ -65,7 +65,7 @@ use ml_kem::{ExpandedDecapsulationKey, MlKem1024};
 #[allow(deprecated)]
 use ml_kem::ExpandedKeyEncoding;
 use sha2::Sha256;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 const PSK_LEN: usize = 32;
 const HKDF_SALT: &[u8] = b"BirdoPQ-v1-PSK";
@@ -89,7 +89,18 @@ pub struct StaticKeypair {
 }
 
 pub fn generate_keypair() -> Result<StaticKeypair, JniErr> {
-    let dk = DecapsulationKey::generate();
+    // `try_generate()`, NOT `generate()`. `Generate::generate()` is
+    // `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common
+    // `src/generate.rs`), documented "will panic in the event the system's
+    // ambient RNG experiences an internal failure" -- and this crate sets
+    // panic = "abort", so that panic is a process abort with no Kotlin-visible
+    // error. `pqcrypto-internals` had the identical defect
+    // (`getrandom::fill(buf).expect("RNG Failed")`); migrating to ml-kem moved
+    // that panic, it did not remove it. `try_generate()` returns the error
+    // instead, which `nativeGenerateKeypair` turns into a thrown
+    // RuntimeException the caller already handles.
+    let dk = DecapsulationKey::try_generate()
+        .map_err(|_| JniErr::Crypto("ML-KEM keygen aborted: the system RNG failed".to_owned()))?;
     let public_key = dk.encapsulation_key().to_bytes().to_vec();
     // NOT `KeyExport::to_bytes()`: that returns the 64-byte seed and panics
     // for expanded-loaded keys. The stored encoding is the 3168-byte expanded
@@ -164,13 +175,18 @@ pub fn derive_psk(
     })?;
 
     // Infallible by construction (FIPS 203 implicit rejection); see above.
-    let ss = dk.decapsulate(&ct);
+    let mut ss = dk.decapsulate(&ct);
     // `SharedKey` is a plain `Array<u8, U32>` with no Drop impl of its own, so
-    // the copy we keep is the one that has to be wiped.
+    // BOTH copies have to be wiped by hand: the `Vec` we take here (via
+    // `Zeroizing`) and `ss` itself, which would otherwise be left on the stack
+    // holding the raw shared secret. `hybrid-array`'s `zeroize` feature is
+    // enabled in the resolved graph (pulled in by `ml-kem/zeroize`), which is
+    // what makes `Array: Zeroize` available.
     let mut ss_bytes = Zeroizing::new(ss.to_vec());
 
     let psk = hkdf_to_psk(&ss_bytes, server_nonce);
     ss_bytes.fill(0);
+    ss.zeroize();
     Ok(psk)
 }
 
@@ -191,12 +207,21 @@ pub fn encapsulate(
         JniErr::Crypto("malformed client public key: failed FIPS 203 validation".to_owned())
     })?;
 
-    let (ct, ss) = ek.encapsulate();
+    // `encapsulate()` DOES still use the ambient-RNG unwrap: `kem` 0.3.0
+    // declares no `TryEncapsulate`, and the only fallible door is
+    // `encapsulate_deterministic`, which lives behind the `hazmat` feature
+    // this crate deliberately keeps out of its non-dev dependencies. This
+    // function is server-side and is reachable only from
+    // `nativeEncapsulateForServer`, a test-only JNI export -- no shipped
+    // client path calls it. Said out loud so the next reader does not take
+    // "the RNG panic is gone" to mean "from everywhere".
+    let (ct, mut ss) = ek.encapsulate();
     let mut ss_bytes = Zeroizing::new(ss.to_vec());
     let ct_bytes = ct.to_vec();
 
     let psk = hkdf_to_psk(&ss_bytes, server_nonce);
     ss_bytes.fill(0);
+    ss.zeroize();
     Ok((ct_bytes, psk))
 }
 

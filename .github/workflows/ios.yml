@@ -514,6 +514,12 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # An exported BirdoPQ symbol with no Swift call site is not a mitigation
+      # -- birdo_pq_stored_key_usable shipped that way once. android.yml runs
+      # this on every PR; here it also guards the build that produces the .ipa.
+      - name: Assert every BirdoPQ export is called from Swift
+        run: bash ./scripts/check_pq_ios_wiring.sh
+
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
 
@@ -629,7 +635,7 @@ jobs:
       - name: Assert the test bundle actually ran
         run: |
           set -euo pipefail
-          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests; do
+          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
             if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
               echo "::error::$suite never reported — the test bundle did not run"
               exit 1

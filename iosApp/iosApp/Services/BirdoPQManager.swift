@@ -61,6 +61,23 @@ final class BirdoPQManager: @unchecked Sendable {
 
     // MARK: - Public API
 
+    /// The ML-KEM implementation the linked `BirdoPQNative` was built with:
+    /// `"mlkem1024-rustcrypto"` since 1.4.30, `"mlkem1024-clean"` (PQClean
+    /// CLEAN C) before it. A build-time fact, not a probe.
+    ///
+    /// Android's twin is `RosenpassNative.nativeImplName()`, tagged on Sentry
+    /// as `birdo.pq.impl` (`CpuFeatures.TAG_PQ_IMPL`) since the 1.4.25 SIGILL
+    /// post-mortem, so a native crash can be attributed to one implementation
+    /// or the other. iOS has NO crash reporter today — `debugLog` compiles to
+    /// nothing in Release — so this is not yet attached to crash metadata; it
+    /// is read at first use, and is the value a reporter would attach when one
+    /// is added. Said plainly rather than described as crash attribution it is
+    /// not yet.
+    static var implementationName: String {
+        guard let name = birdo_pq_impl_name() else { return "unknown" }
+        return String(cString: name)
+    }
+
     /// Returns the Base64 ML-KEM-1024 client public key, generating + persisting
     /// the keypair on first call. Returns `nil` only if both keychain
     /// persistence AND in-memory generation fail (extremely unlikely).
@@ -151,13 +168,7 @@ final class BirdoPQManager: @unchecked Sendable {
         queue.sync {
             cachedKeypair = nil
             currentMode = .disabled
-            let q: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: Self.keychainService,
-                kSecAttrAccount as String: Self.keypairAccount,
-                kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-            ]
-            SecItemDelete(q as CFDictionary)
+            deleteStoredBlob()
         }
     }
 
@@ -166,11 +177,43 @@ final class BirdoPQManager: @unchecked Sendable {
     private func loadOrGenerateKeypair() -> (pk: Data, sk: Data)? {
         return queue.sync {
             if let kp = cachedKeypair { return kp }
-            if let kp = readKeypairFromKeychain() {
-                cachedKeypair = kp
-                return kp
+
+            // The KEM validates stored keys now. `ml-kem` enforces FIPS 203
+            // §7.3 — the 3168-byte expanded decapsulation key embeds H(ek),
+            // recomputed on load and compared — where the implementation that
+            // shipped up to 1.4.29 checked only the length. A key that fails
+            // that check is NOT recoverable, so keeping it would fail every
+            // connect forever: derive_psk returns BIRDO_PQ_ERR_BAD_SECRET_KEY,
+            // tryDecapsulate returns nil, and VPNManager throws
+            // quantumHandshakeFailed. Discard and re-key instead; the server
+            // re-pins the new public key on the next handshake, so the only
+            // cost is one extra keygen. Parity with Android
+            // RosenpassManager.loadOrGenerateKeypair.
+            let stored = readStoredBlob()
+            let decision = StoredPQKeyTriage.decide(
+                blob: stored,
+                publicKeyLength: Int(BIRDO_PQ_PUBLIC_KEY_LEN),
+                secretKeyLength: Int(BIRDO_PQ_SECRET_KEY_LEN),
+                secretKeyIsLoadable: Self.secretKeyIsLoadable
+            )
+            switch decision {
+            case .use:
+                if let blob = stored {
+                    let kp = (
+                        pk: Data(blob.prefix(Int(BIRDO_PQ_PUBLIC_KEY_LEN))),
+                        sk: Data(blob.suffix(Int(BIRDO_PQ_SECRET_KEY_LEN)))
+                    )
+                    cachedKeypair = kp
+                    return kp
+                }
+            case .discardAndRekey(let reason):
+                debugLog("BirdoPQ: persisted ML-KEM keypair unusable (\(reason)) — deleting it and re-keying")
+                deleteStoredBlob()
+            case .generateFresh:
+                debugLog("BirdoPQ: no persisted ML-KEM keypair — generating fresh (~10–50 ms), impl=%@",
+                         Self.implementationName)
             }
-            debugLog("BirdoPQ: no persisted ML-KEM keypair — generating fresh (~10–50 ms)")
+
             guard let kp = generateKeypair() else { return nil }
             // Best-effort persist; if it fails we still return the in-memory
             // pair so the connect attempt isn't blocked.
@@ -179,6 +222,20 @@ final class BirdoPQManager: @unchecked Sendable {
             }
             cachedKeypair = kp
             return kp
+        }
+    }
+
+    /// Ask the native KEM whether this stored secret key still loads.
+    ///
+    /// `birdo_pq_stored_key_usable` runs the same FIPS 203 §7.3 check
+    /// `birdo_pq_derive_psk` runs, without deriving anything, so the answer is
+    /// available BEFORE a connect attempt turns it into a thrown error.
+    private static func secretKeyIsLoadable(_ secretKey: Data) -> Bool {
+        secretKey.withUnsafeBytes { skPtr -> Bool in
+            birdo_pq_stored_key_usable(
+                skPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                secretKey.count
+            ) == 1
         }
     }
 
@@ -197,7 +254,13 @@ final class BirdoPQManager: @unchecked Sendable {
         return (pkData, skData)
     }
 
-    private func readKeypairFromKeychain() -> (pk: Data, sk: Data)? {
+    /// The raw `pk || sk` Keychain value, or `nil` when there is no item.
+    ///
+    /// Deliberately does NOT validate: every rule about what a stored blob is
+    /// worth lives in `StoredPQKeyTriage`, where CI can see it. This function
+    /// used to hold the length check and its own self-heal delete, which is
+    /// why the FIPS 203 check had nowhere obvious to go and ended up nowhere.
+    private func readStoredBlob() -> Data? {
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.keychainService,
@@ -209,23 +272,18 @@ final class BirdoPQManager: @unchecked Sendable {
         var result: AnyObject?
         let status = SecItemCopyMatching(q as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { return nil }
-        // Layout: pk (1568) || sk (3168).
-        let expected = BIRDO_PQ_PUBLIC_KEY_LEN + BIRDO_PQ_SECRET_KEY_LEN
-        guard data.count == expected else {
-            debugLog("BirdoPQ: stored keypair has wrong size \(data.count); discarding")
-            // Self-heal: drop the corrupt blob so the next call regenerates.
-            let del: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: Self.keychainService,
-                kSecAttrAccount as String: Self.keypairAccount,
-                kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-            ]
-            SecItemDelete(del as CFDictionary)
-            return nil
-        }
-        let pk = data.prefix(Int(BIRDO_PQ_PUBLIC_KEY_LEN))
-        let sk = data.suffix(Int(BIRDO_PQ_SECRET_KEY_LEN))
-        return (Data(pk), Data(sk))
+        return data
+    }
+
+    /// Delete the persisted keypair item. Also the upsert half of a write.
+    private func deleteStoredBlob() {
+        let del: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.keychainService,
+            kSecAttrAccount as String: Self.keypairAccount,
+            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
+        ]
+        SecItemDelete(del as CFDictionary)
     }
 
     private func writeKeypairToKeychain(pk: Data, sk: Data) -> Bool {
@@ -234,13 +292,7 @@ final class BirdoPQManager: @unchecked Sendable {
         blob.append(sk)
 
         // Delete first so we get clean upsert semantics.
-        let del: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keypairAccount,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        SecItemDelete(del as CFDictionary)
+        deleteStoredBlob()
 
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

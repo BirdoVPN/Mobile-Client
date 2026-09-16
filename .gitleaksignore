@@ -1,34 +1,33 @@
-# Historical leak — secret rotated and removed in v1.3.15.
-# Format: <commit>:<file>:<rule>:<line>
-32a2d5fbb2ac0e6438ad195db53900ddd7534343:scripts/capture-screenshots.ps1:generic-api-key:12
-
-# False positive: PQ Keychain account-name constant, not a credential.
-73a6887e8595642fd6534306d03802afb41e3853:iosApp/iosApp/Services/BirdoPQManager.swift:generic-api-key:52
-27cf152d50213202d5b7fedde09d868c7bd437b3:iosApp/iosApp/Services/BirdoPQManager.swift:generic-api-key:52
-
-# False positives: BirdoPQ v1 known-answer test vectors, not credentials.
-#
-# native/testdata/ holds two committed ML-KEM-1024 fixtures that the native
-# Rust crates assert against. Both are synthetic, generated for this purpose,
-# and neither has ever been on a device, a server or a wire:
-#
-#   birdo-pq-ml-kem-1024.kat.json      a byte-for-byte copy of birdo-web
-#                                      backend/src/vpn/__fixtures__/birdo-pq-ml-kem-1024.kat.json,
-#                                      generated with @noble/post-quantum. It is
-#                                      the ONLY thing in this repo that can
-#                                      detect byte-incompatibility with the
-#                                      production server's KEM.
-#   birdo-pq-pqclean-stored-key.json   a keypair generated on a workstation with
-#                                      pqcrypto-mlkem 0.1.1 (PQClean CLEAN) so
-#                                      that the install-base guard test has a
-#                                      real pre-1.4.30 stored key to read.
-#
-# The flagged values are a shared secret and two derived preshared keys -- the
-# outputs a KAT exists to pin. Rotating them would mean regenerating the test,
-# which is the opposite of what a known-answer test is for. gitleaks fires on
-# the field NAMES (secret/key) plus the entropy of a hex digest.
+# Fingerprints for gitleaks findings that are deliberately not secrets.
 #
 # Format: <commit>:<file>:<rule>:<line>
-cc4546816bddb76cdf170ebdbc1b1cad5f8cca40:native/testdata/birdo-pq-pqclean-stored-key.json:generic-api-key:10
-cc4546816bddb76cdf170ebdbc1b1cad5f8cca40:native/testdata/birdo-pq-pqclean-stored-key.json:generic-api-key:12
-cc4546816bddb76cdf170ebdbc1b1cad5f8cca40:native/testdata/birdo-pq-ml-kem-1024.kat.json:generic-api-key:15
+#
+# THIS FILE IS EMPTY ON PURPOSE. Read before adding to it.
+#
+# A fingerprint is pinned to a COMMIT SHA, so it is only ever valid for a
+# commit that will never be rewritten. This repo merges squash-only
+# (`gh api repos/BirdoVPN/Mobile-Client` reports allow_merge_commit=false,
+# allow_rebase_merge=false, allow_squash_merge=true), so every commit on a PR
+# branch is replaced by a NEW sha on main. A fingerprint added here for a
+# branch commit is green on the PR and stops matching the instant the PR is
+# squashed -- and .github/workflows/secret-scan.yml, which runs on push to main
+# with fetch-depth: 0, then goes red ON MAIN, after approval, where nobody is
+# watching.
+#
+# That is not hypothetical. This file used to carry:
+#
+#   * the same BirdoPQManager.swift:generic-api-key:52 finding twice, under two
+#     different shas -- once per commit that touched the file;
+#   * three PQ-fixture fingerprints pinned to a branch commit that would not
+#     have survived this PR's own squash;
+#   * scripts/capture-screenshots.ps1:generic-api-key:12 pinned to
+#     32a2d5fbb2ac0e6438ad195db53900ddd7534343, a commit that is no longer an
+#     ancestor of main at all. That entry had been dead for months and nobody
+#     could tell, because a fingerprint that matches nothing looks exactly like
+#     a fingerprint that is doing its job.
+#
+# All of those are now path/regex allowlists in .gitleaks.toml, which are
+# sha-independent: they survive a squash, a rebase, and the line moving.
+#
+# scripts/check_gitleaksignore.sh fails the build if any fingerprint here is
+# pinned to a commit that is not an ancestor of main.

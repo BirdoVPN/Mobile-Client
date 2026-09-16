@@ -50,10 +50,10 @@ int32_t birdo_pq_derive_psk(
     uint8_t* out_psk, size_t out_psk_len);
 
 // Test-only encapsulator. Exported so a round trip can be exercised without
-// the backend. NOTE: as of 2026-09 no Swift test calls it -- grepping
-// iosApp/ for birdo_pq_ finds only derive_psk and generate_keypair, and the
-// round trip is exercised by `cargo test` in this crate instead. Do not call
-// from production code.
+// the backend. NOTE: no Swift code calls it -- the round trip is exercised by
+// `cargo test` in this crate instead, and scripts/check_pq_ios_wiring.sh lists
+// it (with the four *_len accessors) as the only exports allowed to have no
+// Swift call site. Do not call from production code.
 int32_t birdo_pq_test_encapsulate(
     const uint8_t* pk, size_t pk_len,
     uint8_t* out_ct, size_t out_ct_len,

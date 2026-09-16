@@ -247,6 +247,53 @@ if [ -n "$STRAY" ]; then
     FAILED=1
 fi
 
+# -- Layer 4: RUSTFLAGS is not allowed to exist ----------------------------
+#
+# `RUSTFLAGS` as an ENVIRONMENT VARIABLE **REPLACES** `target.<triple>.rustflags`
+# from .cargo/config.toml -- it does not append to it. So a single stray
+# `export RUSTFLAGS=...` anywhere in a build path silently drops BOTH flags
+# this repo relies on, in one step:
+#
+#   --cfg keccak_backend="soft"            the shipped .so links keccak's
+#                                          aarch64 FEAT_SHA3 backend (64
+#                                          instructions), the 1.4.25 crash
+#                                          class. check_no_sha3_ext.sh on the
+#                                          extracted APK libs catches this.
+#
+#   -C link-arg=-Wl,-z,max-page-size=16384 the shipped .so loses 16 KB page
+#                                          alignment. Google Play REQUIRES it
+#                                          for apps targeting API 35+, so this
+#                                          one is a store rejection rather
+#                                          than a crash.
+#                                          verify-16kb-alignment catches it.
+#
+# Both downstream gates exist and both run on the extracted libraries, so this
+# layer is not the only thing between a stray export and a bad artifact. It is
+# here because the downstream failures are far from the cause -- one reads as
+# a SIGILL risk, the other as a Play upload refusal -- and because the
+# ALIGNMENT half was named only in an android.yml comment, sitting on the one
+# step that sets RUSTFLAGS on purpose, which is the last place someone adding
+# a new one would look.
+#
+# The rule: no build path may assign RUSTFLAGS unless the line carries
+# RUSTFLAGS-NEGATIVE-CASE-OK. The two sites that do are deliberate negative
+# tests that build a library specifically to prove a gate rejects it; neither
+# ships anything.
+RUSTFLAGS_MARKER="RUSTFLAGS-NEGATIVE-CASE-OK"
+RUSTFLAGS_HITS=$(grep -rnE '(^|[^A-Za-z0-9_])RUSTFLAGS[[:space:]]*[:=]' \
+    --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.ps1' \
+    --include='*.kts' --include='*.gradle' --include='*.toml' . 2>/dev/null \
+    | grep -vE '^[.]/scripts/check_pq_features[.]sh:' \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|//)' \
+    | grep -vF "$RUSTFLAGS_MARKER" || true)
+if [ -n "$RUSTFLAGS_HITS" ]; then
+    echo "::error::RUSTFLAGS is assigned in a build path. As an env var it REPLACES .cargo/config.toml's target rustflags, dropping BOTH --cfg $KECCAK_CFG (FEAT_SHA3 opcodes ship again) AND -C link-arg=-Wl,-z,max-page-size=16384 (16 KB page alignment, which Google Play requires for API 35+). If the site is a deliberate negative test, put $RUSTFLAGS_MARKER on the line:" >&2
+    printf '%s\n' "$RUSTFLAGS_HITS" | sed 's/^/    /' >&2
+    FAILED=1
+else
+    echo "  ok: no unmarked RUSTFLAGS assignment in any build path"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
     echo "::error::check_pq_features FAILED. See native/README.md § ISA baseline and the decision record in native/rosenpass-jni/Cargo.toml for what the KEM configuration is and why." >&2
     exit 1

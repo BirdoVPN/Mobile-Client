@@ -137,7 +137,18 @@ if [ -z "$OBJDUMP" ]; then
     done
 fi
 if [ -z "$OBJDUMP" ] || ! command -v "$OBJDUMP" >/dev/null 2>&1; then
-    echo "::error::check_no_sha3_ext: no capable objdump found (tried \$OBJDUMP, \$ANDROID_NDK_HOME, rustup llvm-tools, llvm-objdump, aarch64-linux-gnu-objdump, objdump). Install the NDK or run: rustup component add llvm-tools" >&2
+    # Name the exact command, with the toolchain this repo pins. A missing
+    # disassembler is a FAILURE and not a skip -- a gate that cannot look at
+    # the library must never report clean -- but the person who hits it is
+    # usually a reviewer running scripts/tests/check_no_sha3_ext_test.sh
+    # locally, where 15 of 16 fixtures fail with this one line and the fix is
+    # a single rustup command. The channel is read from rust-toolchain.toml so
+    # this hint cannot go stale when the pin moves.
+    _pinned_channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$(dirname -- "${BASH_SOURCE[0]}")/../rust-toolchain.toml" 2>/dev/null | head -1)
+    _hint="rustup component add llvm-tools"
+    [ -n "$_pinned_channel" ] && _hint="$_hint --toolchain $_pinned_channel"
+    echo "::error::check_no_sha3_ext: no capable objdump found (tried \$OBJDUMP, \$ANDROID_NDK_HOME, rustup llvm-tools, llvm-objdump, aarch64-linux-gnu-objdump, objdump). Install the NDK, or run: $_hint" >&2
     exit 1
 fi
 

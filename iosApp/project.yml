@@ -254,6 +254,15 @@ targets:
       # VPNManager.swift (their only caller) cannot be compiled into this bundle,
       # which is how #403 shipped a toggle whose response was silently discarded.
       - path: iosApp/Services/TunnelDns.swift
+      # The BirdoPQ stored-key triage. Foundation-only by design: the decision
+      # to DISCARD a persisted ML-KEM key that no longer passes FIPS 203 7.3
+      # and re-key, rather than retry it forever, is a pure function precisely
+      # so StoredPQKeyTriageTests can pin it here. BirdoPQManager.swift (its
+      # only caller) cannot be compiled into this bundle -- it imports
+      # BirdoPQNative and needs the data-protection Keychain -- which is how
+      # the iOS half of this mitigation shipped exported-but-never-called while
+      # every library-side check stayed green.
+      - path: iosApp/Services/StoredPQKeyTriage.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
