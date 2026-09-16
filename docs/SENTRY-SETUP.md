@@ -320,6 +320,62 @@ from release. Sentry is therefore the *only* remaining channel on the data path.
 That is why `io.sentry.**` must never be added to an `-assumenosideeffects`
 rule, and why a release build now refuses to ship without a DSN.
 
+**CPU-feature attribution (added after the 1.4.25 SIGILL):** every event
+carries `birdo.abi` and `birdo.cpu.features` (the kernel's `/proc/cpuinfo`
+`Features` line) from Sentry init, and — once `librosenpass_jni.so` has
+loaded — `birdo.pq.impl` (`mlkem1024-clean`), `cpu.hwcap` / `cpu.hwcap2`
+(raw `getauxval` words) and one `cpu.<name>=true|false` tag per feature a
+shipped library could depend on (`asimd aes pmull sha1 sha2 sha3 sha512
+atomics asimddp asimdrdm fphp asimdhp crc32 sve i8mm bf16 bti mte`, the
+kernel's own names). A CPU feature set identifies a chip family, not a person;
+the values still pass through the tag scrubber. Set by
+`app/src/main/java/app/birdo/vpn/utils/CpuFeatures.kt`; scope sync to the NDK
+layer is on by default, so native crash envelopes carry them too.
+
+---
+
+## 7a. Runbook — a native crash in `librosenpass_jni.so`
+
+The one incident this project has had of this class: every build from 1.3.25
+to 1.4.25 died with `SIGILL` in `keccakx2_squeezeblocks` on any arm64 device
+whose cores lack FEAT_SHA3 (Snapdragon 6xx/7xx/888, Helio G8x/G9x — most of the
+mid-range), because `pqcrypto-mlkem`'s default `neon` feature compiled a
+PQClean AArch64 path with 64 SHA3-extension opcodes and no runtime CPU check.
+Fixed in #353 (android-v1.4.27 and later ship portable CLEAN C only).
+
+If a `SIGILL` (or "illegal instruction", or a Play crash cluster in
+`librosenpass_jni.so`) shows up:
+
+1. **Which version?** `release` tag or Play `versionCode`
+   (`vMajor*10000 + vMinor*100 + vPatch`, so 10425 = 1.4.25).
+   **< 1.4.27** → it is the known crash; the fix is the update. Do not
+   re-investigate the binary — set the `/updates/android` floor and move on.
+   **≥ 1.4.27** → something new got in. Continue.
+2. **Which feature?** Read the `cpu.*` tags on the event. `cpu.sha3=false`
+   with a SHA3 opcode at the faulting PC is the 1.4.25 shape;
+   `cpu.atomics=false` (an ARMv8.0 core such as Kryo 260) points at an LSE
+   atomic; `cpu.asimddp`/`cpu.fphp`/`cpu.sha512` likewise. If the tags are
+   missing, `birdo.cpu.features` (the cpuinfo line) carries the same bits by
+   name. `birdo.pq.impl` must read `mlkem1024-clean`; anything else means the
+   build did not go through the feature guard.
+3. **Which opcode?** Take the arm64 `librosenpass_jni.so` out of the release
+   APK (`unzip app-release.apk 'lib/*'`) and run the gate on it:
+   `scripts/check_no_sha3_ext.sh <dir-with-abi-subdirs>`. It names the
+   instruction class, mnemonic, function and address. The gate ran green on
+   that exact artifact in CI, so a hit here means the gate's rule table has a
+   gap — extend `arm64_classify` in the script, add a fixture under
+   `scripts/testdata/isa-gate/`, and make `scripts/tests/check_no_sha3_ext_test.sh`
+   prove it bites.
+4. **How did it get in?** `scripts/check_pq_features.sh` shows the resolved
+   `pqcrypto-mlkem` features and who enabled them; `git log -- native/` and
+   `native/rosenpass-jni/Cargo.lock` show the crate bump. The decision record
+   in `native/rosenpass-jni/Cargo.toml` says what is and is not allowed to
+   change.
+
+Negative control when reading Play or Sentry: the same query for versionCode
+10425 still shows the SIGILL cluster. If it does not, the query is wrong, not
+the fleet.
+
 ---
 
 ## 8. Remaining human steps — checklist
@@ -335,3 +391,8 @@ rule, and why a release build now refuses to ship without a DSN.
       the event lands and carries no IP, email or hostname.
 - [ ] *(optional)* **Step 6** — mapping upload, if obfuscated names become a
       problem.
+- [ ] **CPU-feature tags** — on the 5c smoke test, confirm the event carries
+      `birdo.abi`, `birdo.cpu.features`, `birdo.pq.impl=mlkem1024-clean` and
+      `cpu.sha3`; and that a debug build's logcat shows one `CpuFeatures`
+      line (`abi=arm64-v8a hwcap=0x... features=... pq.impl=mlkem1024-clean`)
+      after `RosenpassNative` loads. This cannot be verified without a device.
