@@ -3,13 +3,21 @@
 # == How to read (and change) this file ===============================
 #
 # R8 FULL MODE IS ALREADY ON. It is not something to switch on here.
-# AGP 8.11.2 defines android.enableR8.fullMode as BooleanOption.FULL_R8 with a
-# default of `true` and FeatureStage.Supported — read out of the AGP jar itself
-# (javap on com/android/build/gradle/options/BooleanOption.class: the FULL_R8
-# constructor pushes `iconst_1` for defaultValue), not out of documentation —
-# and nothing in this repo sets it to false. Every rule below is written FOR
-# full mode, where R8 additionally strips annotations from classes it does not
-# keep and assumes an interface has no subtypes it cannot see.
+# AGP 9.4.0 defines android.enableR8.fullMode as BooleanOption.FULL_R8 with a
+# default of `true` and FeatureStage.SoftlyEnforced(VERSION_10_0) — read out of
+# the AGP jar itself (javap on
+# com/android/build/gradle/options/BooleanOption.class: the FULL_R8 constructor
+# pushes `iconst_1` for defaultValue), not out of documentation — and nothing
+# in this repo sets it to false; from AGP 10 nothing can. Every rule below is
+# written FOR full mode, where R8 additionally strips annotations from classes
+# it does not keep and assumes an interface has no subtypes it cannot see.
+#
+# STRICT full mode is on too: android.r8.strictFullModeForKeepRules defaults to
+# `true` since AGP 9.0 (it was `false` on 8.11.2), so a bare `-keep class A`
+# no longer implies `-keep class A { <init>(); }`. Every -keep in this file
+# names its members with `{ *; }`, which is why none of them needed touching;
+# keep it that way, or spell out `<init>()` when a class is only ever
+# constructed reflectively. gradle.properties carries the full flag table.
 #
 # AGP's own proguard-android-optimize.txt is applied FIRST (see the release
 # buildType in app/build.gradle.kts) and already supplies these. Never restate
