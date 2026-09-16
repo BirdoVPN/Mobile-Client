@@ -1,6 +1,5 @@
 package app.birdo.vpn.service
 
-import app.birdo.vpn.data.model.ConnectResponse
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test

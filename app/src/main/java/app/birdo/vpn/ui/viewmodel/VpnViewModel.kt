@@ -4,7 +4,6 @@ import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.data.auth.TokenManager
-import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.model.PortForward
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus

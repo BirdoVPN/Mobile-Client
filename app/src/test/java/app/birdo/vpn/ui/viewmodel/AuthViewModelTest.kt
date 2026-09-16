@@ -1,6 +1,5 @@
 package app.birdo.vpn.ui.viewmodel
 
-import app.birdo.vpn.data.model.LoginResult
 import app.birdo.vpn.data.model.TokenPair
 import app.birdo.vpn.data.model.TwoFactorVerifyResponse
 import app.birdo.vpn.data.model.UserProfile

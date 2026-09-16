@@ -383,7 +383,6 @@ object RosenpassManager {
 
     // ── HKDF helpers (kept for tests + future on-wire derivations) ─────────
 
-    @Suppress("unused")
     internal fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key, "HmacSHA256"))

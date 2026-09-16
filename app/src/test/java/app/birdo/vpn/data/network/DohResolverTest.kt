@@ -2,7 +2,6 @@ package app.birdo.vpn.data.network
 
 import org.junit.Assert.*
 import org.junit.Test
-import java.net.InetAddress
 
 /**
  * Unit tests for [DohResolver].
