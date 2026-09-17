@@ -91,6 +91,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/check-action-pins.sh
 
+      # ios.yml and macos.yml run scripts under Apple's /bin/bash 3.2, and only
+      # on a tag push. android-v1.4.29's iOS build died on `mapfile: command
+      # not found` after every ubuntu PR run of the same script had passed.
+      # This reads every script those workflows invoke for bash-4-only
+      # constructs, on every PR, so the next one fails here instead of on
+      # release day.
+      - name: Scripts run on macOS are bash 3.2-clean
+        run: bash scripts/check_macos_bash_compat.sh
+
       - name: Check certificate pin expiry
         run: |
           # Extract pin-set expiration date from network_security_config.xml

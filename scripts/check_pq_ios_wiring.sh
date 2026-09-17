@@ -58,7 +58,14 @@ TEST_ONLY=(
 # Declarations look like `int32_t birdo_pq_x(` or `const char* birdo_pq_y(`,
 # possibly after a return type on the same line. Take the identifier that is
 # immediately followed by "(".
-mapfile -t EXPORTS < <(grep -oE '\bbirdo_pq_[a-z0-9_]+[[:space:]]*\(' "$HEADER" \
+# NOT `mapfile`: it is a bash 4 builtin, and this script runs under macOS's
+# /bin/bash 3.2 in ios.yml (android-v1.4.29's iOS build died on it with
+# `mapfile: command not found` while every ubuntu PR run had passed).
+# scripts/check_macos_bash_compat.sh now guards every script macOS runs.
+EXPORTS=()
+while IFS= read -r line; do
+    [ -n "$line" ] && EXPORTS+=("$line")
+done < <(grep -oE '\bbirdo_pq_[a-z0-9_]+[[:space:]]*\(' "$HEADER" \
     | sed -E 's/[[:space:]]*\($//' | sort -u)
 
 if [ "${#EXPORTS[@]}" -eq 0 ]; then
