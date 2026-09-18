@@ -95,9 +95,13 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #    and the ISA gate before merging.
 #
 #    It is also UNAUDITED — its README says so in as many words. So was
-#    PQClean. The audited implementation in this system is
-#    @noble/post-quantum on the SERVER, and the tests in handshake.rs assert
-#    byte-equality against a fixture that implementation generated.
+#    PQClean, and so is @noble/post-quantum on the SERVER (its README:
+#    "has not been independently audited yet"; self-audited at 0.6.1, Apr
+#    2026 — an earlier version of this note wrongly called it audited).
+#    What the system DOES have is cross-implementation agreement: the tests
+#    in handshake.rs assert byte-equality against a fixture the server
+#    implementation generated. The external review RFP lives in
+#    BirdoVPN/Architecture audits/PQ-CRYPTO-REVIEW-RFP.md.
 #
 # Features, deliberately minimal:
 #   alloc     — required by module-lattice's MaybeBox heap offload (default).
