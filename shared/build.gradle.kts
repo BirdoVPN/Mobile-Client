@@ -19,9 +19,10 @@ kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
         }
-        // commonTest (FlagUtils/FormatUtils/InputValidator, 29 tests) runs on
-        // the JVM as the Android host test; this is what `:shared:allTests`
-        // executes in CI.
+        // commonTest (FlagUtils/FormatUtils/InputValidator) runs on the JVM as
+        // `:shared:testAndroidHostTest`. The root `testDebugUnitTest` COMPILES
+        // this module but runs no test task inside it, so android.yml names the
+        // host-test task explicitly.
         withHostTestBuilder { }
         lint {
             abortOnError = true

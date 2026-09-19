@@ -13,9 +13,10 @@ updates:
       - "dependencies"
       - "android"
     # Don't bump dependencies that require a newer Kotlin than we currently use.
-    # Ktor 3.4+ requires Kotlin 2.3+; we're on 2.2.20. Let the kotlin group bump first.
     ignore:
-      # Ktor 3.4+ requires Kotlin 2.3; we're on 2.2.20
+      # Ktor is declared by :shared but imported by nothing there yet, and it is
+      # what pulls okhttp to 5.2.1 on releaseRuntimeClasspath (see
+      # app/proguard-rules.pro) — a major bump is a shipped-artifact change.
       - dependency-name: "io.ktor:*"
         versions: [">=3.4.0"]
       # Major bumps that require code/Gradle migrations - hold for manual upgrade
@@ -31,9 +32,10 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "androidx.compose:compose-bom"
         update-types: ["version-update:semver-major"]
-      # Gradle wrapper 9.x requires AGP 8.7+ + Kotlin 2.x — coordinated upgrade needed
+      # The 9.x migration is DONE (wrapper 9.7.1 on AGP 9.4.0 since OPEN-WORK
+      # G4). Hold only the next major so 9.x patches keep flowing.
       - dependency-name: "gradle"
-        versions: [">=9.0.0"]
+        versions: [">=10.0.0"]
       # Kotlin moves as ONE coordinated set (KGP, Compose compiler plugin,
       # serialization plugin, KSP, Hilt — 2.4.10 / 2.3.12 / 2.60.1 since
       # OPEN-WORK G4, 2026-09-13) and the iOS Kotlin/Native side only builds in

@@ -2,7 +2,7 @@ name: Mobile CI (Android + iOS)
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     tags:
       - 'android-v*'   # e.g. android-v1.2.0 - triggers release + Play Store upload
   pull_request:
@@ -159,7 +159,9 @@ jobs:
       - name: Run Unit Tests
         run: |
           chmod +x ./gradlew
-          ./gradlew testDebugUnitTest
+          # :shared:testAndroidHostTest is named explicitly: the root
+          # testDebugUnitTest compiles :shared but runs no test task in it.
+          ./gradlew testDebugUnitTest :shared:testAndroidHostTest
 
       - name: Upload Test Results
         if: always()
