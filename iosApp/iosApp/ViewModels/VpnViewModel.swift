@@ -934,43 +934,6 @@ final class VpnViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Speed Test
-
-    func runSpeedTest(
-        onComplete: @escaping (SpeedTestResult) -> Void,
-        onProgress: @escaping (TestPhase, Double) -> Void
-    ) {
-        Task {
-            do {
-                // Latency phase
-                onProgress(.latency, 0.1)
-                let latency = try await api.measureLatency()
-                onProgress(.latency, 0.33)
-
-                // Download phase
-                onProgress(.download, 0.4)
-                let download = try await api.measureDownload()
-                onProgress(.download, 0.66)
-
-                // Upload phase
-                onProgress(.upload, 0.7)
-                let upload = try await api.measureUpload()
-                onProgress(.upload, 0.95)
-
-                let result = SpeedTestResult(
-                    latencyMs: latency.latencyMs,
-                    jitterMs: latency.jitterMs,
-                    downloadMbps: download,
-                    uploadMbps: upload
-                )
-                onComplete(result)
-            } catch {
-                self.error = error.localizedDescription
-                reportUnauthorized(error)
-            }
-        }
-    }
-
     // MARK: - Private
 
     private func handleStatusChange(_ status: NEVPNStatus) {

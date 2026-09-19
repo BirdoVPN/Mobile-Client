@@ -39,28 +39,3 @@ struct BirdoCard<Content: View>: View {
             )
     }
 }
-
-/// Sub-card: radius 12, 3%-white fill, soft hairline border, padding 12.
-/// Used for nested rows inside a BirdoCard (spec-pixelcanvas-design.md §5.1).
-struct BirdoSubCard<Content: View>: View {
-    var padding: CGFloat
-    @ViewBuilder var content: () -> Content
-
-    init(padding: CGFloat = 12, @ViewBuilder content: @escaping () -> Content) {
-        self.padding = padding
-        self.content = content
-    }
-
-    var body: some View {
-        content()
-            .padding(padding)
-            .background(
-                RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
-                    .fill(BirdoTheme.white03)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
-                    .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
-            )
-    }
-}
