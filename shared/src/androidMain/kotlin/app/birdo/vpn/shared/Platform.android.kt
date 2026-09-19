@@ -6,8 +6,6 @@ import java.net.InetAddress
 
 actual fun currentTimeMillis(): Long = System.currentTimeMillis()
 
-actual fun platformName(): String = "Android"
-
 actual fun isValidDnsAddress(address: String): Boolean {
     if (address.isBlank()) return false
     // Guard: only allow numeric IP literals — never resolve hostnames

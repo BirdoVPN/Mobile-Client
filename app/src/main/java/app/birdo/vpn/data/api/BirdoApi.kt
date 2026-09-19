@@ -69,10 +69,6 @@ interface BirdoApi {
         @Body request: DeleteAccountRequest,
     ): Response<DeleteAccountResponse>
 
-    /** GDPR Art. 20: Right to Data Portability. Returns all user data as JSON. */
-    @GET("v1/gdpr/export")
-    suspend fun exportUserData(): Response<GdprExportResponse>
-
     // ── App updates ──────────────────────────────────────────────
 
     /**
