@@ -236,8 +236,10 @@ object RosenpassNative {
      * Server-side encapsulation, exposed via JNI ONLY for unit-test use that
      * exercises the full client↔server roundtrip in-process.
      *
-     * Production server-side encapsulation runs in `native/birdo-pq-server/`
-     * (a separate binary) and never touches this surface.
+     * Production server-side encapsulation runs IN-PROCESS in the web backend
+     * as pure JS (`@noble/post-quantum`, `birdo-web/.../birdo-pq.service.ts`)
+     * and never touches this surface. `native/birdo-pq-server/` is a reference
+     * implementation, not the production path — see its README.
      *
      * @return 2-element array `[ciphertext (~1568 B), psk (32 B)]`.
      */

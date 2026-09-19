@@ -1,12 +1,10 @@
 package app.birdo.vpn.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -57,25 +55,6 @@ fun BirdoCard(
         Box(Modifier.padding(contentPadding)) {
             content()
         }
-    }
-}
-
-/** Lighter elevated surface variant for nested groups inside a card. */
-@Composable
-fun BirdoSubCard(
-    modifier: Modifier = Modifier,
-    cornerRadius: Dp = 12.dp,
-    contentPadding: PaddingValues = PaddingValues(12.dp),
-    content: @Composable () -> Unit,
-) {
-    val palette = BirdoColors.current
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(cornerRadius),
-        color = if (palette.isLight) palette.surfaceRaised else GlassLight,
-        border = BorderStroke(1.dp, palette.hairlineSoft),
-    ) {
-        Box(Modifier.padding(contentPadding)) { content() }
     }
 }
 

@@ -17,7 +17,7 @@
 | File | Screen |
 |---|---|
 | `screenshot-01-login.png` | Login ("Welcome Back" / sovereign network) |
-| `screenshot-02-home-disconnected.png` | Home — globe, selected server, Connect button |
+| `screenshot-02-home-protected.png` | Home — globe, selected server, Connect button |
 | `screenshot-03-servers.png` | Server list ("Choose a server", 7 locations) |
 | `screenshot-04-settings.png` | Settings (Appearance / Security / Connection) |
 | `screenshot-05-split-tunneling.png` | Split-tunnelling app picker |

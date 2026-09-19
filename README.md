@@ -23,23 +23,28 @@ birdo-client-mobile/
 
 ### Shared Module (`shared/`)
 
-The KMP shared module contains all platform-agnostic logic:
+The KMP shared module holds the cross-platform **wire types and pure helpers**
+— not the tunnel:
 
-- WireGuard tunnel management and key exchange
-- API client (authentication, server list, session management)
-- Connection state machine
-- Certificate pinning and transport security
-- Encryption utilities (ChaCha20-Poly1305 via WireGuard)
+- `model/Models.kt` — the serialised API request/response types
+- `util/{FlagUtils,FormatUtils,InputValidator}.kt` — formatting and validation
+- `Platform.kt` (+ `androidMain` / `appleMain` actuals) — clock and IP-literal
+  validation
+
+Tunnel management, the API client, the connection state machine and certificate
+pinning live in each platform's own source tree (`app/`, `iosApp/`), not here.
 
 Compiled to:
 - **Android:** Kotlin/JVM library linked directly into the app module
-- **iOS:** Native `BirdoShared.framework` (arm64) consumed by the SwiftUI app
+- **iOS/macOS:** `BirdoShared.framework` is still produced and linked by
+  `project.yml`, but **no Swift file imports it today** — the Apple side of the
+  module is unused. Tracked as cleanup; do not rely on it.
 
 ### Android App (`app/`)
 
 - **UI:** Jetpack Compose with Material 3
 - **DI:** Dagger Hilt
-- **VPN:** Android `VpnService` API with kernel WireGuard
+- **VPN:** Android `VpnService` API with wireguard-go (`com.wireguard.android:tunnel`)
 - **Security:** Android Keystore for credential storage, biometric authentication
 - **Distribution:** Google Play (AAB) + direct APK from GitHub Releases
 
@@ -66,9 +71,9 @@ Compiled to:
   it once headless reconnect exists.)
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
-- **Home Screen Widgets** -- Glanceable status with one-tap connect (iOS)
+- **Home Screen Widget** -- Glanceable status with one-tap connect (Android,
+  Glance)
 - **On-Demand Connect** -- Rules-based activation on specific networks (iOS)
-- **iCloud Sync** -- Sync settings across Apple devices (iOS)
 - **Stealth Mode** -- XRAY Reality obfuscation to bypass DPI
 - **Multi-Hop** -- Route through multiple servers for extra anonymity
 
@@ -80,7 +85,7 @@ Compiled to:
 
 - JDK 17 (Temurin recommended)
 - Android Studio Ladybug or later
-- Xcode 16+ (for iOS builds)
+- Xcode 26+ (for iOS builds — App Store Connect requires the iOS 26 SDK)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
 
 ### Android
@@ -143,8 +148,9 @@ cosign verify-blob \
 
 | Workflow | Trigger | Platforms |
 |----------|---------|-----------|
-| [Android CI](.github/workflows/android.yml) | Push to main/develop, PRs | Lint, test, build APK + AAB, Sigstore sign |
-| [iOS CI](.github/workflows/ios.yml) | Push to main/develop, PRs | Build KMP shared framework, build iOS app, simulator tests |
+| [Android CI](.github/workflows/android.yml) | Push to `main`, `android-v*` tags, PRs | Lint, test, build APK + AAB, Sigstore sign |
+| [macOS CI](.github/workflows/macos.yml) | `mac-v*` tags, PRs touching `iosApp/`, `shared/`, `native/` | Build the macOS app, UI screenshots |
+| [iOS CI](.github/workflows/ios.yml) | `android-v*` tags, manual dispatch | Build the iOS app + .ipa, simulator tests |
 
 All workflows use pinned action SHAs, minimal permissions, and Sigstore cosign for artifact signing.
 
@@ -154,15 +160,15 @@ All workflows use pinned action SHAs, minimal permissions, and Sigstore cosign f
 
 | Component | Technology |
 |-----------|------------|
-| Shared Logic | Kotlin Multiplatform 2.1 |
+| Shared Logic | Kotlin Multiplatform 2.4.10 |
 | Android UI | Jetpack Compose + Material 3 |
 | iOS UI | SwiftUI (Swift 6.0) |
-| VPN Protocol | WireGuard (kernel on Android, Network Extension on iOS) |
+| VPN Protocol | WireGuard (wireguard-go on Android, Network Extension on iOS) |
 | Encryption | ChaCha20-Poly1305 |
-| Key Exchange | Curve25519 + Post-Quantum (Rosenpass) |
-| DI (Android) | Dagger Hilt 2.53 |
-| Build (Android) | Gradle 8.7 + AGP 8.7.3 |
-| Build (iOS) | XcodeGen + Xcode 16 |
+| Key Exchange | Curve25519 + Post-Quantum (BirdoPQ v1, ML-KEM-1024) |
+| DI (Android) | Dagger Hilt 2.60.1 |
+| Build (Android) | Gradle 9.7.1 + AGP 9.4.0 |
+| Build (iOS) | XcodeGen + Xcode 26+ |
 | Serialization | kotlinx.serialization |
 | Code Signing | Sigstore (keyless) + Android Keystore |
 
@@ -180,7 +186,7 @@ app/
 shared/
   src/commonMain/      KMP shared code (both platforms)
   src/androidMain/     Android-specific implementations
-  src/iosMain/         iOS-specific implementations
+  src/appleMain/       Apple-specific implementations (iOS + macOS)
   build.gradle.kts     KMP module build config
 iosApp/
   iosApp/              SwiftUI app source
@@ -190,10 +196,9 @@ store-assets/          Store screenshots and graphics
 docs/
   CODE_SIGNING.md      How artifacts are signed
   VERIFICATION.md      How to verify downloads
-  store-listing.md     Google Play / App Store listing
 build.gradle.kts       Root Gradle config
 settings.gradle.kts    Module declarations
-version.properties     Centralized version (1.1.0)
+version.properties     Centralized version (1.4.29)
 ```
 
 ---
@@ -214,7 +219,8 @@ For vulnerability reports, email **security@birdo.app**.
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
+This project is licensed under [Creative Commons Attribution-NonCommercial 4.0
+International (CC BY-NC 4.0)](LICENSE).
 
 ---
 

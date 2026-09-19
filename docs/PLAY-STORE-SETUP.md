@@ -1,11 +1,14 @@
 # Google Play Store — setup & automated release
 
-Birdo Android (`app.birdo.vpn`) is **login-only**: subscriptions are bought on
-**birdo.app** (Polar / crypto), so the app ships **without Google Play Billing**
-and you keep 100% of revenue (no 15–30% Play cut). This is the same model
-Mullvad and (historically) Proton use, and it's allowed: Google Play Billing is
-only required for purchases made *inside* the app. An app that lets existing
-subscribers **log in** to a service bought on your website does not need IAP.
+Birdo Android (`app.birdo.vpn`) sells subscriptions **through Google Play
+Billing** in the Play build (`com.android.billingclient:billing`, wired in
+`billing/PlayBillingManager.kt`). The `-PplayBuild=true` AAB has a real in-app
+purchase path and steers nowhere else, per Play's Payments policy. The
+**sideload APK** and the **F-Droid** build cannot use Play Billing at all (the
+Store will not sell to an app it did not install), so those keep the birdo.app
+web-billing links, which is allowed because they are not distributed through
+Play. `app/build.gradle.kts` (the `isPlayBuild` note) is the authoritative
+description; external LINK-OUT steering is a separate flag (`playExternalOffers`).
 
 The CI (`.github/workflows/android.yml`) already builds a **signed AAB** on
 `android-v*` tags. The `play-upload` job publishes that AAB to Google Play — but
@@ -95,17 +98,15 @@ tagging (or wire an auto-increment later). Play rejects a re-used `versionCode`.
 ---
 
 ## Notes / hardening
-- Pin `r0adkll/upload-google-play` to a **verified commit SHA** (the rest of the
-  workflow SHA-pins its actions; this one is on the `v1.1.3` tag for first setup).
-- **Purchase-steering is now compiled out of the Play build.** The AAB is built
-  with `-PplayBuild=true` -> `BuildConfig.IS_PLAY_BUILD=true`, which removes every
-  external-purchase link (the "Manage on web" plan buttons, the toolbar "Web"
-  action, and the "purchased on birdo.app" copy) from the Subscription screen.
-  Premium tiers render as an informational feature comparison only. The direct
-  **sideload APK** (`assembleRelease`, default `false`) keeps the web-billing
-  links — it is not distributed through Play so it is not bound by Play policy.
-  This is stronger than the old "account-management framed" wording and is the
-  safest posture for VPN review. Full sequenced plan: `docs/PLAY-LAUNCH-PLAN.md`.
+- `r0adkll/upload-google-play` is SHA-pinned at `v1.1.5` (`android.yml`), like
+  every other action in the workflow.
+- **The Play build sells through Play Billing.** The AAB is built with
+  `-PplayBuild=true` -> `BuildConfig.IS_PLAY_BUILD=true`, which routes the
+  Subscription screen at Play Billing and removes the external-purchase links
+  (the "Manage on web" plan buttons, the toolbar "Web" action, the "purchased
+  on birdo.app" copy). The direct **sideload APK** (`assembleRelease`, default
+  `false`) keeps the web-billing links — it is not distributed through Play so
+  it is not bound by Play policy. Full sequenced plan: `docs/PLAY-LAUNCH-PLAN.md`.
 - **16 KB page-size compliance is gated in CI** (`scripts/check_16kb_alignment.sh`)
   — the build fails before signing if any shipped `.so` is not 16 KB-aligned, as
   Google Play requires for API-35 targets. The Rust JNI lib sets the alignment

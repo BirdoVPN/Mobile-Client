@@ -452,7 +452,6 @@ dependencies = [
  "base64",
  "hex",
  "hkdf",
- "hmac",
  "jni",
  "libc",
  "log",

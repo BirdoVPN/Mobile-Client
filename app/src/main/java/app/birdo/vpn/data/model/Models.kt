@@ -39,7 +39,6 @@ typealias RedeemVoucherResponse = app.birdo.vpn.shared.model.RedeemVoucherRespon
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────
 typealias DeleteAccountRequest = app.birdo.vpn.shared.model.DeleteAccountRequest
 typealias DeleteAccountResponse = app.birdo.vpn.shared.model.DeleteAccountResponse
-typealias GdprExportResponse = app.birdo.vpn.shared.model.GdprExportResponse
 
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 typealias VpnServer = app.birdo.vpn.shared.model.VpnServer

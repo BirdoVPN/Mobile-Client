@@ -4,8 +4,11 @@
 > server-side BirdoPQ v1 encapsulation runs **in-process in the web backend as
 > pure JS** (`@noble/post-quantum`) — see
 > `birdo-web/backend/src/vpn/birdo-pq.service.ts` (wired into `vpn.service.ts`).
-> This crate is **never built by CI, never deployed, and never invoked** (no
-> subprocess is spawned per `/connect`). The "shells out to `birdo-pq-server
+> This crate is **never deployed and never invoked** (no subprocess is spawned
+> per `/connect`). CI does build one thing out of it: the second binary,
+> `birdo-pq-smoke`, is cross-compiled for aarch64 and run under QEMU for the
+> FEAT_SHA3 CPU proof (`android.yml`), and the crate's tests/clippy run in the
+> same Rust matrix. The `birdo-pq-server` binary itself ships nowhere. The "shells out to `birdo-pq-server
 > encap`" flow described below is the ORIGINAL design and is **not** how
 > production works. Do not chase this binary during a PQ-handshake incident;
 > read `birdo-pq.service.ts` instead. Kept only as a reference implementation

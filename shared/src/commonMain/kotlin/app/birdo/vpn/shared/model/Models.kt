@@ -288,13 +288,6 @@ data class DeleteAccountResponse(
     val anonymizedItems: Int = 0,
 )
 
-@Serializable
-data class GdprExportResponse(
-    val success: Boolean = false,
-    val message: String? = null,
-    val data: kotlinx.serialization.json.JsonObject? = null,
-)
-
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 
 @Serializable
@@ -753,10 +746,4 @@ enum class VpnState {
     DISCONNECTING,
     ERROR,
     KILL_SWITCH_ACTIVE,
-}
-
-/** Sealed result type for API operations. */
-sealed class ApiResult<out T> {
-    data class Success<T>(val data: T) : ApiResult<T>()
-    data class Error(val message: String, val code: ProtocolErrorCode? = null) : ApiResult<Nothing>()
 }

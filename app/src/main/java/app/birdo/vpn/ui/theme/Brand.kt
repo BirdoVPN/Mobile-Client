@@ -13,16 +13,8 @@ object BirdoBrand {
     val AccentDeep  = Color(0xFF047857)  // emerald-700
     val Accent      = BirdoAccent         // emerald-500 #10B981
     val AccentSoft  = Color(0xFF6EE7B7)   // emerald-300
-    val Cyan        = Color(0xFF22D3EE)   // cyan-400
-    val Teal        = Color(0xFF14B8A6)   // teal-500
-    val Indigo      = Color(0xFF6366F1)   // indigo-500
+    val Teal        = Color(0xFF14B8A6)   // teal-500 — OPERATIVE plan identity
 
-    // ── Surface elevation tiers (dark theme) ──────────────────────────
-    val Surface0 = Color(0xFF050507)   // App background
-    val Surface1 = Color(0xFF0B0B10)   // Cards
-    val Surface2 = Color(0xFF12121A)   // Raised cards
-    val Surface3 = Color(0xFF1A1A24)   // Modals / popovers
-    val Hairline = Color(0x1FFFFFFF)   // 12% white — primary border
     val HairlineSoft = Color(0x14FFFFFF) // 8% white — subtle divider
 
     // ── Brushes ───────────────────────────────────────────────────────
@@ -42,37 +34,11 @@ object BirdoBrand {
             colors = listOf(Color(0xFF047857), Color(0xFF064E3B)),
         )
 
-    /** Cool secondary gradient — info / tech accents. */
-    val InfoGradient: Brush
-        get() = Brush.linearGradient(
-            colors = listOf(Indigo, Cyan),
-        )
-
-    /** Connected glow gradient (soft green halo). */
-    val ConnectedGradient: Brush
-        get() = Brush.radialGradient(
-            colors = listOf(BirdoGreen.copy(alpha = 0.28f), Color.Transparent),
-            radius = 700f,
-        )
-
     /** Disconnected ambient (subtle emerald bloom). */
     val IdleGradient: Brush
         get() = Brush.radialGradient(
             colors = listOf(Accent.copy(alpha = 0.18f), Color.Transparent),
             radius = 800f,
-        )
-
-    /** Error halo. */
-    val ErrorGradient: Brush
-        get() = Brush.radialGradient(
-            colors = listOf(BirdoRed.copy(alpha = 0.25f), Color.Transparent),
-            radius = 700f,
-        )
-
-    /** Subtle vertical fade from surface to transparent (for top fades). */
-    val SurfaceFadeTop: Brush
-        get() = Brush.verticalGradient(
-            colors = listOf(Surface0.copy(alpha = 0.85f), Color.Transparent),
         )
 
     /** Glass card stroke gradient — silver→transparent for premium border. */
@@ -83,18 +49,6 @@ object BirdoBrand {
                 Color.White.copy(alpha = 0.04f),
                 Color.White.copy(alpha = 0.12f),
             ),
-        )
-
-    /** Headline text gradient — white→soft white. */
-    val HeadlineTextGradient: Brush
-        get() = Brush.verticalGradient(
-            colors = listOf(Color.White, Color.White.copy(alpha = 0.55f)),
-        )
-
-    /** Brand text gradient — mint→teal for accent words. */
-    val BrandTextGradient: Brush
-        get() = Brush.linearGradient(
-            colors = listOf(AccentSoft, Teal),
         )
 
     // ── Plan tier identity ────────────────────────────────────────────

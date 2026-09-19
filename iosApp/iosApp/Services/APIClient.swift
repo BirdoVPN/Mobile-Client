@@ -644,59 +644,6 @@ final class APIClient: @unchecked Sendable {
         return try decoder.decode(AppleLinkResult.self, from: data)
     }
 
-    // MARK: - Speed Test
-
-    // AUDIT-M-DRIFT: the speed-test trio lives under `/vpn/speed-test/*` on
-    // VpnController (`speed-test/ping`, `speed-test/download`, `speed-test/upload`),
-    // matching the desktop client's SPEED_TEST_URL. The old `/ping`,
-    // `/speedtest/download` and `/speedtest/upload` paths all 404'd.
-
-    func measureLatency() async throws -> (latencyMs: Int, jitterMs: Int) {
-        var latencies: [Int] = []
-        for _ in 0..<5 {
-            let start = CFAbsoluteTimeGetCurrent()
-            _ = try await get(path: "/vpn/speed-test/ping")
-            let ms = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)
-            latencies.append(ms)
-        }
-        let avg = latencies.reduce(0, +) / max(latencies.count, 1)
-        let jitter = latencies.count > 1
-            ? latencies.map { abs($0 - avg) }.reduce(0, +) / (latencies.count - 1)
-            : 0
-        return (avg, jitter)
-    }
-
-    func measureDownload() async throws -> Double {
-        let start = CFAbsoluteTimeGetCurrent()
-        let data = try await get(path: "/vpn/speed-test/download?size=10485760")
-        // Floor elapsed at 1 microsecond: a sub-millisecond (or clock-skewed
-        // non-positive) measurement would otherwise yield .infinity/NaN Mbps,
-        // which renders as "inf Mbps" in the UI.
-        let elapsed = max(CFAbsoluteTimeGetCurrent() - start, 0.000001)
-        let bits = Double(data.count) * 8
-        return bits / elapsed / 1_000_000 // Mbps
-    }
-
-    func measureUpload() async throws -> Double {
-        let payload = Data(repeating: 0, count: 1_000_000) // 1 MB
-        let start = CFAbsoluteTimeGetCurrent()
-        // Must NOT be sent as application/json: the global express.json() parser
-        // caps bodies at BODY_LIMIT (10kb) and would 413 this payload before the
-        // handler — which reads the raw request stream — ever ran.
-        _ = try await performRequest(
-            method: "POST",
-            path: "/vpn/speed-test/upload",
-            body: payload,
-            authenticated: true,
-            contentType: "application/octet-stream"
-        )
-        // Floor elapsed at 1 microsecond (see measureDownload) to avoid
-        // .infinity/NaN Mbps on a sub-millisecond or non-positive interval.
-        let elapsed = max(CFAbsoluteTimeGetCurrent() - start, 0.000001)
-        let bits = Double(payload.count) * 8
-        return bits / elapsed / 1_000_000
-    }
-
     // MARK: - Session Invalidation
 
     /// Fence every in-flight/late token write against a sign-out that already

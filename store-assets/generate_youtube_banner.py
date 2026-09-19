@@ -6,7 +6,7 @@ text/logo so it renders correctly on mobile, tablet, desktop, and TV.
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 import os
 
-OUT = r"W:\vpn\birdo-client-mobile\store-assets"
+OUT = os.path.dirname(os.path.abspath(__file__))
 os.makedirs(OUT, exist_ok=True)
 
 W, H = 2560, 1440
