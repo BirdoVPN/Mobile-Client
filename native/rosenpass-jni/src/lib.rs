@@ -333,7 +333,9 @@ pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeDeriveSh
 
 /// Server-side encapsulation, exposed via JNI ONLY for unit tests that
 /// exercise the full client↔server roundtrip in-process. Production
-/// server-side code uses `native/birdo-pq-server/` instead.
+/// server-side code is `@noble/post-quantum` inside the web backend
+/// (`birdo-web/.../birdo-pq.service.ts`); `native/birdo-pq-server/` is a
+/// reference implementation, not the deployed path.
 #[no_mangle]
 pub extern "system" fn Java_app_birdo_vpn_service_RosenpassNative_nativeEncapsulateForServer<'a>(
     mut env: JNIEnv<'a>,

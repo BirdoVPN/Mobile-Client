@@ -12,7 +12,7 @@ STORE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Phone screenshots to process
 PHONE_SCREENSHOTS = [
     "screenshot-01-login.png",
-    "screenshot-02-home-disconnected.png",
+    "screenshot-02-home-protected.png",
     "screenshot-03-servers.png",
     "screenshot-04-settings.png",
     "screenshot-05-split-tunneling.png",

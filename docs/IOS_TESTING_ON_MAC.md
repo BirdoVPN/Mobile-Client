@@ -1,7 +1,7 @@
 # iOS Testing on a Mac (No iPhone Required)
 
 You don't need an iPhone to verify the iOS build. CI already proves it compiles, links,
-and that unit tests pass on `macos-14` with Xcode 16. Locally on your Mac you can go
+and that unit tests pass on `macos-26` with Xcode 26+. Locally on your Mac you can go
 further: run the app in the iOS Simulator, debug it, profile it, and even side-load
 it onto a friend's iPhone for free with a personal Apple ID.
 
@@ -25,7 +25,7 @@ when something goes wrong, or when you want to side-load to a real iPhone.
 ## 0. One-time Mac setup
 
 ```bash
-# 1. Xcode 16 (Mac App Store).
+# 1. Xcode 26+ (Mac App Store). App Store Connect requires the iOS 26 SDK.
 xcode-select --install
 
 # 2. Homebrew tools used by the iOS build:

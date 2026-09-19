@@ -1,7 +1,7 @@
 # BirdoVPN Android — Google Play launch plan
 
-**Package:** `app.birdo.vpn`  ·  **Model:** login-only (subscriptions bought on
-birdo.app; no in-app purchase)  ·  **Status as of this plan:** code is
+**Package:** `app.birdo.vpn`  ·  **Model:** Play Billing in the Play build; web
+billing in the sideload / F-Droid builds  ·  **Status as of this plan:** code is
 Play-compliant and CI-gated; remaining work is **the organization developer
 account (see §0 — VPN apps cannot ship from personal accounts) + Console setup**
 (owner-only).
@@ -26,7 +26,7 @@ gotchas that actually gate a VPN app.
 > **Remaining owner path (all Play Console, ~a few days of clicks + a review):**
 > 1. **App on the org account.** If `app.birdo.vpn` was ever uploaded under the old
 >    personal account, use the Play Console **app-transfer** flow to move it to the
->    org account (free app, no in-app purchases -> simple, ~1–2 days). **NEVER
+>    org account. **NEVER
 >    delete + recreate** — the package name is reserved forever once uploaded, so
 >    deleting would burn `app.birdo.vpn` permanently. If it was never uploaded,
 >    just **create** it fresh under the org account.
@@ -74,7 +74,7 @@ The app was already hardened across previous work; verified this pass:
 
 | Area | State |
 |---|---|
-| **Payments policy** |  Play build (`IS_PLAY_BUILD=true`) compiles out **all** external-purchase steering — no buy buttons, no web-billing links, no "buy on birdo.app" copy. Premium tiers show as an informational feature comparison. (Sideload APK keeps the links; it's not on Play.) |
+| **Payments policy** |  Play build (`IS_PLAY_BUILD=true`) sells through Google Play Billing and removes every external-purchase link — no web-billing links, no "buy on birdo.app" copy. (Sideload APK and F-Droid keep the links; they are not on Play.) |
 | **Permissions** |  `QUERY_ALL_PACKAGES` already replaced with a targeted `<queries>` (launcher intent) for the split-tunnel app picker. No sensitive-permission over-ask. |
 | **Foreground service** |  `specialUse` FGS with a written `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` justification + `SUPPORTS_ALWAYS_ON`. `BIND_VPN_SERVICE` declared. |
 | **Data at rest** |  Auth tokens sealed with an Android Keystore AES-256-GCM key (`KeystoreSecureStore`, with corruption recovery). |
@@ -226,25 +226,6 @@ Automated once `PLAY_UPLOAD_ENABLED=true` (see SETUP.md Part C):
 **Recommended track ladder (organization account):** internal (you) -> a short
 closed/open sanity round if you want one (no 12-tester/14-day mandate for org
 accounts) -> production (staged).
-
----
-
-## 7. Phase 2 (optional, later) — in-app purchase via Play Billing
-
-Only if you later want to sell subscriptions **inside** the Play app (Play takes
-15% on subs after year one; you keep 100% today by selling on the web). The
-groundwork exists but is parked:
-
-- Client: PR **#116** (`BillingManager`/`BillingViewModel`, `billing-ktx`) —
-  currently conflicting; would need a rebase.
-- Backend: PR **#21** (`/payments/google-play/verify` + RTDN) — currently
-  **closed**; would need to be reopened/rebuilt and deployed.
-- Owner: create Play Console subscription products (`operative`/`sovereign` ×
-  monthly/yearly base plans), a service account, RTDN Pub/Sub topic, and run
-  license-tester purchase tests on a device.
-
-Flipping `IS_PLAY_BUILD` back to showing purchase UI would then route to Play
-Billing instead of the web. **Not needed for launch** — launch login-only first.
 
 ---
 

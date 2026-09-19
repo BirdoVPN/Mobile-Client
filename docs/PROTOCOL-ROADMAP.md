@@ -1,7 +1,7 @@
 # Protocol Stack & Mobile Parity Roadmap
 
 > Living document. Maintained by @drobo. Updated on every release.
-> Tracking issue: <https://github.com/BirdoVPN/Desktop-Client/issues/roadmap>
+> Tracked in `OPEN-WORK.md` (the estate register), not a GitHub issue.
 
 This roadmap captures the obfuscation, anti-correlation and platform-parity work
 required to reach feature parity with the leading commercial WireGuard VPNs
@@ -86,7 +86,7 @@ not internal effort.
 
 | Gap (vs. desktop)                                         | Plan                                                                                          |
 | --------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Multi-hop                                                 | Implement in the `PacketTunnel/` extension by wrapping a second WG handshake in the first.    |
+| ~~Multi-hop~~ **shipped**                                 | `Views/MultiHopView.swift` + `Services/MultiHopRoute.swift` (PR #335).                       |
 | Split tunnelling                                          | Per-domain bypass list via `NEDNSSettingsManager` rules (no per-app possible on iOS).         |
 | Custom MTU                                                | Expose `tunnelOverheadBytes` in the app settings; respected by `NEPacketTunnelProvider`.      |
 | Quick-connect Shortcuts                                   | Donate `INStartVPNIntent` so Siri / Action Button can connect.                                |
@@ -109,7 +109,7 @@ not internal effort.
 ## Phase 4 — Cross-cutting hardening
 
 * **Reproducible builds** for desktop + Android (mobile already pinned to a
-  fixed Rust toolchain `1.83.0` and Java `17 temurin`).
+  fixed Rust toolchain `1.96.0` and Java `17 temurin`).
 * **GPG-signed Linux artefacts** — see `build-linux.yml` (live).
 * **Apple notarization** for desktop dmg (live), TestFlight for iOS (live).
 * **Sigstore keyless signing** for every artefact across every platform (live).
@@ -133,5 +133,6 @@ not internal effort.
    mode is removed, switch both jobs to Transporter in one PR. (The upload
    step is idempotent on re-runs since 2026-09-13: a DUPLICATE for our own
    CFBundleVersion is treated as already uploaded.)
-3. *F-Droid distribution* — F-Droid requires reproducible builds and rejects
-   Sentry. Tracking issue separately.
+3. *F-Droid distribution* — **shipped.** `fdroid.yml` builds and indexes the
+   repo (`fdroid/config.yml`, `fdroid/metadata/app.birdo.vpn.yml`); the F-Droid
+   flavour omits Sentry.
