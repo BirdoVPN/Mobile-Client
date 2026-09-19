@@ -56,6 +56,36 @@ updates:
       # correctly declared in plugin-id form; Kotlin and Hilt were not.
       - dependency-name: "org.jetbrains.kotlin.*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # CODEQL CEILING - and why the two holds above were not enough.
+      #
+      # 2.4.10 -> 2.4.20 is a PATCH in semver terms (major 2, minor 4, patch 10
+      # -> 20), so it sails straight past both minor+major holds. Dependabot
+      # raised it as #413 and Analyze (java-kotlin) failed with
+      #   "Kotlin version 2.4.20 is too recent. CodeQL currently supports
+      #    versions below 2.4.20"
+      # (run 35461522606). That PR can never go green - CodeQL is a required
+      # check and no rebase moves the extractor's ceiling.
+      #
+      # build.gradle.kts has carried exactly this warning in a comment since G4.
+      # A comment cannot stop Dependabot. This rule can.
+      #
+      # A CEILING rather than a patch hold, deliberately: ">=2.4.20" also covers
+      # every minor and major reachable from 2.4.10 (2.4.21, 2.5.0 and 3.0.0 are
+      # all >= 2.4.20), so it subsumes the two rules above and holds whatever
+      # Dependabot does when one dependency-name carries several ignore entries.
+      # Kotlin patches BELOW 2.4.20 still flow.
+      #
+      # LIFT IT when the codeql-action bundle ships a Kotlin extractor that
+      # accepts 2.4.20: read the version out of a recent Analyze (java-kotlin)
+      # log rather than release notes, and raise build.gradle.kts in the same PR.
+      #
+      # KSP is NOT affected: com.google.devtools.ksp is on 2.3.12 and KSP2 is
+      # versioned independently of Kotlin, so its patches do not drag a Kotlin
+      # version in.
+      - dependency-name: "org.jetbrains.kotlin:*"
+        versions: [">=2.4.20"]
+      - dependency-name: "org.jetbrains.kotlin.*"
+        versions: [">=2.4.20"]
       - dependency-name: "org.jetbrains.kotlinx:*"
         update-types: ["version-update:semver-major"]
       # (The kotlinx-serialization-json ">=1.10.0" ceiling that lived here was
