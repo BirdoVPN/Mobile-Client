@@ -25,7 +25,6 @@ android_logger = "0.13"
 
 # Crypto primitives — HKDF + SHA-256 for the final PSK derivation
 sha2 = "0.10"
-hmac = "0.12"
 hkdf = "0.12"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 
@@ -117,9 +116,6 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #               KAT test. Never in a shipped build.
 ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
-# Encoding for keys / handshake messages on the wire
-base64 = "0.22"
-
 # getauxval(AT_HWCAP / AT_HWCAP2) for nativeCpuFeatures(): the kernel's own
 # statement of which optional ISA extensions this CPU has. Read-only, one
 # syscall-free libc call, no allocation. Bionic exposes it on every API level
@@ -129,6 +125,9 @@ libc = "0.2"
 
 [dev-dependencies]
 hex = "0.4"
+# Only the KAT test re-parses the JSON fixtures; nothing on the wire is
+# base64-encoded in Rust (the Kotlin bridge does that).
+base64 = "0.22"
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
