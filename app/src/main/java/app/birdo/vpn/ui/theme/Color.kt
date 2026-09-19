@@ -7,7 +7,6 @@ import androidx.compose.ui.graphics.Color
 
 // Core backgrounds — matches CSS --background: #050505
 val BirdoBlack = Color(0xFF000000)       // App background (pure black)
-val BirdoBackground = Color(0xFF050505)  // --background
 val BirdoSurface = Color(0xFF0D0D0D)     // Slightly lighter surface
 val BirdoSurfaceVariant = Color(0xFF1A1A1A) // rgba(26,26,26,0.95) from --card
 val BirdoCard = Color(0xB314141A)        // Glass card: rgba(20,20,25,0.7)
@@ -57,16 +56,9 @@ val BirdoRedBg = Color(0x1AF87171)       // 10% opacity
 val BirdoBlue = Color(0xFF3B82F6)        // blue-500 — Info / P2P
 val BirdoBlueBg = Color(0x1A3B82F6)
 
-// Emerald for update UI
-val BirdoEmerald = Color(0xFF10B981)     // emerald-500
-val BirdoEmeraldBg = Color(0x1A10B981)
-
 // Primary button — solid white on dark (matching Windows .btn-primary)
 val BirdoPrimary = Color.White
 val BirdoOnPrimary = Color.Black
-
-// Muted
-val BirdoMuted = Color(0xFFA6A6A6)       // --muted-foreground
 
 // ─── "Dim Light" Theme Tokens ─────────────────────────────────────────────
 // User feedback: pure white light mode is too bright. This is a near-dark
@@ -105,10 +97,6 @@ data class BirdoSemanticPalette(
     val hairlineSoft: Color,
     val accent: Color,
     val accentBg: Color,
-    val mapWater: Color,
-    val mapLand: Color,
-    val mapDot: Color,
-    val mapDotMuted: Color,
 )
 
 val BirdoDarkPalette = BirdoSemanticPalette(
@@ -125,10 +113,6 @@ val BirdoDarkPalette = BirdoSemanticPalette(
     hairlineSoft = Color(0x14FFFFFF),
     accent = BirdoAccent,
     accentBg = BirdoAccentBg,
-    mapWater = Color(0x4D0B0B1A),       // translucent so the pixel canvas reads through
-    mapLand = Color(0x336EE7B7),        // dim mint land
-    mapDot = BirdoAccent,
-    mapDotMuted = Color(0x6610B981),
 )
 
 val BirdoLightPalette = BirdoSemanticPalette(
@@ -145,10 +129,6 @@ val BirdoLightPalette = BirdoSemanticPalette(
     hairlineSoft = Color(0x1AFFFFFF),
     accent = BirdoLightAccent,
     accentBg = BirdoLightAccentBg,
-    mapWater = Color(0x661B1C24),       // translucent matching dim background
-    mapLand = Color(0x5534D399),        // soft mint on dim background
-    mapDot = BirdoLightAccent,
-    mapDotMuted = Color(0x8034D399),
 )
 
 val LocalBirdoColors = androidx.compose.runtime.staticCompositionLocalOf { BirdoDarkPalette }
