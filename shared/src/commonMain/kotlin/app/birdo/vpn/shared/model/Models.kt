@@ -662,70 +662,25 @@ data class KeyRotationResponse(
     val expiresAt: String = "",
 )
 
-// ─── Protocol Error Codes ────────────────────────────────────────────────────
-
-@Serializable
-enum class ProtocolErrorCode {
-    @SerialName("AUTH_REQUIRED") AUTH_REQUIRED,
-    @SerialName("AUTH_EXPIRED") AUTH_EXPIRED,
-    @SerialName("SUBSCRIPTION_REQUIRED") SUBSCRIPTION_REQUIRED,
-    @SerialName("SUBSCRIPTION_EXPIRED") SUBSCRIPTION_EXPIRED,
-    @SerialName("DEVICE_LIMIT_REACHED") DEVICE_LIMIT_REACHED,
-    @SerialName("RATE_LIMITED") RATE_LIMITED,
-    @SerialName("SERVER_OFFLINE") SERVER_OFFLINE,
-    @SerialName("SERVER_FULL") SERVER_FULL,
-    @SerialName("NO_SERVERS_AVAILABLE") NO_SERVERS_AVAILABLE,
-    @SerialName("TUNNEL_CREATION_FAILED") TUNNEL_CREATION_FAILED,
-    @SerialName("TUNNEL_START_FAILED") TUNNEL_START_FAILED,
-    @SerialName("DNS_CONFIGURATION_FAILED") DNS_CONFIGURATION_FAILED,
-    @SerialName("ROUTE_CONFIGURATION_FAILED") ROUTE_CONFIGURATION_FAILED,
-    @SerialName("KILL_SWITCH_FAILED") KILL_SWITCH_FAILED,
-    @SerialName("IPV6_BLOCK_FAILED") IPV6_BLOCK_FAILED,
-    @SerialName("STEALTH_TUNNEL_FAILED") STEALTH_TUNNEL_FAILED,
-    @SerialName("QUANTUM_HANDSHAKE_FAILED") QUANTUM_HANDSHAKE_FAILED,
-    @SerialName("ADMIN_REQUIRED") ADMIN_REQUIRED,
-    @SerialName("NETWORK_UNREACHABLE") NETWORK_UNREACHABLE,
-    @SerialName("HANDSHAKE_TIMEOUT") HANDSHAKE_TIMEOUT,
-    @SerialName("DLL_INTEGRITY_FAILED") DLL_INTEGRITY_FAILED,
-    @SerialName("JNI_INTEGRITY_FAILED") JNI_INTEGRITY_FAILED,
-    @SerialName("SETTINGS_TAMPERED") SETTINGS_TAMPERED,
-    @SerialName("BIOMETRIC_FAILED") BIOMETRIC_FAILED,
-    @SerialName("UNKNOWN") UNKNOWN;
-
-    val userMessage: String get() = when (this) {
-        AUTH_REQUIRED -> "Please sign in to continue"
-        AUTH_EXPIRED -> "Your session has expired — please sign in again"
-        SUBSCRIPTION_REQUIRED -> "A subscription is required for this feature"
-        SUBSCRIPTION_EXPIRED -> "Your subscription has expired"
-        DEVICE_LIMIT_REACHED -> "Device limit reached — remove a device to connect"
-        RATE_LIMITED -> "Too many requests — please wait a moment"
-        SERVER_OFFLINE -> "This server is currently offline"
-        SERVER_FULL -> "This server is at capacity — try another"
-        NO_SERVERS_AVAILABLE -> "No servers available — check back shortly"
-        TUNNEL_CREATION_FAILED -> "Failed to create VPN tunnel"
-        TUNNEL_START_FAILED -> "Failed to start VPN tunnel"
-        DNS_CONFIGURATION_FAILED -> "Failed to configure DNS"
-        ROUTE_CONFIGURATION_FAILED -> "Failed to configure routing"
-        KILL_SWITCH_FAILED -> "Kill switch activation failed"
-        IPV6_BLOCK_FAILED -> "IPv6 leak protection failed"
-        STEALTH_TUNNEL_FAILED -> "Stealth tunnel failed — try without stealth mode"
-        QUANTUM_HANDSHAKE_FAILED -> "Post-quantum handshake failed — try without quantum protection"
-        ADMIN_REQUIRED -> "Administrator privileges are required"
-        NETWORK_UNREACHABLE -> "Network is unreachable — check your connection"
-        HANDSHAKE_TIMEOUT -> "Connection timed out — try a closer server"
-        DLL_INTEGRITY_FAILED -> "Security check failed — application files may be corrupted"
-        JNI_INTEGRITY_FAILED -> "Security check failed — application files may be corrupted"
-        SETTINGS_TAMPERED -> "Settings integrity check failed"
-        BIOMETRIC_FAILED -> "Biometric authentication failed"
-        UNKNOWN -> "An unexpected error occurred"
-    }
-}
-
-@Serializable
-data class ApiErrorBody(
-    val errorCode: ProtocolErrorCode? = null,
-    val message: String? = null,
-)
+// ─── Protocol Error Codes ─ RETIRED 2026-09-20 ─────────────────
+//
+// `ProtocolErrorCode` (25 values with a user-facing message per value) and
+// `ApiErrorBody` lived here mirroring birdo-shared's protocol.json. Owner
+// decision: retire rather than implement on the wire.
+//
+// Unlike the desktop mirror, which at least fed two real code paths, these
+// two were referenced by NOTHING outside their own declarations and the two
+// typealias lines in app/.../data/model/Models.kt. Android never parsed an
+// error body through them.
+//
+// The key they described, camelCase `errorCode`, appears nowhere in
+// birdo-web either: its only `errorCode` is Turnstile's unrelated
+// `errorCodes` array. Removed from the SSOT in birdo-shared #10 and from
+// the desktop in Desktop-Client #193.
+//
+// To bring it back, implement it SERVER-SIDE first and pin it with a test
+// against the serialized response. A type that describes a field nobody
+// sends reads as a contract and is not one.
 
 // ─── Heartbeat ───────────────────────────────────────────────────────────────
 
