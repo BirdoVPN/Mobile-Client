@@ -34,7 +34,8 @@
         "birdo-client-desktop:src-tauri/src/api/cert_pin.rs",
         "birdo-client-mobile:app/src/main/java/app/birdo/vpn/di/NetworkModule.kt",
         "birdo-client-mobile:app/src/main/res/xml/network_security_config.xml",
-        "birdo-client-mobile:iosApp/iosApp/Services/APIClient.swift"
+        "birdo-client-mobile:iosApp/iosApp/Services/APIClient.swift",
+        "birdo-client-mobile:iosApp/PacketTunnel/PacketTunnelProvider.swift"
       ],
       "_overlap_risk": {
         "id": "birdo-app-single-live-lineage",
