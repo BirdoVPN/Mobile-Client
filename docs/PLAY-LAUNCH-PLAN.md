@@ -299,3 +299,45 @@ Play variant must not name the website.
 ---
 
 *Companion: `docs/PLAY-STORE-SETUP.md` (mechanical setup + CI wiring).*
+
+---
+
+# Play decisions of record and recovery procedures
+
+Moved out of the open-work register on 2026-09-20. Reference, not tasks.
+
+## 🔴 Never delete the Play app
+
+`app.birdo.vpn` is **reserved forever** once uploaded. Deleting the app does not
+free the identifier, and a new one cannot reuse it. Any migration must go
+through the **transfer flow**, not delete-and-recreate.
+
+## The Data-safety declaration of record — and why it is now suspect
+
+The answers on file: email + device IDs + crash logs collected, nothing shared,
+no activity or location, encryption in transit yes, deletion URL
+`birdo.app/delete-account`.
+
+⚠ **In-app purchases shipped in #320**, so the "payment info: No (in app)"
+answer needs re-examining against the current Play form. A data-safety/runtime
+mismatch is the top cause of Play enforcement, so this is the one declaration
+worth re-reading rather than assuming.
+
+## If the Play Developer API starts returning 401/403
+
+Re-invite the service-account email under **Users and permissions** with
+**Release manager** on `app.birdo.vpn`, then wait ~15 minutes.
+
+The cause is usually not a credential problem: **app transfers to an org account
+do not carry API grants over**. "Play Store Listing → mode=probe" verifies the
+grant came back.
+
+## The macOS entitlement split is copied from Apple's own client
+
+The official WireGuard Mac App Store client ships **with**
+`com.apple.security.network.server` on the tunnel extension and **without** it on
+the host app. That is byte-for-byte the split this project uses.
+
+Worth keeping because the split looks wrong at a glance — a VPN client asking
+for a *server* entitlement invites "remove it and see". The precedent is the
+answer to that.
