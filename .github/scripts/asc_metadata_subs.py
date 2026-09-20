@@ -72,21 +72,34 @@ def main() -> int:
                 print(f"      {str(a.get('productId')):<40} state={a.get('state')}")
 
         print("  -- review submissions (what is ACTUALLY attached) --")
+        # `submittedDate`, not `submitted`. Apple 400s the WHOLE request on an
+        # unknown member of fields[reviewSubmissions], so the typo did not
+        # degrade the field — it made the entire query unreadable, which is the
+        # one query OPEN-WORK A4 tells the owner to verify the macOS attach
+        # with ("the macOS submission must list MORE THAN ONE item; do not
+        # trust the UI").
+        failed = None
         try:
             rss = get(
                 f"apps/{app_id}/reviewSubmissions",
-                **{"limit": 10, "fields[reviewSubmissions]": "state,platform,submitted"},
+                **{"limit": 10, "fields[reviewSubmissions]": "state,platform,submittedDate"},
             )["data"]
         except requests.HTTPError as e:
-            print(f"    unreadable: {e}")
+            failed = e
             rss = []
-        if not rss:
-            print("    (none)")
+        # "(none)" after a failed request is a lie in the reassuring direction:
+        # it reads as "no submissions exist" when it means "I could not ask".
+        # That is how the typo survived — the output looked like an answer.
+        if failed is not None:
+            print(f"    !! COULD NOT READ the submissions: {failed}")
+            print("       This says NOTHING about what is attached. Do not read it as 'none'.")
+        elif not rss:
+            print("    (none) — the query succeeded and returned no submissions")
         for rs in rss:
             a = rs["attributes"]
             print(
                 f"    submission {rs['id']} platform={a.get('platform')} "
-                f"state={a.get('state')} submitted={a.get('submitted')}"
+                f"state={a.get('state')} submitted={a.get('submittedDate')}"
             )
             try:
                 items = get(f"reviewSubmissions/{rs['id']}/items", **{"limit": 50})["data"]
