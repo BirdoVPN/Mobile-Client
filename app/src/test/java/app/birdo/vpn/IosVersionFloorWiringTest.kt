@@ -79,7 +79,11 @@ class IosVersionFloorWiringTest {
                 "keys on has changed, so it would pass vacuously",
             quantumSites > 0,
         )
-        val applySites = Regex("""applyUpdateAdvisory\(config\.clientUpdate\)""")
+        // Matches the CALL, not one spelling of its argument: the three paths
+        // reach their config differently (`config`, `ctx.newConfig?`), and a
+        // guard that pinned one spelling would have gone green on a connect
+        // path that never called this at all.
+        val applySites = Regex("""(?<!func )applyUpdateAdvisory\(""")
             .findAll(viewModel).count()
         assertEquals(
             "every successful connect must apply the version-floor advisory; " +

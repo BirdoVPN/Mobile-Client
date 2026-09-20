@@ -1398,7 +1398,11 @@ final class VpnViewModel: ObservableObject {
                     activeMultiHop = MultiHopSession(entry: entry, exit: exit, route: ctx.confirmedRoute ?? "")
                     connectedServerId = entry.id
                 }
-                applyUpdateAdvisory(config.clientUpdate)
+                // `ctx.newConfig`, not `config` — the rebuild path carries the
+                // new tunnel config on its context, and it is optional. A nil
+                // here clears the banner, which is correct: no advisory means
+                // this build is no longer below the floor.
+                applyUpdateAdvisory(ctx.newConfig?.clientUpdate)
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // Real inbound bytes on the new peer: the breaker's streak is
                 // spent history (same rule as armKillSwitchAfterHandshake).
