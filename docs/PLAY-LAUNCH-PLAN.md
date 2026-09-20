@@ -134,12 +134,37 @@ bits that trip people up:
       testing** by hand. CI takes over after that.
 - [ ] **Service-account JSON** -> repo secret `PLAY_SERVICE_ACCOUNT_JSON`; set
       variable `PLAY_UPLOAD_ENABLED=true` to arm the auto-upload job.
-- [ ] **App access** — Google reviews **behind your login**. Create a reviewer
-      account on birdo.app **with an active plan** and put the email/password in
-      *App access -> All functionality -> Instructions*. **Without this the review
-      fails** (they can't get past your auth). Include a note: *"Subscriptions
-      are purchased on our website; this app is login-only. Test credentials
-      below have an active plan."*
+- [ ] **App access** — Google reviews **behind your login**. Create an
+      **anonymous** reviewer account **with an active premium plan** and put its
+      anonymous ID and password in *App access -> All functionality ->
+      Instructions*. Those credentials live in the private ops vault, never in
+      this repository. Reviewers sign in on the **Anonymous** tab of the login
+      screen (`LoginScreen.kt` offers Email, Anonymous and SSO; anonymous is the
+      one to hand out). **Without this the review fails** — they cannot get past
+      the auth at all.
+
+      **The instruction note must describe the Play build, not the website.**
+      The wording this checklist used to carry — *"subscriptions are purchased on
+      our website; this app is login-only"* — was true before IAP and is false
+      now: the Play build sells through Google Play Billing. Telling a Play
+      reviewer that the app is sold off-platform is itself a payments-policy
+      flag, and it is wrong about the binary they are holding. Use instead:
+
+      > *"Sign in on the Anonymous tab using the ID and password below. The
+      > account has an active premium plan, so every server location and the
+      > full device allowance are available. Subscriptions in this build are
+      > purchased through Google Play Billing. Voucher codes are sold only on
+      > our website; the app redeems them and never sells them."*
+
+      **The plan lapsing is the silent failure, and it is worse than an
+      outright one.** Since the entitlement floor landed, an account whose plan
+      expires does not get locked out — it falls back to the free **Recon**
+      tier and still connects. Nothing looks broken. But Recon is **1 device
+      and a 10 GB cap** (`device.service.ts`, `admin-users.controller.ts`)
+      against Operative's 5 and Sovereign's 10, so the reviewer quietly sees a
+      different app from the one the listing describes. **Re-check the expiry
+      immediately before every submission**, not once at setup. Topping it up is
+      *Admin -> Users -> set plan*, which defaults to 365 days for a paid plan.
 
 ---
 
@@ -238,8 +263,38 @@ accounts) -> production (staged).
 | Data-safety mismatch flagged | Low | §4b matches code; keep it in sync if SDKs change |
 | Review can't get past login | Medium | Provide reviewer account with an active plan (§3) |
 | 16 KB gate flags prebuilt Go libs | Low | Bump wg-go/xray to current builds (CI will name the file) |
-| In-app **voucher** redemption seen as alt-payment | Low | Vouchers are gift-style codes; if Google objects, gate redemption behind `IS_PLAY_BUILD` too |
+| In-app **voucher** redemption seen as alt-payment | **Settled — see below** | Vouchers are sold only on birdo.app; the app redeems, never sells. Redemption stays enabled in the Play build. |
 | Cert-pin expiry 2027-06-01 | Low (far off) | `lint` warns near expiry; ship an update before |
+
+### Vouchers and Play's payments policy — settled
+
+**The model, decided by the owner:** voucher codes can only be **bought on
+birdo.app**. Inside the app, subscriptions are **IAP** — Google Play Billing —
+and the app never sells a voucher.
+
+That distinction is the entire answer. Play's payments policy governs the
+**purchase** of digital goods, not the **redemption** of a code bought
+elsewhere — redeeming a gift-style code obtained outside the app is permitted.
+What the policy forbids is an in-app alternative purchase flow, or steering a
+user out to one. The Play build does neither, and the code already enforces it:
+
+| | |
+|---|---|
+| Buying a subscription | Google Play Billing. `showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent` (`SubscriptionScreen.kt`) — the CTA appears only when a real loaded Play offer backs it |
+| Buying a voucher | **Not in the app at all.** Website only |
+| Redeeming a voucher | Profile -> *Redeem voucher*. The dialog says *"Enter a 30- or 90-day voucher code to extend or upgrade your subscription"* — it never says where to get one |
+| Steering to the website | Compiled out. The footer note has two strings and the Play build takes `subscription_voucher_note`, which stops at *"Redeem it on the Profile tab."* The `_web` variant that adds *"All purchases can also be managed on birdo.app"* is non-Play only |
+
+**So do not gate redemption behind `IS_PLAY_BUILD`.** Doing so would strip a
+legitimate feature from Play users to pre-empt an objection the policy does not
+actually support. The contingency stays a contingency: if Google ever objects in
+writing, gate it then, and only then.
+
+**What would really break this is not the dialog — it is copy.** One future
+sentence near the voucher flow telling a Play user where vouchers come from
+turns a permitted redemption into prohibited steering. Any new string in that
+area needs the same two-variant treatment the footer note already has, and the
+Play variant must not name the website.
 
 ---
 
