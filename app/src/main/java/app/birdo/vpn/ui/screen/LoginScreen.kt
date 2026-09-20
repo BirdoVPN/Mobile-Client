@@ -786,6 +786,39 @@ fun LoginScreen(
                             fontSize = 13.sp,
                         )
                     }
+                    Spacer(Modifier.height(10.dp))
+                    // Apple. Goes through the SAME web broker as the two above —
+                    // Android has no native Sign in with Apple, so there is no
+                    // ASAuthorization equivalent to reach for here. Apple's Android
+                    // guidance permits the white-outline variant, which is what the
+                    // other two buttons already are, so it matches without breaking
+                    // the brand rules. The logo is drawn as a glyph rather than a
+                    // raster so it stays sharp at every density.
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onSsoLogin("apple")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_SSO_APPLE),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.12f),
+                            contentColor = Color.White,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_sso_apple),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
                 }
             }
             }

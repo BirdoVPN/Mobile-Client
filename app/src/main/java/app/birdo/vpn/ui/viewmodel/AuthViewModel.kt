@@ -58,6 +58,16 @@ class AuthViewModel @Inject constructor(
         private const val MAX_LOGIN_ATTEMPTS = 5
         /** Sliding window in seconds for rate limiting. */
         private const val LOGIN_WINDOW_SECS = 60L
+
+        /** Providers the Birdo web broker will start a PKCE flow for.
+         *
+         *  MUST mirror `NATIVE_OAUTH_PROVIDERS` in
+         *  `birdo-web/lib/native-oauth.ts`. Drift is silent in the worst
+         *  direction: a provider listed here but not there sends the user out to
+         *  a browser that answers 400, and the app is left on a spinner with no
+         *  way back. Internal, but not private — [AuthViewModelSsoProviderTest]
+         *  asserts the contents. */
+        internal val SSO_PROVIDERS = setOf("google", "github", "apple")
     }
 
     /** Sliding window of recent failed login attempt timestamps.
@@ -205,17 +215,22 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    // ── Native SSO (Google / GitHub) ─────────────────────────────────────────
+    // ── Native SSO (Google / GitHub / Apple) ─────────────────────────────────
     // The app is a public PKCE client of Birdo: startSso opens the system
     // browser to the Birdo broker; the browser redirects back to birdo://auth,
     // which MainActivity routes into completeSso to exchange the code for tokens.
 
-    /** Begin native SSO for `provider` ("google" | "github"): generate PKCE +
+    /** Begin native SSO for `provider` (one of [SSO_PROVIDERS]): generate PKCE +
      *  anti-CSRF state, persist them (the browser round-trip may recreate this
      *  ViewModel / the Activity / the process), then open the system browser at
      *  the Birdo broker. */
     fun startSso(provider: String, context: Context) {
-        if (provider != "google" && provider != "github") {
+        // Mirrors NATIVE_OAUTH_PROVIDERS in birdo-web/lib/native-oauth.ts. The
+        // broker rejects anything else with 400 anyway; this guard only makes
+        // the failure legible instead of bouncing the user out to a browser.
+        // Apple is a broker provider on ANDROID only — iOS uses the native
+        // ASAuthorization flow and never calls startSso.
+        if (provider !in SSO_PROVIDERS) {
             _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
             return
         }

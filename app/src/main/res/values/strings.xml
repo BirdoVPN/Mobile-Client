@@ -21,12 +21,15 @@
 
     <string name="login_sso_google">Continue with Google</string>
     <string name="login_sso_github">Continue with GitHub</string>
+    <!-- Apple require the exact wording "Sign in with Apple" (or "Continue
+         with Apple"); it is not a phrase to localise freely or shorten. -->
+    <string name="login_sso_apple">Continue with Apple</string>
 
     <!-- Auth method tabs + inline anonymous form -->
     <string name="login_tab_email">Email</string>
     <string name="login_tab_anonymous">Anonymous</string>
     <string name="login_tab_sso">SSO</string>
-    <string name="login_sso_tab_caption">Sign in with your Google or GitHub account</string>
+    <string name="login_sso_tab_caption">Sign in with your Google, GitHub or Apple account</string>
     <string name="login_anonymous_caption_inline">Enter the 24-digit ID from your anonymous account</string>
     <string name="login_anonymous_create">Create a new anonymous account</string>
 
