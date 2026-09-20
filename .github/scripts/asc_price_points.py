@@ -14,6 +14,21 @@ problem. So for each subscription this prints the nearest GB tier AT OR BELOW
 the advertised figure, and flags the cheapest tier above it as forbidden rather
 than as an option.
 
+PAGINATION IS NOT AN OPTIONAL DETAIL HERE, and the first version of this script
+got it wrong in a way that produced a confident, plausible, wrong answer.
+Apple's price grid runs to several hundred GB tiers and the API returns them 200
+at a time, cheapest first. Reading a single page and calling max() on it does
+not yield "the nearest tier below GBP 38" — it yields the top of page one, which
+was GBP 24.90 for BOTH yearly products. Two different targets resolving to the
+same suspiciously round figure, with "no nearby tiers", was the tell.
+
+So this follows links.next to exhaustion, prints how many tiers it actually saw,
+and — the part that matters — REFUSES to recommend anything when the highest
+tier it fetched is still below the target. A truncated grid can only ever
+produce a wrong "nearest below", so the script says the grid looks truncated
+instead of answering. A check that cannot detect its own truncation is worse
+than no check, because its output reads exactly like a real answer.
+
 Read-only. Makes no changes of any kind.
 """
 
@@ -35,6 +50,10 @@ ADVERTISED = {
     "app.birdo.vpn.sovereign.yearly": 99.0,
 }
 TERRITORY = "GBR"
+
+# Apple caps a page at 200. Following links.next is the only way to see the
+# whole grid; this bound exists so a pathological response cannot loop forever.
+MAX_PAGES = 40
 
 
 def token() -> str:
@@ -61,8 +80,28 @@ def main() -> int:
         r.raise_for_status()
         return r.json()
 
+    def get_all(path, **params):
+        """Every page, following links.next. Returns (data, pages_read)."""
+        out = []
+        r = s.get(f"{API}/{path}", params=params, timeout=60)
+        r.raise_for_status()
+        body = r.json()
+        pages = 1
+        out.extend(body.get("data", []))
+        while pages < MAX_PAGES:
+            nxt = (body.get("links") or {}).get("next")
+            if not nxt:
+                break
+            r = s.get(nxt, timeout=60)
+            r.raise_for_status()
+            body = r.json()
+            pages += 1
+            out.extend(body.get("data", []))
+        return out, pages
+
     apps = get("apps", **{"limit": 20, "fields[apps]": "name,bundleId"})["data"]
     findings = 0
+    truncated = 0
 
     for app in apps:
         app_id = app["id"]
@@ -91,14 +130,14 @@ def main() -> int:
                 print(f"=== {pid}   advertised GBP {want:.2f}")
 
                 try:
-                    pts = get(
+                    pts, pages = get_all(
                         f"subscriptions/{sub['id']}/pricePoints",
                         **{
                             "filter[territory]": TERRITORY,
                             "limit": 200,
                             "fields[subscriptionPricePoints]": "customerPrice,proceeds",
                         },
-                    )["data"]
+                    )
                 except requests.HTTPError as e:
                     print(f"    pricePoints unreadable: {e}")
                     continue
@@ -110,30 +149,45 @@ def main() -> int:
                     print("    Apple returned NO GB price points — cannot advise")
                     continue
 
+                print(
+                    f"    grid: {len(prices)} distinct GB tiers over {pages} page(s), "
+                    f"GBP {prices[0]:.2f} to {prices[-1]:.2f}"
+                )
+
                 exact = [p for p in prices if abs(p - want) < 0.005]
                 below = [p for p in prices if p <= want + 0.005]
                 above = [p for p in prices if p > want + 0.005]
 
                 if exact:
                     print(f"    EXACT TIER EXISTS: GBP {exact[0]:.2f} — select it. No change needed.")
+                elif not above:
+                    # Nothing above the target means the fetch stopped before
+                    # reaching it. "Nearest below" computed from a truncated
+                    # grid is meaningless, so refuse rather than advise.
+                    truncated += 1
+                    print(f"    GRID LOOKS TRUNCATED — highest tier seen is GBP {prices[-1]:.2f},")
+                    print(f"    which is below the advertised GBP {want:.2f}. Apple's grid goes")
+                    print("    higher, so pagination stopped early. NOT ADVISING a tier from")
+                    print(f"    this data. Pages read: {pages} (cap {MAX_PAGES}).")
                 else:
                     findings += 1
                     print(f"    NO EXACT TIER. Apple has no GBP {want:.2f} price point.")
-                    if below:
-                        print(f"    -> SELECT GBP {below[-1]:.2f}  (nearest at or BELOW the advertised price)")
-                    else:
-                        print("    -> NOTHING AT OR BELOW the advertised price.")
-                        print("       Do NOT round up. Change the advertised price in")
-                        print("       birdo-web/lib/plans.ts instead, then re-run this.")
-                    if above:
-                        print(f"    FORBIDDEN: GBP {above[0]:.2f} is the nearest tier above — selecting it")
-                        print("       would charge more than the advertised price (UK CPRs 2008).")
+                    print(f"    -> SELECT GBP {below[-1]:.2f}  (nearest at or BELOW the advertised price)")
+                    print(f"    FORBIDDEN: GBP {above[0]:.2f} is the nearest tier above — selecting it")
+                    print("       would charge more than the advertised price (UK CPRs 2008).")
 
                 near = [p for p in prices if want - 6 <= p <= want + 6]
-                print(f"    nearby GB tiers: {', '.join(f'{p:.2f}' for p in near[:14]) or '(none within 6)'}")
+                shown = ", ".join(f"{p:.2f}" for p in near[:14])
+                more = f" (+{len(near) - 14} more)" if len(near) > 14 else ""
+                print(f"    GB tiers within GBP 6 of the target: {shown or '(none)'}{more}")
 
     print("")
     print(f"subscriptions whose advertised price has NO exact Apple tier: {findings}")
+    if truncated:
+        print(f"subscriptions whose grid came back TRUNCATED (no advice given): {truncated}")
+        print("A truncated grid is a script bug, not an Apple answer. Fix pagination")
+        print("and re-run before acting on anything above.")
+        return 1
     return 0
 
 
