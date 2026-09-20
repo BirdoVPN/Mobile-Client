@@ -20,6 +20,18 @@
     <true/>
 
     <!--
+      Sign in with Apple. Guideline 4.8 requires it wherever the app offers a
+      third-party login service, and the login screen ships Google and GitHub
+      on every platform this target builds for. The Mac App Store enforces the
+      same rule as the App Store, so the macOS target needs the entitlement in
+      its OWN file: this one does not inherit from BirdoVPN.entitlements.
+    -->
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
+
+    <!--
       Packet-tunnel provider. On macOS this entitlement additionally requires
       the app to be distributed by the Mac App Store or signed with a
       Developer ID and a matching provisioning profile; a self-signed build

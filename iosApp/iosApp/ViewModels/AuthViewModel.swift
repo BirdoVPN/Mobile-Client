@@ -719,6 +719,47 @@ final class AuthViewModel: ObservableObject {
         }
     }
 
+    /// Sign in with Apple. Same three outcomes as `loginWithSSO`, handled the
+    /// same way — including the 2FA branch, because Apple sign-in must not be a
+    /// way around a user's second factor.
+    ///
+    /// A cancelled sheet stays silent. Apple's own UI already told the user they
+    /// dismissed it, and an error banner after a deliberate cancel reads as a
+    /// failure that did not happen.
+    func loginWithApple() {
+        guard !isLoading else { return }
+        isLoading = true
+        error = nil
+        pendingEmail = nil
+        pendingAnonymousId = nil
+        pendingContext = .sso
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let outcome = try await AppleSignInService.shared.signIn()
+                switch outcome {
+                case .cancelled:
+                    break
+                case .completed(.success(let tokens)):
+                    if await completeAuthentication(tokens: tokens,
+                                                    knownEmail: nil,
+                                                    knownAnonymousId: nil,
+                                                    context: .sso) {
+                        isLoggedIn = true
+                        refreshStatsInBackground()
+                    }
+                case .completed(.twoFactorRequired(let challenge)):
+                    challengeToken = challenge
+                    requiresTwoFactor = true
+                }
+            } catch {
+                self.error = mapAuthError(error, fallback: "Sign-in failed")
+            }
+            self.isLoading = false
+        }
+    }
+
     // MARK: - Hydration
 
     /// Re-fetch `GET /auth/me` (Profile tab refetches on focus). Tolerant:

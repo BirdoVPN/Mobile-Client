@@ -8,6 +8,10 @@
     </array>
     <key>com.apple.security.personal-vpn</key>
     <true/>
+    <key>com.apple.developer.applesignin</key>
+    <array>
+        <string>Default</string>
+    </array>
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>

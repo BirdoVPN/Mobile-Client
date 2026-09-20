@@ -247,6 +247,34 @@ final class APIClient: @unchecked Sendable {
         return try parseAuthResponse(data)
     }
 
+    /// Sign in with Apple — `POST /auth/apple/native`.
+    ///
+    /// Apple's native flow is NOT a PKCE round trip: `ASAuthorizationController`
+    /// hands the app a signed identity token, so there is no code to exchange
+    /// and no client secret. The backend verifies RS256 + `iss` + `aud` + `exp`
+    /// and that the token was minted for this bundle id.
+    ///
+    /// `nonce` is the RAW per-attempt value; Apple received its SHA-256. The
+    /// server hashes what we send and compares against the token's `nonce`
+    /// claim, so sending the hash here would compare a hash of a hash and the
+    /// replay protection would be silently dead while sign-in still worked.
+    ///
+    /// Response shape is identical to password and SSO login — Apple sign-in
+    /// does NOT bypass a user's 2FA.
+    func loginWithApple(identityToken: String, nonce: String) async throws -> LoginResult {
+        let device = await deviceContext()
+        let body = try encoder.encode(AppleNativeBody(
+            identityToken: identityToken,
+            nonce: nonce,
+            deviceId: device.id,
+            deviceName: device.name,
+            platformVersion: device.osVersion,
+            appVersion: kBirdoClientVersion
+        ))
+        let data = try await post(path: "/auth/apple/native", body: body, authenticated: false)
+        return try parseAuthResponse(data)
+    }
+
     /// Identity hydration — `GET /auth/me` (Bearer). Login is never blocked on
     /// this call; a failure leaves the session logged-in with `user == nil`.
     /// Moved off the brute-force rate bucket server-side (web #279), but do
@@ -1585,6 +1613,24 @@ private struct TwoFactorBody: Encodable {
 
 /// Body for `POST /auth/native/exchange`. Wire casing is EXACT:
 /// `code_verifier` is snake_case (RFC 7636 vocabulary), device fields camelCase.
+/// Body for `POST /auth/apple/native`. Mirrors `SsoExchangeBody`'s device
+/// fields so both native sign-in paths register a session identically.
+private struct AppleNativeBody: Encodable {
+    let identityToken: String
+    let nonce: String
+    let deviceId: String
+    let deviceName: String
+    let deviceType = "MOBILE"
+    let platform = "IOS"
+    let platformVersion: String
+    let appVersion: String
+
+    private enum CodingKeys: String, CodingKey {
+        case identityToken, nonce, deviceId, deviceName, deviceType, platform
+        case platformVersion, appVersion
+    }
+}
+
 private struct SsoExchangeBody: Encodable {
     let code: String
     let codeVerifier: String

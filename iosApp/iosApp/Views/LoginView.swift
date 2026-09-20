@@ -467,7 +467,7 @@ struct LoginView: View {
 
     private var ssoTab: some View {
         VStack(spacing: 0) {
-            Text("Sign in with your Google or GitHub account")
+            Text("Sign in with Apple, Google or GitHub")
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.white40)
                 .multilineTextAlignment(.center)
@@ -488,6 +488,18 @@ struct LoginView: View {
             .padding(.top, 10)
             .accessibilityIdentifier("login_sso_github")
             .loginEntrance(entered, delay: 0.30)
+
+            // Guideline 4.8: an app offering third-party login must also offer
+            // Sign in with Apple. Deliberately the same plain-text button as the
+            // other two rather than ASAuthorizationAppleIDButton — spec §4 is
+            // "no provider logos, matching Android", and 4.8 requires the option
+            // to be EQUIVALENT, not visually dominant.
+            ssoButton("Continue with Apple") {
+                authVM.loginWithApple()
+            }
+            .padding(.top, 10)
+            .accessibilityIdentifier("login_sso_apple")
+            .loginEntrance(entered, delay: 0.32)
         }
     }
 
