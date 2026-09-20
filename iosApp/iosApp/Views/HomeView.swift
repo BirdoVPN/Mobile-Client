@@ -447,6 +447,11 @@ struct HomeView: View {
                 ErrorBanner(message, icon: "exclamationmark.circle")
             }
 
+            if let advisory = vpnVM.updateAdvisory {
+                updateAdvisoryBanner(advisory)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             serverSelector
 
             connectButton
@@ -550,6 +555,56 @@ struct HomeView: View {
         let mb = kb / 1024
         if mb < 1024 { return String(format: "%.1f MB", mb) }
         return String(format: "%.2f GB", mb / 1024)
+    }
+
+    // MARK: - Version Floor Advisory (OPEN-WORK H3)
+
+    /// The warn-only version floor, rendered at last. Placed BELOW the error
+    /// banners on purpose: the connect succeeded and traffic is flowing, so
+    /// this must never compete with a message about something that failed.
+    ///
+    /// Deliberately not an `ErrorBanner` and not red. Nothing is wrong — the
+    /// user is protected right now — and dressing advice as a failure trains
+    /// people to ignore the banner that does mean failure.
+    private func updateAdvisoryBanner(_ advisory: ClientUpdateAdvisory) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.up.circle")
+                .font(.system(size: 18))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                // The server's own words, verbatim — same rule the error
+                // banners follow. The backend owns this copy so it can change
+                // without an App Store release.
+                Text(advisory.message)
+                    .font(.system(size: 13))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 16) {
+                    // The App Store is the ONLY place an iOS user can update
+                    // from. `advisory.updateUrl` is birdo.app/clients, which is
+                    // right for desktop and a dead end here, so it is not used.
+                    if let url = ClientUpdateAdvisory.appStoreURL {
+                        Link("Update", destination: url)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    Button("Dismiss") { vpnVM.dismissUpdateAdvisory() }
+                        .font(.system(size: 13))
+                        .foregroundStyle(BirdoTheme.white60)
+                }
+            }
+        }
+        .foregroundStyle(BirdoTheme.accentSoft)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                .fill(BirdoTheme.accentBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                .strokeBorder(BirdoTheme.accentA(0.3), lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("App update available. \(advisory.message)")
     }
 
     // MARK: - Settings-Blip Banner
