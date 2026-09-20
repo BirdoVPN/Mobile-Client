@@ -121,14 +121,51 @@ in your hand with a build on it:
   2026-07-07 and still show the removed server-load display. Re-capture needs a
   device with USB debugging, which is exactly what you have set up.
 
-## Result
+## Result — run 2026-09-20
 
 | | |
 |---|---|
-| Date | |
-| Device / OS | |
-| Build | debug / release+perfOverlay |
-| Charging, thermal | |
-| Tier observed | FULL / LITE |
-| Frames, p50, p90, max | |
-| Verdict | optimise / close |
+| Device | Samsung SM-S938B (Galaxy S25 Ultra), Android 16, arm64-v8a |
+| Build | debug + `-PallowScreenshots=true` |
+| Panel | 120 Hz LTPO, charging, no thermal warning |
+| Tier observed | FULL throughout; LITE never engaged |
+
+```
+              n       p50    p90    p99    jank
+globe FULL   4379    33.0   48.0   59.0   1.6%
+globe OFF    1012    41.0   48.0   58.0   83.8%
+delta FULL          -8.0   +0.0   +1.0
+```
+
+### ✅ Verdict: close it. Do not optimise.
+
+**The globe costs +0.0 ms at p90 and +1.0 ms at p99.** The item guessed
+"~1–4 ms/frame"; the real cost is below the bottom of that range, and the
+"next wall" it names — Path verbs at ~1.1–1.9M JNI crossings/sec — does not
+show up as frame cost at all.
+
+### Read the DELTA, never the absolute numbers — this panel makes them lie
+
+The S25 Ultra is LTPO: it drops its refresh rate when content is static. So with
+the globe **hidden**, the screen is static, the panel idles, frame intervals
+stretch, and "jank" reads **83.8%** — on a screen with nothing on it. Nothing is
+stalling; the panel is resting.
+
+That is also why p50 is **8 ms faster with the globe ON**: animated content keeps
+the panel at a higher rate. An absolute frame time on a variable-refresh display
+measures the display, not the app.
+
+This is precisely why the HUD has a delta mode, and why the instruction above is
+to collect an OFF baseline rather than quote a single figure.
+
+### What this does and does not settle
+
+**Settles:** there is nothing to chase. The globe is not costing frames, so the
+Path-verb work named in L3 has no measurable prize behind it.
+
+**Does not settle:** behaviour on a weak device. This is a current flagship.
+
+It is a **debug** build, though — no R8, so slower than what ships. The number
+is therefore conservative: release on this device is faster still, and
+debug-on-a-flagship is a rough stand-in for release on something mid-range.
+A +0.0 ms p90 delta has a lot of room before it becomes a problem anywhere.
