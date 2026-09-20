@@ -210,12 +210,17 @@ class AuthViewModel @Inject constructor(
     // browser to the Birdo broker; the browser redirects back to birdo://auth,
     // which MainActivity routes into completeSso to exchange the code for tokens.
 
-    /** Begin native SSO for `provider` ("google" | "github"): generate PKCE +
+    /** Begin native SSO for `provider` ("google" | "github" | "apple"): generate PKCE +
      *  anti-CSRF state, persist them (the browser round-trip may recreate this
      *  ViewModel / the Activity / the process), then open the system browser at
      *  the Birdo broker. */
     fun startSso(provider: String, context: Context) {
-        if (provider != "google" && provider != "github") {
+        // Apple goes through the SAME web broker as the other two. That is
+        // deliberate and is not what iOS does: a native Apple flow needs
+        // ASAuthorization, which is an Apple-platform API, so on Android the
+        // only route is Apple's web OAuth — which is exactly what the broker
+        // already speaks.
+        if (provider != "google" && provider != "github" && provider != "apple") {
             _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
             return
         }

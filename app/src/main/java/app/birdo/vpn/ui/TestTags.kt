@@ -17,6 +17,7 @@ object TestTags {
     const val LOGIN_2FA_BACK_BUTTON = "login_2fa_back_button"
     const val LOGIN_SSO_GOOGLE = "login_sso_google"
     const val LOGIN_SSO_GITHUB = "login_sso_github"
+    const val LOGIN_SSO_APPLE = "login_sso_apple"
     const val LOGIN_TAB_EMAIL = "login_tab_email"
     const val LOGIN_TAB_ANONYMOUS = "login_tab_anonymous"
     const val LOGIN_TAB_SSO = "login_tab_sso"

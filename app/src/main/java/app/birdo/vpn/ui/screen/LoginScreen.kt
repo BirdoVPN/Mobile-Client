@@ -786,6 +786,36 @@ fun LoginScreen(
                             fontSize = 13.sp,
                         )
                     }
+                    Spacer(Modifier.height(10.dp))
+                    // Sign in with Apple. Same plain-text control as the other
+                    // two: the login spec is "no provider logos", and an app
+                    // that offers third-party sign-in has to offer this as an
+                    // EQUIVALENT option, not a more prominent one.
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onClearError()
+                            onSsoLogin("apple")
+                        },
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag(TestTags.LOGIN_SSO_APPLE),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.12f),
+                            contentColor = Color.White,
+                            disabledContentColor = BirdoWhite20,
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.24f)),
+                    ) {
+                        Text(
+                            stringResource(R.string.login_sso_apple),
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                        )
+                    }
                 }
             }
             }
