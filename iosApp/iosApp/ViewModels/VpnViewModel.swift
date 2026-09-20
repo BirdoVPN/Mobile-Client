@@ -85,6 +85,52 @@ final class VpnViewModel: ObservableObject {
     /// premature "Protected" over the new name.
     @Published private(set) var isSwitching = false
 
+    /// OPEN-WORK H3 — the warn-only version floor, finally rendered.
+    ///
+    /// Set from `clientUpdate` on any successful connect and CLEARED on any
+    /// connect that does not carry one, so lifting the floor server-side
+    /// removes the banner on the user's next connect with no app release.
+    /// Dismissal is per-version (see `dismissUpdateAdvisory`): dismissing it
+    /// once must not silence a LATER, higher floor.
+    @Published private(set) var updateAdvisory: ClientUpdateAdvisory?
+
+    /// Floors the user has already dismissed. Keyed by `minVersion`, not by a
+    /// bare bool — a raised floor is new information and says so again.
+    @AppStorage("dismissedUpdateFloors") private var dismissedFloorsRaw = ""
+
+    // MARK: - Version floor advisory (OPEN-WORK H3)
+
+    /// Record the advisory from a connect response, unless this exact floor has
+    /// already been dismissed. A connect WITHOUT an advisory clears it — that is
+    /// how the banner disappears when the owner lowers or unsets the floor.
+    private func applyUpdateAdvisory(_ advisory: ClientUpdateAdvisory?) {
+        guard let advisory, advisory.isRenderable else {
+            updateAdvisory = nil
+            return
+        }
+        updateAdvisory = dismissedFloors.contains(advisory.minVersion) ? nil : advisory
+    }
+
+    /// Dismiss the CURRENT floor only. A later, higher floor is new information
+    /// and must be allowed to show itself again.
+    func dismissUpdateAdvisory() {
+        guard let floor = updateAdvisory?.minVersion, !floor.isEmpty else {
+            updateAdvisory = nil
+            return
+        }
+        var floors = dismissedFloors
+        floors.insert(floor)
+        // Bounded: a user who keeps an install across many floors must not grow
+        // this without limit. Newest kept, oldest dropped — an old floor the
+        // client is now above can never be re-advised anyway.
+        dismissedFloorsRaw = floors.sorted().suffix(20).joined(separator: ",")
+        updateAdvisory = nil
+    }
+
+    private var dismissedFloors: Set<String> {
+        Set(dismissedFloorsRaw.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+    }
+
     // MARK: - Features
     /// Honest indicator: lit only when a true bilateral ML-KEM PSK was
     /// actually derived for this connection (BirdoPQManager mode).
@@ -419,6 +465,7 @@ final class VpnViewModel: ObservableObject {
                 }
                 // Honest indicator: light the "Quantum" badge only when a true
                 // bilateral ML-KEM PSK was actually derived for this connection.
+                applyUpdateAdvisory(config.clientUpdate)
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // `startVPNTunnel()` only REQUESTS the tunnel — it is still
                 // handshaking at this point. `isConnected`, `connectedSince` and
@@ -550,6 +597,7 @@ final class VpnViewModel: ObservableObject {
                 releaseServerSlot()
                 throw error
             }
+            applyUpdateAdvisory(config.clientUpdate)
             quantumActive = BirdoPQManager.shared.currentMode == .bilateral
             // Connected-state ownership: see connect().
             return true
@@ -1350,6 +1398,7 @@ final class VpnViewModel: ObservableObject {
                     activeMultiHop = MultiHopSession(entry: entry, exit: exit, route: ctx.confirmedRoute ?? "")
                     connectedServerId = entry.id
                 }
+                applyUpdateAdvisory(config.clientUpdate)
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // Real inbound bytes on the new peer: the breaker's streak is
                 // spent history (same rule as armKillSwitchAfterHandshake).

@@ -247,6 +247,13 @@ targets:
       # unknown-means-available rule can be pinned here. VpnSettingsView.swift
       # (its only caller) cannot be compiled into this bundle.
       - path: iosApp/Services/BirdoShieldGate.swift
+      # OPEN-WORK H3 version floor. Foundation-only by design: the whole risk
+      # surface is the DECODING — an advisory that fails an otherwise good
+      # connect turns "you should update" into "you cannot connect", and an
+      # empty one renders a blank banner. Both are pinned by
+      # VersionFloorAdvisoryTests. APIClient.swift (its only caller) cannot be
+      # compiled into this bundle.
+      - path: iosApp/Services/ClientUpdateAdvisory.swift
       # K5 connect contract. Foundation-only by design: the two connect request
       # bodies and the encoder factory APIClient serialises them with live here
       # so ConnectContractTests can encode the REAL structs — APIClient.swift

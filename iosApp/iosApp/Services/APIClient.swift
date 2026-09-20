@@ -1782,6 +1782,10 @@ struct VPNConnectionConfig: Decodable {
     let rosenpassPublicKey: String?
     let rosenpassEndpoint: String?
 
+    /// The warn-only version floor advisory, when this build is below it.
+    /// See [ClientUpdateAdvisory] — OPEN-WORK H3.
+    let clientUpdate: ClientUpdateAdvisory?
+
     /// `/vpn/multi-hop/connect` only: the route the backend says it ACTUALLY
     /// installed. `VpnViewModel.connectMultiHop` refuses to bring the tunnel
     /// up unless this names the requested pair (`MultiHopRouteCheck`) — see
@@ -1792,7 +1796,7 @@ struct VPNConnectionConfig: Decodable {
         case endpoint, privateKey, serverPublicKey, presharedKey
         case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId, deferredKeyId
         case quantumEnabled, rosenpassPublicKey, rosenpassEndpoint
-        case multiHop
+        case multiHop, clientUpdate
     }
 
     init(from decoder: Decoder) throws {
@@ -1835,6 +1839,10 @@ struct VPNConnectionConfig: Decodable {
         rosenpassEndpoint = try c.decodeIfPresent(String.self, forKey: .rosenpassEndpoint)
 
         multiHop = try c.decodeIfPresent(MultiHopRouteInfo.self, forKey: .multiHop)
+
+        // Advice, never a reason to reject a good tunnel config: a malformed
+        // advisory decodes to nil and the connect proceeds untouched.
+        clientUpdate = try? c.decodeIfPresent(ClientUpdateAdvisory.self, forKey: .clientUpdate)
     }
 
     /// Hardening: every field is treated as untrusted server input.
