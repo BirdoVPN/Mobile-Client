@@ -34,9 +34,22 @@ internal object GlobePerf {
      * `BuildConfig.DEBUG` and `BuildConfig.PERF_OVERLAY` are both `static final
      * boolean` constants, so in a normal release build this folds to `false` and
      * R8 removes every call site and this whole package with it.
+     *
+     * `ALLOW_SCREENSHOTS` turns it back OFF, and that is not a style choice: it
+     * is the only build that can produce store assets. FLAG_SECURE blocks
+     * screen capture, and `MainActivity` skips it only when
+     * `BuildConfig.DEBUG && BuildConfig.ALLOW_SCREENSHOTS` — deliberately, so
+     * the bypass can never ship. But DEBUG also switches this overlay on, so
+     * before this line the two features were mutually exclusive: every build
+     * that could take a screenshot drew a debug HUD across the Home screen, and
+     * every build without the HUD refused to be captured at all. Store
+     * screenshots were therefore impossible from any configuration.
+     *
+     * A build made for capturing store images has no use for a frame-timing
+     * overlay, so `-PallowScreenshots=true` now implies "no HUD".
      */
     @JvmField
-    val ENABLED: Boolean = BuildConfig.DEBUG || BuildConfig.PERF_OVERLAY
+    val ENABLED: Boolean = (BuildConfig.DEBUG || BuildConfig.PERF_OVERLAY) && !BuildConfig.ALLOW_SCREENSHOTS
 
     /** JankStats per-frame state key. */
     const val STATE_KEY = "globe"

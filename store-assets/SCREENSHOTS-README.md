@@ -1,29 +1,50 @@
-# Play Store phone screenshots
+# Store screenshots
 
-> 🔴 **STALE — do not upload these as-is (OPEN-WORK M10).** The five PNGs in
-> this directory were captured on **2026-07-07** and are what the live Play
-> listing still shows. They predate #345, so they still show the removed
-> real-time server-load display and the pre-rename app name. Re-capture with
-> the procedure below, review each frame for identifiers, then run
-> `Play Store Listing → mode=apply`.
->
-> Re-capture needs a device or emulator with USB debugging **authorised** —
-> it cannot be done from CI, because `FLAG_SECURE` is only lifted by a local
-> debug build (`-PallowScreenshots=true`) and the flow needs a real login.
-> Everything else about this file is current.
+**Re-captured 2026-09-20** on a Samsung SM-S938B (Android 16), 1440x3120, from a
+debug build with `-PallowScreenshots=true`.
 
-**Status: captured 2026-07-07 — superseded by the 1.4.28 UX, awaiting re-capture.**
+## Why this could not be done before
 
-| File | Screen |
+`ALLOW_SCREENSHOTS` and the frame-timing HUD were **mutually exclusive**. The
+capture bypass is gated on `BuildConfig.DEBUG && BuildConfig.ALLOW_SCREENSHOTS`
+— deliberately, so it can never ship — but `BuildConfig.DEBUG` also switched
+`GlobePerf.ENABLED` on. So every build that could take a screenshot drew a debug
+overlay across the Home screen, and every build without the overlay set
+FLAG_SECURE and refused to be captured at all. Store screenshots were impossible
+from any configuration.
+
+`GlobePerf.ENABLED` now excludes screenshot builds, which is the only reason
+these exist.
+
+## How to re-capture
+
+```bash
+ANDROID_HOME=<sdk> ./gradlew :app:installDebug -PallowScreenshots=true
+```
+
+Then drive the app and `adb exec-out screencap -p > out.png`. Note that a fresh
+git worktree does **not** carry `app/src/main/jniLibs/` — it is untracked build
+output — and without it the app refuses to connect at all
+(`quantum/connect_refused_pq_engine_unavailable`), so there is no Protected
+screen to photograph. Copy it from the main checkout first.
+
+## The set
+
+Four, not five. `play_listing.py` accepts 2–8, and four verified images beat
+five where one is unchecked. `screenshot-05-split-tunneling` is gone: split
+tunnelling is not reachable from Settings in the current build, and the security
+panel below is a stronger asset anyway.
+
+| File | Shows |
 |---|---|
-| `screenshot-01-login.png` | Login ("Welcome Back" / sovereign network) |
-| `screenshot-02-home-protected.png` | Home — globe, selected server, Connect button |
-| `screenshot-03-servers.png` | Server list ("Choose a server", 7 locations) |
-| `screenshot-04-settings.png` | Settings (Appearance / Security / Connection) |
-| `screenshot-05-split-tunneling.png` | Split-tunnelling app picker |
+| `screenshot-01-login.png` | Email / Anonymous / SSO tabs |
+| `screenshot-02-home-protected.png` | Connected, the arc drawn to the node, live transfer counters |
+| `screenshot-03-servers.png` | "10 of 10 servers", search, All / Favorites / High-Speed / Port Forwarding |
+| `screenshot-04-security.png` | Quantum Protection and Kill Switch both on |
 
-Upload these in the Play Console (Store listing -> Phone screenshots). Play needs
-2–8; all five here qualify (PNG, 1080×2340-ish portrait).
+---
+
+## Previous notes
 
 ## How they were captured (for future re-capture)
 
