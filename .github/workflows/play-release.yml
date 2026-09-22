@@ -33,24 +33,4 @@ jobs:
     name: Play ${{ inputs.mode }} (${{ inputs.track }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
-      - name: Fetch the AAB
-        if: inputs.mode == 'promote'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test -n "${{ inputs.release_tag }}" || { echo "::error::release_tag is required for promote"; exit 1; }
-          gh release download "${{ inputs.release_tag }}" -R "${{ github.repository }}" -p 'app-release.aab' -D aab
-          ls -la aab/
-      - name: Run
-        env:
-          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-          MODE: ${{ inputs.mode }}
-          TRACK: ${{ inputs.track }}
-          AAB_PATH: aab/app-release.aab
-        run: python3 scripts/play_release.py
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
