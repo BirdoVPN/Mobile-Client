@@ -24,3 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install deps
+        run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
+      - name: Fetch crash issues and stack traces
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION_CODES: ${{ inputs.version_codes }}
+          DAYS: ${{ inputs.days }}
+        run: |
+          set -euo pipefail
+          python3 scripts/play_crashes.py | tee out.txt
+          grep -qE 'crash issue|returned no crash issues|COULD NOT READ' out.txt             || { echo "::error::play_crashes.py produced no verdict - it did not run to completion"; exit 1; }
