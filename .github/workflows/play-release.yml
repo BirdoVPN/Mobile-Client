@@ -1,0 +1,56 @@
+name: Play Release Control
+
+# Owner-invoked. android.yml's auto-submit was refused by Google with
+# "Changes cannot be sent for review automatically" (the app has Console
+# changes pending from the 10428 Broken Functionality rejection), and that
+# workflow rightly refuses to force it on an automated release path.
+#
+# This is the manual path: halt a bad rollout, or land an AAB in the Console
+# as a DRAFT. It never sends anything for review.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "probe (read-only) | halt (stop the in-progress rollout) | promote (upload an AAB as a draft)"
+        required: true
+        default: probe
+        type: choice
+        options: [probe, halt, promote]
+      track:
+        description: "Play track"
+        required: false
+        default: production
+      release_tag:
+        description: "promote only: the GitHub release tag holding app-release.aab"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  control:
+    name: Play ${{ inputs.mode }} (${{ inputs.track }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
+      - name: Fetch the AAB
+        if: inputs.mode == 'promote'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "${{ inputs.release_tag }}" || { echo "::error::release_tag is required for promote"; exit 1; }
+          gh release download "${{ inputs.release_tag }}" -R "${{ github.repository }}" -p 'app-release.aab' -D aab
+          ls -la aab/
+      - name: Run
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          MODE: ${{ inputs.mode }}
+          TRACK: ${{ inputs.track }}
+          AAB_PATH: aab/app-release.aab
+        run: python3 scripts/play_release.py
