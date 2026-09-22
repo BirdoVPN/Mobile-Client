@@ -93,7 +93,11 @@ def main() -> int:
                     print(f"  halting {rel.get('versionCodes')} "
                           f"(was inProgress at userFraction={rel.get('userFraction','-')})")
                     rel["status"] = "halted"
-                    rel.pop("userFraction", None)
+                    # KEEP userFraction. Google rejects the update with
+                    # 400 "HALTED release must have fraction" if it is removed:
+                    # a halted staged rollout still records how far it got, and
+                    # that fraction is what a later resume would continue from.
+                    # Only a fully-rolled-out release has no fraction to carry.
                     changed += 1
             if not changed:
                 s.delete(f"{BASE}/edits/{edit}", timeout=60)
