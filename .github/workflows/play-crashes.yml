@@ -1,0 +1,37 @@
+name: Play Crashes
+
+# Read-only. Asks the Play Developer Reporting API for real stack traces
+# instead of inferring a crash from the changelog - which is how the last
+# Android crash hunt reached a wrong answer.
+on:
+  workflow_dispatch:
+    inputs:
+      version_codes:
+        description: "Comma-separated versionCodes (e.g. 10428,10429)"
+        required: false
+        default: "10428"
+      days:
+        description: "Look-back window in days"
+        required: false
+        default: "28"
+
+permissions:
+  contents: read
+
+jobs:
+  crashes:
+    name: Play crashes (${{ inputs.version_codes }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
+      - name: Fetch crash issues and stack traces
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION_CODES: ${{ inputs.version_codes }}
+          DAYS: ${{ inputs.days }}
+        run: python3 scripts/play_crashes.py
