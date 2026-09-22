@@ -1,9 +1,4 @@
-BirdoVPN — fast, private WireGuard VPN with post-quantum encryption.
+Fixes a crash on startup.
 
-What's new:
-- BirdoShield (beta): block ads, trackers and malware at the VPN's DNS resolver — switch it on per device in VPN Settings
-- Clearer crash diagnostics on older ARM64 phones
-- Leaner app: dead code and unused libraries removed
-- Security hardening and dependency updates
-
-Global server network • no activity logs • kill switch • DNS leak protection • split tunnelling.
+1.4.28 and 1.4.29 could fail to open on some devices. The app now starts
+normally. Nothing else in this release changes how BirdoVPN behaves.
