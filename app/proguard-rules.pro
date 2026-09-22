@@ -63,6 +63,35 @@
 -renamesourcefileattribute SourceFile
 
 # Runtime integrity checks and release verification depend on these constants.
+# ROOM GENERATED DATABASES - the 1.4.28/1.4.29 launch crash.
+#
+# Room finds its generated `<Database>_Impl` with Class.forName and then calls
+# getDeclaredConstructor().newInstance(). R8 sees the class (room-runtime's
+# consumer rule keeps it) but no caller for the constructor, so under FULL MODE
+# it removes the constructor and keeps the name. Room's reflection then throws
+# InstantiationException, which it reports as:
+#
+#     Failed to create an instance of androidx.work.impl.WorkDatabase
+#
+# That is a launch crash, not a lazy one: WorkManager initialises through
+# androidx.startup's InitializationProvider, so it runs inside
+# ActivityThread.handleBindApplication before any of our code. Play rejected
+# 10428 for it under Broken Functionality, and 10429 carries the same defect.
+#
+# The shipped rule is NOT enough. room-runtime 2.2.5 - which arrives here
+# TRANSITIVELY, nothing in this repo asks for Room or WorkManager - ships only:
+#
+#     -keep class * extends androidx.room.RoomDatabase
+#
+# with no member specification. Newer Room ships `{ <init>(); }`; 2.2.5 predates
+# that. Keeping a class does not keep its members in full mode.
+#
+# Asserted against the real minified DEX by scripts/check_r8_keeps.py, because
+# nothing else can see it: R8 does not run in debug, so every unit test, every
+# local debug install and every emulator run passes while the release build
+# dies on launch.
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
+
 -keep class app.birdo.vpn.BuildConfig { *; }
 
 # ── Strip all Log.* calls from release builds ─────────────────────

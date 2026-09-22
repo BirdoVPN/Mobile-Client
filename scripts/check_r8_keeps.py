@@ -462,6 +462,49 @@ def pattern_to_regex(pattern: str) -> re.Pattern:
 # --- Checks ----------------------------------------------------------------
 
 
+def check_room_database_constructors(classes: dict[str, dict], failures: list[str]) -> None:
+    """Room's generated `<Database>_Impl` must keep its no-arg constructor.
+
+    This is the 1.4.28 / 1.4.29 launch crash. Room locates the generated class
+    with Class.forName and then calls getDeclaredConstructor().newInstance().
+    room-runtime 2.2.5 (transitive - nothing here asks for Room) ships only
+    `-keep class * extends androidx.room.RoomDatabase`, with no member spec, so
+    under R8 full mode the class survives and the constructor does not. Room
+    reports the resulting InstantiationException as "Failed to create an
+    instance of ...", and because WorkManager initialises via androidx.startup
+    it happens inside handleBindApplication - before any of our code runs.
+
+    Identified WITHOUT needing superclass info, by Room's codegen contract: the
+    generated class is the abstract database's descriptor with `_Impl` appended,
+    and both are in the DEX. That pairing is what makes this check exact rather
+    than a guess at every `*_Impl` in the app.
+    """
+    pairs = [
+        (impl, impl[:-len("_Impl;")] + ";")
+        for impl in classes
+        if impl.endswith("_Impl;")
+    ]
+    room_impls = [(impl, base) for impl, base in pairs if base in classes]
+
+    if not room_impls:
+        # Not a failure: the app may legitimately have no Room database. Said
+        # out loud so a vacuous pass can never be mistaken for a verified one.
+        print("  room: no generated *_Impl/base pairs in the DEX - nothing to check")
+        return
+
+    for impl, base in sorted(room_impls):
+        methods = classes[impl].get("methods", {})
+        if "<init>" not in methods:
+            failures.append(
+                f"{impl} has NO <init> in the shipped DEX. Room instantiates it "
+                f"reflectively, so this is a guaranteed launch crash: "
+                f'"Failed to create an instance of {base[1:-1].replace("/", ".")}". '
+                f"Fix: -keep class * extends androidx.room.RoomDatabase {{ <init>(); }}"
+            )
+        else:
+            print(f"  room: {impl} keeps <init>")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", nargs="?", help="APK, AAB, .dex, or a directory of .dex")
@@ -658,6 +701,7 @@ def main() -> int:
     # 6. Play-facing R8 metadata (AAB only) --------------------------------
     check_play_r8_metadata(artifact, failures)
 
+    check_room_database_constructors(classes, failures)
     if failures:
         print("", file=sys.stderr)
         for failure in failures:
