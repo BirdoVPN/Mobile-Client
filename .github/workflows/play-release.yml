@@ -56,4 +56,7 @@ jobs:
           python3 scripts/play_release.py | tee out.txt
           # A workflow whose steps were deleted still reports success. Assert the
           # script actually ran and reached its own end marker.
-          grep -q 'AFTER:' out.txt || { echo "::error::play_release.py produced no AFTER block - it did not run to completion"; exit 1; }
+          # probe discards its edit and returns before any AFTER block, so it
+          # has its own end marker. Accepting only 'AFTER:' made every probe
+          # report failure on a run that did exactly what it should.
+          grep -qE 'AFTER:|probe only' out.txt             || { echo "::error::play_release.py reached no end marker - it did not run to completion"; exit 1; }
