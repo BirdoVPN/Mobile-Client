@@ -80,7 +80,7 @@ The account system processes:
   - the plan, and the devices the user adds
   - while a device is connected, a live connection record (account, server,
     device name, tunnel IP, connect time, last check-in). It is deleted when
-    the user disconnects, or about 15 minutes after the last check-in, and is
+    the user disconnects, or within 15 minutes of the last check-in, and is
     left out of our nightly backups. Our daily encrypted copy of the database
     files (kept 7 days, used for point-in-time recovery) can contain it as it
     stood at that moment
@@ -111,7 +111,7 @@ in-app purchases; web subscriptions are sold by Polar.sh as merchant of record.
 
 Birdo Networks Ltd operates the service on rented servers. The account
 database is hosted by Hetzner in Germany (EU); encrypted backups are kept in
-Cloudflare R2 in the EU.
+Cloudflare R2 object storage.
 
 Privacy policy: https://birdo.app/privacy
 """
@@ -125,6 +125,9 @@ STALE_VPN_ANSWER_PHRASES = (
     "No VPN usage data is shared",
     "servers under our control",
     "never included in backups",
+    # Second-pass #6: only the point-in-time-recovery bucket is documented as
+    # EU-jurisdiction; the nightly-dump bucket's is unconfirmed.
+    "Cloudflare R2 in the EU",
     "RAM-only",
     "zero-logs",
 )

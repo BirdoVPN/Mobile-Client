@@ -1,6 +1,7 @@
 package app.birdo.vpn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -151,5 +152,10 @@ class PublicClaimsGuardTest {
         val asc = text(".github/scripts/asc_metadata.py")
         val answers = Regex("VPN_ANSWERS = \"\"\"(.*?)\"\"\"", RegexOption.DOT_MATCHES_ALL).find(asc)!!.groupValues[1]
         assertTrue(answers.contains("hosted by Hetzner in Germany (EU)"))
+        // Second-pass #6: only the WAL bucket is documented as EU-jurisdiction,
+        // and §1.2a fixes the public wording of the vanished-app limit.
+        assertTrue(answers.contains("Cloudflare R2 object storage."))
+        assertFalse("the nightly-dump bucket's jurisdiction is unconfirmed", answers.contains("R2 in the EU"))
+        assertTrue(answers.contains("within 15 minutes of the last check-in"))
     }
 }
