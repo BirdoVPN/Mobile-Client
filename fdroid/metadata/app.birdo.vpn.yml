@@ -60,7 +60,8 @@ Description: |-
   Features:
 
   * Kill switch: if the tunnel drops unexpectedly, the app blocks traffic
-    until it reconnects
+    until it reconnects. Protection applies while BirdoVPN's VPN service is
+    running
   * Split tunnelling: choose which apps use the VPN
   * Your DNS requests go through the encrypted tunnel
   * An optional stealth transport for networks that block VPN traffic

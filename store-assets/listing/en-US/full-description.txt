@@ -8,7 +8,7 @@ PRIVATE BY DESIGN
 • No advertising or analytics SDKs. Optional crash reporting (off unless you turn it on).
 
 PROTECTION
-• Kill switch: if the tunnel drops unexpectedly, the app blocks traffic until it reconnects.
+• Kill switch: if the tunnel drops unexpectedly, the app blocks traffic until it reconnects. Protection applies while BirdoVPN's VPN service is running.
 • Post-quantum key exchange: each connection adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) between your app and our API. The key is then delivered to the VPN server over TLS that is not yet post-quantum, so protection against "record now, decrypt later" is only as strong as that link today.
 • Your DNS requests go through the encrypted tunnel.
 • Stealth mode (Operative and Sovereign) for networks that block or throttle VPN traffic.

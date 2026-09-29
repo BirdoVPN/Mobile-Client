@@ -62,7 +62,9 @@ Compiled to:
 
 - **WireGuard Protocol** -- ChaCha20-Poly1305 encryption with Curve25519 + Post-Quantum key exchange
 - **Kill Switch** -- if the tunnel drops unexpectedly, the app blocks traffic
-  until it reconnects
+  until it reconnects. Android: protection applies while BirdoVPN's VPN
+  service is running. iOS/macOS: if reconnecting keeps failing, the app stops
+  blocking.
 - **Split Tunneling** -- Per-app VPN routing (Android)
 - **Auto-reconnect** -- the tunnel re-establishes itself after network changes
   while the app's service is running. (Android's system "Always-on VPN" toggle

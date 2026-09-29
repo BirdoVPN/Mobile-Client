@@ -130,12 +130,42 @@ class PublicClaimsGuardTest {
             "Not yet independently audited",
             "No advertising or analytics SDKs. Optional crash reporting (off unless you turn it on).",
             "If the tunnel drops unexpectedly, the app blocks traffic until it reconnects.",
+            // Second-pass #5: the corrected REMEDIATION-DECISIONS §2 Android caveat.
+            "Protection applies while BirdoVPN's VPN service is running.",
             "It is not onion routing",
             "TLS that is not yet post-quantum",
             "It is deleted when you disconnect and is left out of our nightly backups.",
             "Our daily encrypted copy of the database files (kept 7 days, used for " +
                 "point-in-time recovery) can contain it as it stood at that moment.",
         ).forEach { assertTrue("full description lost: $it", full.contains(it, ignoreCase = true)) }
+    }
+
+    /**
+     * Second-pass #5: each platform's kill-switch copy carries its caveat.
+     * Android's block is the app's own and holds while its VpnService runs
+     * (Always-on is not offered). iOS releases the block when the re-dial
+     * breaker trips, and tells the user only in-app the next time it runs, so
+     * the copy says "stops blocking" and never "tells you".
+     */
+    @Test
+    fun `kill switch copy carries each platform caveat`() {
+        // Raw resource text: aapt2 needs the apostrophe escaped as \'.
+        val androidCaveat = """Protection applies while BirdoVPN\'s VPN service is running."""
+        val strings = text("app/src/main/res/values/strings.xml")
+        assertTrue(
+            "settings_kill_switch_desc lost the Android caveat",
+            Regex("""<string name="settings_kill_switch_desc">[^<]*""").find(strings)?.value.orEmpty()
+                .contains(androidCaveat),
+        )
+        val fdroid = text("fdroid/metadata/app.birdo.vpn.yml").replace(Regex("""\s+"""), " ")
+        assertTrue(fdroid.contains("Protection applies while BirdoVPN's VPN service is running"))
+
+        val ios = text("iosApp/iosApp/Views/SettingsView.swift")
+        assertTrue(ios.contains("\"If reconnecting keeps failing, the app stops blocking.\""))
+        assertFalse(
+            "the iOS app shows no notification when the breaker releases the block",
+            literals(ios).any { it.contains("tells you", ignoreCase = true) },
+        )
     }
 
     @Test

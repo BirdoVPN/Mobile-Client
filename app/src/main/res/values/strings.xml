@@ -100,9 +100,11 @@
     <string name="settings_section_connection">Connection</string>
     <string name="settings_kill_switch">Kill Switch</string>
     <!-- REMEDIATION-DECISIONS §2 wording. What it does, and no more: the block
-         is the app's own, so it holds while BirdoVPN is running (audit
-         2026-09-29, D-7). -->
-    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects.</string>
+         is the app's own, so it holds while BirdoVPN's VPN service is running
+         (audit 2026-09-29, D-7; the caveat is the corrected §2 one, second-pass
+         #5). Android's Always-on VPN is NOT offered (SUPPORTS_ALWAYS_ON=false),
+         so never point users at it here. -->
+    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. Protection applies while BirdoVPN\'s VPN service is running.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
     <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
          Always-on VPN with Block connections without VPN". The app DISABLES
