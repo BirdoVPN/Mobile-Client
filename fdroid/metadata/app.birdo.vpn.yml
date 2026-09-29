@@ -74,8 +74,10 @@ Description: |-
 
   Crash reporting: the app contains the Sentry crash-reporting SDK. It is off
   by default and sends nothing unless you turn it on (on the first screen, or
-  later in Settings). When on, it sends crash details only: stack trace, app
-  and OS version, device model. No account details or browsing data.
+  later in Settings). When on, it sends crash and error reports: crashes, and
+  errors when an app feature such as connecting or the kill switch fails, with
+  the app and OS version and device model. No account details, IP address or
+  browsing data.
 
   This build is distributed outside Google Play and is signed with Birdo's own
   release key. It is the same APK published on GitHub Releases. A BirdoVPN

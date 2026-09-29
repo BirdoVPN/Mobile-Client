@@ -121,8 +121,10 @@ class BirdoApp : Application() {
             options.release = "${BuildConfig.APPLICATION_ID}@${BuildConfig.APP_VERSION}"
 
             // ── What a report may describe ─────────────────────────────────
-            // The consent screen promises stack trace, app and OS version and
-            // device model/architecture. These stop the SDK COLLECTING the
+            // The consent screen describes crash and error reports (a crash's
+            // stack trace, or FaultReporter's event naming the feature that
+            // failed) with app and OS version and device model/architecture
+            // (second-pass #7). These stop the SDK COLLECTING the
             // rest (battery, memory, storage, root status, system and
             // connectivity events); beforeSend below then rebuilds the
             // contexts from an allow-list, so anything a future SDK adds is

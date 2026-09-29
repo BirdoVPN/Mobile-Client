@@ -139,6 +139,8 @@ fun SettingsScreen(
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
                     description = stringResource(R.string.settings_kill_switch_desc),
+                    // The caveat is the second sentence: never ellipsize it away.
+                    descriptionMaxLines = Int.MAX_VALUE,
                     checked = state.killSwitchEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled) {
@@ -314,6 +316,8 @@ fun SettingsScreen(
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_crash_reports),
                     description = stringResource(R.string.settings_crash_reports_desc),
+                    // A disclosure: shown in full, never ellipsized.
+                    descriptionMaxLines = Int.MAX_VALUE,
                     checked = state.crashReportsEnabled,
                     onCheckedChange = onCrashReportsChange,
                     testTag = TestTags.CRASH_REPORTS_TOGGLE,
@@ -415,6 +419,10 @@ private fun SettingsToggle(
     // Optional explanatory subtitle. Rendered only when present — most rows
     // carry a self-explanatory title and no description.
     description: String? = null,
+    // Two lines suit a hint. A row whose description is a DISCLOSURE (the kill
+    // switch's caveat, what crash reports send) passes Int.MAX_VALUE, so the
+    // part that matters is never cut to an ellipsis (second-pass #5 / #7).
+    descriptionMaxLines: Int = 2,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     testTag: String? = null,
@@ -449,7 +457,7 @@ private fun SettingsToggle(
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 if (description != null) {
-                    Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
+                    Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, maxLines = descriptionMaxLines, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 1.dp))
                 }
             }
             Spacer(Modifier.width(8.dp))

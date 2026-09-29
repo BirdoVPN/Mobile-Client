@@ -57,6 +57,8 @@ class PublicClaimsGuardTest {
         // Second-pass #2: the daily physical backup (7 days) can hold the live
         // record and usage totals (REMEDIATION-DECISIONS §1.2a).
         "never included in backups", "never in backups", "not in any backup",
+        // Second-pass #7: FaultReporter sends error events, not only crashes.
+        "crash details only", "device model only",
     )
 
     /** Every publishable text surface in this repo, as (label, text). */

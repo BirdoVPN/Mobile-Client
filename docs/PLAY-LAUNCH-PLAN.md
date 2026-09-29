@@ -192,7 +192,7 @@ Declare:
 |---|---|---|---|---|
 | **Email address** | Yes | No | Account management | Only for account login/identity |
 | **Device/other IDs** (device id + name) | Yes | No | App functionality | Device-management / multi-device limits |
-| **Crash logs / diagnostics** | Yes (optional) | No | App functionality (analytics: no) | Sentry, off unless the user turns it on; PII-scrubbed |
+| **Crash logs / diagnostics** | Yes (optional) | No | App functionality (analytics: no) | Sentry, off unless the user turns it on; PII-scrubbed. Crash and error reports: crashes, plus an error event when a feature such as connecting or the kill switch fails (FaultReporter) |
 | **Purchase history** | Yes | No | App functionality | Google Play purchase token, linked to the account to grant the plan |
 | **App activity / browsing** | **No** | No | — | No activity logs — the VPN servers record no browsing, DNS or traffic |
 | **Location** | **No** | No | — | Not collected |

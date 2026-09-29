@@ -288,6 +288,12 @@ opt-out. Now:
   back from the OS; `beforeSend` drops any event older than the opt-in moment
   (`crashReportsEnabledSince`).
 - **No sessions.** `isEnableAutoSessionTracking = false`.
+- **Crash AND error reports.** Besides crashes and ANRs, `FaultReporter` sends a
+  non-fatal event when a data-plane feature fails (connect, kill switch,
+  stealth, PQ, DNS, integrity), tagged `birdo.path` / `birdo.fault`. The
+  consent screen, Settings, F-Droid and the README disclose this as "crash and
+  error reports" (second-pass #7, option A). Never describe the reports as
+  "crash details only".
 - **Contexts from an allow-list.** `beforeSend` rebuilds device/OS/app contexts
   to device model + architecture, OS name + version and app id/version/build
   (`CrashReporting.minimiseContexts`); the per-install id, device-app hash,

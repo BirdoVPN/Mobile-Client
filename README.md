@@ -81,8 +81,11 @@ Compiled to:
   sites see the exit server's address. It is not onion routing: the entry
   server can see your IP address and the destinations you connect to.
 - **Crash reporting** -- Sentry, Android only, OFF unless the user turns it on
-  (first screen or Settings); no sessions, no account data. The iOS/macOS app
-  has no crash-reporting SDK.
+  (first screen or Settings). When on it sends crash and error reports:
+  crashes, and errors when an app feature such as connecting or the kill
+  switch fails, with the app and OS version and device model. No sessions, no
+  account details, IP address or browsing data. The iOS/macOS app has no
+  crash-reporting SDK.
 
 ---
 

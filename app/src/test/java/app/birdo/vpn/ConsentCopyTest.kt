@@ -68,16 +68,28 @@ class ConsentCopyTest {
         "Your email (or anonymous account number), plan, the devices you add, and your usage " +
             "totals. Full list: birdo.app/privacy."
 
+    // Second-pass #7 (option A): FaultReporter also sends non-fatal events when
+    // a feature fails, so the disclosure names error reports and never says
+    // "crash details" or "only".
     private val crashReports =
-        "Off by default. If you turn this on, the app sends crash details (stack trace, app and " +
-            "OS version, device model) to Sentry so we can fix bugs. No account details or " +
-            "browsing data. Change it any time in Settings."
+        "Off by default. If you turn this on, the app sends crash and error reports to Sentry " +
+            "so we can fix bugs: crashes, and errors when an app feature such as connecting or " +
+            "the kill switch fails, with the app and OS version and device model. No account " +
+            "details, IP address or browsing data. Change it any time in Settings."
 
     @Test
     fun `android consent items use the approved wording`() {
         assertEquals(noActivityLogs, androidStrings["consent_no_logs_desc"])
         assertEquals(accountHolds, androidStrings["consent_minimal_data_desc"])
         assertEquals(crashReports, androidStrings["consent_crash_reports_desc"])
+    }
+
+    @Test
+    fun `the Settings crash-report row discloses error reports too`() {
+        val settings = androidStrings["settings_crash_reports_desc"].orEmpty()
+        assertTrue(settings.contains("Crash and error reports"))
+        assertTrue(settings.contains("such as connecting or the kill switch fails"))
+        assertFalse("never \"only\": the reports are not crash details alone", settings.contains("only", ignoreCase = true))
     }
 
     @Test
