@@ -366,6 +366,11 @@ final class APIClient: @unchecked Sendable {
         // the NEXT account registered on this handset to the one just erased.
         // Android does the same in `BirdoRepository`'s deletion path.
         resetDeviceIdentity()
+        // Tolerant by design: the erasure has ALREADY happened, so an absent
+        // field, an unexpected shape or an undecodable body must never turn
+        // it into a thrown error. It simply means "nothing to report".
+        return (try? decoder.decode(DeleteAccountResult.self, from: response))?
+            .storeSubscriptionsStillBilling ?? []
     }
 
     // MARK: - Servers
@@ -862,11 +867,6 @@ final class APIClient: @unchecked Sendable {
         // The cache holds the OLD id; leaving it would keep sending the erased
         // identity for the rest of the process lifetime.
         cachedDeviceContext = nil
-        // Tolerant by design: the erasure has ALREADY happened, so an absent
-        // field, an unexpected shape or an undecodable body must never turn
-        // it into a thrown error. It simply means "nothing to report".
-        return (try? decoder.decode(DeleteAccountResult.self, from: response))?
-            .storeSubscriptionsStillBilling ?? []
     }
 
     /// Hardware model identifier, e.g. "Apple iPhone15,3" (Android parity is
