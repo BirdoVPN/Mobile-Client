@@ -370,6 +370,10 @@ fun BirdoNavGraph(
                             // user switched it on, and stays off otherwise.
                             settingsViewModel.setCrashReports(crashReportsEnabled)
                             hasConsented = true
+                            // The two public, unauthenticated calls the view
+                            // models hold back until consent (audit D-12).
+                            updateViewModel.check()
+                            vpnViewModel.fetchClientConfig()
                         },
                         onDecline = {
                             // Close the app if user declines
