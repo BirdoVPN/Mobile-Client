@@ -122,7 +122,10 @@ fun BirdoNavGraph(
     // signed out can only be bound once a session exists, and that moment is
     // here, not on a screen the user may never open.
     val billingViewModel: BillingViewModel = hiltViewModel()
-    var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedPrivacyPolicy) }
+    // The CURRENT consent text, not any version of it: a user who accepted the
+    // pre-2026-09-29 screen (which misdescribed the servers and never asked
+    // for the Terms) sees the corrected one once. See AppPreferences.
+    var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedCurrentConsent) }
     val isOnline by networkMonitor.isOnline.collectAsState(initial = true)
 
     val authState by authViewModel.uiState.collectAsState()
@@ -360,6 +363,7 @@ fun BirdoNavGraph(
                     ConsentScreen(
                         onAccept = { crashReportsEnabled ->
                             appPreferences.hasAcceptedPrivacyPolicy = true
+                            appPreferences.acceptedConsentVersion = AppPreferences.CURRENT_CONSENT_VERSION
                             appPreferences.privacyConsentTimestamp = System.currentTimeMillis()
                             // The optional crash-report choice. Persisted, then
                             // applied by BirdoApp: the SDK starts only if the

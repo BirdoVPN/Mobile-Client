@@ -280,10 +280,18 @@
     <string name="cd_privacy">Privacy</string>
     <string name="consent_title">Your Privacy Matters</string>
     <string name="consent_subtitle">Before using BirdoVPN, please review how your data is handled.</string>
+    <!-- The pre-use data declaration (Apple 5.4 / Play prominent disclosure).
+         Wording is REMEDIATION-DECISIONS §1.5, audit 2026-09-29 (P0-1 / B-1 /
+         D-1 / B-3). The previous text claimed "RAM-only volatile
+         infrastructure" and that no connection timestamps or IP addresses
+         were logged; the nodes are ordinary disk-backed cloud servers and the
+         account system does keep a live session record while you are
+         connected. Never reintroduce "RAM-only", "volatile", "diskless",
+         "zero logs" or "non-reversible". -->
     <string name="consent_no_logs_title">No Activity Logs</string>
-    <string name="consent_no_logs_desc">BirdoVPN operates a strict zero-logs policy on RAM-only volatile infrastructure. No browsing activity, DNS queries, traffic content, connection timestamps, or IP addresses are logged.</string>
-    <string name="consent_minimal_data_title">Account Data Only</string>
-    <string name="consent_minimal_data_desc">Only your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on VPN servers.</string>
+    <string name="consent_no_logs_desc">Our VPN servers don\'t record the sites you visit, your DNS queries or your traffic. While you\'re connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is never included in backups. We also count your data use per billing period.</string>
+    <string name="consent_minimal_data_title">What Your Account Holds</string>
+    <string name="consent_minimal_data_desc">Your email (or anonymous account number), plan, the devices you add, and your usage totals. Full list: birdo.app/privacy.</string>
     <!-- OPT-IN, off by default: the switch next to this text starts unticked,
          and BirdoApp starts Sentry only if the user ticks it here or in
          Settings. Wording: REMEDIATION-DECISIONS §1.5 (audit 2026-09-29). Do
@@ -294,9 +302,14 @@
     <string name="consent_no_data_sales_title">No Data Sales</string>
     <string name="consent_no_data_sales_desc">Your data is never sold, shared with advertisers, or used for profiling.</string>
     <string name="consent_read_privacy_policy">Read the full Privacy Policy</string>
+    <!-- B-13: the consent screen links BOTH documents, states the Terms\' age
+         requirement, and "I Agree & Continue" accepts both. -->
+    <string name="consent_read_terms">Read the Terms of Service</string>
+    <string name="consent_age_notice">You must be 18 or over to use BirdoVPN.</string>
+    <string name="consent_terms_notice">By tapping \"I Agree &amp; Continue\" you accept the Terms of Service and the Privacy Policy.</string>
     <string name="consent_agree">I Agree &amp; Continue</string>
     <string name="consent_decline">Decline</string>
-    <string name="consent_required_notice">You must accept the privacy policy to use BirdoVPN.</string>
+    <string name="consent_required_notice">You must accept the Terms of Service and the Privacy Policy to use BirdoVPN.</string>
 
     <string name="offline_banner">No internet connection</string>
 

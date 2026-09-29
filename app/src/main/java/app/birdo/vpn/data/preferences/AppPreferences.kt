@@ -44,6 +44,25 @@ class AppPreferences @Inject constructor(
         get() = prefs.getLong(KEY_PRIVACY_TIMESTAMP, 0L)
         set(value) = prefs.edit { putLong(KEY_PRIVACY_TIMESTAMP, value) }
 
+    /** Version of the consent screen the user last accepted; 0 = before versioning. */
+    var acceptedConsentVersion: Int
+        get() = prefs.getInt(KEY_CONSENT_VERSION, 0)
+        set(value) = prefs.edit { putInt(KEY_CONSENT_VERSION, value) }
+
+    /**
+     * True when the user accepted THIS version of the consent screen.
+     *
+     * An acceptance of an older version does not count. Version 1 (every build
+     * up to 1.4.31) described "RAM-only volatile infrastructure" and "no
+     * connection timestamps or IP addresses logged", asked for the privacy
+     * policy only, never mentioned the Terms or the minimum age, and had no
+     * crash-report choice. Users who accepted that text are shown the corrected
+     * screen once, and make the crash-report choice for themselves (audit
+     * 2026-09-29, P0-1 / B-1 / B-13 / P1-6).
+     */
+    val hasAcceptedCurrentConsent: Boolean
+        get() = hasAcceptedPrivacyPolicy && acceptedConsentVersion >= CURRENT_CONSENT_VERSION
+
     // ── Crash reports (Sentry) — OPT-IN ──────────────────────────
     /**
      * Whether the user has chosen to send crash reports. OFF by default, and
@@ -318,6 +337,15 @@ class AppPreferences @Inject constructor(
         private const val KEY_LAST_SERVER = "last_server_id"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_policy_accepted"
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
+        private const val KEY_CONSENT_VERSION = "privacy_consent_version"
+
+        /**
+         * Bump when the consent screen's statements change materially, so
+         * every existing user sees — and accepts — the new text once.
+         * 2 = the 2026-09-29 audit rewrite (§1.5 wording, Terms + 18+, opt-in
+         * crash reports).
+         */
+        const val CURRENT_CONSENT_VERSION = 2
         private const val KEY_CRASH_REPORTS = "crash_reports_enabled"
         private const val KEY_CRASH_REPORTS_SINCE = "crash_reports_enabled_since"
         private const val KEY_LOCAL_NETWORK_SHARING = "local_network_sharing"
