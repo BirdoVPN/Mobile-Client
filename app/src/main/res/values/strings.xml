@@ -279,8 +279,12 @@
     <string name="subscription_play_manage">Manage or cancel your subscription in the Google Play Store.</string>
     <!-- A-9 / A-16: shown instead of purchase buttons when the account's paid
          plan was bought outside Google Play. Names no other purchase route:
-         this string ships in the Play build. -->
-    <string name="subscription_managed_elsewhere">Your plan is already active on this account and was bought outside Google Play. Manage or change it where you bought it: subscribing here would bill you twice.</string>
+         this string ships in the Play build. Conditional on purpose
+         (second-pass #8): until /vpn/stats sends source/liveSources the gate
+         falls back to "this Play account owns no Birdo subscription", which is
+         also what a real Play subscriber sees while Play is unavailable, so the
+         text must not assert where the plan was bought. -->
+    <string name="subscription_managed_elsewhere">Your plan is already active on this account. If you bought it outside Google Play, manage it where you bought it: subscribing here would bill you twice.</string>
     <!-- Billing choice (Play external-offers / link-out). Copy must stay NEUTRAL:
          the programme forbids steering away from, or disparaging, Google's option. -->
     <string name="billing_choice_title">Choose how to subscribe</string>

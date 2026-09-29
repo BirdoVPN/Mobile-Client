@@ -90,4 +90,24 @@ class StorePurchaseGateTest {
         val screen = File(dir, "app/src/main/java/app/birdo/vpn/ui/screen/SubscriptionScreen.kt").readText()
         assertTrue(screen.contains("!purchaseManagedElsewhere"))
     }
+
+    /**
+     * Second-pass #8: without source data the fallback is `!owns`, which is
+     * also what a genuine Play (or App Store) subscriber sees while the store
+     * is unavailable or in billing retry. The safe direction is right; the
+     * notice must not then tell them the plan "was bought outside" the store.
+     */
+    @Test
+    fun `the managed-elsewhere notice does not assert where the plan was bought`() {
+        var dir = File("").absoluteFile
+        while (!File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile!!
+        val strings = File(dir, "app/src/main/res/values/strings.xml").readText()
+        val android = Regex("""<string name="subscription_managed_elsewhere">([^<]*)</string>""")
+            .find(strings)?.groupValues?.get(1).orEmpty()
+        assertTrue(android.contains("If you bought it outside Google Play"))
+        assertFalse(android.contains("and was bought outside"))
+        val ios = File(dir, "iosApp/iosApp/Views/SubscriptionView.swift").readText()
+        assertTrue(ios.contains("If you bought it outside the App Store"))
+        assertFalse(ios.contains("and was bought outside"))
+    }
 }

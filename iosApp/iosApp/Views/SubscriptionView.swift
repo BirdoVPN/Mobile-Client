@@ -317,6 +317,12 @@ struct SubscriptionView: View {
     /// Shown instead of Subscribe buttons when the paid plan was bought
     /// outside the App Store. Not dismissible: it explains why there is
     /// nothing to tap here.
+    ///
+    /// Worded conditionally (second-pass #8): until `/vpn/stats` reports
+    /// `source` / `liveSources`, the gate falls back to "this device's App
+    /// Store account owns no Birdo subscription", which is also true of a
+    /// genuine App Store subscriber in billing retry (empty
+    /// `currentEntitlements`). The copy must not tell them otherwise.
     private var managedElsewhereCard: some View {
         BirdoCard(horizontalPadding: 16, verticalPadding: 16) {
             HStack(alignment: .top, spacing: 10) {
@@ -324,7 +330,7 @@ struct SubscriptionView: View {
                     .font(.system(size: 16))
                     .foregroundStyle(BirdoTheme.blue)
                     .accessibilityHidden(true)
-                Text("Your plan is already active on this account and was bought outside the App Store. Manage or change it where you bought it: subscribing here would bill you twice.")
+                Text("Your plan is already active on this account. If you bought it outside the App Store, manage it where you bought it: subscribing here would bill you twice.")
                     .font(BirdoTheme.Fonts.bodySmall)
                     .foregroundStyle(BirdoTheme.onSurface)
                     .fixedSize(horizontal: false, vertical: true)
