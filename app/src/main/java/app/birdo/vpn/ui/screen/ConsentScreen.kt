@@ -3,17 +3,23 @@ package app.birdo.vpn.ui.screen
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -27,14 +33,21 @@ import app.birdo.vpn.ui.theme.*
 /**
  * GDPR-compliant consent screen shown on first launch.
  * User must accept the privacy policy before proceeding.
+ *
+ * Crash reports are a separate, OPTIONAL choice on this screen, OFF unless the
+ * user switches them on — accepting the policy does not switch them on.
+ * [onAccept] carries that choice; the caller persists it and lets BirdoApp
+ * start the SDK only if it is true.
  */
 @Composable
 fun ConsentScreen(
-    onAccept: () -> Unit,
+    onAccept: (crashReportsEnabled: Boolean) -> Unit,
     onDecline: () -> Unit,
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+    // Default OFF, deliberately: an opt-in that starts ticked is not one.
+    var crashReports by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -92,9 +105,9 @@ fun ConsentScreen(
                     description = stringResource(R.string.consent_minimal_data_desc),
                 )
                 Spacer(modifier = Modifier.height(16.dp))
-                DataItem(
-                    title = stringResource(R.string.consent_crash_reports_title),
-                    description = stringResource(R.string.consent_crash_reports_desc),
+                CrashReportsChoice(
+                    checked = crashReports,
+                    onCheckedChange = { crashReports = it },
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 DataItem(
@@ -125,7 +138,7 @@ fun ConsentScreen(
 
         // Accept button
         Button(
-            onClick = onAccept,
+            onClick = { onAccept(crashReports) },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
@@ -170,6 +183,39 @@ fun ConsentScreen(
         )
 
         Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+/**
+ * The optional crash-report item: the same title + description as the other
+ * items, with a switch. The whole row is ONE toggleable so TalkBack announces a
+ * single labelled switch.
+ */
+@Composable
+private fun CrashReportsChoice(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .testTag(TestTags.CONSENT_CRASH_REPORTS),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            DataItem(
+                title = stringResource(R.string.consent_crash_reports_title),
+                description = stringResource(R.string.consent_crash_reports_desc),
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            // The row's toggleable owns the interaction.
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = BirdoWhite,
+                checkedTrackColor = BirdoAccent,
+            ),
+        )
     }
 }
 

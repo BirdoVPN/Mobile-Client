@@ -197,6 +197,12 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_system">System</string>
+    <!-- Crash reports: the Settings half of the consent-screen opt-in. Short
+         enough for the row's two-line description; the full statement is on
+         the consent screen (consent_crash_reports_desc). -->
+    <string name="settings_section_privacy">Privacy</string>
+    <string name="settings_crash_reports">Send Crash Reports</string>
+    <string name="settings_crash_reports_desc">Off by default. Stack trace, app/OS version and device model only.</string>
     <!-- Port forwarding -->
     <string name="port_forward_title">Port Forwarding</string>
     <string name="port_forward_info">Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.</string>
@@ -278,8 +284,13 @@
     <string name="consent_no_logs_desc">BirdoVPN operates a strict zero-logs policy on RAM-only volatile infrastructure. No browsing activity, DNS queries, traffic content, connection timestamps, or IP addresses are logged.</string>
     <string name="consent_minimal_data_title">Account Data Only</string>
     <string name="consent_minimal_data_desc">Only your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on VPN servers.</string>
-    <string name="consent_crash_reports_title">Crash Reports</string>
-    <string name="consent_crash_reports_desc">Anonymous crash reports help fix bugs faster. No personal data is included.</string>
+    <!-- OPT-IN, off by default: the switch next to this text starts unticked,
+         and BirdoApp starts Sentry only if the user ticks it here or in
+         Settings. Wording: REMEDIATION-DECISIONS §1.5 (audit 2026-09-29). Do
+         not reintroduce "anonymous" or "no personal data" — a crash report
+         carries device model and OS version, which are personal data. -->
+    <string name="consent_crash_reports_title">Crash Reports (optional)</string>
+    <string name="consent_crash_reports_desc">Off by default. If you turn this on, the app sends crash details (stack trace, app and OS version, device model) to Sentry so we can fix bugs. No account details or browsing data. Change it any time in Settings.</string>
     <string name="consent_no_data_sales_title">No Data Sales</string>
     <string name="consent_no_data_sales_desc">Your data is never sold, shared with advertisers, or used for profiling.</string>
     <string name="consent_read_privacy_policy">Read the full Privacy Policy</string>

@@ -55,6 +55,8 @@ data class SettingsUiState(
     val biometricLockEnabled: Boolean = false,
     // Theme mode: "dark", "light", "system"
     val themeMode: String = "system",
+    // Crash reports (Sentry): OPT-IN, OFF by default
+    val crashReportsEnabled: Boolean = false,
 )
 
 @HiltViewModel
@@ -87,6 +89,7 @@ class SettingsViewModel @Inject constructor(
             dnsFilteringEnabled = prefs.dnsFilteringEnabled,
             biometricLockEnabled = prefs.biometricLockEnabled,
             themeMode = prefs.themeMode,
+            crashReportsEnabled = prefs.crashReportsEnabled,
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -240,6 +243,18 @@ class SettingsViewModel @Inject constructor(
     fun setBiometricLock(enabled: Boolean) {
         prefs.biometricLockEnabled = enabled
         _uiState.value = _uiState.value.copy(biometricLockEnabled = enabled)
+    }
+
+    /**
+     * Crash reports, the Settings half of the opt-in the consent screen offers.
+     * Persist first, then let BirdoApp start or close the SDK to match — the
+     * one place that decides, so a switch here and a choice on the consent
+     * screen cannot disagree about what "on" means.
+     */
+    fun setCrashReports(enabled: Boolean) {
+        prefs.crashReportsEnabled = enabled
+        _uiState.value = _uiState.value.copy(crashReportsEnabled = enabled)
+        (context.applicationContext as? app.birdo.vpn.BirdoApp)?.applyCrashReportingConsent()
     }
 
     fun setThemeMode(mode: String) {

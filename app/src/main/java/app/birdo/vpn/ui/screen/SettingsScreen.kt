@@ -62,6 +62,7 @@ fun SettingsScreen(
     onKillSwitchChange: (Boolean) -> Unit,
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
+    onCrashReportsChange: (Boolean) -> Unit = {},
     // ── Plan gating ──────────────────────────────────────────────
     // A locked row does not toggle; it taps through to the upgrade flow,
     // the same affordance Stealth Mode uses on the VPN Settings sub-page.
@@ -298,6 +299,24 @@ fun SettingsScreen(
                         onClick = onOpenSplitTunnelApps,
                     )
                 }
+            }
+
+            // ── Privacy ──────────────────────────────────────────
+            // Crash reports are OPT-IN (off by default). This is the "change it
+            // any time in Settings" the consent screen promises; flipping it
+            // starts or closes the SDK immediately (BirdoApp).
+            item { BirdoSectionHeader(stringResource(R.string.settings_section_privacy)) }
+
+            item {
+                SettingsToggle(
+                    icon = Icons.Default.BugReport,
+                    iconColor = BirdoWhite60,
+                    title = stringResource(R.string.settings_crash_reports),
+                    description = stringResource(R.string.settings_crash_reports_desc),
+                    checked = state.crashReportsEnabled,
+                    onCheckedChange = onCrashReportsChange,
+                    testTag = TestTags.CRASH_REPORTS_TOGGLE,
+                )
             }
 
             // ── About Section ────────────────────────────────────

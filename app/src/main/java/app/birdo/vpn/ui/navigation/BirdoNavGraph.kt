@@ -358,9 +358,13 @@ fun BirdoNavGraph(
                 AdaptiveContainer {
                     val consentContext = androidx.compose.ui.platform.LocalContext.current
                     ConsentScreen(
-                        onAccept = {
+                        onAccept = { crashReportsEnabled ->
                             appPreferences.hasAcceptedPrivacyPolicy = true
                             appPreferences.privacyConsentTimestamp = System.currentTimeMillis()
+                            // The optional crash-report choice. Persisted, then
+                            // applied by BirdoApp: the SDK starts only if the
+                            // user switched it on, and stays off otherwise.
+                            settingsViewModel.setCrashReports(crashReportsEnabled)
                             hasConsented = true
                         },
                         onDecline = {
@@ -601,6 +605,7 @@ fun BirdoNavGraph(
                         onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
+                        onCrashReportsChange = { settingsViewModel.setCrashReports(it) },
                         customDnsUnlocked = settingsIsSovereign,
                         portForwardUnlocked = settingsIsSovereign,
                         quantumUnlocked = true,
