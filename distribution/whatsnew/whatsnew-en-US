@@ -1,4 +1,4 @@
-Fixes a crash on startup.
+Fixes subscribing when you are signed out.
 
-1.4.28 and 1.4.29 could fail to open on some devices. The app now starts
-normally. Nothing else in this release changes how BirdoVPN behaves.
+Tapping "Sign in to subscribe" now completes the purchase straight after you
+sign in, instead of stopping there. Nothing else changes.
