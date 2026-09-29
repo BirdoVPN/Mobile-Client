@@ -2,7 +2,7 @@ BirdoVPN is a private VPN built on WireGuard®, with a post-quantum key exchange
 
 PRIVATE BY DESIGN
 • No activity logs: our VPN servers don't record the sites you visit, your DNS queries or your traffic.
-• While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is never included in backups. We also count your data use per billing period.
+• While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. Our daily encrypted copy of the database files (kept 7 days, used for point-in-time recovery) can contain it as it stood at that moment. We also count your data use per billing period.
 • Anonymous accounts: sign in with a 24-digit account number instead of an email if you prefer.
 • Delete your account from inside the app at any time.
 • No advertising or analytics SDKs. Optional crash reporting (off unless you turn it on).

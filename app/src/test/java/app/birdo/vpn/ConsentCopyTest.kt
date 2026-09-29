@@ -61,8 +61,8 @@ class ConsentCopyTest {
     private val noActivityLogs =
         "Our VPN servers don't record the sites you visit, your DNS queries or your traffic. " +
             "While you're connected, our account system keeps a live record of your session " +
-            "(server, device, connect time). It is deleted when you disconnect and is never " +
-            "included in backups. We also count your data use per billing period."
+            "(server, device, connect time). It is deleted when you disconnect and is left out " +
+            "of our nightly backups. We also count your data use per billing period."
 
     private val accountHolds =
         "Your email (or anonymous account number), plan, the devices you add, and your usage " +
@@ -115,7 +115,7 @@ class ConsentCopyTest {
         val forbidden = listOf(
             "RAM-only", "RAM only", "volatile", "diskless", "zero-log", "zero log",
             "non-reversible", "No personal data", "IP addresses are logged",
-            "connection timestamps",
+            "connection timestamps", "never included in backups", "not in any backup",
         )
         val android = androidStrings.filterKeys { it.startsWith("consent_") }.values
         val ios = swiftLiterals(consentView)

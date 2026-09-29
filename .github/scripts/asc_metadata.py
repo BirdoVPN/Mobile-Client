@@ -81,7 +81,9 @@ The account system processes:
   - while a device is connected, a live connection record (account, server,
     device name, tunnel IP, connect time, last check-in). It is deleted when
     the user disconnects, or about 15 minutes after the last check-in, and is
-    never included in backups
+    left out of our nightly backups. Our daily encrypted copy of the database
+    files (kept 7 days, used for point-in-time recovery) can contain it as it
+    stood at that moment
   - data-usage totals per billing period, to enforce the free plan's 10 GB
     allowance and fair use
   - App Store transactions, to grant the subscription that was bought
@@ -122,6 +124,7 @@ STALE_VPN_ANSWER_PHRASES = (
     "in the United Kingdom",
     "No VPN usage data is shared",
     "servers under our control",
+    "never included in backups",
     "RAM-only",
     "zero-logs",
 )

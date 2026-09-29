@@ -53,6 +53,9 @@ class PublicClaimsGuardTest {
         "publicly documented server architecture", "github.com/BirdoVPN/Architecture",
         "no tracking libraries", "no third-party analytics",
         "DNS-over-HTTPS", "live latency",
+        // Second-pass #2: the daily physical backup (7 days) can hold the live
+        // record and usage totals (REMEDIATION-DECISIONS §1.2a).
+        "never included in backups", "never in backups", "not in any backup",
     )
 
     /** Every publishable text surface in this repo, as (label, text). */
@@ -128,7 +131,9 @@ class PublicClaimsGuardTest {
             "If the tunnel drops unexpectedly, the app blocks traffic until it reconnects.",
             "It is not onion routing",
             "TLS that is not yet post-quantum",
-            "It is deleted when you disconnect and is never included in backups.",
+            "It is deleted when you disconnect and is left out of our nightly backups.",
+            "Our daily encrypted copy of the database files (kept 7 days, used for " +
+                "point-in-time recovery) can contain it as it stood at that moment.",
         ).forEach { assertTrue("full description lost: $it", full.contains(it, ignoreCase = true)) }
     }
 

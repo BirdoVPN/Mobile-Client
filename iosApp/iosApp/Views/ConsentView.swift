@@ -153,7 +153,7 @@ struct ConsentView: View {
         VStack(alignment: .leading, spacing: 16) {
             consentItem(
                 title: "No Activity Logs",
-                description: "Our VPN servers don't record the sites you visit, your DNS queries or your traffic. While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is never included in backups. We also count your data use per billing period.")
+                description: "Our VPN servers don't record the sites you visit, your DNS queries or your traffic. While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. We also count your data use per billing period.")
             consentItem(
                 title: "What Your Account Holds",
                 description: "Your email (or anonymous account number), plan, the devices you add, and your usage totals. Full list: birdo.app/privacy.")

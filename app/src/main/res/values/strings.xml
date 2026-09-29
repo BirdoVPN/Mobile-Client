@@ -321,7 +321,7 @@
          connected. Never reintroduce "RAM-only", "volatile", "diskless",
          "zero logs" or "non-reversible". -->
     <string name="consent_no_logs_title">No Activity Logs</string>
-    <string name="consent_no_logs_desc">Our VPN servers don\'t record the sites you visit, your DNS queries or your traffic. While you\'re connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is never included in backups. We also count your data use per billing period.</string>
+    <string name="consent_no_logs_desc">Our VPN servers don\'t record the sites you visit, your DNS queries or your traffic. While you\'re connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. We also count your data use per billing period.</string>
     <string name="consent_minimal_data_title">What Your Account Holds</string>
     <string name="consent_minimal_data_desc">Your email (or anonymous account number), plan, the devices you add, and your usage totals. Full list: birdo.app/privacy.</string>
     <!-- OPT-IN, off by default: the switch next to this text starts unticked,

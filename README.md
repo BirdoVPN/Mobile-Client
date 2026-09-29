@@ -215,8 +215,10 @@ version.properties     Centralized version (1.4.29)
 - Credentials stored in Android Keystore / iOS Keychain
 - No activity logs: the VPN servers do not record the sites you visit, your
   DNS queries or your traffic. While you are connected the account system
-  keeps a live session record, deleted when you disconnect and never included
-  in backups -- see [birdo.app/privacy](https://birdo.app/privacy)
+  keeps a live session record, deleted when you disconnect and left out of our
+  nightly backups. Our daily encrypted copy of the database files (kept 7 days,
+  used for point-in-time recovery) can contain it as it stood at that moment
+  -- see [birdo.app/privacy](https://birdo.app/privacy)
 - No advertising or analytics SDKs; optional crash reporting (Android, off
   unless you turn it on)
 - Release artifacts signed with Sigstore for provenance verification
