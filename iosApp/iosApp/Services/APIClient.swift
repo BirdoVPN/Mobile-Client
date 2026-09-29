@@ -1579,6 +1579,24 @@ private struct APIErrorBody: Decodable {
     let details: Details?
 }
 
+/// Device class and platform sent in every auth body below.
+///
+/// Audit 2026-09-29, D-18: this one target builds both the iOS app and the Mac
+/// App Store app, and every Mac registered itself as an iPhone ("MOBILE" /
+/// "IOS"), so the device list, support and any per-platform view of devices
+/// were wrong for macOS. The backend already accepts DESKTOP and MACOS in the
+/// same enums (auth.controller.ts DeviceInfoSchema; Prisma DeviceType /
+/// Platform) and uses them for display only. Deliberately NOT changed: the
+/// `Birdo-iOS/...` User-Agent and `X-Desktop-Client: birdo-ios` header,
+/// which the backend's version-floor parser and client detection key on.
+#if os(macOS)
+private let kDeviceTypeWire = "DESKTOP"
+private let kPlatformWire = "MACOS"
+#else
+private let kDeviceTypeWire = "MOBILE"
+private let kPlatformWire = "IOS"
+#endif
+
 /// Resolved device identity attached to every auth call. The full six-field
 /// payload (deviceId/deviceName/deviceType/platform/platformVersion/appVersion)
 /// is flattened into each request body below.
@@ -1594,8 +1612,8 @@ private struct LoginBody: Encodable {
     /// Device attribution — also lets a trusted device skip the 2FA challenge.
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 }
@@ -1610,8 +1628,8 @@ private struct AnonymousLoginBody: Encodable {
     let password: String?
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 }
@@ -1621,8 +1639,8 @@ private struct AnonymousLoginBody: Encodable {
 private struct DeviceInfoBody: Encodable {
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 }
@@ -1641,8 +1659,8 @@ private struct AppleNativeBody: Encodable {
     let nonce: String
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 
@@ -1657,8 +1675,8 @@ private struct SsoExchangeBody: Encodable {
     let codeVerifier: String
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 
