@@ -90,6 +90,25 @@ class CrashReportingOptInWiringTest {
         )
     }
 
+    /**
+     * Second-pass #18: Sentry.close() flushes and can block up to the SDK's
+     * shutdown timeout. From the Settings toggle that ran on the main thread.
+     */
+    @Test
+    fun `the SDK is closed off the calling thread`() {
+        val gate = functionBody(app, "applyCrashReportingConsent")
+        val onWorker = gate.substringAfter("crashReportingWorker.submit(", missingDelimiterValue = "")
+        assertTrue(
+            "Sentry.close() must run on crashReportingWorker, not the caller's (main) thread",
+            onWorker.contains("Sentry.close()"),
+        )
+        assertFalse(gate.substringBefore("crashReportingWorker.submit(").contains("Sentry.close()"))
+        assertTrue(
+            "an init must wait for a close still in flight, or a quick off-on flip ends with the SDK off",
+            gate.contains("awaitPendingCrashReportingShutdown()"),
+        )
+    }
+
     @Test
     fun `release-health sessions stay off`() {
         assertFalse(

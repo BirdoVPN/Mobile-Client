@@ -8,6 +8,9 @@ import app.birdo.vpn.utils.CrashReporting
 import dagger.hilt.android.HiltAndroidApp
 import io.sentry.Sentry
 import io.sentry.android.core.SentryAndroid
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -72,20 +75,64 @@ class BirdoApp : Application() {
      *
      * Audit 2026-09-29, P1-6 / C-3 / D-12: this used to be an unconditional
      * init with release-health sessions ON, before the consent screen.
+     *
+     * Second-pass #18: the close and the purge run on [crashReportingWorker],
+     * not the caller's thread. Sentry.close() flushes, and can block for up to
+     * the SDK's shutdown timeout, so on the main thread (the Settings toggle,
+     * onCreate) it could stall the UI. Starting stays on the calling thread:
+     * the SDK must be installed from Application.onCreate before anything can
+     * crash, and an init waits for a close still in flight (a quick off → on
+     * flip), or isEnabled() would still read true, the init would be skipped
+     * and the close would then land on the new session.
      */
     fun applyCrashReportingConsent() {
         try {
             val optedIn = appPreferences.crashReportsEnabled
             if (CrashReporting.shouldStart(BuildConfig.DEBUG, BuildConfig.SENTRY_DSN, optedIn)) {
+                awaitPendingCrashReportingShutdown()
                 if (!Sentry.isEnabled()) initSentry(appPreferences.crashReportsEnabledSince)
             } else {
-                if (Sentry.isEnabled()) Sentry.close()
-                if (!optedIn) CrashReporting.discardUnsentReports(cacheDir)
+                val queueDir = cacheDir
+                pendingCrashReportingShutdown = crashReportingWorker.submit(Runnable {
+                    try {
+                        if (Sentry.isEnabled()) Sentry.close()
+                        if (!optedIn) CrashReporting.discardUnsentReports(queueDir)
+                    } catch (e: Exception) {
+                        android.util.Log.e("BirdoApp", "Crash-reporting shutdown failed", e)
+                    }
+                })
             }
         } catch (e: Exception) {
             // Crash-reporting set-up must never take down the whole app.
             android.util.Log.e("BirdoApp", "Crash-reporting state change failed", e)
         }
+    }
+
+    /** One background thread, so closes and purges never overlap or reorder. */
+    private val crashReportingWorker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "birdo-crash-reporting").apply { isDaemon = true }
+    }
+
+    @Volatile
+    private var pendingCrashReportingShutdown: Future<*>? = null
+
+    /**
+     * Bounded wait for a close still in flight. Past the bound the init goes
+     * ahead anyway; the worst case is an SDK that is off until the next start,
+     * never one that is on without consent.
+     */
+    private fun awaitPendingCrashReportingShutdown() {
+        val pending = pendingCrashReportingShutdown ?: return
+        try {
+            pending.get(CRASH_REPORTING_SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            android.util.Log.w("BirdoApp", "Crash-reporting shutdown still running", e)
+        }
+    }
+
+    private companion object {
+        /** Sentry's own shutdown timeout is 2 s; allow a little more. */
+        const val CRASH_REPORTING_SHUTDOWN_WAIT_SECONDS = 3L
     }
 
     /**
