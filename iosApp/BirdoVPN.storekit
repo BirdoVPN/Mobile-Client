@@ -99,7 +99,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Unlimited data, every server location, stealth mode and 5 device connections.",
+              "description" : "Unlimited data, every server location and 5 device connections.",
               "displayName" : "Operative (Monthly)",
               "locale" : "en_GB"
             }
@@ -127,7 +127,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Unlimited data, every server location, stealth mode and 5 device connections. Billed yearly.",
+              "description" : "Unlimited data, every server location and 5 device connections. Billed yearly.",
               "displayName" : "Operative (Yearly)",
               "locale" : "en_GB"
             }

@@ -240,7 +240,9 @@
     <string name="subscription_choose_plan">Choose a plan</string>
     <string name="subscription_plans_features">Plans &amp; features</string>
     <string name="subscription_monthly">Monthly</string>
-    <string name="subscription_yearly">Yearly · Save 20%</string>
+    <!-- "up to": yearly saves 20% on Operative but 17% on Sovereign (A-34 /
+         A-24). Never a flat "Save 20%" across both plans. -->
+    <string name="subscription_yearly">Yearly · Save up to 20%</string>
     <string name="subscription_manage_web">Manage on web</string>
     <string name="subscription_web_note">Subscriptions are purchased and managed on birdo.app.</string>
     <string name="subscription_voucher_note">Have a voucher code? Redeem it on the Profile tab.</string>

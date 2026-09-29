@@ -91,7 +91,9 @@ struct SubscriptionView: View {
                     }
 
                     SegmentedTabs(
-                        items: ["Monthly", "Yearly · Save 20%"],
+                        // "up to": yearly saves 20% on Operative, 17% on
+                        // Sovereign (audit A-24). Never a flat "Save 20%".
+                        items: ["Monthly", "Yearly · Save up to 20%"],
                         selection: $billingIndex,
                         style: .accent
                     )
@@ -591,7 +593,16 @@ struct SubscriptionView: View {
 // MARK: - Plan catalog
 
 /// Canonical plan data (birdo-web/lib/plans.ts via spec-secondary-screens.md
-/// §5.4 — feature lists match Android verbatim).
+/// §5.4).
+///
+/// FEATURE LISTS ARE PER PLATFORM. They used to "match Android verbatim", and
+/// so this App Store paywall sold Split tunneling, Stealth mode and Speed test —
+/// none of which exists on iOS or macOS — plus "2 server locations", a count
+/// the web deliberately never states (audit 2026-09-29, A-10 / D-4 / A-24;
+/// Guidelines 2.3 / 3.1.2). Every line below is something this app does, on
+/// the plan it is listed under. Face ID "Hide App Contents" is not listed: it
+/// covers the screen and protects no data (SettingsView), so selling it as a
+/// security feature would overstate it.
 ///
 /// The prices here are a FALLBACK ONLY, shown when StoreKit could not resolve a
 /// product. Anything actually purchasable is priced by `Product.displayPrice`,
@@ -633,12 +644,13 @@ private struct PlanCardModel: Identifiable, Sendable {
             isPopular: false,
             features: [
                 "1 device connection",
-                "2 server locations",
+                "Core server locations",
                 "10 GB monthly bandwidth",
                 "WireGuard® encryption",
-                "Post-quantum encryption",
+                "Post-quantum key exchange",
                 "Kill switch",
                 "DNS leak protection",
+                "2FA / TOTP",
             ]
         ),
         PlanCardModel(
@@ -653,13 +665,10 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
-                "Post-quantum encryption",
+                "Post-quantum key exchange",
                 "Kill switch",
-                "Split tunneling",
-                "Stealth mode",
-                "Speed test",
+                "DNS leak protection",
                 "2FA / TOTP",
-                "Biometric lock",
                 "Priority support",
             ]
         ),
@@ -675,16 +684,13 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
-                "Post-quantum encryption",
+                "Post-quantum key exchange",
                 "Kill switch",
-                "Split tunneling",
-                "Stealth mode",
+                "DNS leak protection",
                 "Multi-hop routing",
                 "Port forwarding",
-                "Speed test",
-                "2FA / TOTP",
-                "Biometric lock",
                 "Custom DNS",
+                "2FA / TOTP",
                 "Priority support",
             ]
         ),

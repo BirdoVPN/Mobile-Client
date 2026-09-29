@@ -44,6 +44,17 @@ private data class PlanInfo(
     val accent: Color get() = BirdoBrand.planAccent(id)
 }
 
+/**
+ * What each plan includes ON ANDROID — the platform this paywall sells on.
+ *
+ * Audit 2026-09-29 (A-10 / D-4 / A-24): this list used to be copied between
+ * platforms and sold things that do not exist here — "Speed test" (no mobile
+ * implementation), "2 server locations" (the web deliberately states no
+ * count; the fleet changes), split tunnelling as a paid extra although Android
+ * offers it on every plan, and 2FA / biometric lock as paid although they are
+ * on every plan. Every line below is a feature this app actually has, on the
+ * plan it is listed under. Keep it that way: add a line only with the code.
+ */
 private val plans = listOf(
     PlanInfo(
         id = "RECON",
@@ -53,12 +64,15 @@ private val plans = listOf(
         priceYearly = "Free",
         features = listOf(
             "1 device connection",
-            "2 server locations",
+            "Core server locations",
             "10 GB monthly bandwidth",
             "WireGuard\u00ae encryption",
-            "Post-quantum encryption",
+            "Post-quantum key exchange",
             "Kill switch",
             "DNS leak protection",
+            "Split tunneling",
+            "2FA / TOTP",
+            "Biometric lock",
         ),
     ),
     PlanInfo(
@@ -72,11 +86,11 @@ private val plans = listOf(
             "All server locations",
             "Unlimited bandwidth",
             "WireGuard\u00ae encryption",
-            "Post-quantum encryption",
+            "Post-quantum key exchange",
             "Kill switch",
+            "DNS leak protection",
             "Split tunneling",
             "Stealth mode",
-            "Speed test",
             "2FA / TOTP",
             "Biometric lock",
             "Priority support",
@@ -94,16 +108,16 @@ private val plans = listOf(
             "All server locations",
             "Unlimited bandwidth",
             "WireGuard\u00ae encryption",
-            "Post-quantum encryption",
+            "Post-quantum key exchange",
             "Kill switch",
+            "DNS leak protection",
             "Split tunneling",
             "Stealth mode",
             "Multi-hop routing",
             "Port forwarding",
-            "Speed test",
+            "Custom DNS",
             "2FA / TOTP",
             "Biometric lock",
-            "Custom DNS",
             "Priority support",
         ),
     ),
