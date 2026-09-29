@@ -90,8 +90,12 @@ enum SignInReason: String, Equatable, Sendable, CaseIterable {
     var message: String {
         switch self {
         case .connect, .servers, .multiHop:
-            return "Connecting needs an account: the server creates a private "
-                + "WireGuard key for you and holds a connection slot. Settings, "
+            // The WireGuard private key is generated ON THIS DEVICE for every
+            // connect and never leaves it; the server only registers the
+            // public half (audit 2026-09-29, D-19). The old copy said the
+            // server created the private key.
+            return "Connecting needs an account: the server registers this device's "
+                + "WireGuard key and holds a connection slot. Settings, "
                 + "locations and the policies stay open without one."
         case .usage:
             return "Your data usage belongs to an account. Everything else on "

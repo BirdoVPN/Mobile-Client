@@ -150,7 +150,9 @@ struct ProfileView: View {
                     }
                 }
 
-                Text("An account is what lets the server create your private "
+                // D-19: the private key is generated on this device, never by
+                // the server — the server registers the public half.
+                Text("An account is what lets the server register this device's "
                      + "WireGuard key and hold a connection slot. Settings, VPN "
                      + "settings, the locations list and the policies below all "
                      + "work without one.")
