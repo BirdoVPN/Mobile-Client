@@ -11,6 +11,14 @@
          the day a library releases. -->
     <issue id="GradleDependency" severity="ignore" />
     <issue id="NewerVersionAvailable" severity="ignore" />
+    <!-- Same rule, third issue id. AndroidGradlePluginVersion fires on the
+         GRADLE WRAPPER and on AGP itself, and it is reported as an ERROR rather
+         than a warning, so warningsAsErrors does not even come into it. Gradle
+         9.8.0 shipped and lintDebug went red on untouched main - every open PR
+         in this repo with it. A third party's release cadence must not be able
+         to break this build; upgrading the wrapper is a deliberate PR with its
+         own CI run, exactly like the two above. -->
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
 
     <!-- targetSdk stays one behind compileSdk on purpose: raising it changes
          runtime behaviour for users and needs a device test (build.gradle.kts
