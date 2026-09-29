@@ -63,8 +63,18 @@ interface BirdoApi {
 
     // ── GDPR ─────────────────────────────────────────────────────
 
-    /** GDPR Art. 17: Right to Erasure. Requires password re-confirmation. */
-    @HTTP(method = "DELETE", path = "v1/gdpr/delete", hasBody = true)
+    /**
+     * GDPR Art. 17: Right to Erasure. Requires password re-confirmation.
+     *
+     * The backend route is `@Controller('api/v1/gdpr')` + `@Delete('delete')`,
+     * and api.birdo.app proxies paths to Nest unchanged — so the `api/` here is
+     * real and is NOT a double prefix, even though every other route in this
+     * file is unprefixed. This path used to be `v1/gdpr/delete`, which the
+     * backend does not serve: every in-app deletion on Android failed (audit
+     * 2026-09-29, P0-6 / C-2). iOS has always sent `/api/v1/gdpr/delete`.
+     * Pinned by GdprRouteContractTest.
+     */
+    @HTTP(method = "DELETE", path = GDPR_DELETE_PATH, hasBody = true)
     suspend fun deleteAccount(
         @Body request: DeleteAccountRequest,
     ): Response<DeleteAccountResponse>
@@ -207,4 +217,9 @@ interface BirdoApi {
     suspend fun linkGooglePurchase(
         @Body request: GooglePlayLinkRequest,
     ): Response<GooglePlayLinkResponse>
+
+    companion object {
+        /** Erasure route, relative to https://api.birdo.app. See [deleteAccount]. */
+        const val GDPR_DELETE_PATH = "api/v1/gdpr/delete"
+    }
 }
