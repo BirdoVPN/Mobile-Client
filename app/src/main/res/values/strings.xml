@@ -99,8 +99,18 @@
     <string name="limit">Limit</string>
     <string name="settings_section_connection">Connection</string>
     <string name="settings_kill_switch">Kill Switch</string>
+    <!-- REMEDIATION-DECISIONS §2 wording. What it does, and no more: the block
+         is the app's own, so it holds while BirdoVPN is running (audit
+         2026-09-29, D-7). -->
+    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
-    <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on — and for a system-guaranteed block, enable Android\'s \"Always-on VPN\" with \"Block connections without VPN\" in system VPN settings.</string>
+    <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
+         Always-on VPN with Block connections without VPN". The app DISABLES
+         that system toggle (AndroidManifest SUPPORTS_ALWAYS_ON=false, pinned
+         by ApiLevel36ContractTest: there is no headless reconnect yet), so the
+         advice sent users to a setting they could not turn on. Do not restore
+         it until SUPPORTS_ALWAYS_ON is true. -->
+    <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps fall back to your normal, unencrypted connection and can expose your real IP address and DNS queries until it reconnects. For the strongest protection, keep it on.</string>
     <string name="settings_kill_switch_disable_confirm">Turn off anyway</string>
     <string name="settings_auto_connect">Auto-Connect</string>
     <string name="settings_notifications">Notifications</string>

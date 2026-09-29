@@ -138,7 +138,7 @@ struct SettingsView: View {
             // Android's copy minus its trailing "Always-on VPN" sentence
             // (Android-only system setting; an iOS-equivalent clause is
             // pending owner review — spec-secondary-screens warning 4).
-            message: "If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on.",
+            message: "If the VPN drops while the kill switch is off, your apps fall back to your normal, unencrypted connection and can expose your real IP address and DNS queries until it reconnects. For the strongest protection, keep it on.",
             confirmLabel: "Turn off anyway",
             onConfirm: { settingsVM.confirmDisableKillSwitch() },
             onCancel: { settingsVM.cancelDisableKillSwitch() }
@@ -263,13 +263,21 @@ struct SettingsView: View {
         // Switch keeps its T2 binding (`killSwitchToggleBinding`, never
         // `killSwitchEnabled`) and the confirm-before-disable dialog attached
         // to this screen's body.
+        // Wording: REMEDIATION-DECISIONS §2 (audit 2026-09-29, D-7 / D-3).
+        // The kill switch is armed once the tunnel is up and hands traffic
+        // back if the re-dial breaker trips (TunnelCircuitBreaker), so "block
+        // all traffic" overstated it. The PQ key is derived between the app
+        // and the API and reaches the server over TLS that is not yet
+        // post-quantum, so "protects against future quantum computer attacks"
+        // overstated that. (The row allows four lines; that caveat lives on
+        // birdo.app and in the store text.)
         SettingsToggleRow(icon: "checkmark.shield.fill", iconColor: BirdoTheme.green,
                           title: "Kill Switch",
-                          description: "Block all traffic if VPN disconnects",
+                          description: "If the tunnel drops unexpectedly, blocks traffic until it reconnects.",
                           isOn: settingsVM.killSwitchToggleBinding)
         SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.accent,
                           title: "Quantum Protection",
-                          description: "Add post-quantum pre-shared key exchange via BirdoPQ v1 (ML-KEM-1024, NIST FIPS 203). Protects against future quantum computer attacks.",
+                          description: "Adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) to each connection.",
                           isOn: $settingsVM.quantumProtectionEnabled)
     }
 

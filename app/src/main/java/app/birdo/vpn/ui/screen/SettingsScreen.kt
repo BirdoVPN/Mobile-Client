@@ -138,6 +138,7 @@ fun SettingsScreen(
                     icon = Icons.Default.Shield,
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
+                    description = stringResource(R.string.settings_kill_switch_desc),
                     checked = state.killSwitchEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled) {
