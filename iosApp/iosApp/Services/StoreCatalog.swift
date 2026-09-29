@@ -44,16 +44,6 @@ enum StoreBillingPeriod: String, Equatable, Sendable, CaseIterable {
     }
 }
 
-/// The four auto-renewable subscriptions Birdo sells on the App Store.
-///
-/// These identifiers are PROVISIONAL. They mirror `DEFAULT_APPLE_PRODUCT_PLANS`
-/// in birdo-web's backend (`backend/src/payments/apple/apple-notification.ts`),
-/// which is the authority for what a product id entitles. They do not yet
-/// exist in App Store Connect — the Paid Applications Agreement is not active,
-/// so `Product.products(for:)` returns EMPTY against the real App Store and
-/// the whole rail is developed against `iosApp/BirdoVPN.storekit` instead.
-/// If a product id is ever renamed it must change in BOTH repos, or the server
-/// answers STORE_PRODUCT_UNMAPPED and the purchase unlocks nothing.
 /// Whether the App Store may offer to SELL a plan (or change one) to the
 /// signed-in account.
 ///
@@ -100,6 +90,16 @@ enum StorePurchaseGate {
     }
 }
 
+/// The four auto-renewable subscriptions Birdo sells on the App Store.
+///
+/// These identifiers are PROVISIONAL. They mirror `DEFAULT_APPLE_PRODUCT_PLANS`
+/// in birdo-web's backend (`backend/src/payments/apple/apple-notification.ts`),
+/// which is the authority for what a product id entitles. They do not yet
+/// exist in App Store Connect — the Paid Applications Agreement is not active,
+/// so `Product.products(for:)` returns EMPTY against the real App Store and
+/// the whole rail is developed against `iosApp/BirdoVPN.storekit` instead.
+/// If a product id is ever renamed it must change in BOTH repos, or the server
+/// answers STORE_PRODUCT_UNMAPPED and the purchase unlocks nothing.
 enum BirdoStoreProduct: String, CaseIterable, Sendable {
     case operativeMonthly = "app.birdo.vpn.operative.monthly"
     case operativeYearly  = "app.birdo.vpn.operative.yearly"
