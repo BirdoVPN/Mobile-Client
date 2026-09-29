@@ -35,6 +35,19 @@ final class StoreKitService: ObservableObject {
     /// expected state today — see `storefront`.
     @Published private(set) var products: [Product] = []
 
+    /// The product a signed-out user tried to buy, held across the sign-in
+    /// sheet so the purchase can finish by itself.
+    ///
+    /// APPLE 2.1(b), 2026-09-29: "no payment sheet triggered to complete
+    /// payment". Reproduced from the review notes' own route. `purchase()`
+    /// required a session, so a guest tapping "Sign in to subscribe" raised the
+    /// sign-in sheet and RETURNED. On success ContentView also sets
+    /// `selectedTab = .home`, so the subscription screen was dismissed as well.
+    /// The reviewer was left on the Connect tab with no App Store sheet and no
+    /// way to see that the button had silently become "Subscribe". Telling them
+    /// to tap twice is not a fix; the second tap has to happen on its own.
+    private var pendingPurchaseProductId: String?
+
     /// What the purchase UI should render. Never a bare empty list, never an
     /// unbounded spinner.
     @Published private(set) var storefront: StorefrontState = .loading
@@ -129,6 +142,46 @@ final class StoreKitService: ObservableObject {
         if linked > 0 { onEntitlementChanged() }
     }
 
+    /// Finish a purchase that sign-in interrupted.
+    ///
+    /// Called right after `linkExistingEntitlementsAfterSignIn()`, so ordering
+    /// is deliberate: linking first means a user who ALREADY owns the plan gets
+    /// their entitlement restored and is not charged a second time here.
+    ///
+    /// Safe to call on every sign-in. With nothing pending it does nothing, and
+    /// the slot is cleared before the attempt so a failure cannot leave a
+    /// purchase that retries itself forever.
+    func resumePendingPurchase() async {
+        guard let productId = pendingPurchaseProductId else { return }
+        pendingPurchaseProductId = nil
+        guard isSignedIn() else { return }
+        // Already entitled after linking — nothing to buy. Charging here would
+        // be a duplicate purchase for a plan the account just regained. Asked
+        // of StoreKit rather than of our own plan snapshot, because the
+        // snapshot is refreshed asynchronously and may still be stale here.
+        var alreadyOwned = false
+        for await entitlement in Transaction.currentEntitlements {
+            if case .verified(let transaction) = entitlement,
+               transaction.productID == productId,
+               transaction.revocationDate == nil {
+                alreadyOwned = true
+                break
+            }
+        }
+        guard !alreadyOwned else { return }
+        guard let product = products.first(where: { $0.id == productId }) else { return }
+        await purchase(product)
+    }
+
+    /// Clear a pending purchase. A sign-out means the intent is gone; keeping it
+    /// would charge the NEXT account to sign in on this device.
+    func cancelPendingPurchase() {
+        pendingPurchaseProductId = nil
+    }
+
+    /// Exposed for [resumePendingPurchase] and its tests.
+    var hasPendingPurchase: Bool { pendingPurchaseProductId != nil }
+
     // MARK: - Products
 
     /// Fetch the catalogue, with a hard deadline.
@@ -199,8 +252,10 @@ final class StoreKitService: ObservableObject {
     func purchase(_ product: Product) async {
         guard purchasingProductId == nil else { return }
         guard isSignedIn() else {
-            // Not an error state — an honest prerequisite. The sheet explains
-            // why, and the purchase can be retried straight after.
+            // Not an error state — an honest prerequisite. Hold the product so
+            // resumePendingPurchase() can finish the job the moment a session
+            // exists; the user tapped Subscribe once and meant it.
+            pendingPurchaseProductId = product.id
             requestSignIn()
             return
         }

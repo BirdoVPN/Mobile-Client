@@ -231,12 +231,21 @@ struct ContentView: View {
             // in is therefore the moment those transactions can finally be
             // bound, so re-present everything StoreKit still considers current.
             await storeVM.linkExistingEntitlementsAfterSignIn()
+            // APPLE 2.1(b): a guest who tapped "Sign in to subscribe" meant to
+            // buy. Sign-in used to end the attempt AND send them to the Connect
+            // tab, so App Review saw no payment sheet at all. Finish it here —
+            // after linking, so an account that already owns the plan is
+            // restored rather than charged again.
+            await storeVM.resumePendingPurchase()
         }
         .onChange(of: authVM.isLoggedIn) { _, loggedIn in
             // Signing in is the sheet's whole job — close it the moment it is
             // done, from ONE place rather than at each of the seven sites that
             // flip `isLoggedIn`.
             if loggedIn { authVM.isPresentingSignIn = false }
+            // Signing OUT abandons any purchase intent. Keeping it would charge
+            // whoever signs in next on this device.
+            if !loggedIn { storeVM.cancelPendingPurchase() }
             // Either direction lands on Connect: a fresh session starts there
             // (Android's navigate-Home-clearing-backstack), and a sign-out
             // should not leave the user staring at a tab that just turned into
