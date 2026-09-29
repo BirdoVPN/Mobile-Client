@@ -88,4 +88,24 @@ class DeletionStoreWarningTest {
         val content = source("iosApp/iosApp/ContentView.swift")
         assertTrue(content.contains("authVM.storeSubscriptionsStillBilling"))
     }
+
+    /**
+     * Second-pass #19: the desktop dialog states what the unified erasure keeps
+     * (REMEDIATION-DECISIONS §3); Android and iOS now say the same, in both the
+     * password and the password-less variant.
+     */
+    @Test
+    fun `every deletion dialog states the erasure and retention facts`() {
+        val facts = "The account is anonymised immediately and fully deleted within 30 days; " +
+            "payment records are kept, anonymised, for 7 years for tax."
+        val strings = source("app/src/main/res/values/strings.xml")
+        listOf("delete_dialog_message", "delete_dialog_message_no_password").forEach { name ->
+            val value = Regex("""<string name="$name">([^<]*)</string>""").find(strings)?.groupValues?.get(1)
+            assertTrue("$name lost the retention sentence", value.orEmpty().contains(facts))
+        }
+        val dialog = source("iosApp/iosApp/Views/ProfileView.swift")
+            .substringAfter("private var deleteDialog: some View {")
+            .substringBefore("private func confirmDelete()")
+        assertEquals("both iOS dialog variants must carry it", 2, Regex(Regex.escape(facts)).findAll(dialog).count())
+    }
 }

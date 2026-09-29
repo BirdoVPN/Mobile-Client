@@ -144,11 +144,13 @@
     <!-- Audit 2026-09-29, A-8 / C-9: this used to say the "subscription will be
          deleted". Only a subscription billed by Birdo is cancelled with the
          account; a Google Play or App Store one keeps billing until the user
-         cancels it in the store, which delete_dialog_store_warning says. -->
-    <string name="delete_dialog_message">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. Enter your password to confirm.</string>
+         cancels it in the store, which delete_dialog_store_warning says.
+         The retention sentence is the desktop dialog's, from
+         REMEDIATION-DECISIONS §3 (unified erasure; second-pass #19). -->
+    <string name="delete_dialog_message">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax. Enter your password to confirm.</string>
     <!-- Shown to accounts with no password (SSO and anonymous), which cannot be
          asked to confirm a credential they do not have. -->
-    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted.</string>
+    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax.</string>
     <string name="delete_dialog_store_warning">A subscription billed by Birdo is cancelled with your account. One bought through Google Play or the App Store is not: cancel it there first, or the store will keep charging you.</string>
     <string name="delete_dialog_manage_play">Manage Google Play subscriptions</string>
     <!-- After a deletion, when the server reports store subscriptions that are

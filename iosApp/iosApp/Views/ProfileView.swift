@@ -396,9 +396,11 @@ struct ProfileView: View {
             // Audit 2026-09-29, A-8 / C-9: this used to say the "subscription
             // will be deleted". An App Store subscription is not — only Apple
             // can cancel it — so the warning below says so BEFORE confirming.
+            // The retention sentence is the desktop and Android dialogs'
+            // (REMEDIATION-DECISIONS §3, unified erasure; second-pass #19).
             message: requiresPassword
-                ? "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. Enter your password to confirm."
-                : "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted.",
+                ? "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax. Enter your password to confirm."
+                : "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax.",
             icon: "exclamationmark.triangle.fill",
             iconColor: BirdoTheme.red,
             confirmLabel: "Delete My Account",
