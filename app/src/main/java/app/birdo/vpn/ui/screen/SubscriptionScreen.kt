@@ -153,6 +153,14 @@ fun SubscriptionScreen(
     isRestoring: Boolean = false,
     duplicateBillingMessage: String? = null,
     onDismissDuplicateBilling: () -> Unit = {},
+    /**
+     * The account already has a paid plan bought OUTSIDE this store (the
+     * website, a voucher, or the other app store) — see StorePurchaseGate.
+     * When true no purchase or "Change plan" button is drawn: Play's
+     * replacement flow only knows Play purchases, so tapping one would start a
+     * second, separate subscription (audit 2026-09-29, A-9 / A-16).
+     */
+    purchaseManagedElsewhere: Boolean = false,
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
     val palette = BirdoColors.current
@@ -222,6 +230,13 @@ fun SubscriptionScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
+            // Paid elsewhere: say where it is managed instead of offering a
+            // second subscription.
+            if (purchaseManagedElsewhere) {
+                ManagedElsewhereNotice()
+                Spacer(Modifier.height(12.dp))
+            }
+
             // Plan cards
             plans.forEach { plan ->
                 val isCurrent = currentSubscription?.plan?.equals(plan.id, ignoreCase = true) == true
@@ -242,7 +257,8 @@ fun SubscriptionScreen(
                     // offer resolved; in a non-Play build the CTA is the
                     // web-billing link it has always been.
                     showManageButton = showWebManageAction,
-                    showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent,
+                    showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent &&
+                        !purchaseManagedElsewhere,
                     isChangingPlan = currentSubscription?.plan?.equals("RECON", true) == false,
                     onSelect = { onSelectPlan(plan.id, billingPeriod) },
                 )
@@ -582,6 +598,39 @@ private fun PlanCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+    }
+}
+
+/**
+ * Shown instead of purchase buttons when the account's paid plan was bought
+ * outside Google Play. Not dismissible: it explains why there is nothing to
+ * tap. Deliberately names no other purchase route — this is a Play build.
+ */
+@Composable
+private fun ManagedElsewhereNotice() {
+    val palette = BirdoColors.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = BirdoBlue.copy(alpha = 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = null,
+                tint = BirdoBlue,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                stringResource(R.string.subscription_managed_elsewhere),
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.onSurface,
+            )
         }
     }
 }

@@ -150,6 +150,16 @@ data class SubscriptionStatus(
     val bandwidthIsFresh: Boolean? = null,
     val hasPremiumServers: Boolean = false,
     val subscriptionEndsAt: String? = null,
+    /**
+     * Where the plan was bought — the backend resolver's EntitlementSource
+     * ("WEB", "APPLE_APP_STORE", "GOOGLE_PLAY", "FREE_FLOOR"). NOT sent by
+     * `/vpn/stats` today; read when a backend that sends it is live, so the
+     * store paywalls can tell a web or other-store subscriber apart from their
+     * own (audit 2026-09-29, A-9). Absent = unknown.
+     */
+    val source: String? = null,
+    /** Every rail entitling the account right now, when the backend reports them. */
+    val liveSources: List<String>? = null,
 )
 
 // ─── Anonymous Login ─────────────────────────────────────────────────────────

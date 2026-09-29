@@ -37,6 +37,7 @@ import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
 import app.birdo.vpn.billing.BirdoBillingPeriod
 import app.birdo.vpn.billing.PlaySubscriptionLinks
+import app.birdo.vpn.billing.StorePurchaseGate
 import app.birdo.vpn.billing.PurchasableOffer
 import app.birdo.vpn.billing.StorefrontState
 import app.birdo.vpn.ui.components.BillingChoice
@@ -792,7 +793,17 @@ fun BirdoNavGraph(
                     // something Play never returned.
                     val startPlayPurchase: (String, String) -> Unit = { planId, period ->
                         val offer = offerFor(planId, period)
-                        if (offer != null && activity != null) {
+                        // The gate again, at the one place a purchase starts:
+                        // hiding the button is the UI half, this is the rule.
+                        val paidElsewhere = BuildConfig.IS_PLAY_BUILD &&
+                            StorePurchaseGate.paidElsewhere(
+                                plan = vpnState.subscription?.plan,
+                                source = vpnState.subscription?.source,
+                                liveSources = vpnState.subscription?.liveSources,
+                                thisStore = StorePurchaseGate.SOURCE_GOOGLE_PLAY,
+                                thisStoreOwnsSubscription = billingState.ownsBirdoSubscription,
+                            )
+                        if (offer != null && activity != null && !paidElsewhere) {
                             billingViewModel.purchase(activity, offer) {
                                 navController.navigate(Screen.Login.route)
                             }
@@ -800,6 +811,19 @@ fun BirdoNavGraph(
                     }
 
                     val storefront = billingState.storefront
+
+                    // One subscription per account (audit 2026-09-29, A-9 /
+                    // A-16): a paid plan bought outside Google Play is managed
+                    // where it was bought, never re-sold here.
+                    val currentSub = vpnState.subscription
+                    val purchaseManagedElsewhere = BuildConfig.IS_PLAY_BUILD &&
+                        StorePurchaseGate.paidElsewhere(
+                            plan = currentSub?.plan,
+                            source = currentSub?.source,
+                            liveSources = currentSub?.liveSources,
+                            thisStore = StorePurchaseGate.SOURCE_GOOGLE_PLAY,
+                            thisStoreOwnsSubscription = billingState.ownsBirdoSubscription,
+                        )
 
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
@@ -859,6 +883,7 @@ fun BirdoNavGraph(
                         onDismissDuplicateBilling = {
                             billingViewModel.dismissDuplicateBilling()
                         },
+                        purchaseManagedElsewhere = purchaseManagedElsewhere,
                     )
 
                     if (showBillingChoice) {

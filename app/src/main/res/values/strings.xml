@@ -262,6 +262,10 @@
     <string name="subscription_retry">Try again</string>
     <string name="subscription_loading_prices">Loading subscription prices…</string>
     <string name="subscription_play_manage">Manage or cancel your subscription in the Google Play Store.</string>
+    <!-- A-9 / A-16: shown instead of purchase buttons when the account's paid
+         plan was bought outside Google Play. Names no other purchase route:
+         this string ships in the Play build. -->
+    <string name="subscription_managed_elsewhere">Your plan is already active on this account and was bought outside Google Play. Manage or change it where you bought it: subscribing here would bill you twice.</string>
     <!-- Billing choice (Play external-offers / link-out). Copy must stay NEUTRAL:
          the programme forbids steering away from, or disparaging, Google's option. -->
     <string name="billing_choice_title">Choose how to subscribe</string>

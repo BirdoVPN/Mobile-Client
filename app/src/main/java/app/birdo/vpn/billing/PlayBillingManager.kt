@@ -67,6 +67,15 @@ data class PlayBillingUiState(
     val notice: StoreNotice? = null,
     /** The account is being billed on another rail too. Sticky: it is about money. */
     val duplicateBilling: DuplicateBillingNotice? = null,
+    /**
+     * Whether the Google account on this device currently owns a Birdo
+     * subscription, from the latest reconcile. Feeds [StorePurchaseGate]: a
+     * paid plan Play does not know about was bought elsewhere, and Play must
+     * not sell a second one on top of it. False until the first reconcile
+     * answers, which hides purchase buttons from a paid account for that
+     * moment — the safe direction.
+     */
+    val ownsBirdoSubscription: Boolean = false,
 ) {
     /** The offer for a plan card + period toggle, or null when it is not purchasable. */
     fun offerFor(planSlug: String, period: BirdoBillingPeriod): PurchasableOffer? =
@@ -539,6 +548,13 @@ class PlayBillingManager @Inject constructor(
         when (result.responseCode) {
             BillingClient.BillingResponseCode.OK -> {
                 val list = purchases.orEmpty()
+                if (list.any { p ->
+                        p.purchaseState == Purchase.PurchaseState.PURCHASED &&
+                            p.products.any { BirdoPlayProduct.fromProductId(it) != null }
+                    }
+                ) {
+                    _state.update { it.copy(ownsBirdoSubscription = true) }
+                }
                 scope.launch {
                     var accepted = false
                     list.forEach { if (ingestAndReport(it, announce = true)) accepted = true }
@@ -589,6 +605,9 @@ class PlayBillingManager @Inject constructor(
         // Only purchases of a product we recognise. Play can return a purchase
         // from an id we no longer sell; presenting it just earns a 409.
         val ours = purchases.filter { p -> p.products.any { BirdoPlayProduct.fromProductId(it) != null } }
+        _state.update { st ->
+            st.copy(ownsBirdoSubscription = ours.any { it.purchaseState == Purchase.PurchaseState.PURCHASED })
+        }
         if (ours.isEmpty()) return StoreRestoreOutcome.NothingToRestore
 
         var linked = 0

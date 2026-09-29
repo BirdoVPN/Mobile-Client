@@ -35,6 +35,19 @@ struct SubscriptionView: View {
 
     private var period: StoreBillingPeriod { billingIndex == 1 ? .yearly : .monthly }
 
+    /// The account's paid plan was bought OUTSIDE the App Store (the website,
+    /// a voucher or Google Play): nothing here may sell it a second one
+    /// (audit 2026-09-29, A-9 / A-16). See `StorePurchaseGate`.
+    private var managedElsewhere: Bool {
+        StorePurchaseGate.paidElsewhere(
+            plan: vpnVM.subscription?.plan,
+            source: vpnVM.subscription?.source,
+            liveSources: vpnVM.subscription?.liveSources,
+            thisStore: StorePurchaseGate.sourceAppStore,
+            thisStoreOwnsSubscription: store.ownsStoreSubscription
+        )
+    }
+
     var body: some View {
         ZStack {
             BirdoTheme.black.ignoresSafeArea()
@@ -58,6 +71,10 @@ struct SubscriptionView: View {
 
                     if let notice = store.notice {
                         noticeBanner(notice)
+                    }
+
+                    if managedElsewhere {
+                        managedElsewhereCard
                     }
 
                     Text("Plans & features")
@@ -108,6 +125,7 @@ struct SubscriptionView: View {
             if case .unavailable = store.storefront {
                 await store.loadProducts()
             }
+            await store.refreshOwnership()
         }
         .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick), value: store.notice)
     }
@@ -294,6 +312,26 @@ struct SubscriptionView: View {
         }
     }
 
+    /// Shown instead of Subscribe buttons when the paid plan was bought
+    /// outside the App Store. Not dismissible: it explains why there is
+    /// nothing to tap here.
+    private var managedElsewhereCard: some View {
+        BirdoCard(horizontalPadding: 16, verticalPadding: 16) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(BirdoTheme.blue)
+                    .accessibilityHidden(true)
+                Text("Your plan is already active on this account and was bought outside the App Store. Manage or change it where you bought it: subscribing here would bill you twice.")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurface)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     // MARK: - Restore (Apple requires a visible control)
 
     /// Restore Purchases is MANDATORY for auto-renewable subscriptions and it
@@ -461,6 +499,13 @@ struct SubscriptionView: View {
         if plan.slug == "RECON" {
             // Free tier: nothing to buy, and no button pretending otherwise.
             EmptyView()
+        } else if managedElsewhere {
+            // Paid on another rail: no Subscribe, no "change plan". The card
+            // at the top of the screen says why.
+            Text("Your current plan is managed where you bought it.")
+                .font(.system(size: 12))
+                .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                .padding(.top, 4)
         } else if isCurrent {
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill")

@@ -375,3 +375,60 @@ final class StoreCatalogTests: XCTestCase {
         return result
     }
 }
+
+/// Audit 2026-09-29, A-9 / A-16: one subscription per account. The App Store
+/// paywall offered "Subscribe" to accounts already paying on the website,
+/// Google Play or with a voucher, which starts a second, separate
+/// subscription. Mirrors Android's StorePurchaseGateTest case for case.
+final class StorePurchaseGateTests: XCTestCase {
+
+    private func paidElsewhere(plan: String?,
+                               source: String? = nil,
+                               liveSources: [String]? = nil,
+                               owns: Bool = false) -> Bool {
+        StorePurchaseGate.paidElsewhere(plan: plan,
+                                        source: source,
+                                        liveSources: liveSources,
+                                        thisStore: StorePurchaseGate.sourceAppStore,
+                                        thisStoreOwnsSubscription: owns)
+    }
+
+    func testFreeOrUnknownAccountMayAlwaysBuy() {
+        XCTAssertFalse(paidElsewhere(plan: "RECON"))
+        XCTAssertFalse(paidElsewhere(plan: "recon"))
+        XCTAssertFalse(paidElsewhere(plan: nil))
+        XCTAssertFalse(paidElsewhere(plan: ""))
+        XCTAssertFalse(paidElsewhere(plan: "RECON", source: StorePurchaseGate.sourceWeb))
+    }
+
+    func testServerSaysWebOrGooglePlayBlocksTheAppStore() {
+        XCTAssertTrue(paidElsewhere(plan: "SOVEREIGN", source: StorePurchaseGate.sourceWeb))
+        XCTAssertTrue(paidElsewhere(plan: "OPERATIVE", source: StorePurchaseGate.sourceGooglePlay))
+        XCTAssertTrue(paidElsewhere(plan: "OPERATIVE", source: StorePurchaseGate.sourceWeb, owns: true))
+    }
+
+    func testServerSaysAppStoreAllowsAPlanChange() {
+        XCTAssertFalse(paidElsewhere(plan: "OPERATIVE", source: StorePurchaseGate.sourceAppStore))
+        XCTAssertFalse(paidElsewhere(plan: "OPERATIVE", source: "apple_app_store"))
+    }
+
+    func testAnyLiveRailOtherThanTheAppStoreBlocks() {
+        XCTAssertTrue(paidElsewhere(plan: "SOVEREIGN",
+                                    liveSources: [StorePurchaseGate.sourceAppStore, StorePurchaseGate.sourceWeb]))
+        XCTAssertFalse(paidElsewhere(plan: "SOVEREIGN",
+                                     liveSources: [StorePurchaseGate.sourceAppStore, StorePurchaseGate.sourceFreeFloor]))
+        XCTAssertTrue(paidElsewhere(plan: "SOVEREIGN",
+                                    source: StorePurchaseGate.sourceAppStore,
+                                    liveSources: [StorePurchaseGate.sourceGooglePlay]))
+    }
+
+    func testWithoutServerSourcesAPaidPlanTheAppStoreDoesNotOwnWasBoughtElsewhere() {
+        XCTAssertTrue(paidElsewhere(plan: "OPERATIVE", owns: false))
+        XCTAssertFalse(paidElsewhere(plan: "OPERATIVE", owns: true))
+    }
+
+    func testTheFreeFloorIsNotARail() {
+        XCTAssertTrue(paidElsewhere(plan: "OPERATIVE", source: StorePurchaseGate.sourceFreeFloor, owns: false))
+        XCTAssertFalse(paidElsewhere(plan: "OPERATIVE", source: StorePurchaseGate.sourceFreeFloor, owns: true))
+    }
+}

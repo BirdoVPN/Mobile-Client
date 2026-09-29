@@ -54,6 +54,52 @@ enum StoreBillingPeriod: String, Equatable, Sendable, CaseIterable {
 /// the whole rail is developed against `iosApp/BirdoVPN.storekit` instead.
 /// If a product id is ever renamed it must change in BOTH repos, or the server
 /// answers STORE_PRODUCT_UNMAPPED and the purchase unlocks nothing.
+/// Whether the App Store may offer to SELL a plan (or change one) to the
+/// signed-in account.
+///
+/// Audit 2026-09-29, A-9 / A-16: the paywall offered "Subscribe" to accounts
+/// already paying on another rail — the website (Polar), Google Play, or a
+/// voucher — which starts a second, separate subscription. A paid plan is
+/// managed where it was bought; the App Store only sells to an account that is
+/// free here, or changes a plan the App Store itself sold.
+///
+/// Mirrors Android's `StorePurchaseGate` (PlayStoreCatalog.kt) exactly.
+enum StorePurchaseGate {
+    /// The backend's EntitlementSource values (entitlement-resolver.ts).
+    static let sourceWeb = "WEB"
+    static let sourceAppStore = "APPLE_APP_STORE"
+    static let sourceGooglePlay = "GOOGLE_PLAY"
+    static let sourceFreeFloor = "FREE_FLOOR"
+
+    /// True when the account's paid plan was bought somewhere other than
+    /// `thisStore`, so this store must not offer a purchase.
+    ///
+    /// - Parameters:
+    ///   - plan: the server's resolved plan (`/vpn/stats`); RECON is free.
+    ///   - source: the server's winning entitlement source, when it reports one.
+    ///   - liveSources: every rail entitling the account, when reported.
+    ///   - thisStore: `sourceAppStore` or `sourceGooglePlay`.
+    ///   - thisStoreOwnsSubscription: whether this device's store account owns
+    ///     a Birdo subscription right now — the fallback when the server says
+    ///     nothing about sources.
+    static func paidElsewhere(plan: String?,
+                              source: String?,
+                              liveSources: [String]?,
+                              thisStore: String,
+                              thisStoreOwnsSubscription: Bool) -> Bool {
+        guard let plan = plan?.trimmingCharacters(in: .whitespaces), !plan.isEmpty,
+              plan.uppercased() != "RECON" else { return false }
+        let live = (liveSources ?? [])
+            .map { $0.uppercased() }
+            .filter { !$0.isEmpty && $0 != sourceFreeFloor }
+        if !live.isEmpty { return live.contains { $0 != thisStore } }
+        if let winner = source?.uppercased(), !winner.isEmpty, winner != sourceFreeFloor {
+            return winner != thisStore
+        }
+        return !thisStoreOwnsSubscription
+    }
+}
+
 enum BirdoStoreProduct: String, CaseIterable, Sendable {
     case operativeMonthly = "app.birdo.vpn.operative.monthly"
     case operativeYearly  = "app.birdo.vpn.operative.yearly"

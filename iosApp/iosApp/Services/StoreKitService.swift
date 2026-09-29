@@ -66,6 +66,14 @@ final class StoreKitService: ObservableObject {
     /// where to cancel. Sticky until dismissed: it is about money.
     @Published var duplicateBilling: AppleDuplicateBilling?
 
+    /// Whether this Apple ID currently owns a Birdo subscription, from the
+    /// latest `Transaction.currentEntitlements` sweep. Feeds
+    /// `StorePurchaseGate`: a paid plan the App Store does not know about was
+    /// bought elsewhere, and must not be sold a second time here. False until
+    /// the first sweep answers, which hides purchase buttons from a paid
+    /// account for that moment — the safe direction.
+    @Published private(set) var ownsStoreSubscription = false
+
     // MARK: - Collaborators (injected so nothing here reaches for a singleton)
 
     /// True when there is a usable Birdo session. Purchasing REQUIRES one: the
@@ -128,6 +136,24 @@ final class StoreKitService: ObservableObject {
             }
         }
         Task { await loadProducts() }
+        Task { await refreshOwnership() }
+    }
+
+    /// Re-read whether this Apple ID owns a current Birdo subscription.
+    /// Cheap (local StoreKit state); called at start, after a purchase and
+    /// after a restore, and by the subscription screen when it appears.
+    func refreshOwnership() async {
+        var owns = false
+        let now = Date()
+        for await entitlement in Transaction.currentEntitlements {
+            guard case .verified(let transaction) = entitlement,
+                  BirdoStoreProduct.from(identifier: transaction.productID) != nil,
+                  transaction.revocationDate == nil else { continue }
+            if let expiry = transaction.expirationDate, expiry < now { continue }
+            owns = true
+            break
+        }
+        ownsStoreSubscription = owns
     }
 
     /// Re-present anything StoreKit still considers current. Called when a
@@ -278,6 +304,7 @@ final class StoreKitService: ObservableObject {
             switch result {
             case .success(let verification):
                 _ = await ingest(verification, announceSuccess: true)
+                await refreshOwnership()
             case .userCancelled:
                 // The user said no. Saying anything at all here is noise.
                 break
@@ -338,6 +365,7 @@ final class StoreKitService: ObservableObject {
 
         notice = outcome.isSuccess ? .success(outcome.message) : .info(outcome.message)
         if outcome.isSuccess { onEntitlementChanged() }
+        await refreshOwnership()
         return outcome
     }
 

@@ -1468,6 +1468,13 @@ struct VpnStats: Sendable, Equatable {
     let bandwidthIsFresh: Bool?
     let hasPremiumServers: Bool
     let subscriptionEndsAt: String?
+    /// Where the plan was bought — the backend resolver's EntitlementSource
+    /// ("WEB", "APPLE_APP_STORE", "GOOGLE_PLAY", "FREE_FLOOR"). NOT sent by
+    /// `/vpn/stats` today; read when it is, so the paywall can tell a web or
+    /// Google Play subscriber from an App Store one (audit 2026-09-29, A-9).
+    let source: String?
+    /// Every rail entitling the account right now, when the backend reports them.
+    let liveSources: [String]?
 
     var hasBandwidthCap: Bool { bandwidthLimitGb > 0 }
     var isSovereign: Bool { plan.caseInsensitiveCompare("SOVEREIGN") == .orderedSame }
@@ -1484,7 +1491,7 @@ extension VpnStats: Decodable {
         case plan, status, activeConnections, maxConnections
         case bandwidthLimitGb, bandwidthUsedGb, bandwidthPeriodEnd
         case bandwidthLastSyncAt, bandwidthIsFresh, hasPremiumServers
-        case subscriptionEndsAt
+        case subscriptionEndsAt, source, liveSources
     }
 
     init(from decoder: Decoder) throws {
@@ -1500,6 +1507,10 @@ extension VpnStats: Decodable {
         bandwidthIsFresh = try c.decodeIfPresent(Bool.self, forKey: .bandwidthIsFresh)
         hasPremiumServers = try c.decodeIfPresent(Bool.self, forKey: .hasPremiumServers) ?? false
         subscriptionEndsAt = try c.decodeIfPresent(String.self, forKey: .subscriptionEndsAt)
+        // `try?`: optional, informational fields must never fail the plan
+        // snapshot every gate in the app reads.
+        source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? nil
+        liveSources = (try? c.decodeIfPresent([String].self, forKey: .liveSources)) ?? nil
     }
 }
 
