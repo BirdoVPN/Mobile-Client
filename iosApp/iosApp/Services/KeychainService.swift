@@ -168,7 +168,10 @@ final class KeychainService: @unchecked Sendable {
     }
 
     private func clearAllSharedSecrets() {
-        ["wg_private_key", "wg_preshared_key"].forEach { deleteShared(key: $0) }
+        // `hb_access_token`: the tunnel extension's heartbeat bearer token
+        // (VPNManager.heartbeatTokenAccount, audit D-13) — a session
+        // credential, so it dies with the session.
+        ["wg_private_key", "wg_preshared_key", "hb_access_token"].forEach { deleteShared(key: $0) }
     }
 
     // MARK: - App-Only Keychain Operations

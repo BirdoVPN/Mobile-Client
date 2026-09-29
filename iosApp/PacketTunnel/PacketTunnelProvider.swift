@@ -161,15 +161,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return
         }
 
-        // Heartbeat credentials (finding #2). Passed via providerConfiguration
-        // each connect so the token is fresh; readable only by this app's own
-        // appex. Absent keyId/token simply means no extension heartbeat (older
-        // host build) — the tunnel still works, it just can't self-report
+        // Heartbeat credentials (finding #2). The host parks a fresh token in
+        // the SHARED keychain on each connect and names it here
+        // (`hb-access-token-ref`); the token itself no longer rides
+        // providerConfiguration, which is stored in the system VPN preferences
+        // (audit 2026-09-29, D-13). A profile saved by a pre-1.4.32 host still
+        // carries `hb-access-token` directly and is honoured until the next
+        // connect rewrites it. Absent keyId/token simply means no extension
+        // heartbeat — the tunnel still works, it just can't self-report
         // liveness. NEVER log the token.
         let heartbeatKeyId = (proto.providerConfiguration?["hb-key-id"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let heartbeatToken = (proto.providerConfiguration?["hb-access-token"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let heartbeatToken = resolveHeartbeatToken(
+            ref: proto.providerConfiguration?["hb-access-token-ref"] as? String,
+            legacy: proto.providerConfiguration?["hb-access-token"] as? String
+        )
         // "0.0.0-unknown", never "1.0.0": a fabricated plausible version
         // defeats any server-side version floor and corrupts attribution (the
         // exact regression the codebase eliminated once). MUST stay in
@@ -424,7 +430,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             return
         }
         let keyId = ((message["hb-key-id"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let token = ((message["hb-access-token"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = resolveHeartbeatToken(
+            ref: message["hb-access-token-ref"] as? String,
+            legacy: message["hb-access-token"] as? String
+        ) ?? ""
         let rawVersion = message["hb-client-version"] as? String
         let clientVersion = (rawVersion?.isEmpty == false) ? rawVersion! : "0.0.0-unknown"
         let rawServer = message["server"] as? String
@@ -824,6 +833,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
+    }
+
+    /// The heartbeat bearer token: read from the shared keychain when the host
+    /// named it (`hb-access-token-ref`, 1.4.32+), else the token a pre-1.4.32
+    /// host put in the profile directly. nil when neither is usable.
+    private func resolveHeartbeatToken(ref: String?, legacy: String?) -> String? {
+        let name = (ref ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = name.isEmpty ? legacy : readSharedKeychain(account: name)
+        guard let token = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else { return nil }
+        return token
     }
 
     private func readSharedKeychain(account: String) -> String? {

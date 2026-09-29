@@ -851,6 +851,10 @@ final class AuthViewModel: ObservableObject {
         // AUDIT-C1: drop the persisted ML-KEM-1024 client identity so the
         // next user gets a fresh PQ keypair instead of inheriting this one.
         BirdoPQManager.shared.resetPersistedKeypair()
+        // Audit 2026-09-29, D-13: the persisted VPN profile must not keep this
+        // session's heartbeat credentials (token reference, legacy token, key
+        // id) after sign-out or deletion.
+        VPNManager.shared.scrubHeartbeatCredentials()
         isLoggedIn = false
         user = nil
         stats = nil
