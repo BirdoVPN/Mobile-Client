@@ -122,6 +122,26 @@ final class AuthViewModel: ObservableObject {
     /// inside the dialog.
     @Published private(set) var isDeleting = false
     @Published var deleteError: String?
+    /// Store subscriptions the server reported as STILL BILLING after a
+    /// successful deletion (audit 2026-09-29, A-8 / C-9). Deleting a Birdo
+    /// account cannot cancel an App Store or Google Play subscription, so the
+    /// shell shows these and says where to cancel. Cleared when dismissed.
+    @Published var storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling] = []
+
+    /// The notice for `storeSubscriptionsStillBilling`.
+    var storeBillingNoticeMessage: String {
+        var stores: [String] = []
+        if storeSubscriptionsStillBilling.contains(where: { $0.isAppStore }) {
+            stores.append("the App Store")
+        }
+        if storeSubscriptionsStillBilling.contains(where: { $0.isGooglePlay }) {
+            stores.append("Google Play")
+        }
+        if stores.isEmpty { stores.append("an app store") }
+        return "Your Birdo account has been deleted, but a subscription is still being billed by "
+            + stores.joined(separator: " and ")
+            + ". Only the store can cancel it. Cancel it there to stop further charges."
+    }
 
     /// App-shell reset hook, fired at the END of every local sign-out
     /// (`completeLocalLogout`). The shell wires this to reset sibling
@@ -870,10 +890,13 @@ final class AuthViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await api.deleteAccount(password: password)
+                let stillBilling = try await api.deleteAccount(password: password)
                 // The account is gone — so is its recovery credential.
                 keychain.clearAnonymousId()
                 completeLocalLogout()
+                // After the local sign-out, so nothing in it can clear the
+                // notice before the shell has shown it.
+                self.storeSubscriptionsStillBilling = stillBilling
             } catch {
                 self.deleteError = Self.mapDeleteError(error)
             }

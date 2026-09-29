@@ -286,7 +286,31 @@ data class DeleteAccountResponse(
     val message: String? = null,
     val deletedItems: Int = 0,
     val anonymizedItems: Int = 0,
+    /**
+     * App Store / Google Play subscriptions that are STILL BILLING after the
+     * account was erased. Deleting a Birdo account cancels a web (Polar)
+     * subscription, but only Apple or Google can cancel a store one (audit
+     * 2026-09-29, A-8 / C-9), so the server lists them and the app tells the
+     * user where to cancel.
+     *
+     * Optional on the wire: a backend that predates the field omits it, and
+     * coerceInputValues maps an explicit null to the empty default.
+     */
+    val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
 )
+
+/** One entry of [DeleteAccountResponse.storeSubscriptionsStillBilling]. Every field optional. */
+@Serializable
+data class StoreSubscriptionStillBilling(
+    /** "GOOGLE_PLAY" or "APPLE_APP_STORE" (the backend's EntitlementSource). */
+    val store: String? = null,
+    val productId: String? = null,
+    /** ISO-8601 end of the current paid period, when known. */
+    val expiresAt: String? = null,
+) {
+    val isGooglePlay: Boolean get() = store.equals("GOOGLE_PLAY", ignoreCase = true)
+    val isAppStore: Boolean get() = store.equals("APPLE_APP_STORE", ignoreCase = true)
+}
 
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 

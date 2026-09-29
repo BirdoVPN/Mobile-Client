@@ -321,7 +321,12 @@ final class APIClient: @unchecked Sendable {
     /// - Parameter password: the account password, required by the backend for
     ///   accounts that HAVE one. Pass `nil`/empty for SSO and anonymous accounts
     ///   (no hash on file) — the backend skips the check for those.
-    func deleteAccount(password: String?) async throws {
+    /// - Returns: the App Store / Google Play subscriptions the server reports
+    ///   as STILL BILLING after the erasure (audit 2026-09-29, A-8 / C-9):
+    ///   deleting the account cannot cancel them, so the caller tells the user
+    ///   where to. Empty when there are none or the backend predates the field.
+    @discardableResult
+    func deleteAccount(password: String?) async throws -> [StoreSubscriptionStillBilling] {
         // AUDIT-M-DRIFT: there is no `/auth/account` route. Erasure lives on the
         // GDPR controller at `@Controller('api/v1/gdpr')` + `@Delete('delete')`.
         // api.birdo.app proxies to Nest verbatim (no `uri strip_prefix /api` in
@@ -348,7 +353,7 @@ final class APIClient: @unchecked Sendable {
         let body = try encoder.encode(
             DeleteAccountBody(password: (trimmed?.isEmpty ?? true) ? nil : trimmed)
         )
-        _ = try await performRequest(
+        let response = try await performRequest(
             method: "DELETE",
             path: "/api/v1/gdpr/delete",
             body: body,
@@ -857,6 +862,11 @@ final class APIClient: @unchecked Sendable {
         // The cache holds the OLD id; leaving it would keep sending the erased
         // identity for the rest of the process lifetime.
         cachedDeviceContext = nil
+        // Tolerant by design: the erasure has ALREADY happened, so an absent
+        // field, an unexpected shape or an undecodable body must never turn
+        // it into a thrown error. It simply means "nothing to report".
+        return (try? decoder.decode(DeleteAccountResult.self, from: response))?
+            .storeSubscriptionsStillBilling ?? []
     }
 
     /// Hardware model identifier, e.g. "Apple iPhone15,3" (Android parity is
@@ -1650,6 +1660,25 @@ private struct SsoExchangeBody: Encodable {
 
 private struct DeleteAccountBody: Encodable {
     let password: String?
+}
+
+/// The part of the `DELETE /api/v1/gdpr/delete` response the app acts on.
+private struct DeleteAccountResult: Decodable {
+    let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
+}
+
+/// A store subscription the server reports as still billing after an account
+/// deletion. Every field optional: the backend field is new, and a missing
+/// value must not hide the warning.
+struct StoreSubscriptionStillBilling: Decodable, Sendable, Equatable {
+    /// "APPLE_APP_STORE" or "GOOGLE_PLAY" (the backend's EntitlementSource).
+    let store: String?
+    let productId: String?
+    /// ISO-8601 end of the current paid period, when known.
+    let expiresAt: String?
+
+    var isAppStore: Bool { store?.uppercased() == "APPLE_APP_STORE" }
+    var isGooglePlay: Bool { store?.uppercased() == "GOOGLE_PLAY" }
 }
 
 // ConnectBody / MultiHopBody live in ConnectWire.swift: they are the K5 wire

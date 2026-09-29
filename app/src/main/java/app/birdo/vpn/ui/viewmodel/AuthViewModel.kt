@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.auth.OAuthStateStore
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.StoreSubscriptionStillBilling
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.utils.PkceGenerator
@@ -37,6 +38,13 @@ data class AuthUiState(
     val isDeletingAccount: Boolean = false,
     val deleteAccountError: String? = null,
     val accountDeleted: Boolean = false,
+    /**
+     * App Store / Google Play subscriptions the server reports as still billing
+     * after the account was deleted. Non-empty means the user must be told to
+     * cancel them in the store: deleting a Birdo account cannot (audit
+     * 2026-09-29, A-8 / C-9). Empty when the backend does not send the field.
+     */
+    val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
     /**
      * A just-minted 24-digit anonymous ID the user has NOT yet confirmed saving.
      * Non-null means sign-in is deliberately parked: `isLoggedIn` stays false so
@@ -508,6 +516,8 @@ class AuthViewModel @Inject constructor(
                     _uiState.value = AuthUiState(
                         isLoggedIn = false,
                         accountDeleted = true,
+                        storeSubscriptionsStillBilling =
+                            result.data.storeSubscriptionsStillBilling,
                     )
                 }
                 is ApiResult.Error -> {
@@ -522,6 +532,11 @@ class AuthViewModel @Inject constructor(
 
     fun clearDeleteAccountError() {
         _uiState.value = _uiState.value.copy(deleteAccountError = null)
+    }
+
+    /** The user has read the "your store subscription is still billing" notice. */
+    fun dismissStoreBillingNotice() {
+        _uiState.value = _uiState.value.copy(storeSubscriptionsStillBilling = emptyList())
     }
 
     fun clearError() {

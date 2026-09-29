@@ -208,6 +208,31 @@ struct ContentView: View {
             .interactiveDismissDisabled(authVM.createdAnonymousId != nil)
             .modifier(SignInSheetSizing())
         }
+        // After an account deletion: store subscriptions the server says are
+        // STILL BILLING. Deleting a Birdo account cannot cancel an App Store or
+        // Google Play subscription (audit 2026-09-29, A-8 / C-9), so say so and
+        // open the subscription manager. Never shown when the backend does not
+        // send the list.
+        .alert("Store subscription still active",
+               isPresented: Binding(
+                   get: { !authVM.storeSubscriptionsStillBilling.isEmpty },
+                   set: { presented in
+                       if !presented { authVM.storeSubscriptionsStillBilling = [] }
+                   }),
+               actions: {
+                   if authVM.storeSubscriptionsStillBilling.contains(where: { $0.isAppStore }) {
+                       Button("Manage App Store subscription") {
+                           SystemOpen.manageSubscriptions()
+                           authVM.storeSubscriptionsStillBilling = []
+                       }
+                   }
+                   Button("OK", role: .cancel) {
+                       authVM.storeSubscriptionsStillBilling = []
+                   }
+               },
+               message: {
+                   Text(authVM.storeBillingNoticeMessage)
+               })
         // S1 FIX: loadServers() was previously reachable ONLY from the manual
         // refresh button, so a fresh launch showed "0 servers" and Connect
         // yielded "Select a server first". Fire on the login flip AND on cold

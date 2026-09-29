@@ -391,9 +391,12 @@ struct ProfileView: View {
     private var deleteDialog: some View {
         BirdoConfirmDialog(
             title: "Delete Account",
+            // Audit 2026-09-29, A-8 / C-9: this used to say the "subscription
+            // will be deleted". An App Store subscription is not — only Apple
+            // can cancel it — so the warning below says so BEFORE confirming.
             message: requiresPassword
-                ? "This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted. Enter your password to confirm."
-                : "This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted.",
+                ? "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. Enter your password to confirm."
+                : "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted.",
             icon: "exclamationmark.triangle.fill",
             iconColor: BirdoTheme.red,
             confirmLabel: "Delete My Account",
@@ -404,6 +407,22 @@ struct ProfileView: View {
             onCancel: dismissDeleteDialog
         ) {
             VStack(spacing: 0) {
+                VStack(spacing: 6) {
+                    Text("A subscription billed by Birdo is cancelled with your account. One bought through the App Store or Google Play is not: cancel it there first, or the store will keep charging you.")
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.onSurface)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Manage App Store subscription") {
+                        SystemOpen.manageSubscriptions()
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(BirdoTheme.accent)
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 44) // touch target
+                    .disabled(authVM.isDeleting)
+                }
+                .padding(.bottom, 12)
                 if requiresPassword {
                     BirdoTextField("Password",
                                    placeholder: "Password",

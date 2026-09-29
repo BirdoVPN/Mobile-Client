@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
+import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
@@ -185,6 +186,9 @@ fun ProfileScreen(
 
     if (showDeleteDialog) {
         DeleteAccountDialog(
+            // Deleting the account cannot cancel a Play subscription; the
+            // dialog says so and links to where it can be cancelled.
+            onManageStoreSubscription = { onOpenUrl(PlaySubscriptionLinks.MANAGE) },
             // SSO and password-less anonymous accounts have no password to
             // confirm. The backend already accepts a password-less delete from
             // them (GDPR Art. 17); it was this dialog that trapped them, by
@@ -639,6 +643,7 @@ private fun DeleteAccountDialog(
     error: String?,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
+    onManageStoreSubscription: () -> Unit,
 ) {
     var password by remember { mutableStateOf("") }
 
@@ -654,7 +659,9 @@ private fun DeleteAccountDialog(
             }
         },
         text = {
-            Column {
+            // Scrolls: the store warning below makes this taller than a small
+            // phone's dialog once the password field and keyboard are up.
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     stringResource(
                         if (requiresPassword) R.string.delete_dialog_message
@@ -663,6 +670,24 @@ private fun DeleteAccountDialog(
                     style = MaterialTheme.typography.bodyMedium,
                     color = BirdoWhite60,
                 )
+                // Audit 2026-09-29, A-8 / C-9: this dialog used to say the
+                // "subscription will be deleted". A Play or App Store
+                // subscription is not — only the store can cancel it — so the
+                // user is told BEFORE confirming, with the way to cancel it.
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    stringResource(R.string.delete_dialog_store_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = BirdoWhite80,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                TextButton(
+                    onClick = onManageStoreSubscription,
+                    enabled = !isDeletingAccount,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                ) {
+                    Text(stringResource(R.string.delete_dialog_manage_play), color = BirdoGreen)
+                }
                 if (requiresPassword) {
                     Spacer(Modifier.height(16.dp))
                     OutlinedTextField(

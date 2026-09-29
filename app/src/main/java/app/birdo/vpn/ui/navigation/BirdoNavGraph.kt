@@ -36,6 +36,7 @@ import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
 import app.birdo.vpn.billing.BirdoBillingPeriod
+import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.billing.PurchasableOffer
 import app.birdo.vpn.billing.StorefrontState
 import app.birdo.vpn.ui.components.BillingChoice
@@ -885,6 +886,46 @@ fun BirdoNavGraph(
 
         }
         } // end Column
+
+            // After a deletion: store subscriptions the server says are STILL
+            // BILLING. Deleting a Birdo account cannot cancel a Google Play or
+            // App Store subscription (audit 2026-09-29, A-8 / C-9), so say so
+            // and link to where it can be cancelled. Never shown when the
+            // backend does not send the list.
+            val stillBilling = authState.storeSubscriptionsStillBilling
+            if (stillBilling.isNotEmpty()) {
+                val billingContext = LocalContext.current
+                val stores = stillBilling.map { sub ->
+                    when {
+                        sub.isGooglePlay -> stringResource(R.string.store_still_billing_google_play)
+                        sub.isAppStore -> stringResource(R.string.store_still_billing_app_store)
+                        else -> stringResource(R.string.store_still_billing_unknown_store)
+                    }
+                }.distinct().joinToString("; ")
+                AlertDialog(
+                    onDismissRequest = { authViewModel.dismissStoreBillingNotice() },
+                    title = { Text(stringResource(R.string.store_still_billing_title), fontWeight = FontWeight.Bold) },
+                    text = { Text(stringResource(R.string.store_still_billing_body, stores)) },
+                    confirmButton = {
+                        TextButton(onClick = { authViewModel.dismissStoreBillingNotice() }) {
+                            Text(stringResource(R.string.store_still_billing_ok))
+                        }
+                    },
+                    dismissButton = {
+                        if (stillBilling.any { it.isGooglePlay }) {
+                            TextButton(onClick = {
+                                runCatching {
+                                    billingContext.startActivity(
+                                        Intent(Intent.ACTION_VIEW, PlaySubscriptionLinks.MANAGE.toUri()),
+                                    )
+                                }
+                            }) {
+                                Text(stringResource(R.string.store_still_billing_manage))
+                            }
+                        }
+                    },
+                )
+            }
         } // end Box
     }
 }

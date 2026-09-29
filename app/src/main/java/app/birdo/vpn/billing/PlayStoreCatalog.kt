@@ -509,3 +509,20 @@ data class StoreNotice(val kind: Kind, val text: String) {
         fun error(text: String) = StoreNotice(Kind.ERROR, text)
     }
 }
+
+// ── Managing a Play subscription ────────────────────────────────────────────
+
+/**
+ * Where a Google Play subscription is cancelled or changed.
+ *
+ * Only Google can cancel a Play subscription: deleting the Birdo account does
+ * not, and neither can Birdo (audit 2026-09-29, A-8 / C-9). Every surface that
+ * has to say so links here.
+ */
+object PlaySubscriptionLinks {
+    /** The Play listing's package, not BuildConfig.APPLICATION_ID (debug builds carry a suffix). */
+    const val PACKAGE_NAME = "app.birdo.vpn"
+
+    /** Play's own subscription manager, scoped to this app. */
+    const val MANAGE = "https://play.google.com/store/account/subscriptions?package=$PACKAGE_NAME"
+}

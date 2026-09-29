@@ -129,10 +129,26 @@
 
     <!-- Delete Account Dialog -->
     <string name="delete_dialog_title">Delete Account</string>
-    <string name="delete_dialog_message">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted. Enter your password to confirm.</string>
+    <!-- Audit 2026-09-29, A-8 / C-9: this used to say the "subscription will be
+         deleted". Only a subscription billed by Birdo is cancelled with the
+         account; a Google Play or App Store one keeps billing until the user
+         cancels it in the store, which delete_dialog_store_warning says. -->
+    <string name="delete_dialog_message">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. Enter your password to confirm.</string>
     <!-- Shown to accounts with no password (SSO and anonymous), which cannot be
          asked to confirm a credential they do not have. -->
-    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted.</string>
+    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted.</string>
+    <string name="delete_dialog_store_warning">A subscription billed by Birdo is cancelled with your account. One bought through Google Play or the App Store is not: cancel it there first, or the store will keep charging you.</string>
+    <string name="delete_dialog_manage_play">Manage Google Play subscriptions</string>
+    <!-- After a deletion, when the server reports store subscriptions that are
+         still billing (DeleteAccountResponse.storeSubscriptionsStillBilling).
+         %1$s is a list such as "Google Play (Operative, renews 1 Nov 2026)". -->
+    <string name="store_still_billing_title">Store subscription still active</string>
+    <string name="store_still_billing_body">Your Birdo account has been deleted, but this subscription is still being billed: %1$s. Only the store can cancel it. Cancel it there to stop further charges.</string>
+    <string name="store_still_billing_google_play">Google Play</string>
+    <string name="store_still_billing_app_store">the App Store (cancel it in your Apple Account settings on an iPhone, iPad or Mac)</string>
+    <string name="store_still_billing_unknown_store">an app store</string>
+    <string name="store_still_billing_manage">Open Google Play subscriptions</string>
+    <string name="store_still_billing_ok">OK</string>
     <string name="delete_dialog_password_label">Password</string>
     <string name="delete_dialog_confirm">Delete My Account</string>
     <string name="delete_dialog_deleting">Deleting…</string>
