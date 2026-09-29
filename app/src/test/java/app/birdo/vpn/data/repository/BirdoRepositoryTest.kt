@@ -371,6 +371,43 @@ class BirdoRepositoryTest {
         // The account still exists — its slot reclamation depends on the id
         // staying stable, so a refused deletion must not rotate it.
         verify(exactly = 0) { deviceInfoProvider.resetDeviceIdentity() }
+        verify(exactly = 0) { deviceInfoProvider.forgetPostQuantumKeypair() }
+    }
+
+    // ── ML-KEM keypair rotation (audit 2026-09-29, D-15) ────────
+
+    @Test
+    fun `deleteAccount success forgets the ML-KEM keypair`() = runTest {
+        coEvery { api.deleteAccount(any()) } returns Response.success(
+            DeleteAccountResponse(success = true)
+        )
+
+        repository.deleteAccount("pass123")
+
+        // The per-install PQ public key rides every /connect body; kept, it
+        // joins the erased account to the next one on this handset.
+        verify(exactly = 1) { deviceInfoProvider.forgetPostQuantumKeypair() }
+    }
+
+    @Test
+    fun `logout forgets the ML-KEM keypair`() = runTest {
+        coEvery { api.logout() } returns Response.success(Unit)
+
+        repository.logout()
+
+        verify(exactly = 1) { deviceInfoProvider.forgetPostQuantumKeypair() }
+        // …but not the deviceId: a live account's slot reclamation keys on it.
+        verify(exactly = 0) { deviceInfoProvider.resetDeviceIdentity() }
+    }
+
+    @Test
+    fun `logout still completes when the keypair cannot be deleted`() = runTest {
+        coEvery { api.logout() } returns Response.success(Unit)
+        every { deviceInfoProvider.forgetPostQuantumKeypair() } throws IllegalStateException("keystore")
+
+        repository.logout()
+
+        verify(exactly = 1) { tokenManager.clearAll() }
     }
 
     // ── Get Profile ─────────────────────────────────────────────
