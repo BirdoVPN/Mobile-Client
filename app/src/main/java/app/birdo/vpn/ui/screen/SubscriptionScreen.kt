@@ -175,6 +175,12 @@ fun SubscriptionScreen(
      * second, separate subscription (audit 2026-09-29, A-9 / A-16).
      */
     purchaseManagedElsewhere: Boolean = false,
+    /**
+     * Opens the Terms of Service / Privacy Policy. The purchase screen links
+     * both, as the iOS one already does (audit 2026-09-29, D-20): a
+     * subscription is bought here under those terms.
+     */
+    onOpenUrl: (String) -> Unit = {},
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
     val palette = BirdoColors.current
@@ -388,6 +394,26 @@ fun SubscriptionScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp),
             )
+
+            // The terms a subscription is bought under. Birdo's own pages,
+            // not a purchase route, so they belong in every build.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                TextButton(onClick = { onOpenUrl("https://birdo.app/terms") }) {
+                    Text(
+                        stringResource(R.string.settings_terms_of_service),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                TextButton(onClick = { onOpenUrl("https://birdo.app/privacy") }) {
+                    Text(
+                        stringResource(R.string.settings_privacy_policy),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
 
             Spacer(Modifier.height(32.dp))
         }

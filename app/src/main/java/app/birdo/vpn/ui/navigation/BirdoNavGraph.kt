@@ -884,6 +884,7 @@ fun BirdoNavGraph(
                             billingViewModel.dismissDuplicateBilling()
                         },
                         purchaseManagedElsewhere = purchaseManagedElsewhere,
+                        onOpenUrl = { settingsViewModel.openUrl(it) },
                     )
 
                     if (showBillingChoice) {
