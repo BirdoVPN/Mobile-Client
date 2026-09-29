@@ -1320,4 +1320,54 @@ class AuthViewModelTest {
         assertFalse(state.isLoggedIn)
         assertEquals("Could not create an anonymous account. Please try again.", state.error)
     }
+
+    // ── Deletion preflight (second-pass #9) ─────────────────────
+
+    @Test
+    fun `the deletion preflight names what will keep billing`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        val preflight = app.birdo.vpn.data.model.DeletionPreflightResponse(
+            success = true,
+            storeSubscriptionsStillBilling = listOf(
+                app.birdo.vpn.data.model.StoreSubscriptionStillBilling(store = "GOOGLE_PLAY", productId = "birdo_operative"),
+            ),
+            webSubscriptionWillBeCancelled = true,
+        )
+        coEvery { repository.deletionPreflight() } returns ApiResult.Success(preflight)
+
+        viewModel.loadDeletionPreflight()
+
+        assertEquals(preflight, viewModel.uiState.value.deletionPreflight)
+    }
+
+    @Test
+    fun `a failed deletion preflight leaves the static warning and blocks nothing`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.deletionPreflight() } returns ApiResult.Error("Service temporarily unavailable", 503)
+
+        viewModel.loadDeletionPreflight()
+
+        val state = viewModel.uiState.value
+        assertNull(state.deletionPreflight)
+        assertNull(state.deleteAccountError)
+        assertFalse(state.isDeletingAccount)
+    }
+
+    @Test
+    fun `reopening the dialog drops the previous answer until the new one arrives`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.deletionPreflight() } returns ApiResult.Success(
+            app.birdo.vpn.data.model.DeletionPreflightResponse(success = true, webSubscriptionWillBeCancelled = true),
+        )
+        viewModel.loadDeletionPreflight()
+        assertNotNull(viewModel.uiState.value.deletionPreflight)
+
+        val pending = CompletableDeferred<ApiResult<app.birdo.vpn.data.model.DeletionPreflightResponse>>()
+        coEvery { repository.deletionPreflight() } coAnswers { pending.await() }
+        viewModel.loadDeletionPreflight()
+        assertNull("a stale answer must not be shown for a new dialog", viewModel.uiState.value.deletionPreflight)
+
+        pending.complete(ApiResult.Error("Network error"))
+        assertNull(viewModel.uiState.value.deletionPreflight)
+    }
 }

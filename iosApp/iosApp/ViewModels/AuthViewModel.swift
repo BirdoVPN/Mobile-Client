@@ -143,6 +143,44 @@ final class AuthViewModel: ObservableObject {
             + ". Only the store can cancel it. Cancel it there to stop further charges."
     }
 
+    /// The deletion preflight (second-pass #9): fetched when the deletion
+    /// dialog opens, so the dialog can name the store subscriptions that will
+    /// keep billing BEFORE the user confirms. Nil while loading and after a
+    /// failure; the dialog then shows its static warning, and deletion never
+    /// waits on it.
+    @Published private(set) var deletionPreflight: DeletionPreflight?
+    private var deletionPreflightTask: Task<Void, Never>?
+
+    /// The named-store warning for the deletion dialog, or nil when there is
+    /// nothing named (the static warning is shown instead).
+    var deletionPreflightStoreWarning: String? {
+        guard let subs = deletionPreflight?.stillBilling, !subs.isEmpty else { return nil }
+        var stores: [String] = []
+        if subs.contains(where: { $0.isAppStore }) {
+            stores.append("the App Store")
+        }
+        if subs.contains(where: { $0.isGooglePlay }) {
+            stores.append("Google Play")
+        }
+        if stores.isEmpty { stores.append("an app store") }
+        return "This account has a subscription that deleting it will not cancel, billed by "
+            + stores.joined(separator: " and ")
+            + ". Cancel it there first, or the store will keep charging you."
+    }
+
+    /// Ask the server what a deletion would leave billing. Best effort: any
+    /// failure leaves `deletionPreflight` nil.
+    func loadDeletionPreflight() {
+        deletionPreflightTask?.cancel()
+        deletionPreflight = nil
+        deletionPreflightTask = Task { [weak self] in
+            guard let self else { return }
+            let result = try? await self.api.deletionPreflight()
+            guard !Task.isCancelled else { return }
+            self.deletionPreflight = result
+        }
+    }
+
     /// App-shell reset hook, fired at the END of every local sign-out
     /// (`completeLocalLogout`). The shell wires this to reset sibling
     /// view-models (notably VpnViewModel: plan/servers/subscription caches) so a

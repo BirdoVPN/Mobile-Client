@@ -58,6 +58,28 @@ class DeletionStoreWarningTest {
         assertTrue(profile.contains("onManageStoreSubscription = { onOpenUrl(PlaySubscriptionLinks.MANAGE) }"))
     }
 
+    /** Second-pass #9: the preflight is asked for when the dialog opens. */
+    @Test
+    fun `android names the still-billing stores before confirming`() {
+        val profile = source("app/src/main/java/app/birdo/vpn/ui/screen/ProfileScreen.kt")
+        assertTrue(profile.contains("onDeleteDialogOpened()"))
+        assertTrue(profile.contains("R.string.delete_dialog_preflight_store"))
+        val graph = source("app/src/main/java/app/birdo/vpn/ui/navigation/BirdoNavGraph.kt")
+        assertTrue(graph.contains("onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() }"))
+        assertTrue(graph.contains("deletionPreflight = authState.deletionPreflight"))
+    }
+
+    @Test
+    fun `ios names the still-billing stores before confirming`() {
+        val api = source("iosApp/iosApp/Services/APIClient.swift")
+        assertTrue(api.contains("get(path: \"/api/v1/gdpr/delete/preflight\")"))
+        val profile = source("iosApp/iosApp/Views/ProfileView.swift")
+        assertTrue("the dialog must ask for the preflight when it opens", profile.contains("authVM.loadDeletionPreflight()"))
+        val dialog = profile.substringAfter("private var deleteDialog: some View {")
+            .substringBefore("private func confirmDelete()")
+        assertTrue(dialog.contains("authVM.deletionPreflightStoreWarning"))
+    }
+
     @Test
     fun `android shows what the server says is still billing after deletion`() {
         val auth = source("app/src/main/java/app/birdo/vpn/ui/viewmodel/AuthViewModel.kt")

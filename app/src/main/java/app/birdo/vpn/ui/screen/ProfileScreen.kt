@@ -68,6 +68,7 @@ import android.widget.Toast
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.billing.PlaySubscriptionLinks
+import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
@@ -105,6 +106,10 @@ fun ProfileScreen(
     isDeletingAccount: Boolean = false,
     deleteAccountError: String? = null,
     onClearDeleteError: () -> Unit = {},
+    // Second-pass #9: fetched when the deletion dialog opens (null while
+    // loading or after a failure, when the dialog keeps its static warning).
+    deletionPreflight: DeletionPreflightResponse? = null,
+    onDeleteDialogOpened: () -> Unit = {},
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering). See IS_PLAY_BUILD.
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
@@ -177,7 +182,10 @@ fun ProfileScreen(
             icon = Icons.Default.DeleteForever,
             title = stringResource(R.string.settings_delete_account),
             subtitle = null,
-            onClick = { showDeleteDialog = true },
+            onClick = {
+                showDeleteDialog = true
+                onDeleteDialogOpened()
+            },
             destructive = true,
         )
 
@@ -194,6 +202,7 @@ fun ProfileScreen(
             // them (GDPR Art. 17); it was this dialog that trapped them, by
             // keeping Delete disabled until a non-blank password was typed.
             requiresPassword = user?.hasPassword ?: true,
+            preflight = deletionPreflight,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
             onConfirm = { password -> onDeleteAccount(password) },
@@ -639,6 +648,7 @@ private fun formatRenewalDate(raw: String?): String? {
 @Composable
 private fun DeleteAccountDialog(
     requiresPassword: Boolean,
+    preflight: DeletionPreflightResponse?,
     isDeletingAccount: Boolean,
     error: String?,
     onConfirm: (String) -> Unit,
@@ -675,12 +685,42 @@ private fun DeleteAccountDialog(
                 // subscription is not — only the store can cancel it — so the
                 // user is told BEFORE confirming, with the way to cancel it.
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    stringResource(R.string.delete_dialog_store_warning),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = BirdoWhite80,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                // Second-pass #9: when the preflight has answered and names
+                // store subscriptions that will keep billing, say which ones
+                // BEFORE the confirm button. Loading, failed, or none named:
+                // the static warning, which is true either way. Deletion is
+                // never gated on the preflight.
+                val stillBilling = preflight?.storeSubscriptionsStillBilling.orEmpty()
+                if (stillBilling.isNotEmpty()) {
+                    val stores = stillBilling.map { sub ->
+                        when {
+                            sub.isGooglePlay -> stringResource(R.string.store_still_billing_google_play)
+                            sub.isAppStore -> stringResource(R.string.store_still_billing_app_store)
+                            else -> stringResource(R.string.store_still_billing_unknown_store)
+                        }
+                    }.distinct().joinToString("; ")
+                    Text(
+                        stringResource(R.string.delete_dialog_preflight_store, stores),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoRed,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                } else {
+                    Text(
+                        stringResource(R.string.delete_dialog_store_warning),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (preflight?.webSubscriptionWillBeCancelled == true) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(R.string.delete_dialog_preflight_web),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                    )
+                }
                 TextButton(
                     onClick = onManageStoreSubscription,
                     enabled = !isDeletingAccount,

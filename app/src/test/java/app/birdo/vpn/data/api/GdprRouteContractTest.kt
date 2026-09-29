@@ -48,6 +48,21 @@ class GdprRouteContractTest {
         assertEquals("https://api.birdo.app/api/v1/gdpr/delete", resolved)
     }
 
+    /**
+     * Second-pass #9: the deletion dialog asks `GET /api/v1/gdpr/delete/preflight`
+     * (gdpr.controller.ts `@Get('delete/preflight')` on the same
+     * `api/v1/gdpr` controller) which store subscriptions will keep billing.
+     */
+    @Test
+    fun `the deletion preflight is a GET to the api prefixed route`() {
+        val method = BirdoApi::class.java.methods.single { it.name == "deletionPreflight" }
+        val get = method.getAnnotation(retrofit2.http.GET::class.java)
+        assertNotNull("BirdoApi.deletionPreflight lost its @GET annotation", get)
+        assertEquals(BirdoApi.GDPR_DELETE_PREFLIGHT_PATH, get!!.value)
+        val resolved = "https://api.birdo.app/".toHttpUrl().resolve(get.value)?.toString()
+        assertEquals("https://api.birdo.app/api/v1/gdpr/delete/preflight", resolved)
+    }
+
     @Test
     fun `no other client route still points at the unprefixed gdpr path`() {
         val offenders = BirdoApi::class.java.methods.mapNotNull { m ->

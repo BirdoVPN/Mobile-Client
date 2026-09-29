@@ -40,6 +40,7 @@ typealias RedeemVoucherResponse = app.birdo.vpn.shared.model.RedeemVoucherRespon
 typealias DeleteAccountRequest = app.birdo.vpn.shared.model.DeleteAccountRequest
 typealias DeleteAccountResponse = app.birdo.vpn.shared.model.DeleteAccountResponse
 typealias StoreSubscriptionStillBilling = app.birdo.vpn.shared.model.StoreSubscriptionStillBilling
+typealias DeletionPreflightResponse = app.birdo.vpn.shared.model.DeletionPreflightResponse
 
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 typealias VpnServer = app.birdo.vpn.shared.model.VpnServer

@@ -373,6 +373,17 @@ final class APIClient: @unchecked Sendable {
             .storeSubscriptionsStillBilling ?? []
     }
 
+    /// What deleting the account will and will not stop: the App Store /
+    /// Google Play subscriptions that keep billing, and whether a web
+    /// subscription is cancelled (`GET /api/v1/gdpr/delete/preflight`, same
+    /// controller and auth as `deleteAccount`). Read-only. The deletion dialog
+    /// calls it when it opens so it can name the stores BEFORE the user
+    /// confirms (second-pass #9); a throw simply leaves the static warning.
+    func deletionPreflight() async throws -> DeletionPreflight {
+        let data = try await get(path: "/api/v1/gdpr/delete/preflight")
+        return try decoder.decode(DeletionPreflight.self, from: data)
+    }
+
     // MARK: - Servers
 
     func fetchServers() async throws -> [ServerInfo] {
@@ -1708,6 +1719,19 @@ struct StoreSubscriptionStillBilling: Decodable, Sendable, Equatable {
 
     var isAppStore: Bool { store?.uppercased() == "APPLE_APP_STORE" }
     var isGooglePlay: Bool { store?.uppercased() == "GOOGLE_PLAY" }
+}
+
+/// `GET /api/v1/gdpr/delete/preflight` (backend `DeletionPreflight`, returned
+/// as `{ success, storeSubscriptionsStillBilling, webSubscriptionWillBeCancelled }`).
+/// Every field optional: an absent value means "nothing to name", never an error.
+struct DeletionPreflight: Decodable, Sendable, Equatable {
+    let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
+    let webSubscriptionWillBeCancelled: Bool?
+
+    /// Store subscriptions that will KEEP BILLING after the deletion.
+    var stillBilling: [StoreSubscriptionStillBilling] { storeSubscriptionsStillBilling ?? [] }
+    /// A web (Polar) subscription is billing and the deletion will cancel it.
+    var webWillBeCancelled: Bool { webSubscriptionWillBeCancelled ?? false }
 }
 
 // ConnectBody / MultiHopBody live in ConnectWire.swift: they are the K5 wire

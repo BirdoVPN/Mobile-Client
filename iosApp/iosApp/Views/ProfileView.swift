@@ -88,6 +88,9 @@ struct ProfileView: View {
                         destructive: true
                     ) {
                         showDeleteDialog = true
+                        // Second-pass #9: name the stores still billing before
+                        // the user confirms. Never gates the deletion.
+                        authVM.loadDeletionPreflight()
                     }
                 }
 
@@ -412,11 +415,22 @@ struct ProfileView: View {
         ) {
             VStack(spacing: 0) {
                 VStack(spacing: 6) {
-                    Text("A subscription billed by Birdo is cancelled with your account. One bought through the App Store or Google Play is not: cancel it there first, or the store will keep charging you.")
+                    // Second-pass #9: the preflight's named stores when it has
+                    // answered with some; otherwise (loading, failed, none)
+                    // the static warning, which is true either way.
+                    Text(authVM.deletionPreflightStoreWarning
+                         ?? "A subscription billed by Birdo is cancelled with your account. One bought through the App Store or Google Play is not: cancel it there first, or the store will keep charging you.")
                         .font(BirdoTheme.Fonts.bodySmall)
                         .foregroundStyle(BirdoTheme.onSurface)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
+                    if authVM.deletionPreflight?.webWillBeCancelled == true {
+                        Text("Your subscription billed by Birdo will be cancelled with your account.")
+                            .font(BirdoTheme.Fonts.bodySmall)
+                            .foregroundStyle(BirdoTheme.onSurface)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Button("Manage App Store subscription") {
                         SystemOpen.manageSubscriptions()
                     }

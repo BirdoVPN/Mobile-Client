@@ -518,6 +518,8 @@ fun BirdoNavGraph(
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
+                        deletionPreflight = authState.deletionPreflight,
+                        onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
                     )
                 }
             }

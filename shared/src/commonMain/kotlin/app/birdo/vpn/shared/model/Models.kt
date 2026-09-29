@@ -309,6 +309,23 @@ data class DeleteAccountResponse(
     val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
 )
 
+/**
+ * `GET /api/v1/gdpr/delete/preflight`: what deleting the account will and will
+ * not stop, fetched when the deletion dialog opens so it can name the stores
+ * BEFORE the user confirms (second-pass #9; backend `DeletionPreflight`).
+ *
+ * Every field defaults: a failed or odd preflight must never block a deletion,
+ * the dialog then shows its static store warning instead.
+ */
+@Serializable
+data class DeletionPreflightResponse(
+    val success: Boolean = false,
+    /** Store subscriptions that will KEEP BILLING after the deletion. */
+    val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
+    /** A web (Polar) subscription is billing and the deletion will cancel it. */
+    val webSubscriptionWillBeCancelled: Boolean = false,
+)
+
 /** One entry of [DeleteAccountResponse.storeSubscriptionsStillBilling]. Every field optional. */
 @Serializable
 data class StoreSubscriptionStillBilling(

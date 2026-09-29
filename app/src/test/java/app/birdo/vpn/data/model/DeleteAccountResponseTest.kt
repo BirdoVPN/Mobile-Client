@@ -57,4 +57,34 @@ class DeleteAccountResponseTest {
         // "an app store" is billing) rather than failing the whole decode.
         assertFalse(subs[2].isGooglePlay || subs[2].isAppStore)
     }
+
+    // ── GET api/v1/gdpr/delete/preflight (second-pass #9) ─────────────
+
+    private fun decodePreflight(body: String): DeletionPreflightResponse =
+        json.decodeFromString(serializer<DeletionPreflightResponse>(), body)
+
+    @Test
+    fun `the preflight decodes the backend's shape`() {
+        // gdpr.controller.ts deletePreflight: { success: true, ...DeletionPreflight }.
+        val p = decodePreflight(
+            """
+            {"success":true,
+             "storeSubscriptionsStillBilling":[
+               {"store":"APPLE_APP_STORE","productId":"app.birdo.vpn.operative.yearly","expiresAt":"2027-01-01T00:00:00.000Z"}
+             ],
+             "webSubscriptionWillBeCancelled":true}
+            """.trimIndent(),
+        )
+        assertTrue(p.success)
+        assertEquals(1, p.storeSubscriptionsStillBilling.size)
+        assertTrue(p.storeSubscriptionsStillBilling[0].isAppStore)
+        assertTrue(p.webSubscriptionWillBeCancelled)
+    }
+
+    @Test
+    fun `a sparse preflight means nothing to name`() {
+        val p = decodePreflight("""{"success":true,"storeSubscriptionsStillBilling":null}""")
+        assertTrue(p.storeSubscriptionsStillBilling.isEmpty())
+        assertFalse(p.webSubscriptionWillBeCancelled)
+    }
 }

@@ -446,6 +446,14 @@ class BirdoRepository @Inject constructor(
         return result
     }
 
+    /**
+     * What deleting the account will and will not stop (second-pass #9). Read
+     * only: nothing local changes whatever it returns, and callers treat an
+     * error as "unknown" and fall back to the dialog's static store warning.
+     */
+    suspend fun deletionPreflight(): ApiResult<DeletionPreflightResponse> =
+        withAutoRefresh("Could not check subscriptions") { api.deletionPreflight() }
+
     /** Never lets a keystore/file error turn a sign-out or deletion into a failure. */
     private fun forgetPostQuantumKeypair() {
         try {

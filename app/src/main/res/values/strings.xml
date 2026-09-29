@@ -152,6 +152,12 @@
          asked to confirm a credential they do not have. -->
     <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax.</string>
     <string name="delete_dialog_store_warning">A subscription billed by Birdo is cancelled with your account. One bought through Google Play or the App Store is not: cancel it there first, or the store will keep charging you.</string>
+    <!-- Second-pass #9: from GET api/v1/gdpr/delete/preflight, shown before
+         the confirm button in place of delete_dialog_store_warning when the
+         server names store subscriptions that will keep billing. %1$s is a
+         list of store_still_billing_* names. -->
+    <string name="delete_dialog_preflight_store">This account has a subscription that deleting it will not cancel: %1$s. Cancel it there first, or the store will keep charging you.</string>
+    <string name="delete_dialog_preflight_web">Your subscription billed by Birdo will be cancelled with your account.</string>
     <string name="delete_dialog_manage_play">Manage Google Play subscriptions</string>
     <!-- After a deletion, when the server reports store subscriptions that are
          still billing (DeleteAccountResponse.storeSubscriptionsStillBilling).
