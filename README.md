@@ -61,7 +61,8 @@ Compiled to:
 ## Features
 
 - **WireGuard Protocol** -- ChaCha20-Poly1305 encryption with Curve25519 + Post-Quantum key exchange
-- **Kill Switch** -- Blocks all traffic if the tunnel drops
+- **Kill Switch** -- if the tunnel drops unexpectedly, the app blocks traffic
+  until it reconnects
 - **Split Tunneling** -- Per-app VPN routing (Android)
 - **Auto-reconnect** -- the tunnel re-establishes itself after network changes
   while the app's service is running. (Android's system "Always-on VPN" toggle
@@ -73,9 +74,13 @@ Compiled to:
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,
   Glance)
-- **On-Demand Connect** -- Rules-based activation on specific networks (iOS)
-- **Stealth Mode** -- XRAY Reality obfuscation to bypass DPI
-- **Multi-Hop** -- Route through multiple servers for extra anonymity
+- **Stealth Mode** -- XRAY Reality obfuscation to bypass DPI (Android)
+- **Multi-Hop** -- your traffic enters one server and leaves from another, so
+  sites see the exit server's address. It is not onion routing: the entry
+  server can see your IP address and the destinations you connect to.
+- **Crash reporting** -- Sentry, Android only, OFF unless the user turns it on
+  (first screen or Settings); no sessions, no account data. The iOS/macOS app
+  has no crash-reporting SDK.
 
 ---
 
@@ -208,7 +213,12 @@ version.properties     Centralized version (1.4.29)
 - All network traffic encrypted with WireGuard (ChaCha20-Poly1305)
 - Certificate pinning on all API connections
 - Credentials stored in Android Keystore / iOS Keychain
-- No activity logs, no DNS logs, no traffic inspection
+- No activity logs: the VPN servers do not record the sites you visit, your
+  DNS queries or your traffic. While you are connected the account system
+  keeps a live session record, deleted when you disconnect and never included
+  in backups -- see [birdo.app/privacy](https://birdo.app/privacy)
+- No advertising or analytics SDKs; optional crash reporting (Android, off
+  unless you turn it on)
 - Release artifacts signed with Sigstore for provenance verification
 - CI uses pinned action SHAs and minimal permissions
 - ProGuard/R8 obfuscation on release builds (Android)
@@ -220,7 +230,9 @@ For vulnerability reports, email **security@birdo.app**.
 ## License
 
 This project is licensed under [Creative Commons Attribution-NonCommercial 4.0
-International (CC BY-NC 4.0)](LICENSE).
+International (CC BY-NC 4.0)](LICENSE). That makes the apps source-available,
+not open source: CC BY-NC is not an OSI-approved licence. The server code is
+private.
 
 ---
 

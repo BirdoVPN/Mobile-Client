@@ -1,1 +1,1 @@
-Fast, private WireGuard® VPN with post-quantum encryption and a kill switch.
+Private WireGuard® VPN with a post-quantum key exchange and a kill switch.

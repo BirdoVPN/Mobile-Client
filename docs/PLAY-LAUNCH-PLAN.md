@@ -183,15 +183,18 @@ bits that trip people up:
 
 ### 4b. Data safety form — declare exactly this (matches the code)
 
-The app has **no ads/analytics SDKs**; Sentry runs with PII off + a scrubber.
+The app has **no ads/analytics SDKs**. Sentry crash reporting is OPT-IN (off
+by default, no sessions, PII off + a scrubber) since the 2026-09-29 audit;
+the current Data safety answers are in AUDIT-2026-09-29/remediation/R3-mobile.md.
 Declare:
 
 | Data type | Collected? | Shared? | Purpose | Notes |
 |---|---|---|---|---|
 | **Email address** | Yes | No | Account management | Only for account login/identity |
 | **Device/other IDs** (device id + name) | Yes | No | App functionality | Device-management / multi-device limits |
-| **Crash logs / diagnostics** | Yes | No | Crash prevention / diagnostics | Sentry, PII-scrubbed |
-| **App activity / browsing** | **No** | No | — | Zero-logs VPN — no traffic/activity logging |
+| **Crash logs / diagnostics** | Yes (optional) | No | App functionality (analytics: no) | Sentry, off unless the user turns it on; PII-scrubbed |
+| **Purchase history** | Yes | No | App functionality | Google Play purchase token, linked to the account to grant the plan |
+| **App activity / browsing** | **No** | No | — | No activity logs — the VPN servers record no browsing, DNS or traffic |
 | **Location** | **No** | No | — | Not collected |
 | **Payment info** | **No** (in app) | No | — | Purchases happen on birdo.app, not in the app |
 

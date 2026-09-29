@@ -125,13 +125,15 @@ draw.rounded_rectangle(
 
 draw.text(
     (text_x, bar_y + 30),
-    "Fast. Private. Quantum-ready WireGuard VPN.",
+    "Private WireGuard VPN with a post-quantum key exchange.",
     fill=WHITE_A,
     font=sub_font,
 )
 draw.text(
     (text_x, bar_y + 95),
-    "No logs  ·  No ads  ·  No trackers  ·  Open source",
+    # Audit 2026-09-29: "No logs" (absolute) and "Open source" (CC BY-NC is
+    # not) are retired. REMEDIATION-DECISIONS sections 1.4 and 2.
+    "No activity logs  ·  No ads  ·  Source-available apps",
     fill=WHITE_A,
     font=small_font,
 )

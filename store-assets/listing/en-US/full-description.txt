@@ -1,32 +1,38 @@
-BirdoVPN is a fast, private VPN built on WireGuard®, with post-quantum key exchange, a kill switch and a strict no-activity-logs policy.
+BirdoVPN is a private VPN built on WireGuard®, with a post-quantum key exchange, a kill switch and no activity logs.
 
 PRIVATE BY DESIGN
-• No activity logs — we do not record what you browse, download or connect to
-• Warrant canary published and updated on our website
-• Anonymous accounts — sign in with a 24-digit ID instead of an email if you prefer
-• Delete your account and its data at any time, right from the app
+• No activity logs: our VPN servers don't record the sites you visit, your DNS queries or your traffic.
+• While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is never included in backups. We also count your data use per billing period.
+• Anonymous accounts: sign in with a 24-digit account number instead of an email if you prefer.
+• Delete your account from inside the app at any time.
+• No advertising or analytics SDKs. Optional crash reporting (off unless you turn it on).
 
-MODERN, FAST PROTOCOLS
-• WireGuard® tunnelling for high throughput and quick reconnects
-• Post-quantum key exchange layered on top of the tunnel, protecting today's traffic against tomorrow's quantum attacks
-• Stealth mode for networks that block or throttle VPN traffic
+PROTECTION
+• Kill switch: if the tunnel drops unexpectedly, the app blocks traffic until it reconnects.
+• Post-quantum key exchange: each connection adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) between your app and our API. The key is then delivered to the VPN server over TLS that is not yet post-quantum, so protection against "record now, decrypt later" is only as strong as that link today.
+• Your DNS requests go through the encrypted tunnel.
+• Stealth mode (Operative and Sovereign) for networks that block or throttle VPN traffic.
+• Multi-hop (Sovereign): your traffic enters one server and leaves from another, so sites see the exit server's address. It is not onion routing: the entry server can see your IP address and the destinations you connect to.
 
-STAY PROTECTED
-• Kill switch — if the tunnel drops, traffic stops instead of leaking
-• DNS leak protection with encrypted DNS (DNS-over-HTTPS)
-• Multi-hop — route through two locations for an extra privacy layer
-• Biometric app lock to keep the app itself private
+EVERYDAY USE
+• Split tunnelling: choose which apps use the VPN and which go direct.
+• Quick Settings tile and home-screen widget for one-tap connect.
+• Biometric lock: require your fingerprint or face to open the app.
+• Local network sharing, and a custom WireGuard port and MTU.
+• Port forwarding and custom DNS (Sovereign).
 
-MADE FOR EVERYDAY USE
-• Split tunnelling — choose which apps use the VPN and which go direct
-• Global server locations with live latency so you can pick the best exit
-• Home-screen widget for one-tap connect
-• No ads, no trackers, no analytics SDKs in the app
+PLANS
+• Recon (free): 1 device, 10 GB of data a month, core server locations.
+• Operative: 5 devices, unlimited data, all server locations, stealth mode.
+• Sovereign: 10 devices, plus multi-hop, port forwarding and custom DNS.
+Subscriptions bought in the app are billed by Google Play in your local currency. Manage or cancel them in the Play Store: deleting your BirdoVPN account does not cancel a Google Play subscription.
 
-Get started free — create an account (email or anonymous ID) and connect. Premium tiers add more locations and features.
+OPEN ABOUT WHAT WE ARE
+• Source-available apps (CC BY-NC 4.0). Our server code is private.
+• Not yet independently audited.
 
 BirdoVPN uses the Android VpnService API. The persistent notification while connected is required by Android for VPN apps.
 
-Questions? support@birdo.app • Privacy policy: https://birdo.app/privacy
+Questions? support@birdo.app • Privacy policy: https://birdo.app/privacy • Terms: https://birdo.app/terms
 
 "WireGuard" is a registered trademark of Jason A. Donenfeld.

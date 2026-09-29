@@ -4,10 +4,19 @@ Categories:
 License: CC-BY-NC-4.0
 # Honest disclosure (also stated in the Description):
 #  - NonFreeNet: requires a BirdoVPN account + Birdo's servers to function.
-#  - NonFreeDep: bundles prebuilt native components (Xray, WireGuard-go).
+#  - NonFreeDep: bundles prebuilt native components (Xray, WireGuard-go) and
+#    Google's proprietary Play Billing and Play Integrity libraries. This is
+#    the same APK as GitHub Releases; both libraries are compiled in and are
+#    active only in the Google Play build (BuildConfig.IS_PLAY_BUILD).
+#  - Tracking: the APK contains the Sentry crash-reporting SDK. It is OFF by
+#    default and starts only if the user turns it on (consent screen or
+#    Settings); no sessions, no account data. Declared anyway, because the
+#    reporter ships in this APK and a privacy audience should see it listed
+#    (audit 2026-09-29, D-11 / C-3).
 AntiFeatures:
   - NonFreeNet
   - NonFreeDep
+  - Tracking
 AuthorName: Birdo Networks Ltd
 AuthorWebSite: https://birdo.app
 WebSite: https://birdo.app
@@ -24,32 +33,57 @@ AllowedAPKSigningKeys:
   - f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9
 
 AutoName: BirdoVPN
-Summary: Fast, private, quantum-resistant VPN
+Summary: Private WireGuard VPN with a post-quantum key exchange
 
+# Audit 2026-09-29 (D-11): the description named Rosenpass, which no platform
+# uses (BirdoPQ is ML-KEM-1024, KEM-only), and promised that captured traffic
+# "cannot be decrypted by a future quantum computer". Wording now follows
+# AUDIT-2026-09-29/REMEDIATION-DECISIONS.md sections 1-2.
 Description: |-
-  BirdoVPN is a fast, privacy-first VPN with post-quantum protection built in.
+  BirdoVPN is a private VPN built on WireGuard, with a post-quantum key
+  exchange, a kill switch and no activity logs.
 
-  Your tunnel is secured with WireGuard and wrapped in a post-quantum key
-  exchange (Rosenpass), so traffic captured today cannot be decrypted by a
-  future quantum computer ("harvest now, decrypt later"). An optional stealth
-  transport helps the connection blend in on restrictive networks.
+  No activity logs: our VPN servers don't record the sites you visit, your DNS
+  queries or your traffic. While you're connected, our account system keeps a
+  live record of your session (server, device, connect time). It is deleted
+  when you disconnect and is never included in backups. We also count your
+  data use per billing period.
+
+  Post-quantum key exchange: each connection adds a WireGuard pre-shared key
+  derived with ML-KEM-1024 (BirdoPQ) between your app and our API. The key is
+  then delivered to the VPN server over TLS that is not yet post-quantum, so
+  protection against "record now, decrypt later" is only as strong as that
+  link today.
 
   Features:
 
-  * WireGuard-based tunnel with a post-quantum key exchange layer
-  * A reactive kill switch that blocks traffic if the tunnel drops
-  * Split tunnelling — choose which apps use the VPN
-  * A global network of servers with fast connect and one-tap switching
-  * No activity logs; accounts can be created without an email address
-  * DNS handled inside the tunnel to reduce leaks
+  * Kill switch: if the tunnel drops unexpectedly, the app blocks traffic
+    until it reconnects
+  * Split tunnelling: choose which apps use the VPN
+  * Your DNS requests go through the encrypted tunnel
+  * An optional stealth transport for networks that block VPN traffic
+    (Operative and Sovereign plans)
+  * Multi-hop (Sovereign plan): your traffic enters one server and leaves
+    from another, so sites see the exit server's address. It is not onion
+    routing: the entry server can see your IP address and the destinations
+    you connect to
+  * Accounts can be created without an email address
+
+  Crash reporting: the app contains the Sentry crash-reporting SDK. It is off
+  by default and sends nothing unless you turn it on (on the first screen, or
+  later in Settings). When on, it sends crash details only: stack trace, app
+  and OS version, device model. No account details or browsing data.
 
   This build is distributed outside Google Play and is signed with Birdo's own
   release key. It is the same APK published on GitHub Releases. A BirdoVPN
-  account is required to connect to the network.
+  account is required to connect to the network. The apps are
+  source-available (CC BY-NC 4.0); the server code is private. The service
+  has not yet been independently audited.
 
   Note: the app bundles prebuilt native networking components (Xray and
-  WireGuard-go), which is why it is served from this self-hosted repository
-  rather than the main f-droid.org catalogue.
+  WireGuard-go) and Google's Play Billing and Play Integrity libraries (used
+  only in the Google Play build), which is why it is served from this
+  self-hosted repository rather than the main f-droid.org catalogue.
 
 RepoType: git
 Repo: https://github.com/BirdoVPN/Mobile-Client.git
