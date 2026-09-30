@@ -374,4 +374,43 @@
     <!-- Widget -->
     <string name="widget_description">Quick VPN status and toggle</string>
     <string name="widget_loading">Loading\u2026</string>
+
+    <!-- API failures. Every one of these is produced by ApiErrorMapper, the one
+         place a failed request becomes words on screen: the raw error body and
+         the exception text never reach the UI. Wording follows the canonical
+         "Key errors" table (CLIENT-OVERHAUL-2026-09-30 P1-parity). -->
+    <string name="error_offline">No internet connection.</string>
+    <string name="error_unreachable">Unable to reach BirdoVPN. Check your connection and try again.</string>
+    <string name="error_secure_connection">Couldn\'t set up a secure connection to BirdoVPN. If this Wi-Fi needs you to sign in first, do that, then try again.</string>
+    <string name="error_session_expired">Your session has expired. Sign in again.</string>
+    <string name="error_rate_limited">Too many attempts. Please wait a moment.</string>
+    <string name="error_update_required">This version of BirdoVPN is no longer supported. Update to keep connecting.</string>
+    <string name="error_device_limit">This account is already connected on the maximum number of devices for its plan. Disconnect another device or upgrade your plan.</string>
+    <string name="error_server_unavailable">BirdoVPN is temporarily unavailable. Please try again in a moment.</string>
+    <string name="error_unexpected">Something went wrong. Please try again.</string>
+    <string name="error_invalid_credentials">Invalid email or password</string>
+    <string name="error_invalid_account_number">Invalid account number or password</string>
+    <string name="error_account_locked">Account locked after too many failed sign-in attempts. Wait a few minutes before trying again, or reset your password.</string>
+    <!-- The server's own sentence for a banned OR suspended account; it is
+         deliberately the same for both, so the app repeats it unchanged. -->
+    <string name="error_account_blocked">Unable to sign in. Please contact support.</string>
+    <string name="error_sign_in_failed">Sign-in failed. Please try again.</string>
+    <string name="error_invalid_code">Invalid verification code. Please try again.</string>
+    <string name="error_challenge_expired">Your sign-in timed out. Start again.</string>
+    <string name="error_two_factor_failed">Verification failed. Please try again.</string>
+    <!-- Two different server limits behind one 429 (per device per 24 h, per
+         network per hour). Android has no guest mode, so unlike iOS these do not
+         offer "keep using the app without an account". -->
+    <string name="error_anon_register_device_limit">This device has created too many anonymous accounts in the past 24 hours, so this one was refused. Switching networks will not help: the limit is per device and clears on its own after 24 hours. You can sign in with an existing account instead.</string>
+    <string name="error_anon_register_network_limit">Too many anonymous accounts have been created from this network in the past hour, so this one was refused. Try again in about an hour, or sign in with an existing account.</string>
+    <string name="error_anon_register_failed">Could not create an anonymous account. Please try again.</string>
+    <string name="error_incorrect_password">Incorrect password</string>
+    <string name="error_delete_failed">Account deletion failed. Please try again.</string>
+    <string name="error_connect_failed">Couldn\'t connect to this server. Try again, or choose another location.</string>
+    <string name="error_load_servers">Couldn\'t load servers.</string>
+    <string name="error_load_subscription">Couldn\'t load your plan and usage.</string>
+    <string name="error_load_port_forwards">Couldn\'t load your port forwarding rules.</string>
+    <string name="error_create_port_forward">Couldn\'t add the rule. Please try again.</string>
+    <string name="error_delete_port_forward">Couldn\'t delete the rule. Please try again.</string>
+    <string name="error_voucher_failed">Couldn\'t redeem the voucher. Please try again.</string>
 </resources>
