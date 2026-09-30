@@ -1,7 +1,9 @@
 package app.birdo.vpn
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * Guards the Play policy gate.
@@ -19,8 +21,22 @@ import org.junit.Test
  * When enrolment IS confirmed in the Play Console, the correct way to turn this
  * on is at the build invocation — `-PplayExternalOffers=true` — not by editing
  * the default here. See birdo-web/docs/PLAY-LINK-OUT-BILLING.md.
+ *
+ * Today enrolment is not enough: the link-out path is unfinished (audit A-32),
+ * so :app:validatePlayExternalOffers refuses a Play RELEASE with the flag on.
+ * The last test pins that gate's presence and wiring; the gate itself runs in
+ * Gradle, which a unit test cannot drive.
  */
 class BillingPolicyGateTest {
+
+    private val repoRoot: File by lazy {
+        var dir = File("").absoluteFile
+        while (!File(dir, "settings.gradle.kts").isFile) {
+            dir = dir.parentFile
+                ?: error("settings.gradle.kts not found above ${File("").absolutePath}")
+        }
+        dir
+    }
 
     @Test
     fun `external offers are OFF by default`() {
@@ -45,6 +61,43 @@ class BillingPolicyGateTest {
         assertFalse(
             "The default build must not be permitted to steer to an external checkout.",
             mayShowExternalChoice,
+        )
+    }
+
+    @Test
+    fun `a Play release with external offers on is refused at build time`() {
+        // RM9 / A-32. The default above protects the build nobody configured;
+        // this protects against the one somebody did. Pins that the gate exists,
+        // fires on exactly the Play-AND-flag combination, and hangs off
+        // preReleaseBuild (so debug builds are untouched by construction).
+        val gradle = File(repoRoot, "app/build.gradle.kts").readText()
+        val start = gradle.indexOf("tasks.register(\"validatePlayExternalOffers\")")
+        assertTrue(
+            "A-32 regression: the validatePlayExternalOffers release gate is gone from " +
+                "app/build.gradle.kts, so -PplayBuild=true -PplayExternalOffers=true " +
+                "would build a Play release that steers to an unfinished link-out path",
+            start >= 0,
+        )
+        // The task block ends at the first column-0 closing brace after it.
+        val end = Regex("""(?m)^}""").find(gradle, start)?.range?.first ?: gradle.length
+        val body = gradle.substring(start, end)
+        assertTrue(
+            "validatePlayExternalOffers must throw when BOTH isPlayBuild and " +
+                "playExternalOffers are set (and only then)",
+            Regex("""if \(isPlayBuild && playExternalOffers\)\s*\{\s*throw GradleException""")
+                .containsMatchIn(body),
+        )
+        assertTrue(
+            "validatePlayExternalOffers is no longer wired into preReleaseBuild, so it " +
+                "would never run on bundleRelease",
+            Regex("""preRelease\.dependsOn\([^)]*validatePlayExternalOffers""")
+                .containsMatchIn(gradle),
+        )
+        assertTrue(
+            "the gate and BuildConfig.PLAY_EXTERNAL_OFFERS must read the SAME top-level " +
+                "value; a second, local resolution of the property could drift from it",
+            Regex("""(?m)^val playExternalOffers = """).containsMatchIn(gradle) &&
+                Regex("""(?m)^\s+val playExternalOffers = """).find(gradle) == null,
         )
     }
 }
