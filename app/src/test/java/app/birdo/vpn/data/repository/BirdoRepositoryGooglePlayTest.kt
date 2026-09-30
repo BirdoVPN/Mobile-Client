@@ -59,7 +59,9 @@ class BirdoRepositoryGooglePlayTest {
             platformVersion = "15",
             appVersion = "1.0.0",
         )
-        repository = BirdoRepository(api, tokenManager, deviceInfoProvider)
+        repository = BirdoRepository(
+            api, tokenManager, deviceInfoProvider, ApiErrorMapper(app.birdo.vpn.testing.StringsXml),
+        )
     }
 
     // ── the defect this suite exists for ─────────────────────────────

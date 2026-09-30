@@ -2,6 +2,7 @@ package app.birdo.vpn.billing
 
 import android.app.Activity
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.auth.TokenManager
@@ -33,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -189,7 +191,34 @@ class PlayBillingManager @Inject constructor(
             markUnavailable(StorefrontFailure.PLAY_STORE_UNAVAILABLE)
             return
         }
+        lastReconcileAt = SystemClock.elapsedRealtime()
         scope.launch { refreshInternal(alsoReconcile = true) }
+    }
+
+    /** When the last reconcile was started ([SystemClock.elapsedRealtime]), or null. */
+    @Volatile
+    private var lastReconcileAt: Long? = null
+
+    /**
+     * The app came back to the foreground. A subscription bought or approved
+     * OUTSIDE the app while the process stayed alive (in the Play Store app,
+     * a promo code, an Ask-to-Buy approval on another device) was not linked
+     * until the next cold start or a visit to the subscription screen, so the
+     * plan gates stayed shut (A2-035). A purchases query only, no catalogue
+     * reload, and at most once per [RESUME_RECONCILE_INTERVAL_MS]: returning
+     * from the purchase sheet is itself a resume.
+     */
+    fun onAppResumed() {
+        if (!isRailEnabled || !tokenManager.isLoggedIn()) return
+        val now = SystemClock.elapsedRealtime()
+        val due = resumeReconcileDue(
+            nowMs = now,
+            lastMs = lastReconcileAt,
+            purchaseInFlight = _state.value.purchasingProductId != null,
+        )
+        if (!due) return
+        lastReconcileAt = now
+        scope.launch { reconcile(announce = false) }
     }
 
     /** Products only, plus a reconcile. Called when the purchase screen opens. */
@@ -466,7 +495,21 @@ class PlayBillingManager @Inject constructor(
             // row it minted. Play truncates past 64 characters; a UUID is 36.
             .setObfuscatedAccountId(intent.data.obfuscatedAccountId)
 
-        val result = billingClient.launchBillingFlow(activity, builder.build())
+        // On the main thread (A2-034): this runs after a network call on the
+        // Default pool, and the flow is launched from an Activity, which must
+        // also still be alive after that round trip (a rotation mid-mint).
+        val result = withContext(Dispatchers.Main) {
+            if (activity.isFinishing || activity.isDestroyed) {
+                null
+            } else {
+                billingClient.launchBillingFlow(activity, builder.build())
+            }
+        }
+        if (result == null) {
+            // Nothing was shown, so nothing was charged; drop the spinner.
+            _state.update { it.copy(purchasingProductId = null) }
+            return
+        }
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {
             handleFlowLaunchFailure(result)
         }
@@ -760,3 +803,14 @@ private fun Purchase.toIngestable() = IngestablePurchase(
     isAcknowledged = isAcknowledged,
     productIds = products,
 )
+
+/** The shortest gap between two foreground reconciles. */
+internal const val RESUME_RECONCILE_INTERVAL_MS = 60_000L
+
+/**
+ * Whether a foreground return should reconcile Play purchases now. Never while
+ * a purchase is in flight: its result arrives at onPurchasesUpdated, and a
+ * concurrent sweep would present the same token twice.
+ */
+internal fun resumeReconcileDue(nowMs: Long, lastMs: Long?, purchaseInFlight: Boolean): Boolean =
+    !purchaseInFlight && (lastMs == null || nowMs - lastMs >= RESUME_RECONCILE_INTERVAL_MS)

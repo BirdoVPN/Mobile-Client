@@ -49,8 +49,15 @@ import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.utils.formatAnonymousId
 import app.birdo.vpn.utils.is2faCodeComplete
 import androidx.compose.ui.platform.testTag
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.platform.LocalAutofillManager
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 
@@ -58,15 +65,19 @@ import androidx.compose.ui.semantics.semantics
 private enum class AuthTab { Email, Anonymous, Sso }
 
 /**
- * Login screen matching the Windows client's glassmorphic design:
- * - Pure black background
- * - Centered: pinging status dot + "Secure Connection" badge
+ * Sign-in screen:
+ * - Centered app mark + "Secure Connection" badge
  * - "Welcome Back" in gradient text (white→40% white top-to-bottom)
- * - Subtitle: "Sign in to access the sovereign network"
- * - Glass input fields with subtle white borders
- * - Solid white submit button with black text "Initialize Uplink"
+ * - Subtitle: "Sign in to your Birdo account"
+ * - Email · Anonymous · SSO tabs; glass input fields with subtle white borders
+ * - Solid white "Sign in" button with black text
  * - Stagger-fade-in animations for all elements
  * - 2FA verification form when backend requires it
+ *
+ * Password managers can fill and save the fields (autofill content types,
+ * A2-017). The text a user typed survives a fold, a rotation or a theme
+ * change (rememberSaveable, A2-046); passwords deliberately do not, because
+ * saved state can be written to disk.
  */
 @Composable
 fun LoginScreen(
@@ -77,7 +88,8 @@ fun LoginScreen(
     onVerifyTwoFactor: (code: String) -> Unit = {},
     onClearError: () -> Unit,
     onCancelTwoFactor: () -> Unit = {},
-    onSignUp: () -> Unit = {},
+    /** Opens the password-reset page (P1-023). */
+    onForgotPassword: () -> Unit = {},
     onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
     onSsoLogin: (provider: String) -> Unit = {},
     onCreateAnonymous: () -> Unit = {},
@@ -86,15 +98,18 @@ fun LoginScreen(
     pendingAnonymousId: String? = null,
     onAcknowledgeAnonymousId: () -> Unit = {},
 ) {
-    var email by remember { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var twoFactorCode by remember { mutableStateOf("") }
     // Which auth method the standard (non-2FA) form shows: Email or Anonymous.
-    var activeTab by remember { mutableStateOf(AuthTab.Email) }
-    var anonId by remember { mutableStateOf("") }
+    var activeTab by rememberSaveable { mutableStateOf(AuthTab.Email) }
+    var anonId by rememberSaveable { mutableStateOf("") }
     var anonPassword by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
+    // Offer to save what was just submitted, the way a browser does on a form
+    // submit (A2-017). Null where the platform has no autofill service.
+    val autofill = LocalAutofillManager.current
 
     // Stagger animation
     var visible by remember { mutableStateOf(false) }
@@ -118,6 +133,11 @@ fun LoginScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // No top bar and no bottom bar here, so this screen owns every
+            // inset (A2-010), the keyboard's included: under edge-to-edge
+            // adjustResize no longer shrinks the window, and without this the
+            // keyboard covered the password field and the button.
+            .windowInsetsPadding(WindowInsets.safeDrawing)
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 32.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -166,6 +186,7 @@ fun LoginScreen(
             ) {
                 Text(
                     text = stringResource(R.string.login_welcome_back),
+                    modifier = Modifier.semantics { heading() },
                     fontSize = 30.sp,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.headlineLarge.copy(
@@ -190,7 +211,9 @@ fun LoginScreen(
                         else R.string.login_subtitle
                     ),
                     fontSize = 14.sp,
-                    color = BirdoWhite40,
+                    // White60, not White40: 40% white on black is under the
+                    // 4.5:1 body-text contrast minimum.
+                    color = BirdoWhite60,
                 )
             }
 
@@ -401,7 +424,8 @@ fun LoginScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(BirdoWhite05)
-                        .padding(4.dp),
+                        .padding(4.dp)
+                        .selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     AuthTabButton(
@@ -427,9 +451,11 @@ fun LoginScreen(
 
             Spacer(Modifier.height(20.dp))
 
-            // Fixed-height content well so switching Email/Anonymous/SSO does NOT
-            // change the column height and jolt everything up/down. Sized to the
-            // tallest tab (Anonymous); shorter tabs top-align within it.
+            // Minimum-height content well so switching Email/Anonymous/SSO does
+            // NOT change the column height and jolt everything up/down. Sized to
+            // the tallest tab (Anonymous); shorter tabs top-align within it. A
+            // minimum, not a fixed height, so large fonts grow it instead of
+            // clipping it.
             Column(modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp)) {
             when (activeTab) {
             AuthTab.Email -> {
@@ -474,7 +500,10 @@ fun LoginScreen(
                             unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_EMAIL_FIELD),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Username + ContentType.EmailAddress }
+                            .testTag(TestTags.LOGIN_EMAIL_FIELD),
                     )
                 }
             }
@@ -488,13 +517,33 @@ fun LoginScreen(
                     slideInVertically(initialOffsetY = { 20 }),
             ) {
                 Column {
-                    Text(
-                        stringResource(R.string.password_label),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = BirdoWhite60,
-                        modifier = Modifier.padding(bottom = 6.dp, start = 4.dp),
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            stringResource(R.string.password_label),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = BirdoWhite60,
+                            modifier = Modifier.padding(start = 4.dp).weight(1f),
+                        )
+                        // Same destination as the Windows client (P1-023). Email
+                        // accounts only: anonymous and SSO accounts have no
+                        // password to reset here.
+                        TextButton(
+                            onClick = onForgotPassword,
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                            modifier = Modifier.testTag(TestTags.LOGIN_FORGOT_PASSWORD),
+                        ) {
+                            Text(
+                                stringResource(R.string.login_forgot_password),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = BirdoAccentSoft,
+                            )
+                        }
+                    }
                     OutlinedTextField(
                         value = password,
                         onValueChange = {
@@ -528,6 +577,7 @@ fun LoginScreen(
                             onDone = {
                                 focusManager.clearFocus()
                                 if (email.trim().isNotEmpty() && password.isNotBlank()) {
+                                    autofill?.commit()
                                     onLogin(email.trim(), password)
                                 }
                             }
@@ -542,7 +592,10 @@ fun LoginScreen(
                             unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_PASSWORD_FIELD),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Password }
+                            .testTag(TestTags.LOGIN_PASSWORD_FIELD),
                     )
                 }
             }
@@ -558,6 +611,7 @@ fun LoginScreen(
                 Button(
                     onClick = {
                         focusManager.clearFocus()
+                        autofill?.commit()
                         onLogin(email.trim(), password)
                     },
                     enabled = email.trim().isNotEmpty() && password.isNotBlank() && !isLoading,
@@ -622,12 +676,15 @@ fun LoginScreen(
                             unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_ANONYMOUS_ID_FIELD),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Username }
+                            .testTag(TestTags.LOGIN_ANONYMOUS_ID_FIELD),
                     )
                     Text(
                         stringResource(R.string.login_anonymous_caption_inline),
-                        fontSize = 11.sp,
-                        color = BirdoWhite40,
+                        fontSize = 12.sp,
+                        color = BirdoWhite60,
                         modifier = Modifier.padding(top = 6.dp, start = 4.dp),
                     )
                 }
@@ -660,7 +717,10 @@ fun LoginScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = {
                             focusManager.clearFocus()
-                            if (anonId.length == 24) onLoginAnonymous(anonId, anonPassword.takeIf { it.isNotBlank() })
+                            if (anonId.length == 24) {
+                                autofill?.commit()
+                                onLoginAnonymous(anonId, anonPassword.takeIf { it.isNotBlank() })
+                            }
                         }),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BirdoBrand.AccentSoft.copy(alpha = 0.6f),
@@ -672,14 +732,21 @@ fun LoginScreen(
                             unfocusedContainerColor = Color.White.copy(alpha = 0.09f),
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().testTag(TestTags.LOGIN_ANONYMOUS_PASSWORD_FIELD),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Password }
+                            .testTag(TestTags.LOGIN_ANONYMOUS_PASSWORD_FIELD),
                     )
                 }
 
                 Spacer(Modifier.height(28.dp))
 
                 Button(
-                    onClick = { focusManager.clearFocus(); onLoginAnonymous(anonId, anonPassword.takeIf { it.isNotBlank() }) },
+                    onClick = {
+                        focusManager.clearFocus()
+                        autofill?.commit()
+                        onLoginAnonymous(anonId, anonPassword.takeIf { it.isNotBlank() })
+                    },
                     enabled = anonId.length == 24 && !isLoading,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag(TestTags.LOGIN_ANONYMOUS_SUBMIT),
                     shape = RoundedCornerShape(12.dp),
@@ -744,7 +811,7 @@ fun LoginScreen(
                         enabled = !isLoading,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag(TestTags.LOGIN_SSO_GOOGLE),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -770,7 +837,7 @@ fun LoginScreen(
                         enabled = !isLoading,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag(TestTags.LOGIN_SSO_GITHUB),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -803,7 +870,7 @@ fun LoginScreen(
                         enabled = !isLoading,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag(TestTags.LOGIN_SSO_APPLE),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
@@ -828,9 +895,12 @@ fun LoginScreen(
             Spacer(Modifier.height(20.dp))
 
             // ── Sign up link ──
-            // Hidden on the Anonymous tab: an anonymous account is created in-app
-            // ("Create anonymous account"), not via the web "Sign Up" flow, so the
-            // prompt is irrelevant (and misleading) there. Kept on Email / SSO.
+            // "Sign up" switches to the Anonymous tab, whose first offer is
+            // "Create a new anonymous account", as iOS does (A2-043). It used to
+            // open https://birdo.app/login: a SIGN-IN page behind a "Sign up"
+            // label, through an unguarded startActivity that crashed on a device
+            // with no browser. Hidden on the Anonymous tab, where it would point
+            // at itself.
             AnimatedVisibility(
                 visible = visible && activeTab != AuthTab.Anonymous,
                 enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 350, easing = BirdoMotion.Decel)),
@@ -845,7 +915,7 @@ fun LoginScreen(
                     Text(
                         text = stringResource(R.string.login_no_account),
                         fontSize = 13.sp,
-                        color = BirdoWhite40,
+                        color = BirdoWhite60,
                     )
                     Text(
                         text = stringResource(R.string.login_sign_up),
@@ -854,7 +924,10 @@ fun LoginScreen(
                         fontWeight = FontWeight.Medium,
                         textDecoration = TextDecoration.Underline,
                         modifier = Modifier
-                            .clickable(role = Role.Button) { onSignUp() }
+                            .clickable(role = Role.Button) {
+                                activeTab = AuthTab.Anonymous
+                                onClearError()
+                            }
                             .padding(vertical = 12.dp, horizontal = 4.dp)
                             .testTag(TestTags.LOGIN_SIGN_UP),
                     )
@@ -1000,7 +1073,12 @@ private fun AnonymousIdSavedDialog(
     )
 }
 
-/** Segmented tab button for the Email | Anonymous switcher. */
+/**
+ * Segmented tab button for the Email | Anonymous | SSO switcher. A real tab
+ * to TalkBack ("Email, tab, selected, 1 of 3"), not an unlabelled button whose
+ * state only the fill colour shows (A2-032); at least 48dp tall so the touch
+ * target holds and a large font grows it instead of clipping (A2-024).
+ */
 @Composable
 private fun AuthTabButton(
     label: String,
@@ -1009,12 +1087,14 @@ private fun AuthTabButton(
     onClick: () -> Unit,
 ) {
     Surface(
-        onClick = onClick,
-        modifier = modifier.height(40.dp),
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick),
         shape = RoundedCornerShape(9.dp),
         color = if (selected) Color.White.copy(alpha = 0.14f) else Color.Transparent,
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 8.dp)) {
             Text(
                 text = label,
                 fontSize = 13.sp,

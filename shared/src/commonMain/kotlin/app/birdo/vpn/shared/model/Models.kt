@@ -415,10 +415,11 @@ data class ConnectRequest(
     val serverNodeId: String? = null,
     val deviceName: String? = null,
     /**
-     * Stable device identity (see DeviceInfoProvider). Survives app UPDATE and
-     * REINSTALL, so the backend reclaims THIS device's own connection slot on
-     * reconnect instead of treating it as a new device (which used to trip
-     * "device limit reached" after every update).
+     * Stable device identity (see DeviceInfoProvider). Survives an app UPDATE,
+     * so the backend reclaims THIS device's own connection slot on reconnect
+     * instead of treating it as a new device (which used to trip "device limit
+     * reached" after every update). A REINSTALL mints a new one, deliberately:
+     * see DeviceInfoProvider's "KNOWN COST".
      */
     val deviceId: String? = null,
     val preferredRegion: String? = null,
@@ -558,14 +559,6 @@ data class ConnectResponse(
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
 
 @Serializable
-data class MultiHopRoute(
-    val entryNodeId: String,
-    val exitNodeId: String,
-    val entryCountry: String,
-    val exitCountry: String,
-)
-
-@Serializable
 data class MultiHopConnectRequest(
     val entryNodeId: String,
     val exitNodeId: String,
@@ -694,9 +687,6 @@ data class CreatePortForwardResponse(
     val message: String? = null,
 )
 
-// ─── Google Play Billing ─────────────────────────────────────────────────────
-// Removed: Android distributed as APK from GitHub Releases; no Play Billing.
-
 // ─── Key Rotation ────────────────────────────────────────────────────────────
 
 @Serializable
@@ -741,15 +731,3 @@ data class HeartbeatResponse(
     val serverOnline: Boolean = true,
     val message: String? = null,
 )
-
-// ─── Connection State ────────────────────────────────────────────────────────
-
-/** Cross-platform VPN connection state. */
-enum class VpnState {
-    DISCONNECTED,
-    CONNECTING,
-    CONNECTED,
-    DISCONNECTING,
-    ERROR,
-    KILL_SWITCH_ACTIVE,
-}

@@ -107,7 +107,7 @@ class HomeConnectionModelTest {
     @Test
     fun `Home warns when notifications are off and links to the setting`() {
         var dir = java.io.File("").absoluteFile
-        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = checkNotNull(dir.parentFile) { "repo root not found" }
         val home = java.io.File(dir, "app/src/main/java/app/birdo/vpn/ui/screen/HomeScreen.kt").readText()
         assertTrue(home.contains("NotificationManagerCompat.from(context).areNotificationsEnabled()"))
         assertTrue(home.contains("R.string.home_notifications_off"))

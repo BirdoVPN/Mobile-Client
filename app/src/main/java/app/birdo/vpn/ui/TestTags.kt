@@ -12,6 +12,7 @@ object TestTags {
     const val LOGIN_BUTTON = "login_button"
     const val LOGIN_ERROR = "login_error"
     const val LOGIN_SIGN_UP = "login_sign_up"
+    const val LOGIN_FORGOT_PASSWORD = "login_forgot_password"
     const val LOGIN_2FA_CODE_FIELD = "login_2fa_code_field"
     const val LOGIN_2FA_VERIFY_BUTTON = "login_2fa_verify_button"
     const val LOGIN_2FA_BACK_BUTTON = "login_2fa_back_button"

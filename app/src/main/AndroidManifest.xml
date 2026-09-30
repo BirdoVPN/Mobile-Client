@@ -24,6 +24,12 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- SSO opens in a Custom Tab (SsoLauncher). Without this, package
+             visibility on API 30+ hides every Custom Tabs provider and sign-in
+             silently falls back to the external browser. -->
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
     </queries>
 
     <application

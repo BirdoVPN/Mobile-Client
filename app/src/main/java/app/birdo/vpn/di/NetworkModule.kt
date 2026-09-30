@@ -1,13 +1,17 @@
 package app.birdo.vpn.di
 
+import android.content.Context
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.api.AuthInterceptor
 import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.network.DohResolver
+import app.birdo.vpn.data.repository.ApiErrorMapper
+import app.birdo.vpn.data.repository.StringLookup
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import okhttp3.CertificatePinner
@@ -59,7 +63,8 @@ object NetworkModule {
 
         // ── Certificate Pinning ──────────────────────────────────────
         // Prevents MITM attacks via compromised CAs or rogue proxies.
-        // Chain: birdo.app → WE1 (Google Trust Services) → GlobalSign ECC Root CA - R4
+        // Chain: birdo.app → WE1 (Google Trust Services) → GTS Root R4 (see the
+        // measured chain below; GlobalSign ECC Root CA - R4 is a dormant pin).
         // Pins regenerated 2026-02-22 from live birdo.app certificate chain.
         // Kept in sync with network_security_config.xml (pin-set expiration 2027-06-01).
         // OkHttp validates SPKI pins against ALL certs in the chain (including trust anchor).
@@ -155,4 +160,14 @@ object NetworkModule {
     fun provideBirdoApi(retrofit: Retrofit): BirdoApi {
         return retrofit.create(BirdoApi::class.java)
     }
+
+    /**
+     * The repository's error copy, read from strings.xml through the
+     * application context. [ApiErrorMapper] only sees a [StringLookup], so the
+     * mapping rules stay a plain JVM class under unit test.
+     */
+    @Provides
+    @Singleton
+    fun provideApiErrorMapper(@ApplicationContext context: Context): ApiErrorMapper =
+        ApiErrorMapper(StringLookup { id -> context.getString(id) })
 }

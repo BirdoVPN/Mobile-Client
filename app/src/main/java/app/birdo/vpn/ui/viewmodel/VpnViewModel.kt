@@ -52,7 +52,6 @@ data class VpnUiState(
     val portForwardError: String? = null,
     val needsVpnPermission: Boolean = false,
     val killSwitchActive: Boolean = false,
-    val tick: Long = 0L,
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
@@ -69,6 +68,14 @@ data class VpnUiState(
     val pqMode: String = "DISABLED",
     /** Current subscription status */
     val subscription: SubscriptionStatus? = null,
+    /** A plan/usage fetch is in flight (drives the Limit tab's refresh feedback). */
+    val isLoadingSubscription: Boolean = false,
+    /**
+     * Why the last plan/usage fetch failed, user-facing; null once one
+     * succeeds. The Limit tab used to spin "Loading your usage…" forever on a
+     * failure, because the error branch was silent (A2-018).
+     */
+    val subscriptionError: String? = null,
     /** Port forwards for the current connection */
     val portForwards: List<PortForward> = emptyList(),
     val isLoadingPortForwards: Boolean = false,
@@ -165,6 +172,17 @@ internal sealed interface PendingDial {
     data class Switch(val server: VpnServer) : PendingDial
 }
 
+/** What the voucher dialog shows after a redemption attempt (A2-027). */
+sealed interface VoucherResult {
+    data class Redeemed(val response: RedeemVoucherResponse) : VoucherResult
+
+    /** The server refused the CODE; [slug] is its documented reason, if it gave one. */
+    data class Rejected(val slug: String?) : VoucherResult
+
+    /** The request failed for a reason that is not the code's; [message] is user-facing. */
+    data class Failed(val message: String) : VoucherResult
+}
+
 @HiltViewModel
 class VpnViewModel @Inject constructor(
     private val vpnManager: VpnManager,
@@ -215,18 +233,15 @@ class VpnViewModel @Inject constructor(
         // where the 401 from an unauthenticated GET /vpn/servers set error="Session expired"
         // before auth had settled. BirdoNavGraph calls loadServers() after login succeeds.
         startStateSync()
-        // FIX-2-9: Auto-connect on startup if preference is enabled
-        autoConnectIfEnabled()
         // Pre-publish any cached subscription so Profile tab is never empty on first paint.
         repository.cachedSubscriptionOrNull()?.let {
             _uiState.value = _uiState.value.copy(subscription = it)
         }
-        // If we already have a token, start fetching subscription right away so it's
-        // ready by the time the user taps the Profile tab. This eliminates the
-        // "RECON → SOVEREIGN" flicker users were seeing on cold start.
-        if (tokenManager.isLoggedIn()) {
-            fetchSubscription()
-        }
+        // Auto-connect and the plan fetch wait for the CURRENT consent, like the
+        // client-config fetch below (audit D-12, A2-028): a returning user with
+        // auto-connect on used to have a VPN session dialled (API connect,
+        // integrity, PQ key) while the re-consent screen was on display.
+        if (prefs.hasAcceptedCurrentConsent) onConsentAccepted()
         // BirdoShield fleet gate. Unauthenticated and public, so unlike the
         // subscription fetch it runs regardless of sign-in state — the VPN
         // Settings screen is reachable by anonymous accounts too.
@@ -240,6 +255,21 @@ class VpnViewModel @Inject constructor(
         // NOTE: Heartbeat is handled by VpnManager.startHeartbeat() which includes
         // key rotation, quality reports, and session-invalid disconnect. No redundant
         // heartbeat needed here — VpnManager is the authoritative keepalive source.
+    }
+
+    /**
+     * The work init holds back until the current consent is accepted; the
+     * graph calls this from the consent screen's accept.
+     */
+    fun onConsentAccepted() {
+        // FIX-2-9: Auto-connect on startup if preference is enabled
+        autoConnectIfEnabled()
+        // If we already have a token, start fetching subscription right away so it's
+        // ready by the time the user taps the Profile tab. This eliminates the
+        // "RECON → SOVEREIGN" flicker users were seeing on cold start.
+        if (tokenManager.isLoggedIn()) {
+            fetchSubscription()
+        }
     }
 
     /**
@@ -345,7 +375,6 @@ class VpnViewModel @Inject constructor(
                         quantumActive = BirdoVpnService.quantumActive,
                         pqMode = RosenpassManager.modeFlow.value.name,
                         publicIp = BirdoVpnService.publicIp,
-                        tick = System.currentTimeMillis(),
                     )
                     if (input.state is VpnState.Connected) startStatsPolling() else stopStatsPolling()
                 }
@@ -379,7 +408,7 @@ class VpnViewModel @Inject constructor(
                 )
                 val ip = BirdoVpnService.publicIp
                 if (_uiState.value.publicIp != ip) {
-                    _uiState.value = _uiState.value.copy(publicIp = ip, tick = System.currentTimeMillis())
+                    _uiState.value = _uiState.value.copy(publicIp = ip)
                 }
                 // Live 1s cadence only matters while the UI is visible. When the
                 // app is backgrounded nothing observes these flows, so match the
@@ -493,13 +522,58 @@ class VpnViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoadingSubscription = true)
             when (val result = repository.getSubscription(forceRefresh)) {
                 is ApiResult.Success -> {
-                    _uiState.value = _uiState.value.copy(subscription = result.data)
+                    _uiState.value = _uiState.value.copy(
+                        subscription = result.data,
+                        isLoadingSubscription = false,
+                        subscriptionError = null,
+                    )
                 }
-                is ApiResult.Error -> { /* silent — non-critical */ }
+                // Kept separate from `error`: the plan is shown on its own tab,
+                // and a stale figure stays on screen with the reason beside it.
+                is ApiResult.Error -> _uiState.value = _uiState.value.copy(
+                    isLoadingSubscription = false,
+                    subscriptionError = result.message,
+                )
             }
         }
+    }
+
+    /**
+     * The plan changed (a Play purchase the server accepted, or a voucher).
+     * Servers carry a PLAN-computed `accessible` flag, so they are re-read
+     * too: refreshing only the plan left premium nodes locked right after the
+     * user had paid for them (A2-003).
+     */
+    fun onEntitlementChanged() {
+        fetchSubscription(forceRefresh = true)
+        loadServers(forceRefresh = true)
+    }
+
+    /**
+     * Forget everything that belongs to the account that just signed out.
+     *
+     * This ViewModel is activity-scoped and outlives a sign-out, so without
+     * this the next account on the device inherited the previous one's server
+     * list (with ITS plan's `accessible` flags), selection, plan and port
+     * forwards (A2-003). iOS does the same in `resetForLogout`.
+     */
+    fun resetForSignOut() {
+        _uiState.value = _uiState.value.copy(
+            servers = emptyList(),
+            selectedServer = null,
+            isLoadingServers = false,
+            subscription = null,
+            isLoadingSubscription = false,
+            subscriptionError = null,
+            portForwards = emptyList(),
+            isLoadingPortForwards = false,
+            connectError = null,
+            serversError = null,
+            portForwardError = null,
+        )
     }
 
     /**
@@ -520,22 +594,21 @@ class VpnViewModel @Inject constructor(
     }
 
     /**
-     * Redeem a voucher code. Refreshes the subscription on success so
-     * the UI reflects the new period end. The provided callback receives
-     * the parsed RedeemVoucherResponse (success body or parsed error
-     * body) — see RedeemVoucherResponse.error for the slug.
+     * Redeem a voucher code. On success the plan and the servers it unlocks
+     * are re-read, so the new plan is usable immediately.
      */
-    fun redeemVoucher(code: String, onResult: (RedeemVoucherResponse?) -> Unit) {
+    fun redeemVoucher(code: String, onResult: (VoucherResult) -> Unit) {
         viewModelScope.launch {
             when (val result = repository.redeemVoucher(code)) {
                 is ApiResult.Success -> {
                     if (result.data.ok) {
-                        // Refresh subscription so SubscriptionScreen shows new period
-                        fetchSubscription(forceRefresh = true)
+                        onEntitlementChanged()
+                        onResult(VoucherResult.Redeemed(result.data))
+                    } else {
+                        onResult(VoucherResult.Rejected(result.data.error))
                     }
-                    onResult(result.data)
                 }
-                is ApiResult.Error -> onResult(null)
+                is ApiResult.Error -> onResult(VoucherResult.Failed(result.message))
             }
         }
     }
@@ -802,27 +875,6 @@ class VpnViewModel @Inject constructor(
     /** Home's dismiss affordance on its message banner (A2-012). */
     fun dismissConnectError() {
         _uiState.value = _uiState.value.copy(connectError = null)
-    }
-
-    /**
-     * Measure TCP connection latency to a server's IP/port.
-     * Uses Socket connect timeout instead of ICMP ping (no root needed).
-     */
-    fun measureServerLatency(ipAddress: String, port: Int = 443, onResult: (Long?) -> Unit) {
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val latency = try {
-                val start = System.nanoTime()
-                java.net.Socket().use { socket ->
-                    socket.connect(java.net.InetSocketAddress(ipAddress, port), 3000)
-                }
-                (System.nanoTime() - start) / 1_000_000 // Convert to ms
-            } catch (_: Exception) {
-                null
-            }
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                onResult(latency)
-            }
-        }
     }
 
     // ── Port Forwarding ──────────────────────────────────────────

@@ -178,9 +178,6 @@ interface BirdoApi {
 
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
 
-    @GET("vpn/multi-hop/routes")
-    suspend fun getMultiHopRoutes(): Response<List<MultiHopRoute>>
-
     @POST("vpn/multi-hop/connect")
     suspend fun connectMultiHop(
         @Body request: MultiHopConnectRequest,
