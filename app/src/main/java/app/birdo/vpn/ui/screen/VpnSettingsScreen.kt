@@ -23,7 +23,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
@@ -129,7 +128,9 @@ fun VpnSettingsScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                // The port and MTU fields are at the bottom of the list.
+                .imePadding(),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -141,10 +142,14 @@ fun VpnSettingsScreen(
                 // means a persisted-on state can't resurface after a downgrade;
                 // the lock affordance routes to the upgrade flow (matches the
                 // Quantum / Custom-DNS / Port-forward gating on the Settings page).
+                // The title no longer says "· Premium" (P1-032): a paying user
+                // saw an upsell word on a setting they own, and the lock icon
+                // already marks it for everyone else.
                 VpnToggle(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_stealth_title),
+                    description = stringResource(R.string.vpn_settings_stealth_desc),
                     checked = state.stealthModeEnabled && stealthUnlocked,
                     onCheckedChange = onStealthModeChange,
                     locked = !stealthUnlocked,
@@ -190,6 +195,7 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Lan,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_local_network),
+                    description = stringResource(R.string.vpn_settings_local_network_desc),
                     checked = state.localNetworkSharing,
                     onCheckedChange = onLocalNetworkSharingChange,
                 )
@@ -207,7 +213,8 @@ fun VpnSettingsScreen(
                 ) {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Router, stringResource(R.string.vpn_settings_port), tint = BirdoGreen, modifier = Modifier.size(22.dp))
+                            // Decorative: the title beside it names the card (A2-032).
+                            Icon(Icons.Default.Router, contentDescription = null, tint = BirdoGreen, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.width(14.dp))
                             Text(
                                 stringResource(R.string.vpn_settings_port),
@@ -309,15 +316,22 @@ fun VpnSettingsScreen(
                     contentPadding = PaddingValues(16.dp),
                 ) {
                     Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Tune, stringResource(R.string.vpn_settings_mtu), tint = BirdoYellow, modifier = Modifier.size(22.dp))
+                        Row(verticalAlignment = Alignment.Top) {
+                            Icon(Icons.Default.Tune, contentDescription = null, tint = BirdoYellow, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.width(14.dp))
-                            Text(
-                                stringResource(R.string.vpn_settings_mtu),
-                                style = MaterialTheme.typography.titleSmall,
-                                color = palette.onSurface,
-                                fontWeight = FontWeight.Medium,
-                            )
+                            Column {
+                                Text(
+                                    stringResource(R.string.vpn_settings_mtu),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.onSurface,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(
+                                    stringResource(R.string.vpn_settings_mtu_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = palette.onSurfaceMuted,
+                                )
+                            }
                         }
                         Spacer(Modifier.height(12.dp))
 
@@ -447,12 +461,12 @@ private fun VpnToggle(
             modifier = rowModifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, title, tint = if (locked) palette.onSurfaceFaint else iconColor, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = null, tint = if (locked) palette.onSurfaceFaint else iconColor, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall, color = palette.onSurface, fontWeight = FontWeight.Medium)
                 if (description != null) {
-                    Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted)
                 }
             }
             Spacer(Modifier.width(8.dp))

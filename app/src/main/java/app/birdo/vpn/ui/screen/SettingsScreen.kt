@@ -26,6 +26,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,6 +45,12 @@ import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
 import app.birdo.vpn.utils.InputValidator
 
+/**
+ * Settings tab root, in the canonical section order (P1-parity "Settings names
+ * and help text"): Appearance · Privacy & Security · Connection ·
+ * Notifications · VPN · About. Every row says what it does (P1-010); iOS
+ * explains every row and this screen used to explain three.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -63,6 +72,8 @@ fun SettingsScreen(
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
     onCrashReportsChange: (Boolean) -> Unit = {},
+    /** The user has read the settings-reset notice (A2-047). */
+    onDismissSettingsResetNotice: () -> Unit = {},
     // ── Plan gating ──────────────────────────────────────────────
     // A locked row does not toggle; it taps through to the upgrade flow,
     // the same affordance Stealth Mode uses on the VPN Settings sub-page.
@@ -87,10 +98,18 @@ fun SettingsScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                // The DNS fields sit low on this list; the keyboard must push
+                // them up, not cover them (edge-to-edge: nothing resizes the
+                // window for us any more).
+                .imePadding(),
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (state.settingsResetNoticePending) {
+                item { SettingsResetNotice(onDismiss = onDismissSettingsResetNotice) }
+            }
+
             // ── Appearance ───────────────────────────────────────
             item { BirdoSectionHeader(stringResource(R.string.settings_section_appearance)) }
 
@@ -101,30 +120,8 @@ fun SettingsScreen(
                 )
             }
 
-            // ── Security ─────────────────────────────────────────
-            item { BirdoSectionHeader(stringResource(R.string.settings_section_security)) }
-
-            item {
-                SettingsToggle(
-                    icon = Icons.Default.Fingerprint,
-                    iconColor = BirdoGreen,
-                    title = stringResource(R.string.settings_biometric),
-                    checked = state.biometricLockEnabled,
-                    onCheckedChange = onBiometricLockChange,
-                )
-            }
-
-            item {
-                SettingsToggle(
-                    icon = Icons.Default.Lock,
-                    iconColor = BirdoAccent,
-                    title = stringResource(R.string.vpn_settings_quantum_title),
-                    checked = state.quantumProtectionEnabled && quantumUnlocked,
-                    onCheckedChange = onQuantumProtectionChange,
-                    locked = !quantumUnlocked,
-                    onLockedTap = { onUpgradeRequired("Quantum Protection") },
-                )
-            }
+            // ── Privacy & Security ───────────────────────────────
+            item { BirdoSectionHeader(stringResource(R.string.settings_section_privacy_security)) }
 
             item {
                 // Kill switch defaults ON (the safe choice) but is user-toggleable.
@@ -155,6 +152,55 @@ fun SettingsScreen(
                 )
             }
 
+            item {
+                SettingsToggle(
+                    icon = Icons.Default.Lock,
+                    iconColor = BirdoAccent,
+                    title = stringResource(R.string.vpn_settings_quantum_title),
+                    description = stringResource(R.string.settings_quantum_desc),
+                    checked = state.quantumProtectionEnabled && quantumUnlocked,
+                    onCheckedChange = onQuantumProtectionChange,
+                    locked = !quantumUnlocked,
+                    onLockedTap = { onUpgradeRequired("Quantum Protection") },
+                )
+            }
+
+            item {
+                // "Hide App Contents", not "Biometric Lock" (P1-011): the gate
+                // covers the screen and guards nothing else — no key is released
+                // by it, and the VPN (Auto-Connect included) runs behind it. A
+                // security name, a Security section and a green icon all implied
+                // otherwise. Neutral icon, and copy that says what it does. iOS
+                // made the same change after its own audit. The stored key is
+                // unchanged.
+                SettingsToggle(
+                    icon = Icons.Default.VisibilityOff,
+                    iconColor = BirdoColors.current.onSurfaceMuted,
+                    title = stringResource(R.string.settings_hide_app_contents),
+                    description = stringResource(R.string.settings_hide_app_contents_desc),
+                    descriptionMaxLines = Int.MAX_VALUE,
+                    checked = state.biometricLockEnabled,
+                    onCheckedChange = onBiometricLockChange,
+                )
+            }
+
+            item {
+                // Crash reports are OPT-IN (off by default). This is the "change
+                // it any time in Settings" the consent screen promises; flipping
+                // it starts or closes the SDK immediately (BirdoApp).
+                SettingsToggle(
+                    icon = Icons.Default.BugReport,
+                    iconColor = BirdoWhite60,
+                    title = stringResource(R.string.settings_crash_reports),
+                    description = stringResource(R.string.settings_crash_reports_desc),
+                    // A disclosure: shown in full, never ellipsized.
+                    descriptionMaxLines = Int.MAX_VALUE,
+                    checked = state.crashReportsEnabled,
+                    onCheckedChange = onCrashReportsChange,
+                    testTag = TestTags.CRASH_REPORTS_TOGGLE,
+                )
+            }
+
             // ── Connection ───────────────────────────────────────
             item { BirdoSectionHeader(stringResource(R.string.settings_section_connection)) }
 
@@ -163,33 +209,25 @@ fun SettingsScreen(
                     icon = Icons.Default.Wifi,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_auto_connect),
+                    description = stringResource(R.string.settings_auto_connect_desc),
                     checked = state.autoConnect,
                     onCheckedChange = onAutoConnectChange,
                     testTag = TestTags.AUTO_CONNECT_TOGGLE,
                 )
             }
 
-            item {
-                SettingsLink(
-                    icon = Icons.Default.NotificationsActive,
-                    iconColor = BirdoWhite60,
-                    title = stringResource(R.string.settings_notif_system),
-                    onClick = onOpenNotificationSettings,
-                    trailing = Icons.AutoMirrored.Filled.OpenInNew,
-                )
-            }
-
-            // ── Display ──────────────────────────────────────────
+            // ── Notifications ────────────────────────────────────
             // What the app shows about a connection. The two detail rows
             // describe the notification's contents, so they appear only while
             // the notification itself is on.
-            item { BirdoSectionHeader(stringResource(R.string.settings_section_display)) }
+            item { BirdoSectionHeader(stringResource(R.string.settings_section_notifications)) }
 
             item {
                 SettingsToggle(
                     icon = Icons.Default.Notifications,
                     iconColor = BirdoYellow,
                     title = stringResource(R.string.settings_notifications),
+                    description = stringResource(R.string.settings_notifications_desc),
                     checked = state.notificationsEnabled,
                     onCheckedChange = onNotificationsChange,
                     testTag = TestTags.NOTIFICATIONS_TOGGLE,
@@ -202,6 +240,7 @@ fun SettingsScreen(
                         icon = Icons.Default.Language,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_notif_show_ip),
+                        description = stringResource(R.string.settings_notif_show_ip_desc),
                         checked = state.showIpInNotification,
                         onCheckedChange = onShowIpInNotificationChange,
                     )
@@ -212,10 +251,22 @@ fun SettingsScreen(
                         icon = Icons.Default.LocationOn,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_notif_show_location),
+                        description = stringResource(R.string.settings_notif_show_location_desc),
                         checked = state.showLocationInNotification,
                         onCheckedChange = onShowLocationInNotificationChange,
                     )
                 }
+            }
+
+            item {
+                SettingsLink(
+                    icon = Icons.Default.NotificationsActive,
+                    iconColor = BirdoWhite60,
+                    title = stringResource(R.string.settings_notif_system),
+                    description = stringResource(R.string.settings_notif_system_desc),
+                    onClick = onOpenNotificationSettings,
+                    trailing = Icons.AutoMirrored.Filled.OpenInNew,
+                )
             }
 
             // ── VPN ──────────────────────────────────────────────
@@ -229,6 +280,7 @@ fun SettingsScreen(
                     icon = Icons.Default.Tune,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_vpn_settings),
+                    description = stringResource(R.string.settings_vpn_settings_desc),
                     onClick = onOpenVpnSettings,
                 )
             }
@@ -238,6 +290,7 @@ fun SettingsScreen(
                     icon = Icons.Default.Dns,
                     iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_custom_dns),
+                    description = stringResource(R.string.settings_custom_dns_desc),
                     checked = state.customDnsEnabled && customDnsUnlocked,
                     onCheckedChange = onCustomDnsEnabledChange,
                     locked = !customDnsUnlocked,
@@ -246,26 +299,23 @@ fun SettingsScreen(
             }
 
             if (state.customDnsEnabled && customDnsUnlocked) {
-                item {
-                    BirdoTextField(
-                        value = state.customDnsPrimary,
-                        onValueChange = onCustomDnsPrimaryChange,
+                // Keyed: the fields keep their typed text in saved state, and
+                // an item that appears above them (the reset notice, the
+                // notification detail rows) must not hand it to another row.
+                item(key = "dns_primary") {
+                    DnsAddressField(
+                        persisted = state.customDnsPrimary,
+                        onValidChange = onCustomDnsPrimaryChange,
                         label = stringResource(R.string.vpn_settings_dns_primary),
                         placeholder = stringResource(R.string.vpn_settings_dns_primary_hint),
-                        keyboardType = KeyboardType.Decimal,
-                        isError = state.customDnsPrimary.isNotBlank() &&
-                            !InputValidator.isValidDnsAddress(state.customDnsPrimary),
                     )
                 }
-                item {
-                    BirdoTextField(
-                        value = state.customDnsSecondary,
-                        onValueChange = onCustomDnsSecondaryChange,
+                item(key = "dns_secondary") {
+                    DnsAddressField(
+                        persisted = state.customDnsSecondary,
+                        onValidChange = onCustomDnsSecondaryChange,
                         label = stringResource(R.string.vpn_settings_dns_secondary),
                         placeholder = stringResource(R.string.vpn_settings_dns_secondary_hint),
-                        keyboardType = KeyboardType.Decimal,
-                        isError = state.customDnsSecondary.isNotBlank() &&
-                            !InputValidator.isValidDnsAddress(state.customDnsSecondary),
                     )
                 }
             }
@@ -275,6 +325,7 @@ fun SettingsScreen(
                     icon = Icons.Default.SwapHoriz,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_port_forward),
+                    description = stringResource(R.string.settings_port_forward_desc),
                     onClick = if (portForwardUnlocked) onOpenPortForward
                         else { { onUpgradeRequired("Port Forwarding") } },
                     locked = !portForwardUnlocked,
@@ -287,6 +338,7 @@ fun SettingsScreen(
                     icon = Icons.AutoMirrored.Filled.CallSplit,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_split_tunnel),
+                    description = stringResource(R.string.settings_split_tunnel_desc),
                     checked = state.splitTunnelingEnabled,
                     onCheckedChange = onSplitTunnelingChange,
                 )
@@ -302,26 +354,6 @@ fun SettingsScreen(
                         onClick = onOpenSplitTunnelApps,
                     )
                 }
-            }
-
-            // ── Privacy ──────────────────────────────────────────
-            // Crash reports are OPT-IN (off by default). This is the "change it
-            // any time in Settings" the consent screen promises; flipping it
-            // starts or closes the SDK immediately (BirdoApp).
-            item { BirdoSectionHeader(stringResource(R.string.settings_section_privacy)) }
-
-            item {
-                SettingsToggle(
-                    icon = Icons.Default.BugReport,
-                    iconColor = BirdoWhite60,
-                    title = stringResource(R.string.settings_crash_reports),
-                    description = stringResource(R.string.settings_crash_reports_desc),
-                    // A disclosure: shown in full, never ellipsized.
-                    descriptionMaxLines = Int.MAX_VALUE,
-                    checked = state.crashReportsEnabled,
-                    onCheckedChange = onCrashReportsChange,
-                    testTag = TestTags.CRASH_REPORTS_TOGGLE,
-                )
             }
 
             // ── About Section ────────────────────────────────────
@@ -392,11 +424,93 @@ fun SettingsScreen(
     }
 }
 
+/**
+ * What a custom-DNS field may persist for the text in it: the trimmed address
+ * when it is blank (meaning "use the VPN's DNS") or a valid IP, else null,
+ * meaning keep typing. The FIELD holds the raw text; only this value reaches
+ * the ViewModel.
+ *
+ * The field used to be bound straight to the persisted value, whose setter
+ * rejected every partial address, so "8." snapped back to "8" and a DNS server
+ * could not be typed at all, only pasted (A2-002).
+ */
+internal fun dnsValueToCommit(text: String): String? {
+    val trimmed = text.trim()
+    return trimmed.takeIf { it.isEmpty() || InputValidator.isValidDnsAddress(it) }
+}
+
+@Composable
+private fun DnsAddressField(
+    persisted: String,
+    onValidChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+) {
+    // Seeded from, then independent of, the persisted value: the same
+    // local-text pattern VPN Settings uses for the port and MTU fields.
+    var text by rememberSaveable { mutableStateOf(persisted) }
+    val invalid = dnsValueToCommit(text) == null
+    BirdoTextField(
+        value = text,
+        onValueChange = { typed ->
+            text = typed
+            dnsValueToCommit(typed)?.let(onValidChange)
+        },
+        label = label,
+        placeholder = placeholder,
+        keyboardType = KeyboardType.Decimal,
+        isError = invalid,
+        // Said while the typed address is not yet in effect, rather than
+        // letting the field imply it has been applied.
+        supportingText = if (invalid) stringResource(R.string.settings_dns_invalid) else null,
+    )
+}
+
+/**
+ * The one-time notice after the settings-integrity check reset the protected
+ * settings (A2-047). Its absence made a Keystore hiccup look like the app
+ * forgetting the user's kill switch, DNS and split-tunnel choices.
+ */
+@Composable
+private fun SettingsResetNotice(onDismiss: () -> Unit) {
+    val palette = BirdoColors.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        shape = RoundedCornerShape(14.dp),
+        color = BirdoYellowBg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoYellow.copy(alpha = 0.3f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.Info, contentDescription = null, tint = BirdoYellow, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                stringResource(R.string.settings_reset_notice),
+                color = palette.onSurface,
+                fontSize = 13.sp,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.dismiss),
+                    tint = palette.onSurfaceMuted,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+/** The row's icon. Decorative: the row's title already names it (A2-032). */
 @Composable
 private fun SettingIconChip(
     icon: ImageVector,
     iconColor: Color,
-    contentDescription: String? = null,
 ) {
     val palette = BirdoColors.current
     Box(
@@ -407,7 +521,7 @@ private fun SettingIconChip(
             .border(1.dp, palette.hairlineSoft, RoundedCornerShape(10.dp)),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription, tint = iconColor, modifier = Modifier.size(18.dp))
+        Icon(icon, contentDescription = null, tint = iconColor, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -452,7 +566,7 @@ private fun SettingsToggle(
             modifier = rowModifier.padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SettingIconChip(icon = icon, iconColor = if (locked) palette.onSurfaceFaint else iconColor, contentDescription = title)
+            SettingIconChip(icon = icon, iconColor = if (locked) palette.onSurfaceFaint else iconColor)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -517,7 +631,7 @@ private fun SettingsLink(
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SettingIconChip(icon = icon, iconColor = if (locked) palette.onSurfaceFaint else iconColor, contentDescription = title)
+            SettingIconChip(icon = icon, iconColor = if (locked) palette.onSurfaceFaint else iconColor)
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)

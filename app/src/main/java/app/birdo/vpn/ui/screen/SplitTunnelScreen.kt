@@ -13,19 +13,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import app.birdo.vpn.R
+import app.birdo.vpn.ui.components.BirdoEmptyState
 import app.birdo.vpn.ui.components.BirdoTextField
 import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
@@ -39,7 +39,7 @@ fun SplitTunnelScreen(
     onToggleApp: (String) -> Unit,
     onBack: () -> Unit,
 ) {
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
 
     val filteredApps = remember(apps, searchQuery) {
         if (searchQuery.isBlank()) apps
@@ -125,6 +125,16 @@ fun SplitTunnelScreen(
                         )
                     }
 
+                    // A search that matches nothing said nothing (A2-040).
+                    if (filteredApps.isEmpty() && searchQuery.isNotBlank()) {
+                        item {
+                            BirdoEmptyState(
+                                icon = Icons.Default.SearchOff,
+                                title = stringResource(R.string.split_tunnel_no_match, searchQuery.trim()),
+                            )
+                        }
+                    }
+
                     item { Spacer(Modifier.height(16.dp)) }
                 }
             }
@@ -157,11 +167,14 @@ private fun AppItem(
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // App icon
+            // App icon: a bitmap the ViewModel rasterised once, off the main
+            // thread. Converting the Drawable here, per bind, allocated a
+            // bitmap on every scroll frame (A2-040). Decorative: the label
+            // below names the app.
             if (app.icon != null) {
                 Image(
-                    bitmap = app.icon.toBitmap(48, 48).asImageBitmap(),
-                    contentDescription = app.label,
+                    bitmap = app.icon,
+                    contentDescription = null,
                     modifier = Modifier
                         .size(36.dp)
                         .clip(RoundedCornerShape(8.dp)),
@@ -174,7 +187,7 @@ private fun AppItem(
                         .background(palette.surfaceRaised),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Default.Android, stringResource(R.string.cd_app), tint = palette.onSurfaceFaint, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Android, contentDescription = null, tint = palette.onSurfaceFaint, modifier = Modifier.size(20.dp))
                 }
             }
 

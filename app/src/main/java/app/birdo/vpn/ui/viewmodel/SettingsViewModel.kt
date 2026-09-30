@@ -4,8 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
-import android.graphics.drawable.Drawable
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -25,7 +26,8 @@ import javax.inject.Inject
 data class AppInfo(
     val packageName: String,
     val label: String,
-    val icon: Drawable?,
+    /** Rasterised once at list size on IO; see [SettingsViewModel.loadInstalledApps]. */
+    val icon: ImageBitmap?,
     val isExcluded: Boolean,
 )
 
@@ -57,6 +59,8 @@ data class SettingsUiState(
     val themeMode: String = "system",
     // Crash reports (Sentry): OPT-IN, OFF by default
     val crashReportsEnabled: Boolean = false,
+    /** The integrity check reset the protected settings; Settings says so once (A2-047). */
+    val settingsResetNoticePending: Boolean = false,
 )
 
 @HiltViewModel
@@ -90,6 +94,7 @@ class SettingsViewModel @Inject constructor(
             biometricLockEnabled = prefs.biometricLockEnabled,
             themeMode = prefs.themeMode,
             crashReportsEnabled = prefs.crashReportsEnabled,
+            settingsResetNoticePending = prefs.settingsResetNoticePending,
         )
     )
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -186,7 +191,11 @@ class SettingsViewModel @Inject constructor(
                     val ownPackage = context.packageName
                     val excluded = prefs.splitTunnelApps
 
-                    pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                    // The row's 36dp icon, in pixels for this screen: rasterised
+                    // HERE, once per app, instead of on every bind while the
+                    // list scrolls. No GET_META_DATA: nothing reads it.
+                    val iconPx = (ICON_SIZE_DP * context.resources.displayMetrics.density).toInt()
+                    pm.getInstalledApplications(0)
                         .filter { app ->
                             app.packageName != ownPackage &&
                                 pm.getLaunchIntentForPackage(app.packageName) != null
@@ -195,7 +204,11 @@ class SettingsViewModel @Inject constructor(
                             AppInfo(
                                 packageName = app.packageName,
                                 label = pm.getApplicationLabel(app).toString(),
-                                icon = try { pm.getApplicationIcon(app) } catch (_: Exception) { null },
+                                icon = try {
+                                    pm.getApplicationIcon(app).toBitmap(iconPx, iconPx).asImageBitmap()
+                                } catch (_: Exception) {
+                                    null
+                                },
                                 isExcluded = excluded.contains(app.packageName),
                             )
                         }
@@ -213,6 +226,19 @@ class SettingsViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(isLoadingApps = false)
             }
         }
+    }
+
+    /**
+     * The picker was left: drop the icon bitmaps. This ViewModel lives as long
+     * as the Activity, so they were held for the rest of the session (A2-040).
+     */
+    fun clearInstalledApps() {
+        _uiState.value = _uiState.value.copy(installedApps = emptyList(), isLoadingApps = false)
+    }
+
+    fun dismissSettingsResetNotice() {
+        prefs.settingsResetNoticePending = false
+        _uiState.value = _uiState.value.copy(settingsResetNoticePending = false)
     }
 
     // ── Stealth & Quantum Settings ────────────────────────────────
@@ -308,6 +334,11 @@ class SettingsViewModel @Inject constructor(
         prefs.wireGuardMtu = clamped
         _uiState.value = _uiState.value.copy(wireGuardMtu = clamped)
         pendingReapplyOnExit = true
+    }
+
+    private companion object {
+        /** Matches SplitTunnelScreen's icon slot. */
+        const val ICON_SIZE_DP = 36
     }
 
     fun openUrl(url: String) {

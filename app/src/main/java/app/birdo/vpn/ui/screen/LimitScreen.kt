@@ -35,8 +35,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.material3.ExperimentalMaterial3Api
+import app.birdo.vpn.ui.components.BirdoPullToRefresh
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import app.birdo.vpn.R
 import app.birdo.vpn.data.model.SubscriptionStatus
-import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.ui.components.BirdoButton
 import app.birdo.vpn.ui.components.BirdoButtonSize
 import app.birdo.vpn.ui.components.BirdoButtonVariant
@@ -63,12 +73,20 @@ import kotlin.math.sin
  * every minute and flushed on disconnect. Honest about staleness: never
  * presents a frozen number as live.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LimitScreen(
-    user: UserProfile?,
     subscription: SubscriptionStatus?,
     onRefresh: () -> Unit,
     onUpgrade: () -> Unit,
+    /** A fetch is in flight: the refresh control says so instead of seeming to do nothing. */
+    isLoading: Boolean = false,
+    /**
+     * Why the last fetch failed. With no data yet this replaces the spinner,
+     * which used to turn forever on any failure (A2-018); with data, the
+     * stale figure stays up and this sits beside it.
+     */
+    error: String? = null,
 ) {
     val palette = BirdoColors.current
 
@@ -83,184 +101,219 @@ fun LimitScreen(
     val meterColor = gaugeColor(fraction)
     val remainingGb = max(0.0, limitGb - usedGb)
 
-    Column(
+    // Pull-to-refresh, as on iOS (A2-023).
+    BirdoPullToRefresh(
+        isLoading = isLoading,
+        onRefresh = onRefresh,
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            // A tab with no top bar owns its status-bar inset (A2-010).
+            .statusBarsPadding(),
     ) {
-        // ── Plan header: name on the left, allowance pill on the right ──
-        Column {
-            SectionLabel("Your Plan")
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    planDisplayName(subscription?.plan),
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.onSurface,
-                )
-                if (subscription != null) {
-                    AllowancePill(
-                        text = if (hasCap) "$limitGb GB / month" else "Unlimited",
-                        palette = palette,
-                    )
-                }
-            }
-        }
-
-        BirdoCard(modifier = Modifier.fillMaxWidth()) {
-            when {
-                subscription == null -> LoadingState(palette)
-                !hasCap -> UnlimitedState(palette)
-                else -> Column(
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // ── Plan header: name on the left, allowance pill on the right ──
+            Column {
+                SectionLabel("Your Plan")
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    SpeedDialGauge(
-                        fraction = fraction,
-                        usedGb = usedGb,
-                        limitGb = limitGb,
-                        color = meterColor,
-                        trackColor = palette.onSurface.copy(alpha = if (palette.isLight) 0.09f else 0.14f),
-                        knobCenterColor = palette.surface,
-                        usedTextColor = palette.onSurface,
-                        subTextColor = palette.onSurfaceMuted,
-                        modifier = Modifier
-                            .padding(top = 4.dp)
-                            .size(232.dp),
-                    )
-
-                    // Freshness — the meter is only as honest as the last sync.
-                    val freshnessText = when {
-                        neverSynced -> "Awaiting first sync — connect to start counting"
-                        isFresh -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Updated $it" }
-                            ?: "Up to date"
-                        else -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Last update $it" }
-                            ?: "May be delayed"
-                    }
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Box(
-                            Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(if (isFresh) BirdoAccent else palette.onSurfaceFaint),
-                        )
-                        Text(
-                            freshnessText,
-                            fontSize = 12.sp,
-                            color = palette.onSurfaceMuted,
-                        )
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-
-                    // Prominent refresh: a tonal accent pill, unmistakably a button.
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(BirdoAccent.copy(alpha = if (palette.isLight) 0.16f else 0.14f))
-                            .clickable(role = Role.Button, onClick = onRefresh)
-                            .padding(horizontal = 16.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Refresh,
-                            contentDescription = null,
-                            tint = BirdoAccent,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Text(
-                            "Refresh usage",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = BirdoAccent,
-                        )
-                    }
-
-                    Spacer(Modifier.height(14.dp))
-                    HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
-                    Spacer(Modifier.height(14.dp))
-
-                    // Used / Left / Resets — equal columns with hairline separators.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        StatCell("Used", formatGb(usedGb), meterColor, palette, Modifier.weight(1f))
-                        StatDivider(palette)
-                        StatCell("Left", formatGb(remainingGb), palette.onSurface, palette, Modifier.weight(1f))
-                        StatDivider(palette)
-                        StatCell(
-                            "Resets",
-                            formatResetDate(subscription.bandwidthPeriodEnd) ?: "Monthly",
-                            palette.onSurface,
-                            palette,
-                            Modifier.weight(1f),
-                        )
-                    }
-
-                    Spacer(Modifier.height(14.dp))
                     Text(
-                        "Counts uploads and downloads · Updates about every minute",
-                        fontSize = 11.sp,
-                        color = palette.onSurfaceFaint,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
+                        planDisplayName(subscription?.plan),
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.onSurface,
                     )
+                    if (subscription != null) {
+                        AllowancePill(
+                            text = if (hasCap) "$limitGb GB / month" else "Unlimited",
+                            palette = palette,
+                        )
+                    }
                 }
             }
-        }
 
-        if (subscription != null && hasCap) {
+            if (error != null && subscription != null) {
+                // Stale figure below, the reason here.
+                Text(
+                    error,
+                    fontSize = 12.sp,
+                    color = BirdoRed,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+
             BirdoCard(modifier = Modifier.fillMaxWidth()) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                when {
+                    subscription == null && error != null && !isLoading ->
+                        LoadFailedState(message = error, onRetry = onRefresh, palette = palette)
+                    subscription == null -> LoadingState(palette)
+                    !hasCap -> UnlimitedState(palette)
+                    else -> Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Box(
+                        SpeedDialGauge(
+                            fraction = fraction,
+                            usedGb = usedGb,
+                            limitGb = limitGb,
+                            color = meterColor,
+                            trackColor = palette.onSurface.copy(alpha = if (palette.isLight) 0.09f else 0.14f),
+                            knobCenterColor = palette.surface,
+                            usedTextColor = palette.onSurface,
+                            subTextColor = palette.onSurfaceMuted,
                             modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(9.dp))
-                                .background(BirdoAccent.copy(alpha = 0.14f)),
-                            contentAlignment = Alignment.Center,
+                                .padding(top = 4.dp)
+                                .size(232.dp),
+                        )
+
+                        // Freshness — the meter is only as honest as the last sync.
+                        val freshnessText = when {
+                            neverSynced -> "Awaiting first sync — connect to start counting"
+                            isFresh -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Updated $it" }
+                                ?: "Up to date"
+                            else -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Last update $it" }
+                                ?: "May be delayed"
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Icon(
-                                Icons.Filled.Bolt,
-                                contentDescription = null,
-                                tint = BirdoAccent,
-                                modifier = Modifier.size(19.dp),
+                            Box(
+                                Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isFresh) BirdoAccent else palette.onSurfaceFaint),
+                            )
+                            Text(
+                                freshnessText,
+                                fontSize = 12.sp,
+                                color = palette.onSurfaceMuted,
+                            )
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
+                        // Prominent refresh: a tonal accent pill, unmistakably a button.
+                        // It shows its own progress: before, a tap changed nothing
+                        // on screen until (or unless) the number moved (A2-018).
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(BirdoAccent.copy(alpha = if (palette.isLight) 0.16f else 0.14f))
+                                .clickable(enabled = !isLoading, role = Role.Button, onClick = onRefresh)
+                                .heightIn(min = 48.dp)
+                                .padding(horizontal = 16.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    color = BirdoAccent,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Filled.Refresh,
+                                    contentDescription = null,
+                                    tint = BirdoAccent,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            Text(
+                                stringResource(if (isLoading) R.string.limit_refreshing else R.string.limit_refresh),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = BirdoAccent,
+                            )
+                        }
+
+                        Spacer(Modifier.height(14.dp))
+                        HorizontalDivider(color = palette.hairlineSoft, thickness = 1.dp)
+                        Spacer(Modifier.height(14.dp))
+
+                        // Used / Left / Resets — equal columns with hairline separators.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            StatCell("Used", formatGb(usedGb), meterColor, palette, Modifier.weight(1f))
+                            StatDivider(palette)
+                            StatCell("Left", formatGb(remainingGb), palette.onSurface, palette, Modifier.weight(1f))
+                            StatDivider(palette)
+                            StatCell(
+                                "Resets",
+                                formatResetDate(subscription.bandwidthPeriodEnd) ?: "Monthly",
+                                palette.onSurface,
+                                palette,
+                                Modifier.weight(1f),
+                            )
+                        }
+
+                        Spacer(Modifier.height(14.dp))
+                        Text(
+                            "Counts uploads and downloads · Updates about every minute",
+                            fontSize = 11.sp,
+                            color = palette.onSurfaceFaint,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+
+            if (subscription != null && hasCap) {
+                BirdoCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .background(BirdoAccent.copy(alpha = 0.14f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Filled.Bolt,
+                                    contentDescription = null,
+                                    tint = BirdoAccent,
+                                    modifier = Modifier.size(19.dp),
+                                )
+                            }
+                            Text(
+                                if (fraction >= 0.9f) "You're almost out of data" else "Need more data?",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = palette.onSurface,
                             )
                         }
                         Text(
-                            if (fraction >= 0.9f) "You're almost out of data" else "Need more data?",
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = palette.onSurface,
+                            "Free accounts include $limitGb GB per month. Upgrade to Operative for unlimited data on every server.",
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = palette.onSurfaceMuted,
+                        )
+                        BirdoButton(
+                            text = "Upgrade for unlimited",
+                            onClick = onUpgrade,
+                            variant = BirdoButtonVariant.Primary,
+                            size = BirdoButtonSize.Medium,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    Text(
-                        "Free accounts include $limitGb GB per month. Upgrade to Operative for unlimited data on every server.",
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        color = palette.onSurfaceMuted,
-                    )
-                    BirdoButton(
-                        text = "Upgrade for unlimited",
-                        onClick = onUpgrade,
-                        variant = BirdoButtonVariant.Primary,
-                        size = BirdoButtonSize.Medium,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
         }
@@ -344,18 +397,29 @@ private fun SpeedDialGauge(
         }
 
         // Centre readout: the number is the hero, the unit line supports it.
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
+        // Both SHRINK to fit rather than overflow the fixed ring: at 200 %
+        // font scale the 40 sp figure used to spill across the arc (A2-024).
+        // The ring keeps its size; the text inside it adapts.
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 36.dp),
+        ) {
+            BasicText(
                 gaugeValue(usedGb),
-                fontSize = 40.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                color = usedTextColor,
+                style = TextStyle(
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = usedTextColor,
+                    textAlign = TextAlign.Center,
+                ),
+                maxLines = 1,
+                autoSize = TextAutoSize.StepBased(minFontSize = 18.sp, maxFontSize = 40.sp),
             )
-            Text(
+            BasicText(
                 "of $limitGb GB used",
-                fontSize = 13.sp,
-                color = subTextColor,
+                style = TextStyle(color = subTextColor, textAlign = TextAlign.Center),
+                maxLines = 1,
+                autoSize = TextAutoSize.StepBased(minFontSize = 9.sp, maxFontSize = 13.sp),
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
@@ -389,9 +453,39 @@ private fun LoadingState(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette) {
             modifier = Modifier.size(32.dp),
         )
         Text(
-            "Loading your usage…",
+            stringResource(R.string.limit_loading),
             fontSize = 13.sp,
             color = palette.onSurfaceMuted,
+        )
+    }
+}
+
+/** No figure to show and the fetch failed: say why and offer the way out. */
+@Composable
+private fun LoadFailedState(
+    message: String,
+    onRetry: () -> Unit,
+    palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 32.dp)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            message,
+            fontSize = 13.sp,
+            color = palette.onSurfaceMuted,
+            textAlign = TextAlign.Center,
+        )
+        BirdoButton(
+            text = stringResource(R.string.retry),
+            onClick = onRetry,
+            variant = BirdoButtonVariant.Secondary,
+            icon = Icons.Filled.Refresh,
         )
     }
 }
@@ -496,7 +590,9 @@ private fun SectionLabel(text: String) {
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 1.5.sp,
         color = BirdoColors.current.onSurfaceMuted,
-        modifier = Modifier.padding(start = 4.dp, bottom = 6.dp),
+        modifier = Modifier
+            .padding(start = 4.dp, bottom = 6.dp)
+            .semantics { heading() },
     )
 }
 

@@ -115,6 +115,20 @@ class InputValidatorTest {
         assertFalse(InputValidator.isValidDnsAddress("::1")) // IPv6 loopback
     }
 
+    /**
+     * A2-002: the Settings field validates as the user types. InetAddress
+     * takes "8.8" as 8.0.0.8 and hands "1.1.1." to the RESOLVER, so a
+     * half-typed address was either wrongly valid or a DNS lookup.
+     */
+    @Test
+    fun `partial and short-form IPv4 addresses are rejected without a lookup`() {
+        assertFalse(InputValidator.isValidDnsAddress("8.8"))
+        assertFalse(InputValidator.isValidDnsAddress("8.8.8"))
+        assertFalse(InputValidator.isValidDnsAddress("1.1.1."))
+        assertFalse(InputValidator.isValidDnsAddress("1."))
+        assertFalse(InputValidator.isValidDnsAddress("134744072")) // 8.8.8.8 as one number
+    }
+
     @Test
     fun `wildcard address rejected for DNS`() {
         assertFalse(InputValidator.isValidDnsAddress("0.0.0.0"))

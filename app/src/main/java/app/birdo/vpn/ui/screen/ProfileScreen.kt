@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -47,6 +48,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,7 +58,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -69,7 +76,6 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.data.model.DeletionPreflightResponse
-import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.ui.components.BirdoCard
@@ -80,7 +86,11 @@ import app.birdo.vpn.ui.theme.BirdoRed
 import app.birdo.vpn.ui.theme.BirdoSurface
 import app.birdo.vpn.ui.theme.BirdoWhite60
 import app.birdo.vpn.ui.theme.BirdoWhite80
+import app.birdo.vpn.ui.components.SignOutConfirmDialog
+import app.birdo.vpn.ui.viewmodel.VoucherResult
+import app.birdo.vpn.utils.anonymousAccountNumber
 import app.birdo.vpn.utils.copySensitiveToClipboard
+import app.birdo.vpn.utils.isAnonymousAccountEmail
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -98,7 +108,7 @@ fun ProfileScreen(
     isConnected: Boolean,
     publicIp: String?,
     onSubscription: () -> Unit,
-    onRedeemVoucher: ((code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit)? = null,
+    onRedeemVoucher: ((code: String, onResult: (VoucherResult) -> Unit) -> Unit)? = null,
     onManageOnWeb: () -> Unit,
     onLogout: () -> Unit,
     onOpenUrl: (String) -> Unit = {},
@@ -113,13 +123,18 @@ fun ProfileScreen(
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering). See IS_PLAY_BUILD.
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
+    /** Anonymous accounts are reminded, before signing out, to keep the account number. */
+    isAnonymousAccount: Boolean = false,
 ) {
-    var showDeleteDialog by remember { mutableStateOf(false) }
-    var showVoucherDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
+    var showVoucherDialog by rememberSaveable { mutableStateOf(false) }
+    var showSignOutConfirm by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // A tab with no top bar owns its status-bar inset (A2-010).
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -138,7 +153,7 @@ fun ProfileScreen(
         SectionLabel("Account")
         ProfileActionRow(
             icon = Icons.Outlined.CardGiftcard,
-            title = "Redeem voucher",
+            title = stringResource(R.string.voucher_title),
             subtitle = null,
             onClick = { showVoucherDialog = true },
         )
@@ -167,15 +182,19 @@ fun ProfileScreen(
 
         SectionLabel("Session")
         // Anonymous accounts carry a synthetic `anon_…@anonymous.local` email —
-        // never surface that string; it reads as a bug.
-        val signOutSubtitle = user?.email?.let { e ->
-            if (e.startsWith("anon_") && e.endsWith("@anonymous.local")) "Anonymous account" else e
-        } ?: "Sign out of this device"
+        // never surface that string; it reads as a bug and carries the number.
+        val signOutSubtitle = when {
+            isAnonymousAccountEmail(user?.email) -> stringResource(R.string.account_anonymous)
+            !user?.email.isNullOrBlank() -> user.email
+            else -> stringResource(R.string.sign_out_subtitle)
+        }
         ProfileActionRow(
             icon = Icons.AutoMirrored.Outlined.Logout,
-            title = "Sign out",
+            title = stringResource(R.string.sign_out),
             subtitle = signOutSubtitle,
-            onClick = onLogout,
+            // Confirmed, as on the Connect tab (A2-006): the same one tap loses
+            // an anonymous account whose number was never saved.
+            onClick = { showSignOutConfirm = true },
             destructive = true,
         )
         ProfileActionRow(
@@ -219,6 +238,15 @@ fun ProfileScreen(
             onDismiss = { showVoucherDialog = false },
         )
     }
+
+    if (showSignOutConfirm) {
+        SignOutConfirmDialog(
+            isConnected = isConnected,
+            isAnonymousAccount = isAnonymousAccount,
+            onConfirm = onLogout,
+            onDismiss = { showSignOutConfirm = false },
+        )
+    }
 }
 
 @Composable
@@ -232,11 +260,11 @@ private fun ProfileIdentityCard(
     val rawEmail = user?.email ?: ""
     // Anonymous accounts carry a synthetic `anon_<24-digit-id>@anonymous.local`
     // email; the 24-digit id IS the account's recovery credential.
-    val isAnon = rawEmail.startsWith("anon_") && rawEmail.endsWith("@anonymous.local")
-    val accountNumber = if (isAnon) rawEmail.removePrefix("anon_").removeSuffix("@anonymous.local") else null
+    val isAnon = isAnonymousAccountEmail(rawEmail)
+    val accountNumber = anonymousAccountNumber(rawEmail)
     val displayName = when {
         !user?.name.isNullOrBlank() -> user.name!!
-        isAnon -> "Anonymous account"
+        isAnon -> stringResource(R.string.account_anonymous)
         rawEmail.isNotBlank() -> rawEmail.substringBefore('@')
         else -> "Account"
     }
@@ -739,7 +767,10 @@ private fun DeleteAccountDialog(
                         singleLine = true,
                         enabled = !isDeletingAccount,
                         isError = error != null,
-                        modifier = Modifier.fillMaxWidth(),
+                        // A password manager can fill the confirmation (A2-017).
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Password },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BirdoRed,
                             cursorColor = BirdoWhite80,
@@ -790,13 +821,30 @@ private fun DeleteAccountDialog(
  */
 @Composable
 private fun VoucherRedeemDialog(
-    onRedeem: (code: String, onResult: (RedeemVoucherResponse?) -> Unit) -> Unit,
+    onRedeem: (code: String, onResult: (VoucherResult) -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var code by remember { mutableStateOf("") }
+    var code by rememberSaveable { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
     var resultIsSuccess by remember { mutableStateOf(false) }
+    // Resolved in composition; the result arrives in a callback.
+    val copy = VoucherCopy(
+        redeemed = stringResource(R.string.voucher_redeemed),
+        extended = stringResource(R.string.voucher_extended),
+        upgraded = stringResource(R.string.voucher_upgraded),
+        invalidFormat = stringResource(R.string.voucher_invalid_format),
+        notFound = stringResource(R.string.voucher_not_found),
+        alreadyRedeemed = stringResource(R.string.voucher_already_redeemed),
+        expired = stringResource(R.string.voucher_expired),
+        planDowngrade = stringResource(R.string.voucher_plan_downgrade),
+        rejected = stringResource(R.string.error_voucher_failed),
+        plans = PlanNames(
+            free = stringResource(R.string.plan_name_free),
+            operative = stringResource(R.string.plan_name_operative),
+            sovereign = stringResource(R.string.plan_name_sovereign),
+        ),
+    )
 
     AlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
@@ -811,13 +859,13 @@ private fun VoucherRedeemDialog(
                     modifier = Modifier.size(22.dp),
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("Redeem voucher", fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.voucher_title), fontWeight = FontWeight.Bold)
             }
         },
         text = {
             Column {
                 Text(
-                    "Enter a 30- or 90-day voucher code to extend or upgrade your subscription.",
+                    stringResource(R.string.voucher_body),
                     style = MaterialTheme.typography.bodySmall,
                     color = BirdoWhite60,
                 )
@@ -844,6 +892,9 @@ private fun VoucherRedeemDialog(
                         msg,
                         style = MaterialTheme.typography.bodySmall,
                         color = if (resultIsSuccess) BirdoGreen else BirdoRed,
+                        // Announced: the result of a paid action must reach a
+                        // TalkBack user too (A2-032).
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
                 }
             }
@@ -853,30 +904,11 @@ private fun VoucherRedeemDialog(
                 onClick = {
                     submitting = true
                     resultMessage = null
-                    onRedeem(code.trim()) { response ->
+                    onRedeem(code.trim()) { result ->
                         submitting = false
-                        if (response == null) {
-                            resultIsSuccess = false
-                            resultMessage = "Network error. Try again."
-                        } else if (response.ok) {
-                            resultIsSuccess = true
-                            resultMessage = buildString {
-                                append("Added ${response.durationDays} days. ")
-                                if (response.extended) append("Subscription extended.")
-                                else append("Plan upgraded to ${response.plan}.")
-                            }
-                            code = ""
-                        } else {
-                            resultIsSuccess = false
-                            resultMessage = when (response.error) {
-                                "invalid_format" -> "Invalid code format. Should be BIRD-XXXX-XXXX-XXXX."
-                                "not_found" -> "Voucher not recognised."
-                                "already_redeemed" -> "Voucher already used."
-                                "expired" -> "Voucher has expired."
-                                "plan_downgrade" -> "Your plan is already higher than this voucher offers."
-                                else -> "Couldn't redeem voucher. Please try again."
-                            }
-                        }
+                        resultIsSuccess = result is VoucherResult.Redeemed
+                        resultMessage = copy.messageFor(result)
+                        if (result is VoucherResult.Redeemed) code = ""
                     }
                 },
                 enabled = !submitting && code.length >= 8,
@@ -892,14 +924,49 @@ private fun VoucherRedeemDialog(
                         strokeWidth = 2.dp,
                     )
                 } else {
-                    Text("Redeem", fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.voucher_redeem), fontWeight = FontWeight.SemiBold)
                 }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !submitting) {
-                Text("Cancel", color = BirdoWhite80)
+                Text(stringResource(R.string.cancel), color = BirdoWhite80)
             }
         },
     )
+}
+
+/**
+ * The voucher dialog's result copy. A failure that is not about the CODE (a
+ * dead session, a rate limit, an outage, no network) says so in the mapped
+ * error text: all of them used to read "Network error. Try again." (A2-027).
+ */
+internal data class VoucherCopy(
+    val redeemed: String,
+    val extended: String,
+    val upgraded: String,
+    val invalidFormat: String,
+    val notFound: String,
+    val alreadyRedeemed: String,
+    val expired: String,
+    val planDowngrade: String,
+    val rejected: String,
+    val plans: PlanNames,
+) {
+    fun messageFor(result: VoucherResult): String = when (result) {
+        is VoucherResult.Redeemed -> {
+            val r = result.response
+            redeemed.format(r.durationDays) + " " +
+                if (r.extended) extended else upgraded.format(plans.of(r.plan))
+        }
+        is VoucherResult.Rejected -> when (result.slug) {
+            "invalid_format" -> invalidFormat
+            "not_found" -> notFound
+            "already_redeemed" -> alreadyRedeemed
+            "expired" -> expired
+            "plan_downgrade" -> planDowngrade
+            else -> rejected
+        }
+        is VoucherResult.Failed -> result.message
+    }
 }

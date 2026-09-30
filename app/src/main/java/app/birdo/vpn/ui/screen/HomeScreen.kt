@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
@@ -68,7 +69,8 @@ import app.birdo.vpn.utils.countryCodeToFlag
 fun HomeScreen(
     state: VpnUiState,
     trafficStats: TrafficStats,
-    userEmail: String?,
+    /** Email, or the "Anonymous account" label. Never the synthetic anon address (A2-013). */
+    accountLabel: String?,
     killSwitchEnabled: Boolean,
     favoriteServers: Set<String> = emptySet(),
     multiHop: MultiHopSelection = MultiHopSelection(),
@@ -85,6 +87,10 @@ fun HomeScreen(
     showUpdateBanner: Boolean = false,
     onUpdateApp: () -> Unit = {},
     onDismissUpdate: () -> Unit = {},
+    /** Anonymous accounts are reminded, before signing out, that the account number is the only way back in. */
+    isAnonymousAccount: Boolean = false,
+    /** The upgrade flow: the device-limit refusal and locked servers route here. */
+    onViewPlans: () -> Unit = {},
 ) {
     val palette = BirdoColors.current
     val isConnected = state.vpnState is VpnState.Connected
@@ -146,9 +152,39 @@ fun HomeScreen(
 
     // The moment protection engages is the emotional peak of the app — mark it
     // with a confirm haptic so the user physically feels the tunnel come up.
+    // Only on the TRANSITION: this screen leaves composition on every tab
+    // switch, so keying on the value alone buzzed again each time the user
+    // came back to a tunnel that had been up all along (A2-033). The last seen
+    // value is saved with the tab's state, so a return restores it.
+    var lastSeenConnected by rememberSaveable { mutableStateOf(isConnected) }
     LaunchedEffect(isConnected) {
-        if (isConnected) haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        if (connectHapticDue(lastSeenConnected, isConnected)) {
+            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+        }
+        lastSeenConnected = isConnected
     }
+
+    // A connect refused for the plan's device cap says what to do in the
+    // banner; the snackbar adds the way to do it (A2-030). Matched on the
+    // mapper's canonical sentence, the only thing that reaches this screen.
+    val deviceLimitText = stringResource(R.string.error_device_limit)
+    val deviceLimitPrompt = stringResource(R.string.device_limit_snackbar)
+    val viewPlansLabel = stringResource(R.string.view_plans)
+    val shownError = state.error ?: (state.vpnState as? VpnState.Error)?.message
+    LaunchedEffect(shownError) {
+        if (shownError == deviceLimitText) {
+            val result = snackbarHostState.showSnackbar(
+                message = deviceLimitPrompt,
+                actionLabel = viewPlansLabel,
+                duration = SnackbarDuration.Long,
+            )
+            if (result == SnackbarResult.ActionPerformed) onViewPlans()
+        }
+    }
+
+    var showSignOutConfirm by rememberSaveable { mutableStateOf(false) }
+    // Tablets: the globe stays full-bleed, the controls keep a phone's width.
+    val controlsMaxWidth = adaptiveMaxContentWidth()
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Mullvad-style full-bleed background map. Everything else floats
@@ -179,7 +215,7 @@ fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             HomeTopBar(
-                userEmail = userEmail,
+                accountLabel = accountLabel,
                 multiHopEnabled = multiHopEnabled,
                 multiHopUnlocked = isSovereign,
                 onToggleMultiHop = {
@@ -200,7 +236,10 @@ fun HomeScreen(
                         )
                     }
                 },
-                onLogout = onLogout,
+                // Confirmed first (A2-006): one stray tap here dropped the
+                // tunnel and signed the user out, and an anonymous account whose
+                // number was never saved was lost with it.
+                onLogout = { showSignOutConfirm = true },
             )
 
             // Status pill floats just below the top bar.
@@ -224,6 +263,7 @@ fun HomeScreen(
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
                 modifier = Modifier
+                    .widthIn(max = controlsMaxWidth)
                     .fillMaxWidth()
                     // Report the panel's real height so the snackbar can sit just
                     // above it in every state instead of guessing an inset.
@@ -363,6 +403,7 @@ fun HomeScreen(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .widthIn(max = controlsMaxWidth)
                 .padding(horizontal = 16.dp)
                 .padding(bottom = bottomPanelHeight + 12.dp),
         ) { data ->
@@ -383,6 +424,19 @@ fun HomeScreen(
         )
     }
 
+    if (showSignOutConfirm) {
+        SignOutConfirmDialog(
+            isConnected = isConnected,
+            isAnonymousAccount = isAnonymousAccount,
+            onConfirm = onLogout,
+            onDismiss = { showSignOutConfirm = false },
+        )
+    }
+
+    // The node the live tunnel is on, marked in the picker (P1-014). A live
+    // switch re-dials the selected node, so while connected they are the same.
+    val connectedServerId = state.selectedServer?.id?.takeIf { isConnected && !multiHopEnabled }
+
     if (showServerSheet) {
         ServerSelectorSheet(
             servers = state.servers,
@@ -392,6 +446,13 @@ fun HomeScreen(
             onSelectServer = onSelectServer,
             onToggleFavorite = onToggleFavorite,
             onDismiss = { showServerSheet = false },
+            isLoading = state.isLoadingServers,
+            onRefresh = onRefreshServers,
+            connectedServerId = connectedServerId,
+            onViewPlans = {
+                showServerSheet = false
+                onViewPlans()
+            },
         )
     }
 
@@ -411,9 +472,19 @@ fun HomeScreen(
             },
             onToggleFavorite = onToggleFavorite,
             onDismiss = { multiHopPickerTarget = null },
+            isLoading = state.isLoadingServers,
+            onRefresh = onRefreshServers,
+            onViewPlans = {
+                multiHopPickerTarget = null
+                onViewPlans()
+            },
         )
     }
 }
+
+/** The connect haptic fires on the way INTO Connected, never on a return to it (A2-033). */
+internal fun connectHapticDue(wasConnected: Boolean, isConnected: Boolean): Boolean =
+    isConnected && !wasConnected
 
 // ── Multi-Hop Bar ───────────────────────────────────────────────────────────
 private enum class MultiHopTarget { Entry, Exit }
@@ -532,6 +603,24 @@ private fun MultiHopServerPair(
                 fontSize = 12.sp,
             )
         }
+        // What Multi-Hop does and does NOT protect, in iOS's words (P1-024):
+        // a paid feature must not let anyone assume onion-style anonymity.
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = null,
+                tint = BirdoColors.current.onSurfaceMuted,
+                modifier = Modifier.padding(top = 1.dp).size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                stringResource(R.string.multihop_explainer),
+                color = BirdoColors.current.onSurfaceMuted,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
+            )
+        }
     }
 }
 
@@ -605,7 +694,7 @@ private fun MultiHopServerCard(
 
 @Composable
 private fun HomeTopBar(
-    userEmail: String?,
+    accountLabel: String?,
     multiHopEnabled: Boolean,
     multiHopUnlocked: Boolean,
     onToggleMultiHop: () -> Unit,
@@ -630,14 +719,14 @@ private fun HomeTopBar(
                 Spacer(Modifier.width(8.dp))
                 BrandLockup()
                 Spacer(Modifier.weight(1f))
-                if (userEmail != null) {
+                if (accountLabel != null) {
                     // A weight(1f) spacer collapses to ZERO once the row's content
-                    // overflows, which it does for an anonymous account id — the
-                    // username then sits flush against "BirdoVPN" with no gap at
-                    // all. The start padding is what actually guarantees the gap;
-                    // the spacer only distributes what is left over.
+                    // overflows, which a long email does — the label then sits
+                    // flush against "BirdoVPN" with no gap at all. The start
+                    // padding is what actually guarantees the gap; the spacer
+                    // only distributes what is left over.
                     Text(
-                        text = userEmail,
+                        text = accountLabel,
                         color = palette.onSurfaceFaint,
                         fontSize = 12.sp,
                         maxLines = 1,
@@ -649,7 +738,7 @@ private fun HomeTopBar(
                 }
                 BirdoIconAction(
                     icon = Icons.AutoMirrored.Filled.Logout,
-                    contentDescription = stringResource(R.string.logout),
+                    contentDescription = stringResource(R.string.sign_out),
                     onClick = onLogout,
                     tint = palette.onSurfaceMuted,
                 )
@@ -761,11 +850,11 @@ private fun CompactConnectButton(
     // The idle → connecting → connected transition is the most important state
     // change in the app: morph the gradient rather than hard-cutting it.
     val (targetStart, targetEnd) = when {
-        isConnected -> BirdoGreen to BirdoAccentDeep
+        isConnected -> BirdoGreen to BirdoAccentMid
         busy -> BirdoBrand.AccentSoft to BirdoBrand.AccentDeep
         multiHopBlocked -> BirdoWhite10 to BirdoWhite10
         multiHopReady -> BirdoBrand.Accent to BirdoBrand.AccentDeep
-        else -> Color(0xFF047857) to Color(0xFF064E3B) // PrimaryGradient stops (deep emerald)
+        else -> BirdoBrand.PrimaryStart to BirdoBrand.PrimaryEnd
     }
     val startColor by animateColorAsState(
         targetValue = targetStart,
@@ -1056,7 +1145,8 @@ private fun UpdateBanner(
                 )
             }
             if (onDismiss != null) {
-                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                // 48dp touch target (A2-032); the icon stays small.
+                IconButton(onClick = onDismiss) {
                     Icon(
                         Icons.Default.Close,
                         contentDescription = stringResource(R.string.cd_dismiss_update),

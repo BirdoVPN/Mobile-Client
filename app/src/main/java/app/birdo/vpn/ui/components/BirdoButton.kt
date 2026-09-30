@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,8 +32,8 @@ enum class BirdoButtonVariant { Primary, Brand, Secondary, Ghost, Danger }
 enum class BirdoButtonSize { Small, Medium, Large }
 
 /**
- * Unified Birdo button. Primary = solid white on dark (legacy compat).
- * Brand = purple→pink gradient (new hero CTA). Secondary = bordered glass.
+ * Unified Birdo button. Primary = solid white on dark. Brand = the deep
+ * emerald fill of the idle Connect CTA. Secondary = bordered glass.
  * Ghost = text only. Danger = red.
  */
 @Composable
@@ -59,6 +60,10 @@ fun BirdoButton(
     val shape = RoundedCornerShape(14.dp)
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    // `indication = null` below drops the ripple AND every focus cue, so a
+    // keyboard, D-pad or switch-access user could not see which button had
+    // focus (A2-032). The press scale covers touch; this ring covers focus.
+    val focused by interaction.collectIsFocusedAsState()
     val pressScale by animateFloatAsState(
         targetValue = if (pressed) 0.97f else 1f,
         animationSpec = tween(120, easing = BirdoMotion.EaseStandard),
@@ -82,7 +87,13 @@ fun BirdoButton(
             .scale(pressScale)
             .clip(shape)
             .then(if (brush != null && enabled) Modifier.background(brush, shape) else Modifier.background(effectiveBg, shape))
-            .then(if (borderBrush != null) Modifier.border(1.dp, borderBrush, shape) else Modifier)
+            .then(
+                when {
+                    focused -> Modifier.border(2.dp, BirdoBrand.AccentSoft, shape)
+                    borderBrush != null -> Modifier.border(1.dp, borderBrush, shape)
+                    else -> Modifier
+                },
+            )
             .clickable(
                 interactionSource = interaction,
                 indication = null,

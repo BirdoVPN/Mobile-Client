@@ -23,6 +23,9 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.billing.BirdoBillingPeriod
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.ui.components.BirdoCard
@@ -72,7 +75,7 @@ private val plans = listOf(
             "DNS leak protection",
             "Split tunneling",
             "2FA / TOTP",
-            "Biometric lock",
+            "Hide app contents",
         ),
     ),
     PlanInfo(
@@ -92,7 +95,7 @@ private val plans = listOf(
             "Split tunneling",
             "Stealth mode",
             "2FA / TOTP",
-            "Biometric lock",
+            "Hide app contents",
             "Priority support",
         ),
         isPopular = true,
@@ -117,11 +120,34 @@ private val plans = listOf(
             "Port forwarding",
             "Custom DNS",
             "2FA / TOTP",
-            "Biometric lock",
+            "Hide app contents",
             "Priority support",
         ),
     ),
 )
+
+/** Where a plan card's price comes from. */
+internal enum class PriceLabel { PLAY, WEB, CHECKING, NOT_ON_PLAY }
+
+/**
+ * A Play build shows Google Play's own localised price or says why there is
+ * none. It used to fall back to the web's GBP figures while the storefront was
+ * loading or unavailable: a US or EU user saw "£3.99/mo" that Play would never
+ * charge, which then changed under them (A2-022). The web figures stay for the
+ * sideload and F-Droid builds, whose checkout is the website. The free plan
+ * is "Free" everywhere.
+ */
+internal fun planPriceLabel(
+    planId: String,
+    isPlayBuild: Boolean,
+    playPrice: String?,
+    storefrontLoading: Boolean,
+): PriceLabel = when {
+    planId.equals("RECON", ignoreCase = true) || !isPlayBuild -> PriceLabel.WEB
+    playPrice != null -> PriceLabel.PLAY
+    storefrontLoading -> PriceLabel.CHECKING
+    else -> PriceLabel.NOT_ON_PLAY
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -263,15 +289,19 @@ fun SubscriptionScreen(
                 // Google Play's own localised price, or null when this plan is
                 // not purchasable here. Never hardcode a price we can look up.
                 val playPrice = if (isPlayBuild) playPriceFor(plan.id, billingPeriod) else null
-                val fallbackPrice =
+                val webPrice =
                     if (billingPeriod == "yearly") plan.priceYearly else plan.priceMonthly
                 PlanCard(
                     plan = plan,
                     isCurrent = isCurrent,
-                    // The published web price is shown ONLY as an informational
-                    // figure when Play has no live price -- and in that state
-                    // there is no purchase button next to it.
-                    price = playPrice ?: fallbackPrice,
+                    price = when (
+                        planPriceLabel(plan.id, isPlayBuild, playPrice, storefrontLoading)
+                    ) {
+                        PriceLabel.PLAY -> playPrice.orEmpty()
+                        PriceLabel.WEB -> webPrice
+                        PriceLabel.CHECKING -> stringResource(R.string.subscription_price_checking)
+                        PriceLabel.NOT_ON_PLAY -> stringResource(R.string.subscription_price_not_on_play)
+                    },
                     isPurchasing = billingIsPurchasing,
                     // THE GATE. In a Play build a CTA exists only when a real
                     // offer resolved; in a non-Play build the CTA is the
@@ -683,7 +713,11 @@ private fun ManagedElsewhereNotice() {
 private fun BillingBanner(text: String, isError: Boolean, onDismiss: () -> Unit) {
     val palette = BirdoColors.current
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        // Announced: a purchase result is exactly what a TalkBack user must
+        // not miss (A2-032).
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
         shape = RoundedCornerShape(12.dp),
         color = if (isError) BirdoRed.copy(alpha = 0.12f) else BirdoGreen.copy(alpha = 0.12f),
     ) {

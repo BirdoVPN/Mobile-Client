@@ -4,12 +4,12 @@
     <!-- Login Screen -->
     <string name="login_status_badge">Secure Connection</string>
     <string name="login_welcome_back">Welcome Back</string>
-    <string name="login_subtitle">Sign in to access the sovereign network</string>
+    <string name="login_subtitle">Sign in to your Birdo account</string>
     <string name="email_label">Email</string>
     <string name="email_placeholder">you@example.com</string>
     <string name="password_label">Password</string>
-    <string name="login_connecting">Connecting…</string>
-    <string name="login_button">Initialize Uplink</string>
+    <string name="login_connecting">Signing in…</string>
+    <string name="login_button">Sign in</string>
     <string name="login_no_account">Don\'t have an account? </string>
     <string name="login_sign_up">Sign up</string>
     <string name="login_2fa_subtitle">Enter your authenticator code</string>
@@ -30,28 +30,27 @@
     <string name="login_tab_anonymous">Anonymous</string>
     <string name="login_tab_sso">SSO</string>
     <string name="login_sso_tab_caption">Sign in with your Google, GitHub or Apple account</string>
-    <string name="login_anonymous_caption_inline">Enter the 24-digit ID from your anonymous account</string>
+    <string name="login_anonymous_caption_inline">Enter the 24-digit number of your anonymous account</string>
     <string name="login_anonymous_create">Create a new anonymous account</string>
 
-    <string name="login_anonymous_id_label">Account ID</string>
+    <string name="login_anonymous_id_label">Account number</string>
     <string name="login_anonymous_id_placeholder">XXXX XXXX XXXX XXXX XXXX XXXX</string>
     <string name="login_anonymous_password_label">Password (optional)</string>
-    <string name="login_anonymous_submit">Sign In</string>
+    <string name="login_anonymous_submit">Sign in</string>
 
     <!-- Shown ONCE, right after an anonymous account is created in-app. The
          24-digit ID is the account's only credential: no email, no password,
          no reset. Wording mirrors iOS/desktop, which show the same gate. -->
-    <string name="anon_created_title">Save your account ID</string>
+    <string name="anon_created_title">Save your account number</string>
     <!-- Plain text, no <b> markup: stringResource() drops HTML styling, so a
          bold tag here would silently render as nothing. -->
-    <string name="anon_created_body">Your anonymous account is ready. This 24-digit ID is the only way to sign in again — there is no email or password on this account.</string>
+    <string name="anon_created_body">Your anonymous account is ready. This 24-digit account number is the only way to sign in again — there is no email or password on this account.</string>
     <string name="anon_created_warning">Write it down or store it in a password manager. We cannot recover or reset it — losing it means losing the account.</string>
     <string name="anon_created_ack">I\'ve saved it — continue</string>
-    <string name="anon_created_copy_cd">Copy account ID</string>
-    <string name="anon_created_copied">Account ID copied</string>
+    <string name="anon_created_copy_cd">Copy account number</string>
+    <string name="anon_created_copied">Account number copied</string>
 
     <!-- Home Screen -->
-    <string name="logout">Logout</string>
     <string name="stats_duration">Duration</string>
     <string name="stats_download">⬇ Download</string>
     <string name="stats_upload">⬆ Upload</string>
@@ -62,8 +61,8 @@
          WireGuard handshake is, but they do need to know why their connection
          is slower than usual, or it just reads as a bad VPN. -->
     <string name="stealth_fallback_active">Stealth active — this network blocks standard VPN traffic</string>
-    <string name="select_server">Select Server</string>
-    <string name="cd_select_server">Select server</string>
+    <string name="select_server">Choose a server</string>
+    <string name="cd_select_server">Choose a server</string>
     <string name="status_protected">Protected</string>
     <string name="status_error">Connection Error</string>
     <string name="status_not_connected">Not Connected</string>
@@ -77,9 +76,7 @@
     <string name="filter_favorites">Favorites</string>
     <string name="filter_high_speed">High-Speed</string>
     <string name="filter_port_forwarding">Port Forwarding</string>
-    <string name="servers_title">Servers</string>
     <string name="cd_refresh">Refresh</string>
-    <string name="servers_search_placeholder">Search servers…</string>
     <string name="cd_clear">Clear</string>
     <plurals name="servers_count">
         <item quantity="one">%d server</item>
@@ -90,8 +87,6 @@
     <string name="no_servers">No servers available</string>
     <string name="servers_favorites_hint">Tap the ★ on any server to add it</string>
     <string name="retry">Retry</string>
-    <string name="cd_remove_favorite">Remove from favorites</string>
-    <string name="cd_add_favorite">Add to favorites</string>
 
     <!-- Settings Screen -->
     <string name="settings_title">Settings</string>
@@ -197,7 +192,7 @@
     <string name="vpn_settings_mtu_range">Valid range: 1280–1500</string>
     <string name="vpn_settings_changes_note">Changes apply when you leave this screen — if you’re connected, the VPN reconnects for a moment (still protected) to apply them</string>
     <string name="vpn_settings_section_security">Security</string>
-    <string name="vpn_settings_stealth_title">Stealth Mode · Premium</string>
+    <string name="vpn_settings_stealth_title">Stealth Mode</string>
     <string name="vpn_settings_birdoshield_title">BirdoShield</string>
     <string name="vpn_settings_birdoshield_desc">Blocks ads, trackers and malware domains at the VPN\'s DNS resolver.</string>
     <!-- Shown instead of the description above when GET /api/client-config reports
@@ -207,7 +202,7 @@
     <string name="vpn_settings_quantum_title">Quantum Protection</string>
     <string name="cd_locked_feature">Premium feature — upgrade to unlock</string>
     <!-- Home / Connect -->
-    <string name="home_multihop_upsell">Multi-Hop is a SOVEREIGN feature. Upgrade to enable.</string>
+    <string name="home_multihop_upsell">Multi-Hop is a Sovereign feature. Upgrade to enable.</string>
     <string name="home_entry_server">Entry server</string>
     <string name="home_exit_server">Exit server</string>
     <string name="home_choose_server">Choose…</string>
@@ -215,20 +210,17 @@
     <string name="home_connect_multihop">Connect Multi-Hop</string>
     <string name="home_entry_exit_must_differ">Entry and exit must be different servers.</string>
     <string name="cd_multihop">Multi-Hop</string>
-    <string name="cd_multihop_locked">Multi-Hop — SOVEREIGN plan required</string>
+    <string name="cd_multihop_locked">Multi-Hop — Sovereign plan required</string>
     <string name="cd_state_on">On</string>
     <string name="cd_state_off">Off</string>
     <string name="cd_show_password">Show password</string>
     <string name="cd_hide_password">Hide password</string>
     <string name="cd_widget_connected">BirdoVPN — protected via %1$s. Double-tap to open the app.</string>
     <string name="cd_widget_disconnected">BirdoVPN — not connected. Double-tap to connect.</string>
-    <string name="servers_empty_hint">Pull down to refresh or tap retry.</string>
+    <string name="servers_empty_hint">Check your connection, then tap Retry.</string>
     <!-- Settings -->
     <string name="settings_subtitle">App preferences &amp; account</string>
     <string name="settings_section_appearance">Appearance</string>
-    <string name="settings_section_security">Security</string>
-    <string name="settings_section_display">Display</string>
-    <string name="settings_biometric">Biometric Lock</string>
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
@@ -237,8 +229,7 @@
          facts as consent_crash_reports_desc (second-pass #7: FaultReporter
          also sends error events when a feature fails, so never "crash
          details only"). The row shows the whole text, never an ellipsis. -->
-    <string name="settings_section_privacy">Privacy</string>
-    <string name="settings_crash_reports">Send Crash Reports</string>
+    <string name="settings_crash_reports">Crash Reports</string>
     <string name="settings_crash_reports_desc">Off by default. Crash and error reports: crashes, and errors when an app feature such as connecting or the kill switch fails, with the app and OS version and device model. No account details, IP address or browsing data.</string>
     <!-- Port forwarding -->
     <string name="port_forward_title">Port Forwarding</string>
@@ -303,7 +294,6 @@
     <string name="billing_choice_web_subtitle">Pay by card on our website</string>
     <string name="billing_choice_note">You can manage or cancel your subscription at any time.</string>
     <string name="dismiss">Dismiss</string>
-    <string name="sheet_search_placeholder">Search by country or city</string>
     <string name="cd_close">Close</string>
     <string name="widget_tap_to_connect">Tap to connect</string>
     <string name="yes">Yes</string>
@@ -320,7 +310,6 @@
         <item quantity="other">Selected apps will bypass VPN and use your regular internet connection. %d apps excluded.</item>
     </plurals>
     <string name="split_tunnel_search_placeholder">Search apps…</string>
-    <string name="cd_app">App</string>
     <string name="split_tunnel_bypass_badge">BYPASS</string>
 
     <!-- Consent Screen -->
@@ -413,4 +402,109 @@
     <string name="error_create_port_forward">Couldn\'t add the rule. Please try again.</string>
     <string name="error_delete_port_forward">Couldn\'t delete the rule. Please try again.</string>
     <string name="error_voucher_failed">Couldn\'t redeem the voucher. Please try again.</string>
+
+    <!-- Account and sign-out (canonical account vocabulary). -->
+    <string name="account_anonymous">Anonymous account</string>
+    <string name="sign_out">Sign out</string>
+    <string name="sign_out_subtitle">Sign out of this device</string>
+    <string name="sign_out_confirm_title">Sign out?</string>
+    <string name="sign_out_confirm_connected">You are still connected. Signing out will disconnect.</string>
+    <string name="sign_out_confirm_body">Are you sure you want to sign out?</string>
+    <string name="sign_out_anonymous_reminder">Make sure you have saved your account number. It is the only way to sign in to this account again.</string>
+    <string name="signing_out">Signing out…</string>
+    <string name="cancel">Cancel</string>
+    <string name="not_now">Not now</string>
+    <string name="login_forgot_password">Forgot password?</string>
+    <!-- After a successful deletion with no store subscription left billing
+         (the store notice covers that case). Facts as in delete_dialog_message. -->
+    <string name="account_deleted_title">Account deleted</string>
+    <string name="account_deleted_body">Your BirdoVPN account and your VPN keys have been deleted. The account was anonymised immediately and is fully deleted within 30 days.</string>
+
+    <!-- Plans in prose: Title Case, never the slug (canonical vocabulary). -->
+    <string name="plan_name_free">Free</string>
+    <string name="plan_name_operative">Operative</string>
+    <string name="plan_name_sovereign">Sovereign</string>
+    <string name="view_plans">View plans</string>
+    <string name="device_limit_snackbar">This plan\'s device limit is reached.</string>
+
+    <!-- Server picker -->
+    <string name="choose_server">Choose a server</string>
+    <string name="server_search_placeholder">Search countries or cities</string>
+    <plurals name="sheet_server_count">
+        <item quantity="one">%1$d of %2$d server</item>
+        <item quantity="other">%1$d of %2$d servers</item>
+    </plurals>
+    <string name="server_locked_upsell">This server requires the %1$s plan. Upgrade to unlock.</string>
+    <string name="server_offline">Offline</string>
+    <string name="cd_server_connected">Connected</string>
+    <string name="cd_server_high_speed">High-speed server</string>
+    <string name="cd_server_port_forwarding">Supports port forwarding</string>
+    <string name="cd_favorite">Favorite</string>
+    <!-- iOS MultiHopView wording: what Multi-Hop does NOT protect, so a paid
+         feature is never mistaken for onion routing. -->
+    <string name="multihop_explainer">Your traffic enters one server and leaves from another, so sites see the exit server\'s address. It is not onion routing: the entry server can see your IP address and the destinations you connect to.</string>
+
+    <!-- Voucher dialog -->
+    <string name="voucher_title">Redeem voucher</string>
+    <string name="voucher_body">Enter a 30- or 90-day voucher code to extend or upgrade your subscription.</string>
+    <string name="voucher_redeem">Redeem</string>
+    <!-- %1$d is a voucher length, which is 30 or 90 days: never one. -->
+    <string name="voucher_redeemed" tools:ignore="PluralsCandidate">Added %1$d days.</string>
+    <string name="voucher_extended">Subscription extended.</string>
+    <string name="voucher_upgraded">Plan upgraded to %1$s.</string>
+    <string name="voucher_invalid_format">Invalid code format. It should look like BIRD-XXXX-XXXX-XXXX.</string>
+    <string name="voucher_not_found">Voucher not recognised.</string>
+    <string name="voucher_already_redeemed">Voucher already used.</string>
+    <string name="voucher_expired">Voucher has expired.</string>
+    <string name="voucher_plan_downgrade">Your plan is already higher than this voucher offers.</string>
+
+    <!-- Limit tab -->
+    <string name="limit_loading">Loading your usage…</string>
+    <string name="limit_refresh">Refresh usage</string>
+    <string name="limit_refreshing">Updating…</string>
+
+    <!-- Settings: canonical section names and help text (P1-parity). -->
+    <string name="settings_section_privacy_security">Privacy &amp; Security</string>
+    <string name="settings_section_notifications">Notifications</string>
+    <string name="settings_quantum_desc">Adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) to each connection.</string>
+    <!-- P1-011: the iOS wording, with the Android prompts. The feature covers
+         the screen and guards nothing else; never describe it as protection. -->
+    <string name="settings_hide_app_contents">Hide App Contents</string>
+    <string name="settings_hide_app_contents_desc">Covers the screen with your fingerprint, face or screen-lock prompt whenever you return to the app. Hides what is on screen only: it protects no data, and the VPN keeps running behind it, including Auto-Connect.</string>
+    <string name="settings_auto_connect_desc">Connect to VPN on app startup.</string>
+    <string name="settings_notifications_desc">Show connection notifications. The ongoing notification while connected is required by Android.</string>
+    <string name="settings_notif_show_ip_desc">Include your public IP address in the connection notification.</string>
+    <string name="settings_notif_show_location_desc">Include the server\'s location in the connection notification.</string>
+    <string name="settings_notif_system_desc">Open system notification settings</string>
+    <string name="settings_vpn_settings_desc">Stealth Mode, BirdoShield, local network, port and MTU</string>
+    <string name="settings_custom_dns_desc">Use your own DNS servers instead of the VPN defaults.</string>
+    <string name="settings_port_forward_desc">Expose ports through your VPN tunnel.</string>
+    <string name="settings_split_tunnel_desc">Choose apps that bypass the VPN.</string>
+    <string name="settings_dns_invalid">Enter a valid IP address</string>
+    <string name="settings_reset_notice">Your VPN settings were reset to safe defaults because they could not be verified. Check your kill switch, DNS and split tunneling choices.</string>
+    <string name="vpn_settings_stealth_desc">Wraps WireGuard in an encrypted transport for networks that block VPNs. Slower.</string>
+    <string name="vpn_settings_local_network_desc">Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN</string>
+    <string name="vpn_settings_mtu_desc">Packet size — lower values improve reliability on unstable networks</string>
+    <string name="split_tunnel_no_match">No apps match \"%1$s\"</string>
+
+    <!-- Play paywall price states (A2-022): never a web GBP figure in a Play build. -->
+    <string name="subscription_price_checking">Checking price…</string>
+    <string name="subscription_price_not_on_play">Not available on Google Play</string>
+
+    <!-- Asked once, at the first connect (A2-026). -->
+    <string name="notif_explainer_title">Connection notifications</string>
+    <string name="notif_explainer_body">While the VPN runs, BirdoVPN shows its connection status in a notification, so you can see you are protected and disconnect from the notification shade.</string>
+    <string name="notif_explainer_allow">Continue</string>
+
+    <!-- Rooted-device warning, shown after consent (A2-042). -->
+    <string name="root_warning_title">Security warning</string>
+    <string name="root_warning_body">This device appears to be rooted. Running a VPN on a rooted device may compromise your privacy and security.\n\nRoot processes can potentially:\n• Read encryption keys from memory\n• Intercept network traffic\n• Bypass the VPN kill switch\n\nProceed with caution.</string>
+    <string name="root_warning_ack">I understand</string>
+
+    <!-- Hide App Contents cover. -->
+    <string name="app_cover_title">App contents hidden</string>
+    <string name="app_cover_body">Unlock to see BirdoVPN. The VPN keeps running while the app is hidden.</string>
+    <string name="app_cover_unlock">Unlock</string>
+    <string name="app_cover_prompt_title">Unlock BirdoVPN</string>
+    <string name="app_cover_prompt_subtitle">Verify your identity to continue</string>
 </resources>

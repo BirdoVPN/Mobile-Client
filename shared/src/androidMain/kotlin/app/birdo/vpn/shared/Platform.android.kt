@@ -12,6 +12,12 @@ actual fun isValidDnsAddress(address: String): Boolean {
     if (!address.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' || it == '%' }) {
         return false
     }
+    // An IPv4 address must be the full dotted quad. InetAddress also takes the
+    // legacy short forms ("8.8" is 8.0.0.8) and, for anything it cannot parse
+    // as a literal ("1.1.1."), falls back to a DNS LOOKUP. The Settings field
+    // validates as the user types, so each half-typed address would have been
+    // a lookup (A2-002). Anything with a ':' is always parsed as IPv6.
+    if (':' !in address && !IPV4_DOTTED_QUAD.matches(address)) return false
     return try {
         val addr = InetAddress.getByName(address)
         (addr is Inet4Address || addr is Inet6Address) &&
@@ -31,3 +37,5 @@ actual fun isValidDnsAddress(address: String): Boolean {
         false
     }
 }
+
+private val IPV4_DOTTED_QUAD = Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$""")

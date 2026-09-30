@@ -38,14 +38,14 @@ private val BirdoDarkColorScheme = darkColorScheme(
 // ── "Dim Light" scheme — warm dark-grey, NOT pure white ──────────────────
 //   Background: dim slate (#1B1C24) — not blinding
 //   Cards:      slightly raised slate for layering
-//   Accent:     softer violet that pops on the dim background
+//   Accent:     a lighter emerald (emerald-400) that pops on the dim background
 private val BirdoLightColorScheme = lightColorScheme(
     primary = BirdoLightAccent,
-    onPrimary = Color(0xFF1B0F36),
+    onPrimary = Color(0xFF022C22),
     primaryContainer = BirdoLightAccentBg,
     onPrimaryContainer = BirdoLightAccent,
     secondary = BirdoAccentSoft,
-    onSecondary = Color(0xFF1B0F36),
+    onSecondary = Color(0xFF022C22),
     secondaryContainer = BirdoLightAccentBg,
     onSecondaryContainer = BirdoLightAccent,
     tertiary = BirdoBlue,

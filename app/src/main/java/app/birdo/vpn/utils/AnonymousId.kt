@@ -23,3 +23,22 @@ fun formatAnonymousId(raw: String): String =
     raw.filter { it.isDigit() }
         .chunked(ANON_ID_GROUP_SIZE)
         .joinToString(" ")
+
+private const val ANON_EMAIL_PREFIX = "anon_"
+private const val ANON_EMAIL_SUFFIX = "@anonymous.local"
+
+/**
+ * Whether [email] is the synthetic address the backend gives an anonymous
+ * account: `anon_<24-digit account number>@anonymous.local`.
+ *
+ * That string must NEVER be rendered. It reads as a bug, and it carries the
+ * account's only credential in the clear: the Home top bar used to show it, and
+ * a published F-Droid screenshot still shows the first twelve digits (A2-013).
+ * iOS draws the same line (APIClient.swift, "Never render it").
+ */
+fun isAnonymousAccountEmail(email: String?): Boolean =
+    email != null && email.startsWith(ANON_EMAIL_PREFIX) && email.endsWith(ANON_EMAIL_SUFFIX)
+
+/** The 24-digit account number inside an anonymous account's synthetic email, or null. */
+fun anonymousAccountNumber(email: String?): String? =
+    email?.takeIf(::isAnonymousAccountEmail)?.removePrefix(ANON_EMAIL_PREFIX)?.removeSuffix(ANON_EMAIL_SUFFIX)

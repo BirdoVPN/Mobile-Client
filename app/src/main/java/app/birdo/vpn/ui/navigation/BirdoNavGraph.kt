@@ -51,11 +51,9 @@ import app.birdo.vpn.ui.viewmodel.AuthViewModel
 import app.birdo.vpn.ui.viewmodel.SettingsViewModel
 import app.birdo.vpn.ui.viewmodel.UpdateViewModel
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
+import app.birdo.vpn.utils.isAnonymousAccountEmail
 
-/**
- * Bottom nav tabs matching Windows client: Connect / Servers / Settings
- * Windows uses: Power icon (Connect), Server icon (Servers), Settings icon
- */
+/** The four tabs, in the iOS order: Profile · Connect · Limit · Settings. */
 private data class BottomNavItem(
     val screen: Screen,
     @param:StringRes val labelRes: Int,
@@ -138,17 +136,26 @@ fun BirdoNavGraph(
 
     // A session has appeared. Re-present anything Play still considers current
     // so a subscription bought before signing in (or on another device, or on a
-    // previous install) binds itself with no user action.
-    LaunchedEffect(authState.isLoggedIn) {
-        if (authState.isLoggedIn) billingViewModel.onSignedIn()
+    // previous install) binds itself with no user action. Not before the
+    // current consent: linking is a request to birdo.app (audit D-12).
+    LaunchedEffect(authState.isLoggedIn, hasConsented) {
+        if (authState.isLoggedIn && hasConsented) billingViewModel.onSignedIn()
     }
 
-    // The server accepted an entitlement: re-read the plan snapshot so every
-    // plan gate in the app opens without a restart. Graph-scoped because a
-    // deferred approval can land while the user is anywhere in the app.
+    // Signed out, for any reason (the button, a deletion, a dead session):
+    // drop the previous account's servers, plan and selection so the next
+    // account on this device never sees them (A2-003).
+    LaunchedEffect(authState.isLoggedIn) {
+        if (!authState.isLoggedIn) vpnViewModel.resetForSignOut()
+    }
+
+    // The server accepted an entitlement: re-read the plan snapshot AND the
+    // servers, whose `accessible` flags are computed from the plan, so every
+    // plan gate in the app opens without a restart (A2-003). Graph-scoped
+    // because a deferred approval can land while the user is anywhere.
     LaunchedEffect(Unit) {
         billingViewModel.entitlementChanged.collect {
-            vpnViewModel.fetchSubscription(forceRefresh = true)
+            vpnViewModel.onEntitlementChanged()
         }
     }
 
@@ -204,8 +211,9 @@ fun BirdoNavGraph(
 
     // Pre-fetch subscription on cold start so the Profile tab never shows the
     // "RECON" placeholder before the real plan loads. Cheap (cached for 30s).
-    LaunchedEffect(authState.isLoggedIn) {
-        if (authState.isLoggedIn && vpnState.subscription == null) {
+    // Held back until the current consent is accepted (A2-028).
+    LaunchedEffect(authState.isLoggedIn, hasConsented) {
+        if (authState.isLoggedIn && hasConsented && vpnState.subscription == null) {
             vpnViewModel.fetchSubscription()
         }
     }
@@ -243,9 +251,25 @@ fun BirdoNavGraph(
         Screen.Limit.route,
     )
 
+    // The offline banner owns the status-bar inset while it is up; the screens
+    // below it must not add a second one.
+    val vpnActive = vpnState.vpnState == VpnState.Connected ||
+        vpnState.vpnState is VpnState.Reconnecting ||
+        vpnState.vpnState == VpnState.Connecting
+    val showOfflineBanner = !isOnline && !vpnActive
+
     val palette = BirdoColors.current
     Scaffold(
         containerColor = palette.background,
+        // INSETS ARE OWNED BY THE SCREENS (A2-010). The default here (the
+        // system bars) padded the NavHost by the status-bar height, and then
+        // every top bar added `statusBarsPadding()` again: a blank band above
+        // every header, visible in the Play screenshot. Now this Scaffold pads
+        // only for the bottom bar, and that padding is CONSUMED below, so a
+        // tab's own Scaffold does not add the navigation-bar inset a second
+        // time either. Top bars (BirdoTopBar, the Home bar) take the status bar;
+        // screens without one (Profile, Limit, Login, Consent) inset themselves.
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (showBottomBar) {
                 // ── Bottom nav ──────────────────────────────────────
@@ -273,9 +297,11 @@ fun BirdoNavGraph(
                                     }
                                 },
                                 icon = {
+                                    // The label below already names the tab;
+                                    // a description here made TalkBack say it twice.
                                     Icon(
                                         item.icon,
-                                        contentDescription = stringResource(item.labelRes),
+                                        contentDescription = null,
                                         modifier = Modifier.size(22.dp),
                                     )
                                 },
@@ -301,8 +327,17 @@ fun BirdoNavGraph(
         },
     ) { scaffoldPadding ->
         Box(modifier = Modifier.fillMaxSize()) {
-            // Pixel canvas background — enabled on both themes (light is now "dim")
-            PixelCanvas()
+            // Pixel canvas background — enabled on both themes (light is now
+            // "dim"). Not on the Connect tab: the globe paints over every pixel
+            // of it there, and it kept redrawing underneath at 15 Hz (A2-019).
+            // Faded rather than cut so a tab switch does not pop.
+            AnimatedVisibility(
+                visible = currentRoute != Screen.Home.route,
+                enter = fadeIn(androidx.compose.animation.core.tween(BirdoMotion.Standard)),
+                exit = fadeOut(androidx.compose.animation.core.tween(BirdoMotion.Standard)),
+            ) {
+                PixelCanvas()
+            }
 
             Column(modifier = Modifier.fillMaxSize()) {
                 // ── Offline banner ──────────────────────────────────
@@ -310,10 +345,7 @@ fun BirdoNavGraph(
                 // connected (or mid-handover during a switch) there is a working
                 // path by definition, so a transient network re-evaluation must
                 // never surface a false "No Internet" banner.
-                val vpnActive = vpnState.vpnState == VpnState.Connected ||
-                    vpnState.vpnState is VpnState.Reconnecting ||
-                    vpnState.vpnState == VpnState.Connecting
-                AnimatedVisibility(visible = !isOnline && !vpnActive) {
+                AnimatedVisibility(visible = showOfflineBanner) {
                     // Full-bleed red surface; content is inset below the status bar
                     // so the text is never hidden behind the notch/notification area.
                     Surface(
@@ -352,7 +384,13 @@ fun BirdoNavGraph(
                     authState.isLoggedIn -> Screen.Home.route
                     else -> Screen.Login.route
                 },
-                modifier = Modifier.padding(scaffoldPadding),
+                modifier = Modifier
+                    .padding(scaffoldPadding)
+                    .consumeWindowInsets(scaffoldPadding)
+                    .then(
+                        if (showOfflineBanner) Modifier.consumeWindowInsets(WindowInsets.statusBars)
+                        else Modifier,
+                    ),
             ) {
             // ── GDPR Consent ─────────────────────────────────────────
             composable(
@@ -372,10 +410,14 @@ fun BirdoNavGraph(
                             // user switched it on, and stays off otherwise.
                             settingsViewModel.setCrashReports(crashReportsEnabled)
                             hasConsented = true
-                            // The two public, unauthenticated calls the view
-                            // models hold back until consent (audit D-12).
+                            // Everything the view models hold back until
+                            // consent (audit D-12, A2-028): the two public
+                            // calls, the session check, auto-connect and the
+                            // plan fetch.
                             updateViewModel.check()
                             vpnViewModel.fetchClientConfig()
+                            authViewModel.onConsentAccepted()
+                            vpnViewModel.onConsentAccepted()
                         },
                         onDecline = {
                             // Close the app if user declines
@@ -404,13 +446,9 @@ fun BirdoNavGraph(
                         onLoginAnonymous = { anonymousId, password ->
                             authViewModel.loginAnonymous(anonymousId, password)
                         },
-                        onSignUp = {
-                            val intent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                "https://birdo.app/login".toUri(),
-                            )
-                            context.startActivity(intent)
-                        },
+                        // Same page the Windows client opens (P1-023), through
+                        // the https-only, crash-guarded opener.
+                        onForgotPassword = { settingsViewModel.openUrl(PASSWORD_RESET_URL) },
                         onSsoLogin = { provider -> authViewModel.startSso(provider, context) },
                         onCreateAnonymous = { authViewModel.registerAnonymous() },
                         // Creating an anonymous account deliberately does NOT flip
@@ -430,11 +468,18 @@ fun BirdoNavGraph(
                 exitTransition = tabExit,
             ) {
                 val context = LocalContext.current
-                AdaptiveContainer {
+                val openPlans = {
+                    vpnViewModel.fetchSubscription()
+                    navController.navigate(Screen.Subscription.route)
+                }
+                // Full-bleed: the globe fills a tablet window too, and
+                // HomeScreen narrows only its controls (A2-048).
+                AdaptiveContainer(fullBleed = true) {
                     HomeScreen(
                         state = vpnState,
                         trafficStats = vpnViewModel.trafficStats.collectAsState().value,
-                        userEmail = authState.user?.email,
+                        accountLabel = accountLabel(authState.user?.email),
+                        isAnonymousAccount = isAnonymousAccountEmail(authState.user?.email),
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -472,6 +517,7 @@ fun BirdoNavGraph(
                             runCatching { context.startActivity(intent) }
                         },
                         onDismissUpdate = { updateViewModel.dismiss() },
+                        onViewPlans = openPlans,
                     )
                 }
             }
@@ -517,6 +563,7 @@ fun BirdoNavGraph(
                         },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
+                        isAnonymousAccount = isAnonymousAccountEmail(authState.user?.email),
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                         deletionPreflight = authState.deletionPreflight,
                         onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
@@ -524,7 +571,7 @@ fun BirdoNavGraph(
                 }
             }
 
-            // ── Data limit (anon-only tab) ──────────────────────────
+            // ── Data limit (every account type) ─────────────────────
             composable(
                 Screen.Limit.route,
                 enterTransition = tabEnter,
@@ -535,8 +582,9 @@ fun BirdoNavGraph(
                     // cached figure when the user deliberately opens their usage.
                     LaunchedEffect(Unit) { vpnViewModel.fetchSubscription(forceRefresh = true) }
                     LimitScreen(
-                        user = authState.user,
                         subscription = vpnState.subscription,
+                        isLoading = vpnState.isLoadingSubscription,
+                        error = vpnState.subscriptionError,
                         onRefresh = { vpnViewModel.fetchSubscription(forceRefresh = true) },
                         onUpgrade = {
                             vpnViewModel.fetchSubscription()
@@ -552,6 +600,7 @@ fun BirdoNavGraph(
                 enterTransition = tabEnter,
                 exitTransition = tabExit,
             ) {
+                val multiHopArmed = vpnViewModel.multiHop.collectAsState().value.enabled
                 AdaptiveContainer {
                     ServerListScreen(
                         servers = vpnState.servers,
@@ -566,6 +615,15 @@ fun BirdoNavGraph(
                         // HomeScreen already renders this; without it here the
                         // refusal was silent on the surface that triggers it.
                         errorMessage = vpnState.error,
+                        // A live switch re-dials the selected node, so while a
+                        // single-hop tunnel is up they are the same node.
+                        connectedServerId = vpnState.selectedServer?.id?.takeIf {
+                            vpnState.vpnState == VpnState.Connected && !multiHopArmed
+                        },
+                        onViewPlans = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
                     )
                 }
             }
@@ -591,6 +649,7 @@ fun BirdoNavGraph(
                     val settingsIsSovereign = settingsPlan == "SOVEREIGN"
                     SettingsScreen(
                         state = settingsState,
+                        onDismissSettingsResetNotice = { settingsViewModel.dismissSettingsResetNotice() },
                         onAutoConnectChange = { settingsViewModel.setAutoConnect(it) },
                         onNotificationsChange = { settingsViewModel.setNotifications(it) },
                         onShowIpInNotificationChange = { settingsViewModel.setShowIpInNotification(it) },
@@ -705,6 +764,7 @@ fun BirdoNavGraph(
                         onCreate = { port, protocol -> vpnViewModel.createPortForward(port, protocol) },
                         onDelete = { id -> vpnViewModel.deletePortForward(id) },
                         onBack = { navController.popBackStack() },
+                        onRefresh = { vpnViewModel.loadPortForwards() },
                     )
                 }
             }
@@ -721,9 +781,13 @@ fun BirdoNavGraph(
                 LaunchedEffect(Unit) {
                     settingsViewModel.loadInstalledApps()
                 }
-                // Apply the whole app-selection edit as one blip on exit.
+                // Apply the whole app-selection edit as one blip on exit, and
+                // let the icon bitmaps go with the screen (A2-040).
                 DisposableEffect(Unit) {
-                    onDispose { settingsViewModel.commitPendingReapply() }
+                    onDispose {
+                        settingsViewModel.commitPendingReapply()
+                        settingsViewModel.clearInstalledApps()
+                    }
                 }
 
                 AdaptiveContainer {
@@ -921,6 +985,20 @@ fun BirdoNavGraph(
             // and link to where it can be cancelled. Never shown when the
             // backend does not send the list.
             val stillBilling = authState.storeSubscriptionsStillBilling
+            if (authState.accountDeleted && stillBilling.isEmpty()) {
+                // The plain confirmation (A2-029). With a store subscription
+                // still billing, the dialog below says the account is deleted.
+                AlertDialog(
+                    onDismissRequest = { authViewModel.dismissAccountDeletedNotice() },
+                    title = { Text(stringResource(R.string.account_deleted_title), fontWeight = FontWeight.Bold) },
+                    text = { Text(stringResource(R.string.account_deleted_body)) },
+                    confirmButton = {
+                        TextButton(onClick = { authViewModel.dismissAccountDeletedNotice() }) {
+                            Text(stringResource(R.string.store_still_billing_ok))
+                        }
+                    },
+                )
+            }
             if (stillBilling.isNotEmpty()) {
                 val billingContext = LocalContext.current
                 val stores = stillBilling.map { sub ->
@@ -931,11 +1009,11 @@ fun BirdoNavGraph(
                     }
                 }.distinct().joinToString("; ")
                 AlertDialog(
-                    onDismissRequest = { authViewModel.dismissStoreBillingNotice() },
+                    onDismissRequest = { authViewModel.dismissAccountDeletedNotice() },
                     title = { Text(stringResource(R.string.store_still_billing_title), fontWeight = FontWeight.Bold) },
                     text = { Text(stringResource(R.string.store_still_billing_body, stores)) },
                     confirmButton = {
-                        TextButton(onClick = { authViewModel.dismissStoreBillingNotice() }) {
+                        TextButton(onClick = { authViewModel.dismissAccountDeletedNotice() }) {
                             Text(stringResource(R.string.store_still_billing_ok))
                         }
                     },
@@ -956,6 +1034,21 @@ fun BirdoNavGraph(
             }
         } // end Box
     }
+}
+
+/** The password-reset page, the one the Windows client opens (P1-023). */
+private const val PASSWORD_RESET_URL = "https://auth.birdo.app/reset-password"
+
+/**
+ * What the Home top bar shows for the signed-in account: the email, or the
+ * canonical "Anonymous account" label. Never the synthetic
+ * `anon_…@anonymous.local` address, which carries the account number (A2-013).
+ */
+@Composable
+private fun accountLabel(email: String?): String? = when {
+    email.isNullOrBlank() -> null
+    isAnonymousAccountEmail(email) -> stringResource(R.string.account_anonymous)
+    else -> email
 }
 
 /**

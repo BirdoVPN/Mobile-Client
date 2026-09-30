@@ -3,17 +3,21 @@ package app.birdo.vpn.ui.theme
 import androidx.compose.ui.graphics.Color
 
 // ─── Birdo Brand Colors ──────────────────────────────────────────────────────
-// Exactly matching the Windows desktop client's CSS variables / Tailwind config
+// The reference for these values is the iOS theme,
+// iosApp/iosApp/Theme/BirdoTheme.swift: surfaces, the emerald accent family and
+// the status colours are shared with it one for one. (This header used to claim
+// an exact match with the Windows client, whose "connected" family and plan
+// colours have since diverged.)
 
-// Core backgrounds — matches CSS --background: #050505
-val BirdoBlack = Color(0xFF000000)       // App background (pure black)
+// Material colour-scheme background. The app's own surfaces come from
+// [BirdoSemanticPalette] (background #050507), not from this.
+val BirdoBlack = Color(0xFF000000)
 val BirdoSurface = Color(0xFF0D0D0D)     // Slightly lighter surface
 val BirdoSurfaceVariant = Color(0xFF1A1A1A) // rgba(26,26,26,0.95) from --card
 val BirdoCard = Color(0xB314141A)        // Glass card: rgba(20,20,25,0.7)
 val BirdoBorder = Color(0x14FFFFFF)      // rgba(255,255,255,0.08)
 
 // Glass backgrounds
-val GlassLight = Color(0x08FFFFFF)       // rgba(255,255,255,0.03)
 val GlassStrong = Color(0x0FFFFFFF)      // rgba(255,255,255,0.06)
 val GlassInput = Color(0x0AFFFFFF)       // rgba(255,255,255,0.04)
 
@@ -21,7 +25,10 @@ val GlassInput = Color(0x0AFFFFFF)       // rgba(255,255,255,0.04)
 val BirdoWhite = Color(0xFFF2F2F2)       // --foreground
 val BirdoWhite80 = Color(0xCCFFFFFF)     // 80% white
 val BirdoWhite60 = Color(0x99FFFFFF)     // 60% — labels
-val BirdoWhite40 = Color(0x66FFFFFF)     // 40% — muted text
+val BirdoWhite40 = Color(0x66FFFFFF)     // 40% — placeholders, disabled content, icons
+// 50%: the faintest TEXT that still meets the 4.5:1 body-text contrast minimum
+// on every dark surface (40% measures 3.7:1 on the app background).
+val BirdoWhite50 = Color(0x80FFFFFF)
 val BirdoWhite20 = Color(0x33FFFFFF)     // 20% — borders/toggles
 val BirdoWhite10 = Color(0x1AFFFFFF)     // 10% — subtle bg
 val BirdoWhite05 = Color(0x0DFFFFFF)     // 5% — very subtle
@@ -30,7 +37,10 @@ val BirdoWhite05 = Color(0x0DFFFFFF)     // 5% — very subtle
 // Matches the web rebrand (birdo.app): emerald-500 #10B981 / emerald-600
 // #059669, keyed off the green hero globe.
 val BirdoAccent = Color(0xFF10B981)      // emerald-500 — primary accent
-val BirdoAccentDeep = Color(0xFF059669)  // emerald-600
+// emerald-600. Named apart from BirdoBrand.AccentDeep (emerald-700) as iOS
+// names them (accentMid / accentDeep): two tokens once shared one name with
+// two different values (P1-036).
+val BirdoAccentMid = Color(0xFF059669)
 val BirdoAccentSoft = Color(0xFF6EE7B7)  // emerald-300 — focus rings, links
 val BirdoAccentBg = Color(0x1A10B981)    // 10% opacity
 
@@ -56,7 +66,7 @@ val BirdoRedBg = Color(0x1AF87171)       // 10% opacity
 val BirdoBlue = Color(0xFF3B82F6)        // blue-500 — Info / P2P
 val BirdoBlueBg = Color(0x1A3B82F6)
 
-// Primary button — solid white on dark (matching Windows .btn-primary)
+// Material `primary`: solid white on dark (the high-emphasis button fill).
 val BirdoPrimary = Color.White
 val BirdoOnPrimary = Color.Black
 
@@ -108,7 +118,7 @@ val BirdoDarkPalette = BirdoSemanticPalette(
     onBackground = BirdoWhite,
     onSurface = Color.White,
     onSurfaceMuted = BirdoWhite60,
-    onSurfaceFaint = BirdoWhite40,
+    onSurfaceFaint = BirdoWhite50,
     hairline = Color(0x1FFFFFFF),
     hairlineSoft = Color(0x14FFFFFF),
     accent = BirdoAccent,
@@ -124,7 +134,8 @@ val BirdoLightPalette = BirdoSemanticPalette(
     onBackground = BirdoLightOnBackground,
     onSurface = BirdoLightOnBackground,
     onSurfaceMuted = BirdoLightOnSurfaceVariant,
-    onSurfaceFaint = Color(0xFF7A7C8E),
+    // 4.8:1 or better on every dim-light surface; #7A7C8E was 3.8:1.
+    onSurfaceFaint = Color(0xFF9A9CAE),
     hairline = Color(0x33FFFFFF),
     hairlineSoft = Color(0x1AFFFFFF),
     accent = BirdoLightAccent,

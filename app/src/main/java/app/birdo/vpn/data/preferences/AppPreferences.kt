@@ -325,6 +325,43 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_LAST_SERVER, null)
         set(value) = prefs.edit { putString(KEY_LAST_SERVER, value) }
 
+    // ── One-shot notices ─────────────────────────────────────────
+
+    /**
+     * [hasAcceptedCurrentConsent] as a flow, so UI that must wait for consent
+     * (the root warning) appears the moment it is given, not at the next launch.
+     */
+    val hasAcceptedCurrentConsentFlow: Flow<Boolean> =
+        callbackFlow {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_CONSENT_VERSION) trySend(hasAcceptedCurrentConsent)
+            }
+            trySend(hasAcceptedCurrentConsent)
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        }
+
+    /**
+     * The settings-integrity check reset the protected settings (kill switch,
+     * custom DNS, split tunnel) to safe defaults. Settings says so once; the
+     * reset used to be silent, which reads as the app forgetting settings
+     * (A2-047). Deliberately NOT a protected key: it describes the reset and
+     * must survive the re-sign that follows it.
+     */
+    var settingsResetNoticePending: Boolean
+        get() = prefs.getBoolean(KEY_SETTINGS_RESET_NOTICE, false)
+        set(value) = prefs.edit { putBoolean(KEY_SETTINGS_RESET_NOTICE, value) }
+
+    /**
+     * Whether the notifications explainer has been shown on this install. It
+     * is shown once, at the first connect, instead of a bare system prompt
+     * over the consent screen at first launch (A2-026). After a "Not now" or a
+     * denial the app does not ask again; Settings links to the system page.
+     */
+    var notificationPermissionExplained: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFICATION_PERMISSION_EXPLAINED, false)
+        set(value) = prefs.edit { putBoolean(KEY_NOTIFICATION_PERMISSION_EXPLAINED, value) }
+
     companion object {
         private const val KEY_KILL_SWITCH = "kill_switch_enabled"
         private const val KEY_AUTO_CONNECT = "auto_connect"
@@ -375,5 +412,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_MULTI_HOP_ENTRY = "multi_hop_entry_node"
         private const val KEY_MULTI_HOP_EXIT = "multi_hop_exit_node"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_SETTINGS_RESET_NOTICE = "settings_reset_notice_pending"
+        private const val KEY_NOTIFICATION_PERMISSION_EXPLAINED = "notification_permission_explained"
     }
 }
