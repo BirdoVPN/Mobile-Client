@@ -78,6 +78,23 @@ def load_font(size, bold=False):
     return ImageFont.load_default()
 
 
+def fit_font(draw, text, max_w, size, bold=False, min_size=28):
+    """Largest font <= size whose rendering of `text` is at most max_w wide.
+
+    The safe area is what YouTube shows on phones; a line that runs past it is
+    cropped there. The corrected 2026-09-29 tagline is longer than the one it
+    replaced and overran the safe area by 83 px at 48 px, so the size is fitted
+    rather than fixed.
+    """
+    while size > min_size:
+        font = load_font(size, bold)
+        box = draw.textbbox((0, 0), text, font=font)
+        if box[2] - box[0] <= max_w:
+            return font
+        size -= 2
+    return load_font(min_size, bold)
+
+
 def draw_pixel_grid(img, spacing=64, alpha=14):
     """Subtle grid overlay for a tech/hacker vibe."""
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
@@ -107,11 +124,20 @@ mark_cy = SAFE_Y + SAFE_H // 2 - 10
 paste_mark(banner, mark_cx, mark_cy, 300)
 
 # Wordmark + tagline to the right of the mark
-title_font  = load_font(150, bold=True)
-sub_font    = load_font(48, bold=False)
-small_font  = load_font(34, bold=False)
+TAGLINE = "Private WireGuard VPN with a post-quantum key exchange."
+# Audit 2026-09-29: "No logs" (absolute) and "Open source" (CC BY-NC is
+# not) are retired. REMEDIATION-DECISIONS sections 1.4 and 2.
+CLAIMS = "No activity logs  ·  No ads  ·  Source-available apps"
 
 text_x = mark_cx + 200
+# Text must end inside the safe area, with the same 20 px margin as the URL.
+text_max_w = SAFE_X + SAFE_W - 20 - text_x
+
+title_font  = load_font(150, bold=True)
+url_font    = load_font(48, bold=False)
+sub_font    = fit_font(draw, TAGLINE, text_max_w, 48)
+small_font  = fit_font(draw, CLAIMS, text_max_w, 34)
+
 title_y = SAFE_Y + 60
 draw.text((text_x, title_y), "BIRDO VPN", fill=WHITE, font=title_font)
 
@@ -123,30 +149,18 @@ draw.rounded_rectangle(
     fill=ACCENT,
 )
 
-draw.text(
-    (text_x, bar_y + 30),
-    "Private WireGuard VPN with a post-quantum key exchange.",
-    fill=WHITE_A,
-    font=sub_font,
-)
-draw.text(
-    (text_x, bar_y + 95),
-    # Audit 2026-09-29: "No logs" (absolute) and "Open source" (CC BY-NC is
-    # not) are retired. REMEDIATION-DECISIONS sections 1.4 and 2.
-    "No activity logs  ·  No ads  ·  Source-available apps",
-    fill=WHITE_A,
-    font=small_font,
-)
+draw.text((text_x, bar_y + 30), TAGLINE, fill=WHITE_A, font=sub_font)
+draw.text((text_x, bar_y + 95), CLAIMS, fill=WHITE_A, font=small_font)
 
 # Footer URL inside safe area, bottom-right
 url = "birdo.app"
-url_bbox = draw.textbbox((0, 0), url, font=sub_font)
+url_bbox = draw.textbbox((0, 0), url, font=url_font)
 url_w = url_bbox[2] - url_bbox[0]
 draw.text(
     (SAFE_X + SAFE_W - url_w - 20, SAFE_Y + SAFE_H - 70),
     url,
     fill=WHITE,
-    font=sub_font,
+    font=url_font,
 )
 
 # (Optional) faint safe-area outline — comment out for final
