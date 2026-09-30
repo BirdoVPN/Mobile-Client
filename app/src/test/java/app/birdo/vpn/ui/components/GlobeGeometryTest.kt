@@ -597,30 +597,29 @@ class GlobeGeometryTest {
      * spinning for a user who has turned animation off. Both are single lines
      * that a refactor removes without any visible symptom on the developer's
      * unlocked, animations-on device — which is exactly why they are pinned.
+     *
+     * The gates now live in ONE place, MotionGate.kt, shared with the
+     * PixelCanvas background (A2-019), and gained a third: the Hide App
+     * Contents cover, under which the Connect screen now stays composed
+     * (A2-009). So this pins both halves: the rule, and the globe using it.
      */
     @Test
-    fun `the animation clock is gated on lifecycle and on the animator scale`() {
+    fun `the animation clock is gated on lifecycle, the animator scale and the app cover`() {
+        val gate = File(repoRoot, "app/src/main/java/app/birdo/vpn/ui/components/MotionGate.kt").readText()
+        assertTrue("MotionGate.kt not found or empty", gate.length > 500)
+        assertTrue("the clock must stop when the app is stopped", gate.contains("Lifecycle.Event.ON_STOP -> started = false"))
+        assertTrue("the clock must restart when the app is started", gate.contains("Lifecycle.Event.ON_START ->"))
+        assertTrue("the system animator duration scale must be honoured", gate.contains("ValueAnimator.areAnimatorsEnabled()"))
+        assertTrue("the app cover must stop it", gate.contains("LocalAppObscured.current"))
+
         val source = File(
             repoRoot,
             "app/src/main/java/app/birdo/vpn/ui/components/WorldGlobe.kt",
         ).readText()
         assertTrue("WorldGlobe.kt not found or empty", source.length > 1_000)
-
         assertTrue(
-            "the clock must stop when the app is stopped",
-            source.contains("Lifecycle.Event.ON_STOP -> started = false"),
-        )
-        assertTrue(
-            "the clock must restart when the app is started",
-            source.contains("Lifecycle.Event.ON_START ->"),
-        )
-        assertTrue(
-            "the globe must honour the system animator duration scale",
-            source.contains("ValueAnimator.areAnimatorsEnabled()"),
-        )
-        assertTrue(
-            "both gates must feed the single `animating` flag",
-            source.contains("val animating = started && animatorsEnabled"),
+            "all gates must feed the single `animating` flag",
+            source.contains("val animating = rememberDecorativeMotionAllowed()"),
         )
         assertTrue(
             "the frame driver must be keyed on `animating` so it is cancelled",

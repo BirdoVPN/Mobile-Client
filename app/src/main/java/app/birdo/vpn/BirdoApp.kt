@@ -2,6 +2,7 @@ package app.birdo.vpn
 
 import android.app.Application
 import app.birdo.vpn.billing.PlayBillingManager
+import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.CpuFeatures
 import app.birdo.vpn.utils.CrashReporting
@@ -37,6 +38,9 @@ class BirdoApp : Application() {
     /** Holds the user's crash-report choice. See [applyCrashReportingConsent]. */
     @Inject lateinit var appPreferences: AppPreferences
 
+    /** Opened in the startup warm-up below, off the main thread. */
+    @Inject lateinit var tokenManager: dagger.Lazy<TokenManager>
+
     override fun onCreate() {
         super.onCreate()
         // Crash reporting is OPT-IN. Nothing is initialised here unless the
@@ -45,21 +49,35 @@ class BirdoApp : Application() {
         // unconditionally, starts with the SDK off and its unsent queue
         // discarded. See CrashReporting for the whole rule.
         applyCrashReportingConsent()
-        // dagger.Lazy, and the flag checked HERE rather than only inside
-        // start(): in a non-Play build (debug, sideload APK, F-Droid) the rail
-        // can never work — Play Billing does not sell to an app the Play Store
-        // did not install — so nothing about it should be built during
-        // Application.onCreate, which is on the cold-start critical path.
-        // Constructing the manager here would also pull in the Retrofit/OkHttp
-        // graph, which otherwise waits until the first screen composes.
-        if (BuildConfig.IS_PLAY_BUILD) {
+        // STARTUP WARM-UP, OFF THE MAIN THREAD (A2-021). Opening the token
+        // store is Keystore work (key generation on a first run, a seal/open
+        // probe, the legacy migration, and a delete-and-regenerate recovery
+        // when the Keystore misbehaves), and the Play rail's construction
+        // builds the whole Retrofit/OkHttp/TokenManager graph. Both used to
+        // run right here, on the cold-start critical path of the store build.
+        // Started now, they are usually finished by the time the first screen
+        // asks for the TokenManager; if not, that caller waits on Hilt's
+        // singleton lock, which is no worse than doing the work itself.
+        //
+        // dagger.Lazy for the rail, and the flag checked HERE rather than only
+        // inside start(): in a non-Play build (debug, sideload APK, F-Droid)
+        // the rail can never work — Play Billing does not sell to an app the
+        // Play Store did not install — so nothing about it is built at all.
+        Thread({
             try {
-                playBilling.get().start()
+                tokenManager.get()
             } catch (e: Exception) {
-                // A wedged Play Store must never take down the whole app.
-                android.util.Log.e("BirdoApp", "Play Billing init failed", e)
+                android.util.Log.w("BirdoApp", "Token store warm-up failed", e)
             }
-        }
+            if (BuildConfig.IS_PLAY_BUILD) {
+                try {
+                    playBilling.get().start()
+                } catch (e: Exception) {
+                    // A wedged Play Store must never take down the whole app.
+                    android.util.Log.e("BirdoApp", "Play Billing init failed", e)
+                }
+            }
+        }, "birdo-startup").start()
     }
 
     /**
