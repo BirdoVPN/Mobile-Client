@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
@@ -34,6 +35,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -49,7 +51,6 @@ import app.birdo.vpn.perf.GlobePerf
 import app.birdo.vpn.perf.GlobePerfControls
 import app.birdo.vpn.perf.GlobePerfOverlay
 import app.birdo.vpn.service.VpnState
-import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
 import app.birdo.vpn.ui.theme.*
@@ -85,12 +86,17 @@ fun HomeScreen(
     showUpdateBanner: Boolean = false,
     onUpdateApp: () -> Unit = {},
     onDismissUpdate: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    onViewPlans: () -> Unit = {},
+    onDismissMessage: () -> Unit = {},
 ) {
     val palette = BirdoColors.current
-    val isConnected = state.vpnState is VpnState.Connected
-    val isConnecting = state.vpnState.isConnectingPhase
-    val isDisconnecting = state.vpnState is VpnState.Disconnecting
-    val isError = state.vpnState is VpnState.Error
+    // What the screen says and offers is decided by the pure functions in
+    // HomeConnectionModel.kt, so the vocabulary and controls are unit-tested.
+    val connection = homeConnection(state)
+    val isConnected = connection.isConnected
+    val isConnecting = connection.isConnecting
+    val isDisconnecting = connection.isDisconnecting
     val isKillSwitchActive = state.killSwitchActive
     var showServerSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -160,7 +166,9 @@ fun HomeScreen(
         if (!showServerSheet && !globeSuppressed()) {
             WorldGlobe(
                 servers = state.servers,
-                selectedServerId = state.selectedServer?.id,
+                // A Multi-Hop session focuses (and draws its arc to) the ENTRY
+                // node, as on iOS — not the last single-hop selection (P1-parity-003).
+                selectedServerId = state.liveMultiHopEntryId ?: state.selectedServer?.id,
                 isConnected = isConnected,
                 autoRotate = true,
                 modifier = Modifier.fillMaxSize(),
@@ -205,12 +213,17 @@ fun HomeScreen(
 
             // Status pill floats just below the top bar.
             Spacer(Modifier.height(12.dp))
-            StatusPill(
-                isConnected = isConnected,
-                isConnecting = isConnecting,
-                isDisconnecting = isDisconnecting,
-                isError = isError,
-            )
+            StatusPill(status = statusVisual(pillModel(state)))
+            // P1-parity-019: the honest hint while the kill switch is on but
+            // not armed yet — nothing is blocking until a session exists.
+            if (killSwitchEnabled && !isConnected && !isKillSwitchActive) {
+                Spacer(Modifier.height(8.dp))
+                BirdoBadge(
+                    text = stringResource(R.string.kill_switch_pending),
+                    tone = BadgeTone.Neutral,
+                    icon = Icons.Default.Shield,
+                )
+            }
 
             // Push the controls to the bottom of the screen so the map
             // breathes between the pill and the action panel.
@@ -260,6 +273,26 @@ fun HomeScreen(
                         )
                     }
 
+                    // A1-027: with notifications off, the alert that says the
+                    // VPN stopped or needs the user reaches nobody. Say so where
+                    // the user will see it, with the way to fix it.
+                    if (!rememberNotificationsEnabled()) {
+                        val context = LocalContext.current
+                        HomeBanner(
+                            icon = Icons.Default.NotificationsOff,
+                            message = stringResource(R.string.home_notifications_off),
+                            tone = BannerTone.Info,
+                            action = BannerAction(stringResource(R.string.home_notifications_turn_on)) {
+                                runCatching {
+                                    context.startActivity(
+                                        android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName),
+                                    )
+                                }
+                            },
+                        )
+                    }
+
                     AnimatedVisibility(visible = isKillSwitchActive) {
                         HomeBanner(
                             icon = Icons.Default.Shield,
@@ -283,21 +316,41 @@ fun HomeScreen(
                     //
                     // Gated on isConnected so it cannot linger over a torn-down
                     // tunnel — stealthActive is only meaningful for a live one.
+                    //
+                    // Info tone, never the red error style: this is a healthy,
+                    // protected connection (P1-parity-004).
                     AnimatedVisibility(visible = isConnected && state.stealthActive) {
                         HomeBanner(
                             icon = Icons.Default.VisibilityOff,
                             message = stringResource(R.string.stealth_fallback_active),
+                            tone = BannerTone.Info,
                         )
                     }
 
-                    if (isError) {
+                    // ONE message banner (A2-011): a message of the Connect
+                    // screen's own (dismissible), else the session's Error with
+                    // the action that fixes it (P1-parity-040). The two used to
+                    // render side by side, often with the same text.
+                    val message = homeMessage(state)
+                    if (message != null) {
+                        val sessionError = state.vpnState as? VpnState.Error
+                        val remedy = if (state.connectError == null) sessionError?.kind?.let { remedyFor(it) } else null
                         HomeBanner(
                             icon = Icons.Default.ErrorOutline,
-                            message = state.vpnState.message,
+                            message = message,
+                            action = remedy?.let { r ->
+                                BannerAction(stringResource(r.label)) {
+                                    when (r) {
+                                        Remedy.OPEN_SETTINGS -> onOpenSettings()
+                                        Remedy.VIEW_PLANS -> onViewPlans()
+                                        Remedy.UPDATE -> onUpdateApp()
+                                        Remedy.CHOOSE_SERVER ->
+                                            if (state.servers.isNotEmpty()) showServerSheet = true else onOpenServers()
+                                    }
+                                }
+                            },
+                            onDismiss = if (state.connectError != null) onDismissMessage else null,
                         )
-                    }
-                    if (state.error != null) {
-                        HomeBanner(icon = Icons.Default.ErrorOutline, message = state.error)
                     }
 
                     if (multiHopEnabled) {
@@ -322,31 +375,48 @@ fun HomeScreen(
                         )
                     }
 
-                    CompactConnectButton(
-                        isConnected = isConnected,
-                        isConnecting = isConnecting,
-                        isDisconnecting = isDisconnecting,
-                        multiHopReady = multiHopRoute != null,
+                    val cta = ctaModel(
+                        connection,
                         multiHopArmed = multiHopEnabled,
+                        multiHopReady = multiHopRoute != null,
+                    )
+                    CompactConnectButton(
+                        cta = cta,
+                        isConnected = isConnected,
                         onClick = {
-                            when {
-                                isConnected -> {
+                            when (cta.action) {
+                                CtaAction.DISCONNECT -> {
                                     haptics.performHapticFeedback(HapticFeedbackType.Reject)
                                     onDisconnect()
                                 }
-                                isConnecting || isDisconnecting -> Unit
-                                multiHopRoute != null -> {
+                                CtaAction.CONNECT_MULTI_HOP -> multiHopRoute?.let { route ->
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onConnectMultiHop(multiHopRoute.first.id, multiHopRoute.second.id)
+                                    onConnectMultiHop(route.first.id, route.second.id)
                                 }
-                                multiHopEnabled -> Unit // disabled until both selected
-                                else -> {
+                                CtaAction.CONNECT -> {
                                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     onConnect()
                                 }
+                                CtaAction.NONE -> Unit
                             }
                         },
                     )
+                    // A1-010: the way out of a connect that is taking too long.
+                    if (cta.showCancel) {
+                        TextButton(
+                            onClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.Reject)
+                                onDisconnect()
+                            },
+                            modifier = Modifier.testTag(TestTags.CANCEL_CONNECT_BUTTON),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.cancel_connect),
+                                color = palette.onSurfaceMuted,
+                                fontSize = 14.sp,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -687,33 +757,29 @@ private data class StatusVisual(
     val pulse: Boolean,
 )
 
+/** The pill's words and look, from the pure [pillModel]. */
 @Composable
-private fun statusFor(
-    isConnected: Boolean,
-    isConnecting: Boolean,
-    isDisconnecting: Boolean,
-    isError: Boolean,
-): StatusVisual = when {
-    isConnected -> StatusVisual(stringResource(R.string.status_protected), BadgeTone.Success, null, pulse = true)
-    isConnecting -> StatusVisual(stringResource(R.string.connecting), BadgeTone.Warning, Icons.Default.Sync, pulse = false)
-    isDisconnecting -> StatusVisual(stringResource(R.string.disconnecting), BadgeTone.Warning, Icons.Default.Sync, pulse = false)
-    isError -> StatusVisual(stringResource(R.string.status_error), BadgeTone.Danger, Icons.Default.ErrorOutline, pulse = false)
-    else -> StatusVisual(stringResource(R.string.status_not_connected), BadgeTone.Neutral, Icons.Default.WifiOff, pulse = false)
-}
+private fun statusVisual(model: PillModel): StatusVisual = StatusVisual(
+    text = stringResource(model.text),
+    tone = model.tone,
+    icon = when (model.icon) {
+        PillIcon.NONE -> null
+        PillIcon.SYNC -> Icons.Default.Sync
+        PillIcon.ERROR -> Icons.Default.ErrorOutline
+        PillIcon.OFFLINE -> Icons.Default.WifiOff
+    },
+    pulse = model.pulse,
+)
 
 @Composable
 private fun StatusPill(
-    isConnected: Boolean,
-    isConnecting: Boolean,
-    isDisconnecting: Boolean,
-    isError: Boolean,
+    status: StatusVisual,
     modifier: Modifier = Modifier,
 ) {
     // The animated state carries text, tone, icon and pulse TOGETHER. Animating
     // on the text alone and reading the rest from the enclosing scope would
     // render the OUTGOING label in the INCOMING colour mid-crossfade — e.g.
     // "Connecting…" flashing green on its way out.
-    val status = statusFor(isConnected, isConnecting, isDisconnecting, isError)
 
     // Polite live region: TalkBack announces every connection-state change —
     // for a VPN, silent state transitions are a safety problem, not a nicety.
@@ -748,21 +814,19 @@ private fun StatusPill(
  */
 @Composable
 private fun CompactConnectButton(
+    cta: CtaModel,
     isConnected: Boolean,
-    isConnecting: Boolean,
-    isDisconnecting: Boolean,
-    multiHopReady: Boolean = false,
-    multiHopArmed: Boolean = false,
     onClick: () -> Unit,
 ) {
-    val busy = isConnecting || isDisconnecting
-    val multiHopBlocked = multiHopArmed && !multiHopReady && !isConnected
+    val busy = cta.busy
+    val multiHopBlocked = cta.label == R.string.home_choose_entry_exit
+    val multiHopReady = cta.action == CtaAction.CONNECT_MULTI_HOP
 
     // The idle → connecting → connected transition is the most important state
     // change in the app: morph the gradient rather than hard-cutting it.
     val (targetStart, targetEnd) = when {
         isConnected -> BirdoGreen to BirdoAccentDeep
-        busy -> BirdoBrand.AccentSoft to BirdoBrand.AccentDeep
+        busy || cta.action == CtaAction.DISCONNECT -> BirdoBrand.AccentSoft to BirdoBrand.AccentDeep
         multiHopBlocked -> BirdoWhite10 to BirdoWhite10
         multiHopReady -> BirdoBrand.Accent to BirdoBrand.AccentDeep
         else -> Color(0xFF047857) to Color(0xFF064E3B) // PrimaryGradient stops (deep emerald)
@@ -784,14 +848,7 @@ private fun CompactConnectButton(
     )
     val brush = Brush.linearGradient(listOf(startColor, endColor))
 
-    val label = when {
-        isConnected -> stringResource(R.string.disconnect)
-        isConnecting -> stringResource(R.string.connecting)
-        isDisconnecting -> stringResource(R.string.disconnecting)
-        multiHopBlocked -> stringResource(R.string.home_choose_entry_exit)
-        multiHopReady -> stringResource(R.string.home_connect_multihop)
-        else -> stringResource(R.string.connect)
-    }
+    val label = stringResource(cta.label)
 
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -905,7 +962,9 @@ private fun StatTile(
     modifier: Modifier = Modifier,
 ) {
     BirdoCard(
-        modifier = modifier,
+        // One node per tile, "Download: 1.2 MB", instead of an icon labelled
+        // with an arrow glyph and a separate value node (P1-parity-030).
+        modifier = modifier.clearAndSetSemantics { contentDescription = "$label: $value" },
         cornerRadius = 12.dp,
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
     ) {
@@ -914,7 +973,7 @@ private fun StatTile(
             horizontalArrangement = Arrangement.Center,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(14.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(6.dp))
             // Roll the digits rather than teleporting them. Only recomposes when
             // the FORMATTED string changes, so a stat ticking within the same
@@ -953,37 +1012,90 @@ private fun StatTile(
 // ── Banner ────────────────────────────────────────────────────────────────
 
 /**
- * One banner for every inline alert on the Connect screen (kill switch,
- * connect error, transient API error). No internal padding — the parent
- * Column owns vertical rhythm. Assertive live region: an alert that appears
- * silently is an alert a TalkBack user never receives.
+ * Whether the app may post notifications, re-read every time the screen
+ * resumes — the user turns them on in system settings and comes back.
+ */
+@Composable
+private fun rememberNotificationsEnabled(): Boolean {
+    val context = LocalContext.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var enabled by remember {
+        mutableStateOf(androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled())
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                enabled = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return enabled
+}
+
+/** Danger for problems; Info (brand) for a notice about a healthy connection. */
+private enum class BannerTone { Danger, Info }
+
+private data class BannerAction(val label: String, val onClick: () -> Unit)
+
+/**
+ * One banner for every inline message on the Connect screen. No internal
+ * padding — the parent Column owns vertical rhythm. A Danger banner is an
+ * assertive live region: an alert that appears silently is an alert a TalkBack
+ * user never receives. An Info banner is polite, and never styled as an error.
  */
 @Composable
 private fun HomeBanner(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     message: String,
     modifier: Modifier = Modifier,
+    tone: BannerTone = BannerTone.Danger,
+    action: BannerAction? = null,
+    onDismiss: (() -> Unit)? = null,
 ) {
+    val (fg, bg) = when (tone) {
+        BannerTone.Danger -> BirdoRed to BirdoRedBg
+        BannerTone.Info -> BirdoBrand.AccentSoft to BirdoAccentBg
+    }
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .semantics { liveRegion = LiveRegionMode.Assertive },
+            .semantics {
+                liveRegion = if (tone == BannerTone.Danger) LiveRegionMode.Assertive else LiveRegionMode.Polite
+            },
         shape = RoundedCornerShape(14.dp),
-        color = BirdoRedBg,
-        border = androidx.compose.foundation.BorderStroke(1.dp, BirdoRed.copy(alpha = 0.3f)),
+        color = bg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.3f)),
     ) {
         Row(
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, contentDescription = null, tint = BirdoRed, modifier = Modifier.size(18.dp))
+            Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
             Text(
                 text = message,
-                color = BirdoRed,
+                color = fg,
                 fontSize = 13.sp,
                 modifier = Modifier.weight(1f),
             )
+            if (action != null) {
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = action.onClick) {
+                    Text(text = action.label, color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = stringResource(R.string.cd_dismiss_message),
+                        tint = fg.copy(alpha = 0.7f),
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
         }
     }
 }

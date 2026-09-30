@@ -79,6 +79,9 @@ class DataplaneFaultReportingTest {
         "app/src/main/java/app/birdo/vpn/service/XrayManager.kt",
         "app/src/main/java/app/birdo/vpn/service/BirdoTileService.kt",
         "app/src/main/java/app/birdo/vpn/service/WireGuardConfigBuilder.kt",
+        // Restarts the session after an app update; a failed start is a
+        // session the user wanted up that stays down (A1-015).
+        "app/src/main/java/app/birdo/vpn/service/PackageReplacedReceiver.kt",
         "app/src/main/java/app/birdo/vpn/utils/NativeLibraryVerifier.kt",
         "app/src/main/java/app/birdo/vpn/utils/SettingsHmac.kt",
     )
@@ -104,6 +107,10 @@ class DataplaneFaultReportingTest {
             "It returns what SHOULD happen; every caller reports what DID. Reporting here " +
             "would fire on a correct refusal and double-count the callers' outcomes " +
             "(Mobile-Client#336)",
+        "SessionPolicy.kt" to
+            "the session supervisor's verdicts (reconnect budget, system-start plan, " +
+            "one-tap toggle) as pure functions: no Android, no I/O, nothing to catch. " +
+            "VpnManager and BirdoVpnService carry the verdicts out and report there",
     )
 
     private fun source(path: String): String {
@@ -880,7 +887,7 @@ class DataplaneFaultReportingTest {
             1,
             constructions.size,
         )
-        val funnelStart = text.indexOf("private fun publishError(message: String) {")
+        val funnelStart = text.indexOf("private fun publishError(message: String")
         assertTrue("$path has lost its publishError funnel", funnelStart >= 0)
         val funnelEnd = text.indexOf("\n    }", funnelStart)
         assertTrue("publishError has no closing brace", funnelEnd > funnelStart)
@@ -895,9 +902,15 @@ class DataplaneFaultReportingTest {
         assertReports(
             path,
             listOf(
+                // One START dispatch (startServiceFor) serves both dial paths
+                // now, so the single-hop and multi-hop codes are one: a guard
+                // written once cannot drift between two parallel copies.
                 "service_start_dispatch_failed",
-                "service_start_dispatch_failed_multihop",
                 "service_stop_dispatch_failed",
+                // The supervisor gave up and could not take its own block down.
+                "release_block_dispatch_failed",
+                // Connected with no key id to heartbeat for (A1-005's invariant).
+                "heartbeat_no_key_id",
                 // The jurisdiction-leak guard: the user cannot observe their own egress country.
                 "multihop_route_unconfirmed",
                 "multihop_route_mismatch",
@@ -907,6 +920,28 @@ class DataplaneFaultReportingTest {
                 "manager_state_collector_threw",
                 "settings_reapply_threw",
             ),
+        )
+    }
+
+    /**
+     * The system starts (Always-on, a sticky restart, an app update) happen
+     * with nobody watching, so the ways they can fail to restore a session
+     * are reported rather than only logged (A1-014, A1-015).
+     */
+    @Test
+    fun `system starts report what they cannot restore`() {
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt",
+            listOf(
+                // A sticky restart is not on the background-FGS exemption list.
+                "system_start_foreground_refused",
+                // No VpnManager: no headless connect, no state rendering.
+                "service_entry_point_unavailable",
+            ),
+        )
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/PackageReplacedReceiver.kt",
+            listOf("package_replaced_restart_failed"),
         )
     }
 

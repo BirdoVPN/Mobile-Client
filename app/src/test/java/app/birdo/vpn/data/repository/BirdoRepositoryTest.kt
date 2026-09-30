@@ -8,8 +8,10 @@ import app.birdo.vpn.data.model.*
 import app.birdo.vpn.shared.model.LoginResult
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -555,6 +557,65 @@ class BirdoRepositoryTest {
 
         assertTrue(result is ApiResult.Success)
         coVerify(exactly = 0) { api.disconnect(any()) }
+    }
+
+    /**
+     * A1-005: Disconnect then a quick Connect. The Disconnect's DELETE was
+     * still in flight when the new connect stored its key id — and on return
+     * the old DELETE cleared it unconditionally: the new session stopped
+     * heartbeating and its live peer was reaped five minutes later.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a late DELETE never clears the next session's key id`() = runTest {
+        var storedKey: String? = "key-1"
+        every { tokenManager.getLastKeyId() } answers { storedKey }
+        every { tokenManager.setLastKeyId(any()) } answers { storedKey = firstArg() }
+        every { tokenManager.clearLastKeyId() } answers { storedKey = null }
+        val gate = kotlinx.coroutines.CompletableDeferred<Response<Unit>>()
+        coEvery { api.disconnect("key-1") } coAnswers { gate.await() }
+        coEvery { api.connect(any()) } returns Response.success(ConnectResponse(success = true, keyId = "key-2"))
+
+        val late = async { repository.disconnectVpn() }
+        runCurrent()
+        repository.connectVpn("server_1")
+        gate.complete(Response.success(Unit))
+        late.await()
+
+        assertEquals("key-2", storedKey)
+        verify(exactly = 0) { tokenManager.clearWireGuardPrivateKey() }
+    }
+
+    @Test
+    fun `disconnectVpn releases the key it is named, and clears the stored id only when it matches`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns "key-other"
+        coEvery { api.disconnect("key-explicit") } returns Response.success(Unit)
+
+        repository.disconnectVpn("key-explicit")
+
+        coVerify { api.disconnect("key-explicit") }
+        verify(exactly = 0) { tokenManager.clearLastKeyId() }
+    }
+
+    @Test
+    fun `a heartbeat with no key id says so with its own code`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns null
+
+        val result = repository.sendHeartbeat()
+
+        assertEquals(BirdoRepository.CODE_NO_ACTIVE_KEY, (result as ApiResult.Error).code)
+        coVerify(exactly = 0) { api.heartbeat(any()) }
+    }
+
+    @Test
+    fun `a heartbeat names the session's own key when given one`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns "stored"
+        coEvery { api.heartbeat("session-key") } returns Response.success(HeartbeatResponse())
+
+        repository.sendHeartbeat("session-key")
+
+        coVerify { api.heartbeat("session-key") }
+        coVerify(exactly = 0) { api.heartbeat("stored") }
     }
 
     // ── Anonymous Login ─────────────────────────────────────────

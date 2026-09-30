@@ -325,6 +325,21 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_LAST_SERVER, null)
         set(value) = prefs.edit { putString(KEY_LAST_SERVER, value) }
 
+    // ── Session intent (Always-on / restart / update) ────────────
+    /**
+     * The user wants the VPN up: set when a session is asked for, cleared by
+     * a Disconnect, a sign-out or a failure that re-dialling cannot fix. A
+     * system start (a sticky restart after the process was killed, an app
+     * update) reconnects headlessly only while this is true, so a stale
+     * intent can never re-dial a session the user ended (iOS lesson #284).
+     * commit() so the intent is durable before the process can die with it.
+     * Not HMAC-protected: a forged value can only make BirdoVPN reconnect the
+     * user's own route after a restart.
+     */
+    var sessionShouldBeUp: Boolean
+        get() = prefs.getBoolean(KEY_SESSION_SHOULD_BE_UP, false)
+        set(value) = prefs.edit(commit = true) { putBoolean(KEY_SESSION_SHOULD_BE_UP, value) }
+
     companion object {
         private const val KEY_KILL_SWITCH = "kill_switch_enabled"
         private const val KEY_AUTO_CONNECT = "auto_connect"
@@ -335,6 +350,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
         private const val KEY_FAVORITES = "favorite_servers"
         private const val KEY_LAST_SERVER = "last_server_id"
+        private const val KEY_SESSION_SHOULD_BE_UP = "session_should_be_up"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_policy_accepted"
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
         private const val KEY_CONSENT_VERSION = "privacy_consent_version"

@@ -1,6 +1,7 @@
 package app.birdo.vpn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -95,19 +96,45 @@ class QuickSelectGuardTest {
 
     @Test
     fun `Android quick-connect still ranks on load — the rule the Apple twin copies`() {
-        // Not a change: VpnManager.quickConnect() has ranked by minByOrNull
+        // Not a change: VpnManager's quick connect has ranked by minByOrNull
         // { it.load } since it shipped, and K10 part A (birdo-web) makes that
         // `load` CPU-aware with no client release. This pins the Android half
-        // so the two platforms cannot drift apart in opposite directions.
+        // so the two platforms cannot drift apart in opposite directions. The
+        // rule lives in ONE function now, VpnManager.bestServer, which the
+        // quick connect and the ViewModel's pre-selection both call.
         val text = source("app/src/main/java/app/birdo/vpn/service/VpnManager.kt")
-        val quickConnect = text.indexOf("suspend fun quickConnect()")
-        assertTrue("VpnManager.quickConnect() not found", quickConnect >= 0)
-        val body = text.substring(quickConnect, minOf(text.length, quickConnect + 2000))
+        val bestServer = text.indexOf("fun bestServer(servers: List<VpnServer>): VpnServer?")
+        assertTrue("VpnManager.bestServer() not found", bestServer >= 0)
+        val body = text.substring(bestServer, minOf(text.length, bestServer + 400))
         assertTrue(
-            "VpnManager.quickConnect() no longer filters online && accessible and ranks by " +
+            "VpnManager.bestServer() no longer filters online && accessible and ranks by " +
                 "minByOrNull { it.load }",
             Regex("""\.filter\s*\{\s*it\.isOnline\s*&&\s*it\.accessible\s*\}\s*\.minByOrNull\s*\{\s*it\.load\s*\}""")
                 .containsMatchIn(body),
+        )
+        assertTrue(
+            "VpnManager's quick connect no longer picks through bestServer()",
+            Regex("""val bestServer = bestServer\(servers\)""").containsMatchIn(text),
+        )
+    }
+
+    /**
+     * A1-023: K10 was fixed on iOS only; Android's pre-selection kept taking
+     * the first usable row of the name-sorted list — the same country for
+     * every new user, whatever its load. It now uses the quick-connect rule.
+     */
+    @Test
+    fun `the Android pre-selection uses the quick-connect rule, not the first row`() {
+        val text = source("app/src/main/java/app/birdo/vpn/ui/viewmodel/VpnViewModel.kt")
+        assertFalse(
+            "VpnViewModel pre-selects the FIRST usable node of a name-sorted list again (K10). " +
+                "Use VpnManager.bestServer(servers) — and do not leave the old spelling in a " +
+                "comment either; this guard reads the raw file.",
+            Regex("""firstOrNull\s*\{\s*it\.isOnline""").containsMatchIn(text),
+        )
+        assertTrue(
+            "VpnViewModel.loadServers no longer pre-selects through VpnManager.bestServer",
+            text.contains("VpnManager.bestServer(servers)"),
         )
     }
 }

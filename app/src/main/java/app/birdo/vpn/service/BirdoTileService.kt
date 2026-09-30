@@ -8,12 +8,14 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
+import androidx.annotation.StringRes
 import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.utils.FaultReporter
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.combine
 import javax.inject.Inject
 
 /**
@@ -34,18 +36,42 @@ class BirdoTileService : TileService() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /**
-     * Collects [BirdoVpnService.stateFlow] only while the tile is bound.
-     * Without it the tile rendered a static snapshot taken at bind time, so it
-     * went stale during the entire connect/disconnect sequence the user is
-     * watching, and after a drop or an Adaptive Transport fallback it could
-     * read "Disconnected" over a live tunnel — and [onClick] acts on the LIVE
-     * state, so tapping a tile that reads Disconnected disconnected the VPN,
+     * Collects VpnManager's state and the kill-switch flag only while the tile
+     * is bound. Without it the tile rendered a static snapshot taken at bind
+     * time, so it went stale during the entire connect/disconnect sequence the
+     * user is watching — and [onClick] acts on the LIVE state, so tapping a
+     * tile that read Disconnected over a live tunnel disconnected the VPN,
      * the opposite of the user's intent.
+     *
+     * VpnManager's state, not the service's (A1-002, A1-021): the service
+     * reads Disconnected for the whole API phase of a dial, which let a second
+     * tap start a second dial, and never learns about the manager's own
+     * outcomes (Reconnecting, a backend refusal).
      */
     private var stateJob: Job? = null
 
     companion object {
         private const val TAG = "BirdoTile"
+
+        /** What the tile shows: active or not, and a subtitle (a string resource, or the server's name). */
+        data class TileModel(val active: Boolean, @param:StringRes val subtitle: Int, val serverLabel: String? = null)
+
+        /**
+         * The tile for a state. Blocked is INACTIVE with the truth: the kill
+         * switch is not a connection, and an ACTIVE tile reading "Working…"
+         * claimed a working VPN while every packet was being dropped.
+         */
+        fun tileModel(state: VpnState, killSwitchActive: Boolean, serverLabel: String?, showLocation: Boolean): TileModel =
+            when {
+                state is VpnState.Connected ->
+                    TileModel(true, R.string.status_protected, serverLabel?.takeIf { showLocation })
+                state is VpnState.Reconnecting -> TileModel(true, R.string.status_reconnecting)
+                state.isConnectingPhase -> TileModel(true, R.string.connecting)
+                state is VpnState.Disconnecting -> TileModel(true, R.string.disconnecting)
+                killSwitchActive -> TileModel(false, R.string.tile_traffic_blocked)
+                state is VpnState.Error -> TileModel(false, R.string.status_error)
+                else -> TileModel(false, R.string.status_not_connected)
+            }
     }
 
     override fun onStartListening() {
@@ -53,9 +79,8 @@ class BirdoTileService : TileService() {
         updateTile()
         stateJob?.cancel()
         stateJob = scope.launch {
-            BirdoVpnService.stateFlow.collect {
-                withContext(Dispatchers.Main) { updateTile() }
-            }
+            combine(vpnManager.state, BirdoVpnService.killSwitchActiveFlow) { _, _ -> }
+                .collect { withContext(Dispatchers.Main) { updateTile() } }
         }
     }
 
@@ -68,16 +93,23 @@ class BirdoTileService : TileService() {
     override fun onClick() {
         super.onClick()
 
-        val currentState = BirdoVpnService.currentState
-        Log.i(TAG, "Tile clicked — current state: $currentState")
+        val state = vpnManager.state.value
+        Log.i(TAG, "Tile clicked — current state: $state")
 
-        when (currentState) {
-            // KillSwitchActive is a tappable state: all traffic is blocked and
-            // disconnect() is what releases the block. It used to fall into the
-            // else branch, which rendered an ACTIVE tile that silently ignored
-            // every tap — a device with all traffic blocked and no way out of it
-            // from the shade.
-            is VpnState.Connected, is VpnState.KillSwitchActive -> {
+        when (
+            QuickToggle.decide(
+                state = state,
+                killSwitchActive = BirdoVpnService.killSwitchActive,
+                signedIn = tokenManager.isLoggedIn(),
+                vpnPermissionGranted = vpnManager.isVpnPermissionGranted(),
+            )
+        ) {
+            // Connected, connecting, reconnecting, or blocked: the tap is the
+            // way out. KillSwitchActive used to fall into a branch that
+            // silently ignored every tap — a device with all traffic blocked
+            // and no way out of it from the shade — and a connect in flight
+            // could not be cancelled here at all (A1-010).
+            QuickToggle.Action.DISCONNECT -> {
                 // Destructive action (drops the tunnel / clears the fail-closed
                 // kill switch): from a LOCKED device, demand unlock first —
                 // mirrors setAuthenticationRequired on the notification action.
@@ -87,160 +119,84 @@ class BirdoTileService : TileService() {
                     performTileDisconnect()
                 }
             }
-            is VpnState.Disconnected, is VpnState.Error -> {
-                // Guard: don't attempt VPN if user isn't authenticated
-                if (!tokenManager.isLoggedIn()) {
-                    Log.w(TAG, "Tile connect blocked — user not authenticated")
-                    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (launchIntent != null) {
-                        openAppAndCollapse(launchIntent)
-                    }
-                    return
-                }
+            // Signed out, or VPN permission missing: a tile cannot show a
+            // sign-in form or a permission prompt, so it hands off to the app.
+            // Same shape as every other tile hand-off, so it goes through the
+            // one helper that reports the dead end.
+            QuickToggle.Action.OPEN_APP -> openAppOrLog("Tile connect needs sign-in or VPN permission")
+            QuickToggle.Action.CONNECT -> connectFromTile()
+            QuickToggle.Action.NONE -> Log.d(TAG, "Tile clicked while disconnecting, ignoring")
+        }
+    }
 
-                // Need to check VPN permission
-                if (!vpnManager.isVpnPermissionGranted()) {
-                    // Can't request permission from tile — open app instead.
-                    // Same shape as every other tile hand-off, so it goes
-                    // through the one helper that reports the dead end.
-                    openAppOrLog("Tile connect needs VPN permission")
-                    return
-                }
-
-                // MULTI-HOP FIRST. vpnManager.quickConnect() builds a
-                // SINGLE-HOP tunnel unconditionally. VpnViewModel.quickConnect()
-                // guards against that and its comment names this tile as a
-                // caller it protects -- but the tile injects VpnManager directly
-                // and never passes through the ViewModel, so the guard did not
-                // apply here. Tapping the tile with Multi-Hop armed therefore
-                // built one hop while the app kept drawing the entry -> exit
-                // route the user chose, which is the silent downgrade the other
-                // entry points exist to prevent.
-                //
-                // The armed/incomplete decision itself comes from
-                // MultiHopPolicy (Mobile-Client#336) so this surface cannot
-                // drift from auto-connect and quick-connect again. The
-                // entitlement branch below stays local: it is a tile-specific
-                // concern (no UI to show an error on, and a cached plan that
-                // can be absent), not part of the multi-hop policy.
-                val decision = MultiHopPolicy.forNewConnection(
-                    appPreferences.multiHopEnabled,
-                    appPreferences.multiHopEntryNodeId,
-                    appPreferences.multiHopExitNodeId,
-                )
-                if (decision !is MultiHopPolicy.NewConnection.SingleHop) {
-                    // The pref alone is NOT the armed state. HomeScreen renders
-                    // `multiHop.enabled && isSovereign`, and nothing clears the
-                    // pref when a plan lapses -- so an ex-SOVEREIGN account keeps
-                    // multiHopEnabled == true forever. Dialling multi-hop for
-                    // them means the backend refuses it, VpnManager sets its own
-                    // Error state, and BirdoVpnService.currentState (the only
-                    // thing updateTile reads) never moves: a tile that connects
-                    // nothing and says nothing, every tap. Single-hop is both what
-                    // they are entitled to and what the app already draws, so
-                    // there is no downgrade being hidden.
-                    val plan = repository.cachedSubscriptionOrNull()?.plan
-                    when {
-                        // Entitlement unknown (cold process, or the cache aged
-                        // out). Refuse to guess: guessing single-hop can silently
-                        // downgrade a paying user, guessing multi-hop can dead-end
-                        // a lapsed one. Hand off to the UI, which has a live
-                        // subscription and somewhere to show an error -- the same
-                        // escape hatch this branch already uses for permission.
-                        plan == null -> {
-                            openAppOrLog("Multi-hop armed but entitlement unknown")
-                            return
-                        }
-                        // Not entitled: a single hop is correct AND is what the
-                        // app displays for this account, so fall through to it.
-                        !plan.equals("SOVEREIGN", ignoreCase = true) -> {}
-                        // Armed but incomplete (a node was retired, or prefs are
-                        // half-written). Quietly substituting a single hop is the
-                        // failure this branch exists to prevent.
-                        decision is MultiHopPolicy.NewConnection.RefuseIncompletePair -> {
-                            openAppOrLog("Multi-hop armed but entry/exit incomplete")
-                            return
-                        }
-                        decision is MultiHopPolicy.NewConnection.MultiHop -> {
-                            scope.launch {
-                                try {
-                                    // Deliberately NO fallback to quickConnect()
-                                    // on failure: a single hop presented as the
-                                    // chosen multi-hop route is indistinguishable
-                                    // from success and leaks the jurisdiction the
-                                    // user paid to hide. Staying disconnected is
-                                    // the honest result -- but it must be VISIBLE.
-                                    // connectMultiHop RETURNS an error, it does
-                                    // not throw, so the catch below would never
-                                    // have fired on a refusal.
-                                    //
-                                    // The visibility does NOT come from the line
-                                    // below: R8 strips android.util.Log entirely
-                                    // from the release artifact, so on a shipped
-                                    // build this Log.w reaches nobody, exactly as
-                                    // the Log.e it replaced did. It comes from
-                                    // VpnManager, where every non-success return
-                                    // publishes a VpnState.Error (a breadcrumb via
-                                    // publishError) and the two jurisdiction-leak
-                                    // refusals report at their root as
-                                    // multihop_route_unconfirmed / _mismatch. This
-                                    // line is the `adb logcat` convenience only; a
-                                    // report here would just add a second throttle
-                                    // bucket for one fact.
-                                    when (val r = vpnManager.connectMultiHop(decision.entryNodeId, decision.exitNodeId)) {
-                                        is ApiResult.Success ->
-                                            if (!r.data.success) {
-                                                Log.w(TAG, "Tile multi-hop refused: " + r.data.message)
-                                            }
-                                        is ApiResult.Error ->
-                                            Log.w(TAG, "Tile multi-hop failed: " + r.message)
-                                    }
-                                    withContext(Dispatchers.Main) { updateTile() }
-                                } catch (e: Exception) {
-                                    // A THROW, unlike a refusal, never reaches
-                                    // publishError — it unwinds past VpnManager
-                                    // entirely, so there is no state change and
-                                    // no breadcrumb. Multi-hop is armed and the
-                                    // user's tap did nothing: staying
-                                    // disconnected is correct, being silent
-                                    // about it is not.
-                                    FaultReporter.report(
-                                        FaultReporter.PATH_CONNECT,
-                                        "tile_multihop_threw",
-                                        "Quick Settings multi-hop connect threw — the tap did nothing",
-                                        e,
-                                    )
-                                }
+    /**
+     * MULTI-HOP FIRST. The tile injects VpnManager directly and never passes
+     * through the ViewModel, so the Multi-Hop guard there does not apply here:
+     * tapping the tile with Multi-Hop armed built one hop while the app kept
+     * drawing the entry -> exit route the user chose, the silent downgrade
+     * the other entry points exist to prevent. The armed/incomplete decision
+     * comes from MultiHopPolicy (Mobile-Client#336) and the entitlement rule
+     * from QuickToggle, shared with the widget so the two cannot drift.
+     *
+     * The single-hop dial is VpnManager.connectPreferred: the user's last
+     * server, not "the lowest-load node anywhere" (A1-021).
+     */
+    private fun connectFromTile() {
+        val decision = MultiHopPolicy.forNewConnection(
+            appPreferences.multiHopEnabled,
+            appPreferences.multiHopEntryNodeId,
+            appPreferences.multiHopExitNodeId,
+        )
+        when (val plan = QuickToggle.connectPlan(decision, repository.cachedSubscriptionOrNull()?.plan)) {
+            is QuickToggle.ConnectPlan.OpenApp -> openAppOrLog(plan.reason)
+            is QuickToggle.ConnectPlan.MultiHop -> scope.launch {
+                try {
+                    // Deliberately NO fallback to a single hop on failure: a
+                    // single hop presented as the chosen multi-hop route is
+                    // indistinguishable from success and leaks the jurisdiction
+                    // the user paid to hide. Staying disconnected is the honest
+                    // result -- and it is VISIBLE: VpnManager publishes every
+                    // non-success as a VpnState.Error, which this tile renders,
+                    // and the two jurisdiction-leak refusals report at their
+                    // root as multihop_route_unconfirmed / _mismatch. This log
+                    // line is the `adb logcat` convenience only (R8 strips it).
+                    when (val r = vpnManager.connectMultiHop(plan.entryNodeId, plan.exitNodeId)) {
+                        is ApiResult.Success ->
+                            if (!r.data.success) {
+                                Log.w(TAG, "Tile multi-hop refused: " + r.data.message)
                             }
-                            return
-                        }
-                        // Unreachable: the enclosing `if` already excluded
-                        // SingleHop, and the two branches above cover the rest
-                        // of MultiHopPolicy.NewConnection. Spelled out so that
-                        // adding a fourth case to that sealed type surfaces
-                        // here as a decision to make, not as a silent no-op.
-                        else -> Unit
+                        is ApiResult.Error ->
+                            Log.w(TAG, "Tile multi-hop failed: " + r.message)
                     }
-                }
-
-                scope.launch {
-                    try {
-                        vpnManager.quickConnect()
-                        withContext(Dispatchers.Main) { updateTile() }
-                    } catch (e: Exception) {
-                        FaultReporter.report(
-                            FaultReporter.PATH_CONNECT,
-                            "tile_connect_threw",
-                            "Quick Settings connect threw — the tap did nothing",
-                            e,
-                        )
-                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // A THROW, unlike a refusal, never reaches publishError —
+                    // it unwinds past VpnManager entirely, so there is no state
+                    // change and no breadcrumb. Multi-hop is armed and the
+                    // user's tap did nothing: staying disconnected is correct,
+                    // being silent about it is not.
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "tile_multihop_threw",
+                        "Quick Settings multi-hop connect threw — the tap did nothing",
+                        e,
+                    )
                 }
             }
-            else -> {
-                // Connecting/Disconnecting — do nothing
-                Log.d(TAG, "Tile clicked during transition, ignoring")
+            is QuickToggle.ConnectPlan.Preferred -> scope.launch {
+                try {
+                    vpnManager.connectPreferred(plan.multiHopEntitled)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "tile_connect_threw",
+                        "Quick Settings connect threw — the tap did nothing",
+                        e,
+                    )
+                }
             }
         }
     }
@@ -267,7 +223,8 @@ class BirdoTileService : TileService() {
         scope.launch {
             try {
                 vpnManager.disconnect()
-                withContext(Dispatchers.Main) { updateTile() }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 // The tunnel may still be up while the tile redraws to
                 // Disconnected — the user believes they are off the VPN.
@@ -283,53 +240,19 @@ class BirdoTileService : TileService() {
 
     private fun updateTile() {
         val tile = qsTile ?: return
-        val state = BirdoVpnService.currentState
-
-        when (state) {
-            is VpnState.Connected -> {
-                tile.state = Tile.STATE_ACTIVE
-                tile.label = "BirdoVPN"
-                // The shade is readable from a LOCKED device and had no opt-out:
-                // gate the exit-node name on the same preference that governs
-                // the notification's location line.
-                tile.subtitle =
-                    if (appPreferences.showLocationInNotification) {
-                        BirdoVpnService.connectedServer ?: "Connected"
-                    } else {
-                        "Connected"
-                    }
-                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
-            }
-            is VpnState.Connecting, is VpnState.Disconnecting -> {
-                tile.state = Tile.STATE_ACTIVE
-                tile.label = "BirdoVPN"
-                tile.subtitle = if (state is VpnState.Connecting) "Connecting…" else "Disconnecting…"
-                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
-            }
-            is VpnState.Disconnected, is VpnState.Error -> {
-                tile.state = Tile.STATE_INACTIVE
-                tile.label = "BirdoVPN"
-                tile.subtitle = "Disconnected"
-                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
-            }
-            // The kill switch is not a connection. It rendered as an ACTIVE tile
-            // reading "Working\u2026", which claims a working VPN while every packet
-            // on the device is being dropped. INACTIVE + the truth.
-            is VpnState.KillSwitchActive -> {
-                tile.state = Tile.STATE_INACTIVE
-                tile.label = "BirdoVPN"
-                tile.subtitle = "Traffic blocked"
-                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
-            }
-            else -> {
-                // Authenticating, StealthConnecting, Reconnecting
-                tile.state = Tile.STATE_ACTIVE
-                tile.label = "BirdoVPN"
-                tile.subtitle = "Working\u2026"
-                tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
-            }
-        }
-
+        val model = tileModel(
+            state = vpnManager.state.value,
+            killSwitchActive = BirdoVpnService.killSwitchActive,
+            serverLabel = vpnManager.connectedServer.value,
+            // The shade is readable from a LOCKED device and had no opt-out:
+            // gate the server name on the same preference that governs the
+            // notification's location line.
+            showLocation = appPreferences.showLocationInNotification,
+        )
+        tile.state = if (model.active) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.label = "BirdoVPN"
+        tile.subtitle = model.serverLabel ?: getString(model.subtitle)
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_vpn_key)
         tile.updateTile()
     }
 

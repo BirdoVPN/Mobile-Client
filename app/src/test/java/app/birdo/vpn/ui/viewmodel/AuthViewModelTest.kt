@@ -69,7 +69,10 @@ class AuthViewModelTest {
      */
     private fun createLoggedOutViewModel(): AuthViewModel {
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
-        return createViewModel()
+        // A stored session whose profile check 401s now puts "Your session has
+        // expired" on Login (A2-004; see `init without valid session sets logged
+        // out`). These tests start from a clean Login screen.
+        return createViewModel().also { it.clearError() }
     }
 
     /**
@@ -122,7 +125,11 @@ class AuthViewModelTest {
         assertFalse(state.isLoggedIn)
         assertFalse(state.isLoading)
         assertNull(state.user)
-        assertNull(state.error)
+        // A2-004: the stored session died, which is not the same as never
+        // having one. Login says so, and the nav graph hands the flag to the
+        // VPN so a tunnel from that session is not left up unexplained.
+        assertTrue(state.sessionExpired)
+        assertEquals("Your session has expired. Sign in again.", state.error)
     }
 
     @Test

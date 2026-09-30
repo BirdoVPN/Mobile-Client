@@ -1,6 +1,7 @@
 package app.birdo.vpn.service
 
 import android.net.VpnService
+import android.os.SystemClock
 import android.util.Log
 import app.birdo.vpn.utils.FaultReporter
 
@@ -21,14 +22,22 @@ import app.birdo.vpn.utils.FaultReporter
  * @param handle           The wg-go tunnel handle returned by [WgNative.turnOn]
  * @param service          The [VpnService] instance providing [VpnService.protect]
  * @param isAlive          Returns `true` while the tunnel should be monitored
- * @param onUnexpectedExit Called when the monitor decides the tunnel is dead
+ * @param onUnexpectedExit Called when the monitor decides the tunnel is dead;
+ *   the argument is true when the tunnel never completed a handshake at all
+ * @param elapsedRealtime  Monotonic clock that INCLUDES deep sleep
+ * @param uptime           Monotonic clock that EXCLUDES deep sleep
  */
 class TunnelMonitor(
     private val handle: Int,
     private val service: VpnService,
     private val isAlive: () -> Boolean,
-    private val onUnexpectedExit: () -> Unit,
+    private val onUnexpectedExit: (neverHandshook: Boolean) -> Unit,
+    private val elapsedRealtime: () -> Long = { SystemClock.elapsedRealtime() },
+    private val uptime: () -> Long = { SystemClock.uptimeMillis() },
 ) {
+    /** What one stall check concluded; see [verdict]. */
+    enum class Verdict { ALIVE, SKIPPED_AFTER_SUSPEND, NEVER_HANDSHOOK, STALLED }
+
     companion object {
         private const val TAG = "TunnelMonitor"
         /**
@@ -61,6 +70,33 @@ class TunnelMonitor(
          * handle. Capped to avoid blocking the caller if a native call stalls.
          */
         private const val STOP_JOIN_TIMEOUT_MS = 2_000L
+
+        /**
+         * Deep sleep between two checks longer than this makes the next stall
+         * verdict untrustworthy. Thread.sleep counts awake time only, so after
+         * a phone slept for minutes the first check lands on a handshake that
+         * is old only because the CPU was off — wg-go re-handshakes on the
+         * next packet it sends, which it has not had the chance to do yet.
+         */
+        internal const val SUSPEND_GAP_MS = 10_000L
+
+        /**
+         * The stall decision, pure. [suspendedMs] is how long the device was in
+         * deep sleep since the previous check ([suspendGap]). After a suspend
+         * the verdict is deferred one cycle so wg-go gets its handshake round
+         * before anything is declared dead (A1-017): the old check condemned a
+         * perfectly good tunnel on every long screen-off.
+         */
+        internal fun verdict(handshakeAgeSec: Long?, suspendedMs: Long): Verdict = when {
+            suspendedMs > SUSPEND_GAP_MS -> Verdict.SKIPPED_AFTER_SUSPEND
+            handshakeAgeSec == null -> Verdict.NEVER_HANDSHOOK
+            handshakeAgeSec > STALL_THRESHOLD_SEC -> Verdict.STALLED
+            else -> Verdict.ALIVE
+        }
+
+        /** Deep-sleep time between two readings: elapsed time minus awake time. */
+        internal fun suspendGap(prevElapsed: Long, prevUptime: Long, nowElapsed: Long, nowUptime: Long): Long =
+            ((nowElapsed - prevElapsed) - (nowUptime - prevUptime)).coerceAtLeast(0L)
     }
 
     private var thread: Thread? = null
@@ -80,10 +116,18 @@ class TunnelMonitor(
     fun start() {
         thread = Thread({
             Log.i(TAG, "Tunnel monitor started for handle=$handle")
-            val startTime = System.currentTimeMillis()
+            val startTime = elapsedRealtime()
+            var lastElapsed = startTime
+            var lastUptime = uptime()
+            var neverHandshook = false
             try {
                 while (!stopped && isAlive() && !Thread.currentThread().isInterrupted) {
                     Thread.sleep(CHECK_INTERVAL_MS)
+                    val nowElapsed = elapsedRealtime()
+                    val nowUptime = uptime()
+                    val suspendedMs = suspendGap(lastElapsed, lastUptime, nowElapsed, nowUptime)
+                    lastElapsed = nowElapsed
+                    lastUptime = nowUptime
                     try {
                         val v4 = WgNative.getSocketV4(handle)
                         if (v4 >= 0) service.protect(v4)
@@ -105,21 +149,28 @@ class TunnelMonitor(
                     }
 
                     // Handshake-stall detection (after grace period)
-                    if (WgNative.canReadConfig() && System.currentTimeMillis() - startTime > STALL_GRACE_MS) {
-                        val ageSec = lastHandshakeAgeSeconds()
+                    if (WgNative.canReadConfig() && nowElapsed - startTime > STALL_GRACE_MS) {
                         // Stalls are breadcrumbs, not events: usually the
                         // network, not the client. onUnexpectedExit publishes
                         // the Error; these record WHICH stall it was.
-                        if (ageSec == null) {
-                            Log.w(TAG, "Tunnel stalled — no WireGuard handshake after grace period")
-                            FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall: no handshake after grace period")
-                            break
-                        }
-                        if (ageSec > STALL_THRESHOLD_SEC) {
-                            Log.w(TAG, "Tunnel stalled — last handshake ${ageSec}s ago, declaring dead")
-                            FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall: last handshake older than threshold")
-                            // Break out so onUnexpectedExit fires below
-                            break
+                        when (verdict(lastHandshakeAgeSeconds(), suspendedMs)) {
+                            Verdict.ALIVE -> Unit
+                            Verdict.SKIPPED_AFTER_SUSPEND -> {
+                                Log.i(TAG, "Device was suspended ${suspendedMs}ms — deferring the stall check one cycle")
+                                FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall check deferred after a suspend")
+                            }
+                            Verdict.NEVER_HANDSHOOK -> {
+                                Log.w(TAG, "Tunnel stalled — no WireGuard handshake after grace period")
+                                FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall: no handshake after grace period")
+                                neverHandshook = true
+                                break
+                            }
+                            Verdict.STALLED -> {
+                                Log.w(TAG, "Tunnel stalled — last handshake older than ${STALL_THRESHOLD_SEC}s, declaring dead")
+                                FaultReporter.trail(FaultReporter.PATH_TUNNEL, "stall: last handshake older than threshold")
+                                // Break out so onUnexpectedExit fires below
+                                break
+                            }
                         }
                     }
                 }
@@ -128,7 +179,7 @@ class TunnelMonitor(
             }
             if (!stopped && isAlive()) {
                 Log.w(TAG, "Tunnel monitor exited while connected — triggering kill switch")
-                onUnexpectedExit()
+                onUnexpectedExit(neverHandshook)
             }
             Log.i(TAG, "Tunnel monitor exiting")
         }, "birdo-tunnel-monitor").apply { isDaemon = true; start() }

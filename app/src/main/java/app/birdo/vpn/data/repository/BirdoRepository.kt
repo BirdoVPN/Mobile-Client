@@ -95,7 +95,22 @@ class BirdoRepository @Inject constructor(
          * instead of restating 15_000 and quietly drifting from it.
          */
         internal const val LOGOUT_SERVER_CALL_TIMEOUT_MS = 15_000L
+
+        /**
+         * [sendHeartbeat] with no key id to beat for. Distinct from a transport
+         * failure (code 0): VpnManager treats it as the invariant failure it
+         * is — a Connected session the backend is about to reap — rather than
+         * looping on it silently (A1-005).
+         */
+        const val CODE_NO_ACTIVE_KEY = -1
     }
+
+    /**
+     * Guards the stored WireGuard key id. A connect writes it and a disconnect
+     * clears it, from different coroutines; without the lock a Disconnect's
+     * late DELETE cleared the id the NEXT session had just stored (A1-005).
+     */
+    private val keyIdLock = Any()
 
     fun invalidateServerCache() {
         cachedServers = null
@@ -704,11 +719,13 @@ class BirdoRepository @Inject constructor(
             }
             if (result is ApiResult.Success) {
                 val body = result.data
-                body.keyId?.let { tokenManager.setLastKeyId(it) }
                 // FIX-1-1: Store locally generated private key instead of server-provided one.
                 // The server no longer returns privateKey when clientPublicKey was sent.
                 val localPrivateKey = String(privateKeyChars)
-                tokenManager.setWireGuardPrivateKey(localPrivateKey)
+                synchronized(keyIdLock) {
+                    body.keyId?.let { tokenManager.setLastKeyId(it) }
+                    tokenManager.setWireGuardPrivateKey(localPrivateKey)
+                }
                 // Inject the locally-generated private key into the response so
                 // VpnManager and BirdoVpnService can build the WireGuard config.
                 // The server intentionally omits privateKey when clientPublicKey was sent.
@@ -722,24 +739,37 @@ class BirdoRepository @Inject constructor(
         }
     }
 
-    suspend fun disconnectVpn(): ApiResult<Unit> {
-        val keyId = tokenManager.getLastKeyId()
+    /**
+     * Release a WireGuard peer server-side.
+     *
+     * @param keyId the session to release. VpnManager names the key of the
+     *   session it started; null falls back to the stored id (a session from a
+     *   previous process).
+     */
+    suspend fun disconnectVpn(keyId: String? = null): ApiResult<Unit> {
+        val target = keyId ?: tokenManager.getLastKeyId()
         var serverResult: ApiResult<Unit> = ApiResult.Success(Unit)
-        if (keyId != null) {
+        if (target != null) {
             // Through withAutoRefresh, NOT a bare api.disconnect(): access tokens
             // live one hour, so the ordinary end-of-session disconnect presented
             // an expired token, got a silent 401, and left the WireGuard peer
             // provisioned server-side — consuming a plan connection slot while
             // the UI reported a clean disconnect. Same class as the logout() fix.
-            serverResult = withAutoRefresh("Disconnect failed") { api.disconnect(keyId) }
+            serverResult = withAutoRefresh("Disconnect failed") { api.disconnect(target) }
         }
-        // Local teardown is authoritative: clear the key id unconditionally so
-        // heartbeats stop carrying a stale keyId even if the server call failed
-        // (the server reaps orphaned peers on missed heartbeats).
-        tokenManager.clearLastKeyId()
-        // FIX-1-8: Clear WG private key from storage after disconnect.
-        // Fresh keys are generated on each new connection.
-        tokenManager.clearWireGuardPrivateKey()
+        // Local teardown is authoritative, but only for THIS key: clear the
+        // stored id whether or not the server call succeeded (the server reaps
+        // orphaned peers on missed heartbeats) — unless a newer connect stored
+        // its own id while the DELETE was in flight. Clearing that one stopped
+        // the new session's heartbeats and got its live peer reaped (A1-005).
+        synchronized(keyIdLock) {
+            if (target == null || tokenManager.getLastKeyId() == target) {
+                tokenManager.clearLastKeyId()
+                // FIX-1-8: Clear WG private key from storage after disconnect.
+                // Fresh keys are generated on each new connection.
+                tokenManager.clearWireGuardPrivateKey()
+            }
+        }
         return serverResult
     }
 
@@ -747,10 +777,11 @@ class BirdoRepository @Inject constructor(
      * FIX-2-10: Send heartbeat to backend to report connection health.
      * P1-9: Returns HeartbeatResponse so callers can act on valid/serverOnline.
      */
-    suspend fun sendHeartbeat(): ApiResult<HeartbeatResponse> {
-        val keyId = tokenManager.getLastKeyId() ?: return ApiResult.Error("No active key ID")
+    suspend fun sendHeartbeat(keyId: String? = null): ApiResult<HeartbeatResponse> {
+        val target = keyId ?: tokenManager.getLastKeyId()
+            ?: return ApiResult.Error("No active key ID", CODE_NO_ACTIVE_KEY)
         return withAutoRefresh("Heartbeat failed") {
-            api.heartbeat(keyId)
+            api.heartbeat(target)
         }
     }
 
@@ -828,9 +859,11 @@ class BirdoRepository @Inject constructor(
             }
             if (result is ApiResult.Success) {
                 val body = result.data
-                body.keyId?.let { tokenManager.setLastKeyId(it) }
                 val localPrivateKey = String(privateKeyChars)
-                tokenManager.setWireGuardPrivateKey(localPrivateKey)
+                synchronized(keyIdLock) {
+                    body.keyId?.let { tokenManager.setLastKeyId(it) }
+                    tokenManager.setWireGuardPrivateKey(localPrivateKey)
+                }
                 return ApiResult.Success(body.copy(privateKey = localPrivateKey))
             }
             return result
