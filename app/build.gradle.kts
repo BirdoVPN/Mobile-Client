@@ -116,6 +116,12 @@ val allowMissingSentryDsn = ((project.findProperty("allowMissingSentryDsn") as S
 val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.getenv("BIRDO_PLAY_BUILD"))
     ?.toBoolean() ?: false
 
+// Play external-offers (link-out) flag. Documented at its buildConfigField in
+// defaultConfig; resolved HERE, at the top level, because the release gate
+// validatePlayExternalOffers (below) has to read the same value.
+val playExternalOffers = (project.findProperty("playExternalOffers") as String?)
+    ?.toBoolean() ?: false
+
 // Store-screenshot capture flag. When a DEBUG build is assembled with
 // -PallowScreenshots=true, MainActivity skips FLAG_SECURE so the Play Store
 // listing screenshots can be captured on an emulator/device. It is double-gated
@@ -250,8 +256,10 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
         // and only AFTER enrolment is confirmed in the Play Console. Being a
         // Play build must never by itself be enough to make the app steer.
         // See birdo-web/docs/PLAY-LINK-OUT-BILLING.md.
-        val playExternalOffers = (project.findProperty("playExternalOffers") as String?)
-            ?.toBoolean() ?: false
+        //
+        // Enrolment is NOT enough either, today: a Play RELEASE with this flag
+        // on is refused by :app:validatePlayExternalOffers until the link-out
+        // path is finished (audit A-32).
         buildConfigField("boolean", "PLAY_EXTERNAL_OFFERS", "$playExternalOffers")
     }
 
@@ -563,6 +571,43 @@ val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfi
             throw GradleException(
                 "BIRDO_SIGNING_CERT_FINGERPRINT is required for release builds. " +
                     "Use a comma-separated allow-list for Play and sideload certificates."
+            )
+        }
+    }
+}
+
+// ── Release gate: no Play release may link out to an external checkout ──────
+//
+// Audit 2026-09-29 A-32 (RM9). PLAY_EXTERNAL_OFFERS switches on the Play
+// link-out path in BirdoNavGraph / BirdoBillingChoiceSheet, and that path is
+// INCOMPLETE: none of Play's External Offers APIs (isExternalOfferAvailable,
+// the information dialog, the reporting details) are called, and the backend
+// has no 24-hour external-transaction report. A Play build that steers without
+// them breaks the Payments policy even for an enrolled developer, and a
+// removed app does not get its package name back.
+//
+// Until now the only protection was the flag's default (BillingPolicyGateTest);
+// nothing stopped `bundleRelease -PplayBuild=true -PplayExternalOffers=true`.
+// So the combination is refused here, on preReleaseBuild, like the other
+// release gates. Scope, deliberately narrow:
+//   • Play RELEASE only (isPlayBuild AND a release variant). Debug builds never
+//     reach preReleaseBuild, and the sideload/F-Droid APK (isPlayBuild=false)
+//     links to the web checkout already and ignores the flag
+//     (externalOffersAllowed = IS_PLAY_BUILD && PLAY_EXTERNAL_OFFERS).
+//   • No override property. When the path is complete (client APIs + backend
+//     reporting + Play Console enrolment), delete this gate in the same PR.
+val validatePlayExternalOffers = tasks.register("validatePlayExternalOffers") {
+    group = "verification"
+    description = "Fails a Play release build that has the unfinished external-offers path switched on."
+
+    doLast {
+        if (isPlayBuild && playExternalOffers) {
+            throw GradleException(
+                "Refusing to build a Google Play RELEASE with -PplayExternalOffers=true.\n" +
+                    "The Play link-out path is incomplete (audit A-32): no External Offers " +
+                    "client APIs and no 24-hour external-transaction reporting. Shipping it " +
+                    "breaks Play's Payments policy. Build the Play AAB without " +
+                    "-PplayExternalOffers. See birdo-web/docs/PLAY-LINK-OUT-BILLING.md."
             )
         }
     }
@@ -987,15 +1032,21 @@ afterEvaluate {
 
     // Every release-build gate hangs off this ONE task. `findByName(...)?.` used
     // to swallow a rename: if AGP ever stopped creating preReleaseBuild the
-    // safe-call would silently detach all three gates and the build would stay
+    // safe-call would silently detach every gate and the build would stay
     // green with the checks gone — the exact failure mode #357 documents.
     // Fail instead, so a toolchain change surfaces as a build error.
     val preRelease = tasks.findByName("preReleaseBuild") ?: throw GradleException(
         "AGP no longer creates :app:preReleaseBuild, so the release gates " +
-            "(validateReleaseSecurityConfig, validateSentryDsn, buildRustLibs) are " +
-            "wired to nothing. Re-point them at the replacement task before shipping."
+            "(validateReleaseSecurityConfig, validateSentryDsn, validatePlayExternalOffers, " +
+            "buildRustLibs) are wired to nothing. Re-point them at the replacement task " +
+            "before shipping."
     )
-    preRelease.dependsOn(validateReleaseSecurityConfig, buildRustLibs, validateSentryDsn)
+    preRelease.dependsOn(
+        validateReleaseSecurityConfig,
+        buildRustLibs,
+        validateSentryDsn,
+        validatePlayExternalOffers,
+    )
 }
 
 dependencies {

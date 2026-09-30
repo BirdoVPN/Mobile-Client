@@ -22,7 +22,7 @@
 | DSN resolution (`-PsentryDsn` > `local.properties` > env) | `app/build.gradle.kts` | wired |
 | Release build **fails** without a usable DSN | `app/build.gradle.kts` → `:app:validateSentryDsn` | wired |
 | CI passes the secret to the release job | `.github/workflows/android.yml` → job `release` | wired |
-| Runtime init | `app/src/main/java/app/birdo/vpn/BirdoApp.kt` → `initSentry()` | wired |
+| Runtime init — **opt-in only** (consent screen / Settings toggle) | `app/src/main/java/app/birdo/vpn/BirdoApp.kt` → `applyCrashReportingConsent()` → `initSentry()` | wired |
 | PII scrubbing / no performance data / no replay | same file | wired |
 | Sentry calls survive R8 | `app/proguard-rules.pro` | verified |
 | The DSN value itself | Sentry.io | **YOURS — Steps 1–3** |
@@ -271,7 +271,43 @@ To automate it later you would need:
 
 ## 7. Privacy posture — what Sentry is and is not allowed to send
 
-Birdo's privacy policy states no connection logs are kept. A crash reporter that
+**Crash reporting is OPT-IN (audit 2026-09-29, P1-6 / C-3 / D-12).** Until
+1.4.31 the SDK started in `Application.onCreate` for every release build, with
+release-health sessions on, before the consent screen was drawn and with no
+opt-out. Now:
+
+- **Off by default.** `AppPreferences.crashReportsEnabled` defaults to `false`.
+  The consent screen shows an unticked switch; Settings → Privacy → *Send Crash
+  Reports* changes it later. Upgraded installs start OFF too.
+- **One gate.** `BirdoApp.applyCrashReportingConsent()` is the only path to
+  `SentryAndroid.init`, and it runs only when the user opted in (and the build
+  is a release with a DSN). Turning it off calls `Sentry.close()` and deletes
+  the unsent queue under `cacheDir/sentry` (`CrashReporting.discardUnsentReports`),
+  which also clears anything a pre-1.4.32 build left there.
+- **Not retroactive.** On its first start the SDK reads the most recent ANR
+  back from the OS; `beforeSend` drops any event older than the opt-in moment
+  (`crashReportsEnabledSince`).
+- **No sessions.** `isEnableAutoSessionTracking = false`.
+- **Crash AND error reports.** Besides crashes and ANRs, `FaultReporter` sends a
+  non-fatal event when a data-plane feature fails (connect, kill switch,
+  stealth, PQ, DNS, integrity), tagged `birdo.path` / `birdo.fault`. The
+  consent screen, Settings, F-Droid and the README disclose this as "crash and
+  error reports" (second-pass #7, option A). Never describe the reports as
+  "crash details only".
+- **Contexts from an allow-list.** `beforeSend` rebuilds device/OS/app contexts
+  to device model + architecture, OS name + version and app id/version/build
+  (`CrashReporting.minimiseContexts`); the per-install id, device-app hash,
+  locale, timezone and hardware figures are dropped. System-event and
+  connectivity breadcrumbs, root checks and the "additional context" collector
+  are off.
+- The DSN requirement for release builds (`:app:validateSentryDsn`) is
+  unchanged: an opted-in user must actually be able to report.
+
+Pinned by `CrashReportingTest`, `CrashReportingOptInWiringTest` and
+`PrivacyBoundaryTest`.
+
+
+Birdo's privacy policy states that no activity logs are kept. A crash reporter that
 exports a destination host or a tunnel address contradicts that policy exactly
 as a server-side log line would, and this estate has already had one incident of
 that class (ufw logging customer destinations). So the configuration in

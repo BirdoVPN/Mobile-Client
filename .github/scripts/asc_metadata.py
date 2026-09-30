@@ -54,6 +54,14 @@ Privacy Policy: https://birdo.app/privacy
 Birdo Terms of Service: https://birdo.app/terms
 """
 
+# Audit 2026-09-29 (D-5 / B-15): the previous answers told App Review that
+# account data was stored "on servers under our control in the United
+# Kingdom" (it is hosted by Hetzner in Germany), that "No VPN usage data is
+# shared ... with any third party" (Cloudflare resolves DNS by default and
+# fronts the API), and described the collected data as far narrower than the
+# account system's live connection record. Every sentence below follows
+# AUDIT-2026-09-29/REMEDIATION-DECISIONS.md sections 1-3; change it only with
+# that file.
 VPN_ANSWERS = """
 VPN FUNCTIONALITY - ANSWERS TO APP REVIEW'S QUESTIONS
 
@@ -62,35 +70,67 @@ NetworkExtension packet-tunnel-provider.
 
 1) What user information is the app collecting using the VPN?
 
-None of the user's traffic or browsing data. The tunnel carries traffic without
-inspection, logging or storage: no browsing history, no DNS queries, no traffic
-content, and no logs of visited destinations. Only operational account data is
-processed:
-  - the account identifier
-  - the subscription tier
-  - a connection liveness heartbeat, which carries only the connection key ID
-  - aggregate byte counters, used to enforce the free tier's monthly allowance
+Our VPN servers do not record the sites or addresses a user connects to, their
+DNS queries, their traffic content, or a connection log. While a device is
+connected, the VPN server holds that device's WireGuard public key and tunnel
+IP address in memory.
+
+The account system processes:
+  - the account identifier: an email address, or an anonymous account number
+  - the plan, and the devices the user adds
+  - while a device is connected, a live connection record (account, server,
+    device name, tunnel IP, connect time, last check-in). It is deleted when
+    the user disconnects, or within 15 minutes of the last check-in, and is
+    left out of our nightly backups. Our daily encrypted copy of the database
+    files (kept 7 days, used for point-in-time recovery) can contain it as it
+    stood at that moment
+  - data-usage totals per billing period, to enforce the free plan's 10 GB
+    allowance and fair use
+  - App Store transactions, to grant the subscription that was bought
+Every request the app makes to our API, including the periodic check-in,
+arrives from the device's current IP address. The address is used transiently
+for rate limiting (at most 15 minutes, or 24 hours for a security lockout) and
+is not written to request logs. Sign-in security records keep only a salted
+hash of the IP address, for 90 days.
 
 2) For what purposes are you collecting this information?
 
 Solely to operate the service: authenticating the account, applying plan and
-device limits, enforcing the free tier's data allowance, balancing load across
-servers, and detecting abuse. It is never used for advertising, profiling or
-behavioural analytics, and it is never used to build a profile of a user's
-activity.
+device limits, enforcing the free plan's data allowance, and detecting abuse.
+It is never used for advertising, profiling or behavioural analytics. The iOS
+and macOS apps contain no advertising, analytics or crash-reporting SDK.
 
 3) Will the data be shared with any third parties?
 
-No. No VPN usage data is shared, sold or disclosed to any third party. Payments
-for in-app purchases are processed by Apple; web subscriptions are processed by
-a card processor acting as merchant of record. No VPN usage data is shared with
-either - they receive only what is needed to take payment.
+We do not sell user data or share it for advertising. Service providers
+process it on our behalf to run the service: Hetzner hosts the account system,
+Vultr hosts the VPN servers, and Cloudflare provides the API's network edge
+and, unless the user sets their own DNS, resolves the DNS queries sent through
+the VPN (it sees the VPN server's address, not the user's). Apple processes
+in-app purchases; web subscriptions are sold by Polar.sh as merchant of record.
 
-Server infrastructure is operated by Birdo Networks Ltd on rented hardware.
-Account data is stored on servers under our control in the United Kingdom.
+Birdo Networks Ltd operates the service on rented servers. The account
+database is hosted by Hetzner in Germany (EU); encrypted backups are kept in
+Cloudflare R2 object storage.
 
 Privacy policy: https://birdo.app/privacy
 """
+
+# Sentences from earlier versions of VPN_ANSWERS that are known to be false.
+# apply mode never rewrites notes that already carry VPN answers (see
+# handle()), so a store that still holds the old block would otherwise be
+# reported as fine. These make that loud instead.
+STALE_VPN_ANSWER_PHRASES = (
+    "in the United Kingdom",
+    "No VPN usage data is shared",
+    "servers under our control",
+    "never included in backups",
+    # Second-pass #6: only the point-in-time-recovery bucket is documented as
+    # EU-jurisdiction; the nightly-dump bucket's is unconfirmed.
+    "Cloudflare R2 in the EU",
+    "RAM-only",
+    "zero-logs",
+)
 
 # App Store Connect refuses edits to a version the review team holds.
 EDITABLE = {
@@ -220,6 +260,13 @@ def handle(asc: Asc, app, want_platform: str, mode: str) -> None:
             )
         )
         print(f"  [{vs}] review notes: {len(notes)} chars, VPN answers present = {has}")
+        stale = [phrase for phrase in STALE_VPN_ANSWER_PHRASES if phrase in notes]
+        if stale:
+            # Never rewritten automatically: the notes may have been edited by
+            # hand since, and a blind replace could destroy that. The owner
+            # replaces the old block with VPN_ANSWERS in App Store Connect.
+            print(f"  [{vs}] !! STALE VPN ANSWERS in the review notes: {stale}")
+            print(f"  [{vs}] !! Replace the old answers block with VPN_ANSWERS by hand in App Store Connect.")
         if mode == "read":
             print("  ----- CURRENT REVIEW NOTES -----")
             for line in notes.splitlines():

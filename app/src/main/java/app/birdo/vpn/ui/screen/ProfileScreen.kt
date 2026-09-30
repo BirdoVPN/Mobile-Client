@@ -67,6 +67,8 @@ import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
+import app.birdo.vpn.billing.PlaySubscriptionLinks
+import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
@@ -104,6 +106,10 @@ fun ProfileScreen(
     isDeletingAccount: Boolean = false,
     deleteAccountError: String? = null,
     onClearDeleteError: () -> Unit = {},
+    // Second-pass #9: fetched when the deletion dialog opens (null while
+    // loading or after a failure, when the dialog keeps its static warning).
+    deletionPreflight: DeletionPreflightResponse? = null,
+    onDeleteDialogOpened: () -> Unit = {},
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering). See IS_PLAY_BUILD.
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
@@ -176,7 +182,10 @@ fun ProfileScreen(
             icon = Icons.Default.DeleteForever,
             title = stringResource(R.string.settings_delete_account),
             subtitle = null,
-            onClick = { showDeleteDialog = true },
+            onClick = {
+                showDeleteDialog = true
+                onDeleteDialogOpened()
+            },
             destructive = true,
         )
 
@@ -185,11 +194,15 @@ fun ProfileScreen(
 
     if (showDeleteDialog) {
         DeleteAccountDialog(
+            // Deleting the account cannot cancel a Play subscription; the
+            // dialog says so and links to where it can be cancelled.
+            onManageStoreSubscription = { onOpenUrl(PlaySubscriptionLinks.MANAGE) },
             // SSO and password-less anonymous accounts have no password to
             // confirm. The backend already accepts a password-less delete from
             // them (GDPR Art. 17); it was this dialog that trapped them, by
             // keeping Delete disabled until a non-blank password was typed.
             requiresPassword = user?.hasPassword ?: true,
+            preflight = deletionPreflight,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
             onConfirm = { password -> onDeleteAccount(password) },
@@ -635,10 +648,12 @@ private fun formatRenewalDate(raw: String?): String? {
 @Composable
 private fun DeleteAccountDialog(
     requiresPassword: Boolean,
+    preflight: DeletionPreflightResponse?,
     isDeletingAccount: Boolean,
     error: String?,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
+    onManageStoreSubscription: () -> Unit,
 ) {
     var password by remember { mutableStateOf("") }
 
@@ -654,7 +669,9 @@ private fun DeleteAccountDialog(
             }
         },
         text = {
-            Column {
+            // Scrolls: the store warning below makes this taller than a small
+            // phone's dialog once the password field and keyboard are up.
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     stringResource(
                         if (requiresPassword) R.string.delete_dialog_message
@@ -663,6 +680,54 @@ private fun DeleteAccountDialog(
                     style = MaterialTheme.typography.bodyMedium,
                     color = BirdoWhite60,
                 )
+                // Audit 2026-09-29, A-8 / C-9: this dialog used to say the
+                // "subscription will be deleted". A Play or App Store
+                // subscription is not — only the store can cancel it — so the
+                // user is told BEFORE confirming, with the way to cancel it.
+                Spacer(Modifier.height(12.dp))
+                // Second-pass #9: when the preflight has answered and names
+                // store subscriptions that will keep billing, say which ones
+                // BEFORE the confirm button. Loading, failed, or none named:
+                // the static warning, which is true either way. Deletion is
+                // never gated on the preflight.
+                val stillBilling = preflight?.storeSubscriptionsStillBilling.orEmpty()
+                if (stillBilling.isNotEmpty()) {
+                    val stores = stillBilling.map { sub ->
+                        when {
+                            sub.isGooglePlay -> stringResource(R.string.store_still_billing_google_play)
+                            sub.isAppStore -> stringResource(R.string.store_still_billing_app_store)
+                            else -> stringResource(R.string.store_still_billing_unknown_store)
+                        }
+                    }.distinct().joinToString("; ")
+                    Text(
+                        stringResource(R.string.delete_dialog_preflight_store, stores),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoRed,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                } else {
+                    Text(
+                        stringResource(R.string.delete_dialog_store_warning),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (preflight?.webSubscriptionWillBeCancelled == true) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(R.string.delete_dialog_preflight_web),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                    )
+                }
+                TextButton(
+                    onClick = onManageStoreSubscription,
+                    enabled = !isDeletingAccount,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                ) {
+                    Text(stringResource(R.string.delete_dialog_manage_play), color = BirdoGreen)
+                }
                 if (requiresPassword) {
                     Spacer(Modifier.height(16.dp))
                     OutlinedTextField(

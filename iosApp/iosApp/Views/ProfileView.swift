@@ -88,6 +88,9 @@ struct ProfileView: View {
                         destructive: true
                     ) {
                         showDeleteDialog = true
+                        // Second-pass #9: name the stores still billing before
+                        // the user confirms. Never gates the deletion.
+                        authVM.loadDeletionPreflight()
                     }
                 }
 
@@ -150,7 +153,9 @@ struct ProfileView: View {
                     }
                 }
 
-                Text("An account is what lets the server create your private "
+                // D-19: the private key is generated on this device, never by
+                // the server — the server registers the public half.
+                Text("An account is what lets the server register this device's "
                      + "WireGuard key and hold a connection slot. Settings, VPN "
                      + "settings, the locations list and the policies below all "
                      + "work without one.")
@@ -391,9 +396,14 @@ struct ProfileView: View {
     private var deleteDialog: some View {
         BirdoConfirmDialog(
             title: "Delete Account",
+            // Audit 2026-09-29, A-8 / C-9: this used to say the "subscription
+            // will be deleted". An App Store subscription is not — only Apple
+            // can cancel it — so the warning below says so BEFORE confirming.
+            // The retention sentence is the desktop and Android dialogs'
+            // (REMEDIATION-DECISIONS §3, unified erasure; second-pass #19).
             message: requiresPassword
-                ? "This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted. Enter your password to confirm."
-                : "This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted.",
+                ? "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax. Enter your password to confirm."
+                : "This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax.",
             icon: "exclamationmark.triangle.fill",
             iconColor: BirdoTheme.red,
             confirmLabel: "Delete My Account",
@@ -404,6 +414,33 @@ struct ProfileView: View {
             onCancel: dismissDeleteDialog
         ) {
             VStack(spacing: 0) {
+                VStack(spacing: 6) {
+                    // Second-pass #9: the preflight's named stores when it has
+                    // answered with some; otherwise (loading, failed, none)
+                    // the static warning, which is true either way.
+                    Text(authVM.deletionPreflightStoreWarning
+                         ?? "A subscription billed by Birdo is cancelled with your account. One bought through the App Store or Google Play is not: cancel it there first, or the store will keep charging you.")
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.onSurface)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if authVM.deletionPreflight?.webWillBeCancelled == true {
+                        Text("Your subscription billed by Birdo will be cancelled with your account.")
+                            .font(BirdoTheme.Fonts.bodySmall)
+                            .foregroundStyle(BirdoTheme.onSurface)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button("Manage App Store subscription") {
+                        SystemOpen.manageSubscriptions()
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(BirdoTheme.accent)
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 44) // touch target
+                    .disabled(authVM.isDeleting)
+                }
+                .padding(.bottom, 12)
                 if requiresPassword {
                     BirdoTextField("Password",
                                    placeholder: "Password",

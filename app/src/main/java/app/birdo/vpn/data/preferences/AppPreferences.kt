@@ -44,6 +44,64 @@ class AppPreferences @Inject constructor(
         get() = prefs.getLong(KEY_PRIVACY_TIMESTAMP, 0L)
         set(value) = prefs.edit { putLong(KEY_PRIVACY_TIMESTAMP, value) }
 
+    /** Version of the consent screen the user last accepted; 0 = before versioning. */
+    var acceptedConsentVersion: Int
+        get() = prefs.getInt(KEY_CONSENT_VERSION, 0)
+        set(value) = prefs.edit { putInt(KEY_CONSENT_VERSION, value) }
+
+    /**
+     * True when the user accepted THIS version of the consent screen.
+     *
+     * An acceptance of an older version does not count. Version 1 (every build
+     * up to 1.4.31) described "RAM-only volatile infrastructure" and "no
+     * connection timestamps or IP addresses logged", asked for the privacy
+     * policy only, never mentioned the Terms or the minimum age, and had no
+     * crash-report choice. Users who accepted that text are shown the corrected
+     * screen once, and make the crash-report choice for themselves (audit
+     * 2026-09-29, P0-1 / B-1 / B-13 / P1-6).
+     */
+    val hasAcceptedCurrentConsent: Boolean
+        get() = hasAcceptedPrivacyPolicy && acceptedConsentVersion >= CURRENT_CONSENT_VERSION
+
+    // ── Crash reports (Sentry) — OPT-IN ──────────────────────────
+    /**
+     * Whether the user has chosen to send crash reports. OFF by default, and
+     * nothing turns it on except the user: the toggle on the consent screen or
+     * the one in Settings. BirdoApp.applyCrashReportingConsent() starts the SDK
+     * only while this is true and closes it the moment it is false.
+     *
+     * Until 1.4.31 Sentry started in Application.onCreate for every release
+     * build, with release-health sessions on, before the consent screen was
+     * even drawn and with no way to turn it off (audit 2026-09-29, P1-6 / C-3 /
+     * D-12). Defaulting this to false is what makes an upgraded install go
+     * quiet until its owner says otherwise.
+     *
+     * commit() so a choice made immediately before the SDK starts (or stops) is
+     * durable first. Not HMAC-protected: a forged value can only switch crash
+     * reporting on for the device it is on, which is exactly what the user can
+     * already do from Settings, and a new protected key would force a
+     * signature migration for every installed user.
+     */
+    var crashReportsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_CRASH_REPORTS, false)
+        set(value) {
+            val wasOn = crashReportsEnabled
+            prefs.edit(commit = true) {
+                putBoolean(KEY_CRASH_REPORTS, value)
+                // The moment of opt-in, kept so BirdoApp's beforeSend can drop
+                // anything that HAPPENED before it — the SDK reads historical
+                // ANRs from the OS on its first start, and those predate the
+                // user's consent. Re-affirming an existing opt-in keeps the
+                // original moment; opting out forgets it.
+                if (value && !wasOn) putLong(KEY_CRASH_REPORTS_SINCE, System.currentTimeMillis())
+                if (!value) remove(KEY_CRASH_REPORTS_SINCE)
+            }
+        }
+
+    /** Epoch millis of the current opt-in, or 0 when crash reports are off. */
+    val crashReportsEnabledSince: Long
+        get() = prefs.getLong(KEY_CRASH_REPORTS_SINCE, 0L)
+
     // ── Auto-Connect ─────────────────────────────────────────────
     var autoConnect: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CONNECT, false)
@@ -279,6 +337,17 @@ class AppPreferences @Inject constructor(
         private const val KEY_LAST_SERVER = "last_server_id"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_policy_accepted"
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
+        private const val KEY_CONSENT_VERSION = "privacy_consent_version"
+
+        /**
+         * Bump when the consent screen's statements change materially, so
+         * every existing user sees — and accepts — the new text once.
+         * 2 = the 2026-09-29 audit rewrite (§1.5 wording, Terms + 18+, opt-in
+         * crash reports).
+         */
+        const val CURRENT_CONSENT_VERSION = 2
+        private const val KEY_CRASH_REPORTS = "crash_reports_enabled"
+        private const val KEY_CRASH_REPORTS_SINCE = "crash_reports_enabled_since"
         private const val KEY_LOCAL_NETWORK_SHARING = "local_network_sharing"
         private const val KEY_STEALTH_MODE = "stealth_mode_enabled"
         private const val KEY_DNS_FILTERING_ENABLED = "dns_filtering_enabled"

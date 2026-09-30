@@ -1,1 +1,1 @@
-Fast, private, quantum-resistant VPN
+Private WireGuard VPN with a post-quantum key exchange

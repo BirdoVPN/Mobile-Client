@@ -13,8 +13,9 @@
 repo_url: "https://birdovpn.github.io/Mobile-Client/fdroid/repo"
 repo_name: "BirdoVPN"
 repo_description: >-
-  Official self-hosted F-Droid repository for BirdoVPN — a fast, private,
-  quantum-resistant VPN. Add this repository to your F-Droid client to install
+  Official self-hosted F-Droid repository for BirdoVPN — a private WireGuard
+  VPN with a post-quantum key exchange. Add this repository to your F-Droid
+  client to install
   BirdoVPN and get automatic updates. Every APK here is the same
   developer-signed build published on GitHub Releases.
 repo_icon: "icon.png"

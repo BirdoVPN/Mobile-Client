@@ -65,4 +65,41 @@ class AppPreferencesTest {
         every { store.getBoolean("dns_filtering_enabled", any()) } returns true
         assertTrue(prefs.dnsFilteringEnabled)
     }
+
+    // ── Crash reports: OPT-IN (audit 2026-09-29, P1-6 / C-3) ─────────────
+
+    @Test
+    fun `crash reports are OFF on a device that never chose`() {
+        assertFalse(prefs.crashReportsEnabled)
+        verify(exactly = 1) { store.getBoolean("crash_reports_enabled", false) }
+    }
+
+    @Test
+    fun `opting in is durable and records when it happened`() {
+        val before = System.currentTimeMillis()
+        prefs.crashReportsEnabled = true
+
+        verify(exactly = 1) { editor.putBoolean("crash_reports_enabled", true) }
+        verify(exactly = 1) {
+            editor.putLong("crash_reports_enabled_since", match { it >= before })
+        }
+        verify(exactly = 1) { editor.commit() }
+        verify(exactly = 0) { editor.apply() }
+    }
+
+    @Test
+    fun `re-affirming an existing opt-in keeps the original moment`() {
+        every { store.getBoolean("crash_reports_enabled", any()) } returns true
+        prefs.crashReportsEnabled = true
+        verify(exactly = 0) { editor.putLong("crash_reports_enabled_since", any()) }
+    }
+
+    @Test
+    fun `opting out forgets the opt-in moment`() {
+        every { store.getBoolean("crash_reports_enabled", any()) } returns true
+        prefs.crashReportsEnabled = false
+
+        verify(exactly = 1) { editor.putBoolean("crash_reports_enabled", false) }
+        verify(exactly = 1) { editor.remove("crash_reports_enabled_since") }
+    }
 }

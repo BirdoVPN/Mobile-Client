@@ -150,6 +150,16 @@ data class SubscriptionStatus(
     val bandwidthIsFresh: Boolean? = null,
     val hasPremiumServers: Boolean = false,
     val subscriptionEndsAt: String? = null,
+    /**
+     * Where the plan was bought — the backend resolver's EntitlementSource
+     * ("WEB", "APPLE_APP_STORE", "GOOGLE_PLAY", "FREE_FLOOR"). NOT sent by
+     * `/vpn/stats` today; read when a backend that sends it is live, so the
+     * store paywalls can tell a web or other-store subscriber apart from their
+     * own (audit 2026-09-29, A-9). Absent = unknown.
+     */
+    val source: String? = null,
+    /** Every rail entitling the account right now, when the backend reports them. */
+    val liveSources: List<String>? = null,
 )
 
 // ─── Anonymous Login ─────────────────────────────────────────────────────────
@@ -286,7 +296,48 @@ data class DeleteAccountResponse(
     val message: String? = null,
     val deletedItems: Int = 0,
     val anonymizedItems: Int = 0,
+    /**
+     * App Store / Google Play subscriptions that are STILL BILLING after the
+     * account was erased. Deleting a Birdo account cancels a web (Polar)
+     * subscription, but only Apple or Google can cancel a store one (audit
+     * 2026-09-29, A-8 / C-9), so the server lists them and the app tells the
+     * user where to cancel.
+     *
+     * Optional on the wire: a backend that predates the field omits it, and
+     * coerceInputValues maps an explicit null to the empty default.
+     */
+    val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
 )
+
+/**
+ * `GET /api/v1/gdpr/delete/preflight`: what deleting the account will and will
+ * not stop, fetched when the deletion dialog opens so it can name the stores
+ * BEFORE the user confirms (second-pass #9; backend `DeletionPreflight`).
+ *
+ * Every field defaults: a failed or odd preflight must never block a deletion,
+ * the dialog then shows its static store warning instead.
+ */
+@Serializable
+data class DeletionPreflightResponse(
+    val success: Boolean = false,
+    /** Store subscriptions that will KEEP BILLING after the deletion. */
+    val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
+    /** A web (Polar) subscription is billing and the deletion will cancel it. */
+    val webSubscriptionWillBeCancelled: Boolean = false,
+)
+
+/** One entry of [DeleteAccountResponse.storeSubscriptionsStillBilling]. Every field optional. */
+@Serializable
+data class StoreSubscriptionStillBilling(
+    /** "GOOGLE_PLAY" or "APPLE_APP_STORE" (the backend's EntitlementSource). */
+    val store: String? = null,
+    val productId: String? = null,
+    /** ISO-8601 end of the current paid period, when known. */
+    val expiresAt: String? = null,
+) {
+    val isGooglePlay: Boolean get() = store.equals("GOOGLE_PLAY", ignoreCase = true)
+    val isAppStore: Boolean get() = store.equals("APPLE_APP_STORE", ignoreCase = true)
+}
 
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 

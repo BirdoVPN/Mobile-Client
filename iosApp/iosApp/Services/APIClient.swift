@@ -321,7 +321,12 @@ final class APIClient: @unchecked Sendable {
     /// - Parameter password: the account password, required by the backend for
     ///   accounts that HAVE one. Pass `nil`/empty for SSO and anonymous accounts
     ///   (no hash on file) — the backend skips the check for those.
-    func deleteAccount(password: String?) async throws {
+    /// - Returns: the App Store / Google Play subscriptions the server reports
+    ///   as STILL BILLING after the erasure (audit 2026-09-29, A-8 / C-9):
+    ///   deleting the account cannot cancel them, so the caller tells the user
+    ///   where to. Empty when there are none or the backend predates the field.
+    @discardableResult
+    func deleteAccount(password: String?) async throws -> [StoreSubscriptionStillBilling] {
         // AUDIT-M-DRIFT: there is no `/auth/account` route. Erasure lives on the
         // GDPR controller at `@Controller('api/v1/gdpr')` + `@Delete('delete')`.
         // api.birdo.app proxies to Nest verbatim (no `uri strip_prefix /api` in
@@ -348,7 +353,7 @@ final class APIClient: @unchecked Sendable {
         let body = try encoder.encode(
             DeleteAccountBody(password: (trimmed?.isEmpty ?? true) ? nil : trimmed)
         )
-        _ = try await performRequest(
+        let response = try await performRequest(
             method: "DELETE",
             path: "/api/v1/gdpr/delete",
             body: body,
@@ -361,6 +366,22 @@ final class APIClient: @unchecked Sendable {
         // the NEXT account registered on this handset to the one just erased.
         // Android does the same in `BirdoRepository`'s deletion path.
         resetDeviceIdentity()
+        // Tolerant by design: the erasure has ALREADY happened, so an absent
+        // field, an unexpected shape or an undecodable body must never turn
+        // it into a thrown error. It simply means "nothing to report".
+        return (try? decoder.decode(DeleteAccountResult.self, from: response))?
+            .storeSubscriptionsStillBilling ?? []
+    }
+
+    /// What deleting the account will and will not stop: the App Store /
+    /// Google Play subscriptions that keep billing, and whether a web
+    /// subscription is cancelled (`GET /api/v1/gdpr/delete/preflight`, same
+    /// controller and auth as `deleteAccount`). Read-only. The deletion dialog
+    /// calls it when it opens so it can name the stores BEFORE the user
+    /// confirms (second-pass #9); a throw simply leaves the static warning.
+    func deletionPreflight() async throws -> DeletionPreflight {
+        let data = try await get(path: "/api/v1/gdpr/delete/preflight")
+        return try decoder.decode(DeletionPreflight.self, from: data)
     }
 
     // MARK: - Servers
@@ -1458,6 +1479,13 @@ struct VpnStats: Sendable, Equatable {
     let bandwidthIsFresh: Bool?
     let hasPremiumServers: Bool
     let subscriptionEndsAt: String?
+    /// Where the plan was bought — the backend resolver's EntitlementSource
+    /// ("WEB", "APPLE_APP_STORE", "GOOGLE_PLAY", "FREE_FLOOR"). NOT sent by
+    /// `/vpn/stats` today; read when it is, so the paywall can tell a web or
+    /// Google Play subscriber from an App Store one (audit 2026-09-29, A-9).
+    let source: String?
+    /// Every rail entitling the account right now, when the backend reports them.
+    let liveSources: [String]?
 
     var hasBandwidthCap: Bool { bandwidthLimitGb > 0 }
     var isSovereign: Bool { plan.caseInsensitiveCompare("SOVEREIGN") == .orderedSame }
@@ -1474,7 +1502,7 @@ extension VpnStats: Decodable {
         case plan, status, activeConnections, maxConnections
         case bandwidthLimitGb, bandwidthUsedGb, bandwidthPeriodEnd
         case bandwidthLastSyncAt, bandwidthIsFresh, hasPremiumServers
-        case subscriptionEndsAt
+        case subscriptionEndsAt, source, liveSources
     }
 
     init(from decoder: Decoder) throws {
@@ -1490,6 +1518,10 @@ extension VpnStats: Decodable {
         bandwidthIsFresh = try c.decodeIfPresent(Bool.self, forKey: .bandwidthIsFresh)
         hasPremiumServers = try c.decodeIfPresent(Bool.self, forKey: .hasPremiumServers) ?? false
         subscriptionEndsAt = try c.decodeIfPresent(String.self, forKey: .subscriptionEndsAt)
+        // `try?`: optional, informational fields must never fail the plan
+        // snapshot every gate in the app reads.
+        source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? nil
+        liveSources = (try? c.decodeIfPresent([String].self, forKey: .liveSources)) ?? nil
     }
 }
 
@@ -1558,6 +1590,24 @@ private struct APIErrorBody: Decodable {
     let details: Details?
 }
 
+/// Device class and platform sent in every auth body below.
+///
+/// Audit 2026-09-29, D-18: this one target builds both the iOS app and the Mac
+/// App Store app, and every Mac registered itself as an iPhone ("MOBILE" /
+/// "IOS"), so the device list, support and any per-platform view of devices
+/// were wrong for macOS. The backend already accepts DESKTOP and MACOS in the
+/// same enums (auth.controller.ts DeviceInfoSchema; Prisma DeviceType /
+/// Platform) and uses them for display only. Deliberately NOT changed: the
+/// `Birdo-iOS/...` User-Agent and `X-Desktop-Client: birdo-ios` header,
+/// which the backend's version-floor parser and client detection key on.
+#if os(macOS)
+private let kDeviceTypeWire = "DESKTOP"
+private let kPlatformWire = "MACOS"
+#else
+private let kDeviceTypeWire = "MOBILE"
+private let kPlatformWire = "IOS"
+#endif
+
 /// Resolved device identity attached to every auth call. The full six-field
 /// payload (deviceId/deviceName/deviceType/platform/platformVersion/appVersion)
 /// is flattened into each request body below.
@@ -1573,8 +1623,8 @@ private struct LoginBody: Encodable {
     /// Device attribution — also lets a trusted device skip the 2FA challenge.
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 }
@@ -1589,8 +1639,8 @@ private struct AnonymousLoginBody: Encodable {
     let password: String?
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 }
@@ -1600,8 +1650,8 @@ private struct AnonymousLoginBody: Encodable {
 private struct DeviceInfoBody: Encodable {
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 }
@@ -1620,8 +1670,8 @@ private struct AppleNativeBody: Encodable {
     let nonce: String
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 
@@ -1636,8 +1686,8 @@ private struct SsoExchangeBody: Encodable {
     let codeVerifier: String
     let deviceId: String
     let deviceName: String
-    let deviceType = "MOBILE"
-    let platform = "IOS"
+    let deviceType = kDeviceTypeWire
+    let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
 
@@ -1650,6 +1700,38 @@ private struct SsoExchangeBody: Encodable {
 
 private struct DeleteAccountBody: Encodable {
     let password: String?
+}
+
+/// The part of the `DELETE /api/v1/gdpr/delete` response the app acts on.
+private struct DeleteAccountResult: Decodable {
+    let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
+}
+
+/// A store subscription the server reports as still billing after an account
+/// deletion. Every field optional: the backend field is new, and a missing
+/// value must not hide the warning.
+struct StoreSubscriptionStillBilling: Decodable, Sendable, Equatable {
+    /// "APPLE_APP_STORE" or "GOOGLE_PLAY" (the backend's EntitlementSource).
+    let store: String?
+    let productId: String?
+    /// ISO-8601 end of the current paid period, when known.
+    let expiresAt: String?
+
+    var isAppStore: Bool { store?.uppercased() == "APPLE_APP_STORE" }
+    var isGooglePlay: Bool { store?.uppercased() == "GOOGLE_PLAY" }
+}
+
+/// `GET /api/v1/gdpr/delete/preflight` (backend `DeletionPreflight`, returned
+/// as `{ success, storeSubscriptionsStillBilling, webSubscriptionWillBeCancelled }`).
+/// Every field optional: an absent value means "nothing to name", never an error.
+struct DeletionPreflight: Decodable, Sendable, Equatable {
+    let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
+    let webSubscriptionWillBeCancelled: Bool?
+
+    /// Store subscriptions that will KEEP BILLING after the deletion.
+    var stillBilling: [StoreSubscriptionStillBilling] { storeSubscriptionsStillBilling ?? [] }
+    /// A web (Polar) subscription is billing and the deletion will cancel it.
+    var webWillBeCancelled: Bool { webSubscriptionWillBeCancelled ?? false }
 }
 
 // ConnectBody / MultiHopBody live in ConnectWire.swift: they are the K5 wire

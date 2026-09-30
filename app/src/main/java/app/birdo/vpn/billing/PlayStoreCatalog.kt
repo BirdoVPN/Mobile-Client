@@ -509,3 +509,79 @@ data class StoreNotice(val kind: Kind, val text: String) {
         fun error(text: String) = StoreNotice(Kind.ERROR, text)
     }
 }
+
+// ── Managing a Play subscription ────────────────────────────────────────────
+
+/**
+ * Where a Google Play subscription is cancelled or changed.
+ *
+ * Only Google can cancel a Play subscription: deleting the Birdo account does
+ * not, and neither can Birdo (audit 2026-09-29, A-8 / C-9). Every surface that
+ * has to say so links here.
+ */
+object PlaySubscriptionLinks {
+    /** The Play listing's package, not BuildConfig.APPLICATION_ID (debug builds carry a suffix). */
+    const val PACKAGE_NAME = "app.birdo.vpn"
+
+    /** Play's own subscription manager, scoped to this app. */
+    const val MANAGE = "https://play.google.com/store/account/subscriptions?package=$PACKAGE_NAME"
+}
+
+// ── One subscription per account ────────────────────────────────────────────
+
+/**
+ * Whether this app store may offer to SELL a plan (or change one) to the
+ * signed-in account.
+ *
+ * Audit 2026-09-29, A-9 / A-16: the paywall offered "Subscribe" / "Change plan"
+ * to an account that was already paying on another rail — the website (Polar),
+ * the other app store, or a voucher. Play's replacement flow only knows about
+ * Play-owned purchases, so a web or App Store subscriber tapping "Change plan"
+ * started a SECOND, separate subscription, and the server could only warn them
+ * afterwards that they were now billed twice. A paid plan is managed where it
+ * was bought; this store only sells to an account that is free here, or changes
+ * a plan this store itself sold.
+ *
+ * Pure so it can be unit tested, and mirrored exactly by the iOS
+ * `StorePurchaseGate` in StoreCatalog.swift.
+ */
+object StorePurchaseGate {
+    /** The backend's EntitlementSource values (entitlement-resolver.ts). */
+    const val SOURCE_WEB = "WEB"
+    const val SOURCE_APP_STORE = "APPLE_APP_STORE"
+    const val SOURCE_GOOGLE_PLAY = "GOOGLE_PLAY"
+    const val SOURCE_FREE_FLOOR = "FREE_FLOOR"
+
+    /**
+     * True when the account's paid plan was bought somewhere other than
+     * [thisStore], so this store must not offer a purchase.
+     *
+     * @param plan the server's resolved plan (`/vpn/stats`); RECON is free.
+     * @param source the server's winning entitlement source, when it reports
+     *   one. Optional: `/vpn/stats` does not send it yet.
+     * @param liveSources every rail currently entitling the account, when the
+     *   server reports them. Optional for the same reason.
+     * @param thisStore [SOURCE_GOOGLE_PLAY] or [SOURCE_APP_STORE].
+     * @param thisStoreOwnsSubscription whether this device's store account
+     *   currently owns a Birdo subscription. The fallback when the server says
+     *   nothing about sources: a paid plan this store does not know about was
+     *   bought elsewhere.
+     */
+    fun paidElsewhere(
+        plan: String?,
+        source: String?,
+        liveSources: List<String>?,
+        thisStore: String,
+        thisStoreOwnsSubscription: Boolean,
+    ): Boolean {
+        val isPaid = !plan.isNullOrBlank() && !plan.equals("RECON", ignoreCase = true)
+        if (!isPaid) return false
+        val live = liveSources.orEmpty()
+            .map { it.uppercase() }
+            .filter { it.isNotBlank() && it != SOURCE_FREE_FLOOR }
+        if (live.isNotEmpty()) return live.any { it != thisStore }
+        val winner = source?.uppercase()?.takeIf { it.isNotBlank() && it != SOURCE_FREE_FLOOR }
+        if (winner != null) return winner != thisStore
+        return !thisStoreOwnsSubscription
+    }
+}

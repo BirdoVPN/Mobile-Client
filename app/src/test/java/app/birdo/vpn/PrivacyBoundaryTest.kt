@@ -190,6 +190,14 @@ class PrivacyBoundaryTest {
             "options.beforeBreadcrumb",
             "options.beforeSend",
             "event.user = null",
+            // Audit 2026-09-29 (P1-6 / C-3): no release-health sessions, no
+            // collected device extras, and contexts rebuilt from an allow-list.
+            "options.isEnableAutoSessionTracking = false",
+            "options.isCollectAdditionalContext = false",
+            "options.isEnableSystemEventBreadcrumbs = false",
+            "options.isEnableNetworkEventBreadcrumbs = false",
+            "CrashReporting.minimiseContexts(event.contexts)",
+            "CrashReporting.predatesConsent(",
         )
         val missing = required.filterNot { app.contains(it) }
         assertEquals(

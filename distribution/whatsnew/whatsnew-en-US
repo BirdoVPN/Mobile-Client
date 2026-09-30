@@ -1,4 +1,11 @@
-Fixes subscribing when you are signed out.
+Privacy update.
 
-Tapping "Sign in to subscribe" now completes the purchase straight after you
-sign in, instead of stopping there. Nothing else changes.
+The first screen now says exactly what our servers and our account system
+keep, links the Terms of Service and the Privacy Policy, and asks you to
+confirm you are 18 or over. You will see it once after updating.
+
+Crash reports are now off unless you turn them on, there or in
+Settings > Privacy.
+
+Deleting your account from the app now works, and reminds you that a Google
+Play subscription must be cancelled in the Play Store.

@@ -178,7 +178,13 @@ class VpnViewModel @Inject constructor(
         // BirdoShield fleet gate. Unauthenticated and public, so unlike the
         // subscription fetch it runs regardless of sign-in state — the VPN
         // Settings screen is reachable by anonymous accounts too.
-        fetchClientConfig()
+        //
+        // But NOT before the consent screen has been accepted: a request to
+        // birdo.app is still a request from this device's IP, and the consent
+        // screen is where the user is told what the app sends (audit
+        // 2026-09-29, D-12). BirdoNavGraph fetches it the moment consent is
+        // given; the VPN Settings screen refreshes it on every open.
+        if (prefs.hasAcceptedCurrentConsent) fetchClientConfig()
         // NOTE: Heartbeat is handled by VpnManager.startHeartbeat() which includes
         // key rotation, quality reports, and session-invalid disconnect. No redundant
         // heartbeat needed here — VpnManager is the authoritative keepalive source.

@@ -44,6 +44,17 @@ private data class PlanInfo(
     val accent: Color get() = BirdoBrand.planAccent(id)
 }
 
+/**
+ * What each plan includes ON ANDROID — the platform this paywall sells on.
+ *
+ * Audit 2026-09-29 (A-10 / D-4 / A-24): this list used to be copied between
+ * platforms and sold things that do not exist here — "Speed test" (no mobile
+ * implementation), "2 server locations" (the web deliberately states no
+ * count; the fleet changes), split tunnelling as a paid extra although Android
+ * offers it on every plan, and 2FA / biometric lock as paid although they are
+ * on every plan. Every line below is a feature this app actually has, on the
+ * plan it is listed under. Keep it that way: add a line only with the code.
+ */
 private val plans = listOf(
     PlanInfo(
         id = "RECON",
@@ -53,12 +64,15 @@ private val plans = listOf(
         priceYearly = "Free",
         features = listOf(
             "1 device connection",
-            "2 server locations",
+            "Core server locations",
             "10 GB monthly bandwidth",
             "WireGuard\u00ae encryption",
-            "Post-quantum encryption",
+            "Post-quantum key exchange",
             "Kill switch",
             "DNS leak protection",
+            "Split tunneling",
+            "2FA / TOTP",
+            "Biometric lock",
         ),
     ),
     PlanInfo(
@@ -72,11 +86,11 @@ private val plans = listOf(
             "All server locations",
             "Unlimited bandwidth",
             "WireGuard\u00ae encryption",
-            "Post-quantum encryption",
+            "Post-quantum key exchange",
             "Kill switch",
+            "DNS leak protection",
             "Split tunneling",
             "Stealth mode",
-            "Speed test",
             "2FA / TOTP",
             "Biometric lock",
             "Priority support",
@@ -94,16 +108,16 @@ private val plans = listOf(
             "All server locations",
             "Unlimited bandwidth",
             "WireGuard\u00ae encryption",
-            "Post-quantum encryption",
+            "Post-quantum key exchange",
             "Kill switch",
+            "DNS leak protection",
             "Split tunneling",
             "Stealth mode",
             "Multi-hop routing",
             "Port forwarding",
-            "Speed test",
+            "Custom DNS",
             "2FA / TOTP",
             "Biometric lock",
-            "Custom DNS",
             "Priority support",
         ),
     ),
@@ -153,6 +167,20 @@ fun SubscriptionScreen(
     isRestoring: Boolean = false,
     duplicateBillingMessage: String? = null,
     onDismissDuplicateBilling: () -> Unit = {},
+    /**
+     * The account already has a paid plan bought OUTSIDE this store (the
+     * website, a voucher, or the other app store) — see StorePurchaseGate.
+     * When true no purchase or "Change plan" button is drawn: Play's
+     * replacement flow only knows Play purchases, so tapping one would start a
+     * second, separate subscription (audit 2026-09-29, A-9 / A-16).
+     */
+    purchaseManagedElsewhere: Boolean = false,
+    /**
+     * Opens the Terms of Service / Privacy Policy. The purchase screen links
+     * both, as the iOS one already does (audit 2026-09-29, D-20): a
+     * subscription is bought here under those terms.
+     */
+    onOpenUrl: (String) -> Unit = {},
 ) {
     var billingPeriod by remember { mutableStateOf("yearly") }
     val palette = BirdoColors.current
@@ -222,6 +250,13 @@ fun SubscriptionScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
+            // Paid elsewhere: say where it is managed instead of offering a
+            // second subscription.
+            if (purchaseManagedElsewhere) {
+                ManagedElsewhereNotice()
+                Spacer(Modifier.height(12.dp))
+            }
+
             // Plan cards
             plans.forEach { plan ->
                 val isCurrent = currentSubscription?.plan?.equals(plan.id, ignoreCase = true) == true
@@ -242,7 +277,8 @@ fun SubscriptionScreen(
                     // offer resolved; in a non-Play build the CTA is the
                     // web-billing link it has always been.
                     showManageButton = showWebManageAction,
-                    showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent,
+                    showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent &&
+                        !purchaseManagedElsewhere,
                     isChangingPlan = currentSubscription?.plan?.equals("RECON", true) == false,
                     onSelect = { onSelectPlan(plan.id, billingPeriod) },
                 )
@@ -358,6 +394,26 @@ fun SubscriptionScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 8.dp),
             )
+
+            // The terms a subscription is bought under. Birdo's own pages,
+            // not a purchase route, so they belong in every build.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                TextButton(onClick = { onOpenUrl("https://birdo.app/terms") }) {
+                    Text(
+                        stringResource(R.string.settings_terms_of_service),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                TextButton(onClick = { onOpenUrl("https://birdo.app/privacy") }) {
+                    Text(
+                        stringResource(R.string.settings_privacy_policy),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
 
             Spacer(Modifier.height(32.dp))
         }
@@ -582,6 +638,39 @@ private fun PlanCard(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+        }
+    }
+}
+
+/**
+ * Shown instead of purchase buttons when the account's paid plan was bought
+ * outside Google Play. Not dismissible: it explains why there is nothing to
+ * tap. Deliberately names no other purchase route — this is a Play build.
+ */
+@Composable
+private fun ManagedElsewhereNotice() {
+    val palette = BirdoColors.current
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = BirdoBlue.copy(alpha = 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Info,
+                contentDescription = null,
+                tint = BirdoBlue,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                stringResource(R.string.subscription_managed_elsewhere),
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.onSurface,
+            )
         }
     }
 }

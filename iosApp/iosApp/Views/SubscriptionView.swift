@@ -35,6 +35,19 @@ struct SubscriptionView: View {
 
     private var period: StoreBillingPeriod { billingIndex == 1 ? .yearly : .monthly }
 
+    /// The account's paid plan was bought OUTSIDE the App Store (the website,
+    /// a voucher or Google Play): nothing here may sell it a second one
+    /// (audit 2026-09-29, A-9 / A-16). See `StorePurchaseGate`.
+    private var managedElsewhere: Bool {
+        StorePurchaseGate.paidElsewhere(
+            plan: vpnVM.subscription?.plan,
+            source: vpnVM.subscription?.source,
+            liveSources: vpnVM.subscription?.liveSources,
+            thisStore: StorePurchaseGate.sourceAppStore,
+            thisStoreOwnsSubscription: store.ownsStoreSubscription
+        )
+    }
+
     var body: some View {
         ZStack {
             BirdoTheme.black.ignoresSafeArea()
@@ -60,6 +73,10 @@ struct SubscriptionView: View {
                         noticeBanner(notice)
                     }
 
+                    if managedElsewhere {
+                        managedElsewhereCard
+                    }
+
                     Text("Plans & features")
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(BirdoTheme.onSurface)
@@ -74,7 +91,9 @@ struct SubscriptionView: View {
                     }
 
                     SegmentedTabs(
-                        items: ["Monthly", "Yearly · Save 20%"],
+                        // "up to": yearly saves 20% on Operative, 17% on
+                        // Sovereign (audit A-24). Never a flat "Save 20%".
+                        items: ["Monthly", "Yearly · Save up to 20%"],
                         selection: $billingIndex,
                         style: .accent
                     )
@@ -108,6 +127,7 @@ struct SubscriptionView: View {
             if case .unavailable = store.storefront {
                 await store.loadProducts()
             }
+            await store.refreshOwnership()
         }
         .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick), value: store.notice)
     }
@@ -294,6 +314,32 @@ struct SubscriptionView: View {
         }
     }
 
+    /// Shown instead of Subscribe buttons when the paid plan was bought
+    /// outside the App Store. Not dismissible: it explains why there is
+    /// nothing to tap here.
+    ///
+    /// Worded conditionally (second-pass #8): until `/vpn/stats` reports
+    /// `source` / `liveSources`, the gate falls back to "this device's App
+    /// Store account owns no Birdo subscription", which is also true of a
+    /// genuine App Store subscriber in billing retry (empty
+    /// `currentEntitlements`). The copy must not tell them otherwise.
+    private var managedElsewhereCard: some View {
+        BirdoCard(horizontalPadding: 16, verticalPadding: 16) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(BirdoTheme.blue)
+                    .accessibilityHidden(true)
+                Text("Your plan is already active on this account. If you bought it outside the App Store, manage it where you bought it: subscribing here would bill you twice.")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurface)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     // MARK: - Restore (Apple requires a visible control)
 
     /// Restore Purchases is MANDATORY for auto-renewable subscriptions and it
@@ -461,6 +507,13 @@ struct SubscriptionView: View {
         if plan.slug == "RECON" {
             // Free tier: nothing to buy, and no button pretending otherwise.
             EmptyView()
+        } else if managedElsewhere {
+            // Paid on another rail: no Subscribe, no "change plan". The card
+            // at the top of the screen says why.
+            Text("Your current plan is managed where you bought it.")
+                .font(.system(size: 12))
+                .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                .padding(.top, 4)
         } else if isCurrent {
             HStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill")
@@ -546,7 +599,16 @@ struct SubscriptionView: View {
 // MARK: - Plan catalog
 
 /// Canonical plan data (birdo-web/lib/plans.ts via spec-secondary-screens.md
-/// §5.4 — feature lists match Android verbatim).
+/// §5.4).
+///
+/// FEATURE LISTS ARE PER PLATFORM. They used to "match Android verbatim", and
+/// so this App Store paywall sold Split tunneling, Stealth mode and Speed test —
+/// none of which exists on iOS or macOS — plus "2 server locations", a count
+/// the web deliberately never states (audit 2026-09-29, A-10 / D-4 / A-24;
+/// Guidelines 2.3 / 3.1.2). Every line below is something this app does, on
+/// the plan it is listed under. Face ID "Hide App Contents" is not listed: it
+/// covers the screen and protects no data (SettingsView), so selling it as a
+/// security feature would overstate it.
 ///
 /// The prices here are a FALLBACK ONLY, shown when StoreKit could not resolve a
 /// product. Anything actually purchasable is priced by `Product.displayPrice`,
@@ -588,12 +650,13 @@ private struct PlanCardModel: Identifiable, Sendable {
             isPopular: false,
             features: [
                 "1 device connection",
-                "2 server locations",
+                "Core server locations",
                 "10 GB monthly bandwidth",
                 "WireGuard® encryption",
-                "Post-quantum encryption",
+                "Post-quantum key exchange",
                 "Kill switch",
                 "DNS leak protection",
+                "2FA / TOTP",
             ]
         ),
         PlanCardModel(
@@ -608,13 +671,10 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
-                "Post-quantum encryption",
+                "Post-quantum key exchange",
                 "Kill switch",
-                "Split tunneling",
-                "Stealth mode",
-                "Speed test",
+                "DNS leak protection",
                 "2FA / TOTP",
-                "Biometric lock",
                 "Priority support",
             ]
         ),
@@ -630,16 +690,13 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
-                "Post-quantum encryption",
+                "Post-quantum key exchange",
                 "Kill switch",
-                "Split tunneling",
-                "Stealth mode",
+                "DNS leak protection",
                 "Multi-hop routing",
                 "Port forwarding",
-                "Speed test",
-                "2FA / TOTP",
-                "Biometric lock",
                 "Custom DNS",
+                "2FA / TOTP",
                 "Priority support",
             ]
         ),

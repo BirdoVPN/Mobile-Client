@@ -36,6 +36,8 @@ import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
 import app.birdo.vpn.billing.BirdoBillingPeriod
+import app.birdo.vpn.billing.PlaySubscriptionLinks
+import app.birdo.vpn.billing.StorePurchaseGate
 import app.birdo.vpn.billing.PurchasableOffer
 import app.birdo.vpn.billing.StorefrontState
 import app.birdo.vpn.ui.components.BillingChoice
@@ -122,7 +124,10 @@ fun BirdoNavGraph(
     // signed out can only be bound once a session exists, and that moment is
     // here, not on a screen the user may never open.
     val billingViewModel: BillingViewModel = hiltViewModel()
-    var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedPrivacyPolicy) }
+    // The CURRENT consent text, not any version of it: a user who accepted the
+    // pre-2026-09-29 screen (which misdescribed the servers and never asked
+    // for the Terms) sees the corrected one once. See AppPreferences.
+    var hasConsented by remember { mutableStateOf(appPreferences.hasAcceptedCurrentConsent) }
     val isOnline by networkMonitor.isOnline.collectAsState(initial = true)
 
     val authState by authViewModel.uiState.collectAsState()
@@ -358,10 +363,19 @@ fun BirdoNavGraph(
                 AdaptiveContainer {
                     val consentContext = androidx.compose.ui.platform.LocalContext.current
                     ConsentScreen(
-                        onAccept = {
+                        onAccept = { crashReportsEnabled ->
                             appPreferences.hasAcceptedPrivacyPolicy = true
+                            appPreferences.acceptedConsentVersion = AppPreferences.CURRENT_CONSENT_VERSION
                             appPreferences.privacyConsentTimestamp = System.currentTimeMillis()
+                            // The optional crash-report choice. Persisted, then
+                            // applied by BirdoApp: the SDK starts only if the
+                            // user switched it on, and stays off otherwise.
+                            settingsViewModel.setCrashReports(crashReportsEnabled)
                             hasConsented = true
+                            // The two public, unauthenticated calls the view
+                            // models hold back until consent (audit D-12).
+                            updateViewModel.check()
+                            vpnViewModel.fetchClientConfig()
                         },
                         onDecline = {
                             // Close the app if user declines
@@ -504,6 +518,8 @@ fun BirdoNavGraph(
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
+                        deletionPreflight = authState.deletionPreflight,
+                        onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
                     )
                 }
             }
@@ -601,6 +617,7 @@ fun BirdoNavGraph(
                         onKillSwitchChange = { settingsViewModel.setKillSwitch(it) },
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
+                        onCrashReportsChange = { settingsViewModel.setCrashReports(it) },
                         customDnsUnlocked = settingsIsSovereign,
                         portForwardUnlocked = settingsIsSovereign,
                         quantumUnlocked = true,
@@ -778,7 +795,17 @@ fun BirdoNavGraph(
                     // something Play never returned.
                     val startPlayPurchase: (String, String) -> Unit = { planId, period ->
                         val offer = offerFor(planId, period)
-                        if (offer != null && activity != null) {
+                        // The gate again, at the one place a purchase starts:
+                        // hiding the button is the UI half, this is the rule.
+                        val paidElsewhere = BuildConfig.IS_PLAY_BUILD &&
+                            StorePurchaseGate.paidElsewhere(
+                                plan = vpnState.subscription?.plan,
+                                source = vpnState.subscription?.source,
+                                liveSources = vpnState.subscription?.liveSources,
+                                thisStore = StorePurchaseGate.SOURCE_GOOGLE_PLAY,
+                                thisStoreOwnsSubscription = billingState.ownsBirdoSubscription,
+                            )
+                        if (offer != null && activity != null && !paidElsewhere) {
                             billingViewModel.purchase(activity, offer) {
                                 navController.navigate(Screen.Login.route)
                             }
@@ -786,6 +813,19 @@ fun BirdoNavGraph(
                     }
 
                     val storefront = billingState.storefront
+
+                    // One subscription per account (audit 2026-09-29, A-9 /
+                    // A-16): a paid plan bought outside Google Play is managed
+                    // where it was bought, never re-sold here.
+                    val currentSub = vpnState.subscription
+                    val purchaseManagedElsewhere = BuildConfig.IS_PLAY_BUILD &&
+                        StorePurchaseGate.paidElsewhere(
+                            plan = currentSub?.plan,
+                            source = currentSub?.source,
+                            liveSources = currentSub?.liveSources,
+                            thisStore = StorePurchaseGate.SOURCE_GOOGLE_PLAY,
+                            thisStoreOwnsSubscription = billingState.ownsBirdoSubscription,
+                        )
 
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
@@ -845,6 +885,8 @@ fun BirdoNavGraph(
                         onDismissDuplicateBilling = {
                             billingViewModel.dismissDuplicateBilling()
                         },
+                        purchaseManagedElsewhere = purchaseManagedElsewhere,
+                        onOpenUrl = { settingsViewModel.openUrl(it) },
                     )
 
                     if (showBillingChoice) {
@@ -872,6 +914,46 @@ fun BirdoNavGraph(
 
         }
         } // end Column
+
+            // After a deletion: store subscriptions the server says are STILL
+            // BILLING. Deleting a Birdo account cannot cancel a Google Play or
+            // App Store subscription (audit 2026-09-29, A-8 / C-9), so say so
+            // and link to where it can be cancelled. Never shown when the
+            // backend does not send the list.
+            val stillBilling = authState.storeSubscriptionsStillBilling
+            if (stillBilling.isNotEmpty()) {
+                val billingContext = LocalContext.current
+                val stores = stillBilling.map { sub ->
+                    when {
+                        sub.isGooglePlay -> stringResource(R.string.store_still_billing_google_play)
+                        sub.isAppStore -> stringResource(R.string.store_still_billing_app_store)
+                        else -> stringResource(R.string.store_still_billing_unknown_store)
+                    }
+                }.distinct().joinToString("; ")
+                AlertDialog(
+                    onDismissRequest = { authViewModel.dismissStoreBillingNotice() },
+                    title = { Text(stringResource(R.string.store_still_billing_title), fontWeight = FontWeight.Bold) },
+                    text = { Text(stringResource(R.string.store_still_billing_body, stores)) },
+                    confirmButton = {
+                        TextButton(onClick = { authViewModel.dismissStoreBillingNotice() }) {
+                            Text(stringResource(R.string.store_still_billing_ok))
+                        }
+                    },
+                    dismissButton = {
+                        if (stillBilling.any { it.isGooglePlay }) {
+                            TextButton(onClick = {
+                                runCatching {
+                                    billingContext.startActivity(
+                                        Intent(Intent.ACTION_VIEW, PlaySubscriptionLinks.MANAGE.toUri()),
+                                    )
+                                }
+                            }) {
+                                Text(stringResource(R.string.store_still_billing_manage))
+                            }
+                        }
+                    },
+                )
+            }
         } // end Box
     }
 }

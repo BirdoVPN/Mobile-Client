@@ -93,9 +93,14 @@ struct MultiHopView: View {
                     Text("Double VPN")
                         .font(BirdoTheme.Fonts.titleMedium)
                         .foregroundColor(BirdoTheme.onSurface)
-                    Text("Route traffic through two servers for extra privacy")
+                    // REMEDIATION-DECISIONS §2 (audit 2026-09-29, D-10): one
+                    // encryption layer, two servers. The entry server sees both
+                    // who you are and where you go, so "extra privacy" / "extra
+                    // anonymity" overstated it.
+                    Text("Your traffic enters one server and leaves from another, so sites see the exit server's address. It is not onion routing: the entry server can see your IP address and the destinations you connect to.")
                         .font(BirdoTheme.Fonts.bodySmall)
                         .foregroundColor(BirdoTheme.onSurfaceMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }

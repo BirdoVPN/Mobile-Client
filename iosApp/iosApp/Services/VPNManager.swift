@@ -38,6 +38,23 @@ final class VPNManager: @unchecked Sendable {
     /// shared-secret wipe on logout still covers these accounts.
     private static let sharedKeychainService = "app.birdo.vpn.shared"
 
+    /// Shared-keychain account the extension's heartbeat bearer token lives
+    /// under, passed to the extension BY REFERENCE (`hb-access-token-ref`).
+    ///
+    /// Audit 2026-09-29, D-13: the token itself used to ride
+    /// `providerConfiguration`, which NetworkExtension stores in the system VPN
+    /// preferences and which outlived sign-out and account deletion. It now
+    /// lives next to the WireGuard keys, is deleted on disconnect and by
+    /// `KeychainService.clear()` on sign-out, and the persisted profile holds
+    /// only its name. MUST match `KeychainService.clearAllSharedSecrets`.
+    static let heartbeatTokenAccount = "hb_access_token"
+
+    /// Provider-configuration keys that identify the account or session. All
+    /// are removed from the persisted profile on sign-out / deletion
+    /// (`scrubHeartbeatCredentials`); `hb-access-token` is the pre-1.4.32 key
+    /// that carried the token itself.
+    private static let heartbeatProfileKeys = ["hb-access-token", "hb-access-token-ref", "hb-key-id"]
+
     /// Fired on every NEVPNStatus transition AND replayed with the settled
     /// status whenever a manager finishes loading (finding #4/#7). The `didSet`
     /// covers the race where `loadManager()`'s async completion assigns
@@ -150,12 +167,13 @@ final class VPNManager: @unchecked Sendable {
         // CRITICAL (finding #2): the liveness heartbeat must run in the
         // extension (it outlives the app; the host app is suspended on lock).
         // Pass the connection handle + a FRESH access token so the extension
-        // can POST /vpn/heartbeat/{keyId} on its own. The token lives under the
-        // app-only keychain service the extension cannot read, so it has to
-        // ride providerConfiguration — which is readable ONLY by this app's own
-        // appex (same app group), acceptable per the security review. NEVER log
-        // it. A short-lived/stale token failing heartbeat must NOT tear the
-        // tunnel down; only an explicit {valid:false} does.
+        // can POST /vpn/heartbeat/{keyId} on its own. The token is parked in
+        // the SHARED keychain group next to the WireGuard keys and passed BY
+        // REFERENCE (`hb-access-token-ref`); providerConfiguration is stored
+        // in the system VPN preferences and outlived sign-out, so the token no
+        // longer rides it (audit 2026-09-29, D-13). NEVER log it. A
+        // short-lived/stale token failing heartbeat must NOT tear the tunnel
+        // down; only an explicit {valid:false} does.
         var providerConfig: [String: Any] = [
             "wg-config": wgConfig,
             "wg-private-key-ref": "wg_private_key",
@@ -164,8 +182,11 @@ final class VPNManager: @unchecked Sendable {
         if let keyId = config.keyId, !keyId.isEmpty {
             providerConfig["hb-key-id"] = keyId
         }
-        if let token = KeychainService.shared.accessToken, !token.isEmpty {
-            providerConfig["hb-access-token"] = token
+        // The bearer token goes into the shared keychain; the profile only
+        // names it (D-13). No token = no extension heartbeat, never a failed
+        // connect.
+        for (key, value) in parkHeartbeatToken() {
+            providerConfig[key] = value
         }
         // Never fabricate a plausible version: a "1.0.0" fallback is exactly
         // the hardcoded value that defeated the iOS version floor once already
@@ -234,6 +255,7 @@ final class VPNManager: @unchecked Sendable {
             mgr.saveToPreferences { _ in }
             deleteSharedSecret(account: "wg_private_key")
             deleteSharedSecret(account: "wg_preshared_key")
+            deleteSharedSecret(account: Self.heartbeatTokenAccount)
             throw error
         }
     }
@@ -323,8 +345,8 @@ final class VPNManager: @unchecked Sendable {
         if let keyId = config.keyId, !keyId.isEmpty {
             providerConfiguration["hb-key-id"] = keyId
         }
-        if let token = KeychainService.shared.accessToken, !token.isEmpty {
-            providerConfiguration["hb-access-token"] = token
+        for (key, value) in parkHeartbeatToken() {
+            providerConfiguration[key] = value
         }
         try await applyLiveProfile(providerConfiguration: providerConfiguration,
                                    serverAddress: config.serverAddress,
@@ -339,9 +361,13 @@ final class VPNManager: @unchecked Sendable {
     func restoreProfile(_ snapshot: TunnelProfileSnapshot) async throws {
         var providerConfiguration = snapshot.providerConfiguration
         // A token refreshed since the snapshot is the one the extension should
-        // heartbeat with.
-        if let token = KeychainService.shared.accessToken, !token.isEmpty {
-            providerConfiguration["hb-access-token"] = token
+        // heartbeat with — parked in the shared keychain, never in the profile
+        // (D-13). A snapshot of a profile written by an older build may still
+        // carry the token itself; it is dropped here.
+        providerConfiguration.removeValue(forKey: "hb-access-token")
+        providerConfiguration.removeValue(forKey: "hb-access-token-ref")
+        for (key, value) in parkHeartbeatToken() {
+            providerConfiguration[key] = value
         }
         try await applyLiveProfile(providerConfiguration: providerConfiguration,
                                    serverAddress: snapshot.serverAddress,
@@ -482,11 +508,66 @@ final class VPNManager: @unchecked Sendable {
         return String(data: data, encoding: .utf8)
     }
 
+    /// Write the current access token to the shared keychain for the tunnel
+    /// extension's heartbeat, and return the provider-configuration entry that
+    /// names it. Empty when there is no token or the write failed: the
+    /// extension then simply runs without a heartbeat, as it did for a host
+    /// build that passed none. Never the token itself (D-13).
+    private func parkHeartbeatToken() -> [String: String] {
+        guard let token = KeychainService.shared.accessToken, !token.isEmpty else {
+            deleteSharedSecret(account: Self.heartbeatTokenAccount)
+            return [:]
+        }
+        guard writeSharedSecret(account: Self.heartbeatTokenAccount, value: token) else {
+            return [:]
+        }
+        return ["hb-access-token-ref": Self.heartbeatTokenAccount]
+    }
+
+    /// Remove every account/session identifier from the PERSISTED VPN profile
+    /// and delete the parked heartbeat token. Called on sign-out and after
+    /// account deletion (AuthViewModel.completeLocalLogout), after the tunnel
+    /// is down.
+    ///
+    /// Audit 2026-09-29, D-13: the profile (system VPN preferences) used to
+    /// keep the bearer token and the connection key id after the account that
+    /// owned them was signed out or erased. Works on the in-memory manager
+    /// when there is one, so the on-demand disarm `disconnect()` just made is
+    /// saved with it and can never be overwritten by a stale reload.
+    func scrubHeartbeatCredentials() {
+        deleteSharedSecret(account: Self.heartbeatTokenAccount)
+        if let mgr = manager {
+            scrubHeartbeatCredentials(in: mgr)
+            return
+        }
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, _ in
+            guard let self, let mgr = managers?.first else { return }
+            self.scrubHeartbeatCredentials(in: mgr)
+        }
+    }
+
+    private func scrubHeartbeatCredentials(in mgr: NETunnelProviderManager) {
+        guard let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol,
+              var providerConfig = proto.providerConfiguration,
+              Self.heartbeatProfileKeys.contains(where: { providerConfig[$0] != nil }) else { return }
+        for key in Self.heartbeatProfileKeys {
+            providerConfig.removeValue(forKey: key)
+        }
+        proto.providerConfiguration = providerConfig
+        mgr.protocolConfiguration = proto
+        mgr.saveToPreferences { error in
+            if let error {
+                debugLog("[VPNManager] heartbeat credential scrub failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
     func disconnect() {
         // SEC: wipe shared secrets from keychain — the kernel tunnel has
         // already consumed them; nothing else needs them after disconnect.
         deleteSharedSecret(account: "wg_private_key")
         deleteSharedSecret(account: "wg_preshared_key")
+        deleteSharedSecret(account: Self.heartbeatTokenAccount)
 
         guard let mgr = manager else { return }
 

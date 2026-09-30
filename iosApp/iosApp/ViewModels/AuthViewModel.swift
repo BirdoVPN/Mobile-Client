@@ -122,6 +122,64 @@ final class AuthViewModel: ObservableObject {
     /// inside the dialog.
     @Published private(set) var isDeleting = false
     @Published var deleteError: String?
+    /// Store subscriptions the server reported as STILL BILLING after a
+    /// successful deletion (audit 2026-09-29, A-8 / C-9). Deleting a Birdo
+    /// account cannot cancel an App Store or Google Play subscription, so the
+    /// shell shows these and says where to cancel. Cleared when dismissed.
+    @Published var storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling] = []
+
+    /// The notice for `storeSubscriptionsStillBilling`.
+    var storeBillingNoticeMessage: String {
+        var stores: [String] = []
+        if storeSubscriptionsStillBilling.contains(where: { $0.isAppStore }) {
+            stores.append("the App Store")
+        }
+        if storeSubscriptionsStillBilling.contains(where: { $0.isGooglePlay }) {
+            stores.append("Google Play")
+        }
+        if stores.isEmpty { stores.append("an app store") }
+        return "Your Birdo account has been deleted, but a subscription is still being billed by "
+            + stores.joined(separator: " and ")
+            + ". Only the store can cancel it. Cancel it there to stop further charges."
+    }
+
+    /// The deletion preflight (second-pass #9): fetched when the deletion
+    /// dialog opens, so the dialog can name the store subscriptions that will
+    /// keep billing BEFORE the user confirms. Nil while loading and after a
+    /// failure; the dialog then shows its static warning, and deletion never
+    /// waits on it.
+    @Published private(set) var deletionPreflight: DeletionPreflight?
+    private var deletionPreflightTask: Task<Void, Never>?
+
+    /// The named-store warning for the deletion dialog, or nil when there is
+    /// nothing named (the static warning is shown instead).
+    var deletionPreflightStoreWarning: String? {
+        guard let subs = deletionPreflight?.stillBilling, !subs.isEmpty else { return nil }
+        var stores: [String] = []
+        if subs.contains(where: { $0.isAppStore }) {
+            stores.append("the App Store")
+        }
+        if subs.contains(where: { $0.isGooglePlay }) {
+            stores.append("Google Play")
+        }
+        if stores.isEmpty { stores.append("an app store") }
+        return "This account has a subscription that deleting it will not cancel, billed by "
+            + stores.joined(separator: " and ")
+            + ". Cancel it there first, or the store will keep charging you."
+    }
+
+    /// Ask the server what a deletion would leave billing. Best effort: any
+    /// failure leaves `deletionPreflight` nil.
+    func loadDeletionPreflight() {
+        deletionPreflightTask?.cancel()
+        deletionPreflight = nil
+        deletionPreflightTask = Task { [weak self] in
+            guard let self else { return }
+            let result = try? await self.api.deletionPreflight()
+            guard !Task.isCancelled else { return }
+            self.deletionPreflight = result
+        }
+    }
 
     /// App-shell reset hook, fired at the END of every local sign-out
     /// (`completeLocalLogout`). The shell wires this to reset sibling
@@ -831,6 +889,10 @@ final class AuthViewModel: ObservableObject {
         // AUDIT-C1: drop the persisted ML-KEM-1024 client identity so the
         // next user gets a fresh PQ keypair instead of inheriting this one.
         BirdoPQManager.shared.resetPersistedKeypair()
+        // Audit 2026-09-29, D-13: the persisted VPN profile must not keep this
+        // session's heartbeat credentials (token reference, legacy token, key
+        // id) after sign-out or deletion.
+        VPNManager.shared.scrubHeartbeatCredentials()
         isLoggedIn = false
         user = nil
         stats = nil
@@ -870,10 +932,13 @@ final class AuthViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await api.deleteAccount(password: password)
+                let stillBilling = try await api.deleteAccount(password: password)
                 // The account is gone — so is its recovery credential.
                 keychain.clearAnonymousId()
                 completeLocalLogout()
+                // After the local sign-out, so nothing in it can clear the
+                // notice before the shell has shown it.
+                self.storeSubscriptionsStillBilling = stillBilling
             } catch {
                 self.deleteError = Self.mapDeleteError(error)
             }

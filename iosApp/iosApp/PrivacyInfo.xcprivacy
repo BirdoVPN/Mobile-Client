@@ -28,11 +28,14 @@
                 <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
             </array>
         </dict>
-        <!-- Persistent device identifier: "ios_" + SHA-256(IDFV|salt) prefix,
-             persisted in the keychain so it survives reinstall (APIClient
-             deviceContext()); sent on every auth/connect call as deviceId.
-             Linked to the account, not used for tracking. Matches the Play
-             data-safety declaration for the identical Android identifier. -->
+        <!-- Persistent device identifier: "ios_" + a RANDOM v4 UUID minted on
+             this install (APIClient.mintDeviceId), persisted in the keychain
+             so it survives reinstall (APIClient deviceContext()); sent on
+             every auth/connect call as deviceId and rotated when the account
+             is deleted. Installs that minted it before the switch keep their
+             older IDFV-derived value until then. Linked to the account, not
+             used for tracking. Matches the Play data-safety declaration for
+             the Android identifier. -->
         <dict>
             <key>NSPrivacyCollectedDataType</key>
             <string>NSPrivacyCollectedDataTypeDeviceID</string>
@@ -49,6 +52,24 @@
         <dict>
             <key>NSPrivacyCollectedDataType</key>
             <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+        <!-- Purchase history (audit 2026-09-29, C-21 / D-19): every App Store
+             purchase's signed transaction (product, purchase and expiry dates,
+             original transaction id) is sent to our backend and bound to the
+             Birdo account (StoreKitService.ingest -> POST
+             /payments/store/apple/link; re-sent on sign-in and restore) so the
+             server can grant the plan. Linked to the account, not tracking. -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypePurchaseHistory</string>
             <key>NSPrivacyCollectedDataTypeLinked</key>
             <true/>
             <key>NSPrivacyCollectedDataTypeTracking</key>

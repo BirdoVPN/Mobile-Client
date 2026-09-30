@@ -72,16 +72,23 @@ struct ConsentView: View {
                     dataSummaryCard
                         .padding(.top, 24)
 
-                    Button {
-                        if let url = URL(string: "https://birdo.app/privacy") { openURL(url) }
-                    } label: {
-                        Text("Read the full Privacy Policy")
-                            .font(.system(size: 14))
-                            .underline()
-                            .foregroundStyle(BirdoTheme.accent)
-                            .frame(minHeight: 44) // touch target
+                    // BOTH documents are linked, because accepting accepts both
+                    // (audit 2026-09-29, B-13: accepting here used to cover the
+                    // privacy policy only, and the Terms were never presented).
+                    // Grouped so the enclosing builder stays well under its
+                    // child limit.
+                    VStack(spacing: 0) {
+                        policyLink("Read the Terms of Service", "https://birdo.app/terms")
+                        policyLink("Read the full Privacy Policy", "https://birdo.app/privacy")
+
+                        // The Terms' minimum age, stated where the account is created.
+                        Text("You must be 18 or over to use BirdoVPN.")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(BirdoTheme.white60)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
                     }
-                    .buttonStyle(PressScaleButtonStyle())
                     .padding(.top, 16)
 
                     // acceptConsent() persists the flag AND the
@@ -90,8 +97,16 @@ struct ConsentView: View {
                                   variant: .brand,
                                   fontSize: 16,
                                   action: { authVM.acceptConsent() })
-                        .padding(.top, 24)
+                        .padding(.top, 20)
                         .accessibilityIdentifier("consent_accept")
+
+                    // What "I Agree & Continue" means, next to the button.
+                    Text("By tapping \"I Agree & Continue\" you accept the Terms of Service and the Privacy Policy.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(BirdoTheme.white60)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 8)
 
                     deferButton
                         .padding(.top, 12)
@@ -121,26 +136,27 @@ struct ConsentView: View {
     // MARK: - Data summary card
 
     private var dataSummaryCard: some View {
+        // The pre-use data declaration Apple 5.4 asks for. Wording is
+        // REMEDIATION-DECISIONS §1.5 (audit 2026-09-29, P0-1 / B-1 / D-1 /
+        // B-3), shared with Android and desktop.
+        //
+        // The old copy said the nodes ran a "strict zero-logs policy on
+        // RAM-only volatile infrastructure" and called the sign-in IP hash
+        // "non-reversible". Neither is true: the nodes are ordinary
+        // disk-backed cloud servers, and a salted, truncated hash of an IPv4
+        // address can be matched back. Never reintroduce "RAM-only",
+        // "volatile", "diskless", "zero logs" or "non-reversible".
+        //
+        // There is NO crash-report item: the iOS/macOS app contains no
+        // crash-reporting SDK, and this screen must not describe collection
+        // that does not happen (it used to promise "anonymous crash reports").
         VStack(alignment: .leading, spacing: 16) {
             consentItem(
                 title: "No Activity Logs",
-                // Scoped to the VPN traffic plane, where the claim is literally
-                // true: the WireGuard nodes run RAM-only with no persistent
-                // storage (backend abuse.service.ts / no-logs-enforcement).
-                // The earlier copy also said "IP addresses are logged" in
-                // absolute terms, which the account DB contradicts (see next
-                // item) — App Review / regulators penalise false absolutes.
-                description: "On our VPN servers, Birdo operates a strict zero-logs policy on RAM-only volatile infrastructure. Your browsing activity, DNS queries, traffic content, and the IP addresses you visit are never monitored, logged, or stored.")
+                description: "Our VPN servers don't record the sites you visit, your DNS queries or your traffic. While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. We also count your data use per billing period.")
             consentItem(
-                title: "Account Data Only",
-                // Truthful disclosure: the separate account database keeps
-                // login/session timestamps and a non-reversible hash of your
-                // IP for security and abuse prevention — it is not stored in
-                // the clear and never lives on the VPN servers.
-                description: "Your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on the VPN servers. For security and abuse prevention that database also keeps sign-in timestamps and a non-reversible hash of your IP address, not your raw IP.")
-            consentItem(
-                title: "Crash Reports",
-                description: "Anonymous crash reports help fix bugs faster. No personal data is included.")
+                title: "What Your Account Holds",
+                description: "Your email (or anonymous account number), plan, the devices you add, and your usage totals. Full list: birdo.app/privacy.")
             consentItem(
                 title: "No Data Sales",
                 description: "Your data is never sold, shared with advertisers, or used for profiling.")
@@ -151,6 +167,19 @@ struct ConsentView: View {
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.card, style: .continuous)
                 .fill(BirdoTheme.surfaceVariant)
         )
+    }
+
+    private func policyLink(_ title: String, _ address: String) -> some View {
+        Button {
+            if let url = URL(string: address) { openURL(url) }
+        } label: {
+            Text(title)
+                .font(.system(size: 14))
+                .underline()
+                .foregroundStyle(BirdoTheme.accent)
+                .frame(minHeight: 44) // touch target
+        }
+        .buttonStyle(PressScaleButtonStyle())
     }
 
     private func consentItem(title: String, description: String) -> some View {

@@ -2,9 +2,15 @@ package app.birdo.vpn
 
 import android.app.Application
 import app.birdo.vpn.billing.PlayBillingManager
+import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.CpuFeatures
+import app.birdo.vpn.utils.CrashReporting
 import dagger.hilt.android.HiltAndroidApp
+import io.sentry.Sentry
 import io.sentry.android.core.SentryAndroid
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -28,14 +34,17 @@ class BirdoApp : Application() {
      */
     @Inject lateinit var playBilling: dagger.Lazy<PlayBillingManager>
 
+    /** Holds the user's crash-report choice. See [applyCrashReportingConsent]. */
+    @Inject lateinit var appPreferences: AppPreferences
+
     override fun onCreate() {
         super.onCreate()
-        try {
-            initSentry()
-        } catch (e: Exception) {
-            // Sentry init should never take down the whole app
-            android.util.Log.e("BirdoApp", "Sentry init failed", e)
-        }
+        // Crash reporting is OPT-IN. Nothing is initialised here unless the
+        // user has already turned it on (consent screen or Settings); a fresh
+        // install, and every install upgrading from a build that reported
+        // unconditionally, starts with the SDK off and its unsent queue
+        // discarded. See CrashReporting for the whole rule.
+        applyCrashReportingConsent()
         // dagger.Lazy, and the flag checked HERE rather than only inside
         // start(): in a non-Play build (debug, sideload APK, F-Droid) the rail
         // can never work — Play Billing does not sell to an app the Play Store
@@ -53,7 +62,88 @@ class BirdoApp : Application() {
         }
     }
 
-    private fun initSentry() {
+    /**
+     * Bring the crash reporter in line with the user's current choice.
+     *
+     * Idempotent, and the ONE place the SDK is started or stopped: called from
+     * [onCreate], from the consent screen when it is accepted, and from the
+     * Settings toggle. Opted in (and a release build with a DSN) → start it if
+     * it is not running. Otherwise → close it if it is running (Sentry.close()
+     * flushes what was already captured under consent and uninstalls the
+     * uncaught-exception, ANR and NDK handlers), and when the user is opted out
+     * discard anything still queued on disk.
+     *
+     * Audit 2026-09-29, P1-6 / C-3 / D-12: this used to be an unconditional
+     * init with release-health sessions ON, before the consent screen.
+     *
+     * Second-pass #18: the close and the purge run on [crashReportingWorker],
+     * not the caller's thread. Sentry.close() flushes, and can block for up to
+     * the SDK's shutdown timeout, so on the main thread (the Settings toggle,
+     * onCreate) it could stall the UI. Starting stays on the calling thread:
+     * the SDK must be installed from Application.onCreate before anything can
+     * crash, and an init waits for a close still in flight (a quick off → on
+     * flip), or isEnabled() would still read true, the init would be skipped
+     * and the close would then land on the new session.
+     */
+    fun applyCrashReportingConsent() {
+        try {
+            val optedIn = appPreferences.crashReportsEnabled
+            if (CrashReporting.shouldStart(BuildConfig.DEBUG, BuildConfig.SENTRY_DSN, optedIn)) {
+                awaitPendingCrashReportingShutdown()
+                if (!Sentry.isEnabled()) initSentry(appPreferences.crashReportsEnabledSince)
+            } else {
+                val queueDir = cacheDir
+                pendingCrashReportingShutdown = crashReportingWorker.submit(Runnable {
+                    try {
+                        if (Sentry.isEnabled()) Sentry.close()
+                        if (!optedIn) CrashReporting.discardUnsentReports(queueDir)
+                    } catch (e: Exception) {
+                        android.util.Log.e("BirdoApp", "Crash-reporting shutdown failed", e)
+                    }
+                })
+            }
+        } catch (e: Exception) {
+            // Crash-reporting set-up must never take down the whole app.
+            android.util.Log.e("BirdoApp", "Crash-reporting state change failed", e)
+        }
+    }
+
+    /** One background thread, so closes and purges never overlap or reorder. */
+    private val crashReportingWorker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "birdo-crash-reporting").apply { isDaemon = true }
+    }
+
+    @Volatile
+    private var pendingCrashReportingShutdown: Future<*>? = null
+
+    /**
+     * Bounded wait for a close still in flight. Past the bound the init goes
+     * ahead anyway; the worst case is an SDK that is off until the next start,
+     * never one that is on without consent.
+     */
+    private fun awaitPendingCrashReportingShutdown() {
+        val pending = pendingCrashReportingShutdown ?: return
+        try {
+            pending.get(CRASH_REPORTING_SHUTDOWN_WAIT_SECONDS, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            android.util.Log.w("BirdoApp", "Crash-reporting shutdown still running", e)
+        }
+    }
+
+    private companion object {
+        /** Sentry's own shutdown timeout is 2 s; allow a little more. */
+        const val CRASH_REPORTING_SHUTDOWN_WAIT_SECONDS = 3L
+    }
+
+    /**
+     * Start Sentry. Reached only through [applyCrashReportingConsent], i.e.
+     * only after the user opted in.
+     *
+     * @param consentSinceMillis when the user opted in; events describing
+     *   anything earlier (a historical ANR the SDK reads from the OS on first
+     *   start) are dropped in beforeSend.
+     */
+    private fun initSentry(consentSinceMillis: Long) {
         // Skip Sentry entirely in debug builds — avoids DSN validation issues
         // and keeps development logcat clean. This is also why a debug build
         // never needs the SENTRY_DSN secret; see docs/SENTRY-SETUP.md.
@@ -70,9 +160,30 @@ class BirdoApp : Application() {
 
         SentryAndroid.init(this) { options ->
             options.dsn = dsn
-            options.isEnableAutoSessionTracking = true
+            // NO release-health sessions. A session envelope is a per-install
+            // id sent on every app start: usage telemetry, not a crash report,
+            // and not something the consent screen describes.
+            options.isEnableAutoSessionTracking = false
             options.environment = "production"
             options.release = "${BuildConfig.APPLICATION_ID}@${BuildConfig.APP_VERSION}"
+
+            // ── What a report may describe ─────────────────────────────────
+            // The consent screen describes crash and error reports (a crash's
+            // stack trace, or FaultReporter's event naming the feature that
+            // failed) with app and OS version and device model/architecture
+            // (second-pass #7). These stop the SDK COLLECTING the
+            // rest (battery, memory, storage, root status, system and
+            // connectivity events); beforeSend below then rebuilds the
+            // contexts from an allow-list, so anything a future SDK adds is
+            // dropped too.
+            options.isCollectAdditionalContext = false
+            options.isEnableRootCheck = false
+            options.isEnableSystemEventBreadcrumbs = false
+            options.isEnableNetworkEventBreadcrumbs = false
+            // Only the most recent ANR is ever read back from the OS (the SDK
+            // default, pinned), and beforeSend drops it when it predates the
+            // opt-in.
+            options.isReportHistoricalAnrs = false
 
             // ── Privacy ────────────────────────────────────────────────────
             // This is a VPN whose privacy policy states no connection logs are
@@ -165,6 +276,13 @@ class BirdoApp : Application() {
             }
 
             options.beforeSend = io.sentry.SentryOptions.BeforeSendCallback { event, _ ->
+                // Consent is not retroactive. The SDK's first start reads the
+                // most recent ANR back from the OS, and that ANR happened
+                // while crash reporting was OFF — drop anything that predates
+                // the opt-in.
+                if (CrashReporting.predatesConsent(event.timestamp, consentSinceMillis)) {
+                    return@BeforeSendCallback null
+                }
                 event.message?.let { it.formatted = scrub(it.formatted) }
                 event.exceptions?.forEach { ex -> ex.value = scrub(ex.value) }
                 // Breadcrumbs ride along on crash events (auto-instrumented
@@ -199,6 +317,11 @@ class BirdoApp : Application() {
                 // needs in order to fix the crash.
                 event.user = null
                 event.serverName = null
+                // Device / OS / app contexts rebuilt from an allow-list: model
+                // and architecture, OS name and version, app id/version/build.
+                // The SDK's defaults also carry a per-install id, a device-app
+                // hash, locale, timezone, screen, memory and storage figures.
+                CrashReporting.minimiseContexts(event.contexts)
                 event
             }
         }

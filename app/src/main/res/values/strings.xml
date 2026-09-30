@@ -99,8 +99,20 @@
     <string name="limit">Limit</string>
     <string name="settings_section_connection">Connection</string>
     <string name="settings_kill_switch">Kill Switch</string>
+    <!-- REMEDIATION-DECISIONS §2 wording. What it does, and no more: the block
+         is the app's own, so it holds while BirdoVPN's VPN service is running
+         (audit 2026-09-29, D-7; the caveat is the corrected §2 one, second-pass
+         #5). Android's Always-on VPN is NOT offered (SUPPORTS_ALWAYS_ON=false),
+         so never point users at it here. -->
+    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. Protection applies while BirdoVPN\'s VPN service is running.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
-    <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps can fall back to the normal, unencrypted connection and briefly leak your real IP address and DNS queries. For the strongest protection keep it on — and for a system-guaranteed block, enable Android\'s \"Always-on VPN\" with \"Block connections without VPN\" in system VPN settings.</string>
+    <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
+         Always-on VPN with Block connections without VPN". The app DISABLES
+         that system toggle (AndroidManifest SUPPORTS_ALWAYS_ON=false, pinned
+         by ApiLevel36ContractTest: there is no headless reconnect yet), so the
+         advice sent users to a setting they could not turn on. Do not restore
+         it until SUPPORTS_ALWAYS_ON is true. -->
+    <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps fall back to your normal, unencrypted connection and can expose your real IP address and DNS queries until it reconnects. For the strongest protection, keep it on.</string>
     <string name="settings_kill_switch_disable_confirm">Turn off anyway</string>
     <string name="settings_auto_connect">Auto-Connect</string>
     <string name="settings_notifications">Notifications</string>
@@ -129,10 +141,34 @@
 
     <!-- Delete Account Dialog -->
     <string name="delete_dialog_title">Delete Account</string>
-    <string name="delete_dialog_message">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted. Enter your password to confirm.</string>
+    <!-- Audit 2026-09-29, A-8 / C-9: this used to say the "subscription will be
+         deleted". Only a subscription billed by Birdo is cancelled with the
+         account; a Google Play or App Store one keeps billing until the user
+         cancels it in the store, which delete_dialog_store_warning says.
+         The retention sentence is the desktop dialog's, from
+         REMEDIATION-DECISIONS §3 (unified erasure; second-pass #19). -->
+    <string name="delete_dialog_message">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax. Enter your password to confirm.</string>
     <!-- Shown to accounts with no password (SSO and anonymous), which cannot be
          asked to confirm a credential they do not have. -->
-    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. All your data, VPN keys, and subscription will be deleted.</string>
+    <string name="delete_dialog_message_no_password">This action is permanent and cannot be undone. Your account, its data and your VPN keys will be deleted. The account is anonymised immediately and fully deleted within 30 days; payment records are kept, anonymised, for 7 years for tax.</string>
+    <string name="delete_dialog_store_warning">A subscription billed by Birdo is cancelled with your account. One bought through Google Play or the App Store is not: cancel it there first, or the store will keep charging you.</string>
+    <!-- Second-pass #9: from GET api/v1/gdpr/delete/preflight, shown before
+         the confirm button in place of delete_dialog_store_warning when the
+         server names store subscriptions that will keep billing. %1$s is a
+         list of store_still_billing_* names. -->
+    <string name="delete_dialog_preflight_store">This account has a subscription that deleting it will not cancel: %1$s. Cancel it there first, or the store will keep charging you.</string>
+    <string name="delete_dialog_preflight_web">Your subscription billed by Birdo will be cancelled with your account.</string>
+    <string name="delete_dialog_manage_play">Manage Google Play subscriptions</string>
+    <!-- After a deletion, when the server reports store subscriptions that are
+         still billing (DeleteAccountResponse.storeSubscriptionsStillBilling).
+         %1$s is a list such as "Google Play (Operative, renews 1 Nov 2026)". -->
+    <string name="store_still_billing_title">Store subscription still active</string>
+    <string name="store_still_billing_body">Your Birdo account has been deleted, but this subscription is still being billed: %1$s. Only the store can cancel it. Cancel it there to stop further charges.</string>
+    <string name="store_still_billing_google_play">Google Play</string>
+    <string name="store_still_billing_app_store">the App Store (cancel it in your Apple Account settings on an iPhone, iPad or Mac)</string>
+    <string name="store_still_billing_unknown_store">an app store</string>
+    <string name="store_still_billing_manage">Open Google Play subscriptions</string>
+    <string name="store_still_billing_ok">OK</string>
     <string name="delete_dialog_password_label">Password</string>
     <string name="delete_dialog_confirm">Delete My Account</string>
     <string name="delete_dialog_deleting">Deleting…</string>
@@ -197,6 +233,13 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_system">System</string>
+    <!-- Crash reports: the Settings half of the consent-screen opt-in. Same
+         facts as consent_crash_reports_desc (second-pass #7: FaultReporter
+         also sends error events when a feature fails, so never "crash
+         details only"). The row shows the whole text, never an ellipsis. -->
+    <string name="settings_section_privacy">Privacy</string>
+    <string name="settings_crash_reports">Send Crash Reports</string>
+    <string name="settings_crash_reports_desc">Off by default. Crash and error reports: crashes, and errors when an app feature such as connecting or the kill switch fails, with the app and OS version and device model. No account details, IP address or browsing data.</string>
     <!-- Port forwarding -->
     <string name="port_forward_title">Port Forwarding</string>
     <string name="port_forward_info">Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.</string>
@@ -218,7 +261,9 @@
     <string name="subscription_choose_plan">Choose a plan</string>
     <string name="subscription_plans_features">Plans &amp; features</string>
     <string name="subscription_monthly">Monthly</string>
-    <string name="subscription_yearly">Yearly · Save 20%</string>
+    <!-- "up to": yearly saves 20% on Operative but 17% on Sovereign (A-34 /
+         A-24). Never a flat "Save 20%" across both plans. -->
+    <string name="subscription_yearly">Yearly · Save up to 20%</string>
     <string name="subscription_manage_web">Manage on web</string>
     <string name="subscription_web_note">Subscriptions are purchased and managed on birdo.app.</string>
     <string name="subscription_voucher_note">Have a voucher code? Redeem it on the Profile tab.</string>
@@ -240,6 +285,14 @@
     <string name="subscription_retry">Try again</string>
     <string name="subscription_loading_prices">Loading subscription prices…</string>
     <string name="subscription_play_manage">Manage or cancel your subscription in the Google Play Store.</string>
+    <!-- A-9 / A-16: shown instead of purchase buttons when the account's paid
+         plan was bought outside Google Play. Names no other purchase route:
+         this string ships in the Play build. Conditional on purpose
+         (second-pass #8): until /vpn/stats sends source/liveSources the gate
+         falls back to "this Play account owns no Birdo subscription", which is
+         also what a real Play subscriber sees while Play is unavailable, so the
+         text must not assert where the plan was bought. -->
+    <string name="subscription_managed_elsewhere">Your plan is already active on this account. If you bought it outside Google Play, manage it where you bought it: subscribing here would bill you twice.</string>
     <!-- Billing choice (Play external-offers / link-out). Copy must stay NEUTRAL:
          the programme forbids steering away from, or disparaging, Google's option. -->
     <string name="billing_choice_title">Choose how to subscribe</string>
@@ -274,18 +327,39 @@
     <string name="cd_privacy">Privacy</string>
     <string name="consent_title">Your Privacy Matters</string>
     <string name="consent_subtitle">Before using BirdoVPN, please review how your data is handled.</string>
+    <!-- The pre-use data declaration (Apple 5.4 / Play prominent disclosure).
+         Wording is REMEDIATION-DECISIONS §1.5, audit 2026-09-29 (P0-1 / B-1 /
+         D-1 / B-3). The previous text claimed "RAM-only volatile
+         infrastructure" and that no connection timestamps or IP addresses
+         were logged; the nodes are ordinary disk-backed cloud servers and the
+         account system does keep a live session record while you are
+         connected. Never reintroduce "RAM-only", "volatile", "diskless",
+         "zero logs" or "non-reversible". -->
     <string name="consent_no_logs_title">No Activity Logs</string>
-    <string name="consent_no_logs_desc">BirdoVPN operates a strict zero-logs policy on RAM-only volatile infrastructure. No browsing activity, DNS queries, traffic content, connection timestamps, or IP addresses are logged.</string>
-    <string name="consent_minimal_data_title">Account Data Only</string>
-    <string name="consent_minimal_data_desc">Only your email, subscription status, and aggregate bandwidth are stored in a separate account database — never on VPN servers.</string>
-    <string name="consent_crash_reports_title">Crash Reports</string>
-    <string name="consent_crash_reports_desc">Anonymous crash reports help fix bugs faster. No personal data is included.</string>
+    <string name="consent_no_logs_desc">Our VPN servers don\'t record the sites you visit, your DNS queries or your traffic. While you\'re connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. We also count your data use per billing period.</string>
+    <string name="consent_minimal_data_title">What Your Account Holds</string>
+    <string name="consent_minimal_data_desc">Your email (or anonymous account number), plan, the devices you add, and your usage totals. Full list: birdo.app/privacy.</string>
+    <!-- OPT-IN, off by default: the switch next to this text starts unticked,
+         and BirdoApp starts Sentry only if the user ticks it here or in
+         Settings. Wording: REMEDIATION-DECISIONS §1.3 / §1.5 (audit
+         2026-09-29; second-pass #7, option A: FaultReporter's non-fatal
+         connect / kill-switch / stealth / PQ / DNS fault events are disclosed,
+         not dropped). Do not reintroduce "anonymous", "no personal data" or
+         "only" — a report carries device model and OS version, which are
+         personal data. -->
+    <string name="consent_crash_reports_title">Crash Reports (optional)</string>
+    <string name="consent_crash_reports_desc">Off by default. If you turn this on, the app sends crash and error reports to Sentry so we can fix bugs: crashes, and errors when an app feature such as connecting or the kill switch fails, with the app and OS version and device model. No account details, IP address or browsing data. Change it any time in Settings.</string>
     <string name="consent_no_data_sales_title">No Data Sales</string>
     <string name="consent_no_data_sales_desc">Your data is never sold, shared with advertisers, or used for profiling.</string>
     <string name="consent_read_privacy_policy">Read the full Privacy Policy</string>
+    <!-- B-13: the consent screen links BOTH documents, states the Terms\' age
+         requirement, and "I Agree & Continue" accepts both. -->
+    <string name="consent_read_terms">Read the Terms of Service</string>
+    <string name="consent_age_notice">You must be 18 or over to use BirdoVPN.</string>
+    <string name="consent_terms_notice">By tapping \"I Agree &amp; Continue\" you accept the Terms of Service and the Privacy Policy.</string>
     <string name="consent_agree">I Agree &amp; Continue</string>
     <string name="consent_decline">Decline</string>
-    <string name="consent_required_notice">You must accept the privacy policy to use BirdoVPN.</string>
+    <string name="consent_required_notice">You must accept the Terms of Service and the Privacy Policy to use BirdoVPN.</string>
 
     <string name="offline_banner">No internet connection</string>
 

@@ -41,10 +41,12 @@ object TestTags {
     const val KILL_SWITCH_TOGGLE = "kill_switch_toggle"
     const val AUTO_CONNECT_TOGGLE = "auto_connect_toggle"
     const val NOTIFICATIONS_TOGGLE = "notifications_toggle"
+    const val CRASH_REPORTS_TOGGLE = "crash_reports_toggle"
 
     // Consent screen
     const val CONSENT_ACCEPT = "consent_accept"
     const val CONSENT_DECLINE = "consent_decline"
+    const val CONSENT_CRASH_REPORTS = "consent_crash_reports"
 
     // Navigation
     const val OFFLINE_BANNER = "offline_banner"

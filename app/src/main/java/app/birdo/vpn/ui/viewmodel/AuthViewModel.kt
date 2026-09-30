@@ -9,6 +9,8 @@ import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.auth.OAuthStateStore
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.DeletionPreflightResponse
+import app.birdo.vpn.data.model.StoreSubscriptionStillBilling
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.utils.PkceGenerator
@@ -37,6 +39,21 @@ data class AuthUiState(
     val isDeletingAccount: Boolean = false,
     val deleteAccountError: String? = null,
     val accountDeleted: Boolean = false,
+    /**
+     * App Store / Google Play subscriptions the server reports as still billing
+     * after the account was deleted. Non-empty means the user must be told to
+     * cancel them in the store: deleting a Birdo account cannot (audit
+     * 2026-09-29, A-8 / C-9). Empty when the backend does not send the field.
+     */
+    val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
+    /**
+     * The deletion preflight, fetched when the deletion dialog opens so it can
+     * name the store subscriptions that will keep billing BEFORE the user
+     * confirms (second-pass #9). Null while loading, and when the request
+     * failed: the dialog then shows its static store warning, and deletion is
+     * never blocked on it.
+     */
+    val deletionPreflight: DeletionPreflightResponse? = null,
     /**
      * A just-minted 24-digit anonymous ID the user has NOT yet confirmed saving.
      * Non-null means sign-in is deliberately parked: `isLoggedIn` stays false so
@@ -508,6 +525,8 @@ class AuthViewModel @Inject constructor(
                     _uiState.value = AuthUiState(
                         isLoggedIn = false,
                         accountDeleted = true,
+                        storeSubscriptionsStillBilling =
+                            result.data.storeSubscriptionsStillBilling,
                     )
                 }
                 is ApiResult.Error -> {
@@ -520,8 +539,32 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    private var deletionPreflightJob: Job? = null
+
+    /**
+     * Ask the server what a deletion would leave billing. Called when the
+     * deletion dialog opens. Best effort by design: an error leaves
+     * [AuthUiState.deletionPreflight] null and the dialog falls back to its
+     * static warning; it never touches the deletion itself.
+     */
+    fun loadDeletionPreflight() {
+        deletionPreflightJob?.cancel()
+        _uiState.value = _uiState.value.copy(deletionPreflight = null)
+        deletionPreflightJob = viewModelScope.launch {
+            val result = repository.deletionPreflight()
+            if (result is ApiResult.Success) {
+                _uiState.value = _uiState.value.copy(deletionPreflight = result.data)
+            }
+        }
+    }
+
     fun clearDeleteAccountError() {
         _uiState.value = _uiState.value.copy(deleteAccountError = null)
+    }
+
+    /** The user has read the "your store subscription is still billing" notice. */
+    fun dismissStoreBillingNotice() {
+        _uiState.value = _uiState.value.copy(storeSubscriptionsStillBilling = emptyList())
     }
 
     fun clearError() {

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.service.RosenpassManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
@@ -63,7 +64,7 @@ data class ClientDeviceInfo(
  */
 @Singleton
 class DeviceInfoProvider @Inject constructor(
-    @ApplicationContext context: Context,
+    @ApplicationContext private val context: Context,
 ) {
     private val prefs = context.getSharedPreferences("birdo_device_prefs", Context.MODE_PRIVATE)
 
@@ -108,6 +109,27 @@ class DeviceInfoProvider @Inject constructor(
      * plan's device cap.
      */
     fun resetDeviceIdentity(): String = mintDeviceId()
+
+    /**
+     * PRIVACY: delete this install's persisted ML-KEM-1024 (BirdoPQ) keypair,
+     * so the next connect generates a fresh one.
+     *
+     * The client public key rides every /connect body. It used to be minted
+     * once per install and never rotated, so every account ever used on this
+     * handset presented the same 1,568-byte value to the API and to the
+     * Cloudflare edge in front of it — a stable identifier that joins
+     * anonymous accounts the user believes are unrelated, and undoes the
+     * deviceId rotation above (audit 2026-09-29, D-15 / C-8).
+     *
+     * Called on sign-out AND on account deletion. Unlike the deviceId, this key
+     * carries no server-side state to strand: the backend does not store it
+     * (it is only used to encapsulate the per-connect PSK), so rotating it
+     * costs one keygen on the next connect and nothing else. iOS already does
+     * the same (AuthViewModel.completeLocalLogout).
+     */
+    fun forgetPostQuantumKeypair() {
+        RosenpassManager.resetPersistedKeypair(context)
+    }
 
     /** Mint and persist a fresh random device id. `commit`, not `apply`: the
      *  caller may be about to make a network call that must carry the new id. */

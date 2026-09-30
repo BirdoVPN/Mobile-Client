@@ -407,6 +407,10 @@ class BirdoRepository @Inject constructor(
         tokenManager.clearAll()
         invalidateServerCache()
         invalidateSubscriptionCache()
+        // PRIVACY: the per-install ML-KEM public key would otherwise be sent
+        // unchanged by the NEXT account signed in on this handset, linking the
+        // two (audit D-15). Best effort — sign-out must complete regardless.
+        forgetPostQuantumKeypair()
     }
 
     /**
@@ -436,8 +440,27 @@ class BirdoRepository @Inject constructor(
             // a rotation of a value nothing can recompute, not an escape from
             // one that can.)
             deviceInfoProvider.resetDeviceIdentity()
+            // Same reasoning for the ML-KEM keypair (audit D-15).
+            forgetPostQuantumKeypair()
         }
         return result
+    }
+
+    /**
+     * What deleting the account will and will not stop (second-pass #9). Read
+     * only: nothing local changes whatever it returns, and callers treat an
+     * error as "unknown" and fall back to the dialog's static store warning.
+     */
+    suspend fun deletionPreflight(): ApiResult<DeletionPreflightResponse> =
+        withAutoRefresh("Could not check subscriptions") { api.deletionPreflight() }
+
+    /** Never lets a keystore/file error turn a sign-out or deletion into a failure. */
+    private fun forgetPostQuantumKeypair() {
+        try {
+            deviceInfoProvider.forgetPostQuantumKeypair()
+        } catch (_: Exception) {
+            // The next connect still works: it loads or regenerates the pair.
+        }
     }
 
     // ── Generic auto-refresh wrapper ────────────────────────────

@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.AppUpdateInfo
+import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -32,6 +33,7 @@ import javax.inject.Inject
 class UpdateViewModel @Inject constructor(
     private val repository: BirdoRepository,
     @param:ApplicationContext private val context: Context,
+    appPreferences: AppPreferences,
 ) : ViewModel() {
 
     data class UpdateUiState(
@@ -48,7 +50,11 @@ class UpdateViewModel @Inject constructor(
     }
 
     init {
-        check()
+        // Not before the consent screen is accepted (audit 2026-09-29, D-12):
+        // the check is a request from this device's IP to our API, and the
+        // consent screen is where the user learns what the app sends.
+        // BirdoNavGraph runs check() the moment consent is given.
+        if (appPreferences.hasAcceptedCurrentConsent) check()
     }
 
     fun check() {
