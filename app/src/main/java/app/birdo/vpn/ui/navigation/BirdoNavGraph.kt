@@ -53,6 +53,43 @@ import app.birdo.vpn.ui.viewmodel.UpdateViewModel
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 
 /**
+ * A2-004: the VPN as seen from Login — "Your VPN is still connected." and a
+ * Disconnect — for a session that outlived the sign-in behind it.
+ */
+@Composable
+private fun LoginVpnStatus(onDisconnect: () -> Unit) {
+    val palette = BirdoColors.current
+    Surface(
+        color = palette.surface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Shield,
+                contentDescription = null,
+                tint = palette.accent,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = stringResource(R.string.login_vpn_still_on),
+                color = palette.onSurface,
+                fontSize = 13.sp,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onDisconnect) {
+                Text(stringResource(R.string.disconnect), color = palette.accent)
+            }
+        }
+    }
+}
+
+/**
  * Bottom nav tabs matching Windows client: Connect / Servers / Settings
  * Windows uses: Power icon (Connect), Server icon (Servers), Settings icon
  */
@@ -152,7 +189,29 @@ fun BirdoNavGraph(
         }
     }
 
-    // Handle VPN permission requests
+    // ── Session lifecycle ↔ VPN (A2-004, A2-005, A1-035) ────────
+    // The account session ended on its own (a 401 the refresh could not fix,
+    // seen by the profile check or by the VPN heartbeat): each side tells the
+    // other, so Login explains itself and the VPN stops trying to recover a
+    // session nobody can re-authorise. Neither call loops: both are no-ops
+    // the second time.
+    LaunchedEffect(authState.sessionExpired) {
+        if (authState.sessionExpired) vpnViewModel.onSessionExpired()
+    }
+    LaunchedEffect(vpnState.sessionExpired) {
+        if (vpnState.sessionExpired) authViewModel.onSessionExpired()
+    }
+    LaunchedEffect(authState.isLoggedIn) {
+        if (authState.isLoggedIn) vpnViewModel.onSignedIn()
+    }
+    // Deletion tears the tunnel down only once the server has CONFIRMED it
+    // (A2-005): a mistyped password used to disconnect the VPN and then fail.
+    LaunchedEffect(authState.accountDeleted) {
+        if (authState.accountDeleted) vpnViewModel.onAccountDeleted()
+    }
+
+    // Handle VPN permission requests. The ViewModel replays the exact dial
+    // that asked (A1-007), including when no prompt is needed after all.
     LaunchedEffect(vpnState.needsVpnPermission) {
         if (vpnState.needsVpnPermission) {
             val intent = vpnViewModel.getVpnPermissionIntent()
@@ -421,6 +480,16 @@ fun BirdoNavGraph(
                         onAcknowledgeAnonymousId = { authViewModel.acknowledgeAnonymousId() },
                     )
                 }
+                // A2-004: a session that expired can leave the tunnel (or the
+                // kill-switch block) up, and Login has no bottom bar to reach
+                // Home from. Say so here, with the way to stop it.
+                val vpnStillOn = (vpnState.vpnState !is VpnState.Disconnected &&
+                    vpnState.vpnState !is VpnState.Error) || vpnState.killSwitchActive
+                if (vpnStillOn) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                        LoginVpnStatus(onDisconnect = { vpnViewModel.disconnect() })
+                    }
+                }
             }
 
             // ── Home (Connect tab) ──────────────────────────────────
@@ -457,9 +526,22 @@ fun BirdoNavGraph(
                             }
                         },
                         onLogout = {
-                            vpnViewModel.disconnect()
-                            authViewModel.logout()
+                            vpnViewModel.disconnectForSignOut { authViewModel.logout() }
                         },
+                        onOpenSettings = {
+                            navController.navigate(Screen.Settings.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        onViewPlans = {
+                            vpnViewModel.fetchSubscription()
+                            navController.navigate(Screen.Subscription.route)
+                        },
+                        onDismissMessage = { vpnViewModel.dismissConnectError() },
                         updateInfo = updateState.info,
                         showUpdateBanner = updateState.showBanner,
                         onUpdateApp = {
@@ -507,14 +589,10 @@ fun BirdoNavGraph(
                             }
                         },
                         onLogout = {
-                            vpnViewModel.disconnect()
-                            authViewModel.logout()
+                            vpnViewModel.disconnectForSignOut { authViewModel.logout() }
                         },
                         onOpenUrl = { settingsViewModel.openUrl(it) },
-                        onDeleteAccount = { password ->
-                            vpnViewModel.disconnect()
-                            authViewModel.deleteAccount(password)
-                        },
+                        onDeleteAccount = { password -> authViewModel.deleteAccount(password) },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
@@ -562,10 +640,11 @@ fun BirdoNavGraph(
                         onToggleFavorite = { vpnViewModel.toggleFavorite(it) },
                         onRefresh = { vpnViewModel.loadServers(forceRefresh = true) },
                         onBack = { navController.popBackStack() },
-                        // selectServer can REFUSE (live Multi-Hop downgrade).
-                        // HomeScreen already renders this; without it here the
-                        // refusal was silent on the surface that triggers it.
-                        errorMessage = vpnState.error,
+                        // The list's own load error first; otherwise a refusal
+                        // from selectServer (live Multi-Hop downgrade), which
+                        // HomeScreen also renders — without it here the refusal
+                        // was silent on the surface that triggers it.
+                        errorMessage = vpnState.serversError ?: vpnState.connectError,
                     )
                 }
             }
@@ -701,7 +780,7 @@ fun BirdoNavGraph(
                     PortForwardScreen(
                         portForwards = vpnState.portForwards,
                         isLoading = vpnState.isLoadingPortForwards,
-                        error = vpnState.error,
+                        error = vpnState.portForwardError,
                         onCreate = { port, protocol -> vpnViewModel.createPortForward(port, protocol) },
                         onDelete = { id -> vpnViewModel.deletePortForward(id) },
                         onBack = { navController.popBackStack() },

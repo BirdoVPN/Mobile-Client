@@ -190,6 +190,7 @@ fun SettingsScreen(
                     icon = Icons.Default.Notifications,
                     iconColor = BirdoYellow,
                     title = stringResource(R.string.settings_notifications),
+                    description = stringResource(R.string.settings_notifications_desc),
                     checked = state.notificationsEnabled,
                     onCheckedChange = onNotificationsChange,
                     testTag = TestTags.NOTIFICATIONS_TOGGLE,

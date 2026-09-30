@@ -61,6 +61,14 @@ data class AuthUiState(
      * [AuthViewModel.registerAnonymous].
      */
     val pendingAnonymousId: String? = null,
+    /**
+     * The session ENDED on its own — a 401 the refresh could not fix — as
+     * opposed to the user signing out. The nav graph hands it to the VPN
+     * (A2-004: the Login screen used to appear with the tunnel still up and
+     * nothing on it to say so or to stop it), and [error] carries the
+     * sentence Login shows.
+     */
+    val sessionExpired: Boolean = false,
 )
 
 @HiltViewModel
@@ -177,12 +185,7 @@ class AuthViewModel @Inject constructor(
                 is ApiResult.Error -> {
                     // 401 (or 401 after refresh failed) → token is dead, force re-login.
                     // Any other failure (network, 5xx, timeout) is transient — stay logged in.
-                    if (result.code == 401) {
-                        _uiState.value = _uiState.value.copy(
-                            isLoggedIn = false,
-                            user = null,
-                        )
-                    }
+                    if (result.code == 401) onSessionExpired()
                 }
             }
         }
@@ -360,6 +363,21 @@ class AuthViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * The session is dead: from [checkSession], or from the VPN heartbeat's
+     * 401 (the graph forwards VpnManager.sessionExpired). Back to Login, with
+     * the reason on it. The tokens are left as BirdoRepository left them.
+     */
+    fun onSessionExpired() {
+        if (!_uiState.value.isLoggedIn) return
+        _uiState.value = _uiState.value.copy(
+            isLoggedIn = false,
+            user = null,
+            sessionExpired = true,
+            error = app.birdo.vpn.service.SessionCopy.SESSION_EXPIRED,
+        )
     }
 
     fun logout() {

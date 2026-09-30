@@ -103,21 +103,34 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="VPN tunnel that encrypts and routes all user network traffic to a remote VPN server. Must run continuously while user is connected; cannot be deferred or restarted without breaking the encrypted tunnel and exposing user IP/DNS." />
             <!--
-                Always-on VPN is DISABLED (value="false") so Android greys out the
-                system "Always-on VPN" toggle for this app. The service cannot yet
-                self-establish a tunnel from a system-initiated (null-action) start
-                or after reboot — the WireGuard config is fetched per user-initiated
-                connect and held in memory, and there is no headless re-auth path.
-                Leaving this "true" would let a user enable Always-on + "Block
-                connections without VPN" (lockdown) and then lose all connectivity
-                after every reboot until they manually reconnect. Disabling it fails
-                safe. TODO: implement headless reconnect (re-auth + re-fetch config
-                for the last server in onStartCommand) then flip this back to true.
+                Always-on VPN is SUPPORTED. The platform starts the service with
+                the android.net.VpnService action at boot, on unlock and when the
+                setting changes; BirdoVpnService.onStartCommand treats that (and a
+                sticky restart, and an app update) as a system start: it arms the
+                kill-switch block first when the kill switch or "Block connections
+                without VPN" asks for one, then asks VpnManager for a HEADLESS
+                connect from the persisted session (last server or Multi-Hop pair,
+                Keystore-sealed tokens, a fresh WireGuard key per connect). Signed
+                out, consent missing or a refusal never fails open silently: the
+                block holds and an "Action needed" alert says what to do. Pinned by
+                ApiLevel36ContractTest: this may only read "true" while that
+                handler exists.
             -->
             <meta-data
                 android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
-                android:value="false" />
+                android:value="true" />
         </service>
+
+        <!-- Restores the session after an app update (the update kills the process,
+             tunnel and block included). Not exported: only the system delivers
+             MY_PACKAGE_REPLACED, and only to this package. -->
+        <receiver
+            android:name=".service.PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Quick Settings Tile — Toggle VPN from notification shade -->
         <service

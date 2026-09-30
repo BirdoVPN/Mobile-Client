@@ -53,24 +53,67 @@
     <!-- Home Screen -->
     <string name="logout">Logout</string>
     <string name="stats_duration">Duration</string>
-    <string name="stats_download">⬇ Download</string>
-    <string name="stats_upload">⬆ Upload</string>
-    <string name="kill_switch_blocking">Kill Switch — All traffic blocked</string>
+    <!-- Plain words: these are read aloud by TalkBack (P1-parity-030). -->
+    <string name="stats_download">Download</string>
+    <string name="stats_upload">Upload</string>
+    <string name="kill_switch_blocking">Kill Switch — all traffic blocked</string>
+    <!-- P1-parity-019: the honest hint while the kill switch is on but not yet armed. -->
+    <string name="kill_switch_pending">Kill Switch arms once connected</string>
     <!-- Shown when Adaptive Transport has switched the live connection to the
          stealth transport. Deliberately states the CAUSE ("this network blocks
          VPN traffic"), not the mechanism: the user does not need to know what a
          WireGuard handshake is, but they do need to know why their connection
          is slower than usual, or it just reads as a bad VPN. -->
-    <string name="stealth_fallback_active">Stealth active — this network blocks standard VPN traffic</string>
+    <string name="stealth_fallback_active">This network blocks standard VPN traffic — using Stealth Mode</string>
     <string name="select_server">Select Server</string>
     <string name="cd_select_server">Select server</string>
+    <!-- Connection states: the canonical vocabulary of the 2026-09-30 parity
+         audit (sentence case, Unicode ellipsis). Shared by Home, the ongoing
+         notification, the Quick Settings tile and the widget. -->
     <string name="status_protected">Protected</string>
-    <string name="status_error">Connection Error</string>
-    <string name="status_not_connected">Not Connected</string>
+    <string name="status_protected_multihop">Protected · Multi-Hop</string>
+    <string name="status_error">Connection error</string>
+    <string name="status_not_connected">Not connected</string>
+    <string name="status_switching">Switching server…</string>
+    <string name="status_reconnecting">Reconnecting…</string>
     <string name="connect">Connect</string>
     <string name="disconnect">Disconnect</string>
     <string name="connecting">Connecting…</string>
     <string name="disconnecting">Disconnecting…</string>
+    <string name="cta_switching">Switching…</string>
+    <!-- A1-010: the way out of a connect that is taking too long. -->
+    <string name="cancel_connect">Cancel</string>
+    <string name="banner_action_open_settings">Open Settings</string>
+    <string name="banner_action_view_plans">View plans</string>
+    <string name="banner_action_choose_server">Choose server</string>
+    <string name="cd_dismiss_message">Dismiss message</string>
+    <!-- A1-027: the alerts that say the VPN stopped or needs the user are notifications. -->
+    <string name="home_notifications_off">Notifications are off, so BirdoVPN can\'t alert you when the VPN stops or needs you.</string>
+    <string name="home_notifications_turn_on">Turn on</string>
+
+    <!-- Ongoing notification, alerts, tile (P1-parity-028: no glyph prefixes). -->
+    <string name="notif_title_protected">BirdoVPN — Protected</string>
+    <string name="notif_title_protected_multihop">BirdoVPN — Protected · Multi-Hop</string>
+    <string name="notif_body_waiting_network">Waiting for a network connection…</string>
+    <string name="notif_body_attempt">Attempt %1$d</string>
+    <string name="notif_action_stop_blocking">Stop blocking</string>
+    <string name="notif_action_reconnect">Reconnect</string>
+    <string name="notif_detail_traffic">Download %1$s · Upload %2$s</string>
+    <string name="notif_detail_stealth">Stealth Mode in use</string>
+    <string name="notif_detail_quantum">Quantum Protection on</string>
+    <string name="notif_detail_kill_switch">Kill Switch on</string>
+    <string name="notif_disconnected_body">Tap Connect to protect your connection</string>
+    <string name="notif_alert_sign_in">Sign in to BirdoVPN</string>
+    <string name="notif_alert_update">Update BirdoVPN</string>
+    <string name="notif_alert_revoked">Connection revoked</string>
+    <string name="notif_alert_turned_off">BirdoVPN was turned off</string>
+    <string name="notif_alert_open_app">Open BirdoVPN to connect</string>
+    <string name="notif_alert_cant_connect">BirdoVPN couldn\'t connect</string>
+    <string name="notif_alert_stopped">BirdoVPN stopped unexpectedly</string>
+    <string name="tile_traffic_blocked">Traffic blocked</string>
+
+    <!-- A2-004: the Login screen while a session the user can no longer manage is still up. -->
+    <string name="login_vpn_still_on">Your VPN is still connected.</string>
 
     <!-- Server List Screen -->
     <string name="filter_all">All</string>
@@ -102,20 +145,23 @@
     <!-- REMEDIATION-DECISIONS §2 wording. What it does, and no more: the block
          is the app's own, so it holds while BirdoVPN's VPN service is running
          (audit 2026-09-29, D-7; the caveat is the corrected §2 one, second-pass
-         #5). Android's Always-on VPN is NOT offered (SUPPORTS_ALWAYS_ON=false),
-         so never point users at it here. -->
-    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. Protection applies while BirdoVPN\'s VPN service is running.</string>
+         #5). Since the 2026-09-30 overhaul the app releases its own block when
+         reconnecting keeps failing (parity with iOS and Windows), and Android's
+         Always-on VPN IS supported (SUPPORTS_ALWAYS_ON=true, pinned by
+         ApiLevel36ContractTest), so the system-level block may be named. -->
+    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. If reconnecting keeps failing, the app stops blocking. Protection applies while BirdoVPN\'s VPN service is running. For a block Android enforces at all times, turn on Always-on VPN and Block connections without VPN in Android\'s VPN settings.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
     <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
-         Always-on VPN with Block connections without VPN". The app DISABLES
-         that system toggle (AndroidManifest SUPPORTS_ALWAYS_ON=false, pinned
-         by ApiLevel36ContractTest: there is no headless reconnect yet), so the
-         advice sent users to a setting they could not turn on. Do not restore
-         it until SUPPORTS_ALWAYS_ON is true. -->
+         Always-on VPN with Block connections without VPN", advice for a setting
+         the app then disabled. Always-on is supported since 2026-09-30 and the
+         Kill Switch row now names it; this dialog keeps the REMEDIATION-DECISIONS
+         text until that document is revised. -->
     <string name="settings_kill_switch_disable_msg">If the VPN drops while the kill switch is off, your apps fall back to your normal, unencrypted connection and can expose your real IP address and DNS queries until it reconnects. For the strongest protection, keep it on.</string>
     <string name="settings_kill_switch_disable_confirm">Turn off anyway</string>
     <string name="settings_auto_connect">Auto-Connect</string>
     <string name="settings_notifications">Notifications</string>
+    <!-- A1-028 / P1-parity-012: what the toggle governs, now that something reads it. -->
+    <string name="settings_notifications_desc">Show a notice when the VPN disconnects. The ongoing notification while connected, and alerts that need your action, always show.</string>
     <string name="settings_notif_show_ip">Show IP Address</string>
     <string name="settings_notif_show_location">Show Server Location</string>
     <string name="settings_notif_system">Notification Settings</string>
@@ -220,8 +266,8 @@
     <string name="cd_state_off">Off</string>
     <string name="cd_show_password">Show password</string>
     <string name="cd_hide_password">Hide password</string>
-    <string name="cd_widget_connected">BirdoVPN — protected via %1$s. Double-tap to open the app.</string>
-    <string name="cd_widget_disconnected">BirdoVPN — not connected. Double-tap to connect.</string>
+    <string name="cd_widget_connected">BirdoVPN — protected via %1$s. Double-tap to disconnect.</string>
+    <string name="cd_widget_state">BirdoVPN — %1$s. %2$s</string>
     <string name="servers_empty_hint">Pull down to refresh or tap retry.</string>
     <!-- Settings -->
     <string name="settings_subtitle">App preferences &amp; account</string>
@@ -306,6 +352,9 @@
     <string name="sheet_search_placeholder">Search by country or city</string>
     <string name="cd_close">Close</string>
     <string name="widget_tap_to_connect">Tap to connect</string>
+    <string name="widget_tap_to_disconnect">Tap to disconnect</string>
+    <string name="widget_tap_to_cancel">Tap to cancel</string>
+    <string name="widget_tap_to_stop_blocking">Tap to stop blocking</string>
     <string name="yes">Yes</string>
     <string name="no">No</string>
     <string name="settings_version">Version %s</string>

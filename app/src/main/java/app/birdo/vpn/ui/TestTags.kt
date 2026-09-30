@@ -34,6 +34,7 @@ object TestTags {
 
     // Home screen
     const val CONNECT_BUTTON = "connect_button"
+    const val CANCEL_CONNECT_BUTTON = "cancel_connect_button"
     const val VPN_STATUS = "vpn_status"
     const val SERVER_SELECTOR = "server_selector"
 

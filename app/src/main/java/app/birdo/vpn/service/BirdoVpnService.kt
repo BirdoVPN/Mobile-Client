@@ -1,30 +1,35 @@
 package app.birdo.vpn.service
 
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.service.quicksettings.TileService
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.FaultReporter
-import app.birdo.vpn.utils.FormatUtils
 import app.birdo.vpn.utils.RootDetector
 import com.wireguard.config.*
-import com.wireguard.crypto.Key
+import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -36,7 +41,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Android VPN Service with WireGuard tunnel, Kill Switch, and Split Tunneling.
@@ -111,9 +119,44 @@ class BirdoVpnService : VpnService() {
          */
         const val ACTION_UPDATE_SETTINGS = "app.birdo.vpn.UPDATE_SETTINGS"
 
+        /**
+         * Release the kill-switch block and tear down whatever is left of the
+         * data plane, but KEEP the current Error on screen and the service in
+         * the foreground. Sent by VpnManager when the supervisor gives up
+         * (budget spent), or when a user dial that never connected created a
+         * block it must not keep (A1-003). Unlike [ACTION_STOP] it does not
+         * publish Disconnected, which would erase the explanation.
+         */
+        const val ACTION_RELEASE_BLOCK = "app.birdo.vpn.RELEASE_BLOCK"
+
+        /**
+         * Sent by PackageReplacedReceiver after an app update killed the
+         * process, when the user's session should be up (A1-015). Handled as
+         * a system start: see [SystemStartKind].
+         */
+        const val ACTION_HEADLESS_CONNECT = "app.birdo.vpn.HEADLESS_CONNECT"
+
+        /**
+         * The notification's Disconnect and "Stop blocking" actions. Routed
+         * to VpnManager.disconnect() — the one path that releases the peer,
+         * cancels recovery and supersedes an in-flight dial. They used to send
+         * ACTION_STOP here directly, so a dial in flight could bring the
+         * tunnel back seconds after the user stopped it (A1-009).
+         */
+        const val ACTION_USER_DISCONNECT = "app.birdo.vpn.USER_DISCONNECT"
+
+        /** The notification's Reconnect action: VpnManager.connectPreferred(). */
+        const val ACTION_USER_RECONNECT = "app.birdo.vpn.USER_RECONNECT"
+
         const val EXTRA_KILL_SWITCH = "kill_switch"
         const val EXTRA_SPLIT_TUNNEL_ENABLED = "split_tunnel_enabled"
         const val EXTRA_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
+        /** STOP only: the user asked for this teardown (no "Not connected" notice follows it). */
+        const val EXTRA_USER_INITIATED = "user_initiated"
+        /** STOP only: end in this Error instead of Disconnected, and post it as an alert. */
+        const val EXTRA_STOP_REASON = "stop_reason"
+        /** STOP only: the [FailureKind] name that goes with [EXTRA_STOP_REASON]. */
+        const val EXTRA_STOP_KIND = "stop_kind"
         /**
          * SWITCH_TEARDOWN only: force the fail-closed blocking interface up for
          * this teardown even when the kill switch is OFF. Used by the settings
@@ -172,6 +215,46 @@ class BirdoVpnService : VpnService() {
             MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
         val transportBlockedFlow: SharedFlow<Unit> = _transportBlockedFlow.asSharedFlow()
 
+        /**
+         * A1-017: "the device is awake again, or on a different network" —
+         * screen on, unlock, a new underlying network. VpnManager answers with
+         * an immediate heartbeat: its periodic one counts awake time only, so
+         * a phone that slept past the backend's 5-minute reap learns about it
+         * the moment the user is back, not a full interval later. An EVENT,
+         * so a SharedFlow with no replay, like [transportBlockedFlow].
+         */
+        private val _wakeFlow = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 4)
+        val wakeFlow: SharedFlow<Unit> = _wakeFlow.asSharedFlow()
+
+        /**
+         * True between onCreate and onDestroy. VpnManager reads it to send a
+         * plain startService() to a running (already foreground) service
+         * instead of startForegroundService(), which the Android 12+
+         * background-start restriction can refuse for a re-dial made with the
+         * screen off.
+         */
+        @Volatile var running: Boolean = false
+            private set
+
+        /**
+         * `VpnService.isLockdownEnabled()` as last seen by the service: Android's
+         * "Block connections without VPN". Copy that says whether traffic is
+         * still blocked must account for it.
+         */
+        @Volatile var lockdownActive: Boolean = false
+            private set
+
+        /** Process-lifetime scope for widget refreshes, which must outlive the service instance. */
+        private val widgetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /** Whether the ongoing notification's stats ticker should run; see notificationTicker. */
+        internal fun shouldTickNotification(state: VpnState, screenInteractive: Boolean): Boolean =
+            state is VpnState.Connected && screenInteractive
+
+        /** The post-stop "Not connected" notice: never for a stop the user asked for, and only if they want notices. */
+        internal fun shouldPostDisconnectedNotice(userInitiated: Boolean, notificationsEnabled: Boolean): Boolean =
+            !userInitiated && notificationsEnabled
+
         // FIX-2-12: Reactive state flow replaces 1-second polling.
         // VpnManager collects this flow to receive state changes immediately.
         private val _stateFlow = MutableStateFlow<VpnState>(VpnState.Disconnected)
@@ -219,7 +302,7 @@ class BirdoVpnService : VpnService() {
          * state, a user tapping a tile that read "Disconnected" disconnected
          * their VPN — the exact opposite of their intent.
          */
-        private fun requestTileRefresh() {
+        internal fun requestTileRefresh() {
             val ctx = appContext ?: return
             try {
                 TileService.requestListeningState(
@@ -234,14 +317,9 @@ class BirdoVpnService : VpnService() {
         }
 
         @Volatile private var activeConfig: ConnectResponse? = null
-        // @Volatile: written on the main thread by handleUpdateSettings (live
-        // settings push) and read on the tunnel executor by the drop handler.
+        // @Volatile: written by handleUpdateSettings (live settings push) and
+        // read by the drop handler.
         @Volatile private var isKillSwitchEnabled: Boolean = true
-        // True while startTunnel() runs on the tunnel executor. Set on the main
-        // thread in handleStart before the executor hand-off and cleared in its
-        // finally; handleUpdateSettings reads it to avoid releasing the block
-        // while an establish() is in flight (the one unsafe window).
-        @Volatile private var tunnelSetupInProgress = false
         private var isSplitTunnelingEnabled: Boolean = false
         private var splitTunnelAppList: Set<String> = emptySet()
 
@@ -252,6 +330,30 @@ class BirdoVpnService : VpnService() {
 
     private val notifManager by lazy { VpnNotificationManager(this) }
     private val appPrefs: AppPreferences by lazy { AppPreferences(this) }
+
+    /**
+     * Hilt singletons the platform-created service cannot have injected. A
+     * seam (not a plain lazy) so a unit test can drive onStartCommand without
+     * a Hilt application.
+     */
+    internal var entryPointProvider: () -> VpnManagerEntryPoint = {
+        EntryPointAccessors.fromApplication(applicationContext, VpnManagerEntryPoint::class.java)
+    }
+    private val entryPoint: VpnManagerEntryPoint? by lazy {
+        try {
+            entryPointProvider()
+        } catch (e: Exception) {
+            // Without it the service can still hold a block and tear down,
+            // but cannot reconnect headlessly or render the session state.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "service_entry_point_unavailable",
+                "BirdoVpnService could not reach VpnManager — no headless connect, no state rendering",
+                e,
+            )
+            null
+        }
+    }
 
     // ── Tunnel state ─────────────────────────────────────────────
 
@@ -268,11 +370,14 @@ class BirdoVpnService : VpnService() {
     // a leaked fd, or a monitor still watching a dead handle. The neighbouring
     // isKillSwitchEnabled is already @Volatile for exactly this reason.
     //
-    // Visibility only. These reads and writes are still not ATOMIC with respect
-    // to each other — serialising every lifecycle transition onto tunnelExecutor
-    // is the real fix and is deliberately left for a change that can be tested
-    // on a device (queueing a user's Disconnect behind an in-flight 30s PQ
-    // establish is its own hazard).
+    // Visibility only; ATOMICITY comes from [serial]. Every lifecycle
+    // transition — start, stop, switch teardown, kill-switch block, release,
+    // settings push, watchdog, drop, probe verdict, revoke — runs on
+    // tunnelExecutor, one at a time, in arrival order (A1-012). The old
+    // objection ("a user's Disconnect queued behind a 30 s PQ establish") no
+    // longer holds: BirdoPQ is a local ML-KEM decapsulation now, and a STOP
+    // bumps [transitionGen] on arrival, so an in-flight setup abandons itself
+    // at its next checkpoint instead of making the Disconnect wait for it.
 
     /** VPN interface — only held during kill switch. */
     @Volatile private var vpnInterface: ParcelFileDescriptor? = null
@@ -315,11 +420,82 @@ class BirdoVpnService : VpnService() {
     /** Main-thread handler for periodic ticks and timeouts. */
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /**
+     * Bumped on the MAIN thread by every START / STOP / SWITCH_TEARDOWN /
+     * KILL_SWITCH_BLOCK the moment it arrives, before it is queued. An
+     * in-flight startTunnel captured the value it was started with; a mismatch
+     * at one of its checkpoints means a newer transition owns the tunnel, so
+     * it abandons its setup without a block and without an Error (A1-012).
+     */
+    private val transitionGen = AtomicLong(0)
+
+    /** Set first thing in onDestroy: nothing may establish() on a destroyed service. */
+    @Volatile private var destroyed = false
+
+    /** Whether the screen is on; the stats ticker sleeps while it is off (A1-036). */
+    @Volatile private var screenInteractive = true
+
+    /**
+     * Service-lifetime scope that renders VpnManager's state into the
+     * notification. Created in onCreate, not at construction: a service built
+     * by a unit test has no main dispatcher to hand it.
+     */
+    private var serviceScope: CoroutineScope? = null
+
+    /** Progress text for the ongoing notification during setup ("Starting stealth tunnel…"). */
+    @Volatile private var notificationDetail: String? = null
+
+    /** The alert currently posted, so an unchanged state does not re-alert. */
+    private var postedAlertKey: String? = null
+
+    /**
+     * Screen on/off and unlock. Screen off stops the ongoing notification's
+     * stats ticker — a wg-go JNI read and a notify() every 8 s for a
+     * notification nobody can see (A1-036); screen on refreshes it once and
+     * resumes. Screen on and unlock also tell VpnManager the device is awake,
+     * for an immediate heartbeat (A1-017).
+     */
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    screenInteractive = false
+                    stopNotificationTicker()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    screenInteractive = true
+                    if (currentState is VpnState.Connected) {
+                        updateNotification()
+                        startNotificationTicker()
+                    }
+                    _wakeFlow.tryEmit(Unit)
+                }
+                Intent.ACTION_USER_PRESENT -> _wakeFlow.tryEmit(Unit)
+            }
+        }
+    }
+
+    /**
+     * Run a lifecycle transition on [tunnelExecutor], after every transition
+     * that arrived before it. Once onDestroy has shut the executor down there
+     * is nothing left to transition; the rejection is expected and ignored.
+     */
+    private fun serial(task: () -> Unit) {
+        try {
+            tunnelExecutor.execute(task)
+        } catch (_: RejectedExecutionException) {
+            Log.i(TAG, "Transition arrived after onDestroy — ignored")
+        }
+    }
+
+    /** True while [gen] is still the newest transition and the service is alive. */
+    private fun isCurrent(gen: Long): Boolean = !destroyed && transitionGen.get() == gen
+
     // ── Periodic runnables ───────────────────────────────────────
 
     private val notificationTicker = object : Runnable {
         override fun run() {
-            if (currentState is VpnState.Connected) {
+            if (shouldTickNotification(currentState, screenInteractive)) {
                 // Read wg-go stats off the main thread (blocking JNI getConfig),
                 // then refresh the notification back on the main thread. Skip this
                 // tick if the previous read is still running so reads can't pile
@@ -333,15 +509,13 @@ class BirdoVpnService : VpnService() {
                             statsReadInFlight.set(false)
                         }
                         mainHandler.post {
-                            if (currentState is VpnState.Connected) {
-                                updateNotification(buildConnectedText())
-                            }
+                            if (currentState is VpnState.Connected) updateNotification()
                         }
                     }
                 } else {
                     // A read is still in flight; just refresh the notification with
-                    // the last-known stats so the timer/uptime still advances.
-                    updateNotification(buildConnectedText())
+                    // the last-known stats.
+                    updateNotification()
                 }
                 mainHandler.postDelayed(this, notifTickIntervalMs())
             }
@@ -349,7 +523,9 @@ class BirdoVpnService : VpnService() {
     }
 
     private val connectTimeoutRunnable = Runnable {
-        if (currentState.isConnectingPhase) {
+        val gen = transitionGen.get()
+        serial {
+            if (!isCurrent(gen) || !currentState.isConnectingPhase) return@serial
             // Routine (a dead zone, a captive portal): Log.w plus the
             // VpnState.Error breadcrumb from updateState, not an event. Error
             // severity in this file means FaultReporter — a bare Log.e is
@@ -374,8 +550,8 @@ class BirdoVpnService : VpnService() {
             } else {
                 cleanupTunnel()
             }
-            updateState(VpnState.Error("Connection timed out"))
-            updateNotification("Connection timed out")
+            cleanupStealthAndQuantum()
+            updateState(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))
         }
     }
 
@@ -384,158 +560,346 @@ class BirdoVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         appContext = applicationContext
-        notifManager.createChannel()
+        running = true
+        notifManager.createChannels()
+        screenInteractive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive != false
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        ContextCompat.registerReceiver(this, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        renderManagerState()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // A null action means the SYSTEM restarted us after an OOM kill
-        // (START_STICKY redelivery), not an app request — every real start sets
-        // an explicit ACTION_* (see VpnManager). The original START intent's
-        // extras (tunnel config + the user's VpnService consent) are gone, so we
-        // can't re-establish. Satisfy the foreground-start requirement, then stop
-        // cleanly instead of parking in a fake "Connecting…" foreground state,
-        // and don't ask to be restarted again.
-        if (intent?.action == null) {
-            // The tunnel is down (the OS killed and is restarting us). The widget
-            // pref survives process death, so without this the home-screen widget
-            // keeps showing a green "Protected" for a VPN that is no longer up.
-            updateWidgetState(false, null)
-
-            // RE-ARM THE KILL SWITCH. It is process-local — the blocking
-            // interface died with the process — and the OS-level always-on
-            // lockdown that would have covered this is deliberately disabled
-            // (AndroidManifest SUPPORTS_ALWAYS_ON=false: there is no headless
-            // re-auth path yet). So this branch used to stopSelf(), which also
-            // removed the persistent notification, and a user who had asked for
-            // fail-closed protection was left with traffic flowing unprotected,
-            // no VPN interface, no blocking interface, and no signal at all.
-            //
-            // We cannot re-establish the tunnel (the START intent's config and
-            // consent are gone), but activateKillSwitch() needs neither — it
-            // uses only hard-coded addresses. Honour the preference: block, stay
-            // foreground, and say why.
-            val rearm = try {
-                appPrefs.killSwitchEnabled
-            } catch (e: Exception) {
-                // An unreadable preference decides "do not block" below —
-                // fail-open — for a user who may have asked for fail-closed.
-                // The decision stands (a fail-closed default would block a
-                // user who never enabled it), but it must not be silent.
-                FaultReporter.report(
-                    FaultReporter.PATH_KILL_SWITCH,
-                    "kill_switch_pref_unreadable_restart",
-                    "Kill-switch preference unreadable on system restart — defaulting to NOT blocking",
-                    e,
-                )
-                false
-            }
-            startForeground(
-                VpnNotificationManager.NOTIFICATION_ID,
-                notifManager.buildForegroundNotification(
-                    if (rearm) "Kill Switch Active — reconnect required" else "Disconnected",
-                ),
-            )
-            if (!rearm) {
-                Log.i(TAG, "onStartCommand with null action (system restart) — stopping cleanly")
-                stopSelf()
-                return START_NOT_STICKY
-            }
-
-            Log.i(TAG, "System restart with kill switch enabled — re-arming the block")
-            isKillSwitchEnabled = true
-            activateKillSwitch()
-            if (!killSwitchActive) {
-                // Silent failure of a security control is worse than a loud one:
-                // the user believes they are fail-closed and they are not.
-                // "Loud" has to mean loud to the OPERATOR too — Log.e is
-                // stripped from release builds, so this reports.
-                FaultReporter.report(
-                    FaultReporter.PATH_KILL_SWITCH,
-                    "kill_switch_rearm_failed_restart",
-                    "Kill switch could not be re-armed after a system restart — traffic is NOT blocked",
-                )
-                updateState(VpnState.Error("Kill switch could not be armed — traffic is NOT protected"))
-                updateNotification("Kill switch could not be armed — traffic is NOT protected")
-            }
-            // START_STICKY: if the OS kills us again we want to come back and
-            // re-arm again rather than leave the block down for good.
-            return START_STICKY
+    /**
+     * VpnManager is the single owner of the session state (A1-002). The
+     * service used to render its own copy, which went stale the moment the
+     * manager moved on without it: "Reconnecting…" forever after the retries
+     * stopped, backend refusals that never reached the notification, a tile
+     * reading "Disconnected" over a blocked device. Now the ongoing
+     * notification, the "Action needed" alert and the widget are all drawn
+     * from the manager's state, whoever changed it.
+     */
+    private fun renderManagerState() {
+        val manager = entryPoint?.vpnManager() ?: return
+        val renderScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        serviceScope = renderScope
+        renderScope.launch {
+            combine(
+                manager.state,
+                killSwitchActiveFlow,
+                manager.sessionExpired,
+                manager.switching,
+            ) { state, blocking, expired, switching -> RenderInput(state, blocking, expired, switching) }
+                .collect { input ->
+                    updateNotification()
+                    renderAlert(input)
+                    updateWidgetState(input.state is VpnState.Connected, connectedServer)
+                }
         }
+    }
+
+    private data class RenderInput(
+        val state: VpnState,
+        val killSwitchActive: Boolean,
+        val sessionExpired: Boolean,
+        val switching: Boolean,
+    )
+
+    /** Post, replace or withdraw the high-importance alert for [input]. */
+    private fun renderAlert(input: RenderInput) {
+        val alert = VpnNotificationManager.alertFor(
+            state = input.state,
+            killSwitchActive = input.killSwitchActive,
+            sessionExpired = input.sessionExpired,
+            uiForeground = uiForeground,
+        )
+        if (alert == null) {
+            // Only withdraw once the session is healthy again; an alert the
+            // user has not seen yet must survive "Connecting…".
+            if (input.state is VpnState.Connected && postedAlertKey != null) {
+                notifManager.cancelAlert()
+                postedAlertKey = null
+            }
+            return
+        }
+        if (alert.key == postedAlertKey) return
+        notifManager.postAlert(alert)
+        postedAlertKey = alert.key
+    }
+
+    /** What the notification shows: the manager's state when there is one, else the service's own. */
+    private fun displayState(): VpnState = entryPoint?.vpnManager()?.state?.value ?: currentState
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Three starts have no app request behind them: a sticky restart (a
+        // null intent), Always-on (VpnService.SERVICE_INTERFACE, sent by the
+        // platform at boot, unlock and setting changes), and our own
+        // MY_PACKAGE_REPLACED receiver. Every app-initiated start sets one of
+        // the explicit ACTION_* below.
+        val systemStart = when (intent?.action) {
+            null -> SystemStartKind.STICKY_RESTART
+            VpnService.SERVICE_INTERFACE -> SystemStartKind.ALWAYS_ON
+            ACTION_HEADLESS_CONNECT -> SystemStartKind.PACKAGE_REPLACED
+            else -> null
+        }
+        if (systemStart != null) return handleSystemStart(systemStart)
+        val action = intent!!.action
 
         // Android 12+ requires startForeground() within ~5s of EVERY
         // startForegroundService() call (regardless of action) or the app is
         // killed with ForegroundServiceDidNotStartInTimeException. The STOP and
         // unknown branches previously didn't, which intermittently crashed the
         // app on a server switch (rapid STOP→START). Satisfy it up front for
-        // every start, then dispatch.
-        val foregroundNotif = when (intent.action) {
-            ACTION_STOP -> notifManager.buildForegroundNotification("Disconnecting…")
-            ACTION_SWITCH_TEARDOWN ->
-                notifManager.buildForegroundNotification("Reconnecting…", VpnState.Connecting)
-            ACTION_KILL_SWITCH_BLOCK ->
-                notifManager.buildForegroundNotification("Kill Switch — Blocking traffic")
-            // A settings push must not flash "Connecting…" over a healthy
-            // session — keep the notification truthful for the actual state.
-            ACTION_UPDATE_SETTINGS -> notifManager.buildForegroundNotification(
-                when {
-                    killSwitchActive -> "Kill Switch Active — Traffic blocked"
-                    currentState is VpnState.Connected -> buildConnectedText()
-                    else -> "Updating settings…"
-                },
-                currentState,
-            )
-            else -> notifManager.buildForegroundNotification("Connecting…", VpnState.Connecting)
-        }
-        startForeground(VpnNotificationManager.NOTIFICATION_ID, foregroundNotif)
+        // every start, then dispatch. The notification is drawn from the
+        // current state, never a hard-coded "Connecting…": an unrecognised
+        // start must not claim a connect that nothing is running.
+        startForeground(VpnNotificationManager.NOTIFICATION_ID, buildCurrentNotification())
 
-        when (intent.action) {
-            ACTION_START -> handleStart(intent)
-            ACTION_STOP  -> stopTunnel()
-            ACTION_SWITCH_TEARDOWN -> switchTeardown(intent)
-            ACTION_KILL_SWITCH_BLOCK -> {
-                // Latch the service-side flag too. It is otherwise captured
-                // ONCE from the START intent, and this action now has a real
-                // sender (VpnManager.sessionDeadTeardown); handleUpdateSettings
-                // and handleStart's finally both RELEASE the block when this
-                // reads false. The restart re-arm above sets it for the same
-                // reason — a guard on one of several parallel paths is how a
-                // fail-open window gets reintroduced here.
-                isKillSwitchEnabled = true
-                activateKillSwitch()
-                if (!killSwitchActive) {
-                    // establish() refused (in practice: VPN consent revoked).
-                    // activateKillSwitch has already torn the data plane down,
-                    // so traffic is in the clear while currentState still reads
-                    // Connected and the notification still says "Blocking
-                    // traffic". Silent failure of a security control is worse
-                    // than a loud one — same handling as the restart re-arm,
-                    // including reporting it: this branch is unreachable in a
-                    // debug build (it needs a revoked consent on a live
-                    // session), so the release channel is the only one that
-                    // will ever see it.
-                    FaultReporter.report(
-                        FaultReporter.PATH_KILL_SWITCH,
-                        "kill_switch_rearm_failed_invalidated",
-                        "Kill switch could not be armed for an invalidated session — traffic is NOT blocked",
-                    )
-                    updateState(VpnState.Error("Kill switch could not be armed — traffic is NOT protected"))
-                    updateNotification("Kill switch could not be armed — traffic is NOT protected")
-                }
-                // The tunnel is gone on BOTH branches (activateKillSwitch tears
-                // wg-go down either way), but the widget's "Protected" flag
-                // lives in SharedPreferences and outlives it. Only stopTunnel()
-                // and TunnelMonitor.onUnexpectedExit cleared it, so this path
-                // would have left a green home-screen widget asserting
-                // protection over a dead tunnel — the false safety signal the
-                // block exists to prevent. Unconditional, as in onUnexpectedExit.
-                updateWidgetState(false, null)
+        when (action) {
+            ACTION_START -> {
+                val gen = transitionGen.incrementAndGet()
+                serial { handleStart(intent, gen) }
             }
-            ACTION_UPDATE_SETTINGS -> handleUpdateSettings(intent)
+            ACTION_STOP -> {
+                transitionGen.incrementAndGet()
+                val reason = intent.getStringExtra(EXTRA_STOP_REASON)?.let { message ->
+                    val kind = intent.getStringExtra(EXTRA_STOP_KIND)
+                        ?.let { name -> FailureKind.entries.firstOrNull { it.name == name } }
+                        ?: FailureKind.TRANSIENT
+                    VpnState.Error(message, kind)
+                }
+                val userInitiated = intent.getBooleanExtra(EXTRA_USER_INITIATED, false)
+                serial { stopTunnel(reason, userInitiated) }
+            }
+            ACTION_SWITCH_TEARDOWN -> {
+                transitionGen.incrementAndGet()
+                serial { switchTeardown(intent) }
+            }
+            ACTION_KILL_SWITCH_BLOCK -> {
+                transitionGen.incrementAndGet()
+                serial { handleKillSwitchBlock() }
+            }
+            ACTION_RELEASE_BLOCK -> serial { handleReleaseBlock() }
+            ACTION_UPDATE_SETTINGS -> serial { handleUpdateSettings(intent) }
+            ACTION_USER_DISCONNECT -> {
+                val manager = entryPoint?.vpnManager()
+                if (manager != null) {
+                    manager.requestDisconnect()
+                } else {
+                    transitionGen.incrementAndGet()
+                    serial { stopTunnel(reason = null, userInitiated = true) }
+                }
+            }
+            ACTION_USER_RECONNECT -> entryPoint?.vpnManager()?.requestConnectPreferred()
+            else -> serial {
+                // Nothing we know how to do; do not park in the foreground.
+                if (currentState is VpnState.Disconnected && !killSwitchActive) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
         }
         return START_STICKY
     }
 
-    private fun handleStart(intent: Intent) {
+    /**
+     * A start the SYSTEM made (A1-014, A1-015): decide what to do from the
+     * persisted intent and the platform's own settings, arm the block first
+     * when it is due, then hand VpnManager a headless connect — or, when the
+     * session cannot come up without the user, say so and keep any block.
+     *
+     * Never fails open silently: expired credentials, missing consent or a
+     * missing VPN permission end in a typed Error and an "Action needed"
+     * alert, with the block held whenever the kill switch or Android's
+     * lockdown asks for one. The app itself is exempt from lockdown (AOSP
+     * Vpn.setVpnForcedLocked exempts the VPN package), so signing in works
+     * from behind it.
+     */
+    private fun handleSystemStart(kind: SystemStartKind): Int {
+        // The tunnel is down (the OS killed and is restarting us, or it never
+        // ran). The widget pref survives process death, so without this the
+        // home-screen widget keeps showing a green "Protected" for a VPN that
+        // is no longer up.
+        updateWidgetState(false, null)
+        lockdownActive = isLockdownEnabled
+
+        val killSwitchPref = try {
+            appPrefs.killSwitchEnabled
+        } catch (e: Exception) {
+            // An unreadable preference decides "do not block" below —
+            // fail-open — for a user who may have asked for fail-closed.
+            // The decision stands (a fail-closed default would block a
+            // user who never enabled it), but it must not be silent.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "kill_switch_pref_unreadable_restart",
+                "Kill-switch preference unreadable on system restart — defaulting to NOT blocking",
+                e,
+            )
+            false
+        }
+        val manager = entryPoint?.vpnManager()
+        val plan = SystemStartPolicy.plan(
+            kind = kind,
+            sessionShouldBeUp = appPrefs.sessionShouldBeUp,
+            alwaysOn = isAlwaysOn,
+            lockdown = lockdownActive,
+            killSwitchPref = killSwitchPref,
+            signedIn = entryPoint?.tokenManager()?.isLoggedIn() == true,
+            consentAccepted = appPrefs.hasAcceptedCurrentConsent,
+            vpnPermissionGranted = VpnService.prepare(this) == null,
+        )
+        Log.i(TAG, "System start $kind: $plan")
+        if (plan.idle) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val shownState = when {
+            plan.connect -> VpnState.Connecting
+            plan.actionNeeded != null ->
+                VpnState.Error(SessionCopy.actionNeeded(plan.actionNeeded), plan.actionNeeded)
+            else -> VpnState.KillSwitchActive
+        }
+        try {
+            startForeground(
+                VpnNotificationManager.NOTIFICATION_ID,
+                notifManager.buildForegroundNotification(
+                    state = shownState,
+                    killSwitchActive = plan.armBlock,
+                    body = (shownState as? VpnState.Error)?.message,
+                ),
+            )
+        } catch (e: Exception) {
+            // A sticky restart is not on Android's list of background
+            // foreground-service start exemptions (Always-on and
+            // MY_PACKAGE_REPLACED are covered: a 60 s power allowlist and a
+            // documented broadcast exemption). Refused → nothing can run, so
+            // at least tell the user.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "system_start_foreground_refused",
+                "startForeground refused on a system start — the VPN cannot restore itself",
+                e,
+            )
+            notifManager.postAlert(VpnNotificationManager.stoppedUnexpectedlyAlert())
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (plan.armBlock) {
+            transitionGen.incrementAndGet()
+            serial { armBlockForSystemStart() }
+        }
+        when {
+            plan.connect -> if (manager?.connectHeadless() == null) {
+                // No VpnManager: nothing can dial. The block (if any) holds.
+                notifManager.postAlert(VpnNotificationManager.stoppedUnexpectedlyAlert())
+            }
+            plan.actionNeeded != null -> {
+                manager?.reportHeadlessBlocked(plan.actionNeeded)
+                if (!plan.armBlock) {
+                    // Nothing to hold: the alert is the whole story.
+                    notifManager.postAlert(VpnNotificationManager.alertFor(shownState, false, false, false)
+                        ?: VpnNotificationManager.stoppedUnexpectedlyAlert())
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+            }
+        }
+        // START_STICKY: if the OS kills us again we want to come back and
+        // re-arm again rather than leave the block down for good.
+        return START_STICKY
+    }
+
+    /**
+     * RE-ARM THE KILL SWITCH on a system start. It is process-local — the
+     * blocking interface died with the process. activateKillSwitch() needs no
+     * config and no consent prompt — only hard-coded addresses — so it can be
+     * up before the headless connect has even reached the API.
+     */
+    private fun armBlockForSystemStart() {
+        Log.i(TAG, "System start with the kill switch or lockdown on — arming the block first")
+        isKillSwitchEnabled = true
+        activateKillSwitch()
+        if (!killSwitchActive) {
+            // Silent failure of a security control is worse than a loud one:
+            // the user believes they are fail-closed and they are not.
+            // "Loud" has to mean loud to the OPERATOR too — Log.e is
+            // stripped from release builds, so this reports.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "kill_switch_rearm_failed_restart",
+                "Kill switch could not be re-armed after a system restart — traffic is NOT blocked",
+            )
+            updateState(
+                VpnState.Error(
+                    "Kill switch could not be armed — traffic is NOT protected",
+                    FailureKind.VPN_PERMISSION_REQUIRED,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Block for a session the server invalidated (VpnManager's reap
+     * recovery): block first, the re-dial follows behind it.
+     */
+    private fun handleKillSwitchBlock() {
+        // Latch the service-side flag too. It is otherwise captured ONCE from
+        // the START intent; handleUpdateSettings RELEASES the block when this
+        // reads false. The restart re-arm sets it for the same reason — a
+        // guard on one of several parallel paths is how a fail-open window
+        // gets reintroduced here.
+        isKillSwitchEnabled = true
+        activateKillSwitch()
+        if (!killSwitchActive) {
+            // establish() refused (in practice: VPN consent revoked).
+            // activateKillSwitch has already torn the data plane down,
+            // so traffic is in the clear while currentState still reads
+            // Connected and the notification still says "Blocking
+            // traffic". Silent failure of a security control is worse
+            // than a loud one — same handling as the restart re-arm,
+            // including reporting it: this branch is unreachable in a
+            // debug build (it needs a revoked consent on a live
+            // session), so the release channel is the only one that
+            // will ever see it.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "kill_switch_rearm_failed_invalidated",
+                "Kill switch could not be armed for an invalidated session — traffic is NOT blocked",
+            )
+            updateState(
+                VpnState.Error(
+                    "Kill switch could not be armed — traffic is NOT protected",
+                    FailureKind.VPN_PERMISSION_REQUIRED,
+                ),
+            )
+        }
+        // The tunnel is gone on BOTH branches (activateKillSwitch tears
+        // wg-go down either way), but the widget's "Protected" flag
+        // lives in SharedPreferences and outlives it. Unconditional, as in
+        // the drop handler.
+        updateWidgetState(false, null)
+    }
+
+    /**
+     * [ACTION_RELEASE_BLOCK]: take the block and whatever is left of the data
+     * plane down, keep the Error and the foreground. Skipped when a newer
+     * session already owns the interface.
+     */
+    private fun handleReleaseBlock() {
+        if (currentState is VpnState.Connected || currentState.isConnectingPhase) return
+        deactivateKillSwitch()
+        cleanupTunnel()
+        cleanupStealthAndQuantum()
+        mainHandler.post { updateNotification() }
+    }
+
+    private fun handleStart(intent: Intent, gen: Long) {
         notifManager.cancelDisconnected()
 
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, true)
@@ -548,61 +912,31 @@ class BirdoVpnService : VpnService() {
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         mainHandler.postDelayed(connectTimeoutRunnable, CONNECT_TIMEOUT_MS)
 
-        // Mark tunnel setup in-flight on the MAIN thread (serialized with
-        // handleUpdateSettings) BEFORE handing off to the executor, so a
-        // concurrent kill-switch-off toggle never releases the block while
-        // startTunnel() is mid-establish. Cleared in the executor's finally.
-        tunnelSetupInProgress = true
-        tunnelExecutor.execute {
-            try {
-                startTunnel()
-            } catch (t: Throwable) {
-                // Reported, not just logged: this catch exists precisely for
-                // the errors startTunnel's `catch (e: Exception)` cannot see
-                // (UnsatisfiedLinkError, OutOfMemoryError, NoSuchMethodError
-                // from a native/AGP bump) — the class of failure that hits a
-                // whole device family at once and never reaches a developer's
-                // logcat.
-                FaultReporter.report(
-                    FaultReporter.PATH_CONNECT,
-                    "tunnel_setup_throwable",
-                    "Unhandled Throwable escaped tunnel setup",
-                    t,
-                )
-                // startTunnel's own catch only covers Exception; a Throwable that
-                // escapes it left the tunnel half-built and the user unprotected
-                // with no block. Fail closed here too, before publishing Error.
-                // activateKillSwitch() does its own ordered teardown (establish
-                // the block first, then turn wg-go off) — no teardown here first.
-                if (isKillSwitchEnabled) {
-                    activateKillSwitch()
-                }
-                updateState(VpnState.Error(t.message ?: "Tunnel crashed"))
-                mainHandler.post { updateNotification("Connection failed") }
-            } finally {
-                // Deferred-release pickup: if the user turned the kill switch OFF
-                // WHILE this establish was in flight, handleUpdateSettings couldn't
-                // release the block (the tunnelSetupInProgress gate deferred it).
-                // Now that setup is done and — if it failed — the block is still
-                // up, honour fail-open here.
-                //
-                // CLEAR THE GATE FIRST, then re-read isKillSwitchEnabled. Doing the
-                // release check before clearing the gate was a lost update: a
-                // toggle landing between the check and the clear was dropped by
-                // BOTH this finally (read stale `true`) and handleUpdateSettings
-                // (saw the gate still set → deferred to this finally, which had
-                // already decided). Clearing first makes the two orderings form an
-                // impossible cycle, so whichever handler runs last observes the
-                // toggle and releases. A double deactivateKillSwitch is idempotent.
-                tunnelSetupInProgress = false
-                if (!isKillSwitchEnabled && killSwitchActive &&
-                    currentState !is VpnState.Connected
-                ) {
-                    deactivateKillSwitch()
-                    mainHandler.post { updateNotification("Reconnecting…") }
-                }
-            }
+        try {
+            startTunnel(gen)
+        } catch (t: Throwable) {
+            // Reported, not just logged: this catch exists precisely for
+            // the errors startTunnel's `catch (e: Exception)` cannot see
+            // (UnsatisfiedLinkError, OutOfMemoryError, NoSuchMethodError
+            // from a native/AGP bump) — the class of failure that hits a
+            // whole device family at once and never reaches a developer's
+            // logcat.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "tunnel_setup_throwable",
+                "Unhandled Throwable escaped tunnel setup",
+                t,
+            )
+            // startTunnel's own catch only covers Exception; a Throwable that
+            // escapes it left the tunnel half-built and the user unprotected
+            // with no block. Fail closed here too, before publishing Error.
+            // activateKillSwitch() does its own ordered teardown (establish
+            // the block first, then turn wg-go off) — no teardown here first.
+            failSetup(gen, t.message ?: "Tunnel crashed", FailureKind.TRANSIENT)
         }
+        // No deferred kill-switch release here any more: a settings push that
+        // arrived during this setup is queued behind it on the same executor,
+        // so handleUpdateSettings runs next and sees the setup's outcome.
     }
 
     /**
@@ -616,23 +950,21 @@ class BirdoVpnService : VpnService() {
      * Deliberately does NOT tear anything down: an earlier version called
      * stopTunnel() when the kill switch was disabled "while blocking", but
      * killSwitchActive is also latched true throughout every reconnect/reapply
-     * rebuild — so that stopTunnel() raced an in-flight startTunnel() on the
-     * tunnel executor and could strand a destroyed service claiming "Connected"
-     * over live cleartext. Flag-only is race-free. A user who wants out of an
-     * active block uses Disconnect (which is a clean, ordered teardown).
+     * rebuild. Flag-only is race-free. A user who wants out of an active block
+     * uses Disconnect (which is a clean, ordered teardown).
      */
     private fun handleUpdateSettings(intent: Intent) {
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
         Log.i(TAG, "Runtime settings update (flag-only): killSwitchEnabled=$isKillSwitchEnabled")
 
         // Kill switch turned OFF while it's actively blocking a DEAD tunnel:
-        // honour fail-open by releasing the block. Safe whenever no establish()
-        // is in flight — gate on `!tunnelSetupInProgress` (executor idle) rather
-        // than on specific states, because the block also lingers in Disconnected
-        // during an auto-reconnect BACKOFF (switchTeardown keeps it up, the next
-        // /connect hasn't dispatched ACTION_START yet). currentState is never
-        // Connected here (killSwitchActive is cleared on connect success).
-        if (!isKillSwitchEnabled && killSwitchActive && !tunnelSetupInProgress) {
+        // honour fail-open by releasing the block. This runs on the tunnel
+        // executor, so no establish() can be in flight underneath it; the
+        // block also lingers in Disconnected during a reconnect BACKOFF
+        // (switchTeardown keeps it up, the next /connect hasn't dispatched
+        // ACTION_START yet). currentState is never Connected here
+        // (killSwitchActive is cleared on connect success).
+        if (!isKillSwitchEnabled && killSwitchActive) {
             deactivateKillSwitch()
             if (currentState is VpnState.KillSwitchActive) {
                 // KillSwitchActive was the resting state (nothing reconnecting) —
@@ -643,23 +975,18 @@ class BirdoVpnService : VpnService() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             } else {
-                // Error / Disconnected (mid auto-reconnect): block released, let
-                // VpnManager's reconnect continue fail-open.
-                mainHandler.post { updateNotification("Reconnecting…") }
+                // Error / Disconnected (mid recovery): block released, let
+                // VpnManager's recovery continue fail-open.
+                mainHandler.post { updateNotification() }
             }
             return
         }
 
-        // `!tunnelSetupInProgress` matches the guard on the kill-switch release
-        // branch above, and for the same reason: switchTeardown publishes
-        // Disconnected before the incoming ACTION_START's establish lands, so a
-        // settings push arriving in that window would stopSelf() a service with
-        // a tunnel setup in flight on the executor — onDestroy then runs
-        // cleanupTunnel + shutdownNow underneath it, orphaning a wg-go tunnel
-        // and a VPN interface with no owner.
-        if (currentState is VpnState.Disconnected && !killSwitchActive &&
-            !tunnelSetupInProgress
-        ) {
+        // switchTeardown publishes Disconnected before the incoming
+        // ACTION_START lands; a START already queued behind this push is safe
+        // (it re-creates nothing we stop here), and one not yet sent re-creates
+        // the service when it arrives.
+        if (currentState is VpnState.Disconnected && !killSwitchActive) {
             // Nothing is running — a stale push started us; don't park in a
             // fake foreground state.
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -670,75 +997,119 @@ class BirdoVpnService : VpnService() {
         // Live session: refresh the notification so its kill-switch line
         // reflects the new value immediately.
         if (currentState is VpnState.Connected) {
-            mainHandler.post { updateNotification(buildConnectedText()) }
+            mainHandler.post { updateNotification() }
         }
     }
 
+    /**
+     * Another VPN app took over, or the user removed BirdoVPN's VPN
+     * permission. It used to look like an ordinary disconnect: no reason, and
+     * the peer left for the reap (A1-029). Now it ends in a typed Error with
+     * an alert that says what happened; VpnManager releases the peer and
+     * clears the session intent when it sees that Error. May be called off
+     * the main thread (VpnService docs), so it is serialised like every other
+     * transition.
+     */
     override fun onRevoke() {
         Log.i(TAG, "VPN permission revoked")
-        deactivateKillSwitch()
-        activeConfig = null
-        stopTunnel()
+        transitionGen.incrementAndGet()
+        serial {
+            deactivateKillSwitch()
+            activeConfig = null
+            stopTunnel(
+                reason = VpnState.Error(SessionCopy.VPN_TAKEN_OVER, FailureKind.VPN_TAKEN_OVER),
+                userInitiated = false,
+            )
+        }
         super.onRevoke()
     }
 
     override fun onDestroy() {
+        // Stop accepting work, and tell an in-flight setup it is orphaned
+        // BEFORE anything else: its next checkpoint then abandons without an
+        // establish() on a destroyed service (A1-012).
+        destroyed = true
+        running = false
+        transitionGen.incrementAndGet()
         stopNotificationTicker()
         mainHandler.removeCallbacks(connectTimeoutRunnable)
+        try { unregisterReceiver(screenReceiver) } catch (_: IllegalArgumentException) { /* never registered */ }
+        serviceScope?.cancel()
         // The tunnel dies with the service, so the widget's "Protected" must
         // too. onDestroy is reached on paths that never go through stopTunnel
         // (handleUpdateSettings' stale-push stopSelf, an OOM kill, a force-stop
         // that runs it), and none of those reset the flag.
         updateWidgetState(false, null)
-        cleanupTunnel()
-        activeConfig = null
-        tunnelExecutor.shutdownNow()
+        // Cleanup is queued behind whatever transition is running, then the
+        // executor drains. shutdown(), not shutdownNow(): an interrupt made
+        // runBlocking in a stealth setup throw, and its catch armed a block on
+        // this destroyed service. An in-flight setup that outlives the bounded
+        // wait abandons itself at its next checkpoint.
+        serial {
+            cleanupTunnel()
+            cleanupStealthAndQuantum()
+            activeConfig = null
+        }
+        tunnelExecutor.shutdown()
+        try {
+            tunnelExecutor.awaitTermination(1_500, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
         statsExecutor.shutdownNow()
         super.onDestroy()
     }
 
     // ── Notification helpers (delegate to VpnNotificationManager) ─
 
-    /** Build a one-line connected status string from current state + prefs. */
-    private fun buildConnectedText(): String {
-        val parts = mutableListOf<String>()
-        // Show protection indicators
-        if (stealthActive && quantumActive) {
-            parts.add("Stealth + Quantum")
-        } else if (stealthActive) {
-            parts.add("Stealth")
-        } else if (quantumActive) {
-            parts.add("Quantum")
-        }
-        if (appPrefs.showLocationInNotification) {
-            parts.add(connectedServer ?: "Server")
-        }
-        if (connectedSince > 0) {
-            // Same formatter as the home screen's clock (shared module), so
-            // the notification and the UI can never disagree on the format.
-            parts.add(FormatUtils.formatDuration(connectedSince))
-        }
-        if (appPrefs.showIpInNotification) {
-            val ip = publicIp ?: activeConfig?.assignedIp
-            if (!ip.isNullOrBlank()) parts.add(ip)
-        }
-        return if (parts.isEmpty()) "Protected" else parts.joinToString("  ·  ")
+    /** The body line while connected: "via {location}[ · {IP}]", each part behind its preference. */
+    private fun buildConnectedText(): String? {
+        val location = if (appPrefs.showLocationInNotification) connectedServer else null
+        val ip = if (appPrefs.showIpInNotification) publicIp ?: activeConfig?.assignedIp else null
+        return VpnNotificationManager.connectedBody(location, ip)
     }
 
-    private fun updateNotification(status: String) {
-        notifManager.update(
-            notifManager.buildForegroundNotification(
-                status = status,
-                state = currentState,
-                connectedSince = connectedSince,
-                killSwitchActive = killSwitchActive,
-                killSwitchEnabled = isKillSwitchEnabled,
-                splitTunnelingEnabled = isSplitTunnelingEnabled,
-                splitTunnelAppCount = splitTunnelAppList.size,
-                rxBytes = rxBytes,
-                txBytes = txBytes,
-            )
+    /**
+     * The ongoing notification for the current state. Drawn from VpnManager's
+     * state (the single owner) whenever it is reachable, so it cannot go stale
+     * behind the manager; [notificationDetail] only fills the body while a
+     * setup is in progress.
+     */
+    private fun buildCurrentNotification(): android.app.Notification {
+        val manager = entryPoint?.vpnManager()
+        val state = displayState()
+        val body = when {
+            state is VpnState.Connected -> buildConnectedText()
+            state is VpnState.Error -> state.message
+            state.isConnectingPhase -> notificationDetail
+            else -> null
+        }
+        return notifManager.buildForegroundNotification(
+            state = state,
+            body = body,
+            killSwitchActive = killSwitchActive,
+            switching = manager?.switching?.value == true,
+            multiHop = manager?.activeMultiHopRoute != null,
+            connectedSince = connectedSince,
+            details = if (state is VpnState.Connected) {
+                notifManager.connectedDetails(
+                    rxBytes = rxBytes,
+                    txBytes = txBytes,
+                    stealthActive = stealthActive,
+                    quantumActive = quantumActive,
+                    killSwitchEnabled = isKillSwitchEnabled,
+                    splitTunnelAppCount = if (isSplitTunnelingEnabled) splitTunnelAppList.size else 0,
+                )
+            } else {
+                emptyList()
+            },
         )
+    }
+
+    /** Re-render the ongoing notification; [detail] replaces the setup progress text. */
+    private fun updateNotification(detail: String? = notificationDetail) {
+        notificationDetail = detail
+        notifManager.update(buildCurrentNotification())
     }
 
     private fun startNotificationTicker() {
@@ -794,13 +1165,13 @@ class BirdoVpnService : VpnService() {
         }
 
         // Hostname — resolve on background thread
-        tunnelExecutor.execute {
+        serial {
             try {
                 val resolvedIp = InetAddress.getByName(host).hostAddress
                 if (!resolvedIp.isNullOrBlank()) {
                     _publicIpFlow.value = resolvedIp
                     if (BuildConfig.DEBUG) Log.i(TAG, "VPN server IP: $resolvedIp (resolved from $host)")
-                    mainHandler.post { updateNotification(buildConnectedText()) }
+                    mainHandler.post { updateNotification() }
                 }
             } catch (e: Exception) {
                 _publicIpFlow.value = host
@@ -827,6 +1198,12 @@ class BirdoVpnService : VpnService() {
      * block is held AND auto-reconnect runs — fail-closed and self-healing.
      */
     private fun activateKillSwitch() {
+        if (destroyed) {
+            // Nothing may establish() on a destroyed service (A1-012): the
+            // interface would outlive its owner. Tear down what is ours.
+            cleanupTunnelDataPlane()
+            return
+        }
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
         try {
             // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
@@ -872,7 +1249,7 @@ class BirdoVpnService : VpnService() {
                 _killSwitchActiveFlow.value = true
                 updateState(VpnState.KillSwitchActive)
                 Log.i(TAG, "Kill switch active — all traffic blocked")
-                updateNotification("Kill Switch Active — Traffic blocked")
+                mainHandler.post { updateNotification() }
             } else {
                 // establish() failed (e.g. permission revoked) — don't hold a dead fd.
                 if (stale != null) { try { stale.close() } catch (_: Exception) {} }
@@ -914,7 +1291,35 @@ class BirdoVpnService : VpnService() {
 
     // ── Tunnel Management ───────────────────────────────────────
 
-    private fun startTunnel() {
+    /**
+     * The shared failure path of a tunnel setup, so the kill-switch ordering
+     * contract is written once: block FIRST (or a full cleanup for a fail-open
+     * user), THEN publish the Error. A setup that a newer transition has
+     * already superseded publishes nothing at all — the newer one owns the
+     * tunnel and the state (A1-012).
+     */
+    private fun failSetup(gen: Long, message: String, kind: FailureKind) {
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        cleanupStealthAndQuantum()
+        if (!isCurrent(gen)) {
+            Log.i(TAG, "Failed setup was already superseded — no block, no Error")
+            return
+        }
+        if (isKillSwitchEnabled) activateKillSwitch() else cleanupTunnel()
+        updateState(VpnState.Error(message, kind))
+    }
+
+    /** A checkpoint in [startTunnel]: true (and the setup abandoned) when a newer transition owns the tunnel. */
+    private fun supersededAt(gen: Long, where: String): Boolean {
+        if (isCurrent(gen)) return false
+        Log.i(TAG, "Setup superseded at $where — abandoning without a block or an Error")
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        cleanupStealthAndQuantum()
+        return true
+    }
+
+    private fun startTunnel(gen: Long) {
+        notificationDetail = null
         val config = activeConfig
         if (config == null || config.privateKey == null ||
             config.serverPublicKey == null || config.endpoint == null ||
@@ -927,9 +1332,7 @@ class BirdoVpnService : VpnService() {
                 "connect_no_config",
                 "Tunnel start requested with no or an incomplete VPN configuration",
             )
-            updateState(VpnState.Error("No VPN configuration"))
-            mainHandler.removeCallbacks(connectTimeoutRunnable)
-            mainHandler.post { updateNotification("Error: No VPN configuration") }
+            failSetup(gen, "No VPN configuration", FailureKind.TRANSIENT)
             return
         }
 
@@ -941,9 +1344,7 @@ class BirdoVpnService : VpnService() {
                 "connect_refused_debugger",
                 "Refused to start the tunnel: a debugger is attached to a release build",
             )
-            updateState(VpnState.Error("Security check failed"))
-            mainHandler.removeCallbacks(connectTimeoutRunnable)
-            mainHandler.post { updateNotification("Error: Security check failed") }
+            failSetup(gen, "Security check failed", FailureKind.REFUSED)
             return
         }
 
@@ -979,14 +1380,12 @@ class BirdoVpnService : VpnService() {
                 "connect_refused_quantum_not_granted",
                 "Refused to connect: quantum protection was requested but the server did not grant it",
             )
-            cleanupStealthAndQuantum()
-            if (isKillSwitchEnabled) activateKillSwitch()
-            updateState(
-                VpnState.Error(
-                    "Quantum protection was requested but the server did not enable it. " +
-                        "Not connecting, because that would use weaker encryption than shown. " +
-                        "Try again, or turn off Quantum Protection in Settings."
-                )
+            failSetup(
+                gen,
+                "Quantum protection was requested but the server did not enable it. " +
+                    "Not connecting, because that would use weaker encryption than shown. " +
+                    "Try again, or turn off Quantum Protection in Settings.",
+                FailureKind.QUANTUM_FAILED,
             )
             return
         }
@@ -996,14 +1395,12 @@ class BirdoVpnService : VpnService() {
                 "connect_refused_stealth_not_granted",
                 "Refused to connect: stealth mode was requested but the server did not grant it",
             )
-            cleanupStealthAndQuantum()
-            if (isKillSwitchEnabled) activateKillSwitch()
-            updateState(
-                VpnState.Error(
-                    "Stealth mode was requested but the server did not enable it. " +
-                        "Not connecting, because traffic would not be disguised as shown. " +
-                        "Try again, or turn off Stealth Mode in Settings."
-                )
+            failSetup(
+                gen,
+                "Stealth mode was requested but the server did not enable it. " +
+                    "Not connecting, because traffic would not be disguised as shown. " +
+                    "Try again, or turn off Stealth Mode in Settings.",
+                FailureKind.STEALTH_FAILED,
             )
             return
         }
@@ -1026,11 +1423,7 @@ class BirdoVpnService : VpnService() {
                         "connect_refused_stealth_unavailable",
                         "Refused to connect: stealth was requested and no Xray runtime is packaged",
                     )
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
-                    updateState(VpnState.Error("Stealth engine unavailable"))
-                    mainHandler.removeCallbacks(connectTimeoutRunnable)
-                    mainHandler.post { updateNotification("Error: Stealth engine unavailable") }
+                    failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
                     return
                 }
 
@@ -1038,6 +1431,9 @@ class BirdoVpnService : VpnService() {
                 val xrayStarted = runBlocking(Dispatchers.IO) {
                     XrayManager.start(applicationContext, config)
                 }
+                // Checkpoint: the Xray start is the one slow step left in a
+                // setup, so it is where a Disconnect most often lands.
+                if (supersededAt(gen, "stealth start")) return
 
                 if (xrayStarted) {
                     val xrayPort = XrayManager.getLocalPort()
@@ -1053,11 +1449,7 @@ class BirdoVpnService : VpnService() {
                         "Refused to connect: the Xray stealth tunnel failed to start and a direct fallback would downgrade protection",
                     )
                     _stealthActiveFlow.value = false
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
-                    updateState(VpnState.Error("Stealth tunnel failed"))
-                    mainHandler.removeCallbacks(connectTimeoutRunnable)
-                    mainHandler.post { updateNotification("Error: Stealth tunnel failed") }
+                    failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
                     return
                 }
             } else {
@@ -1079,11 +1471,7 @@ class BirdoVpnService : VpnService() {
                         "Refused to connect: the server enabled quantum protection but sent no PQ payload",
                     )
                     _quantumActiveFlow.value = false
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
-                    updateState(VpnState.Error("Quantum key exchange unavailable"))
-                    mainHandler.removeCallbacks(connectTimeoutRunnable)
-                    mainHandler.post { updateNotification("Error: Quantum unavailable") }
+                    failSetup(gen, SessionCopy.QUANTUM_FAILED, FailureKind.QUANTUM_FAILED)
                     return
                 }
 
@@ -1093,6 +1481,7 @@ class BirdoVpnService : VpnService() {
                 quantumPsk = runBlocking(Dispatchers.IO) {
                     RosenpassManager.performKeyExchange(applicationContext, config)
                 }
+                if (supersededAt(gen, "quantum key exchange")) return
 
                 if (quantumPsk != null) {
                     _quantumActiveFlow.value = true
@@ -1106,11 +1495,7 @@ class BirdoVpnService : VpnService() {
                         "connect_refused_pq_exchange_failed",
                         "Refused to connect: the PQ key exchange failed and a classical fallback would downgrade protection",
                     )
-                    cleanupStealthAndQuantum()
-                    if (isKillSwitchEnabled) activateKillSwitch()
-                    updateState(VpnState.Error("Quantum key exchange failed"))
-                    mainHandler.removeCallbacks(connectTimeoutRunnable)
-                    mainHandler.post { updateNotification("Error: Quantum failed") }
+                    failSetup(gen, SessionCopy.QUANTUM_FAILED, FailureKind.QUANTUM_FAILED)
                     return
                 }
             } else {
@@ -1130,11 +1515,7 @@ class BirdoVpnService : VpnService() {
                     "connect_refused_integrity",
                     "Refused to start the tunnel: wg-go integrity verification failed",
                 )
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
-                updateState(VpnState.Error("Security: library integrity check failed"))
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                mainHandler.post { updateNotification("Error: Security check failed") }
+                failSetup(gen, "Security: library integrity check failed", FailureKind.REFUSED)
                 return
             }
 
@@ -1150,11 +1531,7 @@ class BirdoVpnService : VpnService() {
                     "connect_engine_unavailable",
                     "Refused to start the tunnel: the WireGuard native bridge is unavailable",
                 )
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
-                updateState(VpnState.Error("WireGuard engine unavailable"))
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                mainHandler.post { updateNotification("Error: WireGuard engine unavailable") }
+                failSetup(gen, "WireGuard engine unavailable", FailureKind.REFUSED)
                 return
             }
 
@@ -1169,6 +1546,9 @@ class BirdoVpnService : VpnService() {
             }
 
             val wgConfig = buildWireGuardConfig(effectiveConfig)
+            // Checkpoint before establish(): nothing may establish() for a
+            // setup that a Disconnect superseded, or on a destroyed service.
+            if (supersededAt(gen, "establish")) return
             val vpnFd = buildVpnInterface(effectiveConfig) ?: run {
                 // Twin of activateKillSwitch's kill_switch_establish_refused:
                 // establish() returns null rather than throwing (VPN consent
@@ -1180,11 +1560,7 @@ class BirdoVpnService : VpnService() {
                     "connect_establish_refused",
                     "VpnService.Builder.establish() returned null for the tunnel interface",
                 )
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
-                updateState(VpnState.Error("VPN permission denied"))
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                mainHandler.post { updateNotification("Error: VPN permission denied") }
+                failSetup(gen, SessionCopy.VPN_PERMISSION, FailureKind.VPN_PERMISSION_REQUIRED)
                 return
             }
 
@@ -1212,11 +1588,7 @@ class BirdoVpnService : VpnService() {
                     "wgTurnOn refused the tunnel configuration (code $handle)",
                 )
                 try { ParcelFileDescriptor.adoptFd(tunFd).close() } catch (_: Exception) {}
-                cleanupStealthAndQuantum()
-                if (isKillSwitchEnabled) activateKillSwitch()
-                updateState(VpnState.Error("WireGuard tunnel failed to start"))
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                mainHandler.post { updateNotification("Error: WireGuard tunnel failed") }
+                failSetup(gen, "WireGuard tunnel failed to start", FailureKind.NEVER_ESTABLISHED)
                 return
             }
 
@@ -1294,8 +1666,17 @@ class BirdoVpnService : VpnService() {
             // (stealthEnabled with no xrayEndpoint) skipped the probe on a plain
             // WireGuard tunnel and disabled the fallback for exactly the
             // filtered-network users Adaptive Transport exists for.
-            startTransportProbe(handle, onStealthTransport = stealthEndpointOverride != null)
+            startTransportProbe(handle, gen, onStealthTransport = stealthEndpointOverride != null)
 
+        } catch (e: InterruptedException) {
+            // Only an executor shutdown interrupts this thread, and that means
+            // the service is going away: a user abort, not a failure. No block
+            // on a destroyed service, no Error for VpnManager to answer with a
+            // re-dial (A1-012).
+            Log.i(TAG, "Tunnel setup interrupted — abandoning")
+            cleanupStealthAndQuantum()
+            cleanupTunnelDataPlane()
+            Thread.currentThread().interrupt()
         } catch (e: Exception) {
             FaultReporter.report(
                 FaultReporter.PATH_CONNECT,
@@ -1309,16 +1690,7 @@ class BirdoVpnService : VpnService() {
             // blocking fd) and only then turns wg-go off, so there is no window
             // where routing reverts to the physical network. Only fully release
             // when the kill switch is OFF. Block first, publish Error last.
-            if (isKillSwitchEnabled) {
-                activateKillSwitch()
-                cleanupStealthAndQuantum()
-            } else {
-                cleanupTunnel()
-                cleanupStealthAndQuantum()
-            }
-            updateState(VpnState.Error(e.message ?: "Tunnel failed"))
-            mainHandler.removeCallbacks(connectTimeoutRunnable)
-            mainHandler.post { updateNotification("Connection failed: ${e.message ?: "Unknown error"}") }
+            failSetup(gen, e.message ?: "Tunnel failed", FailureKind.TRANSIENT)
         }
     }
 
@@ -1333,6 +1705,18 @@ class BirdoVpnService : VpnService() {
         val builder = Builder()
             .setSession("BirdoVPN")
             .setBlocking(false)
+            // A1-013: at targetSdk >= 29 a VPN network is METERED unless it
+            // says otherwise, so with BirdoVPN up every app treated home Wi-Fi
+            // as metered — "Wi-Fi only" updates, photo backups and UNMETERED
+            // jobs waited for as long as the tunnel stayed up. false makes the
+            // VPN inherit the meteredness of the network it runs over.
+            .setMetered(false)
+        // …and name that network from the first packet, not from the first
+        // default-network callback, so the inheritance is right immediately.
+        // The app is excluded from its own VPN, so its active network here is
+        // the physical one.
+        val underlying = (getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager)?.activeNetwork
+        if (underlying != null) builder.setUnderlyingNetworks(arrayOf(underlying))
 
         // MTU
         val userMtu = appPrefs.wireGuardMtu
@@ -1565,26 +1949,35 @@ class BirdoVpnService : VpnService() {
                     currentState !is VpnState.Disconnecting &&
                     currentState !is VpnState.Error
             },
-            onUnexpectedExit = {
-                // Fail closed FIRST (block all traffic), THEN hand off to
-                // auto-reconnect. Activating the kill switch alone tears wg-go
-                // down and latches the state at KillSwitchActive, which
-                // VpnManager never treats as a reconnect trigger — so a >3-min
-                // stall (subway/flight-mode/dead-zone) left the user stranded
-                // with all traffic blocked until a manual reconnect, and wg-go
-                // could not self-heal even when connectivity returned. Emitting
-                // Error drives VpnManager's existing exponential-backoff
-                // reconnect (which re-arms the kill switch per attempt and
-                // clears it on a successful connect), matching the desktop
-                // client's behaviour on the same drop.
-                if (isKillSwitchEnabled) activateKillSwitch()
-                // The tunnel is no longer carrying traffic — clear the widget's
-                // "Protected" so it doesn't keep asserting a connection through
-                // the whole reconnect window (or indefinitely on a permanent
-                // stall). Unconditional: even with the kill switch OFF the tunnel
-                // is down, so a green widget would be a false safety signal.
-                updateWidgetState(false, null)
-                updateState(VpnState.Error("Connection lost — reconnecting…"))
+            onUnexpectedExit = { neverHandshook ->
+                // Serialised like every other transition, and dropped if this
+                // tunnel is no longer the live one by the time it runs.
+                serial {
+                    if (tunnelHandle != handle || destroyed) return@serial
+                    // Fail closed FIRST (block all traffic), THEN hand off to
+                    // the supervisor. Activating the kill switch alone tears
+                    // wg-go down and latches the state at KillSwitchActive,
+                    // which VpnManager does not treat as a failure — so a
+                    // >3-min stall (subway/flight-mode/dead-zone) left the user
+                    // stranded with all traffic blocked until a manual
+                    // reconnect. Emitting Error drives VpnManager's recovery
+                    // (which holds the block across each re-dial and clears it
+                    // on a successful connect), matching the desktop client's
+                    // behaviour on the same drop.
+                    if (isKillSwitchEnabled) activateKillSwitch()
+                    // The tunnel is no longer carrying traffic — clear the
+                    // widget's "Protected" so it doesn't keep asserting a
+                    // connection through the whole reconnect window.
+                    // Unconditional: even with the kill switch OFF the tunnel is
+                    // down, so a green widget would be a false safety signal.
+                    updateWidgetState(false, null)
+                    updateState(
+                        VpnState.Error(
+                            "Connection lost. Reconnecting…",
+                            if (neverHandshook) FailureKind.NEVER_ESTABLISHED else FailureKind.DIED_AFTER_HANDSHAKE,
+                        ),
+                    )
+                }
             },
         ).also { it.start() }
     }
@@ -1611,7 +2004,7 @@ class BirdoVpnService : VpnService() {
      *    the ordinary backoff reconnect. Emitting "blocked" instead would ask
      *    VpnManager for a fallback it has already made — a reconnect loop.
      */
-    private fun startTransportProbe(handle: Int, onStealthTransport: Boolean) {
+    private fun startTransportProbe(handle: Int, gen: Long, onStealthTransport: Boolean) {
         Thread({
             val verdict = try {
                 TransportProbe(
@@ -1645,41 +2038,46 @@ class BirdoVpnService : VpnService() {
                 )
                 TransportProbe.Result.HANDSHAKE_OK
             }
-            when (verdict) {
-                TransportProbe.Result.HANDSHAKE_OK -> publishConnected(handle)
-
-                TransportProbe.Result.BLOCKED -> if (!onStealthTransport) {
-                    Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
-                    // tryEmit, not emit: this is a non-suspending context and the
-                    // buffer is sized for it. A dropped emission would only mean a
-                    // missed fallback, never a blocked tunnel thread. If VpnManager
-                    // declines the fallback (cooldown, multi-hop, no server) the
-                    // connect watchdog re-armed by startTunnel resolves the state.
-                    _transportBlockedFlow.tryEmit(Unit)
-                } else {
-                    Log.w(TAG, "Transport probe: no handshake over stealth — failing the connect")
-                    // Fail closed first, then publish Error — see the ordering
-                    // contract on [activateKillSwitch]. The tunnel here is LIVE
-                    // (established, just no handshake) and wg-go holds the sole
-                    // tun fd, so activateKillSwitch() must do its own ordered
-                    // establish-then-teardown — a teardown here first would
-                    // revert routing to the physical network before the block.
-                    if (isKillSwitchEnabled) {
-                        activateKillSwitch()
-                    } else {
-                        cleanupTunnel()
-                    }
-                    cleanupStealthAndQuantum()
-                    updateState(VpnState.Error("No handshake — this network is blocking the VPN"))
-                    mainHandler.removeCallbacks(connectTimeoutRunnable)
-                    mainHandler.post { updateNotification("Error: no handshake") }
-                }
-
-                // The tunnel went away while probing (disconnect, switch, kill
-                // switch). Whoever tore it down owns the state.
-                TransportProbe.Result.ABORTED -> Unit
-            }
+            // The verdict is a transition like any other: serialised, and
+            // dropped if a newer one (a Disconnect, a switch) owns the tunnel.
+            serial { if (isCurrent(gen) && tunnelHandle == handle) onProbeVerdict(verdict, handle, onStealthTransport) }
         }, "birdo-transport-probe").apply { isDaemon = true }.start()
+    }
+
+    private fun onProbeVerdict(verdict: TransportProbe.Result, handle: Int, onStealthTransport: Boolean) {
+        when (verdict) {
+            TransportProbe.Result.HANDSHAKE_OK -> publishConnected(handle)
+
+            TransportProbe.Result.BLOCKED -> if (!onStealthTransport) {
+                Log.w(TAG, "Transport probe: no handshake — requesting stealth fallback")
+                // tryEmit, not emit: this is a non-suspending context and the
+                // buffer is sized for it. A dropped emission would only mean a
+                // missed fallback, never a blocked tunnel thread. If VpnManager
+                // declines the fallback (cooldown, multi-hop, no server) the
+                // connect watchdog re-armed by startTunnel resolves the state.
+                _transportBlockedFlow.tryEmit(Unit)
+            } else {
+                Log.w(TAG, "Transport probe: no handshake over stealth — failing the connect")
+                // Fail closed first, then publish Error — see the ordering
+                // contract on [activateKillSwitch]. The tunnel here is LIVE
+                // (established, just no handshake) and wg-go holds the sole
+                // tun fd, so activateKillSwitch() must do its own ordered
+                // establish-then-teardown — a teardown here first would
+                // revert routing to the physical network before the block.
+                if (isKillSwitchEnabled) {
+                    activateKillSwitch()
+                } else {
+                    cleanupTunnel()
+                }
+                cleanupStealthAndQuantum()
+                mainHandler.removeCallbacks(connectTimeoutRunnable)
+                updateState(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))
+            }
+
+            // The tunnel went away while probing (disconnect, switch, kill
+            // switch). Whoever tore it down owns the state.
+            TransportProbe.Result.ABORTED -> Unit
+        }
     }
 
     /**
@@ -1696,7 +2094,7 @@ class BirdoVpnService : VpnService() {
         updateWidgetState(true, connectedServer)
         mainHandler.removeCallbacks(connectTimeoutRunnable)
         mainHandler.post {
-            updateNotification(buildConnectedText())
+            updateNotification()
             startNotificationTicker()
         }
     }
@@ -1713,7 +2111,18 @@ class BirdoVpnService : VpnService() {
         return WireGuardConfigBuilder.applyPortOverride(endpoint, appPrefs)
     }
 
-    private fun stopTunnel() {
+    /**
+     * Full teardown: tunnel, block and foreground service.
+     *
+     * @param reason end in this Error instead of Disconnected (a revoke, a
+     *   takeover), and post it as an alert, since the ongoing notification
+     *   that could have carried it goes away with the service.
+     * @param userInitiated the user asked for this stop. The standalone "Not
+     *   connected" notice is only for a stop they did NOT ask for, and only
+     *   while the Notifications setting is on (A1-028, P1-parity-012) — that
+     *   setting used to be read by nothing at all.
+     */
+    private fun stopTunnel(reason: VpnState.Error?, userInitiated: Boolean) {
         Log.i(TAG, "Stopping VPN tunnel")
         updateState(VpnState.Disconnecting)
         stopNotificationTicker()
@@ -1723,13 +2132,18 @@ class BirdoVpnService : VpnService() {
         cleanupStealthAndQuantum()
         // Clear sensitive config from memory (private keys, etc.)
         activeConfig = null
-        updateState(VpnState.Disconnected)
+        updateState(reason ?: VpnState.Disconnected)
         _connectedServerFlow.value = null
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
         _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
         updateWidgetState(false, null)
-        notifManager.postDisconnectedNotification()
+        if (reason != null) {
+            val alert = VpnNotificationManager.alertFor(reason, killSwitchActive = false, sessionExpired = false, uiForeground = uiForeground)
+            if (alert != null) notifManager.postAlert(alert)
+        } else if (shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
+            notifManager.postDisconnectedNotification()
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -1828,6 +2242,9 @@ class BirdoVpnService : VpnService() {
             override fun onAvailable(network: Network) {
                 if (tunnelHandle != handle) return
                 Log.i(TAG, "Underlying network changed -> $network, reprotecting socket")
+                // A new path is also a moment to prove the peer is still
+                // registered (A1-017): VpnManager beats immediately.
+                _wakeFlow.tryEmit(Unit)
                 try {
                     @Suppress("DEPRECATION")
                     setUnderlyingNetworks(arrayOf(network))
@@ -1916,9 +2333,13 @@ class BirdoVpnService : VpnService() {
                 putBoolean("vpn_connected", connected)
                 putString("server_name", serverName)
             }
-            CoroutineScope(Dispatchers.IO).launch {
+            // The application context and a process-lifetime scope: the
+            // refresh must outlive this service instance (onDestroy calls this
+            // on its way out) without holding the instance itself.
+            val appCtx = applicationContext
+            widgetScope.launch {
                 try {
-                    app.birdo.vpn.widget.BirdoWidget().updateAll(this@BirdoVpnService)
+                    app.birdo.vpn.widget.BirdoWidget().updateAll(appCtx)
                 } catch (e: Exception) {
                     Log.w(TAG, "Glance widget update failed", e)
                 }
@@ -1948,11 +2369,20 @@ sealed class VpnState {
     data object StealthConnecting : VpnState()
     data object Connected : VpnState()
     data object Disconnecting : VpnState()
-    /** Automatic reconnection in progress after unexpected disconnect. */
-    data class Reconnecting(val attempt: Int = 0) : VpnState()
+    /**
+     * The supervisor is recovering a session: a backoff delay before re-dial
+     * [attempt], or — [waitingForNetwork] — holding until the device is online
+     * again. Published by VpnManager for the whole wait, so every surface says
+     * "Reconnecting…" instead of "Not connected" (A1-008).
+     */
+    data class Reconnecting(val attempt: Int = 0, val waitingForNetwork: Boolean = false) : VpnState()
     /** Kill switch is active — all traffic blocked to prevent leaks. */
     data object KillSwitchActive : VpnState()
-    data class Error(val message: String) : VpnState()
+    /**
+     * @param kind why, for recovery: the supervisor retries, stops or asks the
+     *   user on this, never on the message text.
+     */
+    data class Error(val message: String, val kind: FailureKind = FailureKind.TRANSIENT) : VpnState()
 }
 
 /**

@@ -12,15 +12,20 @@ import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.MultiHopPolicy
+import app.birdo.vpn.service.RosenpassManager
+import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.isConnectingPhase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -32,7 +37,19 @@ data class VpnUiState(
     val servers: List<VpnServer> = emptyList(),
     val selectedServer: VpnServer? = null,
     val isLoadingServers: Boolean = false,
-    val error: String? = null,
+    /**
+     * A message for the Connect screen that the session state does not carry
+     * itself: a refused server switch, an incomplete Multi-Hop pair, a
+     * retired node, a denied permission. Connect FAILURES are not copied here
+     * any more: VpnManager publishes them as VpnState.Error, and Home drew
+     * both — two identical red banners, which even disagreed for a 426
+     * (A2-011). Dismissible.
+     */
+    val connectError: String? = null,
+    /** The Servers screen's own error (A2-012: one shared field leaked between screens). */
+    val serversError: String? = null,
+    /** The Port Forwarding screen's own error. */
+    val portForwardError: String? = null,
     val needsVpnPermission: Boolean = false,
     val killSwitchActive: Boolean = false,
     val tick: Long = 0L,
@@ -70,7 +87,22 @@ data class VpnUiState(
      * treats unknown as AVAILABLE. See [nextDnsFilteringAvailable].
      */
     val dnsFilteringAvailable: Boolean? = null,
+    /** A server switch is in flight: Home says "Switching server…" (P1-parity-016). */
+    val switching: Boolean = false,
+    /**
+     * The entry node of the live (or dialling) Multi-Hop session, or null.
+     * Drives "Protected · Multi-Hop" (P1-parity-017) and the globe's focus
+     * and arc, which used to point at the last single-hop selection
+     * (P1-parity-003).
+     */
+    val liveMultiHopEntryId: String? = null,
+    /** The account session expired; the tunnel may still be up (see VpnManager.sessionExpired). */
+    val sessionExpired: Boolean = false,
 )
+
+/** True while a Multi-Hop session is the one that is connected. */
+val VpnUiState.multiHopActive: Boolean
+    get() = vpnState is VpnState.Connected && liveMultiHopEntryId != null
 
 /**
  * The next fleet-gate value given the current one and a fetch outcome.
@@ -119,6 +151,20 @@ data class TrafficStats(
     val tickMs: Long = 0L,
 )
 
+/**
+ * The dial that asked for the VPN permission prompt, replayed EXACTLY when
+ * the user grants it (A1-007). The grant used to call connect(), which never
+ * consults the Multi-Hop policy: a first Multi-Hop dial on a fresh install
+ * came back from the system dialog as a single hop while Home kept drawing
+ * the entry -> exit pair.
+ */
+internal sealed interface PendingDial {
+    data object Connect : PendingDial
+    data object Quick : PendingDial
+    data class MultiHop(val entryNodeId: String, val exitNodeId: String) : PendingDial
+    data class Switch(val server: VpnServer) : PendingDial
+}
+
 @HiltViewModel
 class VpnViewModel @Inject constructor(
     private val vpnManager: VpnManager,
@@ -150,6 +196,12 @@ class VpnViewModel @Inject constructor(
         ),
     )
     val multiHop: StateFlow<MultiHopSelection> = _multiHop.asStateFlow()
+
+    /** See [PendingDial]. Cleared when the permission is granted or denied. */
+    private var pendingDial: PendingDial? = null
+
+    /** The stats poll, alive only while connected (A1-036). */
+    private var statsJob: Job? = null
 
     fun setMultiHopSelection(enabled: Boolean, entryId: String?, exitId: String?) {
         prefs.multiHopEnabled = enabled
@@ -265,72 +317,90 @@ class VpnViewModel @Inject constructor(
     }
 
     // FIX-2-12: Reactive state sync via StateFlow collection.
-    // VPN state changes propagate immediately (no 1s delay).
-    // A separate 1s loop still updates traffic stats (rxBytes, txBytes) which
-    // remain volatile companion fields on BirdoVpnService.
     private fun startStateSync() {
-        // Reactive: collect state/connectedServer/connectedSince immediately
+        // One combined stream, so the kill-switch banner, the switching label
+        // and the session-expired flag follow their sources directly. They used
+        // to be snapshots taken only when the connection state changed, so a
+        // block released by a settings push left "All traffic blocked" on
+        // screen over a free device (A1-044).
         viewModelScope.launch {
-            vpnManager.state.collect { vpnState ->
-                _uiState.value = _uiState.value.copy(
-                    vpnState = vpnState,
-                    connectedServer = vpnManager.connectedServer.value,
-                    connectedSince = vpnManager.connectedSince.value,
-                    killSwitchActive = app.birdo.vpn.service.BirdoVpnService.killSwitchActive,
-                    stealthActive = app.birdo.vpn.service.BirdoVpnService.stealthActive,
-                    quantumActive = app.birdo.vpn.service.BirdoVpnService.quantumActive,
-                    pqMode = app.birdo.vpn.service.RosenpassManager.modeFlow.value.name,
-                    tick = System.currentTimeMillis(),
-                )
-            }
-        }
-        // Periodic: poll traffic stats & public IP (volatile service fields the
-        // state collector above doesn't carry).
-        //
-        // Traffic counters go to their own [trafficStats] flow so a per-second
-        // byte tick only recomposes the stats row — not the globe, top bar,
-        // server selector and connect button, which is what happened when they
-        // lived on VpnUiState. `publicIp` and `tick` stay on VpnUiState but are
-        // only re-emitted when they genuinely change, so a connected-but-idle
-        // tunnel produces ZERO UiState emissions per tick.
-        viewModelScope.launch {
-            while (isActive) {
-                val svcRx = app.birdo.vpn.service.BirdoVpnService.rxBytes
-                val svcTx = app.birdo.vpn.service.BirdoVpnService.txBytes
-                val svcIp = app.birdo.vpn.service.BirdoVpnService.publicIp
-
-                val s = _uiState.value
-                val connected = s.vpnState == VpnState.Connected
-                val stats = _trafficStats.value
-                // While connected, advance the tick every poll so the duration
-                // readout counts up. While disconnected, only flush the service's
-                // reset values (once) — no idle emissions.
-                if (connected) {
-                    _trafficStats.value = TrafficStats(
-                        rxBytes = svcRx,
-                        txBytes = svcTx,
-                        tickMs = System.currentTimeMillis(),
+            combine(
+                vpnManager.state,
+                BirdoVpnService.killSwitchActiveFlow,
+                vpnManager.switching,
+                vpnManager.sessionExpired,
+            ) { state, blocking, switching, expired -> SyncInput(state, blocking, switching, expired) }
+                .collect { input ->
+                    val route = vpnManager.activeMultiHopRoute
+                    val routeIsLive = input.state is VpnState.Connected || input.state.isConnectingPhase
+                    _uiState.value = _uiState.value.copy(
+                        vpnState = input.state,
+                        connectedServer = vpnManager.connectedServer.value,
+                        connectedSince = vpnManager.connectedSince.value,
+                        killSwitchActive = input.killSwitchActive,
+                        switching = input.switching,
+                        sessionExpired = input.sessionExpired,
+                        liveMultiHopEntryId = if (routeIsLive) route?.first else null,
+                        stealthActive = BirdoVpnService.stealthActive,
+                        quantumActive = BirdoVpnService.quantumActive,
+                        pqMode = RosenpassManager.modeFlow.value.name,
+                        publicIp = BirdoVpnService.publicIp,
+                        tick = System.currentTimeMillis(),
                     )
-                } else if (stats.rxBytes != svcRx || stats.txBytes != svcTx) {
-                    _trafficStats.value = TrafficStats(rxBytes = svcRx, txBytes = svcTx, tickMs = 0L)
+                    if (input.state is VpnState.Connected) startStatsPolling() else stopStatsPolling()
                 }
+        }
+    }
 
-                if (s.publicIp != svcIp) {
-                    _uiState.value = s.copy(publicIp = svcIp, tick = System.currentTimeMillis())
+    private data class SyncInput(
+        val state: VpnState,
+        val killSwitchActive: Boolean,
+        val switching: Boolean,
+        val sessionExpired: Boolean,
+    )
+
+    /**
+     * Poll the traffic counters (volatile service fields the state stream does
+     * not carry) — ONLY while connected. The loop used to run every 1 s / 8 s
+     * for the activity's whole lifetime, disconnected included (A1-036).
+     *
+     * Counters go to their own [trafficStats] flow so a per-second byte tick
+     * only recomposes the stats row — not the globe, top bar, server selector
+     * and connect button.
+     */
+    private fun startStatsPolling() {
+        if (statsJob?.isActive == true) return
+        statsJob = viewModelScope.launch {
+            while (isActive) {
+                _trafficStats.value = TrafficStats(
+                    rxBytes = BirdoVpnService.rxBytes,
+                    txBytes = BirdoVpnService.txBytes,
+                    tickMs = System.currentTimeMillis(),
+                )
+                val ip = BirdoVpnService.publicIp
+                if (_uiState.value.publicIp != ip) {
+                    _uiState.value = _uiState.value.copy(publicIp = ip, tick = System.currentTimeMillis())
                 }
-
                 // Live 1s cadence only matters while the UI is visible. When the
                 // app is backgrounded nothing observes these flows, so match the
-                // service's adaptive ticker (8s) and stop waking the main thread
-                // behind the user's back.
-                delay(if (app.birdo.vpn.service.BirdoVpnService.uiForeground) 1000L else 8000L)
+                // service's adaptive ticker (8s).
+                delay(if (BirdoVpnService.uiForeground) 1000L else 8000L)
             }
         }
     }
 
+    private fun stopStatsPolling() {
+        if (statsJob == null) return
+        statsJob?.cancel()
+        statsJob = null
+        // Flush the service's reset values once, so a new session does not
+        // start from the last one's counters.
+        _trafficStats.value = TrafficStats(rxBytes = BirdoVpnService.rxBytes, txBytes = BirdoVpnService.txBytes)
+    }
+
     fun loadServers(forceRefresh: Boolean = false) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoadingServers = true, error = null)
+            _uiState.value = _uiState.value.copy(isLoadingServers = true, serversError = null)
             when (val result = repository.getServers(forceRefresh)) {
                 is ApiResult.Success -> {
                     val servers = result.data.sortedWith(
@@ -342,17 +412,19 @@ class VpnViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(
                         servers = servers,
                         isLoadingServers = false,
-                        // Never auto-select a node this plan can't use: the user
-                        // would tap Connect and eat a server-side refusal.
-                        selectedServer = _uiState.value.selectedServer
-                            ?: servers.firstOrNull { it.isOnline && it.accessible },
+                        // K10 (A1-023): pre-select the lowest-load node this
+                        // plan can use — the node a quick connect would dial —
+                        // never the first row of a name-sorted list, which was
+                        // the same country for every new user. One rule, shared
+                        // with VpnManager.quickConnect (VpnManager.bestServer).
+                        selectedServer = _uiState.value.selectedServer ?: VpnManager.bestServer(servers),
                     )
                     pruneRetiredMultiHopNodes(servers)
                 }
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
                         isLoadingServers = false,
-                        error = result.message,
+                        serversError = result.message,
                     )
                 }
             }
@@ -395,7 +467,7 @@ class VpnViewModel @Inject constructor(
         )
         // Name which end went, rather than leaving a silently half-empty picker.
         _uiState.value = _uiState.value.copy(
-            error = when {
+            connectError = when {
                 entryGone && exitGone ->
                     "Both of your Multi-Hop servers were retired. Pick a new entry and exit."
                 entryGone -> "Your Multi-Hop entry server was retired. Pick a new one."
@@ -504,56 +576,47 @@ class VpnViewModel @Inject constructor(
         //
         //   * A tap that only relabels (nothing connected) can downgrade
         //     nothing, so refusing it is pure obstruction.
-        //   * activeMultiHopRoute goes STALE. VpnManager clears it in connect()
-        //     and tearDownTunnel() only, and a teardown driven by the service --
-        //     the notification's Disconnect action, onRevoke(), onDestroy() --
-        //     reaches neither. It also gets set on connectMultiHop's API success,
-        //     before the tunnel is established, so a multi-hop dial that fails
-        //     leaves it set with nothing running. Gating on it alone would then
-        //     refuse every server tap while the user is plainly disconnected,
-        //     with no Disconnect control rendered anywhere to satisfy the
-        //     message. Requiring `onTunnel` confines the refusal to a session
-        //     that genuinely exists.
+        //   * activeMultiHopRoute goes STALE. VpnManager clears it on a
+        //     single-hop dial and a teardown it performs itself; a teardown
+        //     driven by the service -- onRevoke(), onDestroy() -- does not. It
+        //     also gets set on connectMultiHop's API success, before the tunnel
+        //     is established, so a multi-hop dial that fails leaves it set with
+        //     nothing running. Gating on it alone would then refuse every
+        //     server tap while the user is plainly disconnected, with no
+        //     Disconnect control rendered anywhere to satisfy the message.
+        //     Requiring `onTunnel` confines the refusal to a session that
+        //     genuinely exists.
         //
-        // The field is NOT cleared on a service-published Disconnect on purpose:
-        // startAutoReconnect() reads it to rebuild the SAME route after a drop,
-        // and clearing it there would silently convert a dropped multi-hop into
-        // a single-hop reconnect -- the very failure this guard exists to stop.
         // No same-node exemption, deliberately, and this matches iOS. `prev` is
         // the SELECTION label, which during a multi-hop session does not track
         // the live route at all -- so exempting `prev?.id == server.id` let a tap
-        // on the highlighted row fall through to the `error = null` below and
-        // silently wipe the refusal the previous tap had just raised.
+        // on the highlighted row fall through to the `connectError = null` below
+        // and silently wipe the refusal the previous tap had just raised.
         when (val change = MultiHopPolicy.forRouteChange(onTunnel, vpnManager.activeMultiHopRoute)) {
             is MultiHopPolicy.RouteChange.RefuseWouldDowngrade -> {
-                _uiState.value = _uiState.value.copy(error = change.message)
+                _uiState.value = _uiState.value.copy(connectError = change.message)
                 return
             }
             MultiHopPolicy.RouteChange.Allowed -> Unit
         }
 
         // Clear the refusal (and any stale connect error) once a selection is
-        // actually accepted -- the Servers tab now renders uiState.error, so a
-        // banner left standing would outlive the tap that caused it.
-        _uiState.value = _uiState.value.copy(selectedServer = server, error = null)
+        // actually accepted, so a banner cannot outlive the tap that caused it.
+        _uiState.value = _uiState.value.copy(selectedServer = server, connectError = null)
         if (!onTunnel || prev?.id == server.id) return
         if (!vpnManager.isVpnPermissionGranted()) {
-            _uiState.value = _uiState.value.copy(needsVpnPermission = true)
+            requestPermissionFor(PendingDial.Switch(server))
             return
         }
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(error = null)
             try {
-                when (val result = vpnManager.connect(server.id)) {
-                    is ApiResult.Success -> { /* state syncs via startStateSync */ }
-                    is ApiResult.Error -> {
-                        _uiState.value = _uiState.value.copy(error = result.message)
-                    }
-                }
+                // A failure is published by VpnManager as the session's Error.
+                vpnManager.connect(server.id)
             } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
                 // Never let a switch failure escape the coroutine and crash the app.
                 _uiState.value = _uiState.value.copy(
-                    error = t.message ?: "Couldn't switch server — please try again.",
+                    connectError = t.message ?: "Couldn't switch server — please try again.",
                 )
             }
         }
@@ -568,13 +631,53 @@ class VpnViewModel @Inject constructor(
 
     // ── Connection ───────────────────────────────────────────────
 
+    /**
+     * A dial is refused while one is in flight, while connected, and while the
+     * supervisor is reconnecting — Home shows Disconnect for that, and a
+     * second dial beside the recovery used to mint a second peer (A1-008).
+     */
+    private fun dialInProgress(): Boolean {
+        val s = vpnManager.state.value
+        return s.isConnectingPhase || s == VpnState.Connected || s == VpnState.Disconnecting ||
+            s is VpnState.Reconnecting
+    }
+
+    private fun requestPermissionFor(dial: PendingDial) {
+        pendingDial = dial
+        _uiState.value = _uiState.value.copy(needsVpnPermission = true)
+    }
+
+    /** Multi-Hop is armed exactly as Home draws it: the pref AND a SOVEREIGN plan. */
+    private fun multiHopArmedAsShown(): Boolean =
+        prefs.multiHopEnabled &&
+            _uiState.value.subscription?.plan?.equals("SOVEREIGN", ignoreCase = true) == true
+
     fun connect() {
-        val currentState = vpnManager.state.value
-        if (currentState.isConnectingPhase || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
+        if (dialInProgress()) return
 
         if (!vpnManager.isVpnPermissionGranted()) {
-            _uiState.value = _uiState.value.copy(needsVpnPermission = true)
+            requestPermissionFor(PendingDial.Connect)
             return
+        }
+
+        // Second guard behind Home's own routing (A1-007): a single-hop dial is
+        // never built while Multi-Hop is armed as Home draws it.
+        when (
+            val decision = MultiHopPolicy.forNewConnection(
+                multiHopArmedAsShown(),
+                prefs.multiHopEntryNodeId,
+                prefs.multiHopExitNodeId,
+            )
+        ) {
+            is MultiHopPolicy.NewConnection.MultiHop -> {
+                connectMultiHop(decision.entryNodeId, decision.exitNodeId)
+                return
+            }
+            MultiHopPolicy.NewConnection.RefuseIncompletePair -> {
+                _uiState.value = _uiState.value.copy(connectError = SessionCopy.INCOMPLETE_MULTI_HOP)
+                return
+            }
+            MultiHopPolicy.NewConnection.SingleHop -> Unit
         }
 
         val server = _uiState.value.selectedServer
@@ -583,37 +686,25 @@ class VpnViewModel @Inject constructor(
             return
         }
 
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(error = null)
-            when (val result = vpnManager.connect(server.id)) {
-                is ApiResult.Success -> {
-                    // State is updated via syncState
-                }
-                is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(
-                        error = connectErrorMessage(result),
-                    )
-                }
-            }
-        }
+        _uiState.value = _uiState.value.copy(connectError = null)
+        // A failure is published by VpnManager as the session's Error, with
+        // the canonical copy (426 included); nothing to copy here.
+        viewModelScope.launch { vpnManager.connect(server.id) }
     }
 
     fun quickConnect() {
-        val currentState = vpnManager.state.value
-        if (currentState.isConnectingPhase || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
+        if (dialInProgress()) return
 
         if (!vpnManager.isVpnPermissionGranted()) {
-            _uiState.value = _uiState.value.copy(needsVpnPermission = true)
+            requestPermissionFor(PendingDial.Quick)
             return
         }
 
+        _uiState.value = _uiState.value.copy(connectError = null)
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(error = null)
-
             // Same contract as autoConnectIfEnabled: quick connect is also
-            // reached from the home-screen widget and the quick-settings tile,
-            // neither of which has UI to gate on. Without this they build a
-            // single hop while the app keeps displaying the chosen route.
+            // reached from surfaces with no UI to gate on. Without this they
+            // build a single hop while the app keeps displaying the chosen route.
             when (
                 val decision = MultiHopPolicy.forNewConnection(
                     prefs.multiHopEnabled,
@@ -623,33 +714,15 @@ class VpnViewModel @Inject constructor(
             ) {
                 MultiHopPolicy.NewConnection.RefuseIncompletePair -> {
                     // Refuse rather than silently downgrade — see below.
-                    _uiState.value = _uiState.value.copy(
-                        error = "Multi-Hop is on but no entry/exit pair is selected. " +
-                            "Choose both in Settings, or turn Multi-Hop off.",
-                    )
-                    return@launch
+                    _uiState.value = _uiState.value.copy(connectError = SessionCopy.INCOMPLETE_MULTI_HOP)
                 }
-                MultiHopPolicy.NewConnection.SingleHop -> Unit
-                is MultiHopPolicy.NewConnection.MultiHop -> {
-                    when (val result = vpnManager.connectMultiHop(decision.entryNodeId, decision.exitNodeId)) {
-                        is ApiResult.Success -> {}
-                        is ApiResult.Error ->
-                            // NOT falling back to vpnManager.quickConnect(): a
-                            // single-hop tunnel presented as the user's chosen
-                            // multi-hop route is indistinguishable from success to
-                            // them, and leaks the jurisdiction they paid to hide.
-                            _uiState.value =
-                                _uiState.value.copy(error = connectErrorMessage(result))
-                    }
-                    return@launch
-                }
-            }
-
-            when (val result = vpnManager.quickConnect()) {
-                is ApiResult.Success -> {}
-                is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(error = connectErrorMessage(result))
-                }
+                // NOT falling back to a single hop on failure: a single-hop
+                // tunnel presented as the user's chosen multi-hop route is
+                // indistinguishable from success to them, and leaks the
+                // jurisdiction they paid to hide.
+                is MultiHopPolicy.NewConnection.MultiHop ->
+                    vpnManager.connectMultiHop(decision.entryNodeId, decision.exitNodeId)
+                MultiHopPolicy.NewConnection.SingleHop -> vpnManager.quickConnect()
             }
         }
     }
@@ -660,63 +733,75 @@ class VpnViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Sign-out: tear the tunnel down and WAIT for the server to release the
+     * slot, then [thenSignOut] — which wipes the tokens. Run as one sequence
+     * so the DELETE cannot race the token wipe and leave the peer holding a
+     * device slot until the reaper (A1-045, A2-005; iOS disconnectForSignOut).
+     */
+    fun disconnectForSignOut(thenSignOut: () -> Unit) {
+        viewModelScope.launch {
+            vpnManager.disconnectForSignOut()
+            thenSignOut()
+        }
+    }
+
+    /** The account is gone server-side, peer included: tear down locally only. */
+    fun onAccountDeleted() {
+        vpnManager.onAccountDeleted()
+    }
+
+    /** The account session died (a 401 the refresh could not fix). See VpnManager.onSessionExpired. */
+    fun onSessionExpired() {
+        vpnManager.onSessionExpired()
+    }
+
+    /** A session exists again: resume anything the expiry paused. */
+    fun onSignedIn() {
+        vpnManager.onSignedIn()
+    }
+
     fun connectMultiHop(entryNodeId: String, exitNodeId: String) {
-        val currentState = vpnManager.state.value
-        if (currentState.isConnectingPhase || currentState == VpnState.Connected || currentState == VpnState.Disconnecting) return
+        if (dialInProgress()) return
 
         if (!vpnManager.isVpnPermissionGranted()) {
-            _uiState.value = _uiState.value.copy(needsVpnPermission = true)
+            requestPermissionFor(PendingDial.MultiHop(entryNodeId, exitNodeId))
             return
         }
 
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(error = null)
-            when (val result = vpnManager.connectMultiHop(entryNodeId, exitNodeId)) {
-                is ApiResult.Success -> {
-                    val body = result.data
-                    if (!body.success) {
-                        _uiState.value = _uiState.value.copy(
-                            error = body.message ?: "Multi-hop connection failed",
-                        )
-                    }
-                }
-                is ApiResult.Error -> {
-                    _uiState.value = _uiState.value.copy(error = connectErrorMessage(result))
-                }
-            }
-        }
+        _uiState.value = _uiState.value.copy(connectError = null)
+        // Refusals (no route block, a different route, the API) are published
+        // by VpnManager as the session's Error.
+        viewModelScope.launch { vpnManager.connectMultiHop(entryNodeId, exitNodeId) }
     }
 
-
-    /**
-     * Map a connect failure to a user-facing message. HTTP 426 is the backend's
-     * version support floor: the raw error body is structured JSON (too long for
-     * the sanitizer, which would degrade it to a generic "Connection failed"),
-     * so translate it into the one actionable sentence.
-     */
-    private fun connectErrorMessage(result: ApiResult.Error): String =
-        if (result.code == 426) {
-            "This app version is no longer supported. Update BirdoVPN to reconnect."
-        } else {
-            result.message
-        }
-
+    /** Replay exactly the dial that asked for the permission (A1-007). */
     fun onVpnPermissionGranted() {
         _uiState.value = _uiState.value.copy(needsVpnPermission = false)
-        connect()
+        val dial = pendingDial
+        pendingDial = null
+        when (dial) {
+            PendingDial.Connect -> connect()
+            PendingDial.Quick -> quickConnect()
+            is PendingDial.MultiHop -> connectMultiHop(dial.entryNodeId, dial.exitNodeId)
+            is PendingDial.Switch -> selectServer(dial.server)
+            null -> Unit
+        }
     }
 
     fun onVpnPermissionDenied() {
+        pendingDial = null
         _uiState.value = _uiState.value.copy(
             needsVpnPermission = false,
-            error = "VPN permission is required to connect",
+            connectError = SessionCopy.VPN_PERMISSION,
         )
     }
 
     fun getVpnPermissionIntent(): Intent? = vpnManager.getVpnPermissionIntent()
 
-    fun clearError() {
-        _uiState.value = _uiState.value.copy(error = null)
+    /** Home's dismiss affordance on its message banner (A2-012). */
+    fun dismissConnectError() {
+        _uiState.value = _uiState.value.copy(connectError = null)
     }
 
     /**
@@ -744,7 +829,7 @@ class VpnViewModel @Inject constructor(
 
     fun loadPortForwards() {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoadingPortForwards = true)
+            _uiState.value = _uiState.value.copy(isLoadingPortForwards = true, portForwardError = null)
             when (val result = repository.getPortForwards()) {
                 is ApiResult.Success -> {
                     _uiState.value = _uiState.value.copy(
@@ -754,7 +839,7 @@ class VpnViewModel @Inject constructor(
                 }
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
-                        error = result.message,
+                        portForwardError = result.message,
                         isLoadingPortForwards = false,
                     )
                 }
@@ -764,7 +849,7 @@ class VpnViewModel @Inject constructor(
 
     fun createPortForward(internalPort: Int, protocol: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoadingPortForwards = true)
+            _uiState.value = _uiState.value.copy(isLoadingPortForwards = true, portForwardError = null)
             when (val result = repository.createPortForward(internalPort, protocol)) {
                 is ApiResult.Success -> {
                     val created = result.data.portForward
@@ -775,14 +860,14 @@ class VpnViewModel @Inject constructor(
                         )
                     } else {
                         _uiState.value = _uiState.value.copy(
-                            error = result.data.message ?: "Failed to create port forward",
+                            portForwardError = result.data.message ?: "Failed to create port forward",
                             isLoadingPortForwards = false,
                         )
                     }
                 }
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
-                        error = result.message,
+                        portForwardError = result.message,
                         isLoadingPortForwards = false,
                     )
                 }
@@ -792,13 +877,14 @@ class VpnViewModel @Inject constructor(
 
     fun deletePortForward(id: String) {
         viewModelScope.launch {
-            when (repository.deletePortForward(id)) {
+            when (val result = repository.deletePortForward(id)) {
                 is ApiResult.Success -> {
                     _uiState.value = _uiState.value.copy(
                         portForwards = _uiState.value.portForwards.filter { it.id != id },
                     )
                 }
-                is ApiResult.Error -> { /* silent */ }
+                // It used to fail silently: the rule stayed, and nothing said so (A2-012).
+                is ApiResult.Error -> _uiState.value = _uiState.value.copy(portForwardError = result.message)
             }
         }
     }

@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.ui.theme.*
+import kotlinx.coroutines.launch
 
 enum class BadgeTone { Neutral, Success, Warning, Danger, Info, Brand }
 
@@ -66,25 +67,40 @@ fun BirdoBadge(
     }
 }
 
+/**
+ * The status dot with its pulse ring: three bursts, then still — as on iOS and
+ * Windows (P1-parity-002). The ring used to animate forever, redrawing every
+ * frame for as long as the Connect screen showed "Protected". Re-runs when the
+ * dot re-enters composition (the pill changing state); skipped entirely when
+ * the system animator scale is 0 (Remove animations).
+ */
 @Composable
 fun PulsingDot(color: Color, size: androidx.compose.ui.unit.Dp = 8.dp) {
-    val transition = rememberInfiniteTransition(label = "pulse")
-    val scale by transition.animateFloat(
-        initialValue = 1f, targetValue = 2f,
-        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing), RepeatMode.Restart),
-        label = "s",
-    )
-    val alpha by transition.animateFloat(
-        initialValue = 0.6f, targetValue = 0f,
-        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing), RepeatMode.Restart),
-        label = "a",
-    )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scale = remember { Animatable(1f) }
+    val alpha = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        val animatorScale = android.provider.Settings.Global.getFloat(
+            context.contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        )
+        if (animatorScale == 0f) return@LaunchedEffect
+        repeat(PULSE_BURSTS) {
+            scale.snapTo(1f)
+            alpha.snapTo(0.6f)
+            kotlinx.coroutines.coroutineScope {
+                launch { scale.animateTo(2f, tween(PULSE_MS, easing = LinearEasing)) }
+                launch { alpha.animateTo(0f, tween(PULSE_MS, easing = LinearEasing)) }
+            }
+        }
+    }
     Box(contentAlignment = Alignment.Center) {
         Box(
             Modifier
                 .size(size)
-                .scale(scale)
-                .alpha(alpha)
+                .scale(scale.value)
+                .alpha(alpha.value)
                 .clip(CircleShape)
                 .background(color),
         )
@@ -96,3 +112,6 @@ fun PulsingDot(color: Color, size: androidx.compose.ui.unit.Dp = 8.dp) {
         )
     }
 }
+
+private const val PULSE_BURSTS = 3
+private const val PULSE_MS = 1100
