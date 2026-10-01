@@ -72,7 +72,6 @@ class DataplaneFaultReportingTest {
         "app/src/main/java/app/birdo/vpn/service/WgNative.kt",
         "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt",
         "app/src/main/java/app/birdo/vpn/service/VpnManager.kt",
-        "app/src/main/java/app/birdo/vpn/service/TunnelMonitor.kt",
         "app/src/main/java/app/birdo/vpn/service/TransportProbe.kt",
         "app/src/main/java/app/birdo/vpn/service/RosenpassNative.kt",
         "app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt",
@@ -107,6 +106,14 @@ class DataplaneFaultReportingTest {
             "It returns what SHOULD happen; every caller reports what DID. Reporting here " +
             "would fire on a correct refusal and double-count the callers' outcomes " +
             "(Mobile-Client#336)",
+        "TunnelMonitor.kt" to
+            "the dead-tunnel verdict, a pure rule plus a sleep loop with nothing to catch " +
+            "since its socket re-protect moved into BirdoVpnService (A1-037). Its verdicts are " +
+            "breadcrumbs, and the Error they cause is published by the service's updateState funnel",
+        "TunnelRouting.kt" to
+            "D-6's routing rules (who is excluded from the tunnel, the Xray carve-out, which API " +
+            "client a call uses, the socket-protect verdict) as pure functions: nothing to catch. " +
+            "BirdoVpnService reports what they lead to (socket_protect_failed)",
         "SessionPolicy.kt" to
             "the session supervisor's verdicts (reconnect budget, system-start plan, " +
             "one-tap toggle) as pure functions: no Android, no I/O, nothing to catch. " +
@@ -808,15 +815,19 @@ class DataplaneFaultReportingTest {
     }
 
     /**
-     * FaultReporter's own throttle exists because "socket protect runs every
-     * cycle" — yet only WgNative's JNI *getter* throw was reported. These are
-     * the two actual protect() call sites; when protect() itself throws,
-     * wg-go's own UDP socket is routed back into the tunnel.
+     * There is ONE protect of wg-go's sockets now, right after wgTurnOn
+     * (A1-037: the 2 s poller, the 30 s monitor loop and the per-capability
+     * re-protect are gone). Since D-6 the app is inside its own tunnel, so a
+     * socket left unprotected sends WireGuard's own packets into the tunnel:
+     * the connect is refused and that refusal must reach us.
      */
     @Test
-    fun `both socket protect call sites report`() {
-        assertReports("app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt", listOf("socket_reprotect_failed"))
-        assertReports("app/src/main/java/app/birdo/vpn/service/TunnelMonitor.kt", listOf("socket_protect_failed"))
+    fun `the one socket protect site reports`() {
+        assertReports("app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt", listOf("socket_protect_failed"))
+        assertFalse(
+            "a periodic re-protect is back in TunnelMonitor; protect() once, after wgTurnOn",
+            source("app/src/main/java/app/birdo/vpn/service/TunnelMonitor.kt").contains(".protect("),
+        )
     }
 
     /** Native-integrity verdicts only ever happen on builds we did not ship. */

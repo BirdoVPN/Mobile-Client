@@ -253,4 +253,19 @@ class WireGuardConfigBuilderTest {
             serviceSource.substring(dnsResolved, lnsStart).contains("for (dns in tunnelDns)"),
         )
     }
+
+    // ── A1-038: the keepalive ceiling ───────────────────────────────────
+
+    @Test
+    fun `the keepalive is clamped so an idle tunnel stays under the stall backstop`() {
+        fun keepalive(seconds: Int?) =
+            WireGuardConfigBuilder.effectiveKeepaliveSec(response(dns = null).copy(persistentKeepalive = seconds))
+        // The old ceiling was 300: an idle tunnel then re-handshook only every
+        // 300 s, past TunnelMonitor's 180 s backstop, and "died" every few minutes.
+        assertEquals(WireGuardConfigBuilder.MAX_KEEPALIVE_SEC, keepalive(300))
+        assertEquals(25, keepalive(null))
+        assertEquals(25, keepalive(25))
+        assertEquals(10, keepalive(1))
+        assertTrue(WireGuardConfigBuilder.IDLE_HANDSHAKE_AGE_PEAK_SEC < TunnelMonitor.STALL_THRESHOLD_SEC)
+    }
 }

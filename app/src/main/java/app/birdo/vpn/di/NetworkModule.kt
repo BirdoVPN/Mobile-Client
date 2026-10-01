@@ -5,8 +5,11 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.api.AuthInterceptor
 import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.network.DohResolver
+import app.birdo.vpn.data.network.ProtectingSocketFactory
+import app.birdo.vpn.data.network.RoutingCallFactory
 import app.birdo.vpn.data.repository.ApiErrorMapper
 import app.birdo.vpn.data.repository.StringLookup
+import app.birdo.vpn.service.ApiRoutePolicy
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import dagger.Module
 import dagger.Provides
@@ -20,6 +23,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Singleton
 
 @Module
@@ -39,11 +43,26 @@ object NetworkModule {
         isLenient = false // Strict JSON parsing — reject malformed responses
     }
 
+    /** Qualifier of the client whose sockets go around any tunnel of ours (D-6). */
+    const val BYPASS_CLIENT = "api-bypass"
+
+    /** Qualifier of the client that rides the tunnel while one is up (D-6). */
+    const val TUNNEL_CLIENT = "api-tunnel"
+
+    /**
+     * D-6: the API client for when the app's traffic must NOT ride a tunnel —
+     * no tunnel yet, the kill-switch block, the reconnect path, Stealth (see
+     * ApiRoutePolicy). Its sockets are protect()ed around any tunnel of ours,
+     * and only this client resolves over DoH: inside a working tunnel the
+     * system resolver already IS the tunnel's DNS.
+     */
     @Provides
     @Singleton
-    fun provideOkHttpClient(authInterceptor: AuthInterceptor): OkHttpClient {
-        val builder = OkHttpClient.Builder()
+    @Named(BYPASS_CLIENT)
+    fun provideBypassClient(authInterceptor: AuthInterceptor): OkHttpClient =
+        baseClient(authInterceptor)
             .dns(DohResolver.dns)
+            .socketFactory(ProtectingSocketFactory())
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
@@ -59,6 +78,36 @@ object NetworkModule {
             // only setting that covers the whole thing, including redirects and
             // retries.
             .callTimeout(45, TimeUnit.SECONDS)
+            .build()
+
+    /**
+     * D-6: the API client for a verified, live tunnel — the heartbeat and every
+     * other call while Connected. Ordinary sockets and the system resolver,
+     * both of which are the tunnel's now that the app is inside it.
+     *
+     * Short timeouts, deliberately: a tunnel can die between two handshakes,
+     * and a call into a half-dead tunnel must fail fast as a transport error
+     * (which never tears anything down) instead of holding a heartbeat or a
+     * live rebuild for the bypass client's 45 s.
+     */
+    @Provides
+    @Singleton
+    @Named(TUNNEL_CLIENT)
+    fun provideTunnelClient(authInterceptor: AuthInterceptor): OkHttpClient =
+        baseClient(authInterceptor)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(25, TimeUnit.SECONDS)
+            .build()
+
+    /**
+     * What both clients share: auth, certificate pinning, debug logging. A
+     * fresh Builder each time, never `newBuilder()` of one client, so the two
+     * never share a connection pool (see RoutingCallFactory).
+     */
+    private fun baseClient(authInterceptor: AuthInterceptor): OkHttpClient.Builder {
+        val builder = OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
 
         // ── Certificate Pinning ──────────────────────────────────────
@@ -142,15 +191,26 @@ object NetworkModule {
             builder.addInterceptor(logging)
         }
 
-        return builder.build()
+        return builder
     }
 
+    /**
+     * Every API call picks its client when it is created, from the session's
+     * state at that moment (ApiRoutePolicy.currentPath).
+     */
     @Provides
     @Singleton
-    fun provideRetrofit(client: OkHttpClient): Retrofit {
+    fun provideRetrofit(
+        @Named(TUNNEL_CLIENT) tunnelClient: OkHttpClient,
+        @Named(BYPASS_CLIENT) bypassClient: OkHttpClient,
+    ): Retrofit {
         return Retrofit.Builder()
             .baseUrl(BuildConfig.API_BASE_URL + "/")
-            .client(client)
+            .callFactory(
+                RoutingCallFactory(tunnelClient, bypassClient) {
+                    ApiRoutePolicy.currentPath() == ApiRoutePolicy.Path.BYPASS
+                },
+            )
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
     }

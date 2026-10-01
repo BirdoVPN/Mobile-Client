@@ -317,7 +317,9 @@ internal class VpnNotificationManager(private val context: Context) {
         val accentColor = accentFor(model.tone)
         val pendingOpen = openAppIntent()
         val text = body ?: (state as? VpnState.Reconnecting)?.let {
-            if (it.waitingForNetwork) {
+            if (it.waitingForNetwork && it.captivePortal) {
+                context.getString(R.string.notif_body_captive_portal)
+            } else if (it.waitingForNetwork) {
                 context.getString(R.string.notif_body_waiting_network)
             } else {
                 context.getString(R.string.notif_body_attempt, it.attempt)

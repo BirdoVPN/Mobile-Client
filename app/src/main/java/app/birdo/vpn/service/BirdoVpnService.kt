@@ -7,19 +7,23 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.Network
-import android.net.NetworkCapabilities
 import android.net.VpnService
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.os.SystemClock
 import android.service.quicksettings.TileService
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.data.network.BypassSockets
+import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.RootDetector
@@ -40,6 +44,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
+import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -64,6 +70,13 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Split Tunneling: uses [VpnService.Builder.addDisallowedApplication] to let
  * selected apps bypass VPN.
+ *
+ * The app's own traffic (D-6, A1-016): BirdoVPN is INSIDE its tunnel, except
+ * while Stealth runs Xray as a child process; it is outside the kill-switch
+ * block, so sign-in and /connect work behind it. wg-go's UDP sockets are
+ * protect()ed once, right after wgTurnOn, and the API goes around a tunnel
+ * only through the bypass client this service lends [protect] to
+ * ([BypassSockets]). The rules are in TunnelRouting.kt.
  */
 class BirdoVpnService : VpnService() {
 
@@ -71,6 +84,9 @@ class BirdoVpnService : VpnService() {
         private const val TAG = "BirdoVPN"
         /** Max time (ms) to allow tunnel setup before forcing an error. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
+        /** Reads of wg-go's socket descriptors before the protect gives up (see protectTunnelSockets). */
+        private const val PROTECT_ATTEMPTS = 10
+        private const val PROTECT_RETRY_MS = 50L
         /**
          * POWER: the notification-refresh cadence drives a blocking wg-go
          * getConfig JNI read (readTrafficStats) on every tick, 24/7 while
@@ -387,15 +403,41 @@ class BirdoVpnService : VpnService() {
     @Volatile private var tunnelMonitor: TunnelMonitor? = null
 
     /**
-     * Default-network callback — fires when the OS swaps the underlying
-     * transport (Wi-Fi ↔ cellular ↔ ethernet). On every change we:
-     *   1. Tell the framework which network actually carries our tunnel via
-     *      [setUnderlyingNetworks] so battery / data attribution is correct.
-     *   2. Immediately re-[protect] the wg-go UDP socket so it binds to the
-     *      new transport instead of waiting for the 5s [TunnelMonitor] tick —
-     *      makes Wi-Fi→cellular handover effectively seamless.
+     * Watches the PHYSICAL networks under the tunnel (NOT_VPN + INTERNET; see
+     * [NetworkMonitor.underlyingNetworkRequest]). Not the default-network
+     * callback any more: since D-6 the app rides its own tunnel, so its
+     * default network IS the VPN, and that callback would describe the tunnel
+     * to itself.
+     *
+     * It no longer re-protects anything (A1-037): protect() marks wg-go's
+     * unconnected UDP socket once, and the socket then follows the system
+     * default network on every send. Nor does it call setUnderlyingNetworks:
+     * a VPN that declares none is taken to use the system default network,
+     * which is exactly the network wg-go's protected socket uses.
+     *
+     * What it does: a new network asks VpnManager for an immediate heartbeat
+     * (A1-017), and "no physical network at all" feeds the dead-tunnel check
+     * ([TunnelMonitor], [underlyingMissingSince]).
      */
-    private var defaultNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var underlyingNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /** The physical networks currently available, maintained by [underlyingNetworkCallback]. */
+    private val underlyingNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * elapsedRealtime when the last physical network went away, or 0 while
+     * one exists. Starts "missing" at registration: the platform reports the
+     * networks that already exist right after, and the monitor's start-up
+     * grace covers that gap.
+     */
+    @Volatile private var underlyingMissingSince = 0L
+
+    /**
+     * What the API's bypass client calls to go around the tunnel. One
+     * instance for this service's lifetime, so [onDestroy] removes exactly
+     * the one it installed.
+     */
+    private val bypassProtector: (Socket) -> Boolean = { socket -> protect(socket) }
 
     /** Single-thread executor for tunnel operations — avoids ANR on main thread. */
     private val tunnelExecutor = Executors.newSingleThreadExecutor { r ->
@@ -561,6 +603,7 @@ class BirdoVpnService : VpnService() {
         super.onCreate()
         appContext = applicationContext
         running = true
+        BypassSockets.install(bypassProtector)
         notifManager.createChannels()
         screenInteractive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive != false
         val filter = IntentFilter().apply {
@@ -1030,6 +1073,7 @@ class BirdoVpnService : VpnService() {
         // establish() on a destroyed service (A1-012).
         destroyed = true
         running = false
+        BypassSockets.uninstall(bypassProtector)
         transitionGen.incrementAndGet()
         stopNotificationTicker()
         mainHandler.removeCallbacks(connectTimeoutRunnable)
@@ -1233,6 +1277,11 @@ class BirdoVpnService : VpnService() {
                 // Point DNS at the blocking interface so queries don't leak
                 .addDnsServer("10.255.255.1")
                 .setBlocking(true)
+                // BirdoVPN itself stays OUTSIDE the block — unlike the tunnel
+                // (D-6). The block is not a tunnel, it carries nothing; the
+                // app has to reach the API through it to sign in, re-dial and
+                // release peers. Android's own lockdown exempts the VPN
+                // package for the same reason (AOSP Vpn.setVpnForcedLocked).
                 .addDisallowedApplication(packageName)
 
             val established = builder.establish()
@@ -1549,7 +1598,7 @@ class BirdoVpnService : VpnService() {
             // Checkpoint before establish(): nothing may establish() for a
             // setup that a Disconnect superseded, or on a destroyed service.
             if (supersededAt(gen, "establish")) return
-            val vpnFd = buildVpnInterface(effectiveConfig) ?: run {
+            val vpnFd = buildVpnInterface(effectiveConfig, stealth = stealthEndpointOverride != null) ?: run {
                 // Twin of activateKillSwitch's kill_switch_establish_refused:
                 // establish() returns null rather than throwing (VPN consent
                 // revoked, another VPN holding the interface, a route the
@@ -1606,9 +1655,17 @@ class BirdoVpnService : VpnService() {
             // ML-KEM-1024 decapsulation, which gives the same HNDL guarantee
             // — see RosenpassManager kdoc + native/ROADMAP.md.
 
-            protectTunnelSockets(handle)
-            startTunnelMonitor(handle)
-            registerDefaultNetworkCallback(handle)
+            // D-6: the app is inside its own tunnel now, so wg-go's UDP
+            // sockets MUST go around it or every WireGuard packet loops back
+            // into the interface it came from. Once, here, before anything
+            // relies on the tunnel; a socket that cannot be protected fails
+            // the connect (block first, as every setup failure does).
+            if (!protectTunnelSockets(handle)) {
+                failSetup(gen, SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT)
+                return
+            }
+            startTunnelMonitor(handle, WireGuardConfigBuilder.effectiveKeepaliveSec(effectiveConfig))
+            registerUnderlyingNetworkCallback(handle)
 
             // SEC (honest scope): drop OUR references to the key from the
             // retained ConnectResponse. This does NOT scrub the key from process
@@ -1700,8 +1757,12 @@ class BirdoVpnService : VpnService() {
      * Configures MTU, address, DNS, routes, and split-tunneling exclusions.
      * Returns the established [ParcelFileDescriptor] or `null` if the user
      * has not granted VPN permission.
+     *
+     * @param stealth this tunnel's WireGuard runs over the local Xray relay:
+     *   BirdoVPN stays outside the tunnel by UID and Xray's server is carved
+     *   out of the routes (D-6; see [TunnelAppRules] and [XrayCarveOut]).
      */
-    private fun buildVpnInterface(config: ConnectResponse): ParcelFileDescriptor? {
+    private fun buildVpnInterface(config: ConnectResponse, stealth: Boolean): ParcelFileDescriptor? {
         val builder = Builder()
             .setSession("BirdoVPN")
             .setBlocking(false)
@@ -1709,14 +1770,35 @@ class BirdoVpnService : VpnService() {
             // says otherwise, so with BirdoVPN up every app treated home Wi-Fi
             // as metered — "Wi-Fi only" updates, photo backups and UNMETERED
             // jobs waited for as long as the tunnel stayed up. false makes the
-            // VPN inherit the meteredness of the network it runs over.
+            // VPN inherit the meteredness of the network it runs over — the
+            // system default network, since no underlying networks are
+            // declared (wg-go's protected socket follows that network too).
             .setMetered(false)
-        // …and name that network from the first packet, not from the first
-        // default-network callback, so the inheritance is right immediately.
-        // The app is excluded from its own VPN, so its active network here is
-        // the physical one.
-        val underlying = (getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager)?.activeNetwork
-        if (underlying != null) builder.setUnderlyingNetworks(arrayOf(underlying))
+
+        // Xray's server leaves by the physical network, never through the
+        // tunnel that Xray itself carries (D-6). API 33+ excludes it outright;
+        // below that, every route that contains it is split around it
+        // ([addRoute]).
+        val xrayServer = if (stealth) XrayCarveOut.serverIpv4(config.xrayEndpoint) else null
+        val carveAround = xrayServer?.takeIf {
+            XrayCarveOut.method(Build.VERSION.SDK_INT) == XrayCarveOut.Method.ROUTE_TABLE
+        }
+        val addRoute: (String, Int) -> Unit = { address, prefix ->
+            if (carveAround != null && !address.contains(':')) {
+                for (cidr in XrayCarveOut.split("$address/$prefix", carveAround)) {
+                    builder.addRoute(cidr.substringBefore('/'), cidr.substringAfter('/').toInt())
+                }
+            } else {
+                builder.addRoute(address, prefix)
+            }
+        }
+        if (xrayServer != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            builder.excludeRoute(IpPrefix(InetAddress.getByName(xrayServer), 32))
+        } else if (stealth && xrayServer == null) {
+            // A hostname, or no endpoint: nothing to carve without a lookup.
+            // The stealth UID exclusion below still keeps Xray off the tunnel.
+            FaultReporter.trail(FaultReporter.PATH_STEALTH, "xray server is not an IPv4 literal — no route carve-out")
+        }
 
         // MTU
         val userMtu = appPrefs.wireGuardMtu
@@ -1808,7 +1890,7 @@ class BirdoVpnService : VpnService() {
                 )
                 for (cidr in nonLanRoutes) {
                     val parts = cidr.split("/")
-                    builder.addRoute(parts[0], parts[1].toInt())
+                    addRoute(parts[0], parts[1].toInt())
                 }
                 // BirdoShield (D18): the filtering resolver (10.13.13.1) sits
                 // inside the 10.0.0.0/8 hole this set leaves for the LAN.
@@ -1819,15 +1901,15 @@ class BirdoVpnService : VpnService() {
                 // Empty unless the resolved DNS holds a tunnel-gateway address.
                 for (cidr in WireGuardConfigBuilder.pinnedResolverRoutes(tunnelDns, config.assignedIp)) {
                     val parts = cidr.split("/")
-                    builder.addRoute(parts[0], parts[1].toInt())
+                    addRoute(parts[0], parts[1].toInt())
                 }
                 // Still route IPv6 through VPN for leak protection
-                builder.addRoute("::", 0)
+                addRoute("::", 0)
                 Log.i(TAG, "Local network sharing enabled — LAN ranges excluded from VPN routes")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to configure LAN exclusion routes, falling back to full route: ${e.message}")
-                builder.addRoute("0.0.0.0", 0)
-                builder.addRoute("::", 0)
+                addRoute("0.0.0.0", 0)
+                addRoute("::", 0)
             }
         } else {
             var hasV6Default = false
@@ -1838,7 +1920,7 @@ class BirdoVpnService : VpnService() {
                     val addr = parts[0]
                     val prefix = if (parts.size > 1) parts[1].toInt() else
                         if (cidr.contains(":")) 128 else 32
-                    builder.addRoute(addr, prefix)
+                    addRoute(addr, prefix)
                     if (addr == "::" && prefix == 0) hasV6Default = true
                     if (addr == "0.0.0.0" && prefix == 0) hasV4Default = true
                 } catch (e: Exception) { Log.w(TAG, "Invalid route: $cidr — ${e.message}") }
@@ -1850,7 +1932,7 @@ class BirdoVpnService : VpnService() {
             // otherwise win). Guarded so we never add a duplicate ::/0 (Android
             // throws IllegalArgumentException on duplicate routes).
             if (!hasV6Default) {
-                try { builder.addRoute("::", 0) } catch (e: Exception) {
+                try { addRoute("::", 0) } catch (e: Exception) {
                     // Leak-shaped: without ::/0 captured, IPv6 egresses on the
                     // physical adapter below the tunnel. The connect proceeds
                     // (unchanged here), so this report is the only witness.
@@ -1885,7 +1967,7 @@ class BirdoVpnService : VpnService() {
             // cannot capture the traffic it promised to capture.
             if (!hasV4Default) {
                 try {
-                    builder.addRoute("0.0.0.0", 0)
+                    addRoute("0.0.0.0", 0)
                     Log.w(TAG, "allowedIps carried no IPv4 default route - added one")
                 } catch (e: Exception) {
                     // Fails closed (null → kill switch + error), which is the
@@ -1902,42 +1984,93 @@ class BirdoVpnService : VpnService() {
             }
         }
 
-        // Split Tunneling
-        builder.addDisallowedApplication(packageName)
-        if (isSplitTunnelingEnabled && splitTunnelAppList.isNotEmpty()) {
-            for (app in splitTunnelAppList) {
-                try {
-                    packageManager.getPackageInfo(app, 0)
-                    builder.addDisallowedApplication(app)
-                } catch (_: PackageManager.NameNotFoundException) {
-                    Log.w(TAG, "Split tunnel: $app not installed, skipping")
-                }
+        // Who stays out of the tunnel: the split-tunnel apps, and BirdoVPN
+        // itself ONLY while Stealth runs Xray as a child process (D-6).
+        val ownPackage = packageName
+        val disallowed = TunnelAppRules.disallowedPackages(
+            ownPackage = ownPackage,
+            stealthActive = stealth,
+            splitTunnelEnabled = isSplitTunnelingEnabled,
+            splitTunnelApps = splitTunnelAppList,
+        )
+        for (app in disallowed) {
+            if (app == ownPackage) {
+                builder.addDisallowedApplication(app)
+                continue
+            }
+            try {
+                packageManager.getPackageInfo(app, 0)
+                builder.addDisallowedApplication(app)
+            } catch (_: PackageManager.NameNotFoundException) {
+                Log.w(TAG, "Split tunnel: $app not installed, skipping")
             }
         }
 
         return builder.establish()
     }
 
-    private fun protectTunnelSockets(handle: Int) {
-        Thread({
-            try {
-                Thread.sleep(100)
-                repeat(20) { attempt ->
-                    if (tunnelHandle != handle) return@Thread
-                    val v4 = WgNative.getSocketV4(handle)
-                    if (v4 >= 0) protect(v4)
-                    val v6 = WgNative.getSocketV6(handle)
-                    if (v6 >= 0) protect(v6)
-                    Thread.sleep(if (v4 >= 0 || v6 >= 0) 2000 else 200)
+    /**
+     * Protect wg-go's UDP sockets from the tunnel, ONCE, synchronously.
+     *
+     * Before D-6 this was a background thread that re-protected every 2 s for
+     * 40 s, joined by a 30 s loop in TunnelMonitor and a re-protect on every
+     * capability change (A1-037) — all of it without effect while the app was
+     * excluded from its own tunnel. Now that the app is inside it, the one
+     * protect that matters is this one: protect() marks the descriptor, and
+     * the unconnected socket then follows the system default network on every
+     * send, across roams, for its whole life.
+     *
+     * wgTurnOn opens the sockets before it returns (device.Up binds them), so
+     * the first read normally finds them; the bounded retry only covers a bind
+     * that lands a moment later.
+     *
+     * @return true when at least one socket exists and every socket that
+     *   exists is protected. Anything else would send WireGuard's own packets
+     *   into the tunnel they are meant to carry.
+     */
+    private fun protectTunnelSockets(handle: Int): Boolean {
+        var v4 = -1
+        var v6 = -1
+        for (attempt in 1..PROTECT_ATTEMPTS) {
+            v4 = WgNative.getSocketV4(handle)
+            v6 = WgNative.getSocketV6(handle)
+            if (v4 >= 0 || v6 >= 0) break
+            if (attempt < PROTECT_ATTEMPTS) {
+                try {
+                    Thread.sleep(PROTECT_RETRY_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
                 }
-            } catch (_: InterruptedException) { /* shutting down */ }
-        }, "birdo-socket-protect").apply { isDaemon = true; start() }
+            }
+        }
+        val protected4 = v4 >= 0 && protectSocketFd(v4)
+        val protected6 = v6 >= 0 && protectSocketFd(v6)
+        val ok = TunnelSocketProtection.complete(v4, v6, protected4, protected6)
+        if (!ok) {
+            FaultReporter.report(
+                FaultReporter.PATH_TUNNEL,
+                "socket_protect_failed",
+                "wg-go's UDP sockets could not be protected from the tunnel — refusing the connect",
+            )
+        }
+        return ok
     }
 
-    private fun startTunnelMonitor(handle: Int) {
+    private fun protectSocketFd(fd: Int): Boolean = try {
+        protect(fd)
+    } catch (e: Exception) {
+        // The verdict is reported once by protectTunnelSockets; the cause
+        // travels as a breadcrumb.
+        FaultReporter.trail(FaultReporter.PATH_TUNNEL, "protect() threw: ${e.javaClass.simpleName}")
+        false
+    }
+
+    private fun startTunnelMonitor(handle: Int, keepaliveSec: Int) {
         tunnelMonitor = TunnelMonitor(
             handle = handle,
-            service = this,
+            keepaliveSec = keepaliveSec,
+            underlyingMissingSince = { underlyingMissingSince },
             // Same predicate as the transport probe, and for the same reason:
             // the monitor starts BEFORE Connected is published (now up to
             // TransportProbe.WINDOW_MS before it), so gating on Connected made
@@ -2162,7 +2295,7 @@ class BirdoVpnService : VpnService() {
      * itself, AFTER its blocking interface is established.
      */
     private fun cleanupTunnelDataPlane() {
-        unregisterDefaultNetworkCallback()
+        unregisterUnderlyingNetworkCallback()
         tunnelMonitor?.stop()
         tunnelMonitor = null
         if (tunnelHandle >= 0) {
@@ -2215,108 +2348,75 @@ class BirdoVpnService : VpnService() {
         updateState(VpnState.Disconnected)
     }
 
-    // ── Roaming (Wi-Fi ↔ Cellular handover) ────────────────────────
+    // ── The physical networks under the tunnel ─────────────────────
 
     /**
-     * Watch the system's *default* network (the one carrying non-VPN traffic)
-     * and, on every change, re-bind / re-protect the wg-go UDP socket so the
-     * tunnel keeps flowing without a user-visible reconnect.
+     * Track the physical networks (NOT_VPN + INTERNET) while [handle] is the
+     * live tunnel; see [underlyingNetworkCallback] for why this is not the
+     * default-network callback any more and why it neither re-protects nor
+     * declares underlying networks.
      */
-    private fun registerDefaultNetworkCallback(handle: Int) {
-        unregisterDefaultNetworkCallback()
+    private fun registerUnderlyingNetworkCallback(handle: Int) {
+        unregisterUnderlyingNetworkCallback()
         // `as? ConnectivityManager ?: return` folded a missing manager into
-        // exactly the outcome the catch below reports — no callback, so the
-        // tunnel never re-protects its sockets or updates its underlying
-        // network on a roam — but silently. Same branch, same consequence, so
-        // the same channel: an elvis here hid the twin of a reported failure.
+        // exactly the outcome the catch below reports — no callback — but
+        // silently. Same branch, same consequence, so the same channel: an
+        // elvis here hid the twin of a reported failure.
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         if (cm == null) {
             FaultReporter.report(
                 FaultReporter.PATH_TUNNEL,
                 "network_callback_no_manager",
-                "ConnectivityManager unavailable — no re-protect on network change",
+                "ConnectivityManager unavailable — network loss will not be noticed until the stall check",
             )
             return
         }
+        underlyingNetworks.clear()
+        underlyingMissingSince = SystemClock.elapsedRealtime()
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 if (tunnelHandle != handle) return
-                Log.i(TAG, "Underlying network changed -> $network, reprotecting socket")
+                underlyingNetworks.add(network)
+                underlyingMissingSince = 0L
                 // A new path is also a moment to prove the peer is still
                 // registered (A1-017): VpnManager beats immediately.
                 _wakeFlow.tryEmit(Unit)
-                try {
-                    @Suppress("DEPRECATION")
-                    setUnderlyingNetworks(arrayOf(network))
-                } catch (e: Exception) {
-                    Log.w(TAG, "setUnderlyingNetworks failed", e)
-                }
-                reprotectTunnelSockets(handle)
-            }
-
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                if (tunnelHandle != handle) return
-                // Transport swap (e.g. Wi-Fi caps -> cellular caps on same Network id)
-                reprotectTunnelSockets(handle)
             }
 
             override fun onLost(network: Network) {
                 if (tunnelHandle != handle) return
-                // Don't trigger an error — the OS will surface a new default network
-                // via onAvailable(). Just clear the underlying-network attribution
-                // so the framework knows the previous transport is gone.
-                try {
-                    @Suppress("DEPRECATION")
-                    setUnderlyingNetworks(null)
-                } catch (_: Exception) { /* best effort */ }
+                underlyingNetworks.remove(network)
+                // Not an error by itself — a roam usually brings the next
+                // network within a second. TunnelMonitor declares the tunnel
+                // dead only when NONE has come back for a while.
+                if (underlyingNetworks.isEmpty()) underlyingMissingSince = SystemClock.elapsedRealtime()
             }
         }
         try {
-            cm.registerDefaultNetworkCallback(cb)
-            defaultNetworkCallback = cb
+            cm.registerNetworkCallback(NetworkMonitor.underlyingNetworkRequest(), cb)
+            underlyingNetworkCallback = cb
         } catch (e: Exception) {
-            // Without the callback the tunnel never re-protects its sockets or
-            // updates its underlying network on a roam: it works until the
-            // first network change, then stalls with no cause recorded.
+            // Without the callback a network loss goes unnoticed until the
+            // handshake checks catch it, and a roam sends no heartbeat nudge.
+            underlyingMissingSince = 0L
             FaultReporter.report(
                 FaultReporter.PATH_TUNNEL,
                 "network_callback_register_failed",
-                "registerDefaultNetworkCallback threw — no re-protect on network change",
+                "registerNetworkCallback threw — network loss will not be noticed until the stall check",
                 e,
             )
         }
     }
 
-    private fun unregisterDefaultNetworkCallback() {
-        val cb = defaultNetworkCallback ?: return
-        defaultNetworkCallback = null
+    private fun unregisterUnderlyingNetworkCallback() {
+        val cb = underlyingNetworkCallback ?: return
+        underlyingNetworkCallback = null
+        underlyingNetworks.clear()
+        underlyingMissingSince = 0L
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             cm?.unregisterNetworkCallback(cb)
         } catch (_: Exception) { /* already unregistered */ }
-        try {
-            @Suppress("DEPRECATION")
-            setUnderlyingNetworks(null)
-        } catch (_: Exception) { /* not active */ }
-    }
-
-    private fun reprotectTunnelSockets(handle: Int) {
-        try {
-            val v4 = WgNative.getSocketV4(handle)
-            if (v4 >= 0) protect(v4)
-            val v6 = WgNative.getSocketV6(handle)
-            if (v6 >= 0) protect(v6)
-        } catch (e: Exception) {
-            // A protect() that throws means wg-go's own UDP socket is routed
-            // back into the tunnel — a leak-shaped failure, not a warning.
-            // Throttled: this runs on every network change.
-            FaultReporter.report(
-                FaultReporter.PATH_TUNNEL,
-                "socket_reprotect_failed",
-                "Re-protecting the tunnel sockets after a network change threw",
-                e,
-            )
-        }
     }
 
     /** Stop Xray Reality and Rosenpass, zeroing all PQ key material. */
@@ -2374,8 +2474,16 @@ sealed class VpnState {
      * [attempt], or — [waitingForNetwork] — holding until the device is online
      * again. Published by VpnManager for the whole wait, so every surface says
      * "Reconnecting…" instead of "Not connected" (A1-008).
+     *
+     * @param captivePortal while waiting: the network is there but held behind
+     *   a sign-in page, so the surfaces say "sign in to this Wi-Fi" rather than
+     *   "waiting for a network" (A1-026).
      */
-    data class Reconnecting(val attempt: Int = 0, val waitingForNetwork: Boolean = false) : VpnState()
+    data class Reconnecting(
+        val attempt: Int = 0,
+        val waitingForNetwork: Boolean = false,
+        val captivePortal: Boolean = false,
+    ) : VpnState()
     /** Kill switch is active — all traffic blocked to prevent leaks. */
     data object KillSwitchActive : VpnState()
     /**

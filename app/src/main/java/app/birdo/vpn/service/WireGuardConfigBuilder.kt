@@ -128,12 +128,7 @@ object WireGuardConfigBuilder {
         val peerBuilder = Peer.Builder()
             .parsePublicKey(peerPublicKey.toBase64())
             .parseEndpoint(effectiveEndpoint)
-            // Floor the keepalive at 10s: a keepalive of 1-2s wakes the radio
-            // every second or two (heavy battery drain) for no benefit, and the
-            // value is server-supplied — clamp defensively so a misconfigured or
-            // compromised backend can never drive the client's radio that hard.
-            // Default WireGuard keepalive is 25s; 10s honours any sane override.
-            .parsePersistentKeepalive("${(response.persistentKeepalive ?: 25).coerceIn(10, 300)}")
+            .parsePersistentKeepalive("${effectiveKeepaliveSec(response)}")
         var allowedIpCount = 0
         for (cidr in response.allowedIps ?: listOf("0.0.0.0/0", "::/0")) {
             try {
@@ -182,6 +177,35 @@ object WireGuardConfigBuilder {
 
         return config
     }
+
+    /** WireGuard's REKEY_AFTER_TIME: an idle peer re-handshakes on the first send after this. */
+    private const val REKEY_AFTER_TIME_SEC = 120
+
+    /** Keepalive floor: a keepalive of 1-2 s would wake the radio every second or two for nothing. */
+    private const val MIN_KEEPALIVE_SEC = 10
+
+    /**
+     * Keepalive ceiling (A1-038). An idle tunnel re-handshakes only on a send
+     * after [REKEY_AFTER_TIME_SEC], and the keepalive is its only send, so the
+     * handshake age of a healthy idle tunnel peaks at 120 s + the keepalive.
+     * TunnelMonitor's idle backstop declares a tunnel dead at 180 s; the old
+     * ceiling of 300 s would have let a backend change to a long keepalive
+     * condemn every idle tunnel every few minutes. 55 keeps the peak at 175 s.
+     */
+    internal const val MAX_KEEPALIVE_SEC = 55
+
+    /**
+     * The persistent keepalive wg-go runs with: the server's value (25 s
+     * today, iOS hard-codes the same), clamped to [MIN_KEEPALIVE_SEC]..
+     * [MAX_KEEPALIVE_SEC]. Server-supplied, so clamped defensively either way.
+     * TunnelMonitor reads the same number to tell a keepalive from a send
+     * that expects an answer.
+     */
+    fun effectiveKeepaliveSec(response: ConnectResponse): Int =
+        (response.persistentKeepalive ?: 25).coerceIn(MIN_KEEPALIVE_SEC, MAX_KEEPALIVE_SEC)
+
+    /** The idle handshake-age peak [MAX_KEEPALIVE_SEC] allows; pinned below TunnelMonitor's backstop by a test. */
+    internal const val IDLE_HANDSHAKE_AGE_PEAK_SEC = REKEY_AFTER_TIME_SEC + MAX_KEEPALIVE_SEC
 
     /**
      * Apply the user's WireGuard port override to the endpoint string.

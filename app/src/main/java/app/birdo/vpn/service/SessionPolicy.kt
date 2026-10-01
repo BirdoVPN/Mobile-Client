@@ -379,6 +379,17 @@ internal object SessionCopy {
     const val STILL_BLOCKED = "The kill switch is blocking traffic until you reconnect or disconnect."
     const val STOPPED_UNEXPECTEDLY = "BirdoVPN could not restart its connection. Open BirdoVPN to reconnect."
 
+    /**
+     * The local tunnel engine failed (the service would not start, wg-go
+     * crashed, its sockets could not be protected). Never the exception's own
+     * text: that is a stack-trace fragment, not something a user can act on
+     * (A2-001's rule, applied to the engine).
+     */
+    const val ENGINE_FAILED = "BirdoVPN couldn't start its secure tunnel. Please try again."
+
+    /** Every network is held behind a sign-in page (hotel, airport Wi-Fi): A1-026. */
+    const val CAPTIVE_PORTAL = "This Wi-Fi network needs you to sign in first. Sign in, then connect."
+
     /** Why a system start cannot bring the session up without the user. */
     fun actionNeeded(kind: FailureKind): String = when (kind) {
         FailureKind.SIGN_IN_REQUIRED -> SESSION_EXPIRED

@@ -94,6 +94,7 @@
     <string name="notif_title_protected">BirdoVPN — Protected</string>
     <string name="notif_title_protected_multihop">BirdoVPN — Protected · Multi-Hop</string>
     <string name="notif_body_waiting_network">Waiting for a network connection…</string>
+    <string name="notif_body_captive_portal">Sign in to this Wi-Fi network to continue.</string>
     <string name="notif_body_attempt">Attempt %1$d</string>
     <string name="notif_action_stop_blocking">Stop blocking</string>
     <string name="notif_action_reconnect">Reconnect</string>

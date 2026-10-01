@@ -20,6 +20,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -54,6 +55,9 @@ class VpnManagerTest {
     /** What NetworkMonitor reports; tests flip it to model going offline. */
     private val onlineFlow = MutableStateFlow(true)
 
+    /** Every physical network behind a captive portal (A1-026); wins over [onlineFlow]. */
+    private val captiveFlow = MutableStateFlow(false)
+
     /**
      * The action of every Intent VpnManager builds, in order. android.jar's
      * Intent is a stub here, so the actions are recorded on construction.
@@ -71,6 +75,13 @@ class VpnManagerTest {
         networkMonitor = mockk(relaxed = true)
 
         every { networkMonitor.isOnline } returns onlineFlow
+        every { networkMonitor.status } returns combine(onlineFlow, captiveFlow) { online, captive ->
+            when {
+                captive -> NetworkMonitor.Connectivity.CAPTIVE_PORTAL
+                online -> NetworkMonitor.Connectivity.ONLINE
+                else -> NetworkMonitor.Connectivity.OFFLINE
+            }
+        }
 
         mockkConstructor(Intent::class)
         every { anyConstructed<Intent>().setAction(any()) } answers {
@@ -835,6 +846,74 @@ class VpnManagerTest {
         advanceTimeBy(10_000)
         coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
         quiesce()
+    }
+
+    /**
+     * Live, 2026-09-30 (emulator, airplane mode, kill switch on): the
+     * notification counted "Attempt 4, 5, 6" through the whole outage and
+     * never said "Waiting for a network connection…", because the app's own
+     * block-all interface kept NetworkMonitor "online". With NOT_VPN tracking
+     * the offline edge arrives, and a re-dial already scheduled turns into a
+     * wait that spends nothing.
+     */
+    @Test
+    fun `going offline during a backoff stops counting attempts and waits for the network`() = runTest {
+        connectAndEstablish()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("timeout")
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        val backoff = vpnManager.state.value
+        assertTrue("a backoff first: $backoff", backoff is VpnState.Reconnecting && !backoff.waitingForNetwork)
+
+        onlineFlow.value = false
+        runCurrent()
+        val waiting = vpnManager.state.value
+        assertTrue("waits once offline: $waiting", waiting is VpnState.Reconnecting && waiting.waitingForNetwork)
+        advanceTimeBy(10 * 60_000L)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        onlineFlow.value = true
+        advanceTimeBy(10_000)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `behind a captive portal the session waits, says so, and re-dials once the portal is passed`() = runTest {
+        connectAndEstablish()
+        captiveFlow.value = true
+        runCurrent()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("timeout")
+
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        val waiting = vpnManager.state.value
+        assertTrue(
+            "a captive portal is a wait with its own reason (A1-026): $waiting",
+            waiting is VpnState.Reconnecting && waiting.waitingForNetwork && waiting.captivePortal,
+        )
+        // A dial behind the portal only burns the budget: none is made.
+        advanceTimeBy(10 * 60_000L)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+
+        // Signing in to the Wi-Fi validates it: that edge re-dials.
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        captiveFlow.value = false
+        advanceTimeBy(10_000)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a dial that cannot get past a captive portal says to sign in to the Wi-Fi`() = runTest {
+        captiveFlow.value = true
+        runCurrent()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Couldn't reach BirdoVPN.", 0)
+
+        vpnManager.connect("srv-1")
+
+        assertEquals(SessionCopy.CAPTIVE_PORTAL, (vpnManager.state.value as VpnState.Error).message)
     }
 
     @Test

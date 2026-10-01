@@ -173,8 +173,11 @@ class VpnManager @Inject constructor(
     /** The Error this class published as a give-up verdict; see [publishError]. */
     private var verdictError: VpnState.Error? = null
 
-    /** Latest reading of [NetworkMonitor.isOnline]. */
+    /** A physical network that is not behind a captive portal exists ([NetworkMonitor.status]). */
     @Volatile private var online = true
+
+    /** Every physical network is behind a captive portal's sign-in page. */
+    @Volatile private var captivePortal = false
 
     /**
      * The WireGuard key id of the session THIS process started. Heartbeats
@@ -324,6 +327,17 @@ class VpnManager @Inject constructor(
          */
         fun bestServer(servers: List<VpnServer>): VpnServer? =
             servers.filter { it.isOnline && it.accessible }.minByOrNull { it.load }
+
+        /**
+         * The live session state, for the one reader that cannot be injected
+         * with this class: the API's call factory, which VpnManager itself
+         * depends on (through the repository), so DI would be a cycle. Only
+         * the StateFlow is held — no Context, nothing to leak.
+         */
+        @Volatile private var liveState: StateFlow<VpnState>? = null
+
+        /** VpnManager's state, or Disconnected before it exists (ApiRoutePolicy). */
+        fun sessionState(): VpnState = liveState?.value ?: VpnState.Disconnected
     }
 
     // FIX-2-12: Singleton scope for reactive state collection from the service.
@@ -331,6 +345,8 @@ class VpnManager @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     init {
+        liveState = state
+
         // FIX-2-12: Reactively collect state from BirdoVpnService's StateFlow.
         // Applies the transition guards below; fires immediately on every
         // state change instead of with the ≤1s delay of the old polling.
@@ -432,14 +448,19 @@ class VpnManager @Inject constructor(
         // Network-aware recovery: a session waiting for the network (or
         // sitting in a backoff delay) re-dials the moment it returns — whether
         // or not a retry job happens to be running, which is what the old
-        // `reconnectJob?.isActive` condition required (A1-001).
+        // `reconnectJob?.isActive` condition required (A1-001). Physical
+        // networks only (NetworkMonitor): our own block or tunnel can neither
+        // keep this "online" nor take it "offline". A captive portal counts as
+        // not usable — a dial behind one only burns the budget — and passing
+        // it is the edge that re-dials (A1-026).
         scope.launch {
-            networkMonitor.isOnline
+            networkMonitor.status
                 .distinctUntilChanged()
-                .collect { isOnline ->
+                .collect { status ->
                     try {
-                        online = isOnline
-                        if (isOnline) onNetworkAvailable()
+                        online = status == NetworkMonitor.Connectivity.ONLINE
+                        captivePortal = status == NetworkMonitor.Connectivity.CAPTIVE_PORTAL
+                        if (online) onNetworkAvailable() else onNetworkUnavailable()
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -614,6 +635,14 @@ class VpnManager @Inject constructor(
     private fun superseded(gen: Long): Boolean = gen != intentGeneration
 
     /**
+     * The words for a failed API call. A transport failure (code 0) while
+     * every network is behind a captive portal is the portal, not the server:
+     * say so, instead of the generic "couldn't reach" (A1-026).
+     */
+    private fun apiErrorCopy(code: Int, message: String): String =
+        if (code == 0 && captivePortal) SessionCopy.CAPTIVE_PORTAL else SessionCopy.forApiError(code, message)
+
+    /**
      * Server switch / reconnect: fully tear down the existing tunnel +
      * server-side peer BEFORE establishing the new one. Without this, picking
      * a new server (Germany → Amsterdam) leaves the old peer registered and
@@ -764,7 +793,7 @@ class VpnManager @Inject constructor(
             is ApiResult.Error -> {
                 if (!superseded(gen)) {
                     publishError(
-                        SessionCopy.forApiError(result.code, result.message),
+                        apiErrorCopy(result.code, result.message),
                         FailureKind.fromHttpStatus(result.code),
                     )
                 }
@@ -909,7 +938,7 @@ class VpnManager @Inject constructor(
             is ApiResult.Error -> {
                 if (!superseded(gen)) {
                     publishError(
-                        SessionCopy.forApiError(result.code, result.message),
+                        apiErrorCopy(result.code, result.message),
                         FailureKind.fromHttpStatus(result.code),
                     )
                 }
@@ -1017,7 +1046,7 @@ class VpnManager @Inject constructor(
         if (serversResult is ApiResult.Error) {
             if (!superseded(gen)) {
                 publishError(
-                    SessionCopy.forApiError(serversResult.code, serversResult.message),
+                    apiErrorCopy(serversResult.code, serversResult.message),
                     FailureKind.fromHttpStatus(serversResult.code),
                 )
             }
@@ -1416,11 +1445,7 @@ class VpnManager @Inject constructor(
         session = outcome.session
         when (val decision = outcome.decision) {
             is ReconnectPolicy.Decision.Retry -> scheduleReconnect(decision.attempt, decision.delayMs)
-            ReconnectPolicy.Decision.WaitForNetwork -> {
-                reconnectJob?.cancel()
-                _state.value = VpnState.Reconnecting(session.failures + 1, waitingForNetwork = true)
-                transitionStartTime = System.currentTimeMillis()
-            }
+            ReconnectPolicy.Decision.WaitForNetwork -> waitForNetwork(session.failures + 1)
             is ReconnectPolicy.Decision.GiveUp -> {
                 giveUp(decision, kind)
                 // The dropped tunnel said "Reconnecting…"; say why nothing will.
@@ -1508,9 +1533,19 @@ class VpnManager @Inject constructor(
             if (online) {
                 runDial { redial(); ApiResult.Success(Unit) }
             } else {
-                _state.value = VpnState.Reconnecting(1, waitingForNetwork = true)
+                waitForNetwork(1)
             }
         }
+    }
+
+    /**
+     * Hold the session in "Reconnecting… / Waiting for a network connection…"
+     * without spending budget; [onNetworkAvailable] re-dials on the edge.
+     */
+    private fun waitForNetwork(attempt: Int) {
+        reconnectJob?.cancel()
+        _state.value = VpnState.Reconnecting(attempt, waitingForNetwork = true, captivePortal = captivePortal)
+        transitionStartTime = System.currentTimeMillis()
     }
 
     private fun onNetworkAvailable() {
@@ -1519,6 +1554,22 @@ class VpnManager @Inject constructor(
             scheduleReconnect(s.attempt, delayMs = 0L)
         }
         heartbeatNow()
+    }
+
+    /**
+     * The device went offline (or behind a captive portal) while a re-dial
+     * was scheduled: stop counting attempts against a network that is not
+     * there and wait for it instead. Live on the emulator (2026-09-30) the
+     * attempt counter kept rising through airplane mode because the offline
+     * edge never arrived; with NOT_VPN tracking it does, and this is what it
+     * does. A dial already in flight finishes on its own and lands in
+     * WaitForNetwork through [onFailure].
+     */
+    private fun onNetworkUnavailable() {
+        val s = _state.value
+        if (s is VpnState.Reconnecting && session.mayAutoRetry && dialJob?.isActive != true) {
+            waitForNetwork(s.attempt)
+        }
     }
 
     /** Cancel any pending re-dial and the post-give-up cooldown. */
