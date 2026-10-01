@@ -192,26 +192,33 @@ class OverhaulSourceGuardTest {
     fun `no screen or component fixes the height of a control, so labels grow with the font`() {
         // Spacers may be fixed; anything that can hold a label may not.
         val fixed = Regex("""\.height\(\s*[\d.]+\.dp\s*\)""")
-        val offenders = uiSources().filter { (path, _) -> path !in fixedHeightAllowed }.flatMap { (path, src) ->
-            src.lines().withIndex()
+        val hits = uiSources().associate { (path, src) ->
+            path to src.lines().withIndex()
                 .filter { (_, line) -> "Spacer" !in line && fixed.containsMatchIn(line) }
                 .map { (i, line) -> "$path:${i + 1}: ${line.trim()}" }
         }
+        val offenders = hits.filterKeys { it !in fixedHeightAllowed }.values.flatten()
         assertEquals("fixed-height control (A2-024): use heightIn(min = …)", emptyList<String>(), offenders)
+        // An exemption that no longer matches anything is a hole for the next
+        // fixed height in that file (REVIEW-AND2-006).
+        val stale = fixedHeightAllowed.filter { hits[it].isNullOrEmpty() }
+        assertEquals("stale fixed-height exemption", emptyList<String>(), stale)
     }
 
     /**
      * Text in a fixed-size tile is drawn with the user's font scale and
      * outgrows the tile at 200 %, where the tile's clip cuts it (a country
      * flag drawn as an emoji was). Such text must be sized in dp (`.toSp()`),
-     * like the icon it stands in for. Files another 2026-09-30 lane owns this
-     * round are listed with the count they still have, so a new tile fails.
+     * like the icon it stands in for. A file another lane still owns may be
+     * listed here with the exact count it has, so a new tile still fails; an
+     * entry whose count no longer matches fails too.
+     *
+     * Empty since the merge: HomeScreen's two flag tiles are dp-sized, and its
+     * stale entry of 2 was never checked (files with no hits were dropped
+     * before the comparison), so two new sp-sized texts there would have
+     * passed (REVIEW-AND2-006).
      */
-    private val scaledTextInTilePending = mapOf(
-        // AND-VPN-B owns HomeScreen.kt: the two server-card flag tiles want
-        // the ServerListScreen fix, `fontSize = with(LocalDensity.current) { 22.dp.toSp() }`.
-        "ui/screen/HomeScreen.kt" to 2,
-    )
+    private val scaledTextInTilePending = emptyMap<String, Int>()
 
     @Test
     fun `text inside a fixed-size tile does not scale with the font`() {
@@ -232,8 +239,12 @@ class OverhaulSourceGuardTest {
                 }
             }.toSet()
             path to lines
-        }.filterValues { it.isNotEmpty() }
-        val unexpected = found.filter { (path, lines) -> lines.size != scaledTextInTilePending[path] }
+        }
+        // Every file with hits, and every listed file whether or not it still
+        // has any: a listed count that no longer matches is stale.
+        val unexpected = (found.filterValues { it.isNotEmpty() }.keys + scaledTextInTilePending.keys)
+            .associateWith { found[it].orEmpty() }
+            .filter { (path, lines) -> lines.size != (scaledTextInTilePending[path] ?: 0) }
         assertEquals("sp-sized Text in a fixed-size tile (A2-024)", emptyMap<String, Set<Int>>(), unexpected)
     }
 

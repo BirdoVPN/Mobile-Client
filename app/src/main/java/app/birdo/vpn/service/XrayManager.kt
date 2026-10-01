@@ -73,6 +73,15 @@ object XrayManager {
     private var stopping = false
 
     /**
+     * Seams for a unit test of [start] (REVIEW-AND2-014): which local port it
+     * takes, and what runs the config it built. The test reads that config,
+     * so a start() that stopped forwarding to the node's WireGuard endpoint
+     * fails a test, not only a device session.
+     */
+    internal var pickLocalPort: (Int) -> Int = { findAvailablePort(it) }
+    internal var launch: (Context, String) -> Boolean = { context, configJson -> startWithBinary(context, configJson) }
+
+    /**
      * Get the local port that Xray is listening on.
      * WireGuard should set its endpoint to 127.0.0.1:{localPort}.
      */
@@ -232,7 +241,7 @@ object XrayManager {
         }
 
         // Find an available local port
-        localPort = findAvailablePort(DEFAULT_LOCAL_PORT)
+        localPort = pickLocalPort(DEFAULT_LOCAL_PORT)
         Log.i(TAG, "Using local port $localPort for Xray dokodemo-door inbound")
 
         try {
@@ -251,7 +260,7 @@ object XrayManager {
 
             stopping = false
             onUnexpectedExit = onExit
-            if (startWithBinary(context, configJson)) {
+            if (launch(context, configJson)) {
                 isRunning = true
                 Log.i(TAG, "Xray Reality tunnel started — listening on 127.0.0.1:$localPort")
                 return@withContext true

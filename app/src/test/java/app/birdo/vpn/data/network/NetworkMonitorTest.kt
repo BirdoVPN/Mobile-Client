@@ -1,13 +1,21 @@
 package app.birdo.vpn.data.network
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import app.birdo.vpn.data.network.NetworkMonitor.Connectivity
+import app.cash.turbine.test
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkConstructor
+import io.mockk.slot
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -79,5 +87,39 @@ class NetworkMonitorTest {
         assertEquals(Connectivity.CAPTIVE_PORTAL, NetworkMonitor.classify(listOf(captive)))
         // Captive Wi-Fi, but cellular works: the device is online.
         assertEquals(Connectivity.ONLINE, NetworkMonitor.classify(listOf(captive, unvalidated)))
+    }
+
+    /**
+     * REVIEW-AND2-014: the two tests above pin the request and the
+     * classification, but not that [NetworkMonitor.status] uses them. Reverting
+     * it to `registerDefaultNetworkCallback` — the regression the live
+     * airplane-mode run caught (BASELINE A8) — passed both. This drives the
+     * real flow: it must follow the callback registered for THAT request.
+     */
+    @Test
+    @Suppress("DEPRECATION") // allNetworks: the snapshot NetworkMonitor itself reads.
+    fun `status follows the physical networks it registered for, never the default network`() = runTest {
+        val request = mockk<NetworkRequest>()
+        mockkConstructor(NetworkRequest.Builder::class)
+        every { anyConstructed<NetworkRequest.Builder>().addCapability(any()) } answers { self as NetworkRequest.Builder }
+        every { anyConstructed<NetworkRequest.Builder>().build() } returns request
+        val callback = slot<ConnectivityManager.NetworkCallback>()
+        val cm = mockk<ConnectivityManager>(relaxed = true) {
+            every { allNetworks } returns emptyArray()
+            every { registerNetworkCallback(request, capture(callback)) } just Runs
+        }
+        val context = mockk<Context> { every { getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm }
+
+        NetworkMonitor(context).status.test {
+            assertEquals(Connectivity.OFFLINE, awaitItem())
+            val wlan = mockk<Network>()
+            callback.captured.onAvailable(wlan)
+            callback.captured.onCapabilitiesChanged(wlan, wifi)
+            assertEquals(Connectivity.ONLINE, awaitItem())
+            callback.captured.onLost(wlan)
+            assertEquals(Connectivity.OFFLINE, awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+        verify(exactly = 0) { cm.registerDefaultNetworkCallback(any()) }
     }
 }
