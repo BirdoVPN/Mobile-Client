@@ -128,6 +128,15 @@ struct ProfileView: View {
         .onDisappear {
             copyToastTask?.cancel()
         }
+        .onChange(of: authVM.isLoggedIn) { _, loggedIn in
+            // A confirmed deletion signs the user out from inside the dialog.
+            // The shell no longer rebuilds on sign-out, so close it here or it
+            // would still be on screen over the guest card.
+            guard !loggedIn else { return }
+            showDeleteDialog = false
+            deletePassword = ""
+            localDeleteError = nil
+        }
     }
 
     // MARK: - Guest card
@@ -472,10 +481,14 @@ struct ProfileView: View {
             return
         }
         localDeleteError = nil
-        // Tunnel down BEFORE erasure — deletion wipes the shared keychain the
-        // tunnel extension reads (same ordering rule as logout).
-        vpnVM.disconnect()
-        authVM.deleteAccount(password: requiresPassword ? deletePassword : nil)
+        // Owner item 43: NO disconnect here any more. The request goes first,
+        // with the tunnel up; AuthViewModel tears the tunnel down only once
+        // the server has confirmed the erasure — and still before the sign-out
+        // wipes the keychain the extension reads. A refusal leaves the user
+        // connected and signed in.
+        let vpn = vpnVM
+        authVM.deleteAccount(password: requiresPassword ? deletePassword : nil,
+                             tearDownTunnel: { vpn.tearDownForAccountDeletion() })
     }
 
     private func dismissDeleteDialog() {

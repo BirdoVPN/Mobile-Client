@@ -950,14 +950,26 @@ final class AuthViewModel: ObservableObject {
 
     // MARK: - Account Deletion (GDPR Art. 17)
 
-    /// Erase the account. Callers must disconnect the VPN first (same
-    /// ordering rule as `logout()`). No client-side password validation —
-    /// password-less accounts (SSO, anonymous without password) legitimately
-    /// send nothing, and the backend is authoritative for the rest (the
-    /// Android 6-256 pre-check stranded password-less deletes; do not
-    /// replicate). Results surface via `deleteError` / `isDeleting` so they
-    /// render inside the dialog.
-    func deleteAccount(password: String?) {
+    /// Erase the account.
+    ///
+    /// Owner item 43: the request goes FIRST, with the tunnel still up. Only a
+    /// CONFIRMED erasure runs `tearDownTunnel`, clears the credentials and
+    /// signs out — in that order, because the sign-out wipes the keychain the
+    /// tunnel extension reads. A refusal (wrong password, 429, 5xx, offline)
+    /// leaves the user connected and signed in, with the reason in the dialog.
+    /// (The VPN used to be disconnected before the request, so every failed
+    /// attempt cost the user their tunnel for nothing.)
+    ///
+    /// No client-side password validation — password-less accounts (SSO,
+    /// anonymous without password) legitimately send nothing, and the backend
+    /// is authoritative for the rest (the Android 6-256 pre-check stranded
+    /// password-less deletes; do not replicate). Results surface via
+    /// `deleteError` / `isDeleting` so they render inside the dialog.
+    ///
+    /// - Parameter tearDownTunnel: takes the VPN down locally; returns whether
+    ///   one was up. The view owns the VpnViewModel, so it supplies this.
+    func deleteAccount(password: String?,
+                       tearDownTunnel: @escaping @MainActor @Sendable () -> Bool) {
         guard !isDeleting else { return }
         isDeleting = true
         deleteError = nil
@@ -965,17 +977,79 @@ final class AuthViewModel: ObservableObject {
             guard let self else { return }
             do {
                 let stillBilling = try await api.deleteAccount(password: password)
-                // The account is gone — so is its recovery credential.
-                keychain.clearAnonymousId()
-                completeLocalLogout()
-                // After the local sign-out, so nothing in it can clear the
-                // notice before the shell has shown it.
-                self.storeSubscriptionsStillBilling = stillBilling
+                finishConfirmedDeletion(stillBilling: stillBilling, tearDownTunnel: tearDownTunnel)
+            } catch let error where AccountDeletion.outcomeIsUnknown(error) {
+                await resolveUnknownDeletionOutcome(tearDownTunnel: tearDownTunnel)
             } catch {
                 self.deleteError = Self.mapDeleteError(error)
             }
             self.isDeleting = false
         }
+    }
+
+    /// The server confirmed the erasure: NOW the tunnel goes down, then the
+    /// credentials, then the session.
+    private func finishConfirmedDeletion(stillBilling: [StoreSubscriptionStillBilling],
+                                         tearDownTunnel: @MainActor () -> Bool) {
+        // Before the keychain wipe below: the extension reads its secrets there.
+        _ = tearDownTunnel()
+        // The account is gone — so is its recovery credential.
+        keychain.clearAnonymousId()
+        completeLocalLogout()
+        // After the local sign-out, so nothing in it can clear the notice
+        // before the shell has shown it.
+        storeSubscriptionsStillBilling = stillBilling
+    }
+
+    /// The request went out and no answer came back — see
+    /// `AccountDeletion.outcomeIsUnknown`. Usually that IS a deletion: the
+    /// erasure revoked this device's own peer before the server answered, so
+    /// the answer died in the tunnel. Find out rather than guess.
+    private func resolveUnknownDeletionOutcome(tearDownTunnel: @MainActor () -> Bool) async {
+        // The tunnel has to go first or the check below cannot leave the
+        // device: with the peer revoked it is a black hole, and with the kill
+        // switch on it takes every other route with it. If the account turns
+        // out to still exist, the user reconnects; the message says so.
+        let tunnelWasUp = tearDownTunnel()
+        switch await probeAccountAfterLostDeletionAnswer() {
+        case .gone:
+            // APIClient rotates the device identity only on an answered
+            // success; this success went unanswered.
+            api.resetDeviceIdentity()
+            // The answer carrying the still-billing list was lost; the
+            // preflight the dialog fetched names the same subscriptions.
+            finishConfirmedDeletion(stillBilling: deletionPreflight?.stillBilling ?? [],
+                                    tearDownTunnel: { false })
+        case .stillExists:
+            deleteError = tunnelWasUp
+                ? "Your account was not deleted: the connection dropped before Birdo answered. The VPN was disconnected so the app could check. Please try again."
+                : "Your account was not deleted: the connection dropped before Birdo answered. Please try again."
+        case .unknown:
+            deleteError = tunnelWasUp
+                ? "The connection dropped before Birdo answered, and the app could not check whether your account was deleted. The VPN was disconnected. Check your connection and try again; if the account is already gone, the app will sign you out."
+                : "The connection dropped before Birdo answered, and the app could not check whether your account was deleted. Check your connection and try again; if the account is already gone, the app will sign you out."
+        }
+    }
+
+    private enum DeletionProbe { case gone, stillExists, unknown }
+
+    /// Ask `GET /auth/me` whether the account survived. The erasure ends every
+    /// session server-side, so a definitive 401 (after APIClient's refresh
+    /// attempt also fails) means deleted; a profile means it was not.
+    private func probeAccountAfterLostDeletionAnswer() async -> DeletionProbe {
+        for attempt in 0..<3 {
+            // Give the tunnel teardown time to land before asking.
+            try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 3))
+            do {
+                _ = try await api.fetchProfile()
+                return .stillExists
+            } catch APIError.unauthorized {
+                return .gone
+            } catch {
+                continue
+            }
+        }
+        return .unknown
     }
 
     // MARK: - Shared Completion

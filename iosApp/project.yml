@@ -284,6 +284,11 @@ targets:
       # fallback. Pinned by AccountIdentityTests; UserProfile (APIClient.swift)
       # cannot be compiled into this bundle.
       - path: iosApp/Services/AccountIdentity.swift
+      # Owner items 43 / 85 / 97: account deletion's pure decisions — which
+      # failures leave the outcome unknown (a deletion's answer dies in the
+      # tunnel it just revoked), and the two-factor refusal classification.
+      # Pinned by AccountDeletionTests; AuthViewModel cannot be compiled here.
+      - path: iosApp/Services/AccountDeletion.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
