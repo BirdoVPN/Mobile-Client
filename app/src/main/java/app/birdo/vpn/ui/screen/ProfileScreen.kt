@@ -344,11 +344,14 @@ private fun ProfileIdentityCard(
                         )
                         Text(
                             // Grouped in fours, as the sign-in field reads it back.
+                            // Two lines, not an ellipsis: it is a credential the
+                            // user copies out by hand, and at large font scales one
+                            // line cut it short (A2-024). The groups break cleanly.
                             text = formatAnonymousId(accountNumber),
                             color = palette.onBackground,
                             fontSize = 14.sp,
                             fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 1.dp),
                         )

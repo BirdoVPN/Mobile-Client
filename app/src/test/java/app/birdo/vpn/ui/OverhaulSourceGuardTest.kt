@@ -237,6 +237,15 @@ class OverhaulSourceGuardTest {
         assertEquals("sp-sized Text in a fixed-size tile (A2-024)", emptyMap<String, Set<Int>>(), unexpected)
     }
 
+    @Test
+    fun `the account number wraps at large font scales instead of being cut short`() {
+        val number = source("$main/ui/screen/ProfileScreen.kt")
+            .substringAfter("text = formatAnonymousId(accountNumber),")
+            .substringBefore("modifier =")
+        assertTrue("the Profile account number is no longer shown grouped", number.contains("maxLines"))
+        assertFalse("a credential the user copies by hand is ellipsized to one line", number.contains("maxLines = 1"))
+    }
+
     // ── D6 (owner decision, 2026-10-01) ──────────────────────────────────
 
     @Test
