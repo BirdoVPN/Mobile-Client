@@ -178,6 +178,10 @@ final class VPNManager: @unchecked Sendable {
             "wg-config": wgConfig,
             "wg-private-key-ref": "wg_private_key",
             "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
+            // LIVE-PORT53: the Endpoint carries the server's own port. Without
+            // this the extension treats the profile as an older build's and
+            // pins its Endpoint to the relays' port (WireGuardPort).
+            WireGuardPort.endpointPortSourceKey: WireGuardPort.endpointPortFromServer,
         ]
         if let keyId = config.keyId, !keyId.isEmpty {
             providerConfig["hb-key-id"] = keyId
@@ -341,6 +345,9 @@ final class VPNManager: @unchecked Sendable {
             "wg-private-key-ref": "wg_private_key",
             "wg-preshared-key-ref": (effectivePsk?.isEmpty == false) ? "wg_preshared_key" : "",
             "hb-client-version": Self.heartbeatClientVersion(),
+            // Same marker as connect() (LIVE-PORT53). It rides the reconfigure
+            // message too, which copies every entry of this dictionary.
+            WireGuardPort.endpointPortSourceKey: WireGuardPort.endpointPortFromServer,
         ]
         if let keyId = config.keyId, !keyId.isEmpty {
             providerConfiguration["hb-key-id"] = keyId
@@ -921,7 +928,10 @@ final class VPNManager: @unchecked Sendable {
         lines.append("")
         lines.append("[Peer]")
         lines.append("PublicKey = \(config.publicKey)")
-        lines.append("Endpoint = \(endpointString(host: config.serverAddress, port: effectivePort(config.serverPort)))")
+        // The server's own port, always (LIVE-PORT53): the port is no longer a
+        // setting, and a "53" or custom port an older build saved is never
+        // read. The profile says so with `WireGuardPort.endpointPortSourceKey`.
+        lines.append("Endpoint = \(endpointString(host: config.serverAddress, port: config.serverPort))")
         // A peer with no AllowedIPs routes NO traffic. The server normally sends
         // the full-tunnel pair; if it sent none, fall back to it rather than
         // building a tunnel that silently carries nothing (matches Android's
@@ -995,18 +1005,6 @@ final class VPNManager: @unchecked Sendable {
         let addr = String(trimmed[..<slash])
         guard addr.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 else { return false }
         return v4.s_addr == 0 // 0.0.0.0 with prefix /0
-    }
-
-    /// Apply the user's WireGuard port override. "auto", "custom" (the picker's
-    /// placeholder tag) and any out-of-range value keep the server-provided
-    /// port — same contract as Android's `applyPortOverride`.
-    private func effectivePort(_ serverPort: Int) -> Int {
-        guard let pref = UserDefaults.standard.string(forKey: "wg_port"),
-              let override = Int(pref),
-              (1...65535).contains(override) else {
-            return serverPort
-        }
-        return override
     }
 
     /// `host:port`, bracketing IPv6 literals. `Endpoint = fd00::1:51820` is
