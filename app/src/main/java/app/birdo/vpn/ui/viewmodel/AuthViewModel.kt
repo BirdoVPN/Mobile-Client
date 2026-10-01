@@ -92,12 +92,17 @@ data class AuthUiState(
      * state today, and a log line or a crash breadcrumb added later must not
      * be what changes that (REVIEW-AND2-010).
      */
-    override fun toString(): String =
-        "AuthUiState(isLoading=$isLoading, isLoggedIn=$isLoggedIn, user=$user, " +
-            "requiresTwoFactor=$requiresTwoFactor, isDeletingAccount=$isDeletingAccount, " +
-            "deleteRequiresTwoFactor=$deleteRequiresTwoFactor, accountDeleted=$accountDeleted, " +
-            "pendingAnonymousId=${if (pendingAnonymousId != null) "[REDACTED]" else "null"}, " +
-            "sessionExpired=$sessionExpired)"
+    override fun toString(): String = listOf(
+        "isLoading=$isLoading",
+        "isLoggedIn=$isLoggedIn",
+        "user=$user",
+        "requiresTwoFactor=$requiresTwoFactor",
+        "isDeletingAccount=$isDeletingAccount",
+        "deleteRequiresTwoFactor=$deleteRequiresTwoFactor",
+        "accountDeleted=$accountDeleted",
+        "pendingAnonymousId=${if (pendingAnonymousId != null) "[REDACTED]" else "null"}",
+        "sessionExpired=$sessionExpired",
+    ).joinToString(separator = ", ", prefix = "AuthUiState(", postfix = ")")
 }
 
 @HiltViewModel
