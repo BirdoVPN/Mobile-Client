@@ -101,9 +101,11 @@ final class APIClient: @unchecked Sendable {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
+        // Platform-specific since owner item 96: a Mac says macOS, not iOS
+        // (ClientIdentity). The PacketTunnel heartbeat sends the same pair.
         config.httpAdditionalHeaders = [
-            "User-Agent": "Birdo-iOS/\(kBirdoClientVersion) (iOS)",
-            "X-Desktop-Client": "birdo-ios",
+            "User-Agent": ClientIdentity.userAgent(version: kBirdoClientVersion),
+            "X-Desktop-Client": ClientIdentity.clientHeaderValue,
         ]
         // SEC: Disable HTTP cookies + URL cache so auth headers and JSON
         // bodies aren't persisted to disk between launches.
@@ -321,12 +323,20 @@ final class APIClient: @unchecked Sendable {
     /// - Parameter password: the account password, required by the backend for
     ///   accounts that HAVE one. Pass `nil`/empty for SSO and anonymous accounts
     ///   (no hash on file) — the backend skips the check for those.
+    /// - Parameter twoFactorCode: owner item 85 — a 6-digit TOTP or a backup
+    ///   code, sent once the server has answered `two_factor_required`.
+    /// - Parameter appleAuthorizationCode: owner item 97 — a fresh Sign in with
+    ///   Apple code, so the backend can revoke the app's Apple tokens.
     /// - Returns: the App Store / Google Play subscriptions the server reports
     ///   as STILL BILLING after the erasure (audit 2026-09-29, A-8 / C-9):
     ///   deleting the account cannot cancel them, so the caller tells the user
     ///   where to. Empty when there are none or the backend predates the field.
+    /// - Throws: `DeletionRefusal` for the server's two-factor refusals; every
+    ///   other failure as before.
     @discardableResult
-    func deleteAccount(password: String?) async throws -> [StoreSubscriptionStillBilling] {
+    func deleteAccount(password: String?,
+                       twoFactorCode: String? = nil,
+                       appleAuthorizationCode: String? = nil) async throws -> [StoreSubscriptionStillBilling] {
         // AUDIT-M-DRIFT: there is no `/auth/account` route. Erasure lives on the
         // GDPR controller at `@Controller('api/v1/gdpr')` + `@Delete('delete')`.
         // api.birdo.app proxies to Nest verbatim (no `uri strip_prefix /api` in
@@ -349,16 +359,21 @@ final class APIClient: @unchecked Sendable {
         // the correct message. The only cost is one wasted rotation on a wrong
         // password (the backend's rotation grace window keeps that safe), which
         // is far better than a permanently un-deletable account.
-        let trimmed = password?.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = try encoder.encode(
-            DeleteAccountBody(password: (trimmed?.isEmpty ?? true) ? nil : trimmed)
+            DeleteAccountBody(password: password,
+                              twoFactorCode: twoFactorCode,
+                              appleAuthorizationCode: appleAuthorizationCode)
         )
         let response = try await performRequest(
             method: "DELETE",
             path: "/api/v1/gdpr/delete",
             body: body,
             authenticated: true,
-            refreshOn401: true
+            refreshOn401: true,
+            // Owner item 85: the 403 `two_factor_required` / `two_factor_invalid`
+            // refusals are told apart by their CODE, which the generic error
+            // mapping would throw away with the body.
+            refusal: { status, data in DeletionRefusal.classify(status: status, body: data) }
         )
         // PRIVACY: only after the erasure actually succeeded (performRequest
         // throws otherwise, so a failed delete leaves the identity alone and the
@@ -922,7 +937,12 @@ final class APIClient: @unchecked Sendable {
         /// branches stop matching without a single compiler complaint. Only the
         /// Apple store rail — which is the reason `details.code` exists — asks
         /// for the structured form.
-        structuredErrors: Bool = false
+        structuredErrors: Bool = false,
+        /// Endpoint-specific refusals classified from the raw status + body
+        /// BEFORE the generic mapping discards the body. A non-nil result is
+        /// thrown as-is. Only account deletion passes one (owner item 85: its
+        /// `two_factor_required` / `two_factor_invalid` codes).
+        refusal: ((Int, Data) -> Error?)? = nil
     ) async throws -> Data {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw APIError.invalidURL
@@ -1000,6 +1020,7 @@ final class APIClient: @unchecked Sendable {
                 throw APIError.invalidResponse
             }
             guard (200...299).contains(retryHttp.statusCode) else {
+                if let refused = refusal?(retryHttp.statusCode, retryData) { throw refused }
                 // Same rule on the retry: a coded 401 is the endpoint refusing,
                 // not the session dying. Collapsing it to `.unauthorized` here
                 // would throw the code away after the refresh succeeded, which
@@ -1015,6 +1036,7 @@ final class APIClient: @unchecked Sendable {
         }
 
         guard (200...299).contains(http.statusCode) else {
+            if let refused = refusal?(http.statusCode, data) { throw refused }
             throw Self.error(status: http.statusCode, body: data, structured: structuredErrors)
         }
         return data
@@ -1369,31 +1391,34 @@ struct UserProfile: Sendable, Equatable {
     /// password account delete without one.
     let hasPassword: Bool
     let isSSO: Bool
+    /// Owner item 86: "anonymous" | "standard", when the backend sends it.
+    let accountType: String?
+    /// Owner item 86: the backend's own answer, when it sends one.
+    let isAnonymousField: Bool?
+    /// Owner item 86: the 24-digit account number, when the backend sends it.
+    let accountNumber: String?
 
-    /// Anonymous accounts carry the synthetic email
-    /// `anon_<24digits>@anonymous.local`. Never render it — it "reads as a
-    /// bug"; show `Anonymous account` + the account-number card instead.
-    var isAnonymous: Bool {
-        guard let email else { return false }
-        return email.hasPrefix("anon_") && email.hasSuffix("@anonymous.local")
-    }
+    /// Anonymous account? The explicit `/auth/me` fields win; an older
+    /// backend is read from the synthetic email `anon_<24digits>@anonymous.local`
+    /// (`AccountIdentity`). Never render that email — it "reads as a bug";
+    /// show `Anonymous account` + the account-number card instead.
+    var isAnonymous: Bool { identity.isAnonymous }
 
-    /// The 24-digit account number extracted from the synthetic email;
-    /// nil for non-anonymous accounts.
-    var anonymousAccountNumber: String? {
-        guard isAnonymous, let email,
-              let atIndex = email.firstIndex(of: "@") else { return nil }
-        let start = email.index(email.startIndex, offsetBy: "anon_".count)
-        guard start < atIndex else { return nil }
-        let digits = String(email[start..<atIndex])
-        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
-        return digits
+    /// The 24-digit account number; nil for non-anonymous accounts.
+    var anonymousAccountNumber: String? { identity.accountNumber }
+
+    private var identity: AccountIdentity.Resolved {
+        AccountIdentity.resolve(accountType: accountType,
+                                isAnonymous: isAnonymousField,
+                                accountNumber: accountNumber,
+                                email: email)
     }
 }
 
 extension UserProfile: Decodable {
     private enum CodingKeys: String, CodingKey {
         case id, email, name, emailVerified, hasPassword, isSSO
+        case accountType, isAnonymous, accountNumber
     }
 
     init(from decoder: Decoder) throws {
@@ -1404,6 +1429,12 @@ extension UserProfile: Decodable {
         emailVerified = try c.decodeIfPresent(Bool.self, forKey: .emailVerified) ?? false
         hasPassword = try c.decodeIfPresent(Bool.self, forKey: .hasPassword) ?? true
         isSSO = try c.decodeIfPresent(Bool.self, forKey: .isSSO) ?? false
+        // `try?`: new, optional fields. A shape this build does not expect
+        // falls back to the email parsing instead of failing the whole
+        // identity (which would leave `user == nil` on every launch).
+        accountType = (try? c.decodeIfPresent(String.self, forKey: .accountType)) ?? nil
+        isAnonymousField = (try? c.decodeIfPresent(Bool.self, forKey: .isAnonymous)) ?? nil
+        accountNumber = (try? c.decodeIfPresent(String.self, forKey: .accountNumber)) ?? nil
     }
 }
 
@@ -1597,9 +1628,9 @@ private struct APIErrorBody: Decodable {
 /// "IOS"), so the device list, support and any per-platform view of devices
 /// were wrong for macOS. The backend already accepts DESKTOP and MACOS in the
 /// same enums (auth.controller.ts DeviceInfoSchema; Prisma DeviceType /
-/// Platform) and uses them for display only. Deliberately NOT changed: the
-/// `Birdo-iOS/...` User-Agent and `X-Desktop-Client: birdo-ios` header,
-/// which the backend's version-floor parser and client detection key on.
+/// Platform) and uses them for display only. The User-Agent and
+/// `X-Desktop-Client` header followed on 2026-10-01 (owner item 96) — see
+/// `ClientIdentity`.
 #if os(macOS)
 private let kDeviceTypeWire = "DESKTOP"
 private let kPlatformWire = "MACOS"
@@ -1698,9 +1729,8 @@ private struct SsoExchangeBody: Encodable {
     }
 }
 
-private struct DeleteAccountBody: Encodable {
-    let password: String?
-}
+// DeleteAccountBody lives in AccountDeletion.swift (owner items 85 / 97) so
+// AccountDeletionTests can encode the real struct.
 
 /// The part of the `DELETE /api/v1/gdpr/delete` response the app acts on.
 private struct DeleteAccountResult: Decodable {

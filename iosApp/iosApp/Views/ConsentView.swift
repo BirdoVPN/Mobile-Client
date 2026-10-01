@@ -57,9 +57,7 @@ struct ConsentView: View {
                         .multilineTextAlignment(.center)
                         .padding(.top, 16)
 
-                    Text(isSheet
-                            ? "Before you create or sign in to an account, please review how your data is handled."
-                            : "Before using BirdoVPN, please review how your data is handled.")
+                    Text(subtitle)
                         .font(.system(size: 14))
                         .foregroundStyle(BirdoTheme.white60)
                         .multilineTextAlignment(.center)
@@ -91,8 +89,9 @@ struct ConsentView: View {
                     }
                     .padding(.top, 16)
 
-                    // acceptConsent() persists the flag AND the
-                    // privacyConsentTimestamp — nothing else to do here.
+                    // acceptConsent() persists the flag, the consent VERSION
+                    // (ConsentRecord, owner item 38) and the timestamp —
+                    // nothing else to do here.
                     PrimaryButton("I Agree & Continue",
                                   variant: .brand,
                                   fontSize: 16,
@@ -111,11 +110,16 @@ struct ConsentView: View {
                     deferButton
                         .padding(.top, 12)
 
+                    // Owner item 41: the app makes NO network request until
+                    // this is accepted, so the location list (fetched from
+                    // Birdo's servers) is no longer browsable before it.
                     Text(isSheet
-                            ? "Accepting is required only to create or sign in to an account. "
-                                + "The rest of the app keeps working without one."
-                            : "You can use the app's settings, read the policies and browse "
-                                + "locations without accepting. Accepting is required only to "
+                            ? "Accepting is required to create or sign in to an account, and "
+                                + "to load the location list. Settings and the policies keep "
+                                + "working without it."
+                            : "You can use the app's settings and read the policies without "
+                                + "accepting. The location list comes from Birdo's servers, so "
+                                + "it loads only after you accept, and accepting is required to "
                                 + "create or sign in to an account.")
                         .font(.system(size: 12))
                         .foregroundStyle(BirdoTheme.white40)
@@ -131,6 +135,23 @@ struct ConsentView: View {
             }
         }
         .pixelCanvasTouchTrail(pixelModel)
+    }
+
+    /// Owner item 38: a user who accepted an older disclosure is told it
+    /// changed, so seeing it again does not read as the app having reset.
+    private var subtitle: String {
+        if isSheet {
+            return "Before you create or sign in to an account, please review how your data is handled."
+        }
+        if authVM.isReconsent {
+            // Honest about WHAT changed (audit 2026-09-29, B-1 / B-13): the
+            // data description was corrected, and accepting now covers the
+            // Terms as well as the Privacy Policy.
+            return "We've updated this notice: it describes your data more accurately and now "
+                + "covers the Terms of Service as well as the Privacy Policy. Please review it "
+                + "before you carry on."
+        }
+        return "Before using BirdoVPN, please review how your data is handled."
     }
 
     // MARK: - Data summary card
