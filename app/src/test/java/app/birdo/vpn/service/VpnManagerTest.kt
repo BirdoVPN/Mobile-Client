@@ -1530,10 +1530,10 @@ class VpnManagerTest {
         val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
         coEvery { repository.connectVpn(any(), any()) } coAnswers { gate.await() }
 
-        assertTrue(vpnManager.connectHeadless())
+        assertTrue(vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON))
         runCurrent()
         // Always-on and our own MY_PACKAGE_REPLACED can both start us.
-        assertFalse(vpnManager.connectHeadless())
+        assertFalse(vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON))
         gate.complete(ApiResult.Success(makeConnectResponse()))
         runCurrent()
 
@@ -1547,7 +1547,7 @@ class VpnManagerTest {
         every { prefs.lastServerId } returns "srv-1"
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("timeout")
 
-        vpnManager.connectHeadless()
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
         advanceTimeBy(60_000)
 
         // The phone may have booted before its network: a user dial would stop
@@ -1566,7 +1566,7 @@ class VpnManagerTest {
             repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
         } returns ApiResult.Success(makeMultiHopResponse())
 
-        vpnManager.connectHeadless()
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
         runCurrent()
 
         coVerify { repository.connectMultiHop("de-1", "nl-1", any(), any(), any(), any(), any(), any(), any()) }
@@ -1592,7 +1592,7 @@ class VpnManagerTest {
         every { prefs.lastKnownPlan } returns "OPERATIVE"
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
 
-        vpnManager.connectHeadless()
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
         runCurrent()
 
         coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
@@ -1605,7 +1605,7 @@ class VpnManagerTest {
         armMultiHopPrefs()
         every { prefs.lastKnownPlan } returns null
 
-        vpnManager.connectHeadless()
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
         runCurrent()
 
         val error = vpnManager.state.value as VpnState.Error
@@ -1668,7 +1668,7 @@ class VpnManagerTest {
         onlineFlow.value = false
         runCurrent()
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Unable to resolve host", 0)
-        vpnManager.connectHeadless()
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
         runCurrent()
         val waiting = vpnManager.state.value
         assertTrue("$waiting", waiting is VpnState.Reconnecting && waiting.waitingForNetwork)
@@ -1691,7 +1691,119 @@ class VpnManagerTest {
         assertFalse(vpnManager.sessionInProgress())
         connectAndEstablish()
         assertTrue(vpnManager.sessionInProgress())
-        assertFalse(vpnManager.connectHeadless())
+        assertFalse(vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON))
+        quiesce()
+    }
+
+    // ── REVIEW-AND2-004: the tap that started the process joins its resume ──
+
+    private fun gatedDial(): CompletableDeferred<ApiResult<ConnectResponse>> {
+        every { prefs.lastServerId } returns "srv-1"
+        val gate = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery { repository.connectVpn(any(), any()) } coAnswers { gate.await() }
+        return gate
+    }
+
+    /**
+     * After a crash, the tile tap is what starts the process, and BirdoApp's
+     * resume dials before SystemUI delivers the click. Decided on the resume's
+     * Connecting, the tap was a DISCONNECT of the session it had just brought
+     * back.
+     */
+    @Test
+    fun `the tile tap that started the process joins its resume instead of disconnecting it`() = runTest {
+        var now = 0L
+        vpnManager.elapsedRealtime = { now }
+        val gate = gatedDial()
+
+        assertTrue(vpnManager.connectHeadless(SystemStartKind.PROCESS_RESTART))
+        runCurrent()
+        now = 600L
+        val action = QuickToggle.decide(
+            vpnManager.state.value, false, true, true, true,
+            joinsResume = vpnManager.claimTapForResume(),
+        )
+        assertEquals(QuickToggle.Action.NONE, action)
+        // One tap per resume: the next one is the user's own decision.
+        assertFalse(vpnManager.claimTapForResume())
+
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
+        assertTrue(BirdoVpnService.ACTION_START in dispatchedActions)
+        assertFalse(BirdoVpnService.ACTION_STOP in dispatchedActions)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    /**
+     * The widget's callback read Disconnected and chose CONNECT, and the
+     * resume began dialling before that CONNECT ran: it used to supersede the
+     * resume only after the resume's /connect had minted a peer.
+     */
+    @Test
+    fun `a widget tap decided before the resume began joins it and mints nothing more`() = runTest {
+        val gate = gatedDial()
+        assertEquals(
+            QuickToggle.Action.CONNECT,
+            QuickToggle.decide(VpnState.Disconnected, false, true, true, true, vpnManager.claimTapForResume()),
+        )
+
+        vpnManager.connectHeadless(SystemStartKind.PROCESS_RESTART)
+        runCurrent()
+        vpnManager.requestConnectPreferred()
+        runCurrent()
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        // The resume's own peer is the session's: nothing released as superseded.
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        assertTrue(BirdoVpnService.ACTION_START in dispatchedActions)
+        quiesce()
+    }
+
+    @Test
+    fun `a tap whose own dial got there first makes the resume a no-op`() = runTest {
+        val gate = gatedDial()
+
+        launch { vpnManager.connectPreferred() }
+        runCurrent()
+        assertFalse(vpnManager.connectHeadless(SystemStartKind.PROCESS_RESTART))
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a tap past the window acts on the state it sees`() = runTest {
+        var now = 0L
+        vpnManager.elapsedRealtime = { now }
+        val gate = gatedDial()
+
+        vpnManager.connectHeadless(SystemStartKind.PROCESS_RESTART)
+        runCurrent()
+        now = QuickToggle.RESUME_TAP_WINDOW_MS + 1
+
+        assertFalse(vpnManager.claimTapForResume())
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
+        quiesce()
+    }
+
+    @Test
+    fun `no other system start claims a tap`() = runTest {
+        val gate = gatedDial()
+
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
+        runCurrent()
+
+        // Always-on starts at boot, unlock or a setting change, never because
+        // of a tap: a tap during it is the user's own.
+        assertFalse(vpnManager.claimTapForResume())
+        gate.complete(ApiResult.Success(makeConnectResponse()))
+        runCurrent()
         quiesce()
     }
 

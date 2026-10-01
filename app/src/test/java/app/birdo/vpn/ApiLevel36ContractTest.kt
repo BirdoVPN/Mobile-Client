@@ -155,8 +155,10 @@ class ApiLevel36ContractTest {
         val handler = vpnService.substringAfter("private fun handleSystemStart(kind: SystemStartKind): Int {", "")
         assertTrue("handleSystemStart is gone", handler.isNotEmpty())
         assertTrue(
-            "handleSystemStart no longer calls connectHeadless()",
-            handler.substringBefore("\n    }\n").contains("connectHeadless()"),
+            "handleSystemStart no longer calls connectHeadless(kind)",
+            // The start's kind is passed through: a process-start resume is
+            // offered to the tap that may have started it (REVIEW-AND2-004).
+            handler.substringBefore("\n    }\n").contains("connectHeadless(kind)"),
         )
         // An app update restores the session too (A1-015).
         assertTrue(

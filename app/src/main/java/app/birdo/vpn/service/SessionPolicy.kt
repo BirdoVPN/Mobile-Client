@@ -727,7 +727,7 @@ internal object QuickToggle {
         DISCONNECT,
         /** Needs the app: signed out, or the VPN permission prompt. */
         OPEN_APP,
-        /** Mid-disconnect: nothing to do. */
+        /** Nothing to do: mid-disconnect, or the tap's own connect is already under way ([joinsResume]). */
         NONE,
     }
 
@@ -736,6 +736,10 @@ internal object QuickToggle {
      *   reach the backend (audit D-12), and a widget or tile tap after a
      *   consent-version bump used to send /vpn/connect before the user had seen
      *   the new text (REVIEW-AND-010). Stopping is always allowed.
+     * @param joinsResume this tap started the process whose resume is still
+     *   connecting (VpnManager.claimTapForResume, REVIEW-AND2-004): it meant
+     *   "connect", and that is happening. Read as anything else, the tile's
+     *   tap disconnected the very session it had just brought back.
      */
     fun decide(
         state: VpnState,
@@ -743,7 +747,9 @@ internal object QuickToggle {
         signedIn: Boolean,
         vpnPermissionGranted: Boolean,
         consentAccepted: Boolean,
+        joinsResume: Boolean,
     ): Action = when {
+        joinsResume -> Action.NONE
         state is VpnState.Disconnecting -> Action.NONE
         state is VpnState.Connected || state.isConnectingPhase || state is VpnState.Reconnecting ->
             Action.DISCONNECT
@@ -752,6 +758,26 @@ internal object QuickToggle {
         !signedIn || !vpnPermissionGranted || !consentAccepted -> Action.OPEN_APP
         else -> Action.CONNECT
     }
+
+    /**
+     * How long after a process-start resume began its dial a tap may still be
+     * the one that started the process. The tap's delivery and the resume both
+     * follow the same process start (Application.onCreate, then the service's
+     * start and the tile's bind or the widget's broadcast), so in practice the
+     * gap is well under a second; the bound is what keeps a later, deliberate
+     * tap from being swallowed.
+     */
+    const val RESUME_TAP_WINDOW_MS = 5_000L
+
+    /**
+     * REVIEW-AND2-004: a tap joins a process-start resume when it is the
+     * resume's own dial that is still connecting ([sameDial]: nothing newer
+     * took over), and it began at most [RESUME_TAP_WINDOW_MS] ago. Once the
+     * session is up, or it failed, the tap acts on what the user sees.
+     */
+    fun joinsResume(resumeAgeMs: Long, sameDial: Boolean, state: VpnState): Boolean =
+        sameDial && resumeAgeMs in 0..RESUME_TAP_WINDOW_MS &&
+            (state.isConnectingPhase || state is VpnState.Reconnecting)
 
     /** What CONNECT dials, given the Multi-Hop decision and the cached plan. */
     sealed interface ConnectPlan {

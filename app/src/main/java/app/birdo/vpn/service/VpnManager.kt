@@ -50,6 +50,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
@@ -229,6 +230,14 @@ class VpnManager @Inject constructor(
      * [scope]'s thread like [session].
      */
     private var deadSessionKey: String? = null
+
+    /**
+     * REVIEW-AND2-004: the process-start resume's dial ([generation]) and when
+     * it began, offered to the one tap that may have started the process
+     * ([claimTapForResume]). Cleared by every user or system dial.
+     */
+    private data class ResumeTap(val generation: Long, val startedAtMs: Long)
+    private val resumeTap = AtomicReference<ResumeTap?>(null)
 
     /** Clock and dispatcher seams, so the heartbeat and backoff logic run under a test scheduler. */
     internal var elapsedRealtime: () -> Long = { SystemClock.elapsedRealtime() }
@@ -617,12 +626,19 @@ class VpnManager @Inject constructor(
      * all use this, so none of them substitutes "the lowest-load node
      * anywhere" for the server the user actually chose.
      *
+     * A tap that started this process while the process-start resume is
+     * still on its way JOINS that resume instead of dialling again
+     * (REVIEW-AND2-004): the surface decided on the state it read before the
+     * resume began, and a second dial would mint a second peer and supersede
+     * the first only after its /connect had gone out.
+     *
      * @param multiHopEntitled what the caller knows about the plan: false
      *   dials the single hop the app is drawing for a lapsed plan (see
      *   BirdoTileService); null reads the persisted last-known plan.
      */
-    suspend fun connectPreferred(multiHopEntitled: Boolean? = null): ApiResult<Any> = runDial {
-        preferredDial(DialOrigin.USER, multiHopEntitled)
+    suspend fun connectPreferred(multiHopEntitled: Boolean? = null): ApiResult<Any> {
+        if (claimTapForResume()) return ApiResult.Success(Unit)
+        return runDial { preferredDial(DialOrigin.USER, multiHopEntitled) }
     }
 
     /**
@@ -640,13 +656,42 @@ class VpnManager @Inject constructor(
      * but the session is HEADLESS-owned, so retryable failures heal
      * themselves — the phone may have booted with no network yet.
      *
+     * @param kind which system start this is. A [SystemStartKind.PROCESS_RESTART]
+     *   may have been caused by the very tap a tile or widget is about to
+     *   deliver, so its dial is offered to that tap ([claimTapForResume]).
      * @return false when a session is already up or in flight, so a platform
      *   start and our own MY_PACKAGE_REPLACED start cannot dial twice.
      */
-    fun connectHeadless(): Boolean {
+    fun connectHeadless(kind: SystemStartKind): Boolean {
         if (sessionInProgress()) return false
-        scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = null) } }
+        val resume = kind == SystemStartKind.PROCESS_RESTART
+        scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = null, resume = resume) } }
         return true
+    }
+
+    /**
+     * REVIEW-AND2-004: whether a tile or widget tap is the one that started
+     * this process, and so belongs to the resume that start began.
+     *
+     * After a crash, the tap on the Quick Settings tile or the widget is what
+     * starts the new process; BirdoApp's process-start resume then dials
+     * before the tap is decided. Decided on the resume's Connecting, the tile's
+     * tap meant DISCONNECT and ended the session it had just brought back; the
+     * widget, deciding on the Disconnected it read first, dialled a second time.
+     * The tap meant "connect", which is already happening, so it does nothing.
+     *
+     * At most ONE tap is claimed per resume, and only while that resume's own
+     * dial is still connecting and [QuickToggle.RESUME_TAP_WINDOW_MS] old: a
+     * later tap is the user's own decision and acts on the state as shown.
+     * Thread-safe: the tile decides on the main thread, the widget does not.
+     */
+    fun claimTapForResume(): Boolean {
+        val resume = resumeTap.getAndSet(null) ?: return false
+        return QuickToggle.joinsResume(
+            resumeAgeMs = elapsedRealtime() - resume.startedAtMs,
+            sameDial = resume.generation == intentGeneration,
+            state = _state.value,
+        )
     }
 
     /**
@@ -703,6 +748,7 @@ class VpnManager @Inject constructor(
                 cancelRecovery()
                 avoidServerId = null
                 deadSessionKey = null
+                resumeTap.set(null)
                 session = if (origin == DialOrigin.USER) {
                     ReconnectPolicy.Session.userDial()
                 } else {
@@ -1204,9 +1250,14 @@ class VpnManager @Inject constructor(
         return dialSingle(bestServer.id, null, gen, prior)
     }
 
-    private suspend fun preferredDial(origin: DialOrigin, multiHopEntitled: Boolean?): ApiResult<Any> {
+    private suspend fun preferredDial(
+        origin: DialOrigin,
+        multiHopEntitled: Boolean?,
+        resume: Boolean = false,
+    ): ApiResult<Any> {
         val prior = _state.value
         val gen = beginDial(origin, prior)
+        if (resume) resumeTap.set(ResumeTap(gen, elapsedRealtime()))
         // ONE entitlement rule for every dial (REVIEW-AND-007): what the caller
         // knows, else the persisted last-known plan. Headless and quick dials
         // used to read the raw pref, which a lapsed plan never clears, so an

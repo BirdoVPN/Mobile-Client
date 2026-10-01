@@ -436,7 +436,8 @@ class SessionPolicyTest {
             signedIn: Boolean = true,
             permission: Boolean = true,
             consent: Boolean = true,
-        ) = QuickToggle.decide(state, blocking, signedIn, permission, consent)
+            joinsResume: Boolean = false,
+        ) = QuickToggle.decide(state, blocking, signedIn, permission, consent, joinsResume)
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connecting))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Reconnecting(2)))
@@ -450,6 +451,28 @@ class SessionPolicyTest {
         // stopping is always allowed.
         assertEquals(QuickToggle.Action.OPEN_APP, decide(VpnState.Disconnected, consent = false))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected, consent = false))
+        // REVIEW-AND2-004: the tap that started the process joins the resume
+        // that start began, whatever the resume shows by the time it lands.
+        assertEquals(QuickToggle.Action.NONE, decide(VpnState.Connecting, joinsResume = true))
+        assertEquals(QuickToggle.Action.NONE, decide(VpnState.Reconnecting(1), blocking = true, joinsResume = true))
+    }
+
+    @Test
+    fun `only the resume's own dial, still connecting and a few seconds old, claims the tap`() {
+        val window = QuickToggle.RESUME_TAP_WINDOW_MS
+        fun joins(age: Long = 800L, sameDial: Boolean = true, state: VpnState = VpnState.Connecting) =
+            QuickToggle.joinsResume(age, sameDial, state)
+        assertTrue(joins())
+        assertTrue(joins(state = VpnState.Reconnecting(1)))
+        assertTrue(joins(age = window))
+        // Later, the tap is the user's own decision on what the tile shows.
+        assertFalse(joins(age = window + 1))
+        // A newer dial or a Disconnect took over.
+        assertFalse(joins(sameDial = false))
+        // Up, or failed: a tap acts on that.
+        assertFalse(joins(state = VpnState.Connected))
+        assertFalse(joins(state = VpnState.Error("x")))
+        assertFalse(joins(state = VpnState.Disconnected))
     }
 
     @Test
