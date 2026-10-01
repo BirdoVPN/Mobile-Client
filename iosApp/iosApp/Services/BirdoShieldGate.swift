@@ -22,16 +22,81 @@ import Foundation
 /// `GET /api/client-config` — only the fields this client acts on.
 ///
 /// Not a full mirror of the payload: it also serves cert pins (vendored into
-/// `third_party/` and enforced from there), per-plan feature entitlements
-/// (which arrive with the subscription) and consent copy. Modelling them here
-/// would create a second source of truth for each. `Decodable` ignores unknown
-/// keys by default, so web-side additions never break a shipped client.
-struct ClientConfigResponse: Decodable {
+/// `third_party/` and enforced from there), the rest of the per-plan feature
+/// entitlements (which arrive with the subscription) and consent copy.
+/// Modelling them here would create a second source of truth for each. Of
+/// `features`, only `customDns` is read (owner item 40). Unknown keys are
+/// ignored, so web-side additions never break a shipped client.
+struct ClientConfigResponse: Decodable, Sendable {
     /// Is DNS filtering switched on for the fleet this account dials?
     ///
     /// `nil` (key absent — a web deploy older than #465) means UNKNOWN, which
     /// is NOT `false`. See `BirdoShieldGate.row(preference:available:)`.
     let dnsFilteringAvailable: Bool?
+    /// Owner item 40: `features.<PLAN>.customDns`, keyed by UPPERCASED plan
+    /// id. birdo-web serves `features` as one object per plan (RECON /
+    /// OPERATIVE / SOVEREIGN). Empty when absent. See `CustomDnsGate`.
+    let customDnsByPlan: [String: Bool]
+    /// A flat `features.customDns`, should the payload ever carry one. It
+    /// applies to every plan and wins over the per-plan map.
+    let customDnsForAllPlans: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case dnsFilteringAvailable, features
+    }
+
+    private struct FeatureKey: CodingKey {
+        let stringValue: String
+        init?(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+    }
+
+    private struct PlanFeatures: Decodable {
+        let customDns: Bool?
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        dnsFilteringAvailable = try c.decodeIfPresent(Bool.self, forKey: .dnsFilteringAvailable)
+        // `features` is read field by field under `try?`: a shape this build
+        // does not expect must cost only the custom-DNS flag (which then
+        // defaults to available), never the BirdoShield gate above.
+        var byPlan: [String: Bool] = [:]
+        var flat: Bool?
+        if let features = try? c.nestedContainer(keyedBy: FeatureKey.self, forKey: .features) {
+            for key in features.allKeys {
+                if key.stringValue == "customDns" {
+                    flat = try? features.decode(Bool.self, forKey: key)
+                } else if let plan = try? features.decode(PlanFeatures.self, forKey: key),
+                          let value = plan.customDns {
+                    byPlan[key.stringValue.uppercased()] = value
+                }
+            }
+        }
+        customDnsByPlan = byPlan
+        customDnsForAllPlans = flat
+    }
+}
+
+/// Custom DNS servers — may this account's plan use the setting?
+///
+/// Owner item 40 (2026-10-01): Custom DNS is available on EVERY plan. It used
+/// to be locked to SOVEREIGN in the app itself (the row rendered as an upsell
+/// for everyone else); that client-side gate is gone. What remains is the
+/// server's say: if `/api/client-config` carries a `customDns` flag for the
+/// plan, it is honoured — the backend now sends `true` for every plan — and
+/// when it says nothing (no config yet, an unreachable web app, an older
+/// deploy, a guest before consent) the setting is AVAILABLE.
+enum CustomDnsGate {
+    /// - Parameters:
+    ///   - plan: the plan id ("RECON" | "OPERATIVE" | "SOVEREIGN"), any case.
+    ///   - config: the last decoded client config, or nil if none yet.
+    static func isAvailable(plan: String, config: ClientConfigResponse?) -> Bool {
+        guard let config else { return true }
+        if let all = config.customDnsForAllPlans { return all }
+        return config.customDnsByPlan[plan.uppercased()] ?? true
+    }
 }
 
 enum BirdoShieldGate {

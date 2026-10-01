@@ -87,7 +87,18 @@ final class SettingsViewModel: ObservableObject {
     /// "available" and only an explicit server `false` moves it.
     @Published private(set) var dnsFilteringAvailable: Bool?
 
-    /// Refresh the fleet gate. Called by the VPN Settings screen on appear.
+    /// The last decoded `/api/client-config`, for the per-plan Custom DNS flag
+    /// (owner item 40). Nil until a fetch succeeds — read as AVAILABLE.
+    @Published private(set) var clientConfig: ClientConfigResponse?
+
+    /// Custom DNS on this plan? Every plan, unless the server's client config
+    /// says otherwise for it (`CustomDnsGate`, owner item 40).
+    func isCustomDnsAvailable(plan: String) -> Bool {
+        CustomDnsGate.isAvailable(plan: plan, config: clientConfig)
+    }
+
+    /// Refresh the fleet gate and the Custom DNS flag. Called by Settings and
+    /// the VPN Settings screen on appear.
     ///
     /// Failure is silent BY DESIGN: the value is left untouched, so an
     /// unreachable web app leaves the toggle usable instead of greying out a
@@ -101,6 +112,7 @@ final class SettingsViewModel: ObservableObject {
         // Any failure — offline, 5xx, pin cancel, an undecodable body — keeps
         // the current value rather than becoming `false`.
         guard let config = try? await APIClient.shared.fetchClientConfig() else { return }
+        clientConfig = config
         // A web deploy older than #465 omits the key. That is "the server did
         // not say", not "off", so it must not overwrite anything either.
         guard let available = config.dnsFilteringAvailable else { return }
