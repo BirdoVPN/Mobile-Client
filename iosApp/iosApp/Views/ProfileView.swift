@@ -528,9 +528,15 @@ struct ProfileView: View {
         return "Account"
     }
 
+    /// Anonymous FIRST (owner item 86): `isAnonymousAccount` reads /auth/me's
+    /// `accountType` / `isAnonymous` when the backend sends them, so this no
+    /// longer depends on recognising the synthetic email. The account number is
+    /// the account's only credential, so signing out says to keep it.
     private var signOutSubtitle: String {
+        if authVM.isAnonymousAccount {
+            return "Anonymous account. Keep your account number to sign back in."
+        }
         if let email = authVM.userEmail, !email.isEmpty { return email }
-        if authVM.isAnonymousAccount { return "Anonymous account" }
         return "Sign out of this device"
     }
 

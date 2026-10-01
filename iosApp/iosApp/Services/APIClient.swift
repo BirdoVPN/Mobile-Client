@@ -1371,31 +1371,34 @@ struct UserProfile: Sendable, Equatable {
     /// password account delete without one.
     let hasPassword: Bool
     let isSSO: Bool
+    /// Owner item 86: "anonymous" | "standard", when the backend sends it.
+    let accountType: String?
+    /// Owner item 86: the backend's own answer, when it sends one.
+    let isAnonymousField: Bool?
+    /// Owner item 86: the 24-digit account number, when the backend sends it.
+    let accountNumber: String?
 
-    /// Anonymous accounts carry the synthetic email
-    /// `anon_<24digits>@anonymous.local`. Never render it — it "reads as a
-    /// bug"; show `Anonymous account` + the account-number card instead.
-    var isAnonymous: Bool {
-        guard let email else { return false }
-        return email.hasPrefix("anon_") && email.hasSuffix("@anonymous.local")
-    }
+    /// Anonymous account? The explicit `/auth/me` fields win; an older
+    /// backend is read from the synthetic email `anon_<24digits>@anonymous.local`
+    /// (`AccountIdentity`). Never render that email — it "reads as a bug";
+    /// show `Anonymous account` + the account-number card instead.
+    var isAnonymous: Bool { identity.isAnonymous }
 
-    /// The 24-digit account number extracted from the synthetic email;
-    /// nil for non-anonymous accounts.
-    var anonymousAccountNumber: String? {
-        guard isAnonymous, let email,
-              let atIndex = email.firstIndex(of: "@") else { return nil }
-        let start = email.index(email.startIndex, offsetBy: "anon_".count)
-        guard start < atIndex else { return nil }
-        let digits = String(email[start..<atIndex])
-        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
-        return digits
+    /// The 24-digit account number; nil for non-anonymous accounts.
+    var anonymousAccountNumber: String? { identity.accountNumber }
+
+    private var identity: AccountIdentity.Resolved {
+        AccountIdentity.resolve(accountType: accountType,
+                                isAnonymous: isAnonymousField,
+                                accountNumber: accountNumber,
+                                email: email)
     }
 }
 
 extension UserProfile: Decodable {
     private enum CodingKeys: String, CodingKey {
         case id, email, name, emailVerified, hasPassword, isSSO
+        case accountType, isAnonymous, accountNumber
     }
 
     init(from decoder: Decoder) throws {
@@ -1406,6 +1409,12 @@ extension UserProfile: Decodable {
         emailVerified = try c.decodeIfPresent(Bool.self, forKey: .emailVerified) ?? false
         hasPassword = try c.decodeIfPresent(Bool.self, forKey: .hasPassword) ?? true
         isSSO = try c.decodeIfPresent(Bool.self, forKey: .isSSO) ?? false
+        // `try?`: new, optional fields. A shape this build does not expect
+        // falls back to the email parsing instead of failing the whole
+        // identity (which would leave `user == nil` on every launch).
+        accountType = (try? c.decodeIfPresent(String.self, forKey: .accountType)) ?? nil
+        isAnonymousField = (try? c.decodeIfPresent(Bool.self, forKey: .isAnonymous)) ?? nil
+        accountNumber = (try? c.decodeIfPresent(String.self, forKey: .accountNumber)) ?? nil
     }
 }
 

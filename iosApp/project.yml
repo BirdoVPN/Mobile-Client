@@ -279,6 +279,11 @@ targets:
       # Owner item 96: the User-Agent / X-Desktop-Client strings, pinned by
       # ClientIdentityTests (the backend's UA parser keys on the exact token).
       - path: iosApp/Services/ClientIdentity.swift
+      # Owner item 86: anonymous-or-not and the account number from /auth/me —
+      # explicit fields first, the synthetic-email parse as the old-backend
+      # fallback. Pinned by AccountIdentityTests; UserProfile (APIClient.swift)
+      # cannot be compiled into this bundle.
+      - path: iosApp/Services/AccountIdentity.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
