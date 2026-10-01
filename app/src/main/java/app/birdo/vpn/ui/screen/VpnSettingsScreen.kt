@@ -92,7 +92,7 @@ fun VpnSettingsScreen(
     // when the feature is locked, the control shows a lock affordance and
     // tapping it routes the user to the upgrade flow instead of toggling.
     stealthUnlocked: Boolean = true,
-    onUpgradeRequired: (feature: String) -> Unit = {},
+    onUpgradeRequired: () -> Unit = {},
     // ── BirdoShield fleet gate ───────────────────────────────────
     // NOT a plan gate: BirdoShield is on every plan. This is whether the fleet
     // this account dials has DNS filtering switched on at all. Defaults to
@@ -153,7 +153,7 @@ fun VpnSettingsScreen(
                     checked = state.stealthModeEnabled && stealthUnlocked,
                     onCheckedChange = onStealthModeChange,
                     locked = !stealthUnlocked,
-                    onLockedTap = { onUpgradeRequired("Stealth Mode") },
+                    onLockedTap = onUpgradeRequired,
                 )
             }
 

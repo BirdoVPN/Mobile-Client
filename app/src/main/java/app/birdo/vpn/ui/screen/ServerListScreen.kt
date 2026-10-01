@@ -30,6 +30,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -525,7 +526,10 @@ internal fun ServerCard(
                 .then(if (!isSelectable) Modifier.alpha(0.5f) else Modifier),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Country flag badge
+            // Country flag badge. The flag is a picture drawn with an emoji, so
+            // it is sized in dp like an icon: in sp the font scale grew it out
+            // of its 40 dp tile, which clipped it (A2-024). The server name
+            // beside it is the text that scales.
             Box(
                 modifier = Modifier
                     .size(40.dp)
@@ -533,7 +537,7 @@ internal fun ServerCard(
                     .background(palette.surfaceRaised),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(text = flag, fontSize = 20.sp)
+                Text(text = flag, fontSize = with(LocalDensity.current) { 20.dp.toSp() })
             }
 
             Spacer(Modifier.width(12.dp))

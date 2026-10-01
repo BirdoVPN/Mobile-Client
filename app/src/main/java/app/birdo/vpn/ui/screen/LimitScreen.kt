@@ -39,6 +39,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material3.ExperimentalMaterial3Api
 import app.birdo.vpn.ui.components.BirdoPullToRefresh
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
@@ -119,21 +120,29 @@ fun LimitScreen(
         ) {
             // ── Plan header: name on the left, allowance pill on the right ──
             Column {
-                SectionLabel("Your Plan")
+                SectionLabel(stringResource(R.string.limit_section_your_plan))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // The name takes what the pill leaves and wraps: at 200 %
+                    // font scale "Sovereign plan" measured first and squeezed
+                    // the pill (A2-024).
                     Text(
                         planDisplayName(subscription?.plan),
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Bold,
                         color = palette.onSurface,
+                        modifier = Modifier.weight(1f),
                     )
                     if (subscription != null) {
+                        Spacer(Modifier.width(8.dp))
                         AllowancePill(
-                            text = if (hasCap) "$limitGb GB / month" else "Unlimited",
+                            text = if (hasCap) {
+                                stringResource(R.string.data_gb_per_month, limitGb)
+                            } else {
+                                stringResource(R.string.subscription_unlimited)
+                            },
                             palette = palette,
                         )
                     }
@@ -177,12 +186,13 @@ fun LimitScreen(
                         )
 
                         // Freshness — the meter is only as honest as the last sync.
+                        val syncedAgo = syncAge(subscription.bandwidthLastSyncAt, Instant.now())?.text()
                         val freshnessText = when {
-                            neverSynced -> "Awaiting first sync — connect to start counting"
-                            isFresh -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Updated $it" }
-                                ?: "Up to date"
-                            else -> relativeAgo(subscription.bandwidthLastSyncAt)?.let { "Last update $it" }
-                                ?: "May be delayed"
+                            neverSynced -> stringResource(R.string.limit_sync_awaiting)
+                            isFresh -> syncedAgo?.let { stringResource(R.string.limit_sync_updated, it) }
+                                ?: stringResource(R.string.limit_sync_up_to_date)
+                            else -> syncedAgo?.let { stringResource(R.string.limit_sync_last_update, it) }
+                                ?: stringResource(R.string.limit_sync_may_be_delayed)
                         }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -243,17 +253,34 @@ fun LimitScreen(
                         Spacer(Modifier.height(14.dp))
 
                         // Used / Left / Resets — equal columns with hairline separators.
+                        // Intrinsic height, so the separators grow with cells
+                        // whose text wraps at large font scales (A2-024).
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            StatCell("Used", formatGb(usedGb), meterColor, palette, Modifier.weight(1f))
-                            StatDivider(palette)
-                            StatCell("Left", formatGb(remainingGb), palette.onSurface, palette, Modifier.weight(1f))
+                            StatCell(
+                                stringResource(R.string.limit_stat_used),
+                                stringResource(R.string.data_gb, gbFigure(usedGb)),
+                                meterColor,
+                                palette,
+                                Modifier.weight(1f),
+                            )
                             StatDivider(palette)
                             StatCell(
-                                "Resets",
-                                formatResetDate(subscription.bandwidthPeriodEnd) ?: "Monthly",
+                                stringResource(R.string.limit_stat_left),
+                                stringResource(R.string.data_gb, gbFigure(remainingGb)),
+                                palette.onSurface,
+                                palette,
+                                Modifier.weight(1f),
+                            )
+                            StatDivider(palette)
+                            StatCell(
+                                stringResource(R.string.limit_stat_resets),
+                                formatResetDate(subscription.bandwidthPeriodEnd)
+                                    ?: stringResource(R.string.limit_resets_monthly),
                                 palette.onSurface,
                                 palette,
                                 Modifier.weight(1f),
@@ -262,7 +289,7 @@ fun LimitScreen(
 
                         Spacer(Modifier.height(14.dp))
                         Text(
-                            "Counts uploads and downloads · Updates about every minute",
+                            stringResource(R.string.limit_counting_note),
                             fontSize = 11.sp,
                             color = palette.onSurfaceFaint,
                             textAlign = TextAlign.Center,
@@ -294,20 +321,23 @@ fun LimitScreen(
                                 )
                             }
                             Text(
-                                if (fraction >= 0.9f) "You're almost out of data" else "Need more data?",
+                                stringResource(
+                                    if (fraction >= 0.9f) R.string.limit_upsell_almost_out
+                                    else R.string.limit_upsell_need_more,
+                                ),
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = palette.onSurface,
                             )
                         }
                         Text(
-                            "Free accounts include $limitGb GB per month. Upgrade to Operative for unlimited data on every server.",
+                            stringResource(R.string.limit_upsell_body, limitGb),
                             fontSize = 13.sp,
                             lineHeight = 18.sp,
                             color = palette.onSurfaceMuted,
                         )
                         BirdoButton(
-                            text = "Upgrade for unlimited",
+                            text = stringResource(R.string.limit_upsell_cta),
                             onClick = onUpgrade,
                             variant = BirdoButtonVariant.Primary,
                             size = BirdoButtonSize.Medium,
@@ -416,7 +446,7 @@ private fun SpeedDialGauge(
                 autoSize = TextAutoSize.StepBased(minFontSize = 18.sp, maxFontSize = 40.sp),
             )
             BasicText(
-                "of $limitGb GB used",
+                stringResource(R.string.limit_gauge_of_used, limitGb),
                 style = TextStyle(color = subTextColor, textAlign = TextAlign.Center),
                 maxLines = 1,
                 autoSize = TextAutoSize.StepBased(minFontSize = 9.sp, maxFontSize = 13.sp),
@@ -514,14 +544,14 @@ private fun UnlimitedState(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette)
             )
         }
         Text(
-            "Unlimited data",
+            stringResource(R.string.unlimited_data),
             fontSize = 18.sp,
             fontWeight = FontWeight.SemiBold,
             color = palette.onSurface,
             modifier = Modifier.padding(top = 4.dp),
         )
         Text(
-            "Your plan has no data cap — use as much as you like.",
+            stringResource(R.string.limit_unlimited_body),
             fontSize = 13.sp,
             color = palette.onSurfaceMuted,
             textAlign = TextAlign.Center,
@@ -560,7 +590,7 @@ private fun StatDivider(palette: app.birdo.vpn.ui.theme.BirdoSemanticPalette) {
     Box(
         Modifier
             .width(1.dp)
-            .height(30.dp)
+            .fillMaxHeight(0.8f)
             .background(palette.hairlineSoft),
     )
 }
@@ -596,10 +626,11 @@ private fun SectionLabel(text: String) {
     )
 }
 
+@Composable
 private fun planDisplayName(plan: String?): String = when (plan?.uppercase()) {
-    "OPERATIVE" -> "Operative plan"
-    "SOVEREIGN" -> "Sovereign plan"
-    else -> "Free plan"
+    "OPERATIVE" -> stringResource(R.string.plan_title_operative)
+    "SOVEREIGN" -> stringResource(R.string.plan_title_sovereign)
+    else -> stringResource(R.string.plan_title_free)
 }
 
 private fun gaugeColor(fraction: Float): Color = when {
@@ -618,10 +649,11 @@ private fun gaugeValue(gb: Double): String {
     }
 }
 
-private fun formatGb(gb: Double): String {
+/** "0.52", "7.1", "12": the figure for a data_gb label. */
+private fun gbFigure(gb: Double): String {
     val safe = max(0.0, gb)
-    return if (safe >= 10.0) "${safe.roundToInt()} GB"
-    else "${(Math.round(safe * 100.0) / 100.0)} GB"
+    return if (safe >= 10.0) "${safe.roundToInt()}"
+    else "${(Math.round(safe * 100.0) / 100.0)}"
 }
 
 /** "2026-07-31T23:59:59.999Z" → "Jul 31"; null/parse-fail → null. */
@@ -637,19 +669,40 @@ private fun formatResetDate(iso: String?): String? {
     }
 }
 
-/** Relative "3 min ago" / "just now" from an ISO instant; null on parse failure. */
-private fun relativeAgo(iso: String?): String? {
+/** How long ago the meter last synced, in the unit the freshness line names. */
+internal sealed interface SyncAge {
+    data object JustNow : SyncAge
+    data class Minutes(val count: Int) : SyncAge
+    data class Hours(val count: Int) : SyncAge
+    data class Days(val count: Int) : SyncAge
+}
+
+/**
+ * The age of an ISO instant at [now]; null on a parse failure. A sync stamped
+ * after [now] (a phone clock behind the server's) reads as just now. Pure, so
+ * the buckets are tested; the words are `<plurals>` (A2-031).
+ */
+internal fun syncAge(iso: String?, now: Instant): SyncAge? {
     if (iso.isNullOrBlank()) return null
-    return try {
-        val then = Instant.parse(iso)
-        val secs = max(0L, Instant.now().epochSecond - then.epochSecond)
-        when {
-            secs < 60 -> "just now"
-            secs < 3600 -> "${secs / 60} min ago"
-            secs < 86400 -> "${secs / 3600} h ago"
-            else -> "${secs / 86400} d ago"
-        }
+    val then = try {
+        Instant.parse(iso)
     } catch (_: Throwable) {
-        null
+        return null
     }
+    val secs = max(0L, now.epochSecond - then.epochSecond)
+    return when {
+        secs < 60 -> SyncAge.JustNow
+        secs < 3600 -> SyncAge.Minutes((secs / 60).toInt())
+        secs < 86400 -> SyncAge.Hours((secs / 3600).toInt())
+        else -> SyncAge.Days((secs / 86400).toInt())
+    }
+}
+
+/** "just now", "3 min ago", "2 h ago", "5 d ago". */
+@Composable
+private fun SyncAge.text(): String = when (this) {
+    SyncAge.JustNow -> stringResource(R.string.limit_ago_just_now)
+    is SyncAge.Minutes -> pluralStringResource(R.plurals.limit_ago_minutes, count, count)
+    is SyncAge.Hours -> pluralStringResource(R.plurals.limit_ago_hours, count, count)
+    is SyncAge.Days -> pluralStringResource(R.plurals.limit_ago_days, count, count)
 }

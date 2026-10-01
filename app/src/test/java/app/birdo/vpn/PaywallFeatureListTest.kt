@@ -51,9 +51,24 @@ class PaywallFeatureListTest {
         assertFalse("a location count is back on the iOS paywall", ios.any { locationCount.containsMatchIn(it) })
     }
 
+    /**
+     * The Android paywall's copy: its feature lines live in strings.xml since
+     * A2-031 (`subscription_feature_*`), plus whatever literal is left in the
+     * screen. Reading only the screen would now pass on an empty list.
+     */
+    private fun androidPaywallCopy(): List<String> {
+        val strings = source("app/src/main/res/values/strings.xml")
+        val features = Regex(
+            """<(string|plurals) name="subscription_feature_[^"]+"[^>]*>(.*?)</\1>""",
+            RegexOption.DOT_MATCHES_ALL,
+        ).findAll(strings).map { it.groupValues[2] }.toList()
+        assertTrue("found only ${features.size} paywall feature strings", features.size >= 15)
+        return features + literals(source("app/src/main/java/app/birdo/vpn/ui/screen/SubscriptionScreen.kt"))
+    }
+
     @Test
     fun `the Play paywall sells no speed test and states no location count`() {
-        val android = literals(source("app/src/main/java/app/birdo/vpn/ui/screen/SubscriptionScreen.kt"))
+        val android = androidPaywallCopy()
         assertFalse(android.any { it.contains("Speed test", ignoreCase = true) })
         assertFalse("a location count is back on the Android paywall", android.any { locationCount.containsMatchIn(it) })
     }

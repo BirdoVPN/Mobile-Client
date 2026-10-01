@@ -618,5 +618,115 @@
     <string name="billing_item_unavailable">That subscription is not available on Google Play right now.</string>
     <string name="billing_did_not_start">The purchase did not start. If you were charged, tap Restore Purchases.</string>
     <string name="billing_already_owned_unseen">Google Play says you already have this subscription, but Birdo cannot see it on this device yet. Wait a moment and tap Restore Purchases; if it still does not appear, contact support and we will sort it out.</string>
+
+    <!-- Shared by Subscription, Profile and Limit. %1$s is a figure in GB. -->
+    <string name="data_gb">%1$s GB</string>
+    <string name="data_gb_per_month">%1$s GB / month</string>
+    <string name="unlimited_data">Unlimited data</string>
+    <!-- Plan titles in prose (Profile, Limit): the plan's name, never its slug. -->
+    <string name="plan_title_free">Free plan</string>
+    <string name="plan_title_operative">Operative plan</string>
+    <string name="plan_title_sovereign">Sovereign plan</string>
+    <!-- A plan this build does not know yet, by the name the server sent. -->
+    <string name="plan_title_other">%1$s plan</string>
+    <!-- The label of the clipboard entry, which some keyboards show. -->
+    <string name="account_number_clip_label">Birdo account</string>
+
+    <!-- Paywall plan cards (SubscriptionScreen). Feature names are Title Case
+         labels (canonical vocabulary). "Recon" is the free card's name, as on
+         iOS. -->
+    <string name="subscription_plan_recon">Recon</string>
+    <string name="subscription_tagline_recon">Test the waters</string>
+    <string name="subscription_tagline_operative">Most popular</string>
+    <string name="subscription_tagline_sovereign">Full control</string>
+    <string name="subscription_price_free">Free</string>
+    <!-- The web's GBP list prices. Only the sideload and F-Droid builds show
+         them; a Play build shows Google Play's own price (A2-022). -->
+    <string name="subscription_price_operative_monthly">£3.99/mo</string>
+    <string name="subscription_price_operative_yearly">£38/yr</string>
+    <string name="subscription_price_sovereign_monthly">£9.99/mo</string>
+    <string name="subscription_price_sovereign_yearly">£99/yr</string>
+    <plurals name="subscription_feature_devices">
+        <item quantity="one">%d device connection</item>
+        <item quantity="other">%d device connections</item>
+    </plurals>
+    <plurals name="subscription_feature_monthly_data">
+        <item quantity="one">%d GB monthly bandwidth</item>
+        <item quantity="other">%d GB monthly bandwidth</item>
+    </plurals>
+    <string name="subscription_feature_core_locations">Core server locations</string>
+    <string name="subscription_feature_all_locations">All server locations</string>
+    <string name="subscription_feature_unlimited_bandwidth">Unlimited bandwidth</string>
+    <string name="subscription_feature_wireguard">WireGuard® encryption</string>
+    <string name="subscription_feature_post_quantum">Post-quantum key exchange</string>
+    <string name="subscription_feature_kill_switch">Kill Switch</string>
+    <string name="subscription_feature_dns_leak">DNS leak protection</string>
+    <string name="subscription_feature_split_tunneling">Split Tunneling</string>
+    <string name="subscription_feature_stealth">Stealth Mode</string>
+    <string name="subscription_feature_multi_hop">Multi-Hop routing</string>
+    <string name="subscription_feature_port_forwarding">Port Forwarding</string>
+    <string name="subscription_feature_custom_dns">Custom DNS Servers</string>
+    <string name="subscription_feature_two_factor">2FA / TOTP</string>
+    <string name="subscription_feature_hide_app_contents">Hide App Contents</string>
+    <string name="subscription_feature_priority_support">Priority support</string>
+
+    <!-- Profile tab. -->
+    <string name="profile_section_account">Account</string>
+    <string name="profile_section_session">Session</string>
+    <!-- The name shown for an account with neither a name nor an email. -->
+    <string name="profile_display_name_fallback">Account</string>
+    <string name="profile_privacy_link" translatable="false">birdo.app/privacy</string>
+    <string name="profile_terms_link" translatable="false">birdo.app/terms</string>
+    <string name="profile_public_ip">Public IP · %1$s</string>
+    <string name="profile_tap_connect">Tap Connect to start</string>
+    <string name="profile_renews">Renews %1$s</string>
+    <!-- Cancelled or expiring: the date is when access ENDS, never "Renews". -->
+    <string name="profile_access_until">Access until %1$s</string>
+    <!-- Canonical vocabulary: the free plan, never "Free tier". -->
+    <string name="profile_free_plan_upsell">Free plan — upgrade for premium</string>
+    <plurals name="profile_devices">
+        <item quantity="one">%d device</item>
+        <item quantity="other">%d devices</item>
+    </plurals>
+    <string name="profile_premium_servers">Premium servers</string>
+    <string name="profile_manage_subscription">Manage subscription</string>
+    <string name="profile_upgrade_plan">Upgrade plan</string>
+    <string name="voucher_code_label">BIRD-XXXX-XXXX-XXXX</string>
+
+    <!-- Limit tab. -->
+    <string name="limit_section_your_plan">Your Plan</string>
+    <string name="limit_sync_awaiting">Awaiting first sync — connect to start counting</string>
+    <!-- %1$s is a limit_ago_* phrase. -->
+    <string name="limit_sync_updated">Updated %1$s</string>
+    <string name="limit_sync_up_to_date">Up to date</string>
+    <string name="limit_sync_last_update">Last update %1$s</string>
+    <string name="limit_sync_may_be_delayed">May be delayed</string>
+    <string name="limit_ago_just_now">just now</string>
+    <plurals name="limit_ago_minutes">
+        <item quantity="one">%d min ago</item>
+        <item quantity="other">%d min ago</item>
+    </plurals>
+    <plurals name="limit_ago_hours">
+        <item quantity="one">%d h ago</item>
+        <item quantity="other">%d h ago</item>
+    </plurals>
+    <plurals name="limit_ago_days">
+        <item quantity="one">%d d ago</item>
+        <item quantity="other">%d d ago</item>
+    </plurals>
+    <string name="limit_stat_used">Used</string>
+    <string name="limit_stat_left">Left</string>
+    <string name="limit_stat_resets">Resets</string>
+    <string name="limit_resets_monthly">Monthly</string>
+    <string name="limit_counting_note">Counts uploads and downloads · Updates about every minute</string>
+    <string name="limit_upsell_almost_out">You\'re almost out of data</string>
+    <string name="limit_upsell_need_more">Need more data?</string>
+    <string name="limit_upsell_body">Free accounts include %1$s GB per month. Upgrade to Operative for unlimited data on every server.</string>
+    <string name="limit_upsell_cta">Upgrade for unlimited</string>
+    <string name="limit_gauge_of_used">of %1$s GB used</string>
+    <string name="limit_unlimited_body">Your plan has no data cap — use as much as you like.</string>
+
+    <!-- Login: the 2FA field's placeholder. -->
+    <string name="login_2fa_placeholder">000000 or backup code</string>
     <!-- ════ end AND-UI-B ════ -->
 </resources>

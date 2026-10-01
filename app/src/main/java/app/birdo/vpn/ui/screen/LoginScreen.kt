@@ -297,7 +297,7 @@ fun LoginScreen(
                             },
                             placeholder = {
                                 Text(
-                                    "000000 or backup code",
+                                    stringResource(R.string.login_2fa_placeholder),
                                     color = BirdoWhite40,
                                     textAlign = TextAlign.Center,
                                     modifier = Modifier.fillMaxWidth(),
@@ -961,6 +961,7 @@ private fun AnonymousIdSavedDialog(
     // LocalContextGetResourceValueCall lint check, which arrived with the
     // androidx.compose bump in this change.)
     val copiedMessage = stringResource(R.string.anon_created_copied)
+    val clipLabel = stringResource(R.string.account_number_clip_label)
     val grouped = formatAnonymousId(anonymousId)
 
     AlertDialog(
@@ -1007,7 +1008,7 @@ private fun AnonymousIdSavedDialog(
                         .clip(RoundedCornerShape(12.dp))
                         .background(BirdoWhite05)
                         .clickable(role = Role.Button) {
-                            copySensitiveToClipboard(context, "Birdo account", anonymousId)
+                            copySensitiveToClipboard(context, clipLabel, anonymousId)
                             Toast.makeText(
                                 context,
                                 copiedMessage,

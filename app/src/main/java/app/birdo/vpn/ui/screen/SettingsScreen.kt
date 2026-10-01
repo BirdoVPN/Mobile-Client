@@ -80,7 +80,7 @@ fun SettingsScreen(
     customDnsUnlocked: Boolean = true,
     portForwardUnlocked: Boolean = true,
     quantumUnlocked: Boolean = true,
-    onUpgradeRequired: (feature: String) -> Unit = {},
+    onUpgradeRequired: () -> Unit = {},
 ) {
     // Turning the kill switch OFF weakens leak protection, so it is gated behind
     // an explicit confirmation dialog (enabling it stays immediate).
@@ -161,7 +161,7 @@ fun SettingsScreen(
                     checked = state.quantumProtectionEnabled && quantumUnlocked,
                     onCheckedChange = onQuantumProtectionChange,
                     locked = !quantumUnlocked,
-                    onLockedTap = { onUpgradeRequired("Quantum Protection") },
+                    onLockedTap = onUpgradeRequired,
                 )
             }
 
@@ -294,7 +294,7 @@ fun SettingsScreen(
                     checked = state.customDnsEnabled && customDnsUnlocked,
                     onCheckedChange = onCustomDnsEnabledChange,
                     locked = !customDnsUnlocked,
-                    onLockedTap = { onUpgradeRequired("Custom DNS") },
+                    onLockedTap = onUpgradeRequired,
                 )
             }
 
@@ -326,8 +326,7 @@ fun SettingsScreen(
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_port_forward),
                     description = stringResource(R.string.settings_port_forward_desc),
-                    onClick = if (portForwardUnlocked) onOpenPortForward
-                        else { { onUpgradeRequired("Port Forwarding") } },
+                    onClick = if (portForwardUnlocked) onOpenPortForward else onUpgradeRequired,
                     locked = !portForwardUnlocked,
                 )
             }

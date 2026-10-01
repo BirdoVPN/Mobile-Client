@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -57,6 +58,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -150,7 +152,7 @@ fun ProfileScreen(
 
         Spacer(Modifier.height(4.dp))
 
-        SectionLabel("Account")
+        SectionLabel(stringResource(R.string.profile_section_account))
         ProfileActionRow(
             icon = Icons.Outlined.CardGiftcard,
             title = stringResource(R.string.voucher_title),
@@ -160,7 +162,7 @@ fun ProfileScreen(
         if (!isPlayBuild) {
             ProfileActionRow(
                 icon = Icons.AutoMirrored.Outlined.OpenInNew,
-                title = "Manage on web",
+                title = stringResource(R.string.subscription_manage_web),
                 subtitle = null,
                 onClick = onManageOnWeb,
             )
@@ -168,19 +170,19 @@ fun ProfileScreen(
         ProfileActionRow(
             icon = Icons.Outlined.Policy,
             title = stringResource(R.string.settings_privacy_policy),
-            subtitle = "birdo.app/privacy",
+            subtitle = stringResource(R.string.profile_privacy_link),
             onClick = { onOpenUrl("https://birdo.app/privacy") },
         )
         ProfileActionRow(
             icon = Icons.Outlined.Description,
             title = stringResource(R.string.settings_terms_of_service),
-            subtitle = "birdo.app/terms",
+            subtitle = stringResource(R.string.profile_terms_link),
             onClick = { onOpenUrl("https://birdo.app/terms") },
         )
 
         Spacer(Modifier.height(8.dp))
 
-        SectionLabel("Session")
+        SectionLabel(stringResource(R.string.profile_section_session))
         // Anonymous accounts carry a synthetic `anon_…@anonymous.local` email —
         // never surface that string; it reads as a bug and carries the number.
         val signOutSubtitle = when {
@@ -266,10 +268,12 @@ private fun ProfileIdentityCard(
         !user?.name.isNullOrBlank() -> user.name!!
         isAnon -> stringResource(R.string.account_anonymous)
         rawEmail.isNotBlank() -> rawEmail.substringBefore('@')
-        else -> "Account"
+        else -> stringResource(R.string.profile_display_name_fallback)
     }
     val plan = subscription?.plan ?: "RECON"
     val context = LocalContext.current
+    val clipLabel = stringResource(R.string.account_number_clip_label)
+    val copiedMessage = stringResource(R.string.anon_created_copied)
 
     BirdoCard(
         modifier = Modifier.fillMaxWidth(),
@@ -317,15 +321,15 @@ private fun ProfileIdentityCard(
                         .clip(RoundedCornerShape(14.dp))
                         .background(palette.surfaceRaised)
                         .clickable(role = Role.Button) {
-                            copySensitiveToClipboard(context, "Birdo account", accountNumber)
-                            Toast.makeText(context, "Account number copied", Toast.LENGTH_SHORT).show()
+                            copySensitiveToClipboard(context, clipLabel, accountNumber)
+                            Toast.makeText(context, copiedMessage, Toast.LENGTH_SHORT).show()
                         }
                         .padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "ACCOUNT NUMBER",
+                            text = stringResource(R.string.login_anonymous_id_label).uppercase(),
                             color = palette.onSurfaceFaint,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -342,7 +346,7 @@ private fun ProfileIdentityCard(
                     }
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
-                        contentDescription = "Copy account number",
+                        contentDescription = stringResource(R.string.anon_created_copy_cd),
                         tint = palette.accent,
                         modifier = Modifier.padding(8.dp).size(18.dp),
                     )
@@ -366,13 +370,14 @@ private fun ProfileIdentityCard(
                 Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (isConnected) "Protected" else "Not connected",
+                        text = stringResource(if (isConnected) R.string.status_protected else R.string.status_not_connected),
                         color = palette.onBackground,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = publicIp?.let { "Public IP · $it" } ?: "Tap Connect to start",
+                        text = publicIp?.let { stringResource(R.string.profile_public_ip, it) }
+                            ?: stringResource(R.string.profile_tap_connect),
                         color = palette.onSurfaceMuted,
                         fontSize = 11.sp,
                     )
@@ -439,12 +444,12 @@ private fun SubscriptionCard(
                     )
                     Text(
                         text = when {
-                            endsAtFormatted != null && isActive -> "Renews $endsAtFormatted"
+                            endsAtFormatted != null && isActive -> stringResource(R.string.profile_renews, endsAtFormatted)
                             // Canceled / expiring: the date is when access ENDS,
                             // calling that "Renews" would be a lie.
-                            endsAtFormatted != null -> "Access until $endsAtFormatted"
-                            isActive -> "Active subscription"
-                            else -> "Free tier — upgrade for premium"
+                            endsAtFormatted != null -> stringResource(R.string.profile_access_until, endsAtFormatted)
+                            isActive -> stringResource(R.string.subscription_active)
+                            else -> stringResource(R.string.profile_free_plan_upsell)
                         },
                         color = palette.onSurfaceMuted,
                         fontSize = 12.sp,
@@ -453,20 +458,30 @@ private fun SubscriptionCard(
                 StatusPillSmall(active = isActive)
             }
 
-            // Plan benefits chips
+            // Plan benefits chips. They wrap: three in a Row did not fit at
+            // large font scales and the last one was squeezed to a sliver
+            // (A2-024).
             if (subscription != null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     BenefitChip(
-                        label = if (subscription.maxConnections == 1) "1 device"
-                        else "${subscription.maxConnections} devices",
+                        label = pluralStringResource(
+                            R.plurals.profile_devices,
+                            subscription.maxConnections,
+                            subscription.maxConnections,
+                        ),
                     )
                     BenefitChip(
-                        label = if (subscription.bandwidthLimitGb > 0)
-                            "${subscription.bandwidthLimitGb} GB / month"
-                        else "Unlimited data",
+                        label = if (subscription.bandwidthLimitGb > 0) {
+                            stringResource(R.string.data_gb_per_month, subscription.bandwidthLimitGb)
+                        } else {
+                            stringResource(R.string.unlimited_data)
+                        },
                     )
                     if (subscription.hasPremiumServers) {
-                        BenefitChip(label = "Premium servers")
+                        BenefitChip(label = stringResource(R.string.profile_premium_servers))
                     }
                 }
             }
@@ -489,7 +504,7 @@ private fun SubscriptionCard(
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = if (isActive) "Manage subscription" else "Upgrade plan",
+                    text = stringResource(if (isActive) R.string.profile_manage_subscription else R.string.profile_upgrade_plan),
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -509,9 +524,9 @@ private fun SubscriptionCard(
 private fun StatusPillSmall(active: Boolean) {
     val palette = BirdoColors.current
     val (bg, fg, label) = if (active)
-        Triple(BirdoGreen.copy(alpha = 0.18f), BirdoGreen, "ACTIVE")
+        Triple(BirdoGreen.copy(alpha = 0.18f), BirdoGreen, stringResource(R.string.subscription_badge_active))
     else
-        Triple(palette.surfaceRaised, palette.onSurfaceMuted, "INACTIVE")
+        Triple(palette.surfaceRaised, palette.onSurfaceMuted, stringResource(R.string.subscription_badge_inactive))
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
@@ -561,11 +576,12 @@ private fun PlanChip(plan: String) {
 private fun planGradient(plan: String): Brush = BirdoBrand.planGradient(plan)
 
 /** Friendly plan naming — matches the Limit tab ("Free plan", not "RECON plan"). */
+@Composable
 private fun planTitle(plan: String): String = when (plan.uppercase()) {
-    "RECON" -> "Free plan"
-    "OPERATIVE" -> "Operative plan"
-    "SOVEREIGN" -> "Sovereign plan"
-    else -> "$plan plan"
+    "RECON" -> stringResource(R.string.plan_title_free)
+    "OPERATIVE" -> stringResource(R.string.plan_title_operative)
+    "SOVEREIGN" -> stringResource(R.string.plan_title_sovereign)
+    else -> stringResource(R.string.plan_title_other, plan)
 }
 
 @Composable
@@ -876,7 +892,7 @@ private fun VoucherRedeemDialog(
                         code = newValue.uppercase().take(24)
                         resultMessage = null
                     },
-                    label = { Text("BIRD-XXXX-XXXX-XXXX") },
+                    label = { Text(stringResource(R.string.voucher_code_label)) },
                     singleLine = true,
                     enabled = !submitting,
                     modifier = Modifier.fillMaxWidth(),

@@ -22,6 +22,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.billing.BirdoBillingPeriod
+import androidx.annotation.PluralsRes
+import androidx.annotation.StringRes
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -36,15 +39,28 @@ import app.birdo.vpn.ui.theme.*
 
 private data class PlanInfo(
     val id: String,
-    val name: String,
-    val tagline: String,
-    val priceMonthly: String,
-    val priceYearly: String,
-    val features: List<String>,
+    @StringRes val name: Int,
+    @StringRes val tagline: Int,
+    /** The web's GBP list prices: only the sideload and F-Droid builds show them (A2-022). */
+    @StringRes val priceMonthly: Int,
+    @StringRes val priceYearly: Int,
+    val features: List<PlanFeature>,
     val isPopular: Boolean = false,
 ) {
     /** Tier colour — single source of truth, shared with Profile. */
     val accent: Color get() = BirdoBrand.planAccent(id)
+}
+
+/** One line of a plan's feature list. A number in it goes through `<plurals>` (A2-031). */
+private sealed interface PlanFeature {
+    data class Plain(@StringRes val text: Int) : PlanFeature
+    data class Counted(@PluralsRes val text: Int, val count: Int) : PlanFeature
+}
+
+@Composable
+private fun PlanFeature.label(): String = when (this) {
+    is PlanFeature.Plain -> stringResource(text)
+    is PlanFeature.Counted -> pluralStringResource(text, count, count)
 }
 
 /**
@@ -61,67 +77,67 @@ private data class PlanInfo(
 private val plans = listOf(
     PlanInfo(
         id = "RECON",
-        name = "Recon",
-        tagline = "Test the waters",
-        priceMonthly = "Free",
-        priceYearly = "Free",
+        name = R.string.subscription_plan_recon,
+        tagline = R.string.subscription_tagline_recon,
+        priceMonthly = R.string.subscription_price_free,
+        priceYearly = R.string.subscription_price_free,
         features = listOf(
-            "1 device connection",
-            "Core server locations",
-            "10 GB monthly bandwidth",
-            "WireGuard\u00ae encryption",
-            "Post-quantum key exchange",
-            "Kill switch",
-            "DNS leak protection",
-            "Split tunneling",
-            "2FA / TOTP",
-            "Hide app contents",
+            PlanFeature.Counted(R.plurals.subscription_feature_devices, 1),
+            PlanFeature.Plain(R.string.subscription_feature_core_locations),
+            PlanFeature.Counted(R.plurals.subscription_feature_monthly_data, 10),
+            PlanFeature.Plain(R.string.subscription_feature_wireguard),
+            PlanFeature.Plain(R.string.subscription_feature_post_quantum),
+            PlanFeature.Plain(R.string.subscription_feature_kill_switch),
+            PlanFeature.Plain(R.string.subscription_feature_dns_leak),
+            PlanFeature.Plain(R.string.subscription_feature_split_tunneling),
+            PlanFeature.Plain(R.string.subscription_feature_two_factor),
+            PlanFeature.Plain(R.string.subscription_feature_hide_app_contents),
         ),
     ),
     PlanInfo(
         id = "OPERATIVE",
-        name = "Operative",
-        tagline = "Most popular",
-        priceMonthly = "£3.99/mo",
-        priceYearly = "£38/yr",
+        name = R.string.plan_name_operative,
+        tagline = R.string.subscription_tagline_operative,
+        priceMonthly = R.string.subscription_price_operative_monthly,
+        priceYearly = R.string.subscription_price_operative_yearly,
         features = listOf(
-            "5 device connections",
-            "All server locations",
-            "Unlimited bandwidth",
-            "WireGuard\u00ae encryption",
-            "Post-quantum key exchange",
-            "Kill switch",
-            "DNS leak protection",
-            "Split tunneling",
-            "Stealth mode",
-            "2FA / TOTP",
-            "Hide app contents",
-            "Priority support",
+            PlanFeature.Counted(R.plurals.subscription_feature_devices, 5),
+            PlanFeature.Plain(R.string.subscription_feature_all_locations),
+            PlanFeature.Plain(R.string.subscription_feature_unlimited_bandwidth),
+            PlanFeature.Plain(R.string.subscription_feature_wireguard),
+            PlanFeature.Plain(R.string.subscription_feature_post_quantum),
+            PlanFeature.Plain(R.string.subscription_feature_kill_switch),
+            PlanFeature.Plain(R.string.subscription_feature_dns_leak),
+            PlanFeature.Plain(R.string.subscription_feature_split_tunneling),
+            PlanFeature.Plain(R.string.subscription_feature_stealth),
+            PlanFeature.Plain(R.string.subscription_feature_two_factor),
+            PlanFeature.Plain(R.string.subscription_feature_hide_app_contents),
+            PlanFeature.Plain(R.string.subscription_feature_priority_support),
         ),
         isPopular = true,
     ),
     PlanInfo(
         id = "SOVEREIGN",
-        name = "Sovereign",
-        tagline = "Full control",
-        priceMonthly = "£9.99/mo",
-        priceYearly = "£99/yr",
+        name = R.string.plan_name_sovereign,
+        tagline = R.string.subscription_tagline_sovereign,
+        priceMonthly = R.string.subscription_price_sovereign_monthly,
+        priceYearly = R.string.subscription_price_sovereign_yearly,
         features = listOf(
-            "10 device connections",
-            "All server locations",
-            "Unlimited bandwidth",
-            "WireGuard\u00ae encryption",
-            "Post-quantum key exchange",
-            "Kill switch",
-            "DNS leak protection",
-            "Split tunneling",
-            "Stealth mode",
-            "Multi-hop routing",
-            "Port forwarding",
-            "Custom DNS",
-            "2FA / TOTP",
-            "Hide app contents",
-            "Priority support",
+            PlanFeature.Counted(R.plurals.subscription_feature_devices, 10),
+            PlanFeature.Plain(R.string.subscription_feature_all_locations),
+            PlanFeature.Plain(R.string.subscription_feature_unlimited_bandwidth),
+            PlanFeature.Plain(R.string.subscription_feature_wireguard),
+            PlanFeature.Plain(R.string.subscription_feature_post_quantum),
+            PlanFeature.Plain(R.string.subscription_feature_kill_switch),
+            PlanFeature.Plain(R.string.subscription_feature_dns_leak),
+            PlanFeature.Plain(R.string.subscription_feature_split_tunneling),
+            PlanFeature.Plain(R.string.subscription_feature_stealth),
+            PlanFeature.Plain(R.string.subscription_feature_multi_hop),
+            PlanFeature.Plain(R.string.subscription_feature_port_forwarding),
+            PlanFeature.Plain(R.string.subscription_feature_custom_dns),
+            PlanFeature.Plain(R.string.subscription_feature_two_factor),
+            PlanFeature.Plain(R.string.subscription_feature_hide_app_contents),
+            PlanFeature.Plain(R.string.subscription_feature_priority_support),
         ),
     ),
 )
@@ -298,7 +314,7 @@ fun SubscriptionScreen(
                         planPriceLabel(plan.id, isPlayBuild, playPrice, storefrontLoading)
                     ) {
                         PriceLabel.PLAY -> playPrice.orEmpty()
-                        PriceLabel.WEB -> webPrice
+                        PriceLabel.WEB -> stringResource(webPrice)
                         PriceLabel.CHECKING -> stringResource(R.string.subscription_price_checking)
                         PriceLabel.NOT_ON_PLAY -> stringResource(R.string.subscription_price_not_on_play)
                     },
@@ -507,7 +523,11 @@ private fun CurrentPlanHero(sub: SubscriptionStatus) {
                 )
                 MetricCell(
                     stringResource(R.string.subscription_metric_bandwidth),
-                    if (sub.bandwidthLimitGb > 0) "${sub.bandwidthLimitGb} GB" else stringResource(R.string.subscription_unlimited),
+                    if (sub.bandwidthLimitGb > 0) {
+                        stringResource(R.string.data_gb, sub.bandwidthLimitGb.toString())
+                    } else {
+                        stringResource(R.string.subscription_unlimited)
+                    },
                     Modifier.weight(1f),
                 )
                 MetricCell(
@@ -569,15 +589,21 @@ private fun PlanCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Wraps: at 200 % font scale the name and both chips do not
+                    // fit beside the price, and a Row squeezed the last chip to
+                    // a sliver of vertical letters (A2-024).
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
-                            plan.name,
+                            stringResource(plan.name),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = palette.onSurface,
                         )
                         if (plan.isPopular) {
-                            Spacer(Modifier.width(8.dp))
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
                                 color = plan.accent.copy(alpha = 0.15f),
@@ -592,7 +618,6 @@ private fun PlanCard(
                             }
                         }
                         if (isCurrent) {
-                            Spacer(Modifier.width(8.dp))
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
                                 color = BirdoGreen.copy(alpha = 0.15f),
@@ -607,8 +632,9 @@ private fun PlanCard(
                             }
                         }
                     }
-                    Text(plan.tagline, style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted)
+                    Text(stringResource(plan.tagline), style = MaterialTheme.typography.bodySmall, color = palette.onSurfaceMuted)
                 }
+                Spacer(Modifier.width(12.dp))
                 Text(
                     price,
                     style = MaterialTheme.typography.titleLarge,
@@ -632,7 +658,7 @@ private fun PlanCard(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        feature,
+                        feature.label(),
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.onSurfaceMuted,
                     )

@@ -2,6 +2,7 @@ package app.birdo.vpn.ui
 
 import app.birdo.vpn.data.auth.SsoLaunch
 import app.birdo.vpn.data.auth.ssoLaunchFor
+import app.birdo.vpn.testing.KotlinSource
 import app.birdo.vpn.utils.anonymousAccountNumber
 import app.birdo.vpn.utils.isAnonymousAccountEmail
 import org.junit.Assert.assertEquals
@@ -171,16 +172,67 @@ class OverhaulSourceGuardTest {
 
     // ── A2-024 ───────────────────────────────────────────────────────────
 
+    /** Every screen and every shared component, as (path under [main], source). */
+    private fun uiSources(): List<Pair<String, String>> =
+        listOf("ui/screen", "ui/components").flatMap { dir ->
+            File(repoRoot, "$main/$dir").listFiles { f -> f.extension == "kt" }.orEmpty()
+                .sortedBy { it.name }
+                .map { "$dir/${it.name}" to it.readText() }
+        }.also { assertTrue("found only ${it.size} UI files", it.size > 25) }
+
+    /** Shapes that hold no text and may keep a fixed height. */
+    private val fixedHeightAllowed = setOf(
+        // Shimmer placeholder bars, drawn while the real rows load.
+        "ui/components/BirdoSkeleton.kt",
+    )
+
     @Test
-    fun `sign-in and consent buttons grow with the font instead of clipping`() {
-        for (screen in listOf("LoginScreen.kt", "ConsentScreen.kt")) {
-            // Spacers may be fixed; controls may not.
-            val controls = source("$main/ui/screen/$screen").lines().filterNot { "Spacer" in it }
-            assertFalse(
-                "$screen has a fixed-height control again (A2-024)",
-                controls.any { Regex("""\.height\((40|48|52)\.dp\)""").containsMatchIn(it) },
-            )
+    fun `no screen or component fixes the height of a control, so labels grow with the font`() {
+        // Spacers may be fixed; anything that can hold a label may not.
+        val fixed = Regex("""\.height\(\s*[\d.]+\.dp\s*\)""")
+        val offenders = uiSources().filter { (path, _) -> path !in fixedHeightAllowed }.flatMap { (path, src) ->
+            src.lines().withIndex()
+                .filter { (_, line) -> "Spacer" !in line && fixed.containsMatchIn(line) }
+                .map { (i, line) -> "$path:${i + 1}: ${line.trim()}" }
         }
+        assertEquals("fixed-height control (A2-024): use heightIn(min = …)", emptyList<String>(), offenders)
+    }
+
+    /**
+     * Text in a fixed-size tile is drawn with the user's font scale and
+     * outgrows the tile at 200 %, where the tile's clip cuts it (a country
+     * flag drawn as an emoji was). Such text must be sized in dp (`.toSp()`),
+     * like the icon it stands in for. Files another 2026-09-30 lane owns this
+     * round are listed with the count they still have, so a new tile fails.
+     */
+    private val scaledTextInTilePending = mapOf(
+        // AND-VPN-B owns HomeScreen.kt: the two server-card flag tiles want
+        // the ServerListScreen fix, `fontSize = with(LocalDensity.current) { 22.dp.toSp() }`.
+        "ui/screen/HomeScreen.kt" to 2,
+    )
+
+    @Test
+    fun `text inside a fixed-size tile does not scale with the font`() {
+        val tile = Regex("""\b(Box|Surface|Row|Column)\s*\(""")
+        val fixedSize = Regex("""\.size\(\s*[\d.]+\.dp\s*\)""")
+        val text = Regex("""(?<![A-Za-z])Text\s*\(""")
+        val found = uiSources().associate { (path, src) ->
+            val kt = KotlinSource(src)
+            val lines = tile.findAll(kt.code).flatMap { call ->
+                val close = kt.closing(call.range.last)
+                val block = kt.trailingBlock(close)
+                if (block == null || !fixedSize.containsMatchIn(kt.code.substring(call.range.last, close))) {
+                    emptySequence()
+                } else {
+                    text.findAll(kt.code.substring(0, block.last), block.first)
+                        .filter { t -> "toSp()" !in kt.code.substring(t.range.last, kt.closing(t.range.last)) }
+                        .map { t -> kt.lineOf(t.range.first) }
+                }
+            }.toSet()
+            path to lines
+        }.filterValues { it.isNotEmpty() }
+        val unexpected = found.filter { (path, lines) -> lines.size != scaledTextInTilePending[path] }
+        assertEquals("sp-sized Text in a fixed-size tile (A2-024)", emptyMap<String, Set<Int>>(), unexpected)
     }
 
     // ── A2-003 ───────────────────────────────────────────────────────────
