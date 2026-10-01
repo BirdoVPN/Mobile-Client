@@ -103,6 +103,9 @@ class BirdoTileService : TileService() {
                 signedIn = tokenManager.isLoggedIn(),
                 vpnPermissionGranted = vpnManager.isVpnPermissionGranted(),
                 consentAccepted = appPreferences.hasAcceptedCurrentConsent,
+                // After a crash this tap is what started the process, and the
+                // process start already resumed the session (REVIEW-AND2-004).
+                joinsResume = vpnManager.claimTapForResume(),
             )
         ) {
             // Connected, connecting, reconnecting, or blocked: the tap is the
@@ -126,7 +129,7 @@ class BirdoTileService : TileService() {
             // one helper that reports the dead end.
             QuickToggle.Action.OPEN_APP -> openAppOrLog("Tile connect needs sign-in or VPN permission")
             QuickToggle.Action.CONNECT -> connectFromTile()
-            QuickToggle.Action.NONE -> Log.d(TAG, "Tile clicked while disconnecting, ignoring")
+            QuickToggle.Action.NONE -> Log.d(TAG, "Tile clicked while disconnecting or resuming, ignoring")
         }
     }
 
@@ -139,8 +142,11 @@ class BirdoTileService : TileService() {
      * comes from MultiHopPolicy (Mobile-Client#336) and the entitlement rule
      * from QuickToggle, shared with the widget so the two cannot drift.
      *
-     * The single-hop dial is VpnManager.connectPreferred: the user's last
-     * server, not "the lowest-load node anywhere" (A1-021).
+     * Both dials are VpnManager.connectPreferred, as on the widget: the user's
+     * last server, not "the lowest-load node anywhere" (A1-021), or the armed
+     * pair through the same MultiHopPolicy decision — and a tap that started
+     * this process joins the resume it began instead of minting a second peer
+     * (REVIEW-AND2-004).
      */
     private fun connectFromTile() {
         val decision = MultiHopPolicy.forNewConnection(
@@ -165,14 +171,8 @@ class BirdoTileService : TileService() {
                     // and the two jurisdiction-leak refusals report at their
                     // root as multihop_route_unconfirmed / _mismatch. This log
                     // line is the `adb logcat` convenience only (R8 strips it).
-                    when (val r = vpnManager.connectMultiHop(plan.entryNodeId, plan.exitNodeId)) {
-                        is ApiResult.Success ->
-                            if (!r.data.success) {
-                                Log.w(TAG, "Tile multi-hop refused: " + r.data.message)
-                            }
-                        is ApiResult.Error ->
-                            Log.w(TAG, "Tile multi-hop failed: " + r.message)
-                    }
+                    val r = vpnManager.connectPreferred(multiHopEntitled = true)
+                    if (r is ApiResult.Error) Log.w(TAG, "Tile multi-hop failed: " + r.message)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

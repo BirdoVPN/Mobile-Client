@@ -102,8 +102,20 @@ class BirdoApp : Application() {
      * when the kill switch or lockdown asks for it, then a headless connect,
      * "Reconnecting…" from the first frame.
      *
-     * When the start is refused (a widget broadcast is not an exemption from
-     * Android 12's background foreground-service ban), the dead service's
+     * Not only after a crash (REVIEW-AND2-005): the intent survives a reboot
+     * and a Force stop, and nothing here can tell those apart from a crash on
+     * every supported API level, so the first process start after either —
+     * a launcher's widget refresh at boot, the user reopening the app —
+     * restores the connection too. Kept, and documented in README.md, rather
+     * than gated: a wrong "this was not a crash" verdict would bring back the
+     * live P1 (a device left unprotected with its intent forgotten), and a
+     * connection the user left on and did not turn off coming back is the
+     * honest reading of that intent. A tap that started the process joins this
+     * resume (VpnManager.claimTapForResume).
+     *
+     * When Android refuses the start (a background start it does not exempt:
+     * a widget refresh is a broadcast, not a user interaction; whether a
+     * consented VPN app is exempt varies by version), the dead service's
      * notification is retracted and the user is told, instead of a stale
      * "Protected".
      */
@@ -294,38 +306,11 @@ class BirdoApp : Application() {
             options.beforeSendTransaction =
                 io.sentry.SentryOptions.BeforeSendTransactionCallback { _, _ -> null }
 
-            // SEC: Scrub sensitive values from error events before they are sent.
-            // Covers the event message, every exception value AND breadcrumb
-            // message/data — an uncaught crash (the normal path) has a null
-            // event.message but its exception string can embed exactly what a
-            // VPN client must not export: the endpoint host or IP
-            // ("failed to connect to /144.x.x.x (port 51820)",
-            // "UnknownHostException: de-fra-1.birdo.app" — no scheme, so a
-            // URL-only pattern misses both), account emails, and 44-char base64
-            // WireGuard key material. Pattern set mirrors the desktop's
-            // sanitize_error (redact.rs: IPv4 + email + bare hostname) plus the
-            // key/UUID/URL patterns already here, so the two clients agree.
-            // Order matters: URL before host/IP (so scheme'd hosts collapse to
-            // [URL]), email before hostname (so the domain half can't be
-            // half-matched), IPv6 before IPv4 (mapped forms).
-            val scrub: (String?) -> String? = { s ->
-                s
-                    ?.replace(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE), "[UUID]")
-                    ?.replace(Regex("[0-9a-fA-F]{64}"), "[KEY]")
-                    // WireGuard/ML-KEM keys are 32 bytes → 43 base64 chars + '='.
-                    ?.replace(Regex("[A-Za-z0-9+/]{43}="), "[KEY]")
-                    ?.replace(Regex("https?://[\\w.:-]+"), "[URL]")
-                    // IPv6: uncompressed (≥3 hex groups), then "::"-compressed.
-                    // The compressed pattern REQUIRES hex after the "::" so a
-                    // bare "::" in code symbols (Kotlin/C++ "Class::member")
-                    // never matches.
-                    ?.replace(Regex("\\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\\b"), "[IP]")
-                    ?.replace(Regex("(?:\\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*\\b"), "[IP]")
-                    ?.replace(Regex("\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b"), "[IP]")
-                    ?.replace(Regex("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"), "[EMAIL]")
-                    // Bare hostnames (≥3 labels, like our node names) — desktop HOST_RE.
-                    ?.replace(Regex("\\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+\\.[a-zA-Z]{2,}\\b"), "[HOST]")
-            }
+            // SEC: Scrub sensitive values from error events before they are sent:
+            // the event message, every exception value AND breadcrumb
+            // message/data. The patterns live in CrashReporting.scrub, where
+            // they are unit tested.
+            val scrub: (String?) -> String? = CrashReporting::scrub
             // Scrub breadcrumbs at CAPTURE time, not only on the way out.
             // beforeSend (below) sees only the crumbs attached to an event it
             // is given; a crumb recorded now can also be attached by a code

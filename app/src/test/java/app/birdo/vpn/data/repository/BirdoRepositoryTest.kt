@@ -5,6 +5,7 @@ import app.birdo.vpn.data.auth.ClientDeviceInfo
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.testing.StringsXml
 import io.mockk.*
@@ -438,7 +439,7 @@ class BirdoRepositoryTest {
 
     @Test
     fun `deleteAccount success resets the device identity`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(
             DeleteAccountResponse(success = true)
         )
 
@@ -455,19 +456,19 @@ class BirdoRepositoryTest {
     /** ACCOUNT-API-2026-10-01, item 85: the code rides the same body, and only when there is one. */
     @Test
     fun `deleteAccount sends the 2FA code with the password`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(DeleteAccountResponse(success = true))
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(DeleteAccountResponse(success = true))
 
         repository.deleteAccount("pass123", "123456")
         repository.deleteAccount("pass123")
 
-        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", "123456")) }
-        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", null)) }
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", "123456"), AroundTunnel) }
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", null), AroundTunnel) }
     }
 
     @Test
     fun `failed deleteAccount keeps the device identity`() = runTest {
         val err = "nope".toResponseBody("text/plain".toMediaType())
-        coEvery { api.deleteAccount(any()) } returns Response.error(400, err)
+        coEvery { api.deleteAccount(any(), any()) } returns Response.error(400, err)
 
         repository.deleteAccount("wrong-pass")
 
@@ -481,7 +482,7 @@ class BirdoRepositoryTest {
 
     @Test
     fun `deleteAccount success forgets the ML-KEM keypair`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(
             DeleteAccountResponse(success = true)
         )
 
@@ -704,18 +705,30 @@ class BirdoRepositoryTest {
         val result = repository.sendHeartbeat()
 
         assertEquals(BirdoRepository.CODE_NO_ACTIVE_KEY, (result as ApiResult.Error).code)
-        coVerify(exactly = 0) { api.heartbeat(any()) }
+        coVerify(exactly = 0) { api.heartbeat(any(), any()) }
     }
 
     @Test
     fun `a heartbeat names the session's own key when given one`() = runTest {
         coEvery { tokenManager.getLastKeyId() } returns "stored"
-        coEvery { api.heartbeat("session-key") } returns Response.success(HeartbeatResponse())
+        coEvery { api.heartbeat("session-key", any()) } returns Response.success(HeartbeatResponse())
 
         repository.sendHeartbeat("session-key")
 
-        coVerify { api.heartbeat("session-key") }
-        coVerify(exactly = 0) { api.heartbeat("stored") }
+        coVerify { api.heartbeat("session-key", null) }
+        coVerify(exactly = 0) { api.heartbeat("stored", any()) }
+    }
+
+    /** REVIEW-AND2-001: the dead-tunnel probe carries the tag that sends it around the tunnel. */
+    @Test
+    fun `only the dead-tunnel probe is tagged to go around the tunnel`() = runTest {
+        coEvery { api.heartbeat(any(), any()) } returns Response.success(HeartbeatResponse())
+
+        repository.sendHeartbeat("session-key", aroundTunnel = true)
+        repository.sendHeartbeat("session-key")
+
+        coVerify(exactly = 1) { api.heartbeat("session-key", AroundTunnel) }
+        coVerify(exactly = 1) { api.heartbeat("session-key", null) }
     }
 
     // ── Anonymous Login ─────────────────────────────────────────

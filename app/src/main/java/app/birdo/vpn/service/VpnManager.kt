@@ -50,6 +50,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
@@ -222,6 +223,22 @@ class VpnManager @Inject constructor(
      */
     @Volatile private var sessionKeyId: String? = null
 
+    /**
+     * The key of an ESTABLISHED session the service's dead-tunnel check just
+     * declared dead, until the first re-dial has asked the server about it,
+     * around the tunnel ([probeDeadSession], REVIEW-AND2-001). Confined to
+     * [scope]'s thread like [session].
+     */
+    private var deadSessionKey: String? = null
+
+    /**
+     * REVIEW-AND2-004: the process-start resume's dial ([generation]) and when
+     * it began, offered to the one tap that may have started the process
+     * ([claimTapForResume]). Cleared by every user or system dial.
+     */
+    private data class ResumeTap(val generation: Long, val startedAtMs: Long)
+    private val resumeTap = AtomicReference<ResumeTap?>(null)
+
     /** Clock and dispatcher seams, so the heartbeat and backoff logic run under a test scheduler. */
     internal var elapsedRealtime: () -> Long = { SystemClock.elapsedRealtime() }
     internal var jitter: () -> Double = { Random.nextDouble(-1.0, 1.0) }
@@ -349,6 +366,12 @@ class VpnManager @Inject constructor(
         private const val LIVE_REBUILD_TIMEOUT_MS = LiveRebuildPolicy.PROBE_WINDOW_MS + 30_000L + 5_000L
         /** Bound on the server-side slot release at sign-out; local sign-out proceeds regardless. */
         private const val SIGN_OUT_RELEASE_TIMEOUT_MS = 10_000L
+        /**
+         * Bound on the dead-tunnel probe ([probeDeadSession]). It delays a
+         * re-dial the device is waiting for, behind the block, so it is short;
+         * no answer in time is the same as a transport failure: re-dial.
+         */
+        internal const val DEAD_SESSION_PROBE_TIMEOUT_MS = 5_000L
 
         /**
          * Minimum gap between automatic stealth fallbacks.
@@ -603,12 +626,19 @@ class VpnManager @Inject constructor(
      * all use this, so none of them substitutes "the lowest-load node
      * anywhere" for the server the user actually chose.
      *
+     * A tap that started this process while the process-start resume is
+     * still on its way JOINS that resume instead of dialling again
+     * (REVIEW-AND2-004): the surface decided on the state it read before the
+     * resume began, and a second dial would mint a second peer and supersede
+     * the first only after its /connect had gone out.
+     *
      * @param multiHopEntitled what the caller knows about the plan: false
      *   dials the single hop the app is drawing for a lapsed plan (see
      *   BirdoTileService); null reads the persisted last-known plan.
      */
-    suspend fun connectPreferred(multiHopEntitled: Boolean? = null): ApiResult<Any> = runDial {
-        preferredDial(DialOrigin.USER, multiHopEntitled)
+    suspend fun connectPreferred(multiHopEntitled: Boolean? = null): ApiResult<Any> {
+        if (claimTapForResume()) return ApiResult.Success(Unit)
+        return runDial { preferredDial(DialOrigin.USER, multiHopEntitled) }
     }
 
     /**
@@ -626,13 +656,42 @@ class VpnManager @Inject constructor(
      * but the session is HEADLESS-owned, so retryable failures heal
      * themselves — the phone may have booted with no network yet.
      *
+     * @param kind which system start this is. A [SystemStartKind.PROCESS_RESTART]
+     *   may have been caused by the very tap a tile or widget is about to
+     *   deliver, so its dial is offered to that tap ([claimTapForResume]).
      * @return false when a session is already up or in flight, so a platform
      *   start and our own MY_PACKAGE_REPLACED start cannot dial twice.
      */
-    fun connectHeadless(): Boolean {
+    fun connectHeadless(kind: SystemStartKind): Boolean {
         if (sessionInProgress()) return false
-        scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = null) } }
+        val resume = kind == SystemStartKind.PROCESS_RESTART
+        scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = null, resume = resume) } }
         return true
+    }
+
+    /**
+     * REVIEW-AND2-004: whether a tile or widget tap is the one that started
+     * this process, and so belongs to the resume that start began.
+     *
+     * After a crash, the tap on the Quick Settings tile or the widget is what
+     * starts the new process; BirdoApp's process-start resume then dials
+     * before the tap is decided. Decided on the resume's Connecting, the tile's
+     * tap meant DISCONNECT and ended the session it had just brought back; the
+     * widget, deciding on the Disconnected it read first, dialled a second time.
+     * The tap meant "connect", which is already happening, so it does nothing.
+     *
+     * At most ONE tap is claimed per resume, and only while that resume's own
+     * dial is still connecting and [QuickToggle.RESUME_TAP_WINDOW_MS] old: a
+     * later tap is the user's own decision and acts on the state as shown.
+     * Thread-safe: the tile decides on the main thread, the widget does not.
+     */
+    fun claimTapForResume(): Boolean {
+        val resume = resumeTap.getAndSet(null) ?: return false
+        return QuickToggle.joinsResume(
+            resumeAgeMs = elapsedRealtime() - resume.startedAtMs,
+            sameDial = resume.generation == intentGeneration,
+            state = _state.value,
+        )
     }
 
     /**
@@ -688,6 +747,8 @@ class VpnManager @Inject constructor(
                 intentGeneration++
                 cancelRecovery()
                 avoidServerId = null
+                deadSessionKey = null
+                resumeTap.set(null)
                 session = if (origin == DialOrigin.USER) {
                     ReconnectPolicy.Session.userDial()
                 } else {
@@ -732,6 +793,22 @@ class VpnManager @Inject constructor(
      */
     private fun apiErrorCopy(code: Int, message: String): String =
         if (code == 0 && captivePortal) SessionCopy.CAPTIVE_PORTAL else SessionCopy.forApiError(code, message)
+
+    /**
+     * A /connect the server refused inside a 2xx. The Free allowance's end is
+     * a plan decision and says so (REVIEW-AND2-001): QUOTA_EXCEEDED releases
+     * the block and offers View plans, where a generic refusal of a session
+     * that was up kept the device blocked behind "can't connect". It is also
+     * the second line of defence behind the dead-tunnel probe, for a quota end
+     * whose heartbeat reply was lost with the peer.
+     */
+    private fun refusal(serverMessage: String?, quotaExceeded: Boolean): Pair<String, FailureKind> =
+        if (quotaExceeded) {
+            (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to
+                FailureKind.QUOTA_EXCEEDED
+        } else {
+            (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG) to FailureKind.REFUSED
+        }
 
     /**
      * Server switch / reconnect: fully tear down the existing tunnel +
@@ -864,8 +941,8 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val message = config.message ?: SessionCopy.BAD_SERVER_CONFIG
-                    if (!superseded(gen)) publishError(message, FailureKind.REFUSED)
+                    val (message, kind) = refusal(config.message, config.quotaExceeded)
+                    if (!superseded(gen)) publishError(message, kind)
                     return ApiResult.Error(message)
                 }
 
@@ -975,8 +1052,8 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val message = config.message ?: SessionCopy.BAD_SERVER_CONFIG
-                    publishError(message, FailureKind.REFUSED)
+                    val (message, kind) = refusal(config.message, config.quotaExceeded)
+                    publishError(message, kind)
                     return ApiResult.Error(message)
                 }
 
@@ -1173,9 +1250,14 @@ class VpnManager @Inject constructor(
         return dialSingle(bestServer.id, null, gen, prior)
     }
 
-    private suspend fun preferredDial(origin: DialOrigin, multiHopEntitled: Boolean?): ApiResult<Any> {
+    private suspend fun preferredDial(
+        origin: DialOrigin,
+        multiHopEntitled: Boolean?,
+        resume: Boolean = false,
+    ): ApiResult<Any> {
         val prior = _state.value
         val gen = beginDial(origin, prior)
+        if (resume) resumeTap.set(ResumeTap(gen, elapsedRealtime()))
         // ONE entitlement rule for every dial (REVIEW-AND-007): what the caller
         // knows, else the persisted last-known plan. Headless and quick dials
         // used to read the raw pref, which a lapsed plan never clears, so an
@@ -1216,8 +1298,33 @@ class VpnManager @Inject constructor(
 
     /** Re-dial the session the supervisor is recovering, without bumping the generation. */
     private suspend fun redial() {
+        val gen = beginDial(DialOrigin.AUTO_RECONNECT, _state.value)
+        // The first re-dial after an established session died asks the
+        // server why, around the tunnel, before it mints anything: a key the
+        // server ended on purpose must not be dialled back (REVIEW-AND2-001).
+        val deadKey = deadSessionKey?.takeIf { it == sessionKeyId }
+        deadSessionKey = null
+        if (deadKey != null) {
+            val (verdict, message) = probeDeadSession(deadKey)
+            // A Disconnect or a newer dial landed while the probe was out.
+            if (superseded(gen) || !session.wantUp) return
+            val redialHere = when (verdict) {
+                HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.Verdict.REAPED -> true
+                // A single hop moves to another server below; a Multi-Hop route
+                // cannot be re-chosen for the user, so onHeartbeatVerdict stops it.
+                HeartbeatPolicy.Verdict.SERVER_GONE -> activeMultiHop == null
+                // Evicted, revoked, the Free allowance's end: stop, under the
+                // owner rule for the block, and never re-dial.
+                HeartbeatPolicy.Verdict.EVICTED, HeartbeatPolicy.Verdict.REVOKED,
+                HeartbeatPolicy.Verdict.QUOTA_EXCEEDED -> false
+            }
+            if (!redialHere) {
+                onHeartbeatVerdict(verdict, message)
+                return
+            }
+            if (verdict == HeartbeatPolicy.Verdict.SERVER_GONE) avoidServerId = prefs.lastServerId
+        }
         val prior = _state.value
-        val gen = beginDial(DialOrigin.AUTO_RECONNECT, prior)
         val route = activeMultiHop
         val last = prefs.lastServerId
         when {
@@ -1362,7 +1469,9 @@ class VpnManager @Inject constructor(
         val event = when {
             superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
             pqRefusal != null -> pqRefusal
-            config == null -> LiveRebuildPolicy.Event.REQUEST_FAILED
+            config == null -> (result as? ApiResult.Error)
+                ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
+                ?: LiveRebuildPolicy.Event.REQUEST_FAILED
             !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
             !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
                 LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
@@ -1416,7 +1525,9 @@ class VpnManager @Inject constructor(
         val event = when {
             superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
             pqRefusal != null -> pqRefusal
-            config == null -> LiveRebuildPolicy.Event.REQUEST_FAILED
+            config == null -> (result as? ApiResult.Error)
+                ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
+                ?: LiveRebuildPolicy.Event.REQUEST_FAILED
             !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
             !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
                 LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
@@ -1524,7 +1635,11 @@ class VpnManager @Inject constructor(
         return directive
     }
 
-    /** What the user is told when the change did not happen but the session did not move. */
+    /**
+     * What the user is told when the change did not happen but the session did
+     * not move: a server switch, or a settings reapply ([reapplyInProgress]),
+     * which is no switch (REVIEW-AND2-012).
+     */
     private fun keptSessionCopy(
         event: LiveRebuildPolicy.Event,
         serverMessage: String?,
@@ -1535,7 +1650,7 @@ class VpnManager @Inject constructor(
             LiveRebuildPolicy.Event.REQUEST_FAILED -> apiError?.let { apiErrorCopy(it.code, it.message) }
             else -> null
         }
-        return if (why != null) "$why ${SessionCopy.STILL_ON_PREVIOUS}" else SessionCopy.SWITCH_KEPT_PREVIOUS
+        return SessionCopy.keptSession(why, settingsChange = reapplyInProgress)
     }
 
     /**
@@ -1760,6 +1875,13 @@ class VpnManager @Inject constructor(
                 stopHeartbeat()
                 if (vpnState === verdictError) return
                 connectWatchdogJob?.cancel()
+                // The service's dead-tunnel check (or a dead Xray) ended a
+                // session that was up: its key goes to the first re-dial's
+                // probe. A drop the heartbeat already explained cleared the
+                // key before publishing, so it is never asked about twice.
+                if (vpnState.kind == FailureKind.DIED_AFTER_HANDSHAKE && session.established) {
+                    deadSessionKey = sessionKeyId
+                }
                 onFailure(vpnState)
             }
             is VpnState.Connected -> {
@@ -1839,7 +1961,10 @@ class VpnManager @Inject constructor(
                 if (kind != FailureKind.REVOKED && kind != FailureKind.SIGN_IN_REQUIRED) {
                     releasePeer(sessionKeyId)
                 }
-                if (attemptOwnsBlock) releaseBlock()
+                // The Free allowance's end is the server ending the session on
+                // purpose, like a revoke: the owner rule releases the block
+                // (FailureKind.QUOTA_EXCEEDED), here as on the heartbeat path.
+                if (attemptOwnsBlock || kind == FailureKind.QUOTA_EXCEEDED) releaseBlock()
             }
 
             // The budget is spent. Say so in the iOS words, release the
@@ -2398,6 +2523,32 @@ class VpnManager @Inject constructor(
                 sessionDeadTeardown(SessionCopy.SERVER_OFFLINE, FailureKind.DIED_AFTER_HANDSHAKE)
             }
         }
+    }
+
+    /**
+     * REVIEW-AND2-001: ONE heartbeat for the key of a session the dead-tunnel
+     * check declared dead, around the tunnel
+     * ([app.birdo.vpn.data.network.AroundTunnel]: a protect()ed
+     * socket on the physical network, resolved over DoH), bounded by
+     * [DEAD_SESSION_PROBE_TIMEOUT_MS].
+     *
+     * Off-Connected, ApiRoutePolicy would choose the bypass client anyway; the
+     * tag makes it this call's own property, because through the dead peer it
+     * can never be answered. It discloses nothing new: the re-dial it precedes
+     * goes around the tunnel from the same address.
+     *
+     * @return [HeartbeatPolicy.forDeadTunnel]'s verdict, and the server's message.
+     */
+    private suspend fun probeDeadSession(key: String): Pair<HeartbeatPolicy.Verdict, String?> {
+        val sinceLastOk = elapsedRealtime() - lastHeartbeatOkAt
+        val result = withTimeoutOrNull(DEAD_SESSION_PROBE_TIMEOUT_MS) {
+            repository.sendHeartbeat(key, aroundTunnel = true)
+        }
+        val reply = (result as? ApiResult.Success)?.data
+        val verdict = HeartbeatPolicy.forDeadTunnel(reply, sinceLastOk)
+        // No identifiers in this line (node-agent privacy convention).
+        android.util.Log.i("VpnManager", "Dead-tunnel probe: ${if (reply == null) "no answer" else reply.reason} -> $verdict")
+        return verdict to reply?.message
     }
 
     /**

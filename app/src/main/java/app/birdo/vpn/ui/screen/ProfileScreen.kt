@@ -28,6 +28,8 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CardGiftcard
 import androidx.compose.material.icons.outlined.CreditCard
@@ -40,12 +42,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +58,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -89,6 +95,7 @@ import app.birdo.vpn.ui.theme.BirdoSurface
 import app.birdo.vpn.ui.theme.BirdoWhite60
 import app.birdo.vpn.ui.theme.BirdoWhite80
 import app.birdo.vpn.ui.components.SignOutConfirmDialog
+import app.birdo.vpn.ui.viewmodel.DeleteAccountField
 import app.birdo.vpn.ui.viewmodel.VoucherResult
 import app.birdo.vpn.utils.accountNumberOf
 import app.birdo.vpn.utils.copySensitiveToClipboard
@@ -96,6 +103,7 @@ import app.birdo.vpn.utils.filterTwoFactorInput
 import app.birdo.vpn.utils.formatAnonymousId
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.utils.isAnonymousUser
+import app.birdo.vpn.utils.maskAnonymousId
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -121,6 +129,8 @@ fun ProfileScreen(
     onDeleteAccount: (String, String?) -> Unit = { _, _ -> },
     isDeletingAccount: Boolean = false,
     deleteAccountError: String? = null,
+    /** The field [deleteAccountError] is about, or null for neither (REVIEW-AND2-008). */
+    deleteErrorField: DeleteAccountField? = null,
     /** The server wants the account's 2FA code before it deletes it (item 85). */
     deleteRequiresTwoFactor: Boolean = false,
     onClearDeleteError: () -> Unit = {},
@@ -233,6 +243,7 @@ fun ProfileScreen(
             preflight = deletionPreflight,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
+            errorField = deleteErrorField,
             onConfirm = onDeleteAccount,
             onDismiss = {
                 showDeleteDialog = false
@@ -282,6 +293,10 @@ private fun ProfileIdentityCard(
     val context = LocalContext.current
     val clipLabel = stringResource(R.string.account_number_clip_label)
     val copiedMessage = stringResource(R.string.anon_created_copied)
+    // Masked until asked, as on Windows and in the account API contract
+    // (REVIEW-AND2-013): FLAG_SECURE keeps the number out of screenshots, not
+    // out of sight of whoever is beside the user. Copy still takes all of it.
+    var accountNumberShown by rememberSaveable { mutableStateOf(false) }
 
     BirdoCard(
         modifier = Modifier.fillMaxWidth(),
@@ -347,13 +362,27 @@ private fun ProfileIdentityCard(
                             // Two lines, not an ellipsis: it is a credential the
                             // user copies out by hand, and at large font scales one
                             // line cut it short (A2-024). The groups break cleanly.
-                            text = formatAnonymousId(accountNumber),
+                            text = if (accountNumberShown) {
+                                formatAnonymousId(accountNumber)
+                            } else {
+                                maskAnonymousId(accountNumber)
+                            },
                             color = palette.onBackground,
                             fontSize = 14.sp,
                             fontFamily = FontFamily.Monospace,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 1.dp),
+                        )
+                    }
+                    IconButton(onClick = { accountNumberShown = !accountNumberShown }) {
+                        Icon(
+                            imageVector = if (accountNumberShown) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = stringResource(
+                                if (accountNumberShown) R.string.cd_hide_account_number else R.string.cd_show_account_number,
+                            ),
+                            tint = palette.onSurfaceMuted,
+                            modifier = Modifier.size(18.dp),
                         )
                     }
                     Icon(
@@ -717,6 +746,7 @@ private fun DeleteAccountDialog(
     preflight: DeletionPreflightResponse?,
     isDeletingAccount: Boolean,
     error: String?,
+    errorField: DeleteAccountField?,
     onConfirm: (password: String, twoFactorCode: String?) -> Unit,
     onDismiss: () -> Unit,
     onManageStoreSubscription: () -> Unit,
@@ -724,6 +754,7 @@ private fun DeleteAccountDialog(
     var password by remember { mutableStateOf("") }
     // Not saved across process death either: a one-time code, like the password.
     var twoFactorCode by remember { mutableStateOf("") }
+    val codeFocus = remember { FocusRequester() }
 
     AlertDialog(
         onDismissRequest = { if (!isDeletingAccount) onDismiss() },
@@ -806,7 +837,9 @@ private fun DeleteAccountDialog(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         singleLine = true,
                         enabled = !isDeletingAccount,
-                        isError = error != null && !requiresTwoFactor,
+                        // Only the field the error is about (REVIEW-AND2-008):
+                        // after the 2FA prompt a wrong password is still this one's.
+                        isError = errorField == DeleteAccountField.PASSWORD,
                         // A password manager can fill the confirmation (A2-017).
                         modifier = Modifier
                             .fillMaxWidth()
@@ -819,12 +852,20 @@ private fun DeleteAccountDialog(
                     )
                 }
                 if (requiresTwoFactor) {
+                    // REVIEW-AND2-009: the field is appended below the store
+                    // warning, out of sight on a small phone with the keyboard
+                    // up, with Delete greyed out and no reason on screen.
+                    // Focused as it appears (in the same composition as the
+                    // field, so the requester is attached), it scrolls into
+                    // view and raises the keyboard; the prompt is announced.
+                    LaunchedEffect(Unit) { codeFocus.requestFocus() }
                     // The login 2FA field's rules: a TOTP or a backup code.
                     Spacer(Modifier.height(16.dp))
                     Text(
                         stringResource(R.string.delete_dialog_2fa_required),
                         style = MaterialTheme.typography.bodySmall,
                         color = BirdoWhite80,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -840,8 +881,10 @@ private fun DeleteAccountDialog(
                         ),
                         singleLine = true,
                         enabled = !isDeletingAccount,
-                        isError = error != null,
-                        modifier = Modifier.fillMaxWidth(),
+                        isError = errorField == DeleteAccountField.CODE,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(codeFocus),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BirdoRed,
                             cursorColor = BirdoWhite80,
@@ -851,7 +894,12 @@ private fun DeleteAccountDialog(
                 }
                 if (error != null) {
                     Spacer(Modifier.height(4.dp))
-                    Text(error, style = MaterialTheme.typography.bodySmall, color = BirdoRed)
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoRed,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
                 }
             }
         },

@@ -72,7 +72,7 @@ class BirdoVpnServiceLifecycleTest {
         notifications = mockk(relaxed = true)
         manager = mockk(relaxed = true)
         tokens = mockk(relaxed = true)
-        every { manager.connectHeadless() } returns true
+        every { manager.connectHeadless(any()) } returns true
         every { manager.state } returns kotlinx.coroutines.flow.MutableStateFlow(VpnState.Disconnected)
         every { manager.switching } returns kotlinx.coroutines.flow.MutableStateFlow(false)
         every { manager.sessionExpired } returns kotlinx.coroutines.flow.MutableStateFlow(false)
@@ -164,7 +164,7 @@ class BirdoVpnServiceLifecycleTest {
 
         // Not sticky any more: see the next section.
         assertEquals(Service.START_NOT_STICKY, result)
-        verify(exactly = 1) { manager.connectHeadless() }
+        verify(exactly = 1) { manager.connectHeadless(SystemStartKind.ALWAYS_ON) }
         waitFor("the block") { BirdoVpnService.killSwitchActive }
         // The foreground notification of a start that connects says Connecting
         // because it IS connecting — never for a start that connects nothing.
@@ -179,7 +179,7 @@ class BirdoVpnServiceLifecycleTest {
 
         service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
 
-        verify(exactly = 0) { manager.connectHeadless() }
+        verify(exactly = 0) { manager.connectHeadless(any()) }
         verify(exactly = 1) { manager.reportHeadlessBlocked(FailureKind.SIGN_IN_REQUIRED) }
         waitFor("the block") { BirdoVpnService.killSwitchActive }
     }
@@ -192,7 +192,7 @@ class BirdoVpnServiceLifecycleTest {
         val result = service.onStartCommand(null, 0, 1)
 
         assertEquals(Service.START_NOT_STICKY, result)
-        verify(exactly = 0) { manager.connectHeadless() }
+        verify(exactly = 0) { manager.connectHeadless(any()) }
         verify(exactly = 0) { anyConstructed<VpnService.Builder>().establish() }
     }
 
@@ -205,7 +205,7 @@ class BirdoVpnServiceLifecycleTest {
 
         service.onStartCommand(intentWith(BirdoVpnService.ACTION_HEADLESS_CONNECT), 0, 1)
 
-        verify(exactly = 1) { manager.connectHeadless() }
+        verify(exactly = 1) { manager.connectHeadless(SystemStartKind.PACKAGE_REPLACED) }
     }
 
     // ── Process death (live, API 35, 2026-09-30) ────────────────────────
@@ -220,7 +220,7 @@ class BirdoVpnServiceLifecycleTest {
         val result = service.onStartCommand(intentWith(BirdoVpnService.ACTION_RESUME_SESSION), 0, 1)
 
         assertEquals(Service.START_NOT_STICKY, result)
-        verify(exactly = 1) { manager.connectHeadless() }
+        verify(exactly = 1) { manager.connectHeadless(SystemStartKind.PROCESS_RESTART) }
         waitFor("the block") { BirdoVpnService.killSwitchActive }
         // The dead process's "Protected" is replaced from the first frame.
         verify {
@@ -259,7 +259,7 @@ class BirdoVpnServiceLifecycleTest {
 
         // REVIEW-AND-022: no second block arm to supersede the first dial.
         assertEquals(before, generation.get())
-        verify(exactly = 0) { manager.connectHeadless() }
+        verify(exactly = 0) { manager.connectHeadless(any()) }
         verify(exactly = 0) { anyConstructed<VpnService.Builder>().establish() }
     }
 

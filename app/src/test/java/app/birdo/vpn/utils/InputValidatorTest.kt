@@ -210,41 +210,6 @@ class InputValidatorTest {
         assertTrue(InputValidator.isValidIpv4(" 10.0.0.1 "))
     }
 
-    // ── Port ─────────────────────────────────────────────────────
-
-    @Test
-    fun `valid numeric ports`() {
-        assertTrue(InputValidator.isValidPort(1))
-        assertTrue(InputValidator.isValidPort(80))
-        assertTrue(InputValidator.isValidPort(443))
-        assertTrue(InputValidator.isValidPort(51820)) // WireGuard default
-        assertTrue(InputValidator.isValidPort(65535))
-    }
-
-    @Test
-    fun `invalid numeric ports`() {
-        assertFalse(InputValidator.isValidPort(0))
-        assertFalse(InputValidator.isValidPort(-1))
-        assertFalse(InputValidator.isValidPort(65536))
-        assertFalse(InputValidator.isValidPort(100000))
-    }
-
-    @Test
-    fun `valid string ports`() {
-        assertTrue(InputValidator.isValidPort("auto"))
-        assertTrue(InputValidator.isValidPort("51820"))
-        assertTrue(InputValidator.isValidPort("443"))
-    }
-
-    @Test
-    fun `invalid string ports`() {
-        assertFalse(InputValidator.isValidPort(""))
-        assertFalse(InputValidator.isValidPort("abc"))
-        assertFalse(InputValidator.isValidPort("-1"))
-        assertFalse(InputValidator.isValidPort("0"))
-        assertFalse(InputValidator.isValidPort("65536"))
-    }
-
     // ── MTU ──────────────────────────────────────────────────────
 
     @Test

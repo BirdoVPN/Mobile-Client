@@ -192,26 +192,33 @@ class OverhaulSourceGuardTest {
     fun `no screen or component fixes the height of a control, so labels grow with the font`() {
         // Spacers may be fixed; anything that can hold a label may not.
         val fixed = Regex("""\.height\(\s*[\d.]+\.dp\s*\)""")
-        val offenders = uiSources().filter { (path, _) -> path !in fixedHeightAllowed }.flatMap { (path, src) ->
-            src.lines().withIndex()
+        val hits = uiSources().associate { (path, src) ->
+            path to src.lines().withIndex()
                 .filter { (_, line) -> "Spacer" !in line && fixed.containsMatchIn(line) }
                 .map { (i, line) -> "$path:${i + 1}: ${line.trim()}" }
         }
+        val offenders = hits.filterKeys { it !in fixedHeightAllowed }.values.flatten()
         assertEquals("fixed-height control (A2-024): use heightIn(min = …)", emptyList<String>(), offenders)
+        // An exemption that no longer matches anything is a hole for the next
+        // fixed height in that file (REVIEW-AND2-006).
+        val stale = fixedHeightAllowed.filter { hits[it].isNullOrEmpty() }
+        assertEquals("stale fixed-height exemption", emptyList<String>(), stale)
     }
 
     /**
      * Text in a fixed-size tile is drawn with the user's font scale and
      * outgrows the tile at 200 %, where the tile's clip cuts it (a country
      * flag drawn as an emoji was). Such text must be sized in dp (`.toSp()`),
-     * like the icon it stands in for. Files another 2026-09-30 lane owns this
-     * round are listed with the count they still have, so a new tile fails.
+     * like the icon it stands in for. A file another lane still owns may be
+     * listed here with the exact count it has, so a new tile still fails; an
+     * entry whose count no longer matches fails too.
+     *
+     * Empty since the merge: HomeScreen's two flag tiles are dp-sized, and its
+     * stale entry of 2 was never checked (files with no hits were dropped
+     * before the comparison), so two new sp-sized texts there would have
+     * passed (REVIEW-AND2-006).
      */
-    private val scaledTextInTilePending = mapOf(
-        // AND-VPN-B owns HomeScreen.kt: the two server-card flag tiles want
-        // the ServerListScreen fix, `fontSize = with(LocalDensity.current) { 22.dp.toSp() }`.
-        "ui/screen/HomeScreen.kt" to 2,
-    )
+    private val scaledTextInTilePending = emptyMap<String, Int>()
 
     @Test
     fun `text inside a fixed-size tile does not scale with the font`() {
@@ -232,18 +239,52 @@ class OverhaulSourceGuardTest {
                 }
             }.toSet()
             path to lines
-        }.filterValues { it.isNotEmpty() }
-        val unexpected = found.filter { (path, lines) -> lines.size != scaledTextInTilePending[path] }
+        }
+        // Every file with hits, and every listed file whether or not it still
+        // has any: a listed count that no longer matches is stale.
+        val unexpected = (found.filterValues { it.isNotEmpty() }.keys + scaledTextInTilePending.keys)
+            .associateWith { found[it].orEmpty() }
+            .filter { (path, lines) -> lines.size != (scaledTextInTilePending[path] ?: 0) }
         assertEquals("sp-sized Text in a fixed-size tile (A2-024)", emptyMap<String, Set<Int>>(), unexpected)
     }
 
     @Test
     fun `the account number wraps at large font scales instead of being cut short`() {
         val number = source("$main/ui/screen/ProfileScreen.kt")
-            .substringAfter("text = formatAnonymousId(accountNumber),")
+            .substringAfter("text = if (accountNumberShown) {", "")
             .substringBefore("modifier =")
-        assertTrue("the Profile account number is no longer shown grouped", number.contains("maxLines"))
+        assertTrue("the Profile account number is no longer shown grouped", number.contains("formatAnonymousId(accountNumber)"))
+        assertTrue(number.contains("maxLines"))
         assertFalse("a credential the user copies by hand is ellipsized to one line", number.contains("maxLines = 1"))
+    }
+
+    /** REVIEW-AND2-013: masked until asked, as on Windows and in the account API contract. */
+    @Test
+    fun `the account number is masked until the user asks to see it`() {
+        val profile = source("$main/ui/screen/ProfileScreen.kt")
+        assertTrue(profile.contains("var accountNumberShown by rememberSaveable { mutableStateOf(false) }"))
+        val number = profile.substringAfter("text = if (accountNumberShown) {", "").substringBefore("modifier =")
+        assertTrue("the hidden state no longer masks", number.contains("maskAnonymousId(accountNumber)"))
+        assertTrue(profile.contains("R.string.cd_show_account_number"))
+    }
+
+    /** REVIEW-AND2-008/-009: the deletion dialog's errors and its 2FA prompt. */
+    @Test
+    fun `the deletion dialog outlines the field an error is about, and focuses and announces the 2FA prompt`() {
+        val dialog = source("$main/ui/screen/ProfileScreen.kt")
+            .substringAfter("private fun DeleteAccountDialog(", "")
+            .substringBefore("private fun VoucherRedeemDialog(")
+        assertTrue(dialog.contains("isError = errorField == DeleteAccountField.PASSWORD"))
+        assertTrue(dialog.contains("isError = errorField == DeleteAccountField.CODE"))
+        assertFalse("an error is drawn on a field it is not about", dialog.contains("isError = error != null"))
+        val prompt = dialog.substringAfter("if (requiresTwoFactor) {", "")
+        assertTrue("the code field is no longer focused as it appears", prompt.contains("codeFocus.requestFocus()"))
+        assertTrue(prompt.contains(".focusRequester(codeFocus)"))
+        assertTrue(
+            "the 2FA prompt is no longer announced",
+            prompt.substringAfter("R.string.delete_dialog_2fa_required").substringBefore("OutlinedTextField")
+                .contains("liveRegion = LiveRegionMode.Polite"),
+        )
     }
 
     // ── D6 (owner decision, 2026-10-01) ──────────────────────────────────
@@ -273,6 +314,31 @@ class OverhaulSourceGuardTest {
             "the Play listing sells Custom DNS as a Sovereign feature again",
             Regex("""Sovereign:[^\n]*custom DNS""", RegexOption.IGNORE_CASE).containsMatchIn(listing),
         )
+    }
+
+    // ── LIVE-PORT53 ──────────────────────────────────────────────────────
+
+    /**
+     * The relays accept WireGuard on 51820 only (fleet check 2026-10-01), so
+     * the port is no setting: no preset or custom entry on the screen, and a
+     * saved one is retired after the settings are verified (the rewrite
+     * re-signs them).
+     */
+    @Test
+    fun `the WireGuard port is not a choice, and a saved one is retired after verification`() {
+        val screen = source("$main/ui/screen/VpnSettingsScreen.kt")
+        assertFalse("a port preset is offered again", screen.contains("PORT_PRESETS"))
+        assertFalse(screen.contains("onWireGuardPortChange"))
+        assertFalse("the 53 preset is back", screen.contains("\"53\""))
+        assertTrue(screen.contains("R.string.vpn_settings_port_fixed"))
+
+        val integrity = source("$main/MainActivity.kt").replace("\r\n", "\n")
+            .substringAfter("private fun verifySettingsIntegrity() {", "")
+            .substringBefore("\n    }\n")
+        val verified = integrity.indexOf("SettingsHmac.verify(prefs)")
+        val retired = integrity.indexOf("appPreferences.retireWireGuardPortChoice()")
+        assertTrue("the saved port is no longer retired at start-up", retired > 0)
+        assertTrue("the port is retired (and the settings re-signed) before they are verified", retired > verified && verified > 0)
     }
 
     // ── A2-003 ───────────────────────────────────────────────────────────

@@ -70,19 +70,41 @@ Compiled to:
   without VPN" in Android's VPN settings (supported, see below).
 - **Split Tunneling** -- Per-app VPN routing (Android)
 - **Auto-reconnect** -- the tunnel re-establishes itself after network changes
-  and drops. Android notices a dead tunnel in seconds, not minutes (wg-go's
-  handshake and traffic counters: within about 20–30 s, 10–20 s once no
-  network is left under it), shows "Reconnecting…", and waits for the network without
-  spending retries while there is none; a captive portal is said as one.
+  and drops. Android notices a dead tunnel from wg-go's handshake and traffic
+  counters: within about 20–30 s while traffic is flowing, about a minute and
+  a half on an idle phone (its once-a-minute heartbeat is then the only
+  traffic to go unanswered), and 10–20 s once no network is left under it.
+  It shows "Reconnecting…", and waits for the network without spending
+  retries while there is none; a captive portal is said as one. Before the
+  first re-dial it asks the server once, around the tunnel, why the tunnel
+  died: a connection the server ended on purpose (another device took the
+  slot, a Disconnect from another device, the Free plan's data used up)
+  stays down with the reason instead of being dialled back.
 - **Always-on VPN (Android)** -- supported: `SUPPORTS_ALWAYS_ON=true`, pinned
   by `ApiLevel36ContractTest`. When Android starts the service at boot, on
   unlock or when the setting changes, the service puts its block up first and
   then reconnects on its own to the last server (`SystemStartPolicy`). An app
   update restores the session (`PackageReplacedReceiver`). After a crash the
-  service is NOT restarted by Android (`START_NOT_STICKY`, live on API 35):
-  the session resumes, block first, the next time the app's process starts
-  (opening the app, the widget or the tile). With "Block connections without
-  VPN" on, Android keeps blocking through that gap.
+  service is NOT restarted by Android (`START_NOT_STICKY`, live on API 35).
+  Instead, a connection you left on comes back, block first, the next time
+  BirdoVPN's process starts for any reason: you open the app, tap the widget
+  or the Quick Settings tile, or a home-screen widget refresh starts it. That
+  is not only after a crash: it also happens after a reboot without Always-on
+  (launchers refresh their widgets at boot) and after a Force stop once the app
+  is next opened. Disconnect in BirdoVPN first if you do not want the
+  connection back. A tap on the tile or widget that starts the process joins
+  that resume rather than cancelling it. With "Block connections without VPN"
+  on, Android keeps blocking through the gap.
+- **The app's own traffic** -- while connected, BirdoVPN's own requests (sign-in,
+  the server list, the once-a-minute heartbeat, opted-in crash reports) go
+  through the VPN tunnel like every other app's. They go around it, from your
+  own IP address, only where they have to: before the first tunnel is up,
+  behind the kill switch's block and while reconnecting; for the one heartbeat
+  that asks the server why a dead tunnel died; and for an account deletion,
+  whose answer would otherwise be lost with the tunnel the server ends.
+  Exception: during a Stealth Mode session the app's own traffic stays outside
+  the tunnel, as it did before, because Xray runs as a child process of the
+  app and cannot be routed into the tunnel it carries.
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,

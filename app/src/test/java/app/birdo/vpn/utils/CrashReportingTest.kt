@@ -196,4 +196,29 @@ class CrashReportingTest {
             cacheDir.deleteRecursively()
         }
     }
+
+    // ── scrub (REVIEW-AND2-010) ──────────────────────────────────────────
+
+    @Test
+    fun `an anonymous account's number is scrubbed bare and grouped, and longer digit runs are not`() {
+        val number = "123456789012345678901234"
+        assertEquals("login failed for [ACCOUNT]", CrashReporting.scrub("login failed for $number"))
+        assertEquals("id [ACCOUNT].", CrashReporting.scrub("id 1234 5678 9012 3456 7890 1234."))
+        assertEquals("id [ACCOUNT]", CrashReporting.scrub("id 1234-5678-9012-3456-7890-1234"))
+        // The synthetic email form was already an email.
+        assertEquals("[EMAIL]", CrashReporting.scrub("anon_$number@anonymous.local"))
+        // A timestamp, a port and a 25-digit run are not account numbers.
+        assertEquals("at 1759350000000 port 51820", CrashReporting.scrub("at 1759350000000 port 51820"))
+        assertEquals("x 1234567890123456789012345", CrashReporting.scrub("x 1234567890123456789012345"))
+    }
+
+    @Test
+    fun `scrub keeps its earlier rules and is idempotent`() {
+        val raw = "failed to connect to /144.76.1.2 (port 51820) via de-fra-1.birdo.app " +
+            "for user@example.com at https://api.birdo.app/vpn"
+        val once = CrashReporting.scrub(raw)
+        assertEquals("failed to connect to /[IP] (port 51820) via [HOST] for [EMAIL] at [URL]/vpn", once)
+        assertEquals(once, CrashReporting.scrub(once))
+        assertNull(CrashReporting.scrub(null))
+    }
 }

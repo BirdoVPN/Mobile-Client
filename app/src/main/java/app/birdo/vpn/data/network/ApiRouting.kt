@@ -2,6 +2,7 @@ package app.birdo.vpn.data.network
 
 import app.birdo.vpn.utils.FaultReporter
 import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.InetAddress
@@ -89,6 +90,26 @@ class ProtectingSocketFactory(
 }
 
 /**
+ * A Retrofit `@Tag` that sends ONE call around the tunnel whatever the
+ * session's state (REVIEW-AND2-001, -002).
+ *
+ * D-6 is wrong for exactly the calls whose answer the tunnel cannot carry back.
+ * The server takes a WireGuard peer off its node BEFORE it answers the request
+ * that removed it, and since D-6 that request rides the very peer:
+ *  - an account deletion revokes every peer of the account, then replies
+ *    (birdo-web gdpr.service deleteUserData): through the tunnel the reply is
+ *    dropped at the node, and an erasure that worked reads as a failure, with
+ *    the Play billing notice, the device-id and ML-KEM rotation and the sign-out
+ *    all skipped;
+ *  - an eviction, a revoke, a drain or the Free allowance's end removes the
+ *    peer first, so the one heartbeat that asks why a dead tunnel died can only
+ *    be answered off it.
+ * Both leave from the real IP, as the re-dial that follows a dead tunnel does
+ * anyway, so neither discloses more than the path it replaces.
+ */
+object AroundTunnel
+
+/**
  * Retrofit's call factory: each call goes to the tunnel client or the bypass
  * client, decided when the call is created.
  *
@@ -98,21 +119,42 @@ class ProtectingSocketFactory(
  * tunnel). Each client has its own pool. On a change of path the pool that is
  * no longer used drops its idle connections, so nothing is left open around the
  * tunnel, or inside one that is going away.
+ *
+ * The bypass client's lookups open connections of their own, to the DoH
+ * provider ([DohResolver], its bootstrap client's pool), and those are
+ * [alsoAroundTunnel]: dropped with the bypass pool. Live on the emulator
+ * (2026-10-01, F3) one idle `wlan0 -> 1.1.1.1:443` DoH connection stayed
+ * ESTABLISHED outside the tunnel for the whole session. The flip to the
+ * tunnel happens at the first call once the tunnel is up, which is the
+ * heartbeat VpnManager sends the moment it is (startHeartbeat).
  */
 class RoutingCallFactory(
     private val tunnel: OkHttpClient,
     private val bypass: OkHttpClient,
+    private val alsoAroundTunnel: List<ConnectionPool> = emptyList(),
     private val useBypass: () -> Boolean,
 ) : Call.Factory {
 
     @Volatile private var lastBypass: Boolean? = null
 
     override fun newCall(request: Request): Call {
+        // Tagged [AroundTunnel]: the bypass client whatever the path. It is
+        // recorded as a bypass use, nothing more: the next ordinary call on
+        // the tunnel path then drops what this one left open around it.
+        if (request.tag(AroundTunnel::class.java) != null) {
+            lastBypass = true
+            return bypass.newCall(request)
+        }
         val bypassNow = useBypass()
         val previous = lastBypass
         lastBypass = bypassNow
         if (previous != null && previous != bypassNow) {
-            (if (bypassNow) tunnel else bypass).connectionPool.evictAll()
+            if (bypassNow) {
+                tunnel.connectionPool.evictAll()
+            } else {
+                bypass.connectionPool.evictAll()
+                alsoAroundTunnel.forEach { it.evictAll() }
+            }
         }
         return (if (bypassNow) bypass else tunnel).newCall(request)
     }

@@ -652,6 +652,7 @@ fun BirdoNavGraph(
                         onDeleteAccount = { password, code -> authViewModel.deleteAccount(password, code) },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
+                        deleteErrorField = authState.deleteErrorField,
                         deleteRequiresTwoFactor = authState.deleteRequiresTwoFactor,
                         isAnonymousAccount = isAnonymousUser(authState.user),
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
@@ -822,7 +823,6 @@ fun BirdoNavGraph(
                     VpnSettingsScreen(
                         state = settingsState,
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
-                        onWireGuardPortChange = { settingsViewModel.setWireGuardPort(it) },
                         onWireGuardMtuChange = { settingsViewModel.setWireGuardMtu(it) },
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
                         onDnsFilteringChange = { settingsViewModel.setDnsFiltering(it) },

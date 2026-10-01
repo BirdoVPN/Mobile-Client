@@ -947,7 +947,7 @@ class BirdoVpnService : VpnService() {
             serial { armBlockForSystemStart() }
         }
         when {
-            plan.connect -> if (manager?.connectHeadless() == null) {
+            plan.connect -> if (manager?.connectHeadless(kind) == null) {
                 // No VpnManager: nothing can dial. The block (if any) holds.
                 notifManager.postAlert(VpnNotificationManager.stoppedUnexpectedlyAlert())
             }

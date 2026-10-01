@@ -1,5 +1,7 @@
 package app.birdo.vpn.service
 
+import app.birdo.vpn.data.model.HeartbeatResponse
+
 /**
  * The session supervisor's decisions, as pure functions.
  *
@@ -398,6 +400,41 @@ internal object HeartbeatPolicy {
      */
     private fun inferred(sinceLastOkMs: Long): Verdict =
         if (sinceLastOkMs >= REAP_WINDOW_MS) Verdict.REAPED else Verdict.REVOKED
+
+    /**
+     * REVIEW-AND2-001: the answer to the ONE heartbeat VpnManager sends around
+     * the tunnel, before it re-dials, for the key of an established session
+     * the dead-tunnel check declared dead.
+     *
+     * Since D-6 the beats ride the tunnel, and every server-side end of a key —
+     * an eviction, a revoke, a drain, the Free allowance's end — takes the
+     * WireGuard peer off its node before it answers. So none of those replies
+     * ever came back on the live path: the tunnel only went quiet, and the
+     * re-dial that followed evicted the other device in turn (A1-004's
+     * ping-pong), undid a remote Disconnect, or walked into the quota refusal
+     * fully blocked. Asked off the tunnel, the server can say why. Where a dead
+     * tunnel changes the meaning, this differs from [verdict]:
+     *
+     * | reply | verdict |
+     * |---|---|
+     * | none: transport failure, timeout, an HTTP error | ALIVE (re-dial, as before) |
+     * | quota_exceeded | QUOTA_EXCEEDED |
+     * | evicted, revoked | EVICTED, REVOKED |
+     * | reaped, not_found | REAPED (re-dial: a key ended on purpose says so; here not_found is a lost record) |
+     * | server_offline, or a live key on a node that is not online | SERVER_GONE (another server: the connect gate refuses a node that is not online) |
+     * | ok, or a live key | ALIVE (re-dial) |
+     * | no reason (a backend before WEB-HB), not valid | [verdict]'s inference from the last good beat |
+     */
+    fun forDeadTunnel(reply: HeartbeatResponse?, sinceLastOkMs: Long): Verdict = when {
+        reply == null -> Verdict.ALIVE
+        !reply.valid && (reply.reason == "quota_exceeded" || reply.quotaExceeded) -> Verdict.QUOTA_EXCEEDED
+        reply.reason == "evicted" -> Verdict.EVICTED
+        reply.reason == "revoked" -> Verdict.REVOKED
+        reply.reason == "reaped" || reply.reason == "not_found" -> Verdict.REAPED
+        reply.reason == "server_offline" -> Verdict.SERVER_GONE
+        reply.valid -> if (reply.serverOnline) Verdict.ALIVE else Verdict.SERVER_GONE
+        else -> verdict(valid = false, reason = reply.reason, sinceLastOkMs = sinceLastOkMs)
+    }
 }
 
 /**
@@ -456,7 +493,9 @@ enum class SystemStartKind {
      * the previous process died — a crash, a low-memory kill — and Android
      * did not restart the service. Seen live on API 35 (2026-09-30): no
      * restart after `am crash` or `kill -9`, the device unprotected, and the
-     * dead service's "Protected" notification still showing.
+     * dead service's "Protected" notification still showing. The same start
+     * follows a reboot or a Force stop, whose intent survives too: a restore
+     * at the next process start, documented as such (REVIEW-AND2-005).
      */
     PROCESS_RESTART,
 }
@@ -527,7 +566,8 @@ internal object SystemStartPolicy {
     /**
      * Whether a starting app process must bring the session back itself
      * ([SystemStartKind.PROCESS_RESTART]): the user wanted it up and no
-     * service is running in this process to hold it.
+     * service is running in this process to hold it — after a crash, and
+     * equally after a reboot or a Force stop (README.md, Always-on VPN).
      */
     fun resumeOnProcessStart(sessionShouldBeUp: Boolean, serviceRunning: Boolean): Boolean =
         sessionShouldBeUp && !serviceRunning
@@ -585,9 +625,27 @@ internal object SessionCopy {
      */
     const val ENGINE_FAILED = "BirdoVPN couldn't start its secure tunnel. Please try again."
 
-    /** A1-034: a live switch or settings change that did not happen; the session did not move. */
+    /** A1-034: a live switch that did not happen; the session did not move. */
     const val SWITCH_KEPT_PREVIOUS = "Couldn't switch. You're still connected to your previous location."
     const val STILL_ON_PREVIOUS = "You're still connected to your previous location."
+
+    /**
+     * REVIEW-AND2-012: a settings change (MTU, DNS, split tunnelling, Quantum)
+     * that could not be applied in place. No switch was asked for, so the
+     * switch sentence ("your previous location") misread it.
+     */
+    const val SETTINGS_KEPT_PREVIOUS = "Couldn't apply the change. Your connection is unchanged."
+    const val CONNECTION_UNCHANGED = "Your connection is unchanged."
+
+    /**
+     * What a rebuild that kept the live session says: [why] when there is a
+     * reason worth giving, and which kind of change did not happen.
+     */
+    fun keptSession(why: String?, settingsChange: Boolean): String = when {
+        why != null -> "$why ${if (settingsChange) CONNECTION_UNCHANGED else STILL_ON_PREVIOUS}"
+        settingsChange -> SETTINGS_KEPT_PREVIOUS
+        else -> SWITCH_KEPT_PREVIOUS
+    }
 
     /**
      * A1-034: the new peer never answered AFTER the swap, and Android cannot
@@ -690,7 +748,7 @@ internal object QuickToggle {
         DISCONNECT,
         /** Needs the app: signed out, or the VPN permission prompt. */
         OPEN_APP,
-        /** Mid-disconnect: nothing to do. */
+        /** Nothing to do: mid-disconnect, or the tap's own connect is already under way ([joinsResume]). */
         NONE,
     }
 
@@ -699,6 +757,10 @@ internal object QuickToggle {
      *   reach the backend (audit D-12), and a widget or tile tap after a
      *   consent-version bump used to send /vpn/connect before the user had seen
      *   the new text (REVIEW-AND-010). Stopping is always allowed.
+     * @param joinsResume this tap started the process whose resume is still
+     *   connecting (VpnManager.claimTapForResume, REVIEW-AND2-004): it meant
+     *   "connect", and that is happening. Read as anything else, the tile's
+     *   tap disconnected the very session it had just brought back.
      */
     fun decide(
         state: VpnState,
@@ -706,7 +768,9 @@ internal object QuickToggle {
         signedIn: Boolean,
         vpnPermissionGranted: Boolean,
         consentAccepted: Boolean,
+        joinsResume: Boolean,
     ): Action = when {
+        joinsResume -> Action.NONE
         state is VpnState.Disconnecting -> Action.NONE
         state is VpnState.Connected || state.isConnectingPhase || state is VpnState.Reconnecting ->
             Action.DISCONNECT
@@ -715,6 +779,26 @@ internal object QuickToggle {
         !signedIn || !vpnPermissionGranted || !consentAccepted -> Action.OPEN_APP
         else -> Action.CONNECT
     }
+
+    /**
+     * How long after a process-start resume began its dial a tap may still be
+     * the one that started the process. The tap's delivery and the resume both
+     * follow the same process start (Application.onCreate, then the service's
+     * start and the tile's bind or the widget's broadcast), so in practice the
+     * gap is well under a second; the bound is what keeps a later, deliberate
+     * tap from being swallowed.
+     */
+    const val RESUME_TAP_WINDOW_MS = 5_000L
+
+    /**
+     * REVIEW-AND2-004: a tap joins a process-start resume when it is the
+     * resume's own dial that is still connecting ([sameDial]: nothing newer
+     * took over), and it began at most [RESUME_TAP_WINDOW_MS] ago. Once the
+     * session is up, or it failed, the tap acts on what the user sees.
+     */
+    fun joinsResume(resumeAgeMs: Long, sameDial: Boolean, state: VpnState): Boolean =
+        sameDial && resumeAgeMs in 0..RESUME_TAP_WINDOW_MS &&
+            (state.isConnectingPhase || state is VpnState.Reconnecting)
 
     /** What CONNECT dials, given the Multi-Hop decision and the cached plan. */
     sealed interface ConnectPlan {

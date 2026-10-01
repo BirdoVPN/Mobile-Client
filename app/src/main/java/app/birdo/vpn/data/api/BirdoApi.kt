@@ -5,6 +5,7 @@ import app.birdo.vpn.billing.GooglePlayLinkResponse
 import app.birdo.vpn.billing.GooglePurchaseIntentResponse
 import app.birdo.vpn.billing.GoogleStoreRoutes
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -73,10 +74,15 @@ interface BirdoApi {
      * backend does not serve: every in-app deletion on Android failed (audit
      * 2026-09-29, P0-6 / C-2). iOS has always sent `/api/v1/gdpr/delete`.
      * Pinned by GdprRouteContractTest.
+     *
+     * @param aroundTunnel always [AroundTunnel] (REVIEW-AND2-002): the server
+     *   revokes every peer of the account, this device's included, before it
+     *   answers, so through the tunnel its success reply would never arrive.
      */
     @HTTP(method = "DELETE", path = GDPR_DELETE_PATH, hasBody = true)
     suspend fun deleteAccount(
         @Body request: DeleteAccountRequest,
+        @Tag aroundTunnel: AroundTunnel,
     ): Response<DeleteAccountResponse>
 
     /**
@@ -163,9 +169,14 @@ interface BirdoApi {
         @Path("keyId") keyId: String,
     ): Response<Unit>
 
+    /**
+     * @param aroundTunnel [AroundTunnel] for the one beat that asks why a dead
+     *   tunnel died (REVIEW-AND2-001); null lets ApiRoutePolicy choose.
+     */
     @POST("vpn/heartbeat/{keyId}")
     suspend fun heartbeat(
         @Path("keyId") keyId: String,
+        @Tag aroundTunnel: AroundTunnel?,
     ): Response<HeartbeatResponse>
 
     // ── Multi-Hop (Double VPN) ───────────────────────────────────

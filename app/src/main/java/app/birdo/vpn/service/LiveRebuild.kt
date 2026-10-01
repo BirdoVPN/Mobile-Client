@@ -1,5 +1,7 @@
 package app.birdo.vpn.service
 
+import app.birdo.vpn.data.repository.FailureReason
+
 /**
  * A1-034: the PURE half of the in-place live rebuild — the Android twin of
  * iOS `LiveRebuild.swift` (#350, #354).
@@ -41,8 +43,27 @@ internal object LiveRebuildPolicy {
         /** Any other `success: false` (a device cap, a plan, a lookup error): nothing was touched. */
         REFUSED,
 
-        /** /connect failed (transport, 4xx, 5xx). Nothing was minted; the old tunnel was never touched. */
+        /**
+         * /connect was answered with a failure (4xx, 5xx, a body that did not
+         * decode). The answer itself proves the live tunnel carries the API.
+         * Nothing was minted; the old tunnel was never touched.
+         */
         REQUEST_FAILED,
+
+        /**
+         * REVIEW-AND2-003: /connect got no HTTP answer at all through the live
+         * tunnel (no route, a timeout, a TLS failure). A tunnel that handshakes
+         * but cannot carry the API's TLS — an MTU black hole (handshakes are
+         * small, a certificate flight is not), a node whose egress is broken —
+         * fails every rebuild this way, and keeping the session kept the user
+         * on it for good: the dead-tunnel check sees answers, a heartbeat's
+         * transport error never tears down, and the MTU change that would fix
+         * it could never be applied. So it is taken as the tunnel's inability
+         * to carry the change: today's path, behind the block, over the bypass
+         * client. A key the server minted before the answer was lost is
+         * retired by its supersede sweeper at the deferral deadline.
+         */
+        REQUEST_UNANSWERED,
 
         /** Minted, but `deferredKeyId` did not echo the key we ride: the old peer may already be gone. */
         DEFERRAL_NOT_HONOURED,
@@ -89,7 +110,7 @@ internal object LiveRebuildPolicy {
     data class Release(val newKey: Boolean, val oldKey: Boolean)
 
     fun directive(event: Event): Directive = when (event) {
-        Event.CANNOT_REBUILD_HERE, Event.DEFERRAL_NOT_HONOURED -> Directive.LEGACY_TEARDOWN
+        Event.CANNOT_REBUILD_HERE, Event.DEFERRAL_NOT_HONOURED, Event.REQUEST_UNANSWERED -> Directive.LEGACY_TEARDOWN
         Event.REFUSED, Event.REQUEST_FAILED, Event.ROUTE_NOT_CONFIRMED, Event.FAILED_BEFORE_SWAP ->
             Directive.KEEP_OLD_SESSION
         Event.NEW_PEER_HANDSHAKED -> Directive.COMMIT_NEW
@@ -103,7 +124,8 @@ internal object LiveRebuildPolicy {
      * may still be the one carrying traffic.
      */
     fun release(event: Event): Release = when (event) {
-        Event.CANNOT_REBUILD_HERE, Event.REFUSED, Event.REQUEST_FAILED -> Release(newKey = false, oldKey = false)
+        Event.CANNOT_REBUILD_HERE, Event.REFUSED, Event.REQUEST_FAILED, Event.REQUEST_UNANSWERED ->
+            Release(newKey = false, oldKey = false)
         Event.DEFERRAL_NOT_HONOURED, Event.ROUTE_NOT_CONFIRMED, Event.FAILED_BEFORE_SWAP ->
             Release(newKey = true, oldKey = false)
         Event.NEW_PEER_HANDSHAKED -> Release(newKey = false, oldKey = true)
@@ -116,6 +138,19 @@ internal object LiveRebuildPolicy {
         "unknown-current-key", "same-entry-exit-change" -> Event.CANNOT_REBUILD_HERE
         else -> Event.REFUSED
     }
+
+    /**
+     * The event for a /connect that failed, from its
+     * [app.birdo.vpn.data.repository.ApiResult.Error]: no HTTP answer at all
+     * is [Event.REQUEST_UNANSWERED]; anything the server answered, whatever
+     * the status, is [Event.REQUEST_FAILED]. Code 0 is "no response", and its
+     * reason tells a network failure from a 2xx body that did not decode,
+     * which the tunnel did carry.
+     */
+    fun forRequestFailure(code: Int, reason: FailureReason): Event =
+        if (code == 0 && reason in UNANSWERED) Event.REQUEST_UNANSWERED else Event.REQUEST_FAILED
+
+    private val UNANSWERED = setOf(FailureReason.OFFLINE, FailureReason.UNREACHABLE, FailureReason.SECURE_CONNECTION)
 
     /** Only an echo of the EXACT key we ride counts as a deferral. */
     fun deferralHonoured(currentKeyId: String, deferredKeyId: String?): Boolean =

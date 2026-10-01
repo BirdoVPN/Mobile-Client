@@ -18,7 +18,7 @@ EVERYDAY USE
 • Split tunnelling: choose which apps use the VPN and which go direct.
 • Quick Settings tile and home-screen widget for one-tap connect.
 • Biometric lock: require your fingerprint or face to open the app.
-• Local network sharing, and a custom WireGuard port and MTU.
+• Local network sharing, and a custom WireGuard MTU.
 • Custom DNS servers on every plan, and port forwarding (Sovereign).
 
 PLANS

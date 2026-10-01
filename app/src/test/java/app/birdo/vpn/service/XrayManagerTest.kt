@@ -90,8 +90,10 @@ class XrayManagerTest {
         assertEquals("203.0.113.7" to 51820, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "auto"))
         // A node on another WireGuard port.
         assertEquals("203.0.113.7" to 443, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:443", "auto"))
-        // The user's custom WireGuard port wins, as on desktop.
-        assertEquals("203.0.113.7" to 53, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "53"))
+        // LIVE-PORT53: a stale "53" (or any custom port) forwards to the
+        // node's real WireGuard port; nothing on the relays listens on 53.
+        assertEquals("203.0.113.7" to 51820, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "53"))
+        assertEquals("203.0.113.7" to 51820, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "51820"))
         // IPv6.
         assertEquals("2001:db8::7" to 51820, XrayManager.wireGuardTarget("[2001:db8::7]:8443", "[2001:db8::7]:51820", "auto"))
         // Nothing to derive from: refuse, never guess 51820.
@@ -131,5 +133,63 @@ class XrayManagerTest {
         val v6 = dokodemo("2001:db8::7", 51820).getJSONObject("settings")
         assertEquals("2001:db8::7", v6.getString("address"))
         assertFalse(v6.getString("address").startsWith("127."))
+    }
+
+    // ── REVIEW-AND2-014: the call site, not only the helpers ──────────────
+
+    /**
+     * wireGuardTarget and buildXrayConfig are pinned above; this pins what
+     * start() hands them, by reading the config start() actually launches.
+     * Passing anything but the server's own endpoint (the local relay the
+     * service substitutes once Xray is up, or loopback) fails here.
+     */
+    @Test
+    fun `start forwards to the node's own WireGuard endpoint from the server's reply`() = kotlinx.coroutines.test.runTest {
+        var launched: String? = null
+        val pickPort = XrayManager.pickLocalPort
+        val launch = XrayManager.launch
+        XrayManager.pickLocalPort = { 51821 }
+        XrayManager.launch = { _, configJson -> launched = configJson; true }
+        try {
+            val server = app.birdo.vpn.data.model.ConnectResponse(
+                success = true,
+                endpoint = "203.0.113.7:51820",
+                xrayEndpoint = "203.0.113.7:443",
+                xrayUuid = "123e4567-e89b-12d3-a456-426614174000",
+                xrayPublicKey = "A".repeat(43),
+                xrayShortId = "abcd",
+                xraySni = "www.example.com",
+            )
+
+            assertTrue(XrayManager.start(io.mockk.mockk(relaxed = true), server, "auto") {})
+
+            val config = org.json.JSONObject(launched!!)
+            val forward = config.getJSONArray("inbounds").getJSONObject(0).getJSONObject("settings")
+            assertEquals("203.0.113.7", forward.getString("address"))
+            assertEquals(51820, forward.getInt("port"))
+            val reality = config.getJSONArray("outbounds").getJSONObject(0)
+                .getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+            assertEquals("203.0.113.7", reality.getString("address"))
+            assertEquals(443, reality.getInt("port"))
+        } finally {
+            XrayManager.pickLocalPort = pickPort
+            XrayManager.launch = launch
+            XrayManager.stop()
+        }
+    }
+
+    /** The service hands start() the SERVER's reply, and points WireGuard at the relay only after. */
+    @Test
+    fun `the service starts Xray from the server's reply before it substitutes the local relay`() {
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile ?: error("no repo root above $dir")
+        val service = java.io.File(dir, "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt")
+            .readText().replace("\r\n", "\n")
+        val start = service.indexOf("XrayManager.start(applicationContext, config, appPrefs.wireGuardPort)")
+        val relay = service.indexOf("stealthEndpointOverride = \"127.0.0.1:")
+        val activeConfig = service.indexOf("val config = activeConfig")
+        assertTrue("the Stealth start no longer passes the server's own reply", start > 0)
+        assertTrue("`config` is no longer the server's reply where Xray starts", activeConfig in 1 until start)
+        assertTrue("the local relay is substituted before Xray is started", relay > start)
     }
 }

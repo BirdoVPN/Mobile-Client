@@ -234,6 +234,53 @@ class SessionPolicyTest {
         assertTrue(FailureKind.QUOTA_EXCEEDED.terminal)
     }
 
+    // ── REVIEW-AND2-001: the probe around a dead tunnel ──────────────────
+
+    @Test
+    fun `a dead tunnel's probe stops only for an end the server meant, and re-dials for everything else`() {
+        val flowing = 60_000L
+        val slept = HeartbeatPolicy.REAP_WINDOW_MS
+        fun probe(
+            valid: Boolean,
+            reason: String?,
+            serverOnline: Boolean = valid,
+            quota: Boolean = false,
+            gap: Long = flowing,
+        ) = HeartbeatPolicy.forDeadTunnel(
+            app.birdo.vpn.data.model.HeartbeatResponse(
+                valid = valid,
+                serverOnline = serverOnline,
+                reason = reason,
+                quotaExceeded = quota,
+            ),
+            gap,
+        )
+        // No answer (a transport failure, the 5 s cap, an HTTP error): re-dial, as before.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.forDeadTunnel(null, flowing))
+        // The ends the server meant, which the live path can no longer hear.
+        assertEquals(HeartbeatPolicy.Verdict.EVICTED, probe(false, "evicted"))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, probe(false, "revoked", gap = slept))
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, probe(false, "quota_exceeded"))
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, probe(false, null, quota = true))
+        // A reap, and a record the server lost, re-dial — unlike the live
+        // path, where not_found while beats flowed reads as a revoke.
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, probe(false, "reaped"))
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, probe(false, "not_found"))
+        // A drained node, or a live key on a node that is not online: another
+        // server, because the connect gate refuses the same one.
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, probe(false, "server_offline"))
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, probe(true, "server_offline", serverOnline = false))
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, probe(true, null, serverOnline = false))
+        // The key is live: the tunnel died for the network's reasons.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, probe(true, "ok"))
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, probe(true, null))
+        // A backend before WEB-HB ("Connection not found", no reason): the
+        // live path's inference, so today's server stops the ping-pong too.
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, probe(false, null, serverOnline = false))
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, probe(false, null, serverOnline = false, gap = slept))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, probe(false, "some_new_reason"))
+    }
+
     @Test
     fun `the grace notice counts whole minutes from the server's clock`() {
         val now = java.time.Instant.parse("2026-10-01T12:00:00Z").toEpochMilli()
@@ -389,7 +436,8 @@ class SessionPolicyTest {
             signedIn: Boolean = true,
             permission: Boolean = true,
             consent: Boolean = true,
-        ) = QuickToggle.decide(state, blocking, signedIn, permission, consent)
+            joinsResume: Boolean = false,
+        ) = QuickToggle.decide(state, blocking, signedIn, permission, consent, joinsResume)
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connecting))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Reconnecting(2)))
@@ -403,6 +451,28 @@ class SessionPolicyTest {
         // stopping is always allowed.
         assertEquals(QuickToggle.Action.OPEN_APP, decide(VpnState.Disconnected, consent = false))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected, consent = false))
+        // REVIEW-AND2-004: the tap that started the process joins the resume
+        // that start began, whatever the resume shows by the time it lands.
+        assertEquals(QuickToggle.Action.NONE, decide(VpnState.Connecting, joinsResume = true))
+        assertEquals(QuickToggle.Action.NONE, decide(VpnState.Reconnecting(1), blocking = true, joinsResume = true))
+    }
+
+    @Test
+    fun `only the resume's own dial, still connecting and a few seconds old, claims the tap`() {
+        val window = QuickToggle.RESUME_TAP_WINDOW_MS
+        fun joins(age: Long = 800L, sameDial: Boolean = true, state: VpnState = VpnState.Connecting) =
+            QuickToggle.joinsResume(age, sameDial, state)
+        assertTrue(joins())
+        assertTrue(joins(state = VpnState.Reconnecting(1)))
+        assertTrue(joins(age = window))
+        // Later, the tap is the user's own decision on what the tile shows.
+        assertFalse(joins(age = window + 1))
+        // A newer dial or a Disconnect took over.
+        assertFalse(joins(sameDial = false))
+        // Up, or failed: a tap acts on that.
+        assertFalse(joins(state = VpnState.Connected))
+        assertFalse(joins(state = VpnState.Error("x")))
+        assertFalse(joins(state = VpnState.Disconnected))
     }
 
     @Test
@@ -411,6 +481,17 @@ class SessionPolicyTest {
         assertEquals(true, MultiHopPolicy.entitledByPlan("sovereign"))
         assertEquals(false, MultiHopPolicy.entitledByPlan("OPERATIVE"))
         assertEquals(null, MultiHopPolicy.entitledByPlan(null))
+    }
+
+    /** REVIEW-AND2-012: a kept session after a settings change is not a failed switch. */
+    @Test
+    fun `a kept session says which change did not happen`() {
+        assertEquals(SessionCopy.SWITCH_KEPT_PREVIOUS, SessionCopy.keptSession(null, settingsChange = false))
+        assertEquals(SessionCopy.SETTINGS_KEPT_PREVIOUS, SessionCopy.keptSession(null, settingsChange = true))
+        assertEquals("Server busy. ${SessionCopy.STILL_ON_PREVIOUS}", SessionCopy.keptSession("Server busy.", settingsChange = false))
+        assertEquals("Server busy. ${SessionCopy.CONNECTION_UNCHANGED}", SessionCopy.keptSession("Server busy.", settingsChange = true))
+        assertFalse(SessionCopy.keptSession(null, settingsChange = true).contains("switch"))
+        assertFalse(SessionCopy.keptSession("x", settingsChange = true).contains("location"))
     }
 
     @Test

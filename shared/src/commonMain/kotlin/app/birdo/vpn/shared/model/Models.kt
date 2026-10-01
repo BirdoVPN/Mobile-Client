@@ -197,7 +197,15 @@ data class AnonymousLoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
-)
+) {
+    /**
+     * Leaves out [anonymousId] (the account's only credential), [password]
+     * and [deviceId] (a per-install identifier), like [UserProfile]
+     * (REVIEW-AND2-010).
+     */
+    override fun toString(): String =
+        "AnonymousLoginRequest(platform=$platform, platformVersion=$platformVersion, appVersion=$appVersion)"
+}
 
 /** Body for POST /auth/register/anonymous — device context only (all optional);
  *  the server mints the 24-digit ID. Response reuses [AnonymousLoginResponse]. */
@@ -218,7 +226,11 @@ data class AnonymousLoginResponse(
     val tokens: TokenPair? = null,
     @SerialName("requiresTwoFactor") val requiresTwoFactor: Boolean = false,
     @SerialName("challengeToken") val challengeToken: String? = null,
-)
+) {
+    /** Leaves out the account number, the tokens and the 2FA challenge (REVIEW-AND2-010). */
+    override fun toString(): String =
+        "AnonymousLoginResponse(ok=$ok, hasTokens=${tokens != null}, requiresTwoFactor=$requiresTwoFactor)"
+}
 
 // ─── Vouchers ────────────────────────────────────────────────────────────────
 //
@@ -605,6 +617,14 @@ data class ConnectResponse(
      * a new one can never fail the decode).
      */
     val rebuildRefused: String? = null,
+    /**
+     * Beside `success: false`: the Free plan's data allowance for this period
+     * is used up (birdo-web #590, the connect gate in vpn.service.ts), and
+     * [message] says how much and when it resets. A plan decision that asking
+     * again cannot change, so it ends the session as QUOTA_EXCEEDED rather
+     * than as a generic refusal (REVIEW-AND2-001).
+     */
+    val quotaExceeded: Boolean = false,
 )
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
@@ -716,6 +736,8 @@ data class MultiHopConnectResponse(
     val deferredKeyId: String? = null,
     /** A1-034 — see [ConnectResponse.rebuildRefused]. */
     val rebuildRefused: String? = null,
+    /** See [ConnectResponse.quotaExceeded]: multi-hop passes the single-hop gate's refusal through. */
+    val quotaExceeded: Boolean = false,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────

@@ -122,6 +122,9 @@ class WidgetToggleAction : ActionCallback {
                 signedIn = entryPoint.tokenManager().isLoggedIn(),
                 vpnPermissionGranted = manager.isVpnPermissionGranted(),
                 consentAccepted = prefs.hasAcceptedCurrentConsent,
+                // After a crash this tap is what started the process, and the
+                // process start already resumed the session (REVIEW-AND2-004).
+                joinsResume = manager.claimTapForResume(),
             )
             when (action) {
                 QuickToggle.Action.DISCONNECT -> manager.requestDisconnect()

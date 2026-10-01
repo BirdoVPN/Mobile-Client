@@ -95,6 +95,9 @@ class HardcodedCopyGuardTest {
                 check(ok) {
                     "a refusal must never be acknowledged"
                 }
+                val unreachable = error("no plan for this state")
+                StoreNotice.error("Purchase could not be completed")
+                notice.check("Subscription not verified")
                 val fmt = DateTimeFormatter.ofPattern("MMM d, yyyy")
                 val url = "${'$'}{BuildConfig.WEB_BASE_URL}/native/oauth/start?provider=${'$'}p&state=${'$'}s"
                 val keys = listOf("monthly", "SOVEREIGN", "tcp" to "TCP", "BirdoVPN", "WireGuard", "GB")
@@ -115,6 +118,8 @@ class HardcodedCopyGuardTest {
                 "Account number copied",
                 "Session",
                 "ACCOUNT NUMBER",
+                "Purchase could not be completed",
+                "Subscription not verified",
             ),
             prose,
         )
@@ -129,10 +134,20 @@ internal object SourceCopy {
 
     data class Literal(val line: Int, val text: String, val isProse: Boolean)
 
-    /** Calls whose literals are for developers, never for users. */
+    /**
+     * Calls whose literals are for developers, never for users.
+     *
+     * The stdlib's top-level functions (`error`, `require`, `check`, `TODO`,
+     * `println`) and a local `log` or `tracing` helper count only as bare
+     * calls. `\b` also matches after a dot, so `StoreNotice.error("…")` — a
+     * notice the user reads — used to pass as developer text
+     * (REVIEW-AND2-007). A member call of those names is checked like any
+     * other position.
+     */
     private val developerCall = Regex(
-        """(?:\bLog\.[vdiwe]|\blog|\btracing|\berror|\brequire|\brequireNotNull|\bcheck|\bcheckNotNull""" +
-            """|\bTODO|\bRegex|\btoRegex|\bofPattern|\bprintln|\btestTag|\bthrow\s+\w+|\b\w*Exception""" +
+        """(?:\bLog\.[vdiwe]""" +
+            """|(?<![.\w])(?:log|tracing|error|require|requireNotNull|check|checkNotNull|TODO|println)""" +
+            """|\bRegex|\btoRegex|\bofPattern|\btestTag|\bthrow\s+\w+|\b\w*Exception""" +
             """|@[\w.:]+)\s*\(""",
     )
 

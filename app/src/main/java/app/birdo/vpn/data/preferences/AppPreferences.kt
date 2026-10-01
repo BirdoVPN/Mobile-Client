@@ -236,10 +236,34 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_CUSTOM_DNS_SECONDARY, "") ?: ""
         set(value) { prefs.edit(commit = true) { putString(KEY_CUSTOM_DNS_SECONDARY, value) }; signSettings() }
 
-    /** "auto", "51820", "53", or a custom port number as string */
+    /**
+     * "auto". Older builds also stored "51820", "53" or a custom port, which
+     * the relays never accepted (LIVE-PORT53); [retireWireGuardPortChoice]
+     * rewrites those, and the config builder ignores anything but 51820.
+     * The key stays in SettingsHmac.PROTECTED_KEYS: dropping it would change
+     * every installed signature and wipe the protected settings once.
+     */
     var wireGuardPort: String
         get() = prefs.getString(KEY_WG_PORT, "auto") ?: "auto"
         set(value) { prefs.edit(commit = true) { putString(KEY_WG_PORT, value) }; signSettings() }
+
+    /**
+     * LIVE-PORT53: the relays accept WireGuard on 51820 only, so the port is
+     * no longer a setting. A saved "53" or custom port (or the old "51820"
+     * preset, the same as automatic) becomes "auto", once: the next call finds
+     * nothing to do. MTU and every other setting are left as they are.
+     *
+     * Re-signs the protected settings, so it must run only once they have
+     * been verified (MainActivity.verifySettingsIntegrity): earlier it would
+     * sign a tampered set as genuine.
+     *
+     * @return true when it rewrote the stored value.
+     */
+    fun retireWireGuardPortChoice(): Boolean {
+        if (wireGuardPort == "auto") return false
+        wireGuardPort = "auto"
+        return true
+    }
 
     /** 0 = automatic (use server default) */
     var wireGuardMtu: Int

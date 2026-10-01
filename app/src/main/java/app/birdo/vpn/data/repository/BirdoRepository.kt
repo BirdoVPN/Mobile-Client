@@ -11,6 +11,7 @@ import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -429,10 +430,19 @@ class BirdoRepository @Inject constructor(
      * GDPR Art. 17: Delete the user's account and all associated data.
      * Requires password re-confirmation to prevent deletion via stolen JWT.
      * On success, clears all local tokens and cached data.
+     *
+     * Sent around the tunnel even while Connected (REVIEW-AND2-002). The
+     * server revokes every peer of the account before it answers, and since
+     * D-6 the request rode this device's own peer: the success reply was
+     * dropped at the node, the dialog said deletion failed, and nothing below
+     * ran — no Play "still billing" notice, no device-id or ML-KEM rotation,
+     * no sign-out — while the dead tunnel left the device blocked behind a
+     * sign-in prompt for an account that no longer existed. The VPN is still
+     * torn down only after this succeeds (A2-005).
      */
     suspend fun deleteAccount(password: String?, twoFactorCode: String? = null): ApiResult<DeleteAccountResponse> {
         val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
-            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode))
+            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode), AroundTunnel)
         }
         if (result is ApiResult.Success) {
             // Clear local state — account no longer exists on the server.
@@ -834,14 +844,17 @@ class BirdoRepository @Inject constructor(
     /**
      * FIX-2-10: Send heartbeat to backend to report connection health.
      * P1-9: Returns HeartbeatResponse so callers can act on valid/serverOnline.
+     *
+     * @param aroundTunnel send it around the tunnel whatever the session's
+     *   state ([AroundTunnel]): the dead-tunnel probe (REVIEW-AND2-001).
      */
-    suspend fun sendHeartbeat(keyId: String? = null): ApiResult<HeartbeatResponse> {
+    suspend fun sendHeartbeat(keyId: String? = null, aroundTunnel: Boolean = false): ApiResult<HeartbeatResponse> {
         val target = keyId ?: tokenManager.getLastKeyId()
             // A user-facing sentence like every other error here (REVIEW-AND-021);
             // callers branch on the code.
             ?: return errors.unexpected().copy(code = CODE_NO_ACTIVE_KEY)
         return withAutoRefresh(R.string.error_unexpected) {
-            api.heartbeat(target)
+            api.heartbeat(target, AroundTunnel.takeIf { aroundTunnel })
         }
     }
 
