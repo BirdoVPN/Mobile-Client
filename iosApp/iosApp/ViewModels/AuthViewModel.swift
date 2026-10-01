@@ -244,6 +244,9 @@ final class AuthViewModel: ObservableObject {
     /// Sliding-window local rate limit: timestamps of FAILED email logins.
     /// 5 failures within 60 s block further submits.
     private var failedEmailAttempts: [Date] = []
+    /// A signed-in cold start that landed on the consent screen: hydration
+    /// waits for the user to leave it (owner item 41).
+    private var hydrationAwaitsConsentScreen = false
 
     private enum AuthContext {
         case emailLogin
@@ -277,8 +280,15 @@ final class AuthViewModel: ObservableObject {
         if sessionLive {
             isLoggedIn = true
             userEmail = keychain.userEmail
-            Task { [weak self] in
-                await self?.hydrateOnColdStart()
+            if RootRoute.decide(hasConsented: storedConsent, consentDeferred: storedDeferral) == .shell {
+                Task { [weak self] in
+                    await self?.hydrateOnColdStart()
+                }
+            } else {
+                // Owner item 41: the consent screen is up (a signed-in user
+                // being re-asked, item 38), and it makes no request. GET
+                // /auth/me and /vpn/stats wait until they leave it.
+                hydrationAwaitsConsentScreen = true
             }
         } else {
             // Both tokens dead: purge the leftovers so no half-expired
@@ -309,6 +319,18 @@ final class AuthViewModel: ObservableObject {
                 self?.provisionAnonymously(reason: resumed)
             }
         }
+        resumeHydrationAfterConsentScreen()
+    }
+
+    /// Cold-start hydration held back while the consent screen was up (owner
+    /// item 41). Runs once, whichever way the user leaves it.
+    private func resumeHydrationAfterConsentScreen() {
+        guard hydrationAwaitsConsentScreen else { return }
+        hydrationAwaitsConsentScreen = false
+        guard isLoggedIn else { return }
+        Task { [weak self] in
+            await self?.hydrateOnColdStart()
+        }
     }
 
     /// "Not now" on the privacy disclosure.
@@ -324,6 +346,10 @@ final class AuthViewModel: ObservableObject {
         consentDeferred = true
         isReconsent = false
         ConsentRecord.recordDeferral(in: UserDefaults.standard)
+        // A signed-in user who defers the re-consent keeps their session
+        // (signing them out over "Not now" would be a trap of its own), so
+        // the held-back hydration runs now.
+        resumeHydrationAfterConsentScreen()
     }
 
     // MARK: - Sign-in sheet (point of use, never a launch wall)

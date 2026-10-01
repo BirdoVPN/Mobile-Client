@@ -110,11 +110,16 @@ struct ConsentView: View {
                     deferButton
                         .padding(.top, 12)
 
+                    // Owner item 41: the app makes NO network request until
+                    // this is accepted, so the location list (fetched from
+                    // Birdo's servers) is no longer browsable before it.
                     Text(isSheet
-                            ? "Accepting is required only to create or sign in to an account. "
-                                + "The rest of the app keeps working without one."
-                            : "You can use the app's settings, read the policies and browse "
-                                + "locations without accepting. Accepting is required only to "
+                            ? "Accepting is required to create or sign in to an account, and "
+                                + "to load the location list. Settings and the policies keep "
+                                + "working without it."
+                            : "You can use the app's settings and read the policies without "
+                                + "accepting. The location list comes from Birdo's servers, so "
+                                + "it loads only after you accept, and accepting is required to "
                                 + "create or sign in to an account.")
                         .font(.system(size: 12))
                         .foregroundStyle(BirdoTheme.white40)

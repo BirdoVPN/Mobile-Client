@@ -94,6 +94,10 @@ final class SettingsViewModel: ObservableObject {
     /// feature that works. Only a decoded, explicit boolean changes anything —
     /// an older web deploy omits the key, which is unknown, not off.
     func refreshClientConfig() async {
+        // Owner item 41: no request before the privacy disclosure is accepted.
+        // Settings is open to a user who chose "Not now"; the values simply
+        // stay UNKNOWN for them, and unknown reads as available here.
+        guard ConsentRecord.hasAcceptedCurrent(in: .standard) else { return }
         // Any failure — offline, 5xx, pin cancel, an undecodable body — keeps
         // the current value rather than becoming `false`.
         guard let config = try? await APIClient.shared.fetchClientConfig() else { return }

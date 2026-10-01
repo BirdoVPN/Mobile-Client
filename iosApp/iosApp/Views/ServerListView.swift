@@ -419,7 +419,26 @@ struct ServerListView: View {
             LazyVStack(spacing: 6) {
                 guestBanner
 
-                if vpnVM.isLoadingPublicLocations && vpnVM.publicLocations.isEmpty {
+                if !authVM.hasConsented && vpnVM.publicLocations.isEmpty {
+                    // Owner item 41: the list is fetched from Birdo's servers,
+                    // and nothing is requested before the privacy disclosure is
+                    // accepted ("Not now" users land here). Say so, and offer
+                    // the disclosure — accepting loads the list at once.
+                    VStack(spacing: 0) {
+                        ServersEmptyState(
+                            title: "Locations load after you accept the privacy notice",
+                            description: "The list comes from Birdo's servers, and the app asks "
+                                + "them for nothing until you accept.",
+                            showRetry: false,
+                            onRetry: {}
+                        )
+                        PrimaryButton("Review the privacy notice", variant: .secondary, height: 48) {
+                            authVM.requestSignIn(.servers)
+                        }
+                        .frame(maxWidth: 280)
+                        .accessibilityIdentifier("servers_review_consent")
+                    }
+                } else if vpnVM.isLoadingPublicLocations && vpnVM.publicLocations.isEmpty {
                     SkeletonRows()
                 } else if locations.isEmpty {
                     ServersEmptyState(

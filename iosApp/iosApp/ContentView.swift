@@ -103,6 +103,12 @@ struct ContentView: View {
         network.isOffline && !vpnVM.isConnected && !vpnVM.isConnecting
     }
 
+    /// Identity of the launch/sign-in load below: the session AND the consent
+    /// state, so leaving the consent screen (owner item 41) re-runs it.
+    private var launchLoadKey: [Bool] {
+        [authVM.isLoggedIn, authVM.hasConsented, authVM.consentDeferred]
+    }
+
     var body: some View {
         ZStack {
             // Base coat so route swaps never flash the system background.
@@ -238,12 +244,23 @@ struct ContentView: View {
         // yielded "Select a server first". Fire on the login flip AND on cold
         // start when already logged in — Android parity
         // (BirdoNavGraph.kt:149-151, :168-171).
-        .task(id: authVM.isLoggedIn) {
+        //
+        // Owner item 41: keyed on the consent state too, and NOTHING runs while
+        // the consent screen is up. This used to fire on the first frame —
+        // behind ConsentView — so a fresh install asked /vpn/locations before
+        // the user had accepted anything. It now runs when the user leaves the
+        // consent screen (accept, or "Not now"), and the guest list loads the
+        // moment consent is accepted.
+        .task(id: launchLoadKey) {
+            guard RootRoute.decide(hasConsented: authVM.hasConsented,
+                                   consentDeferred: authVM.consentDeferred) == .shell else { return }
             guard authVM.isLoggedIn else {
                 // Guest shell: the per-account server list is unavailable, so
                 // load the public (unauthenticated) location list instead —
-                // browsing locations is not an account-based feature.
-                vpnVM.loadPublicLocations()
+                // browsing locations is not an account-based feature. Only
+                // once consent is ACCEPTED: "Not now" fetches nothing
+                // (loadPublicLocations enforces that itself as well).
+                if authVM.hasConsented { vpnVM.loadPublicLocations() }
                 return
             }
             if vpnVM.servers.isEmpty && !vpnVM.isLoadingServers {
