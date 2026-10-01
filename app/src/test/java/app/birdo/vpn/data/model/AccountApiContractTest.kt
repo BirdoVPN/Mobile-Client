@@ -81,6 +81,33 @@ class AccountApiContractTest {
     }
 
     /** The number is the account's only credential: a stray log of the profile must not carry it. */
+    /**
+     * REVIEW-AND2-010: the other classes that carry the number, and the
+     * challenge and tokens beside it, print none of them either.
+     */
+    @Test
+    fun `the sign-in models and the auth state never print the account number, a password or a token`() {
+        val request = AnonymousLoginRequest(anonymousId = number, password = "hunter2", deviceId = "device-xyz")
+        val response = AnonymousLoginResponse(
+            ok = true,
+            anonymousId = number,
+            tokens = TokenPair("access-secret", "refresh-secret"),
+            requiresTwoFactor = true,
+            challengeToken = "challenge-secret",
+        )
+        val state = app.birdo.vpn.ui.viewmodel.AuthUiState(
+            pendingAnonymousId = number,
+            challengeToken = "challenge-secret",
+            user = profile("""{"id":"u1","email":"anon_$number@anonymous.local","accountNumber":"$number"}"""),
+        )
+        for (printed in listOf(request.toString(), response.toString(), state.toString())) {
+            for (secret in listOf(number, "hunter2", "device-xyz", "access-secret", "refresh-secret", "challenge-secret")) {
+                assertFalse("$secret printed in $printed", printed.contains(secret))
+            }
+        }
+        assertTrue(state.toString().contains("pendingAnonymousId=[REDACTED]"))
+    }
+
     @Test
     fun `the profile never prints its account number or email`() {
         val user = profile("""{"id":"u1","email":"anon_$number@anonymous.local","isAnonymous":true,"accountNumber":"$number"}""")

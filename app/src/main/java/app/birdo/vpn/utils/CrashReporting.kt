@@ -112,6 +112,56 @@ object CrashReporting {
     }
 
     /**
+     * Scrub what a VPN client must not export from a report string, applied
+     * to the event message, every exception value and every breadcrumb.
+     *
+     * An uncaught crash (the normal path) has a null event.message, but its
+     * exception string can embed exactly that: the endpoint host or IP
+     * ("failed to connect to /144.x.x.x (port 51820)",
+     * "UnknownHostException: de-fra-1.birdo.app" — no scheme, so a URL-only
+     * pattern misses both), account emails, 44-char base64 WireGuard key
+     * material, and an anonymous account's 24-digit number, bare or grouped as
+     * the app shows it (REVIEW-AND2-010: `GET /auth/me` sends it bare as
+     * `accountNumber` since the 2026-10-01 account API, and only the
+     * `anon_…@anonymous.local` email form was caught). The set mirrors the
+     * desktop's sanitize_error (redact.rs: IPv4 + email + bare hostname) plus
+     * the key/UUID/URL patterns, so the two clients agree.
+     *
+     * Order matters: the account number first, URL before host/IP (so
+     * scheme'd hosts collapse to [URL]), email before hostname (so the domain
+     * half can't be half-matched), IPv6 before IPv4 (mapped forms).
+     * Idempotent: no replacement matches any pattern.
+     */
+    fun scrub(s: String?): String? {
+        var out = s ?: return null
+        for ((pattern, replacement) in SCRUB_RULES) out = pattern.replace(out, replacement)
+        return out
+    }
+
+    private val SCRUB_RULES: List<Pair<Regex, String>> = listOf(
+        // 24 digits, alone or in six groups of four (space or hyphen). The
+        // boundaries keep a longer digit run (a timestamp, a hash) whole.
+        Regex("""\b\d{4}(?:[ -]?\d{4}){5}\b""") to "[ACCOUNT]",
+        Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE) to "[UUID]",
+        Regex("[0-9a-fA-F]{64}") to "[KEY]",
+        // WireGuard/ML-KEM keys are 32 bytes → 43 base64 chars + '='.
+        Regex("[A-Za-z0-9+/]{43}=") to "[KEY]",
+        Regex("https?://[\\w.:-]+") to "[URL]",
+        // IPv6: uncompressed (≥3 hex groups), then "::"-compressed. The
+        // compressed pattern REQUIRES hex after the "::" so a bare "::" in code
+        // symbols (Kotlin/C++ "Class::member") never matches.
+        Regex("\\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\\b") to "[IP]",
+        Regex("(?:\\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*\\b") to "[IP]",
+        Regex("\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b") to "[IP]",
+        Regex("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b") to "[EMAIL]",
+        // Bare hostnames (≥3 labels, like our node names) — desktop HOST_RE.
+        Regex(
+            "\\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+" +
+                "\\.[a-zA-Z]{2,}\\b",
+        ) to "[HOST]",
+    )
+
+    /**
      * Delete every report the SDK has queued on disk but not yet sent.
      *
      * Called whenever crash reporting is OFF (at start-up and on opt-out, after

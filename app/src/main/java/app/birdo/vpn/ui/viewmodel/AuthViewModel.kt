@@ -84,7 +84,21 @@ data class AuthUiState(
      * sentence Login shows.
      */
     val sessionExpired: Boolean = false,
-)
+) {
+    /**
+     * Leaves out [pendingAnonymousId] (an account's only credential) and
+     * [challengeToken] (a live 2FA challenge), and every message, which can
+     * quote what the user typed; [user] redacts itself. Nothing prints this
+     * state today, and a log line or a crash breadcrumb added later must not
+     * be what changes that (REVIEW-AND2-010).
+     */
+    override fun toString(): String =
+        "AuthUiState(isLoading=$isLoading, isLoggedIn=$isLoggedIn, user=$user, " +
+            "requiresTwoFactor=$requiresTwoFactor, isDeletingAccount=$isDeletingAccount, " +
+            "deleteRequiresTwoFactor=$deleteRequiresTwoFactor, accountDeleted=$accountDeleted, " +
+            "pendingAnonymousId=${if (pendingAnonymousId != null) "[REDACTED]" else "null"}, " +
+            "sessionExpired=$sessionExpired)"
+}
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
