@@ -170,6 +170,55 @@ class SessionPolicyTest {
     }
 
     @Test
+    fun `a reap's rebuild is its whole budget, whatever the rebuild fails with`() {
+        // WEB-HB: one quiet rebuild; a failed rebuild goes to Error instead of
+        // retrying under TRANSIENT's eight attempts.
+        var session = established()
+        val reaped = ReconnectPolicy.onFailure(session, FailureKind.REAPED, true, t0, 0.0)
+        assertTrue(reaped.decision is Decision.Retry)
+        session = reaped.session
+        val rebuildFailed = ReconnectPolicy.onFailure(session, FailureKind.TRANSIENT, true, t0 + 5_000, 0.0)
+        assertEquals(GiveUpReason.BUDGET_EXHAUSTED, (rebuildFailed.decision as Decision.GiveUp).reason)
+        // A reap more than ten minutes later is a new streak with its own rebuild.
+        val later = ReconnectPolicy.onFailure(
+            session.connected(), FailureKind.REAPED, true, t0 + ReconnectPolicy.FAILURE_WINDOW_MS + 1, 0.0,
+        )
+        assertTrue(later.decision is Decision.Retry)
+    }
+
+    @Test
+    fun `an eviction is terminal`() {
+        assertTrue(FailureKind.EVICTED.terminal)
+        assertEquals(0, ReconnectPolicy.maxAttempts(FailureKind.EVICTED))
+    }
+
+    // ── HeartbeatPolicy (WEB-HB's client table) ──────────────────────────
+
+    @Test
+    fun `a heartbeat reason decides, and an absent or unknown one keeps today's inference`() {
+        val flowing = 60_000L
+        val slept = HeartbeatPolicy.REAP_WINDOW_MS
+        fun v(valid: Boolean, reason: String?, gap: Long) = HeartbeatPolicy.verdict(valid, reason, gap)
+        // Today's behaviour, for an older backend or a reason this build does not know.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, null, flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, null, flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, v(false, null, slept))
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, "quarantined", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "quarantined", flowing))
+        // The table.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, "ok", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, "server_offline", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, v(false, "server_offline", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "revoked", slept))
+        assertEquals(HeartbeatPolicy.Verdict.EVICTED, v(false, "evicted", slept))
+        // A reap is a reap even while beats were flowing (no inference needed).
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, v(false, "reaped", flowing))
+        // not_found: the last good beat 5 min or more ago means reaped, else revoked.
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, v(false, "not_found", slept))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "not_found", slept - 1))
+    }
+
+    @Test
     fun `a Disconnect wins over any failure that lands after it`() {
         val out = ReconnectPolicy.onFailure(Session.IDLE, FailureKind.TRANSIENT, online = true, nowMs = t0, jitter = 0.0)
         assertEquals(GiveUpReason.NOT_WANTED, (out.decision as Decision.GiveUp).reason)

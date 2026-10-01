@@ -59,6 +59,13 @@ enum class FailureKind(val terminal: Boolean) {
     /** `valid = false` while heartbeats were flowing: revoked, or another device took the slot. */
     REVOKED(true),
 
+    /**
+     * The heartbeat said "evicted" (WEB-HB): another device of this account
+     * connected and took the slot. Never re-dialled on its own — that would
+     * evict the other device in turn, the ping-pong of A1-004.
+     */
+    EVICTED(true),
+
     /** 401 after the refresh token was rejected. */
     SIGN_IN_REQUIRED(true),
 
@@ -169,6 +176,12 @@ internal object ReconnectPolicy {
         /** When the budget ran out, or null while it has not. */
         val trippedAt: Long? = null,
         /**
+         * This streak began with a reap: its one rebuild is the whole budget,
+         * so a rebuild that fails gives up instead of retrying under the
+         * failure's own (larger) budget (WEB-HB's client table).
+         */
+        val reapStreak: Boolean = false,
+        /**
          * The one re-dial the cooldown allows (REVIEW-AND-011): a failure now
          * gives up again at once instead of starting a fresh eight-attempt
          * streak, which re-armed the block for ~8.5 min every 15 min.
@@ -183,8 +196,14 @@ internal object ReconnectPolicy {
         val mayAutoRetry: Boolean
             get() = wantUp && (established || owner == Owner.HEADLESS)
 
-        fun connected(): Session =
-            copy(established = true, failures = 0, lastFailureAt = 0L, trippedAt = null, lastChance = false)
+        fun connected(): Session = copy(
+            established = true,
+            failures = 0,
+            lastFailureAt = 0L,
+            trippedAt = null,
+            lastChance = false,
+            reapStreak = false,
+        )
 
         companion object {
             val IDLE = Session()
@@ -256,18 +275,20 @@ internal object ReconnectPolicy {
 
         val continues = session.failures > 0 && nowMs - session.lastFailureAt <= FAILURE_WINDOW_MS
         val failures = if (continues) session.failures + 1 else 1
+        val reapStreak = kind == FailureKind.REAPED || (continues && session.reapStreak)
         // Judged by the budget of the MOST RECENT kind, as on iOS: a streak
         // that degrades into never-handshaking stops at that kind's smaller
-        // budget instead of riding the larger one it started with.
-        val budget = maxAttempts(kind)
+        // budget instead of riding the larger one it started with. A streak a
+        // reap began keeps the reap's budget whatever its rebuild fails with.
+        val budget = if (reapStreak) maxAttempts(FailureKind.REAPED) else maxAttempts(kind)
         if (failures > budget) {
             return Outcome(
-                session.copy(failures = failures, lastFailureAt = nowMs, trippedAt = nowMs),
+                session.copy(failures = failures, lastFailureAt = nowMs, trippedAt = nowMs, reapStreak = reapStreak),
                 Decision.GiveUp(GiveUpReason.BUDGET_EXHAUSTED, kind, failures - 1),
             )
         }
         return Outcome(
-            session.copy(failures = failures, lastFailureAt = nowMs),
+            session.copy(failures = failures, lastFailureAt = nowMs, reapStreak = reapStreak),
             Decision.Retry(attempt = failures, delayMs = backoffMs(failures, jitter)),
         )
     }
@@ -289,6 +310,50 @@ internal object ReconnectPolicy {
      */
     fun afterCooldown(session: Session): Session =
         session.copy(failures = 0, lastFailureAt = 0L, trippedAt = null, lastChance = true)
+}
+
+/**
+ * What a heartbeat reply means for the session (WEB-HB's client table).
+ *
+ * birdo-web now says WHY a key is no longer valid, in `reason`. Absent (an
+ * older backend) or unknown, the answer is exactly today's: phase A's
+ * inference from the gap since the last good beat. Present, it decides:
+ *
+ * | reason | the client |
+ * |---|---|
+ * | ok | nothing |
+ * | server_offline, valid | today (the node is draining; the session lives) |
+ * | server_offline, invalid | re-dial a DIFFERENT server, fail-closed meanwhile |
+ * | revoked | stop, no retry (the owner rule) |
+ * | evicted | stop, never re-dial, say another device took the slot |
+ * | reaped | one quiet rebuild behind the block (the reap budget) |
+ * | not_found | last good beat >= 5 min ago: reaped; else revoked |
+ */
+internal object HeartbeatPolicy {
+
+    enum class Verdict { ALIVE, REAPED, REVOKED, EVICTED, SERVER_GONE }
+
+    /** birdo-web's stale-key reap (cleanup.service.ts); the heartbeat runs on awake time only. */
+    const val REAP_WINDOW_MS = 5 * 60_000L
+
+    fun verdict(valid: Boolean, reason: String?, sinceLastOkMs: Long): Verdict = when (reason) {
+        "ok" -> Verdict.ALIVE
+        "server_offline" -> if (valid) Verdict.ALIVE else Verdict.SERVER_GONE
+        "revoked" -> Verdict.REVOKED
+        "evicted" -> Verdict.EVICTED
+        "reaped" -> Verdict.REAPED
+        "not_found" -> inferred(sinceLastOkMs)
+        // Absent or a reason this build does not know: today's handling.
+        else -> if (valid) Verdict.ALIVE else inferred(sinceLastOkMs)
+    }
+
+    /**
+     * Phase A's inference, and WEB-HB's not_found rule: a key gone after the
+     * device went longer than the reap window without a good beat was reaped
+     * while it slept; one gone while beats were flowing was ended on purpose.
+     */
+    private fun inferred(sinceLastOkMs: Long): Verdict =
+        if (sinceLastOkMs >= REAP_WINDOW_MS) Verdict.REAPED else Verdict.REVOKED
 }
 
 /**
@@ -403,6 +468,13 @@ internal object SessionCopy {
     const val UPDATE_REQUIRED = "This version of BirdoVPN is no longer supported. Update to keep connecting."
     const val RATE_LIMITED = "Too many attempts. Please wait a moment."
     const val REVOKED = "Connection has been revoked. Please reconnect."
+    /** The heartbeat said "evicted" (WEB-HB's canonical sentence). */
+    const val EVICTED =
+        "Another device on your account connected, so this one was disconnected. Tap Connect to take it back."
+    /** The heartbeat said a Multi-Hop node went away for good ("server_offline", valid = false). */
+    const val SERVER_OFFLINE = "This server went offline. Reconnecting to another location…"
+    const val MULTI_HOP_ROUTE_OFFLINE =
+        "A server on your Multi-Hop route went offline. Choose another entry or exit."
     const val REAPED = "The server dropped this connection while the device was idle. Reconnecting…"
     const val NO_TUNNEL = "Couldn't establish a secure tunnel to this server. Try another location."
     const val QUANTUM_FAILED =

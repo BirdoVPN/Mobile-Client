@@ -168,14 +168,6 @@ interface BirdoApi {
         @Path("keyId") keyId: String,
     ): Response<HeartbeatResponse>
 
-    // ── Key Rotation (P3-25) ─────────────────────────────────────
-
-    @POST("vpn/connections/{keyId}/rotate")
-    suspend fun rotateKey(
-        @Path("keyId") keyId: String,
-        @Body request: KeyRotationRequest,
-    ): Response<KeyRotationResponse>
-
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
 
     @POST("vpn/multi-hop/connect")

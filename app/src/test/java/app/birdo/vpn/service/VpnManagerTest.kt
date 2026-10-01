@@ -99,6 +99,9 @@ class VpnManagerTest {
         every { prefs.lastServerId } returns null
         every { prefs.stealthModeEnabled } returns false
         every { prefs.quantumProtectionEnabled } returns false
+        // Every Connected session beats at once (WEB-HB); a healthy reply by default.
+        coEvery { repository.sendHeartbeat(any()) } returns
+            ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse())
 
         // Mock BirdoVpnService static companion members
         mockkObject(BirdoVpnService.Companion)
@@ -1058,34 +1061,130 @@ class VpnManagerTest {
     }
 
     @Test
-    fun `heartbeat runs every 60 s, and a wake nudge beats at once but not twice in a row`() = runTest {
+    fun `the first beat goes out as the tunnel comes up, then every 60 s, and a wake nudge beats once`() = runTest {
         var now = 0L
         vpnManager.elapsedRealtime = { now }
         vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
         connectAndEstablish()
-        coEvery { repository.sendHeartbeat(any()) } returns
-            ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse())
+        runCurrent()
+        // WEB-HB: the backend keeps only keys that checked in.
+        coVerify(exactly = 1) { repository.sendHeartbeat("key-123") }
 
         advanceTimeBy(59_000)
-        coVerify(exactly = 0) { repository.sendHeartbeat(any()) }
+        coVerify(exactly = 1) { repository.sendHeartbeat(any()) }
+        now = 61_000
         advanceTimeBy(2_000)
-        coVerify(exactly = 1) { repository.sendHeartbeat("key-123") }
+        coVerify(exactly = 2) { repository.sendHeartbeat("key-123") }
 
         // Screen on right after a beat: dropped.
         vpnManager.heartbeatNow()
         runCurrent()
-        coVerify(exactly = 1) { repository.sendHeartbeat(any()) }
+        coVerify(exactly = 2) { repository.sendHeartbeat(any()) }
 
         now += 30_000
         vpnManager.heartbeatNow()
         runCurrent()
-        coVerify(exactly = 2) { repository.sendHeartbeat(any()) }
+        coVerify(exactly = 3) { repository.sendHeartbeat(any()) }
 
         // The loop ends with the session (and must, or the test scheduler
         // would advance it forever).
         serviceEmits(VpnState.Disconnected)
         advanceTimeBy(5 * 60_000L)
-        coVerify(exactly = 2) { repository.sendHeartbeat(any()) }
+        coVerify(exactly = 3) { repository.sendHeartbeat(any()) }
+    }
+
+    // ── WEB-HB: the heartbeat's reason ──────────────────────────────────
+
+    private fun beatsAnswer(valid: Boolean, reason: String?) {
+        coEvery { repository.sendHeartbeat(any()) } returns
+            ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse(valid = valid, reason = reason))
+    }
+
+    @Test
+    fun `evicted stops the session with the canonical sentence and never re-dials`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        beatsAnswer(valid = false, reason = "evicted")
+
+        advanceTimeBy(61_000)
+
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(SessionCopy.EVICTED, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+        assertEquals(FailureKind.EVICTED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+        verify { prefs.sessionShouldBeUp = false }
+        serviceEmits(VpnState.Error(SessionCopy.EVICTED, FailureKind.EVICTED))
+        advanceTimeBy(30 * 60_000L)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `reaped rebuilds once behind the block, even while beats were flowing`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        beatsAnswer(valid = false, reason = "reaped")
+
+        advanceTimeBy(61_000)
+        assertTrue(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+        assertFalse(BirdoVpnService.ACTION_STOP in dispatchedActions)
+        advanceTimeBy(30_000)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a server that went offline for good is replaced by another one, behind the block`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(makeServer(id = "srv-1", load = 1), makeServer(id = "srv-2", load = 50)),
+        )
+        beatsAnswer(valid = false, reason = "server_offline")
+
+        advanceTimeBy(61_000)
+        assertTrue(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+        advanceTimeBy(30_000)
+        // srv-1 is the lowest load, and the one that went away: never re-dialled.
+        coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `not_found is a reap after a long silence and a revoke while beats were flowing`() = runTest {
+        var now = 0L
+        vpnManager.elapsedRealtime = { now }
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        runCurrent()
+        beatsAnswer(valid = false, reason = "not_found")
+
+        now = 60_000L
+        advanceTimeBy(61_000)
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(FailureKind.REVOKED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+    }
+
+    @Test
+    fun `a reply for a key this device already left is ignored`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        runCurrent()
+        val gate = CompletableDeferred<ApiResult<app.birdo.vpn.data.model.HeartbeatResponse>>()
+        coEvery { repository.sendHeartbeat(any()) } coAnswers { gate.await() }
+        advanceTimeBy(61_000)
+
+        // The user disconnects while that beat is in flight; the DELETE wins,
+        // and the server answers the beat for the key it just removed.
+        vpnManager.disconnect()
+        gate.complete(
+            ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse(valid = false, reason = "revoked")),
+        )
+        runCurrent()
+
+        // REVIEW-AND-013: no revoke teardown over the user's own Disconnect.
+        assertEquals(null, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
     }
 
     @Test

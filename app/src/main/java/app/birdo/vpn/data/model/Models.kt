@@ -62,10 +62,6 @@ typealias PortForward = app.birdo.vpn.shared.model.PortForward
 typealias CreatePortForwardRequest = app.birdo.vpn.shared.model.CreatePortForwardRequest
 typealias CreatePortForwardResponse = app.birdo.vpn.shared.model.CreatePortForwardResponse
 
-// ─── Key Rotation ────────────────────────────────────────────────────────────
-typealias KeyRotationRequest = app.birdo.vpn.shared.model.KeyRotationRequest
-typealias KeyRotationResponse = app.birdo.vpn.shared.model.KeyRotationResponse
-
 // Protocol Error Codes: retired 2026-09-20, see the shared module.
 
 // ─── Heartbeat ───────────────────────────────────────────────────────────────

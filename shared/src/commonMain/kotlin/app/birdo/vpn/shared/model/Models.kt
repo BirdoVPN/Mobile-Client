@@ -687,21 +687,12 @@ data class CreatePortForwardResponse(
     val message: String? = null,
 )
 
-// ─── Key Rotation ────────────────────────────────────────────────────────────
-
-@Serializable
-data class KeyRotationRequest(
-    val clientPublicKey: String,
-)
-
-@Serializable
-data class KeyRotationResponse(
-    val success: Boolean = false,
-    val newKeyId: String = "",
-    val serverPublicKey: String = "",
-    val presharedKey: String? = null,
-    val expiresAt: String = "",
-)
+// ─── Key Rotation ─ REMOVED 2026-10-01 ───────────────────────────────────────
+//
+// KeyRotationRequest/Response described `POST vpn/connections/{keyId}/rotate`,
+// which the backend never shipped; the only caller was gated off by a constant
+// `keyRotationSupported = false` (A2-036). A fresh key per connect is the key
+// lifetime today. Bring the types back with the endpoint, not before it.
 
 // ─── Protocol Error Codes ─ RETIRED 2026-09-20 ─────────────────
 //
@@ -730,4 +721,16 @@ data class HeartbeatResponse(
     val valid: Boolean = true,
     val serverOnline: Boolean = true,
     val message: String? = null,
+    /**
+     * WHY the key is in this state, from a backend with birdo-web's heartbeat
+     * reasons (WEB-HB): "ok", "server_offline", "revoked", "evicted", "reaped"
+     * or "not_found". Absent from an older backend, and a value this build
+     * does not know means the same: today's handling. A plain String, never an
+     * enum, so a new reason can never fail the decode of a whole heartbeat.
+     *
+     * Not in the vendored contract yet: WEB-HB adds it to
+     * backend/contract/vpn-protocol.schema.json, and the copy in contract/ is
+     * re-vendored once that is on birdo-web's main.
+     */
+    val reason: String? = null,
 )

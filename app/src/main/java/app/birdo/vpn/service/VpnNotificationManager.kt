@@ -124,7 +124,7 @@ internal class VpnNotificationManager(private val context: Context) {
          * those need the app, which the notification's tap opens.
          */
         private fun offersReconnect(kind: FailureKind): Boolean =
-            !kind.terminal || kind == FailureKind.REVOKED
+            !kind.terminal || kind == FailureKind.REVOKED || kind == FailureKind.EVICTED
 
         /** The body line while connected: "via {location}[ · {IP}]" (P1-parity-028). */
         fun connectedBody(location: String?, ip: String?): String? {
@@ -157,7 +157,7 @@ internal class VpnNotificationManager(private val context: Context) {
             val title = when (state.kind) {
                 FailureKind.SIGN_IN_REQUIRED -> R.string.notif_alert_sign_in
                 FailureKind.UPDATE_REQUIRED -> R.string.notif_alert_update
-                FailureKind.REVOKED -> R.string.notif_alert_revoked
+                FailureKind.REVOKED, FailureKind.EVICTED -> R.string.notif_alert_revoked
                 FailureKind.VPN_TAKEN_OVER -> R.string.notif_alert_turned_off
                 FailureKind.SETUP_REQUIRED, FailureKind.VPN_PERMISSION_REQUIRED -> R.string.notif_alert_open_app
                 else -> R.string.notif_alert_cant_connect

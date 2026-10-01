@@ -173,6 +173,13 @@ class VpnManager @Inject constructor(
     /** Whether the user was protected when the current dial started (see [giveUp]). */
     private var protectedAtDialStart = false
 
+    /**
+     * A server the heartbeat said went offline for good (`server_offline`,
+     * valid = false): the next automatic re-dial picks another one. Cleared
+     * once a session is up and by every user or system dial.
+     */
+    private var avoidServerId: String? = null
+
     /** The dial in flight, owned by [scope] so a caller's cancellation cannot strand it (A1-011). */
     private var dialJob: Job? = null
     private var connectWatchdogJob: Job? = null
@@ -204,7 +211,7 @@ class VpnManager @Inject constructor(
     // ── Heartbeat keepalive ─────────────────────────────────────────
     private var heartbeatJob: Job? = null
     private val heartbeatMutex = Mutex()
-    /** elapsedRealtime of the last `valid = true` beat; see [onHeartbeatInvalid]. */
+    /** elapsedRealtime of the last `valid = true` beat; see [HeartbeatPolicy]. */
     @Volatile private var lastHeartbeatOkAt = 0L
     /** elapsedRealtime of the last beat attempt, to rate-limit nudges. */
     @Volatile private var lastBeatAt = 0L
@@ -291,7 +298,7 @@ class VpnManager @Inject constructor(
          */
         internal const val HEARTBEAT_INTERVAL_MS = 60_000L
         /** The backend's reap window, above. */
-        internal const val REAP_WINDOW_MS = 5 * 60_000L
+        internal const val REAP_WINDOW_MS = HeartbeatPolicy.REAP_WINDOW_MS
         /** A screen-on or network nudge inside this gap of the last beat is dropped. */
         private const val HEARTBEAT_NUDGE_MIN_GAP_MS = 20_000L
         /**
@@ -300,8 +307,6 @@ class VpnManager @Inject constructor(
          * typing an MTU) into ONE reconnect; short enough to feel immediate.
          */
         private const val SETTINGS_REAPPLY_DEBOUNCE_MS = 1_200L
-        /** Key rotation interval: rotate WireGuard keys every ~45 min for forward secrecy */
-        private const val KEY_ROTATION_HEARTBEATS = 45 // 45 × 60s = 45 minutes
         /** Bound on the server-side slot release at sign-out; local sign-out proceeds regardless. */
         private const val SIGN_OUT_RELEASE_TIMEOUT_MS = 10_000L
 
@@ -632,6 +637,7 @@ class VpnManager @Inject constructor(
             DialOrigin.USER, DialOrigin.HEADLESS -> {
                 intentGeneration++
                 cancelRecovery()
+                avoidServerId = null
                 session = if (origin == DialOrigin.USER) {
                     ReconnectPolicy.Session.userDial()
                 } else {
@@ -1054,7 +1060,7 @@ class VpnManager @Inject constructor(
         if (BirdoVpnService.running) context.startService(intent) else context.startForegroundService(intent)
     }
 
-    private suspend fun quickDial(gen: Long, prior: VpnState): ApiResult<ConnectResponse> {
+    private suspend fun quickDial(gen: Long, prior: VpnState, exclude: String? = null): ApiResult<ConnectResponse> {
         // Connecting is published for the server lookup so every surface shows
         // the dial at once; dialSingle is handed the state from BEFORE it, so
         // a quick connect from idle no longer mistakes its own Connecting for
@@ -1071,7 +1077,8 @@ class VpnManager @Inject constructor(
             return ApiResult.Error(serversResult.message, serversResult.code)
         }
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
-        val servers = (serversResult as ApiResult.Success).data
+        // [exclude]: a server the heartbeat said went offline for good.
+        val servers = (serversResult as ApiResult.Success).data.filter { it.id != exclude }
         val bestServer = bestServer(servers)
         if (bestServer == null) {
             publishError("No servers available", FailureKind.REFUSED)
@@ -1129,6 +1136,8 @@ class VpnManager @Inject constructor(
         val last = prefs.lastServerId
         when {
             route != null -> dialMultiHop(route.first, route.second, null, gen, prior)
+            // The heartbeat said this server went offline: the best other one.
+            last != null && last == avoidServerId -> quickDial(gen, prior, exclude = last)
             last != null -> dialSingle(last, null, gen, prior)
             else -> quickDial(gen, prior)
         }
@@ -1456,6 +1465,7 @@ class VpnManager @Inject constructor(
             }
             is VpnState.Connected -> {
                 session = session.connected()
+                avoidServerId = null
                 cancelRecovery()
                 connectWatchdogJob?.cancel()
                 _switching.value = false
@@ -1916,33 +1926,25 @@ class VpnManager @Inject constructor(
     /**
      * Start the periodic heartbeat to the backend while connected
      * (POST /vpn/heartbeat/{keyId}, every [HEARTBEAT_INTERVAL_MS] ±10 %). It
-     * is the ONLY thing that refreshes the peer's `lastSeen`, so it is what
-     * keeps the backend from reaping a live session.
+     * is what refreshes the peer's `lastSeen`, so it is what keeps the backend
+     * from reaping a live session.
+     *
+     * The FIRST beat goes out as soon as the tunnel is up (WEB-HB): the
+     * backend's stranded-peer purge drops a key that never checked in, and
+     * since D-6 that beat is also the first data through the tunnel, which
+     * the dead-tunnel check (TunnelMonitor) watches for an answer.
+     *
+     * (A ~45-minute key rotation used to tick here behind
+     * `repository.keyRotationSupported`, which was false: the backend has no
+     * rotate endpoint. It never ran and is gone, A2-036.)
      */
     private fun startHeartbeat(resetLastOk: Boolean = true) {
         heartbeatJob?.cancel()
         if (resetLastOk) lastHeartbeatOkAt = elapsedRealtime()
         heartbeatJob = scope.launch(ioDispatcher) {
-            var keyRotationTickCount = 0
             while (isActive) {
-                delay(ReconnectPolicy.jittered(HEARTBEAT_INTERVAL_MS, jitter()))
                 if (!beat()) break
-
-                // P1-13: Periodic key rotation for forward secrecy (~45 min).
-                // Skip entirely while the backend rotate endpoint is unshipped
-                // (repository.keyRotationSupported == false): the existing key is
-                // kept and we never fire a request that can only return 501.
-                if (repository.keyRotationSupported) {
-                    keyRotationTickCount++
-                    if (keyRotationTickCount >= KEY_ROTATION_HEARTBEATS) {
-                        keyRotationTickCount = 0
-                        try {
-                            repository.rotateKey()
-                        } catch (e: Exception) {
-                            android.util.Log.w("VpnManager", "Key rotation failed: ${e.message}")
-                        }
-                    }
-                }
+                delay(ReconnectPolicy.jittered(HEARTBEAT_INTERVAL_MS, jitter()))
             }
         }
     }
@@ -1960,21 +1962,34 @@ class VpnManager @Inject constructor(
     /** One heartbeat round trip. Returns false when the loop must stop. */
     private suspend fun beat(): Boolean = heartbeatMutex.withLock {
         if (_state.value !is VpnState.Connected) return@withLock false
+        val key = sessionKeyId
         val now = elapsedRealtime()
         lastBeatAt = now
         val sinceLastOk = now - lastHeartbeatOkAt
-        when (val result = repository.sendHeartbeat(sessionKeyId)) {
+        val result = repository.sendHeartbeat(key)
+        // Act only on a reply for the session it was sent for (WEB-HB): a
+        // switch or a Disconnect that landed while this beat was in flight
+        // owns the session now, and a reply about the key it just released
+        // ("evicted" for a rebuild's old key, "revoked" after a DELETE) must
+        // not tear the new one down or supersede the user's dial
+        // (REVIEW-AND-013).
+        if (key != sessionKeyId || _state.value !is VpnState.Connected) return@withLock false
+        when (result) {
             is ApiResult.Success -> {
                 val resp = result.data
-                if (!resp.valid) {
-                    withContext(Dispatchers.Main) { onHeartbeatInvalid(resp.message, sinceLastOk) }
-                    return@withLock false
+                when (val verdict = HeartbeatPolicy.verdict(resp.valid, resp.reason, sinceLastOk)) {
+                    HeartbeatPolicy.Verdict.ALIVE -> {
+                        if (resp.valid) lastHeartbeatOkAt = elapsedRealtime()
+                        if (!resp.serverOnline) {
+                            android.util.Log.w("VpnManager", "Heartbeat: server going offline")
+                        }
+                        true
+                    }
+                    else -> {
+                        withContext(Dispatchers.Main) { onHeartbeatVerdict(verdict, resp.message) }
+                        false
+                    }
                 }
-                lastHeartbeatOkAt = elapsedRealtime()
-                if (!resp.serverOnline) {
-                    android.util.Log.w("VpnManager", "Heartbeat: server going offline")
-                }
-                true
             }
             is ApiResult.Error -> {
                 android.util.Log.w("VpnManager", "Heartbeat failed: ${result.message}")
@@ -1996,7 +2011,9 @@ class VpnManager @Inject constructor(
                             "heartbeat_no_key_id",
                             "Connected with no WireGuard key id to heartbeat for — rebuilding before the peer is reaped",
                         )
-                        withContext(Dispatchers.Main) { onHeartbeatInvalid(null, Long.MAX_VALUE) }
+                        withContext(Dispatchers.Main) {
+                            onHeartbeatVerdict(HeartbeatPolicy.Verdict.REAPED, serverMessage = null)
+                        }
                         false
                     }
                     else -> true
@@ -2006,38 +2023,54 @@ class VpnManager @Inject constructor(
     }
 
     /**
-     * The heartbeat said `valid = false`: the key row is gone or inactive.
+     * The heartbeat says the key is no longer this device's live session
+     * ([HeartbeatPolicy] decides which case it is):
      *
-     * Two causes produce the same answer, and they need opposite handling:
-     *
-     *  - Heartbeats were flowing (the last good one is inside the backend's
-     *    reap window). Something ENDED the session on purpose: an admin revoke,
-     *    or — the common case — another device of the same account connected
-     *    and the backend evicted this one ("newest connection wins"). Owner
-     *    decision 2026-09-30, as on iOS: tear down, RELEASE the kill-switch
-     *    block (the phone's traffic is not held hostage because another device
-     *    took the slot), show "Connection has been revoked. Please reconnect."
-     *    and do NOT re-dial — re-dialling evicted the other device in turn, the
-     *    ping-pong of A1-004. Android's own lockdown, if the user enabled it,
-     *    still blocks; that is Android's doing.
-     *
-     *  - The device went LONGER than the reap window without a successful
-     *    beat: it was asleep (A1-017 — delay() counts awake time only). The
-     *    server reaped an idle peer; nobody ended anything. This is the same
-     *    event as a tunnel that stalls after a reap, which recovers under the
-     *    reconnect budget, so it gets exactly that: one re-dial behind the
-     *    block ([FailureKind.REAPED]). Treating the faster detector's verdict
-     *    as a revoke would make every phone that slept five minutes wake up
-     *    unprotected.
+     *  - REAPED: the server dropped an idle peer; nobody ended anything. One
+     *    quiet rebuild behind the block ([FailureKind.REAPED], budget 1 per
+     *    10 min). Phase A inferred this from the gap since the last good beat;
+     *    birdo-web now says it (`reason: "reaped"`), and the inference stays
+     *    for an older backend.
+     *  - REVOKED: ended on purpose (a Disconnect from another device, a
+     *    sign-out everywhere, a plan change). Owner decision 2026-09-30, as on
+     *    iOS: tear down, RELEASE the kill-switch block, say so, no re-dial.
+     *  - EVICTED: another device of this account took the slot. As REVOKED,
+     *    with the sentence that says so — and never re-dialled, or the two
+     *    devices would evict each other in turn (A1-004's ping-pong).
+     *  - SERVER_GONE: the node was drained or destroyed. Re-dial a DIFFERENT
+     *    server, fail-closed meanwhile; a Multi-Hop route cannot be re-chosen
+     *    for the user, so it stops and says which choice to make.
      */
-    private suspend fun onHeartbeatInvalid(serverMessage: String?, sinceLastOkMs: Long) {
-        if (sinceLastOkMs > REAP_WINDOW_MS) {
-            android.util.Log.w("VpnManager", "Heartbeat: peer reaped after an idle gap — rebuilding")
-            sessionDeadTeardown(SessionCopy.REAPED, FailureKind.REAPED)
-            return
+    private suspend fun onHeartbeatVerdict(verdict: HeartbeatPolicy.Verdict, serverMessage: String?) {
+        when (verdict) {
+            HeartbeatPolicy.Verdict.ALIVE -> Unit
+            HeartbeatPolicy.Verdict.REAPED -> {
+                android.util.Log.w("VpnManager", "Heartbeat: peer reaped — rebuilding behind the block")
+                sessionDeadTeardown(SessionCopy.REAPED, FailureKind.REAPED)
+            }
+            HeartbeatPolicy.Verdict.REVOKED -> {
+                android.util.Log.w("VpnManager", "Heartbeat: connection revoked by the server")
+                endSessionForServer(serverMessage?.takeIf { it.isNotBlank() } ?: SessionCopy.REVOKED, FailureKind.REVOKED)
+            }
+            HeartbeatPolicy.Verdict.EVICTED -> {
+                android.util.Log.w("VpnManager", "Heartbeat: another device took this session's slot")
+                endSessionForServer(SessionCopy.EVICTED, FailureKind.EVICTED)
+            }
+            HeartbeatPolicy.Verdict.SERVER_GONE -> if (activeMultiHop != null) {
+                sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
+            } else {
+                android.util.Log.w("VpnManager", "Heartbeat: this server went offline — moving to another")
+                avoidServerId = prefs.lastServerId
+                sessionDeadTeardown(SessionCopy.SERVER_OFFLINE, FailureKind.DIED_AFTER_HANDSHAKE)
+            }
         }
-        android.util.Log.w("VpnManager", "Heartbeat: connection revoked by the server")
-        val message = serverMessage?.takeIf { it.isNotBlank() } ?: SessionCopy.REVOKED
+    }
+
+    /**
+     * The server ended this session on purpose: release the block, show
+     * [message], forget the intent, and never re-dial on our own.
+     */
+    private suspend fun endSessionForServer(message: String, kind: FailureKind) {
         intentGeneration++
         session = ReconnectPolicy.Session.IDLE
         cancelRecovery()
@@ -2048,7 +2081,7 @@ class VpnManager @Inject constructor(
             tearDownTunnel(
                 userInitiated = false,
                 reason = message,
-                reasonKind = FailureKind.REVOKED,
+                reasonKind = kind,
                 releasePeer = false,
             )
         }
