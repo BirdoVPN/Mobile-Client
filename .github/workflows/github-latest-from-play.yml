@@ -1,0 +1,91 @@
+# ============================================================================
+# GitHub "Latest" follows Google Play's 100% production release
+# ============================================================================
+# Owner decision 2026-10-01: GitHub "Latest" for Android must ALWAYS be the
+# newest build that is FULLY released, updated automatically, never by
+# hand-flipping drafts. "Fully released" means Google Play's production track
+# shows it as `completed` (100% rollout).
+#
+# Why Play decides, not the tag: the in-app update banner reads the newest
+# published android-v* GitHub release (GET /updates/android/{v}). If GitHub
+# moved to a build that Play has not yet rolled out to everyone, Play users
+# would be nudged to an update their store does not offer yet.
+#
+# Read-only on Play: play_release.py in probe mode opens an edit, reads the
+# tracks and DISCARDS the edit. On GitHub it only ever moves Latest FORWARD.
+#
+# A release published with GITHUB_TOKEN does not trigger other workflows, so
+# F-Droid's metadata update (fdroid.yml) is dispatched explicitly.
+# ============================================================================
+name: GitHub Latest follows Play
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'  # every 6 h, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write  # to dispatch fdroid.yml
+
+concurrency:
+  group: github-latest-from-play
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install deps
+        run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
+
+      - name: Probe Play production (read-only)
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          MODE: probe
+          TRACK: production
+        run: |
+          set -euo pipefail
+          python3 scripts/play_release.py | tee out.txt
+          grep -q 'probe only' out.txt || { echo "::error::play_release.py probe did not complete"; exit 1; }
+
+      - name: Move GitHub Latest to the 100% production build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Probe lines look like:
+          #   production   completed    versionCodes=['10430'] userFraction=-
+          vc=$(awk '$1 == "production" && $2 == "completed"' out.txt | grep -oE '[0-9]{5,}' | sort -n | tail -1 || true)
+          if [ -z "$vc" ]; then
+            echo "No completed production release on Play; nothing to do."
+            exit 0
+          fi
+          # versionCode = major*10000 + minor*100 + patch (app/build.gradle.kts)
+          tag="android-v$((vc / 10000)).$(( (vc / 100) % 100 )).$((vc % 100))"
+          echo "Play production at 100%: versionCode $vc -> $tag"
+          if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::warning::$tag has no GitHub release; nothing to mark"
+            exit 0
+          fi
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || echo none)
+          if [ "$latest" = "$tag" ]; then
+            echo "$tag is already Latest."
+            exit 0
+          fi
+          case "$latest" in
+            android-v*)
+              lv=$(printf '%s' "${latest#android-v}" | awk -F. '{ print $1 * 10000 + $2 * 100 + $3 }')
+              if [ "$lv" -gt "$vc" ]; then
+                echo "Latest is $latest, newer than $tag; leaving it."
+                exit 0
+              fi
+              ;;
+          esac
+          gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --prerelease=false
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id)
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$id" -f make_latest=true --jq '"marked \(.tag_name) Latest"'
+          gh workflow run fdroid.yml -R "$GITHUB_REPOSITORY" --ref main
+          echo "Dispatched fdroid.yml for $tag."
