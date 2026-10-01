@@ -43,12 +43,18 @@ final class AuthViewModel: ObservableObject {
     /// `GET /auth/me` then confirms; ONLY a definitive 401 (after one
     /// auto-refresh attempt) flips this back to false.
     @Published var isLoggedIn = false
-    /// Consent is shown ONCE, on first launch, before anything else.
+    /// The user accepted the CURRENT disclosure (`ConsentRecord.currentVersion`).
+    /// Shown on first launch, and once more after an update that changes the
+    /// disclosure (owner item 38).
     @Published var hasConsented = false
     /// The user chose "Not now" on the privacy disclosure. They get the whole
     /// guest shell; consent is asked for again before an account is created or
     /// signed into — the only point at which personal data is processed.
     @Published private(set) var consentDeferred = false
+    /// The user accepted an OLDER disclosure and is being shown the current
+    /// one (owner item 38). The screen says it changed, so a returning user
+    /// does not read it as the app having been reset.
+    @Published private(set) var isReconsent = false
     /// The sign-in sheet is up. Raised ONLY by `requestSignIn(_:)`, from an
     /// action that genuinely needs an account.
     @Published var isPresentingSignIn = false
@@ -252,20 +258,25 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
-        let storedConsent = UserDefaults.standard.bool(forKey: "gdpr_consented")
-        let storedDeferral = UserDefaults.standard.bool(forKey: Self.consentDeferredKey)
+        // Owner item 38: consent is VERSIONED. An acceptance of an older
+        // disclosure does not count, so its user sees the current one once.
+        let defaults = UserDefaults.standard
+        let storedConsent = ConsentRecord.hasAcceptedCurrent(in: defaults)
+        let storedDeferral = ConsentRecord.isDeferred(in: defaults)
         // Cold-start routing from local tokens only: logged in iff either
         // stored JWT is unexpired. Unparseable = expired (fail-safe).
         let sessionLive = Self.isTokenLive(keychain.accessToken)
             || Self.isTokenLive(keychain.refreshToken)
+        // A signed-in session is no longer grandfathered into consent: it
+        // used to set `gdpr_consented` here, which made a signed-in user
+        // immune to any change of the disclosure — exactly the users who must
+        // see a rewritten one.
+        hasConsented = storedConsent
+        consentDeferred = storedDeferral
+        isReconsent = !storedConsent && ConsentRecord.acceptedVersion(in: defaults) > 0
         if sessionLive {
             isLoggedIn = true
             userEmail = keychain.userEmail
-            // A logged-in session implies prior consent — grandfather it.
-            hasConsented = true
-            if !storedConsent {
-                UserDefaults.standard.set(true, forKey: "gdpr_consented")
-            }
             Task { [weak self] in
                 await self?.hydrateOnColdStart()
             }
@@ -275,18 +286,20 @@ final class AuthViewModel: ObservableObject {
             if keychain.accessToken != nil || keychain.refreshToken != nil {
                 keychain.clear()
             }
-            hasConsented = storedConsent
-            consentDeferred = storedDeferral
         }
     }
 
     // MARK: - Consent
 
-    static let consentDeferredKey = "gdpr_consent_deferred"
-
     func acceptConsent() {
+        // Persisted FIRST: the flag, THIS version (owner item 38) and the
+        // epoch-millis timestamp Android also keeps. Anything the published
+        // flip below sets off reads the stored record (the item 41 network
+        // gate does), so it must already say "accepted".
+        ConsentRecord.recordAcceptance(in: UserDefaults.standard)
         hasConsented = true
         consentDeferred = false
+        isReconsent = false
         // Hand back to the tap that was interrupted. Deferred so the sheet's
         // ConsentView -> LoginView swap settles before provisioning re-enters
         // and flips it to the progress step.
@@ -296,11 +309,6 @@ final class AuthViewModel: ObservableObject {
                 self?.provisionAnonymously(reason: resumed)
             }
         }
-        let defaults = UserDefaults.standard
-        defaults.set(true, forKey: "gdpr_consented")
-        defaults.removeObject(forKey: Self.consentDeferredKey)
-        // Epoch millis, matching Android's `privacyConsentTimestamp`.
-        defaults.set(Date().timeIntervalSince1970 * 1000, forKey: "privacyConsentTimestamp")
     }
 
     /// "Not now" on the privacy disclosure.
@@ -314,10 +322,8 @@ final class AuthViewModel: ObservableObject {
     func deferConsent() {
         hasConsented = false
         consentDeferred = true
-        let defaults = UserDefaults.standard
-        defaults.set(false, forKey: "gdpr_consented")
-        defaults.set(true, forKey: Self.consentDeferredKey)
-        defaults.removeObject(forKey: "privacyConsentTimestamp")
+        isReconsent = false
+        ConsentRecord.recordDeferral(in: UserDefaults.standard)
     }
 
     // MARK: - Sign-in sheet (point of use, never a launch wall)

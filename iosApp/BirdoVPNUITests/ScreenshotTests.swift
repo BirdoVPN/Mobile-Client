@@ -38,6 +38,9 @@ final class ScreenshotTests: XCTestCase {
         // reads this exact key on launch, so pre-setting it is both the least
         // brittle route and the one that matches what a returning user sees.
         app.launchArguments += ["-gdpr_consented", "YES"]
+        // Consent is versioned (ConsentRecord, owner item 38): a bare `YES`
+        // now reads as an acceptance of the OLD disclosure and re-shows it.
+        app.launchArguments += ["-gdpr_consent_version", "2"]
         // Kill switch OFF for capture only. With it on and no tunnel up, Home
         // shows a red "Kill Switch — All traffic blocked" banner across the hero
         // shot. That is correct behaviour and must stay the shipping default —

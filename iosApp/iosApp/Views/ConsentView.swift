@@ -57,9 +57,7 @@ struct ConsentView: View {
                         .multilineTextAlignment(.center)
                         .padding(.top, 16)
 
-                    Text(isSheet
-                            ? "Before you create or sign in to an account, please review how your data is handled."
-                            : "Before using BirdoVPN, please review how your data is handled.")
+                    Text(subtitle)
                         .font(.system(size: 14))
                         .foregroundStyle(BirdoTheme.white60)
                         .multilineTextAlignment(.center)
@@ -91,8 +89,9 @@ struct ConsentView: View {
                     }
                     .padding(.top, 16)
 
-                    // acceptConsent() persists the flag AND the
-                    // privacyConsentTimestamp — nothing else to do here.
+                    // acceptConsent() persists the flag, the consent VERSION
+                    // (ConsentRecord, owner item 38) and the timestamp —
+                    // nothing else to do here.
                     PrimaryButton("I Agree & Continue",
                                   variant: .brand,
                                   fontSize: 16,
@@ -131,6 +130,23 @@ struct ConsentView: View {
             }
         }
         .pixelCanvasTouchTrail(pixelModel)
+    }
+
+    /// Owner item 38: a user who accepted an older disclosure is told it
+    /// changed, so seeing it again does not read as the app having reset.
+    private var subtitle: String {
+        if isSheet {
+            return "Before you create or sign in to an account, please review how your data is handled."
+        }
+        if authVM.isReconsent {
+            // Honest about WHAT changed (audit 2026-09-29, B-1 / B-13): the
+            // data description was corrected, and accepting now covers the
+            // Terms as well as the Privacy Policy.
+            return "We've updated this notice: it describes your data more accurately and now "
+                + "covers the Terms of Service as well as the Privacy Policy. Please review it "
+                + "before you carry on."
+        }
+        return "Before using BirdoVPN, please review how your data is handled."
     }
 
     // MARK: - Data summary card
