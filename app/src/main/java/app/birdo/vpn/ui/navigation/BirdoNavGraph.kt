@@ -688,11 +688,16 @@ fun BirdoNavGraph(
                         // The list's own load error first; otherwise a refusal
                         // from selectServer (live Multi-Hop downgrade), which
                         // HomeScreen also renders — without it here the refusal
-                        // was silent on the surface that triggers it.
-                        errorMessage = vpnState.serversError ?: vpnState.connectError,
-                        // A live switch re-dials the selected node, so while a
-                        // single-hop tunnel is up they are the same node.
-                        connectedServerId = vpnState.selectedServer?.id?.takeIf {
+                        // was silent on the surface that triggers it. Last, the
+                        // session's own Error: a switch made from this tab fails
+                        // there (a locked node, a device cap), and it used to
+                        // show only on Home (REVIEW-AND-009).
+                        errorMessage = vpnState.serversError ?: vpnState.connectError
+                            ?: (vpnState.vpnState as? VpnState.Error)?.message,
+                        // The node the session was DIALLED to — not the
+                        // selection, which Auto-Connect, the tile, the widget
+                        // and a headless start never set (REVIEW-AND-008).
+                        connectedServerId = vpnState.connectedServerId?.takeIf {
                             vpnState.vpnState == VpnState.Connected && !multiHopArmed
                         },
                         onViewPlans = {

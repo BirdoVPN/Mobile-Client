@@ -146,12 +146,27 @@ class SessionPolicyTest {
     }
 
     @Test
-    fun `a spent budget starts a fresh streak after the cooldown`() {
+    fun `after the cooldown exactly one re-dial is allowed`() {
         val tripped = established().copy(failures = 9, lastFailureAt = t0, trippedAt = t0)
         val fresh = ReconnectPolicy.afterCooldown(tripped)
-        assertEquals(0, fresh.failures)
         assertNull(fresh.trippedAt)
         assertTrue(fresh.mayAutoRetry)
+        assertTrue(fresh.lastChance)
+        // That one re-dial fails: give up again at once (REVIEW-AND-011), not a
+        // fresh eight-attempt streak that re-arms the block for ~8.5 min.
+        val later = t0 + ReconnectPolicy.TRIP_COOLDOWN_MS
+        val out = ReconnectPolicy.onFailure(fresh, FailureKind.DIED_AFTER_HANDSHAKE, true, later, 0.0)
+        val giveUp = out.decision as Decision.GiveUp
+        assertEquals(GiveUpReason.BUDGET_EXHAUSTED, giveUp.reason)
+        assertEquals(1, giveUp.attempts)
+        assertFalse(out.session.lastChance)
+        // Offline it still waits for the network instead of spending the chance.
+        assertEquals(
+            Decision.WaitForNetwork,
+            ReconnectPolicy.onFailure(fresh, FailureKind.TRANSIENT, false, later, 0.0).decision,
+        )
+        // A connect ends it.
+        assertFalse(fresh.connected().lastChance)
     }
 
     @Test
@@ -204,15 +219,30 @@ class SessionPolicyTest {
     }
 
     @Test
-    fun `a sticky restart re-arms the block for a kill-switch user and restores a wanted session`() {
+    fun `a sticky restart re-arms the block only for a session somebody wants`() {
         assertEquals(SystemStartPolicy.Plan(armBlock = true, connect = true, actionNeeded = null), plan(SystemStartKind.STICKY_RESTART))
-        // Nothing was wanted, but the service was running with the kill switch on.
-        assertEquals(
-            SystemStartPolicy.Plan(armBlock = true, connect = false, actionNeeded = null),
-            plan(SystemStartKind.STICKY_RESTART, sessionShouldBeUp = false),
-        )
-        // Kill switch off and nothing wanted: stop without a trace.
+        // Nothing was wanted (a user dial that never connected left the
+        // service foreground): no block nobody asked for (REVIEW-AND-004).
+        // Changed from phase A, which armed here.
+        assertTrue(plan(SystemStartKind.STICKY_RESTART, sessionShouldBeUp = false).idle)
         assertTrue(plan(SystemStartKind.STICKY_RESTART, sessionShouldBeUp = false, killSwitch = false).idle)
+    }
+
+    @Test
+    fun `a process that finds the session dead resumes it, block first`() {
+        assertEquals(
+            SystemStartPolicy.Plan(armBlock = true, connect = true, actionNeeded = null),
+            plan(SystemStartKind.PROCESS_RESTART),
+        )
+        assertEquals(
+            SystemStartPolicy.Plan(armBlock = false, connect = true, actionNeeded = null),
+            plan(SystemStartKind.PROCESS_RESTART, killSwitch = false),
+        )
+        assertEquals(FailureKind.SIGN_IN_REQUIRED, plan(SystemStartKind.PROCESS_RESTART, signedIn = false).actionNeeded)
+        // BirdoApp asks only for a session the user wanted and no service holds.
+        assertTrue(SystemStartPolicy.resumeOnProcessStart(sessionShouldBeUp = true, serviceRunning = false))
+        assertFalse(SystemStartPolicy.resumeOnProcessStart(sessionShouldBeUp = true, serviceRunning = true))
+        assertFalse(SystemStartPolicy.resumeOnProcessStart(sessionShouldBeUp = false, serviceRunning = false))
     }
 
     @Test
@@ -241,8 +271,13 @@ class SessionPolicyTest {
 
     @Test
     fun `a one-tap surface cancels, disconnects or releases the block, and hands off when it cannot connect`() {
-        fun decide(state: VpnState, blocking: Boolean = false, signedIn: Boolean = true, permission: Boolean = true) =
-            QuickToggle.decide(state, blocking, signedIn, permission)
+        fun decide(
+            state: VpnState,
+            blocking: Boolean = false,
+            signedIn: Boolean = true,
+            permission: Boolean = true,
+            consent: Boolean = true,
+        ) = QuickToggle.decide(state, blocking, signedIn, permission, consent)
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connecting))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Reconnecting(2)))
@@ -252,6 +287,26 @@ class SessionPolicyTest {
         assertEquals(QuickToggle.Action.OPEN_APP, decide(VpnState.Disconnected, permission = false))
         assertEquals(QuickToggle.Action.CONNECT, decide(VpnState.Disconnected))
         assertEquals(QuickToggle.Action.CONNECT, decide(VpnState.Error("x")))
+        // REVIEW-AND-010: no /vpn/connect before the current consent, but
+        // stopping is always allowed.
+        assertEquals(QuickToggle.Action.OPEN_APP, decide(VpnState.Disconnected, consent = false))
+        assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected, consent = false))
+    }
+
+    @Test
+    fun `one entitlement rule for every dial`() {
+        assertEquals(true, MultiHopPolicy.entitledByPlan("SOVEREIGN"))
+        assertEquals(true, MultiHopPolicy.entitledByPlan("sovereign"))
+        assertEquals(false, MultiHopPolicy.entitledByPlan("OPERATIVE"))
+        assertEquals(null, MultiHopPolicy.entitledByPlan(null))
+    }
+
+    @Test
+    fun `a give-up that speaks for the traffic is never contradicted`() {
+        val giveUp = SessionCopy.giveUp(FailureKind.DIED_AFTER_HANDSHAKE, 8, lockdown = false)
+        assertTrue(SessionCopy.speaksForTraffic(giveUp))
+        assertTrue(SessionCopy.speaksForTraffic(SessionCopy.giveUp(FailureKind.TRANSIENT, 1, lockdown = true)))
+        assertFalse(SessionCopy.speaksForTraffic(SessionCopy.NO_TUNNEL))
     }
 
     @Test

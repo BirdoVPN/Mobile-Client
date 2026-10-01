@@ -116,6 +116,15 @@ class VpnManager @Inject constructor(
     val connectedSince: StateFlow<Long> = _connectedSince.asStateFlow()
 
     /**
+     * The node this session was DIALLED to: the server, or a Multi-Hop entry.
+     * The Servers list marks it "Connected"; it used to mark the selected row,
+     * which Auto-Connect, the tile, the widget and a headless start never
+     * touch (REVIEW-AND-008).
+     */
+    private val _connectedServerId = MutableStateFlow<String?>(null)
+    val connectedServerId: StateFlow<String?> = _connectedServerId.asStateFlow()
+
+    /**
      * True from a user dial that starts on a live session (a server switch)
      * until it lands: Home reads it to say "Switching server…" instead of a
      * generic "Connecting…" (P1-parity-016).
@@ -539,11 +548,11 @@ class VpnManager @Inject constructor(
      * all use this, so none of them substitutes "the lowest-load node
      * anywhere" for the server the user actually chose.
      *
-     * @param multiHopEntitled false when the caller knows the plan does not
-     *   include Multi-Hop, so a pref left armed by a lapsed plan dials the
-     *   single hop the app is drawing (see BirdoTileService).
+     * @param multiHopEntitled what the caller knows about the plan: false
+     *   dials the single hop the app is drawing for a lapsed plan (see
+     *   BirdoTileService); null reads the persisted last-known plan.
      */
-    suspend fun connectPreferred(multiHopEntitled: Boolean = true): ApiResult<Any> = runDial {
+    suspend fun connectPreferred(multiHopEntitled: Boolean? = null): ApiResult<Any> = runDial {
         preferredDial(DialOrigin.USER, multiHopEntitled)
     }
 
@@ -552,7 +561,7 @@ class VpnManager @Inject constructor(
      * their own: the notification's Reconnect action and the widget, whose
      * broadcast must not wait out an API call.
      */
-    fun requestConnectPreferred(multiHopEntitled: Boolean = true) {
+    fun requestConnectPreferred(multiHopEntitled: Boolean? = null) {
         scope.launch { connectPreferred(multiHopEntitled) }
     }
 
@@ -566,14 +575,21 @@ class VpnManager @Inject constructor(
      *   start and our own MY_PACKAGE_REPLACED start cannot dial twice.
      */
     fun connectHeadless(): Boolean {
-        val s = _state.value
-        if (s is VpnState.Connected || s.isConnectingPhase || s is VpnState.Reconnecting ||
-            s is VpnState.Disconnecting || dialJob?.isActive == true
-        ) {
-            return false
-        }
-        scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = true) } }
+        if (sessionInProgress()) return false
+        scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = null) } }
         return true
+    }
+
+    /**
+     * A session is up or on its way: connected, dialling, recovering or
+     * tearing down. A system start that finds one leaves it alone
+     * (REVIEW-AND-022: two starts after a reboot used to supersede each
+     * other's dial).
+     */
+    fun sessionInProgress(): Boolean {
+        val s = _state.value
+        return s is VpnState.Connected || s.isConnectingPhase || s is VpnState.Reconnecting ||
+            s is VpnState.Disconnecting || dialJob?.isActive == true
     }
 
     /**
@@ -787,6 +803,7 @@ class VpnManager @Inject constructor(
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.
                 _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
+                _connectedServerId.value = serverId
                 prefs.lastServerId = serverId
                 return result
             }
@@ -933,6 +950,7 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error("Couldn't start the VPN service — please try again.")
                 }
                 _connectedServer.value = "${mh.entryNode.name} → ${mh.exitNode.name}"
+                _connectedServerId.value = entryNodeId
                 return result
             }
             is ApiResult.Error -> {
@@ -1062,20 +1080,30 @@ class VpnManager @Inject constructor(
         return dialSingle(bestServer.id, null, gen, prior)
     }
 
-    private suspend fun preferredDial(origin: DialOrigin, multiHopEntitled: Boolean): ApiResult<Any> {
+    private suspend fun preferredDial(origin: DialOrigin, multiHopEntitled: Boolean?): ApiResult<Any> {
         val prior = _state.value
         val gen = beginDial(origin, prior)
-        // The live or last route wins: a Reconnect after a multi-hop session
-        // rebuilds that pair even if the pref has since been disarmed.
-        val route = activeMultiHop
+        // ONE entitlement rule for every dial (REVIEW-AND-007): what the caller
+        // knows, else the persisted last-known plan. Headless and quick dials
+        // used to read the raw pref, which a lapsed plan never clears, so an
+        // ex-Sovereign user with Always-on booted into a refused Multi-Hop dial
+        // and a held block every time.
+        val entitled = multiHopEntitled ?: MultiHopPolicy.entitledByPlan(prefs.lastKnownPlan)
+        val armed = prefs.multiHopEnabled && entitled != false
+        // The live or last route rebuilds that pair — but only while Multi-Hop
+        // is still armed and not known to be lapsed (REVIEW-AND-019).
+        val route = activeMultiHop?.takeIf { armed }
         val decision = if (route != null) {
             MultiHopPolicy.NewConnection.MultiHop(route.first, route.second)
         } else {
-            MultiHopPolicy.forNewConnection(
-                prefs.multiHopEnabled && multiHopEntitled,
-                prefs.multiHopEntryNodeId,
-                prefs.multiHopExitNodeId,
-            )
+            MultiHopPolicy.forNewConnection(armed, prefs.multiHopEntryNodeId, prefs.multiHopExitNodeId)
+        }
+        if (decision is MultiHopPolicy.NewConnection.MultiHop && entitled == null) {
+            // Armed, plan unknown: neither guess. A single hop would silently
+            // downgrade a paying user's jurisdiction; Multi-Hop would dead-end a
+            // lapsed one. Opening the app loads the plan.
+            publishError(SessionCopy.SETUP_REQUIRED, FailureKind.SETUP_REQUIRED)
+            return ApiResult.Error(SessionCopy.SETUP_REQUIRED)
         }
         return when (decision) {
             is MultiHopPolicy.NewConnection.MultiHop ->
@@ -1227,7 +1255,11 @@ class VpnManager @Inject constructor(
      * service and so skipped the peer release, the reconnect cancel and the
      * supersede of an in-flight dial.
      */
-    suspend fun disconnect() {
+    suspend fun disconnect() = withContext(Dispatchers.Main.immediate) {
+        // On Main, like every other writer of the supervisor's state: the
+        // tile calls this from its own IO scope, and a Disconnect racing
+        // onFailure there could leave a re-dial scheduled (REVIEW-AND-017).
+        //
         // Win over any in-flight settings-reapply blip: a user Disconnect must
         // not be undone by the reconnect half of an apply-on-change rebuild.
         reapplyAbortGeneration++
@@ -1299,6 +1331,7 @@ class VpnManager @Inject constructor(
         _state.value = VpnState.Disconnecting
         transitionStartTime = System.currentTimeMillis()
         activeMultiHop = null
+        _connectedServerId.value = null
 
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_STOP
@@ -1473,6 +1506,9 @@ class VpnManager @Inject constructor(
             // A user dial that never connected.
             ReconnectPolicy.GiveUpReason.NEVER_CONNECTED -> {
                 prefs.sessionShouldBeUp = false
+                // Nothing is rebuilt from this route now (REVIEW-AND-019); the
+                // prefs keep the user's pair.
+                activeMultiHop = null
                 releasePeer(sessionKeyId)
                 if (attemptOwnsBlock) releaseBlock()
             }
@@ -1484,7 +1520,10 @@ class VpnManager @Inject constructor(
             // refusal minted. A SIGN_IN_REQUIRED session keeps its intent, so
             // signing in again resumes it (see onSignedIn).
             ReconnectPolicy.GiveUpReason.TERMINAL -> {
-                if (kind != FailureKind.SIGN_IN_REQUIRED) prefs.sessionShouldBeUp = false
+                if (kind != FailureKind.SIGN_IN_REQUIRED) {
+                    prefs.sessionShouldBeUp = false
+                    activeMultiHop = null
+                }
                 if (kind != FailureKind.REVOKED && kind != FailureKind.SIGN_IN_REQUIRED) {
                     releasePeer(sessionKeyId)
                 }
@@ -1611,9 +1650,14 @@ class VpnManager @Inject constructor(
         if (!_sessionExpired.value && !stoppedForSignIn) return
         _sessionExpired.value = false
         when {
-            s is VpnState.Connected -> startHeartbeat()
+            // Keep the last good beat's time: heartbeats stopped at the 401, so
+            // the backend may have reaped the peer while the user was signed
+            // out, and the first beat must be judged against that gap. Starting
+            // the clock afresh made the inevitable "not found" read as a
+            // revoke, which released the block (REVIEW-AND-002).
+            s is VpnState.Connected -> startHeartbeat(resetLastOk = false)
             stoppedForSignIn && (prefs.sessionShouldBeUp || isKillSwitchActive) ->
-                scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = true) } }
+                scope.launch { runDial { preferredDial(DialOrigin.HEADLESS, multiHopEntitled = null) } }
         }
     }
 
@@ -1662,6 +1706,19 @@ class VpnManager @Inject constructor(
         // is expected; the dial's own establish() will supersede it.
         if (localState.isConnectingPhase && serviceState is VpnState.KillSwitchActive &&
             dialJob?.isActive == true
+        ) {
+            return
+        }
+        // Nor may the block's KillSwitchActive overwrite the session's own
+        // verdict. The block is armed on the service's executor and its state
+        // arrives a hop later, so it used to replace an Error the system start
+        // had just published ("sign in", "set up") or a Reconnecting that was
+        // waiting for the network — and then nothing ever re-dialled: sign-in
+        // looked for an Error, the online edge for a Reconnecting, and both
+        // were gone (REVIEW-AND-001). The block itself is still on every
+        // surface through killSwitchActiveFlow.
+        if ((localState is VpnState.Error || localState is VpnState.Reconnecting) &&
+            serviceState is VpnState.KillSwitchActive
         ) {
             return
         }
@@ -1862,9 +1919,9 @@ class VpnManager @Inject constructor(
      * is the ONLY thing that refreshes the peer's `lastSeen`, so it is what
      * keeps the backend from reaping a live session.
      */
-    private fun startHeartbeat() {
+    private fun startHeartbeat(resetLastOk: Boolean = true) {
         heartbeatJob?.cancel()
-        lastHeartbeatOkAt = elapsedRealtime()
+        if (resetLastOk) lastHeartbeatOkAt = elapsedRealtime()
         heartbeatJob = scope.launch(ioDispatcher) {
             var keyRotationTickCount = 0
             while (isActive) {

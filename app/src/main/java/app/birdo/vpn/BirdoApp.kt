@@ -1,11 +1,17 @@
 package app.birdo.vpn
 
 import android.app.Application
+import android.content.Intent
+import androidx.core.content.ContextCompat
 import app.birdo.vpn.billing.PlayBillingManager
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.service.BirdoVpnService
+import app.birdo.vpn.service.SystemStartPolicy
+import app.birdo.vpn.service.VpnNotificationManager
 import app.birdo.vpn.utils.CpuFeatures
 import app.birdo.vpn.utils.CrashReporting
+import app.birdo.vpn.utils.FaultReporter
 import dagger.hilt.android.HiltAndroidApp
 import io.sentry.Sentry
 import io.sentry.android.core.SentryAndroid
@@ -49,6 +55,7 @@ class BirdoApp : Application() {
         // unconditionally, starts with the SDK off and its unsent queue
         // discarded. See CrashReporting for the whole rule.
         applyCrashReportingConsent()
+        resumeSessionAfterProcessDeath()
         // STARTUP WARM-UP, OFF THE MAIN THREAD (A2-021). Opening the token
         // store is Keystore work (key generation on a first run, a seal/open
         // probe, the legacy migration, and a delete-and-regenerate recovery
@@ -69,7 +76,11 @@ class BirdoApp : Application() {
             } catch (e: Exception) {
                 android.util.Log.w("BirdoApp", "Token store warm-up failed", e)
             }
-            if (BuildConfig.IS_PLAY_BUILD) {
+            // Nothing reaches the backend before the CURRENT consent (audit
+            // D-12, A2-028's residual): the rail's start reconciles Play
+            // purchases with the server. MainActivity starts it the moment
+            // consent is given.
+            if (BuildConfig.IS_PLAY_BUILD && appPreferences.hasAcceptedCurrentConsent) {
                 try {
                     playBilling.get().start()
                 } catch (e: Exception) {
@@ -78,6 +89,44 @@ class BirdoApp : Application() {
                 }
             }
         }, "birdo-startup").start()
+    }
+
+    /**
+     * A session the user wanted, and no service in this new process to hold
+     * it: the previous process died (a crash, a low-memory kill) and Android
+     * did not restart the service. Live on API 35 (2026-09-30) it never did,
+     * and reopening the app showed "Not connected" with the user's intent
+     * forgotten, while a lockdown user stayed offline. Every process start —
+     * the user opening the app, the widget, the tile — now asks the service to
+     * resume through the same system-start path as Always-on: the block first
+     * when the kill switch or lockdown asks for it, then a headless connect,
+     * "Reconnecting…" from the first frame.
+     *
+     * When the start is refused (a widget broadcast is not an exemption from
+     * Android 12's background foreground-service ban), the dead service's
+     * notification is retracted and the user is told, instead of a stale
+     * "Protected".
+     */
+    private fun resumeSessionAfterProcessDeath() {
+        if (!SystemStartPolicy.resumeOnProcessStart(appPreferences.sessionShouldBeUp, BirdoVpnService.running)) return
+        try {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, BirdoVpnService::class.java).setAction(BirdoVpnService.ACTION_RESUME_SESSION),
+            )
+        } catch (e: Exception) {
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "process_start_resume_refused",
+                "A new process found the session down and could not restart the VPN service",
+                e,
+            )
+            VpnNotificationManager(this).apply {
+                createChannels()
+                retractStaleStatus()
+                postAlert(VpnNotificationManager.stoppedUnexpectedlyAlert())
+            }
+        }
     }
 
     /**

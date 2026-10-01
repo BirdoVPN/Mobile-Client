@@ -61,6 +61,7 @@ class VpnViewModelAccountStateTest {
         vpnManager = mockk(relaxed = true)
         every { vpnManager.state } returns MutableStateFlow(VpnState.Disconnected)
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
+        every { vpnManager.connectedServerId } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
         every { vpnManager.isVpnPermissionGranted() } returns true
         coEvery { vpnManager.connect(any(), any()) } returns ApiResult.Success(ConnectResponse(success = true))

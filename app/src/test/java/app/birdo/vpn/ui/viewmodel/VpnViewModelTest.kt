@@ -53,6 +53,7 @@ class VpnViewModelTest {
         every { vpnManager.switching } returns switching
         every { vpnManager.sessionExpired } returns sessionExpired
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
+        every { vpnManager.connectedServerId } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
         every { vpnManager.activeMultiHopRoute } returns null
         every { vpnManager.isVpnPermissionGranted() } returns true
@@ -211,6 +212,71 @@ class VpnViewModelTest {
 
         state.value = VpnState.Disconnected
         assertNull(vm.uiState.value.liveMultiHopEntryId)
+    }
+
+    // ── REVIEW-AND-003: Auto-Connect's fallback ───────────────────────────
+
+    private fun autoConnectReady() {
+        every { prefs.autoConnect } returns true
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { tokenManager.isLoggedIn() } returns true
+        every { prefs.lastServerId } returns "srv-1"
+        every { prefs.lastKnownPlan } returns null
+    }
+
+    @Test
+    fun `a Cancel during Auto-Connect is not undone by a fallback quick connect`() = runTest {
+        autoConnectReady()
+        coEvery { vpnManager.connect("srv-1") } returns ApiResult.Error(VpnManager.SUPERSEDED)
+        viewModel()
+        testScheduler.advanceTimeBy(2_000)
+        testScheduler.runCurrent()
+        coVerify(exactly = 1) { vpnManager.connect("srv-1") }
+        coVerify(exactly = 0) { vpnManager.quickConnect() }
+    }
+
+    @Test
+    fun `Auto-Connect falls back only when the saved server is gone or locked`() {
+        assertTrue(VpnViewModel.fallsBackToQuickConnect(ApiResult.Error("Server not found", 404)))
+        assertTrue(VpnViewModel.fallsBackToQuickConnect(ApiResult.Error("Requires a higher plan", 403)))
+        assertFalse(VpnViewModel.fallsBackToQuickConnect(ApiResult.Error(VpnManager.SUPERSEDED)))
+        assertFalse("the watchdog", VpnViewModel.fallsBackToQuickConnect(ApiResult.Error(SessionCopy.NO_TUNNEL)))
+        assertFalse(VpnViewModel.fallsBackToQuickConnect(ApiResult.Error(SessionCopy.UPDATE_REQUIRED, 426)))
+        assertFalse(VpnViewModel.fallsBackToQuickConnect(ApiResult.Error(SessionCopy.SESSION_EXPIRED, 401)))
+        assertFalse(VpnViewModel.fallsBackToQuickConnect(ApiResult.Error("timeout", 0)))
+    }
+
+    // ── The selection a fresh process starts with ─────────────────────────
+
+    @Test
+    fun `a fresh process selects the user's last server, not the best one`() = runTest {
+        every { prefs.lastServerId } returns "br-1"
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("ca-1", "Canada", load = 5), server("br-1", "Brazil", load = 60)),
+        )
+        val vm = viewModel()
+        vm.loadServers()
+        // The emulator, 2026-09-30: São Paulo became Toronto after a crash,
+        // and the next Always-on boot dialled Toronto as "the last server".
+        assertEquals("br-1", vm.uiState.value.selectedServer?.id)
+    }
+
+    @Test
+    fun `a last server this plan can no longer use falls back to the best one`() = runTest {
+        every { prefs.lastServerId } returns "br-1"
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("ca-1", "Canada", load = 5), server("br-1", "Brazil", load = 60, accessible = false)),
+        )
+        val vm = viewModel()
+        vm.loadServers()
+        assertEquals("ca-1", vm.uiState.value.selectedServer?.id)
+    }
+
+    @Test
+    fun `sign-out forgets the account's last server and plan`() {
+        viewModel().resetForSignOut()
+        io.mockk.verify { prefs.lastServerId = null }
+        io.mockk.verify { prefs.lastKnownPlan = null }
     }
 
     // ── A1-045 / A2-005: sign-out ordering ────────────────────────────────

@@ -84,6 +84,26 @@ class BirdoVpnService : VpnService() {
         private const val TAG = "BirdoVPN"
         /** Max time (ms) to allow tunnel setup before forcing an error. */
         private const val CONNECT_TIMEOUT_MS = 30_000L
+        /**
+         * What Android does with this service when the process dies: nothing,
+         * on purpose.
+         *
+         * Live on API 35 (2026-09-30), START_STICKY bought no restart at all
+         * after "am crash" or "kill -9" (restartCount=0, no scheduled restart
+         * after 75 s), and it kept the dead service's record, so its
+         * foreground notification went on saying "BirdoVPN — Protected" over a
+         * device whose traffic was flowing in the clear. A non-sticky service
+         * is brought down with its process, and its notification with it.
+         *
+         * Recovery does not depend on it: every new process of this app (the
+         * user opening it, the widget, the tile) resumes a session the user
+         * wanted through [ACTION_RESUME_SESSION] (BirdoApp), Always-on restarts
+         * the VPN at boot and unlock, and protection that must survive a crash
+         * is Android's own "Block connections without VPN", which the Kill
+         * Switch row now says.
+         */
+        private const val RESTART_POLICY = START_NOT_STICKY
+
         /** Reads of wg-go's socket descriptors before the protect gives up (see protectTunnelSockets). */
         private const val PROTECT_ATTEMPTS = 10
         private const val PROTECT_RETRY_MS = 50L
@@ -163,6 +183,14 @@ class BirdoVpnService : VpnService() {
 
         /** The notification's Reconnect action: VpnManager.connectPreferred(). */
         const val ACTION_USER_RECONNECT = "app.birdo.vpn.USER_RECONNECT"
+
+        /**
+         * Sent by BirdoApp when its process starts and finds a session the
+         * user wanted with no service running: the previous process died and
+         * Android did not restart the service. A system start
+         * ([SystemStartKind.PROCESS_RESTART]).
+         */
+        const val ACTION_RESUME_SESSION = "app.birdo.vpn.RESUME_SESSION"
 
         const val EXTRA_KILL_SWITCH = "kill_switch"
         const val EXTRA_SPLIT_TUNNEL_ENABLED = "split_tunnel_enabled"
@@ -487,8 +515,11 @@ class BirdoVpnService : VpnService() {
     /** Progress text for the ongoing notification during setup ("Starting stealth tunnel…"). */
     @Volatile private var notificationDetail: String? = null
 
-    /** The alert currently posted, so an unchanged state does not re-alert. */
-    private var postedAlertKey: String? = null
+    /**
+     * The alert currently posted, so an unchanged state does not re-alert.
+     * Written by the render collector (main) and by stopTunnel (executor).
+     */
+    @Volatile private var postedAlertKey: String? = null
 
     /**
      * Screen on/off and unlock. Screen off stops the ongoing notification's
@@ -676,15 +707,22 @@ class BirdoVpnService : VpnService() {
     private fun displayState(): VpnState = entryPoint?.vpnManager()?.state?.value ?: currentState
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Three starts have no app request behind them: a sticky restart (a
+        // Android's "Block connections without VPN" can be switched off (or on)
+        // at any time, and the platform sends no start when it is. Read it on
+        // every command, so the give-up copy never claims Android is still
+        // blocking traffic when it is not (REVIEW-AND-005).
+        lockdownActive = isLockdownEnabled
+        // Four starts have no app request behind them: a sticky restart (a
         // null intent), Always-on (VpnService.SERVICE_INTERFACE, sent by the
-        // platform at boot, unlock and setting changes), and our own
-        // MY_PACKAGE_REPLACED receiver. Every app-initiated start sets one of
-        // the explicit ACTION_* below.
+        // platform at boot, unlock and setting changes), our own
+        // MY_PACKAGE_REPLACED receiver, and BirdoApp finding the session dead
+        // when its process starts. Every app-initiated start sets one of the
+        // explicit ACTION_* below.
         val systemStart = when (intent?.action) {
             null -> SystemStartKind.STICKY_RESTART
             VpnService.SERVICE_INTERFACE -> SystemStartKind.ALWAYS_ON
             ACTION_HEADLESS_CONNECT -> SystemStartKind.PACKAGE_REPLACED
+            ACTION_RESUME_SESSION -> SystemStartKind.PROCESS_RESTART
             else -> null
         }
         if (systemStart != null) return handleSystemStart(systemStart)
@@ -744,7 +782,7 @@ class BirdoVpnService : VpnService() {
                 }
             }
         }
-        return START_STICKY
+        return RESTART_POLICY
     }
 
     /**
@@ -761,12 +799,21 @@ class BirdoVpnService : VpnService() {
      * from behind it.
      */
     private fun handleSystemStart(kind: SystemStartKind): Int {
+        val manager = entryPoint?.vpnManager()
+        // Two system starts can land together: Always-on and our own
+        // process-start or package-replaced start, after a reboot or an
+        // update. The second used to arm the block again, which superseded
+        // the first one's dial mid-setup (REVIEW-AND-022). The first one owns
+        // the session; the second only satisfies its startForegroundService().
+        if (manager?.sessionInProgress() == true) {
+            startForeground(VpnNotificationManager.NOTIFICATION_ID, buildCurrentNotification())
+            return RESTART_POLICY
+        }
         // The tunnel is down (the OS killed and is restarting us, or it never
         // ran). The widget pref survives process death, so without this the
         // home-screen widget keeps showing a green "Protected" for a VPN that
         // is no longer up.
         updateWidgetState(false, null)
-        lockdownActive = isLockdownEnabled
 
         val killSwitchPref = try {
             appPrefs.killSwitchEnabled
@@ -783,7 +830,6 @@ class BirdoVpnService : VpnService() {
             )
             false
         }
-        val manager = entryPoint?.vpnManager()
         val plan = SystemStartPolicy.plan(
             kind = kind,
             sessionShouldBeUp = appPrefs.sessionShouldBeUp,
@@ -796,11 +842,19 @@ class BirdoVpnService : VpnService() {
         )
         Log.i(TAG, "System start $kind: $plan")
         if (plan.idle) {
+            // Every system start but a sticky restart arrives through
+            // startForegroundService(); stopping without startForeground()
+            // first crashes the app ("did not then call startForeground").
+            startForeground(VpnNotificationManager.NOTIFICATION_ID, buildCurrentNotification())
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
 
         val shownState = when {
+            // A session that was up and died says "Reconnecting…" from the
+            // first frame, replacing anything a dead process left on screen.
+            plan.connect && kind != SystemStartKind.ALWAYS_ON -> VpnState.Reconnecting(1)
             plan.connect -> VpnState.Connecting
             plan.actionNeeded != null ->
                 VpnState.Error(SessionCopy.actionNeeded(plan.actionNeeded), plan.actionNeeded)
@@ -853,9 +907,7 @@ class BirdoVpnService : VpnService() {
                 }
             }
         }
-        // START_STICKY: if the OS kills us again we want to come back and
-        // re-arm again rather than leave the block down for good.
-        return START_STICKY
+        return RESTART_POLICY
     }
 
     /**
@@ -939,6 +991,18 @@ class BirdoVpnService : VpnService() {
         deactivateKillSwitch()
         cleanupTunnel()
         cleanupStealthAndQuantum()
+        if (!appPrefs.sessionShouldBeUp) {
+            // Nothing is wanted any more (a user dial that never connected, a
+            // terminal refusal): nothing to keep the process alive for. The
+            // error stays on Home. A service left foreground here used to
+            // come back after a process kill as a full block nobody asked
+            // for, with no alert (REVIEW-AND-004).
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        // A spent budget keeps its intent: the process stays (foreground) for
+        // the cooldown's one re-dial.
         mainHandler.post { updateNotification() }
     }
 
@@ -2273,7 +2337,12 @@ class BirdoVpnService : VpnService() {
         updateWidgetState(false, null)
         if (reason != null) {
             val alert = VpnNotificationManager.alertFor(reason, killSwitchActive = false, sessionExpired = false, uiForeground = uiForeground)
-            if (alert != null) notifManager.postAlert(alert)
+            if (alert != null) {
+                notifManager.postAlert(alert)
+                // The render collector sees the same Error a moment later;
+                // the shared key keeps it from posting it again (REVIEW-AND-014).
+                postedAlertKey = alert.key
+            }
         } else if (shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
             notifManager.postDisconnectedNotification()
         }

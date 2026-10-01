@@ -325,6 +325,20 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_LAST_SERVER, null)
         set(value) = prefs.edit { putString(KEY_LAST_SERVER, value) }
 
+    /**
+     * The plan this account last had, as the server reported it (the
+     * subscription fetch writes it, sign-out clears it). What a dial with no
+     * UI in front of it — Always-on, a restart, the tile, the widget — reads
+     * to decide whether an armed Multi-Hop pref is still a Multi-Hop session:
+     * the pref is never cleared when a plan lapses (REVIEW-AND-007/-020), and
+     * the in-memory subscription cache lives 30 s. Not HMAC-protected: a
+     * forged value can only make the client ASK for Multi-Hop, which the
+     * backend refuses without the plan.
+     */
+    var lastKnownPlan: String?
+        get() = prefs.getString(KEY_LAST_KNOWN_PLAN, null)
+        set(value) = prefs.edit { putString(KEY_LAST_KNOWN_PLAN, value) }
+
     // ── Session intent (Always-on / restart / update) ────────────
     /**
      * The user wants the VPN up: set when a session is asked for, cleared by
@@ -388,6 +402,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_FAVORITES = "favorite_servers"
         private const val KEY_LAST_SERVER = "last_server_id"
         private const val KEY_SESSION_SHOULD_BE_UP = "session_should_be_up"
+        private const val KEY_LAST_KNOWN_PLAN = "last_known_plan"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_policy_accepted"
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
         private const val KEY_CONSENT_VERSION = "privacy_consent_version"

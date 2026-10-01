@@ -96,6 +96,7 @@ class BirdoVpnServiceLifecycleTest {
     @After
     fun tearDown() {
         unmockkAll()
+        setKillSwitchEnabled(true)
         val updateState = BirdoVpnService.Companion::class.java
             .getDeclaredMethod("updateState", VpnState::class.java)
         updateState.isAccessible = true
@@ -161,7 +162,8 @@ class BirdoVpnServiceLifecycleTest {
 
         val result = service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
 
-        assertEquals(Service.START_STICKY, result)
+        // Not sticky any more: see the next section.
+        assertEquals(Service.START_NOT_STICKY, result)
         verify(exactly = 1) { manager.connectHeadless() }
         waitFor("the block") { BirdoVpnService.killSwitchActive }
         // The foreground notification of a start that connects says Connecting
@@ -204,6 +206,88 @@ class BirdoVpnServiceLifecycleTest {
         service.onStartCommand(intentWith(BirdoVpnService.ACTION_HEADLESS_CONNECT), 0, 1)
 
         verify(exactly = 1) { manager.connectHeadless() }
+    }
+
+    // ── Process death (live, API 35, 2026-09-30) ────────────────────────
+
+    @Test
+    fun `a new process that finds the session dead resumes it, block first, saying Reconnecting`() {
+        every { prefs.killSwitchEnabled } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { tokens.isLoggedIn() } returns true
+
+        val result = service.onStartCommand(intentWith(BirdoVpnService.ACTION_RESUME_SESSION), 0, 1)
+
+        assertEquals(Service.START_NOT_STICKY, result)
+        verify(exactly = 1) { manager.connectHeadless() }
+        waitFor("the block") { BirdoVpnService.killSwitchActive }
+        // The dead process's "Protected" is replaced from the first frame.
+        verify {
+            notifications.buildForegroundNotification(
+                state = VpnState.Reconnecting(1),
+                body = any(),
+                killSwitchActive = true,
+            )
+        }
+    }
+
+    @Test
+    fun `no command asks Android to restart a dead service with a stale notification`() {
+        // START_STICKY bought no restart on API 35 and kept the dead service's
+        // "Protected" notification on screen; BirdoApp resumes instead.
+        listOf(
+            BirdoVpnService.ACTION_UPDATE_SETTINGS,
+            BirdoVpnService.ACTION_USER_RECONNECT,
+            BirdoVpnService.ACTION_RELEASE_BLOCK,
+        ).forEach { action ->
+            assertEquals(action, Service.START_NOT_STICKY, service.onStartCommand(intentWith(action), 0, 1))
+        }
+    }
+
+    @Test
+    fun `a second system start while the first one's session is in flight changes nothing`() {
+        every { prefs.killSwitchEnabled } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { tokens.isLoggedIn() } returns true
+        every { manager.sessionInProgress() } returns true
+        val generation = field("transitionGen") as AtomicLong
+        val before = generation.get()
+
+        service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
+
+        // REVIEW-AND-022: no second block arm to supersede the first dial.
+        assertEquals(before, generation.get())
+        verify(exactly = 0) { manager.connectHeadless() }
+        verify(exactly = 0) { anyConstructed<VpnService.Builder>().establish() }
+    }
+
+    @Test
+    fun `releasing the block of a session nobody wants any more stops the service`() {
+        every { prefs.sessionShouldBeUp } returns false
+        BirdoVpnService::class.java.getDeclaredMethod("handleReleaseBlock").apply { isAccessible = true }.invoke(service)
+        // REVIEW-AND-004: it used to stay foreground, and come back after a
+        // process kill as a block nobody asked for.
+        verify(exactly = 1) { service.stopSelf() }
+
+        every { prefs.sessionShouldBeUp } returns true
+        BirdoVpnService::class.java.getDeclaredMethod("handleReleaseBlock").apply { isAccessible = true }.invoke(service)
+        // A spent budget keeps the process for the cooldown's re-dial.
+        verify(exactly = 1) { service.stopSelf() }
+    }
+
+    @Test
+    fun `Android's lockdown is read on every command, not only at a system start`() {
+        every { service.isLockdownEnabled } returns true
+        service.onStartCommand(intentWith(BirdoVpnService.ACTION_UPDATE_SETTINGS), 0, 1)
+        assertTrue(BirdoVpnService.lockdownActive)
+
+        // The user turned "Block connections without VPN" off; no system start follows.
+        every { service.isLockdownEnabled } returns false
+        service.onStartCommand(intentWith(BirdoVpnService.ACTION_RELEASE_BLOCK), 0, 1)
+        // REVIEW-AND-005: a give-up must not claim Android still blocks.
+        assertFalse(BirdoVpnService.lockdownActive)
     }
 
     // ── A1-009: the notification's Disconnect goes through VpnManager ────
@@ -338,9 +422,17 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 1) { anyConstructed<VpnService.Builder>().addRoute("::", 0) }
     }
 
+    /** The service-wide kill-switch flag, normally captured from the START intent. */
+    private fun setKillSwitchEnabled(enabled: Boolean) {
+        val field = BirdoVpnService::class.java.getDeclaredField("isKillSwitchEnabled")
+        field.isAccessible = true
+        field.setBoolean(null, enabled)
+    }
+
     /** Arrange a plain WireGuard setup that reaches wgTurnOn; returns the call order. */
     private fun arrangeTunnelStart(protectSucceeds: Boolean): MutableList<String> {
         val order = mutableListOf<String>()
+        setKillSwitchEnabled(true)
         every { prefs.stealthModeEnabled } returns false
         every { prefs.quantumProtectionEnabled } returns false
         every { prefs.killSwitchEnabled } returns true

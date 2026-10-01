@@ -74,6 +74,7 @@ import app.birdo.vpn.utils.RootDetector
 import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -151,6 +152,7 @@ class MainActivity : FragmentActivity() {
 
         checkRootStatus()
         verifySettingsIntegrity()
+        startPlayRailOnceConsented()
         deepLinkRoute.value = parseDeepLink(intent)
         oauthCallback.value = parseOAuthCallback(intent)
 
@@ -318,6 +320,20 @@ class MainActivity : FragmentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
 
+    /**
+     * BirdoApp starts the Play rail at launch only when the current consent
+     * is already given. Otherwise it starts here, the moment the consent
+     * screen is accepted, so a purchase that completed while the app was dead
+     * still reaches the server, after consent and never before it.
+     */
+    private fun startPlayRailOnceConsented() {
+        if (!BuildConfig.IS_PLAY_BUILD || appPreferences.hasAcceptedCurrentConsent) return
+        lifecycleScope.launch {
+            appPreferences.hasAcceptedCurrentConsentFlow.first { it }
+            launch(Dispatchers.Default) { playBilling.get().start() }
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Replace the activity's stored intent: without setIntent(), an
@@ -345,8 +361,10 @@ class MainActivity : FragmentActivity() {
         }
         // Reconcile Play purchases made or approved elsewhere while the process
         // stayed alive (A2-035). Off the main thread: the first call may still
-        // be waiting on the startup warm-up that builds the rail.
-        if (BuildConfig.IS_PLAY_BUILD) {
+        // be waiting on the startup warm-up that builds the rail. Never before
+        // the current consent: the reconcile links purchases to the account
+        // on the backend (A2-028's residual, REVIEW-AND-010).
+        if (BuildConfig.IS_PLAY_BUILD && appPreferences.hasAcceptedCurrentConsent) {
             lifecycleScope.launch(Dispatchers.Default) { playBilling.get().onAppResumed() }
         }
     }

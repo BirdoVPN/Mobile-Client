@@ -99,6 +99,21 @@ class SessionSurfaceModelsTest {
     }
 
     @Test
+    fun `a give-up rendered before its release lands does not also say the block holds`() {
+        // REVIEW-AND-014: the verdict renders while RELEASE_BLOCK is still
+        // queued, so the block flag is still true for that first render.
+        val message = SessionCopy.giveUp(FailureKind.DIED_AFTER_HANDSHAKE, 8, lockdown = false)
+        val alert = VpnNotificationManager.alertFor(
+            VpnState.Error(message, FailureKind.DIED_AFTER_HANDSHAKE),
+            killSwitchActive = true,
+            sessionExpired = false,
+            uiForeground = false,
+        )!!
+        assertEquals(message, alert.body)
+        assertFalse(alert.body.contains(SessionCopy.STILL_BLOCKED))
+    }
+
+    @Test
     fun `an expired session with the tunnel still up is an alert too`() {
         val alert = VpnNotificationManager.alertFor(VpnState.Connected, false, sessionExpired = true, uiForeground = false)
         assertEquals(R.string.notif_alert_sign_in, alert!!.title)

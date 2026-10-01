@@ -819,9 +819,18 @@ class VpnManagerTest {
         // Never a silent block: the supervisor releases the app's own block.
         assertTrue(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
 
-        // …and tries once more on its own after the cooldown.
+        // …and tries exactly ONCE more on its own after the cooldown
+        // (REVIEW-AND-011: it used to restart the full eight-attempt budget,
+        // re-arming the block for ~8.5 min every 15 min).
+        // The give-up landed at ~8.5 min; its cooldown re-dial at ~23.5 min.
         advanceTimeBy(ReconnectPolicy.TRIP_COOLDOWN_MS)
-        coVerify(atLeast = 10) { repository.connectVpn(any(), any()) }
+        coVerify(exactly = 10) { repository.connectVpn(any(), any()) }
+        advanceTimeBy(2 * 60_000L)
+        coVerify(exactly = 10) { repository.connectVpn(any(), any()) }
+        // The next cooldown (~38.5 min) allows the next single attempt, and
+        // only that one.
+        advanceTimeBy(ReconnectPolicy.TRIP_COOLDOWN_MS - 2 * 60_000L)
+        coVerify(exactly = 11) { repository.connectVpn(any(), any()) }
         quiesce()
     }
 
@@ -1209,6 +1218,7 @@ class VpnManagerTest {
         every { prefs.multiHopEnabled } returns true
         every { prefs.multiHopEntryNodeId } returns "de-1"
         every { prefs.multiHopExitNodeId } returns "nl-1"
+        every { prefs.lastKnownPlan } returns "SOVEREIGN"
         coEvery {
             repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
         } returns ApiResult.Success(makeMultiHopResponse())
@@ -1218,6 +1228,157 @@ class VpnManagerTest {
 
         coVerify { repository.connectMultiHop("de-1", "nl-1", any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    /**
+     * REVIEW-AND-007: an ex-Sovereign user with Always-on booted into a
+     * refused Multi-Hop dial and a held block on every reboot, because the
+     * headless dial read the raw pref, which a lapsed plan never clears.
+     */
+    private fun armMultiHopPrefs() {
+        every { prefs.multiHopEnabled } returns true
+        every { prefs.multiHopEntryNodeId } returns "de-1"
+        every { prefs.multiHopExitNodeId } returns "nl-1"
+        every { prefs.lastServerId } returns "srv-1"
+    }
+
+    @Test
+    fun `a headless start dials a single hop for a lapsed plan`() = runTest {
+        armMultiHopPrefs()
+        every { prefs.lastKnownPlan } returns "OPERATIVE"
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connectHeadless()
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
+        coVerify(exactly = 0) { repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a headless start refuses to guess an unknown plan for an armed Multi-Hop pref`() = runTest {
+        armMultiHopPrefs()
+        every { prefs.lastKnownPlan } returns null
+
+        vpnManager.connectHeadless()
+        runCurrent()
+
+        val error = vpnManager.state.value as VpnState.Error
+        assertEquals(FailureKind.SETUP_REQUIRED, error.kind)
+        coVerify(exactly = 0) { repository.connectVpn(any(), any()) }
+        coVerify(exactly = 0) { repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a remembered Multi-Hop route is not rebuilt once the user disarmed Multi-Hop`() = runTest {
+        // A live multi-hop session...
+        every { prefs.lastKnownPlan } returns "SOVEREIGN"
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+        vpnManager.connectMultiHop("de-1", "nl-1")
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        // ...the user turns Multi-Hop off, and later taps Reconnect (REVIEW-AND-019).
+        every { prefs.multiHopEnabled } returns false
+        every { prefs.lastServerId } returns "srv-1"
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.connectPreferred()
+        coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
+        coVerify(exactly = 1) { repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `the dialled node, not the selection, is what the Servers list marks connected`() = runTest {
+        connectAndEstablish()
+        assertEquals("srv-1", vpnManager.connectedServerId.value)
+        vpnManager.disconnect()
+        assertEquals(null, vpnManager.connectedServerId.value)
+    }
+
+    // ── REVIEW-AND-001: the block must not erase the session's verdict ──
+
+    @Test
+    fun `a signed-out system start keeps its reason under the block, and signing in dials`() = runTest {
+        every { prefs.sessionShouldBeUp } returns true
+        every { prefs.lastServerId } returns "srv-1"
+        vpnManager.reportHeadlessBlocked(FailureKind.SIGN_IN_REQUIRED)
+        // The block, armed on the service's executor, lands a hop later.
+        every { BirdoVpnService.killSwitchActive } returns true
+        serviceEmits(VpnState.KillSwitchActive)
+        runCurrent()
+        assertEquals(FailureKind.SIGN_IN_REQUIRED, (vpnManager.state.value as VpnState.Error).kind)
+
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.onSignedIn()
+        runCurrent()
+        coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `an offline boot keeps waiting for the network under the block, and dials when it returns`() = runTest {
+        every { prefs.lastServerId } returns "srv-1"
+        onlineFlow.value = false
+        runCurrent()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Unable to resolve host", 0)
+        vpnManager.connectHeadless()
+        runCurrent()
+        val waiting = vpnManager.state.value
+        assertTrue("$waiting", waiting is VpnState.Reconnecting && waiting.waitingForNetwork)
+
+        // The block's establish() finishes after the dial failed.
+        every { BirdoVpnService.killSwitchActive } returns true
+        serviceEmits(VpnState.KillSwitchActive)
+        runCurrent()
+        assertTrue(vpnManager.state.value is VpnState.Reconnecting)
+
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        onlineFlow.value = true
+        advanceTimeBy(10_000)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a session in progress makes a second system start a no-op`() = runTest {
+        assertFalse(vpnManager.sessionInProgress())
+        connectAndEstablish()
+        assertTrue(vpnManager.sessionInProgress())
+        assertFalse(vpnManager.connectHeadless())
+        quiesce()
+    }
+
+    /**
+     * REVIEW-AND-002: heartbeats stop at a 401, so the backend may reap the
+     * peer while the user is signed out. Signing back in restarted the
+     * "last good beat" clock, and the reap read as a revoke: block released,
+     * no re-dial.
+     */
+    @Test
+    fun `signing in after a 401 judges the next beat against the real gap`() = runTest {
+        var now = 0L
+        vpnManager.elapsedRealtime = { now }
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        coEvery { repository.sendHeartbeat(any()) } returns ApiResult.Error("Session expired", 401)
+        now = 60_000L
+        advanceTimeBy(61_000)
+        assertTrue(vpnManager.sessionExpired.value)
+
+        // Signed back in seven minutes later; the server reaped the peer meanwhile.
+        now = 7 * 60_000L
+        coEvery { repository.sendHeartbeat(any()) } returns
+            ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse(valid = false))
+        vpnManager.onSignedIn()
+        advanceTimeBy(61_000)
+
+        assertTrue("rebuilt behind the block", BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+        assertFalse("never the revoke teardown", BirdoVpnService.ACTION_STOP in dispatchedActions)
         quiesce()
     }
 

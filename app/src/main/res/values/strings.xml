@@ -144,8 +144,11 @@
          #5). Since the 2026-09-30 overhaul the app releases its own block when
          reconnecting keeps failing (parity with iOS and Windows), and Android's
          Always-on VPN IS supported (SUPPORTS_ALWAYS_ON=true, pinned by
-         ApiLevel36ContractTest), so the system-level block may be named. -->
-    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. If reconnecting keeps failing, the app stops blocking. Protection applies while BirdoVPN\'s VPN service is running. For a block Android enforces at all times, turn on Always-on VPN and Block connections without VPN in Android\'s VPN settings.</string>
+         ApiLevel36ContractTest), so the system-level block may be named.
+         The crash sentence is the live finding of 2026-09-30: after a crash
+         Android did not restart the service, and the app's own block died
+         with its process; only Android's lockdown survives that. -->
+    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. If reconnecting keeps failing, the app stops blocking. Protection applies while BirdoVPN\'s VPN service is running. If a crash or Android closes the app, nothing is blocked until it starts again; to stay blocked through that too, turn on Always-on VPN and Block connections without VPN in Android\'s VPN settings.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
     <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
          Always-on VPN with Block connections without VPN", advice for a setting

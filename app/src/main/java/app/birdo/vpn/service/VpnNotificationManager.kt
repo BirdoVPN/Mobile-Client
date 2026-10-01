@@ -162,7 +162,11 @@ internal class VpnNotificationManager(private val context: Context) {
                 FailureKind.SETUP_REQUIRED, FailureKind.VPN_PERMISSION_REQUIRED -> R.string.notif_alert_open_app
                 else -> R.string.notif_alert_cant_connect
             }
-            val body = if (killSwitchActive) {
+            // A give-up already says what happened to the traffic; its release
+            // is queued behind it, so the block is still up for the first
+            // render and appending "is blocking" contradicted the sentence
+            // before it (REVIEW-AND-014).
+            val body = if (killSwitchActive && !SessionCopy.speaksForTraffic(state.message)) {
                 state.message + " " + SessionCopy.STILL_BLOCKED
             } else {
                 state.message
@@ -416,6 +420,10 @@ internal class VpnNotificationManager(private val context: Context) {
                 .setStyle(NotificationCompat.BigTextStyle().bigText(alert.body))
                 .setContentIntent(openAppIntent())
                 .setAutoCancel(true)
+                // A re-post of the same alert (the block flag flipped, the
+                // service re-rendered) updates it silently instead of
+                // sounding a second time (REVIEW-AND-014).
+                .setOnlyAlertOnce(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_ERROR)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -435,6 +443,32 @@ internal class VpnNotificationManager(private val context: Context) {
 
     fun cancelAlert() {
         notificationManager.cancel(ALERT_NOTIFICATION_ID)
+    }
+
+    /**
+     * A new process found no service, yet a dead one's ongoing notification
+     * can still be on screen saying "Protected" (seen live on API 35 after a
+     * crash with START_STICKY). Replace its content with the truth first —
+     * an update is allowed even while the system still counts it as a
+     * foreground-service notification, which an app cannot cancel — then
+     * cancel it, which succeeds once nothing owns it.
+     */
+    fun retractStaleStatus() {
+        try {
+            val honest = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notif_disconnected)
+                .setContentTitle(context.getString(R.string.status_not_connected))
+                .setContentText(SessionCopy.STOPPED_UNEXPECTEDLY)
+                .setContentIntent(openAppIntent())
+                .setSilent(true)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .build()
+            notificationManager.notify(NOTIFICATION_ID, honest)
+            notificationManager.cancel(NOTIFICATION_ID)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not retract the stale status notification", e)
+        }
     }
 
     // ── Post-disconnect notification ─────────────────────────────

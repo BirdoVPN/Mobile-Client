@@ -102,6 +102,7 @@ class BirdoTileService : TileService() {
                 killSwitchActive = BirdoVpnService.killSwitchActive,
                 signedIn = tokenManager.isLoggedIn(),
                 vpnPermissionGranted = vpnManager.isVpnPermissionGranted(),
+                consentAccepted = appPreferences.hasAcceptedCurrentConsent,
             )
         ) {
             // Connected, connecting, reconnecting, or blocked: the tap is the
@@ -147,7 +148,11 @@ class BirdoTileService : TileService() {
             appPreferences.multiHopEntryNodeId,
             appPreferences.multiHopExitNodeId,
         )
-        when (val plan = QuickToggle.connectPlan(decision, repository.cachedSubscriptionOrNull()?.plan)) {
+        // The persisted last-known plan, not only the 30 s cache: a one-tap
+        // connect for a Multi-Hop user used to open the app every time unless
+        // the app had been open in the last 30 s (REVIEW-AND-020).
+        val knownPlan = repository.cachedSubscriptionOrNull()?.plan ?: appPreferences.lastKnownPlan
+        when (val plan = QuickToggle.connectPlan(decision, knownPlan)) {
             is QuickToggle.ConnectPlan.OpenApp -> openAppOrLog(plan.reason)
             is QuickToggle.ConnectPlan.MultiHop -> scope.launch {
                 try {
