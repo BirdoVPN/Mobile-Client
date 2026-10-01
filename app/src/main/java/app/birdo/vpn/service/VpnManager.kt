@@ -1418,7 +1418,9 @@ class VpnManager @Inject constructor(
         val event = when {
             superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
             pqRefusal != null -> pqRefusal
-            config == null -> LiveRebuildPolicy.Event.REQUEST_FAILED
+            config == null -> (result as? ApiResult.Error)
+                ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
+                ?: LiveRebuildPolicy.Event.REQUEST_FAILED
             !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
             !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
                 LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
@@ -1472,7 +1474,9 @@ class VpnManager @Inject constructor(
         val event = when {
             superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
             pqRefusal != null -> pqRefusal
-            config == null -> LiveRebuildPolicy.Event.REQUEST_FAILED
+            config == null -> (result as? ApiResult.Error)
+                ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
+                ?: LiveRebuildPolicy.Event.REQUEST_FAILED
             !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
             !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
                 LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED

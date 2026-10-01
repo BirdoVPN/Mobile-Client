@@ -1779,6 +1779,50 @@ class VpnManagerTest {
         quiesce()
     }
 
+    /**
+     * REVIEW-AND2-003: a tunnel that handshakes but carries no TLS (an MTU
+     * black hole) answers nothing through itself, so a rebuild there used to
+     * keep the broken session forever — the switch, and the MTU change that
+     * would fix it, impossible. No answer now takes today's path: teardown
+     * behind the block, then a fresh dial around the tunnel.
+     */
+    @Test
+    fun `a switch the live tunnel cannot carry falls back to the teardown path`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(
+            ApiResult.Error("Couldn't reach BirdoVPN.", 0, app.birdo.vpn.data.repository.FailureReason.UNREACHABLE),
+        )
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-2")
+
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        // The old key is released by the teardown, and the switch is dialled fresh.
+        coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a settings change the live tunnel cannot carry is applied through the teardown path`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        rebuildAnswers(
+            ApiResult.Error("Couldn't reach BirdoVPN.", 0, app.birdo.vpn.data.repository.FailureReason.UNREACHABLE),
+        )
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(10_000)
+
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        // The original dial and the rebuild's fresh one.
+        coVerify(exactly = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
     @Test
     fun `a swap the service refuses before touching the tunnel keeps the session and gives the new key back`() = runTest {
         connectAndEstablish()

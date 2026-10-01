@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import app.birdo.vpn.data.repository.FailureReason
 import app.birdo.vpn.service.LiveRebuildPolicy.Directive
 import app.birdo.vpn.service.LiveRebuildPolicy.Event
 import org.junit.Assert.assertEquals
@@ -16,9 +17,32 @@ import org.junit.Test
 class LiveRebuildPolicyTest {
 
     @Test
-    fun `only the server's inability to defer reaches the teardown path`() {
+    fun `only a server that cannot defer, or a tunnel that cannot carry the request, reaches the teardown path`() {
         val stopping = Event.entries.filter { LiveRebuildPolicy.directive(it) == Directive.LEGACY_TEARDOWN }
-        assertEquals(setOf(Event.CANNOT_REBUILD_HERE, Event.DEFERRAL_NOT_HONOURED), stopping.toSet())
+        assertEquals(
+            setOf(Event.CANNOT_REBUILD_HERE, Event.DEFERRAL_NOT_HONOURED, Event.REQUEST_UNANSWERED),
+            stopping.toSet(),
+        )
+    }
+
+    /**
+     * REVIEW-AND2-003: a rebuild whose /connect got no answer through the live
+     * tunnel cannot tell a busy server from a tunnel that carries no TLS (an
+     * MTU black hole). Keeping that session kept the user on it for good.
+     */
+    @Test
+    fun `no answer through the live tunnel is the tunnel's fault, any answer is not`() {
+        listOf(FailureReason.UNREACHABLE, FailureReason.OFFLINE, FailureReason.SECURE_CONNECTION).forEach {
+            assertEquals("$it", Event.REQUEST_UNANSWERED, LiveRebuildPolicy.forRequestFailure(0, it))
+        }
+        // A 2xx body that did not decode came through the tunnel.
+        assertEquals(Event.REQUEST_FAILED, LiveRebuildPolicy.forRequestFailure(0, FailureReason.UNEXPECTED))
+        // Any HTTP status proves the tunnel carries the API: keep the session.
+        listOf(400, 403, 429, 500, 502, 503).forEach {
+            assertEquals("$it", Event.REQUEST_FAILED, LiveRebuildPolicy.forRequestFailure(it, FailureReason.SERVER_UNAVAILABLE))
+        }
+        assertFalse("no key was known to be minted", LiveRebuildPolicy.release(Event.REQUEST_UNANSWERED).newKey)
+        assertFalse(LiveRebuildPolicy.release(Event.REQUEST_UNANSWERED).oldKey)
     }
 
     @Test
