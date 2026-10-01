@@ -635,6 +635,9 @@ class BirdoVpnService : VpnService() {
         appContext = applicationContext
         running = true
         BypassSockets.install(bypassProtector)
+        // A process that died with Stealth up left Xray's config (its VLESS
+        // UUID) in the cache; nothing reads it again (A1-041).
+        XrayManager.deleteStaleConfig(this)
         notifManager.createChannels()
         screenInteractive = (getSystemService(POWER_SERVICE) as? PowerManager)?.isInteractive != false
         val filter = IntentFilter().apply {
@@ -1540,9 +1543,10 @@ class BirdoVpnService : VpnService() {
                     return
                 }
 
-                XrayManager.setVpnService(this)
                 val xrayStarted = runBlocking(Dispatchers.IO) {
-                    XrayManager.start(applicationContext, config)
+                    XrayManager.start(applicationContext, config, appPrefs.wireGuardPort) {
+                        onXrayExited(gen)
+                    }
                 }
                 // Checkpoint: the Xray start is the one slow step left in a
                 // setup, so it is where a Disconnect most often lands.
@@ -2177,6 +2181,25 @@ class BirdoVpnService : VpnService() {
                 }
             },
         ).also { it.start() }
+    }
+
+    /**
+     * The Xray child process exited on its own (A1-032): a crash or a kill.
+     * WireGuard's packets to the local relay now go nowhere, which the stall
+     * rules would only notice tens of seconds later — so treat it like a
+     * dead tunnel at once: block first (kill switch on), then the Error the
+     * supervisor re-dials on. Ignored unless it is THIS setup's tunnel that is
+     * up on the stealth transport.
+     */
+    private fun onXrayExited(gen: Long) {
+        serial {
+            if (!isCurrent(gen) || tunnelHandle < 0 || !stealthActive) return@serial
+            FaultReporter.trail(FaultReporter.PATH_STEALTH, "xray exited on its own — tunnel declared dead")
+            if (isKillSwitchEnabled) activateKillSwitch() else cleanupTunnel()
+            cleanupStealthAndQuantum()
+            updateWidgetState(false, null)
+            updateState(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        }
     }
 
     /**

@@ -306,12 +306,11 @@ class BirdoVpnServiceLifecycleTest {
         every { prefs.quantumProtectionEnabled } returns false
         mockkObject(XrayManager)
         every { XrayManager.isAvailable(any()) } returns true
-        every { XrayManager.setVpnService(any()) } just Runs
         every { XrayManager.getLocalPort() } returns 10808
         every { XrayManager.stop() } just Runs
         val generation = field("transitionGen") as AtomicLong
         // The STOP arrives on the main thread while Xray is starting.
-        coEvery { XrayManager.start(any(), any()) } answers { generation.incrementAndGet(); true }
+        coEvery { XrayManager.start(any(), any(), any(), any()) } answers { generation.incrementAndGet(); true }
         BirdoVpnService.setConfig(
             ConnectResponse(
                 success = true,

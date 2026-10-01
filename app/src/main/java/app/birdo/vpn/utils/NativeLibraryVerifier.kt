@@ -130,6 +130,28 @@ object NativeLibraryVerifier {
             Log.d(TAG, "Debug build — skipping native library verification for $libraryName")
             return true
         }
+        return verifyOnce(libraryName) { verifyUncached(context, libraryName) }
+    }
+
+    /** Libraries already verified as trusted in this process (A1-042). */
+    private val trusted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * A1-042: the whole .so was hashed on every connect (and the multi-MB
+     * xray executable on every Stealth start) for a verdict that cannot
+     * change while the process lives: a new library means a reinstall, and a
+     * reinstall kills the process. A TRUSTED verdict is kept; a refusal is
+     * judged (and reported) again next time, so a transient read error can
+     * never stick.
+     */
+    internal fun verifyOnce(libraryName: String, verify: () -> Boolean): Boolean {
+        if (libraryName in trusted) return true
+        val ok = verify()
+        if (ok) trusted += libraryName
+        return ok
+    }
+
+    private fun verifyUncached(context: Context, libraryName: String): Boolean {
 
         val nativeLibDir = context.applicationInfo.nativeLibraryDir
         val libFile = File(nativeLibDir, "lib${libraryName}.so")

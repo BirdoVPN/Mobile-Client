@@ -976,8 +976,8 @@ class DataplaneFaultReportingTest {
                 "stealth_start_failed_all_methods",
                 "stealth_start_threw",
                 "stealth_stop_failed",
-                "stealth_libxray_rejected_config",
-                "stealth_libxray_start_threw",
+                // No WireGuard port to forward to: refused, never guessed (LIVE-AND-STEALTH-001).
+                "stealth_wireguard_target_unknown",
                 "stealth_binary_missing",
                 "stealth_binary_exited",
                 "stealth_binary_start_threw",
