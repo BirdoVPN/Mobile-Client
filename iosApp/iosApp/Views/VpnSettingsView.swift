@@ -8,11 +8,12 @@ import SwiftUI
 ///     Forwarding are NOT here: they were promoted to the Settings root, so
 ///     what is left is the WireGuard transport shape. The kill-switch
 ///     confirm-before-disable dialog moved with its toggle.
-///   - Custom WireGuard port persists per valid keystroke (T3). The radio
-///     selection is LOCAL UI state — deriving it from the persisted port is
-///     the exact bug that made "Custom" unreachable.
+///   - The WireGuard port is not a choice (LIVE-PORT53, Android parity): the
+///     relays accept WireGuard on 51820 only, so the "53" preset and a custom
+///     port never connected and "51820" was the same as Automatic. The card
+///     says so instead of offering controls that only break the connection.
 ///   - Apply-on-change (§0.6): the BirdoShield and Local Network Sharing
-///     flips blip via the ViewModel's 1200 ms debounce; field edits (port/MTU) persist
+///     flips blip via the ViewModel's 1200 ms debounce; field edits (MTU) persist
 ///     immediately but re-apply ONCE on screen exit via
 ///     `commitPendingReapply()` in `.onDisappear`.
 ///
@@ -26,15 +27,6 @@ struct VpnSettingsView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
     @Environment(\.dismiss) private var dismiss
 
-    /// WireGuard port radio selection — LOCAL UI state (T3): "Custom" is a
-    /// mode the user chose, never re-derived from the persisted port.
-    private enum PortChoice {
-        case auto, port51820, port53, custom
-    }
-
-    @State private var portChoice: PortChoice = .auto
-    @State private var customPortText = ""
-    @State private var customPortValid = false
     @State private var mtuText = ""
     @State private var didSyncFromStore = false
 
@@ -102,7 +94,7 @@ struct VpnSettingsView: View {
         // one screen that renders it is the one place it has to be current.
         .task { await settingsVM.refreshClientConfig() }
         .onDisappear {
-            // §0.6 path 3: one blip with the FINAL field values (port/MTU).
+            // §0.6 path 3: one blip with the FINAL field values (MTU).
             settingsVM.commitPendingReapply()
         }
     }
@@ -146,97 +138,37 @@ struct VpnSettingsView: View {
         .background(BirdoTheme.glassStrong.ignoresSafeArea(edges: .top))
     }
 
-    // MARK: - WireGuard port (T3)
+    // MARK: - WireGuard port (LIVE-PORT53)
 
+    /// Not a choice: the relays accept WireGuard on 51820 only (fleet check
+    /// 2026-10-01), so the "53" preset and a custom port could never connect,
+    /// and "51820" was the same as Automatic. The card states the port the
+    /// app dials instead of offering controls that only break the connection.
+    /// Twin of Android's `vpn_settings_port_fixed` row.
     private var portCard: some View {
         BirdoCard(cornerRadius: 14) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 14) {
-                    Image(systemName: "wifi.router")
-                        .font(.system(size: 20))
-                        .foregroundStyle(BirdoTheme.green)
-                        .frame(width: 24)
-                        .accessibilityHidden(true)
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "wifi.router")
+                    .font(.system(size: 20))
+                    .foregroundStyle(BirdoTheme.green)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
                     Text("WireGuard Port")
                         .font(BirdoTheme.Fonts.titleSmall)
                         .foregroundStyle(BirdoTheme.onSurface)
-                }
-
-                portRadio("Automatic", isSelected: portChoice == .auto) {
-                    selectPreset(.auto, value: "auto")
-                }
-                portRadio("51820", isSelected: portChoice == .port51820) {
-                    selectPreset(.port51820, value: "51820")
-                }
-                portRadio("53", isSelected: portChoice == .port53) {
-                    selectPreset(.port53, value: "53")
-                }
-                portRadio("Custom", isSelected: portChoice == .custom) {
-                    selectCustom()
-                }
-
-                if portChoice == .custom {
-                    // Error shown while invalid AND while empty, so the UI
-                    // never implies a half-typed port is applied.
-                    BirdoTextField("Port number",
-                                   placeholder: "",
-                                   text: $customPortText,
-                                   error: customPortValid ? nil : "Enter a port between 1 and 65535",
-                                   keyboardType: .numberPad)
-                        .onChange(of: customPortText) { _, newValue in
-                            let filtered = String(newValue.filter(\.isNumber).prefix(5))
-                            if filtered != newValue { customPortText = filtered }
-                            // Valid values persist per keystroke; invalid or
-                            // partial text persists nothing (T3 fix).
-                            customPortValid = settingsVM.applyCustomWireGuardPort(filtered)
-                        }
+                    Text("Automatic")
+                        .font(BirdoTheme.Fonts.bodyMedium)
+                        .foregroundStyle(Color.white.opacity(0.85))
+                    Text("BirdoVPN servers accept WireGuard on port 51820 only, so there is no port to choose.")
+                        .font(BirdoTheme.Fonts.bodySmall)
+                        .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
         }
-    }
-
-    private func portRadio(_ label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .strokeBorder(isSelected ? BirdoTheme.accent : BirdoTheme.white40, lineWidth: 2)
-                        .frame(width: 20, height: 20)
-                    if isSelected {
-                        Circle()
-                            .fill(BirdoTheme.accent)
-                            .frame(width: 10, height: 10)
-                    }
-                }
-                Text(label)
-                    .font(BirdoTheme.Fonts.bodyMedium)
-                    .foregroundStyle(Color.white.opacity(0.85))
-                Spacer(minLength: 0)
-            }
-            .frame(minHeight: 32)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-    }
-
-    private func selectPreset(_ choice: PortChoice, value: String) {
-        withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
-            portChoice = choice
-        }
-        // Presets persist immediately (+ pending reapply-on-exit).
-        settingsVM.setWireGuardPortPreset(value)
-    }
-
-    private func selectCustom() {
-        withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
-            portChoice = .custom
-        }
-        // Re-validate whatever is already in the field: a valid prefilled
-        // port persists right away; empty/partial persists nothing until
-        // the user types a valid value.
-        customPortValid = settingsVM.applyCustomWireGuardPort(customPortText)
     }
 
     // MARK: - WireGuard MTU
@@ -384,22 +316,12 @@ struct VpnSettingsView: View {
 
     // MARK: - One-time local-state sync
 
-    /// Seed the LOCAL radio/field state from the persisted values once, on
-    /// first appear. This is the only direction data flows from the store
-    /// into the radio — continuous derivation is the T3 bug.
+    /// Seed the LOCAL field state from the persisted values once, on first
+    /// appear. This is the only direction data flows from the store into the
+    /// field — continuous derivation would fight the user's typing.
     private func syncFromStore() {
         guard !didSyncFromStore else { return }
         didSyncFromStore = true
-
-        switch settingsVM.wireGuardPort {
-        case "auto":  portChoice = .auto
-        case "51820": portChoice = .port51820
-        case "53":    portChoice = .port53
-        default:
-            portChoice = .custom
-            customPortText = settingsVM.wireGuardPort
-            customPortValid = SettingsViewModel.isValidPortText(settingsVM.wireGuardPort)
-        }
 
         if settingsVM.wireGuardMtu != 0 {
             mtuText = String(settingsVM.wireGuardMtu)

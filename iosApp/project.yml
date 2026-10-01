@@ -289,6 +289,12 @@ targets:
       # tunnel it just revoked), and the two-factor refusal classification.
       # Pinned by AccountDeletionTests; AuthViewModel cannot be compiled here.
       - path: iosApp/Services/AccountDeletion.swift
+      # LIVE-PORT53: the WireGuard port is no longer a setting. Foundation-only
+      # by design: the migration of a saved "53" / custom port and the pinning
+      # of an older build's tunnel profile are pure functions precisely so
+      # WireGuardPortTests can pin them here. SettingsViewModel and the
+      # PacketTunnel extension (their callers) cannot be compiled into this bundle.
+      - path: iosApp/Services/WireGuardPort.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
@@ -362,6 +368,11 @@ targets:
       # X-Desktop-Client as the host APIClient, so a Mac names itself macOS on
       # both. Foundation-only, so it adds nothing to the extension's footprint.
       - path: iosApp/Services/ClientIdentity.swift
+      # LIVE-PORT53: a tunnel profile saved by a build up to 1.4.32 can carry
+      # the retired "53" or a custom port in its Endpoint, and iOS starts that
+      # profile without the host app. The extension pins such a profile to the
+      # relays' port with the same helper the host app uses. Foundation-only.
+      - path: iosApp/Services/WireGuardPort.swift
     # NOTE: deliberately NO `info:` / `entitlements:` blocks — see the BirdoVPN
     # target above. Regenerating these stripped the NSExtension dict (so the
     # packet-tunnel provider could never load) and emptied the

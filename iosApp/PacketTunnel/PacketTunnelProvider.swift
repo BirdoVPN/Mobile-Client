@@ -155,11 +155,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         os_log("Starting Birdo VPN tunnel", log: log, type: .info)
 
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol,
-              let configString = proto.providerConfiguration?["wg-config"] as? String else {
+              let savedConfig = proto.providerConfiguration?["wg-config"] as? String else {
             recordFailure("missing wg-config in providerConfiguration")
             completionHandler(TunnelError.missingConfig)
             return
         }
+        // LIVE-PORT53: a profile saved by a build up to 1.4.32 can carry the
+        // retired "53" or a custom port in its Endpoint, and iOS starts it
+        // without the app (on-demand, the Settings app's VPN switch). Such a
+        // profile is dialled on the relays' own port instead; one this build
+        // wrote names the server's port and passes through untouched.
+        let configString = WireGuardPort.dialableConfig(
+            savedConfig, providerConfiguration: proto.providerConfiguration)
 
         // Heartbeat credentials (finding #2). The host parks a fresh token in
         // the SHARED keychain on each connect and names it here
@@ -389,10 +396,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         }
         guard let message = (try? JSONSerialization.jsonObject(with: messageData)) as? [String: Any],
               message["cmd"] as? String == "reconfigure",
-              let configString = message["wg-config"] as? String, !configString.isEmpty else {
+              let sentConfig = message["wg-config"] as? String, !sentConfig.isEmpty else {
             reply(false, "bad reconfigure message")
             return
         }
+        // LIVE-PORT53, as in startTunnel: a restore can send back a snapshot
+        // of a profile an older build wrote, with its retired port.
+        let configString = WireGuardPort.dialableConfig(sentConfig, providerConfiguration: message)
         let privateKeyRef = (message["wg-private-key-ref"] as? String) ?? "wg_private_key"
         let presharedKeyRef = (message["wg-preshared-key-ref"] as? String) ?? ""
         guard let privateKey = readSharedKeychain(account: privateKeyRef), !privateKey.isEmpty else {
