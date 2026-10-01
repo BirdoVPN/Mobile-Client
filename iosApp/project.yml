@@ -276,6 +276,9 @@ targets:
       # the iOS half of this mitigation shipped exported-but-never-called while
       # every library-side check stayed green.
       - path: iosApp/Services/StoredPQKeyTriage.swift
+      # Owner item 96: the User-Agent / X-Desktop-Client strings, pinned by
+      # ClientIdentityTests (the backend's UA parser keys on the exact token).
+      - path: iosApp/Services/ClientIdentity.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
@@ -345,6 +348,10 @@ targets:
       # memory ceiling.
       - path: iosApp/Services/TunnelCircuitBreaker.swift
       - path: iosApp/Services/TunnelBreakerStore.swift
+      # Owner item 96: the heartbeat sends the SAME User-Agent and
+      # X-Desktop-Client as the host APIClient, so a Mac names itself macOS on
+      # both. Foundation-only, so it adds nothing to the extension's footprint.
+      - path: iosApp/Services/ClientIdentity.swift
     # NOTE: deliberately NO `info:` / `entitlements:` blocks — see the BirdoVPN
     # target above. Regenerating these stripped the NSExtension dict (so the
     # packet-tunnel provider could never load) and emptied the

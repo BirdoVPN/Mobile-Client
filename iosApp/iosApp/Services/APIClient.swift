@@ -101,9 +101,11 @@ final class APIClient: @unchecked Sendable {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
+        // Platform-specific since owner item 96: a Mac says macOS, not iOS
+        // (ClientIdentity). The PacketTunnel heartbeat sends the same pair.
         config.httpAdditionalHeaders = [
-            "User-Agent": "Birdo-iOS/\(kBirdoClientVersion) (iOS)",
-            "X-Desktop-Client": "birdo-ios",
+            "User-Agent": ClientIdentity.userAgent(version: kBirdoClientVersion),
+            "X-Desktop-Client": ClientIdentity.clientHeaderValue,
         ]
         // SEC: Disable HTTP cookies + URL cache so auth headers and JSON
         // bodies aren't persisted to disk between launches.
@@ -1597,9 +1599,9 @@ private struct APIErrorBody: Decodable {
 /// "IOS"), so the device list, support and any per-platform view of devices
 /// were wrong for macOS. The backend already accepts DESKTOP and MACOS in the
 /// same enums (auth.controller.ts DeviceInfoSchema; Prisma DeviceType /
-/// Platform) and uses them for display only. Deliberately NOT changed: the
-/// `Birdo-iOS/...` User-Agent and `X-Desktop-Client: birdo-ios` header,
-/// which the backend's version-floor parser and client detection key on.
+/// Platform) and uses them for display only. The User-Agent and
+/// `X-Desktop-Client` header followed on 2026-10-01 (owner item 96) — see
+/// `ClientIdentity`.
 #if os(macOS)
 private let kDeviceTypeWire = "DESKTOP"
 private let kPlatformWire = "MACOS"
