@@ -47,6 +47,74 @@ enum RootRoute: Equatable, Sendable {
     }
 }
 
+// MARK: - Consent record (versioned)
+
+/// What the user agreed to on the privacy disclosure, as persisted in
+/// `UserDefaults`.
+///
+/// Owner item 38 (2026-10-01): VERSIONED re-consent. The disclosure was
+/// rewritten on 29–30 Sep 2026 (audit 2026-09-29, P0-1 / B-1 / B-13: no
+/// "RAM-only" claim, both the Terms and the Privacy Policy accepted, the
+/// minimum age stated), so an acceptance of the old text no longer counts.
+/// Every user who accepted an older version sees the current screen ONCE on
+/// their next launch; accepting it records `currentVersion`, and they never
+/// see it at launch again. Android's twin is
+/// `AppPreferences.hasAcceptedCurrentConsent` / `CURRENT_CONSENT_VERSION`
+/// (also 2), with the same "older acceptance does not count" rule.
+///
+/// Before this, iOS stored one Boolean (`gdpr_consented`). A stored `true`
+/// without a version is MIGRATED by reading it as version 1 — the text every
+/// build up to 1.4.31 showed — rather than rewritten, so nothing is lost if
+/// this build is rolled back.
+enum ConsentRecord {
+    /// Bump when the disclosure's statements change materially, so every
+    /// existing user sees, and accepts, the new text once.
+    /// 2 = the 29–30 Sep 2026 audit rewrite.
+    static let currentVersion = 2
+
+    /// The pre-versioning Boolean, still written so an older build reads it.
+    static let acceptedKey = "gdpr_consented"
+    static let versionKey = "gdpr_consent_version"
+    /// "Not now" on the disclosure (see `RootRoute`).
+    static let deferredKey = "gdpr_consent_deferred"
+    /// Epoch millis, matching Android's `privacyConsentTimestamp`.
+    static let timestampKey = "privacyConsentTimestamp"
+
+    /// The disclosure version this user last accepted; 0 = none.
+    static func acceptedVersion(in defaults: UserDefaults) -> Int {
+        guard defaults.bool(forKey: acceptedKey) else { return 0 }
+        // Accepted before versioning existed: that was version 1.
+        guard defaults.object(forKey: versionKey) != nil else { return 1 }
+        return defaults.integer(forKey: versionKey)
+    }
+
+    /// Accepted THIS version. An acceptance of an older one does not count.
+    static func hasAcceptedCurrent(in defaults: UserDefaults) -> Bool {
+        acceptedVersion(in: defaults) >= currentVersion
+    }
+
+    static func isDeferred(in defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: deferredKey)
+    }
+
+    static func recordAcceptance(in defaults: UserDefaults, at date: Date = Date()) {
+        defaults.set(true, forKey: acceptedKey)
+        defaults.set(currentVersion, forKey: versionKey)
+        defaults.removeObject(forKey: deferredKey)
+        defaults.set(date.timeIntervalSince1970 * 1000, forKey: timestampKey)
+    }
+
+    /// "Not now". Withdraws any earlier acceptance — the user has just been
+    /// shown the current text and declined it for now — and drops them into
+    /// the guest shell; `RootRoute` never shows the screen at launch again.
+    static func recordDeferral(in defaults: UserDefaults) {
+        defaults.set(false, forKey: acceptedKey)
+        defaults.removeObject(forKey: versionKey)
+        defaults.set(true, forKey: deferredKey)
+        defaults.removeObject(forKey: timestampKey)
+    }
+}
+
 // MARK: - Point-of-use sign-in prompts
 
 /// Why the sign-in sheet was raised. Each case carries the honest reason the

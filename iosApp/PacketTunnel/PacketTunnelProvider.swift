@@ -471,7 +471,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
 
     /// Start the 30 s liveness loop. Mirrors the host `APIClient.heartbeat`
     /// request exactly: `POST https://api.birdo.app/vpn/heartbeat/{keyId}` with
-    /// `Authorization: Bearer <token>` + `X-Desktop-Client: birdo-ios`. The
+    /// `Authorization: Bearer <token>` + `X-Desktop-Client` (`ClientIdentity`). The
     /// backend answers `{ valid, serverOnline, message? }`. On `valid == false`
     /// (revoked / evicted) we tear the tunnel down with `cancelTunnelWithError`
     /// so a dead peer stops blackholing traffic even while the host app is
@@ -517,8 +517,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("birdo-ios", forHTTPHeaderField: "X-Desktop-Client")
-        request.setValue("Birdo-iOS/\(clientVersion) (iOS)", forHTTPHeaderField: "User-Agent")
+        // Same pair as the host APIClient (ClientIdentity): a Mac names itself.
+        request.setValue(ClientIdentity.clientHeaderValue, forHTTPHeaderField: "X-Desktop-Client")
+        request.setValue(ClientIdentity.userAgent(version: clientVersion), forHTTPHeaderField: "User-Agent")
 
         let data: Data
         let response: URLResponse

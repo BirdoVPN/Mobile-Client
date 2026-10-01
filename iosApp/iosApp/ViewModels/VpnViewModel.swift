@@ -326,6 +326,13 @@ final class VpnViewModel: ObservableObject {
     /// public data with nothing of the previous account in it, and dropping it
     /// would blank the list the signed-out user is looking at.
     func loadPublicLocations(forceRefresh: Bool = false) {
+        // Owner item 41: NOTHING is fetched before the user accepts the privacy
+        // disclosure — this public, unauthenticated list included. It used to
+        // load on the first frame, behind the consent screen, and again for a
+        // user who chose "Not now". Guarded HERE, at the request site, so no
+        // caller (Home, the location list, pull-to-refresh, the app root) can
+        // forget; the app root loads it the moment consent is accepted.
+        guard ConsentRecord.hasAcceptedCurrent(in: .standard) else { return }
         if !forceRefresh,
            !publicLocations.isEmpty,
            let ts = publicLocationsTimestamp,
@@ -511,6 +518,25 @@ final class VpnViewModel: ObservableObject {
         if let keyId {
             try? await api.disconnect(keyId: keyId)
         }
+    }
+
+    /// Account-deletion variant (owner item 43): runs only once the server has
+    /// CONFIRMED the erasure (or the app is checking whether it happened), and
+    /// BEFORE the local sign-out wipes the keychain the extension reads.
+    ///
+    /// Local only. The erasure already revoked every peer of the account on
+    /// the nodes, and the session that would authorise a slot release no
+    /// longer exists — a release here would only earn a 401 (and a second
+    /// sign-out through `onUnauthorized`).
+    /// - Returns: whether a tunnel was up or coming up.
+    @discardableResult
+    func tearDownForAccountDeletion() -> Bool {
+        let wasUp = isConnected || isConnecting
+        isReapplyingSettings = false
+        setActiveKeyId(nil)
+        vpnManager.disconnect()
+        resetSessionState()
+        return wasUp
     }
 
     /// Dial a Multi-Hop pair. Async (unlike `connect()`) so MultiHopView can

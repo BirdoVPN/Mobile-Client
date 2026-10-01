@@ -33,8 +33,9 @@ import UIKit
 struct SettingsView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
     /// Needed since Custom DNS / Port Forwarding moved up from the VPN
-    /// Settings sub-page: both are SOVEREIGN-gated and route to the upgrade
-    /// flow when locked.
+    /// Settings sub-page: Port Forwarding is SOVEREIGN-gated and Custom DNS
+    /// follows the plan's client-config flag (every plan, owner item 40); a
+    /// locked row routes to the upgrade flow.
     @EnvironmentObject var vpnVM: VpnViewModel
     @Environment(\.openURL) private var openURL
     /// Backstop for the reapply commit — see the .onChange below.
@@ -163,13 +164,24 @@ struct SettingsView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { settingsVM.commitPendingReapply() }
         }
+        // The Custom DNS row's plan flag lives in /api/client-config (owner
+        // item 40). A no-op until the privacy disclosure is accepted (item 41);
+        // the row reads as available meanwhile.
+        .task { await settingsVM.refreshClientConfig() }
     }
 
-    // MARK: - DNS (SOVEREIGN-gated, §0.5) — promoted from VPN Settings
+    // MARK: - DNS — promoted from VPN Settings
+
+    /// Owner item 40: Custom DNS is on EVERY plan — it was SOVEREIGN-only here.
+    /// The server's client-config flag for the plan is still honoured, and
+    /// says yes for every plan; no answer reads as available (`CustomDnsGate`).
+    private var customDnsAvailable: Bool {
+        settingsVM.isCustomDnsAvailable(plan: vpnVM.currentPlan)
+    }
 
     @ViewBuilder
     private var customDnsRow: some View {
-        if vpnVM.isSovereign {
+        if customDnsAvailable {
             SettingsToggleRow(icon: "server.rack", iconColor: BirdoTheme.accent,
                               title: "Custom DNS Servers",
                               description: "Use your own DNS servers instead of the VPN defaults",
@@ -289,8 +301,8 @@ struct SettingsView: View {
 
     // MARK: - VPN
 
-    /// The sub-page link plus the two rows promoted out of it (Custom DNS
-    /// Servers, Port Forwarding) — both SOVEREIGN-gated exactly as before.
+    /// The sub-page link plus the two rows promoted out of it: Custom DNS
+    /// Servers (every plan, owner item 40) and Port Forwarding (SOVEREIGN).
     @ViewBuilder
     private var vpnSection: some View {
         SectionHeader("VPN")
@@ -305,7 +317,7 @@ struct SettingsView: View {
         customDnsRow
         // Locked rows render checked = persisted && unlocked (§0.5), so the
         // fields also stay hidden while locked.
-        if vpnVM.isSovereign && settingsVM.customDnsEnabled {
+        if customDnsAvailable && settingsVM.customDnsEnabled {
             dnsFields
         }
         portForwardingRow

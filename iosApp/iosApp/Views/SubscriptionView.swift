@@ -656,6 +656,7 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "Post-quantum key exchange",
                 "Kill switch",
                 "DNS leak protection",
+                "Custom DNS",
                 "2FA / TOTP",
             ]
         ),
@@ -674,6 +675,7 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "Post-quantum key exchange",
                 "Kill switch",
                 "DNS leak protection",
+                "Custom DNS",
                 "2FA / TOTP",
                 "Priority support",
             ]
