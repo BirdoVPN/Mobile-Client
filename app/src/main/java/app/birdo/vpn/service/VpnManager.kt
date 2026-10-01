@@ -235,7 +235,7 @@ class VpnManager @Inject constructor(
      */
     internal var refreshWidget: suspend () -> Unit = {
         try {
-            app.birdo.vpn.widget.BirdoWidget().updateAll(context)
+            withContext(Dispatchers.IO) { app.birdo.vpn.widget.BirdoWidget().updateAll(context) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -544,7 +544,7 @@ class VpnManager @Inject constructor(
                 .map { app.birdo.vpn.widget.BirdoWidget.widgetModel(it, BirdoVpnService.killSwitchActive) }
                 .distinctUntilChanged()
                 .drop(1)
-                .collect { withContext(ioDispatcher) { refreshWidget() } }
+                .collect { refreshWidget() }
         }
     }
 
