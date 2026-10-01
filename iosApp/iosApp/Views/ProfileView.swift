@@ -87,6 +87,8 @@ struct ProfileView: View {
                         subtitle: "Permanently delete your account and data",
                         destructive: true
                     ) {
+                        // A fresh attempt: no leftover two-factor step.
+                        authVM.resetDeletionFlow()
                         showDeleteDialog = true
                         // Second-pass #9: name the stores still billing before
                         // the user confirms. Never gates the deletion.
@@ -127,6 +129,15 @@ struct ProfileView: View {
         }
         .onDisappear {
             copyToastTask?.cancel()
+        }
+        .onChange(of: authVM.isLoggedIn) { _, loggedIn in
+            // A confirmed deletion signs the user out from inside the dialog.
+            // The shell no longer rebuilds on sign-out, so close it here or it
+            // would still be on screen over the guest card.
+            guard !loggedIn else { return }
+            showDeleteDialog = false
+            deletePassword = ""
+            localDeleteError = nil
         }
     }
 
@@ -441,18 +452,27 @@ struct ProfileView: View {
                     .disabled(authVM.isDeleting)
                 }
                 .padding(.bottom, 12)
+                appleReauthNote
                 if requiresPassword {
+                    // In the two-factor step the server's message belongs to
+                    // the code field below, not to the password.
                     BirdoTextField("Password",
                                    placeholder: "Password",
                                    text: $deletePassword,
                                    isSecure: true,
-                                   error: authVM.deleteError ?? localDeleteError,
+                                   error: authVM.deleteRequiresTwoFactor
+                                       ? localDeleteError
+                                       : (authVM.deleteError ?? localDeleteError),
                                    textContentType: .password)
                         .disabled(authVM.isDeleting)
                         .onChange(of: deletePassword) { _, _ in
                             localDeleteError = nil
                         }
-                } else if let err = authVM.deleteError {
+                }
+                if authVM.deleteRequiresTwoFactor {
+                    twoFactorStep
+                        .padding(.top, requiresPassword ? 12 : 0)
+                } else if !requiresPassword, let err = authVM.deleteError {
                     Text(err)
                         .font(BirdoTheme.Fonts.bodySmall)
                         .foregroundStyle(BirdoTheme.red)
@@ -463,6 +483,57 @@ struct ProfileView: View {
         }
     }
 
+    /// Owner item 97: say up front that Apple's sheet will appear, and, if it
+    /// was cancelled or failed, that the next tap deletes without it.
+    @ViewBuilder
+    private var appleReauthNote: some View {
+        if let notice = authVM.deleteNotice {
+            Text(notice)
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.yellowLight)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
+        } else if authVM.offersAppleReauthForDeletion {
+            Text("Apple will ask you to confirm first, so Birdo can also unlink Sign in with Apple.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
+        }
+    }
+
+    /// Owner item 85: the server answered `two_factor_required`. The code is
+    /// sent with the next "Delete My Account" tap; the user is still connected
+    /// and signed in meanwhile.
+    private var twoFactorStep: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("This account uses two-factor authentication. Enter the 6-digit code from your authenticator app, or one of your backup codes.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurface)
+                .fixedSize(horizontal: false, vertical: true)
+            BirdoTextField("Two-factor code",
+                           placeholder: "000000 or backup code",
+                           text: $authVM.deleteTwoFactorCode,
+                           error: authVM.deleteError,
+                           keyboardType: .asciiCapable,
+                           textContentType: .oneTimeCode,
+                           monospaced: true)
+                .disabled(authVM.isDeleting)
+                .accessibilityIdentifier("delete_2fa_code_field")
+                .onChange(of: authVM.deleteTwoFactorCode) { _, newValue in
+                    // Same filter as the login 2FA step: digits, hex a–f,
+                    // dashes; backup codes are at most 19 characters.
+                    let filtered = String(newValue.filter { Self.twoFactorAllowed.contains($0) }.prefix(19))
+                    if filtered != newValue { authVM.deleteTwoFactorCode = filtered }
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static let twoFactorAllowed = Set("0123456789abcdefABCDEF-")
+
     private func confirmDelete() {
         // Local guard ONLY for password accounts — the Android bug ran this
         // check for password-less accounts too and stranded their deletes
@@ -472,10 +543,14 @@ struct ProfileView: View {
             return
         }
         localDeleteError = nil
-        // Tunnel down BEFORE erasure — deletion wipes the shared keychain the
-        // tunnel extension reads (same ordering rule as logout).
-        vpnVM.disconnect()
-        authVM.deleteAccount(password: requiresPassword ? deletePassword : nil)
+        // Owner item 43: NO disconnect here any more. The request goes first,
+        // with the tunnel up; AuthViewModel tears the tunnel down only once
+        // the server has confirmed the erasure — and still before the sign-out
+        // wipes the keychain the extension reads. A refusal leaves the user
+        // connected and signed in.
+        let vpn = vpnVM
+        authVM.deleteAccount(password: requiresPassword ? deletePassword : nil,
+                             tearDownTunnel: { vpn.tearDownForAccountDeletion() })
     }
 
     private func dismissDeleteDialog() {
@@ -483,7 +558,7 @@ struct ProfileView: View {
         showDeleteDialog = false
         deletePassword = ""
         localDeleteError = nil
-        authVM.deleteError = nil
+        authVM.resetDeletionFlow()
     }
 
     // MARK: - Actions
@@ -528,9 +603,15 @@ struct ProfileView: View {
         return "Account"
     }
 
+    /// Anonymous FIRST (owner item 86): `isAnonymousAccount` reads /auth/me's
+    /// `accountType` / `isAnonymous` when the backend sends them, so this no
+    /// longer depends on recognising the synthetic email. The account number is
+    /// the account's only credential, so signing out says to keep it.
     private var signOutSubtitle: String {
+        if authVM.isAnonymousAccount {
+            return "Anonymous account. Keep your account number to sign back in."
+        }
         if let email = authVM.userEmail, !email.isEmpty { return email }
-        if authVM.isAnonymousAccount { return "Anonymous account" }
         return "Sign out of this device"
     }
 

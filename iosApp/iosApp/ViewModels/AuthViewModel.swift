@@ -43,12 +43,18 @@ final class AuthViewModel: ObservableObject {
     /// `GET /auth/me` then confirms; ONLY a definitive 401 (after one
     /// auto-refresh attempt) flips this back to false.
     @Published var isLoggedIn = false
-    /// Consent is shown ONCE, on first launch, before anything else.
+    /// The user accepted the CURRENT disclosure (`ConsentRecord.currentVersion`).
+    /// Shown on first launch, and once more after an update that changes the
+    /// disclosure (owner item 38).
     @Published var hasConsented = false
     /// The user chose "Not now" on the privacy disclosure. They get the whole
     /// guest shell; consent is asked for again before an account is created or
     /// signed into — the only point at which personal data is processed.
     @Published private(set) var consentDeferred = false
+    /// The user accepted an OLDER disclosure and is being shown the current
+    /// one (owner item 38). The screen says it changed, so a returning user
+    /// does not read it as the app having been reset.
+    @Published private(set) var isReconsent = false
     /// The sign-in sheet is up. Raised ONLY by `requestSignIn(_:)`, from an
     /// action that genuinely needs an account.
     @Published var isPresentingSignIn = false
@@ -122,6 +128,33 @@ final class AuthViewModel: ObservableObject {
     /// inside the dialog.
     @Published private(set) var isDeleting = false
     @Published var deleteError: String?
+    /// Owner item 85: the server answered `two_factor_required` — the dialog
+    /// shows a code field and the next attempt sends `twoFactorCode`.
+    @Published private(set) var deleteRequiresTwoFactor = false
+    /// Bound to the deletion dialog's code field (6-digit TOTP or backup
+    /// code). Typing clears the error.
+    @Published var deleteTwoFactorCode = "" {
+        didSet {
+            if oldValue != deleteTwoFactorCode && deleteError != nil { deleteError = nil }
+        }
+    }
+    /// Owner item 97: a non-error note for the deletion dialog — set when the
+    /// Sign in with Apple re-authentication was cancelled or failed, and the
+    /// next tap deletes without it.
+    @Published private(set) var deleteNotice: String?
+    /// The fresh Apple `authorizationCode` for this deletion attempt, kept
+    /// for a resend after a password or two-factor refusal.
+    private var deletionAppleCode: String?
+    /// The Apple step has run for this attempt (a code, a cancel or a
+    /// failure) — it is offered once, never in a loop.
+    private var deletionAppleStepDone = false
+
+    /// Owner item 97: deletion re-authenticates with Sign in with Apple first
+    /// when the app knows the account is Apple-linked (`AccountDeletion`).
+    var offersAppleReauthForDeletion: Bool {
+        AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: keychain.signedInWithApple,
+                                          accountEmail: user?.email)
+    }
     /// Store subscriptions the server reported as STILL BILLING after a
     /// successful deletion (audit 2026-09-29, A-8 / C-9). Deleting a Birdo
     /// account cannot cancel an App Store or Google Play subscription, so the
@@ -238,12 +271,18 @@ final class AuthViewModel: ObservableObject {
     /// Sliding-window local rate limit: timestamps of FAILED email logins.
     /// 5 failures within 60 s block further submits.
     private var failedEmailAttempts: [Date] = []
+    /// A signed-in cold start that landed on the consent screen: hydration
+    /// waits for the user to leave it (owner item 41).
+    private var hydrationAwaitsConsentScreen = false
 
     private enum AuthContext {
         case emailLogin
         case anonymousLogin
         case anonymousCreate
         case sso
+        /// Sign in with Apple — told apart from the web SSO providers because
+        /// account deletion re-authenticates with Apple (owner item 97).
+        case apple
     }
 
     // MARK: - Init / Session Restore
@@ -252,22 +291,34 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
-        let storedConsent = UserDefaults.standard.bool(forKey: "gdpr_consented")
-        let storedDeferral = UserDefaults.standard.bool(forKey: Self.consentDeferredKey)
+        // Owner item 38: consent is VERSIONED. An acceptance of an older
+        // disclosure does not count, so its user sees the current one once.
+        let defaults = UserDefaults.standard
+        let storedConsent = ConsentRecord.hasAcceptedCurrent(in: defaults)
+        let storedDeferral = ConsentRecord.isDeferred(in: defaults)
         // Cold-start routing from local tokens only: logged in iff either
         // stored JWT is unexpired. Unparseable = expired (fail-safe).
         let sessionLive = Self.isTokenLive(keychain.accessToken)
             || Self.isTokenLive(keychain.refreshToken)
+        // A signed-in session is no longer grandfathered into consent: it
+        // used to set `gdpr_consented` here, which made a signed-in user
+        // immune to any change of the disclosure — exactly the users who must
+        // see a rewritten one.
+        hasConsented = storedConsent
+        consentDeferred = storedDeferral
+        isReconsent = !storedConsent && ConsentRecord.acceptedVersion(in: defaults) > 0
         if sessionLive {
             isLoggedIn = true
             userEmail = keychain.userEmail
-            // A logged-in session implies prior consent — grandfather it.
-            hasConsented = true
-            if !storedConsent {
-                UserDefaults.standard.set(true, forKey: "gdpr_consented")
-            }
-            Task { [weak self] in
-                await self?.hydrateOnColdStart()
+            if RootRoute.decide(hasConsented: storedConsent, consentDeferred: storedDeferral) == .shell {
+                Task { [weak self] in
+                    await self?.hydrateOnColdStart()
+                }
+            } else {
+                // Owner item 41: the consent screen is up (a signed-in user
+                // being re-asked, item 38), and it makes no request. GET
+                // /auth/me and /vpn/stats wait until they leave it.
+                hydrationAwaitsConsentScreen = true
             }
         } else {
             // Both tokens dead: purge the leftovers so no half-expired
@@ -275,18 +326,20 @@ final class AuthViewModel: ObservableObject {
             if keychain.accessToken != nil || keychain.refreshToken != nil {
                 keychain.clear()
             }
-            hasConsented = storedConsent
-            consentDeferred = storedDeferral
         }
     }
 
     // MARK: - Consent
 
-    static let consentDeferredKey = "gdpr_consent_deferred"
-
     func acceptConsent() {
+        // Persisted FIRST: the flag, THIS version (owner item 38) and the
+        // epoch-millis timestamp Android also keeps. Anything the published
+        // flip below sets off reads the stored record (the item 41 network
+        // gate does), so it must already say "accepted".
+        ConsentRecord.recordAcceptance(in: UserDefaults.standard)
         hasConsented = true
         consentDeferred = false
+        isReconsent = false
         // Hand back to the tap that was interrupted. Deferred so the sheet's
         // ConsentView -> LoginView swap settles before provisioning re-enters
         // and flips it to the progress step.
@@ -296,11 +349,18 @@ final class AuthViewModel: ObservableObject {
                 self?.provisionAnonymously(reason: resumed)
             }
         }
-        let defaults = UserDefaults.standard
-        defaults.set(true, forKey: "gdpr_consented")
-        defaults.removeObject(forKey: Self.consentDeferredKey)
-        // Epoch millis, matching Android's `privacyConsentTimestamp`.
-        defaults.set(Date().timeIntervalSince1970 * 1000, forKey: "privacyConsentTimestamp")
+        resumeHydrationAfterConsentScreen()
+    }
+
+    /// Cold-start hydration held back while the consent screen was up (owner
+    /// item 41). Runs once, whichever way the user leaves it.
+    private func resumeHydrationAfterConsentScreen() {
+        guard hydrationAwaitsConsentScreen else { return }
+        hydrationAwaitsConsentScreen = false
+        guard isLoggedIn else { return }
+        Task { [weak self] in
+            await self?.hydrateOnColdStart()
+        }
     }
 
     /// "Not now" on the privacy disclosure.
@@ -314,10 +374,12 @@ final class AuthViewModel: ObservableObject {
     func deferConsent() {
         hasConsented = false
         consentDeferred = true
-        let defaults = UserDefaults.standard
-        defaults.set(false, forKey: "gdpr_consented")
-        defaults.set(true, forKey: Self.consentDeferredKey)
-        defaults.removeObject(forKey: "privacyConsentTimestamp")
+        isReconsent = false
+        ConsentRecord.recordDeferral(in: UserDefaults.standard)
+        // A signed-in user who defers the re-consent keeps their session
+        // (signing them out over "Not now" would be a trap of its own), so
+        // the held-back hydration runs now.
+        resumeHydrationAfterConsentScreen()
     }
 
     // MARK: - Sign-in sheet (point of use, never a launch wall)
@@ -790,7 +852,7 @@ final class AuthViewModel: ObservableObject {
         error = nil
         pendingEmail = nil
         pendingAnonymousId = nil
-        pendingContext = .sso
+        pendingContext = .apple
 
         Task { [weak self] in
             guard let self else { return }
@@ -803,7 +865,7 @@ final class AuthViewModel: ObservableObject {
                     if await completeAuthentication(tokens: tokens,
                                                     knownEmail: nil,
                                                     knownAnonymousId: nil,
-                                                    context: .sso) {
+                                                    context: .apple) {
                         isLoggedIn = true
                         refreshStatsInBackground()
                     }
@@ -906,6 +968,11 @@ final class AuthViewModel: ObservableObject {
         pendingContext = .emailLogin
         error = nil
         deleteError = nil
+        deleteRequiresTwoFactor = false
+        deleteTwoFactorCode = ""
+        deleteNotice = nil
+        deletionAppleCode = nil
+        deletionAppleStepDone = false
         isLoading = false
         isDeleting = false
         selectedTab = .email
@@ -918,32 +985,178 @@ final class AuthViewModel: ObservableObject {
 
     // MARK: - Account Deletion (GDPR Art. 17)
 
-    /// Erase the account. Callers must disconnect the VPN first (same
-    /// ordering rule as `logout()`). No client-side password validation —
-    /// password-less accounts (SSO, anonymous without password) legitimately
-    /// send nothing, and the backend is authoritative for the rest (the
-    /// Android 6-256 pre-check stranded password-less deletes; do not
-    /// replicate). Results surface via `deleteError` / `isDeleting` so they
-    /// render inside the dialog.
-    func deleteAccount(password: String?) {
+    /// Erase the account.
+    ///
+    /// Owner item 43: the request goes FIRST, with the tunnel still up. Only a
+    /// CONFIRMED erasure runs `tearDownTunnel`, clears the credentials and
+    /// signs out — in that order, because the sign-out wipes the keychain the
+    /// tunnel extension reads. A refusal (wrong password, 429, 5xx, offline)
+    /// leaves the user connected and signed in, with the reason in the dialog.
+    /// (The VPN used to be disconnected before the request, so every failed
+    /// attempt cost the user their tunnel for nothing.)
+    ///
+    /// No client-side password validation — password-less accounts (SSO,
+    /// anonymous without password) legitimately send nothing, and the backend
+    /// is authoritative for the rest (the Android 6-256 pre-check stranded
+    /// password-less deletes; do not replicate). Results surface via
+    /// `deleteError` / `isDeleting` so they render inside the dialog.
+    ///
+    /// Owner item 85: an account with two-factor authentication is answered
+    /// `two_factor_required`; the dialog then asks for a code (TOTP or backup)
+    /// and the next call resends with it. The user stays connected and signed
+    /// in throughout — a refusal is not a deletion.
+    ///
+    /// - Parameter tearDownTunnel: takes the VPN down locally; returns whether
+    ///   one was up. The view owns the VpnViewModel, so it supplies this.
+    func deleteAccount(password: String?,
+                       tearDownTunnel: @escaping @MainActor @Sendable () -> Bool) {
         guard !isDeleting else { return }
+        var twoFactorCode: String?
+        if deleteRequiresTwoFactor {
+            guard AccountDeletion.isCompleteTwoFactorCode(deleteTwoFactorCode) else {
+                deleteError = "Enter the 6-digit code from your authenticator app, or a backup code."
+                return
+            }
+            twoFactorCode = deleteTwoFactorCode.trimmingCharacters(in: .whitespaces)
+        }
         isDeleting = true
         deleteError = nil
-        Task { [weak self] in
+        Task { [weak self, twoFactorCode] in
             guard let self else { return }
+            // Owner item 97: Apple first, so the code is fresh when it is sent.
+            guard await runAppleReauthStepIfNeeded() else {
+                isDeleting = false
+                return
+            }
             do {
-                let stillBilling = try await api.deleteAccount(password: password)
-                // The account is gone — so is its recovery credential.
-                keychain.clearAnonymousId()
-                completeLocalLogout()
-                // After the local sign-out, so nothing in it can clear the
-                // notice before the shell has shown it.
-                self.storeSubscriptionsStillBilling = stillBilling
+                let stillBilling = try await api.deleteAccount(password: password,
+                                                               twoFactorCode: twoFactorCode,
+                                                               appleAuthorizationCode: deletionAppleCode)
+                finishConfirmedDeletion(stillBilling: stillBilling, tearDownTunnel: tearDownTunnel)
+            } catch let refusal as DeletionRefusal {
+                // Owner item 85. Nothing was deleted; the user stays as they were.
+                deleteRequiresTwoFactor = true
+                switch refusal {
+                case .twoFactorRequired:
+                    // The first ask is not an error — the dialog explains it
+                    // beside the new field. Asked again WITH a code, say so.
+                    deleteError = twoFactorCode == nil
+                        ? nil
+                        : "Enter the 6-digit code from your authenticator app, or a backup code."
+                case .twoFactorInvalid:
+                    deleteError = "That code is not valid. Check it and try again."
+                }
+            } catch let error where AccountDeletion.outcomeIsUnknown(error) {
+                await resolveUnknownDeletionOutcome(tearDownTunnel: tearDownTunnel)
             } catch {
                 self.deleteError = Self.mapDeleteError(error)
             }
             self.isDeleting = false
         }
+    }
+
+    /// The deletion dialog opened or closed: drop any half-finished
+    /// two-factor step so the next attempt starts clean.
+    func resetDeletionFlow() {
+        guard !isDeleting else { return }
+        deleteRequiresTwoFactor = false
+        deleteTwoFactorCode = ""
+        deleteError = nil
+        deleteNotice = nil
+        deletionAppleCode = nil
+        deletionAppleStepDone = false
+    }
+
+    /// Owner item 97: re-authenticate with Sign in with Apple and keep the
+    /// fresh `authorizationCode` for the deletion request.
+    ///
+    /// - Returns: true to go on and send the request now. False when the user
+    ///   cancelled Apple's sheet or Apple failed: the dialog then shows a short
+    ///   note, and the NEXT tap deletes without the code. Proceeding straight
+    ///   after a cancel would turn "cancel" into "delete".
+    private func runAppleReauthStepIfNeeded() async -> Bool {
+        guard offersAppleReauthForDeletion, !deletionAppleStepDone else { return true }
+        deletionAppleStepDone = true
+        do {
+            if let code = try await AppleSignInService.shared.authorizationCodeForAccountDeletion() {
+                deletionAppleCode = code
+                deleteNotice = nil
+                return true
+            }
+            deleteNotice = "Sign in with Apple was cancelled. You can still delete your account: tap "
+                + "Delete My Account again. Then remove BirdoVPN under Sign in with Apple in your "
+                + "Apple ID settings."
+        } catch {
+            deleteNotice = "Sign in with Apple is unavailable right now. You can still delete your "
+                + "account: tap Delete My Account again. Then remove BirdoVPN under Sign in with "
+                + "Apple in your Apple ID settings."
+        }
+        return false
+    }
+
+    /// The server confirmed the erasure: NOW the tunnel goes down, then the
+    /// credentials, then the session.
+    private func finishConfirmedDeletion(stillBilling: [StoreSubscriptionStillBilling],
+                                         tearDownTunnel: @MainActor () -> Bool) {
+        // Before the keychain wipe below: the extension reads its secrets there.
+        _ = tearDownTunnel()
+        // The account is gone — so is its recovery credential.
+        keychain.clearAnonymousId()
+        completeLocalLogout()
+        // After the local sign-out, so nothing in it can clear the notice
+        // before the shell has shown it.
+        storeSubscriptionsStillBilling = stillBilling
+    }
+
+    /// The request went out and no answer came back — see
+    /// `AccountDeletion.outcomeIsUnknown`. Usually that IS a deletion: the
+    /// erasure revoked this device's own peer before the server answered, so
+    /// the answer died in the tunnel. Find out rather than guess.
+    private func resolveUnknownDeletionOutcome(tearDownTunnel: @MainActor () -> Bool) async {
+        // The tunnel has to go first or the check below cannot leave the
+        // device: with the peer revoked it is a black hole, and with the kill
+        // switch on it takes every other route with it. If the account turns
+        // out to still exist, the user reconnects; the message says so.
+        let tunnelWasUp = tearDownTunnel()
+        switch await probeAccountAfterLostDeletionAnswer() {
+        case .gone:
+            // APIClient rotates the device identity only on an answered
+            // success; this success went unanswered.
+            api.resetDeviceIdentity()
+            // The answer carrying the still-billing list was lost; the
+            // preflight the dialog fetched names the same subscriptions.
+            finishConfirmedDeletion(stillBilling: deletionPreflight?.stillBilling ?? [],
+                                    tearDownTunnel: { false })
+        case .stillExists:
+            deleteError = tunnelWasUp
+                ? "Your account was not deleted: the connection dropped before Birdo answered. The VPN was disconnected so the app could check. Please try again."
+                : "Your account was not deleted: the connection dropped before Birdo answered. Please try again."
+        case .unknown:
+            deleteError = tunnelWasUp
+                ? "The connection dropped before Birdo answered, and the app could not check whether your account was deleted. The VPN was disconnected. Check your connection and try again; if the account is already gone, the app will sign you out."
+                : "The connection dropped before Birdo answered, and the app could not check whether your account was deleted. Check your connection and try again; if the account is already gone, the app will sign you out."
+        }
+    }
+
+    private enum DeletionProbe { case gone, stillExists, unknown }
+
+    /// Ask `GET /auth/me` whether the account survived. The erasure ends every
+    /// session server-side, so a definitive 401 (after APIClient's refresh
+    /// attempt also fails) means deleted; a profile means it was not.
+    private func probeAccountAfterLostDeletionAnswer() async -> DeletionProbe {
+        for attempt in 0..<3 {
+            // Give the tunnel teardown time to land before asking.
+            try? await Task.sleep(for: .seconds(attempt == 0 ? 2 : 3))
+            do {
+                _ = try await api.fetchProfile()
+                return .stillExists
+            } catch APIError.unauthorized {
+                return .gone
+            } catch {
+                continue
+            }
+        }
+        return .unknown
     }
 
     // MARK: - Shared Completion
@@ -968,11 +1181,15 @@ final class AuthViewModel: ObservableObject {
             if let knownAnonymousId {
                 keychain.saveAnonymousId(knownAnonymousId)
             }
-        case .emailLogin, .sso:
+        case .emailLogin, .sso, .apple:
             // A previous anonymous account's ID must not survive into a
             // different identity on this device.
             keychain.clearAnonymousId()
         }
+        // Owner item 97: remember a Sign in with Apple session (and forget one
+        // replaced by any other method), so deletion knows to re-authenticate
+        // with Apple. /auth/me does not say whether an account is Apple-linked.
+        keychain.setSignedInWithApple(context == .apple)
         // Hydration — login NEVER blocks on the profile call: a failure still
         // lands on Home with `user == nil`.
         if let profile = try? await api.fetchProfile() {
@@ -1239,7 +1456,11 @@ final class AuthViewModel: ObservableObject {
     private static func mapDeleteError(_ error: Error) -> String {
         if let api = error as? APIError {
             switch api {
-            case .serverMessage(let msg, _):
+            case .serverMessage(let msg, let status):
+                // 429 by STATUS first: the two-factor limiter (owner item 85)
+                // answers with copy of its own, which must not fall through to
+                // the generic failure.
+                if status == 429 { return "Too many attempts. Please wait a moment." }
                 if msg.lowercased().contains("password") { return "Incorrect password" }
                 if msg.contains("429") || msg.lowercased().contains("too many") {
                     return "Too many attempts. Please wait a moment."

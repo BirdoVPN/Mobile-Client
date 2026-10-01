@@ -53,6 +53,11 @@ final class KeychainService: @unchecked Sendable {
     /// who never wrote it down can still sign back in; wiped only by
     /// `clearAnonymousId()` (account deletion / switching to an email account).
     var anonymousId: String? { read(key: "anonymous_id") }
+    /// Owner item 97: this device's CURRENT session was signed in with Sign in
+    /// with Apple. `/auth/me` does not say whether an account is Apple-linked,
+    /// so this is what decides whether account deletion re-authenticates with
+    /// Apple first. Session-scoped: `clear()` drops it with the tokens.
+    var signedInWithApple: Bool { read(key: "sign_in_method") == "apple" }
 
     // MARK: - Save / Clear (host app only)
 
@@ -104,12 +109,22 @@ final class KeychainService: @unchecked Sendable {
         delete(key: "anonymous_id")
     }
 
+    /// Record how the session now being stored was signed in (owner item 97).
+    func setSignedInWithApple(_ value: Bool) {
+        if value {
+            write(key: "sign_in_method", value: "apple")
+        } else {
+            delete(key: "sign_in_method")
+        }
+    }
+
     /// Wipe the session. `device_id` and `anonymous_id` intentionally survive —
     /// see their accessor docs.
     func clear() {
         delete(key: "access_token")
         delete(key: "refresh_token")
         delete(key: "user_email")
+        delete(key: "sign_in_method")
         // Also wipe any tunnel secrets that may have been left behind.
         clearAllSharedSecrets()
     }
