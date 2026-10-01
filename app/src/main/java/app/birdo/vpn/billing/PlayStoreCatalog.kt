@@ -1,5 +1,9 @@
 package app.birdo.vpn.billing
 
+import androidx.annotation.StringRes
+import app.birdo.vpn.R
+import app.birdo.vpn.data.repository.StringLookup
+
 /**
  * The pure, testable half of the Google Play in-app-subscription rail.
  *
@@ -8,7 +12,10 @@ package app.birdo.vpn.billing
  * storefront state machine and — above all — the classification of the server's
  * refusals can be asserted on CI without a device, a Play Store, a test track
  * or a network. [PlayBillingManager] holds the half that genuinely needs
- * BillingClient and does as little thinking as possible.
+ * BillingClient and does as little thinking as possible. Copy is named by
+ * string-resource id and resolved through a [StringLookup] (A2-031): `R` ids
+ * are plain ints, and the JVM tests resolve them against the shipped
+ * strings.xml.
  *
  * ── This is a PORT of iosApp/iosApp/Services/StoreCatalog.swift ─────────────
  * The Apple rail shipped first (92340bd) and survived two adversarial reviews.
@@ -69,10 +76,11 @@ enum class BirdoBillingPeriod(val basePlanId: String, val priceSuffix: String) {
     YEARLY("yearly", "/yr"),
     ;
 
-    val renewalSentence: String
+    @get:StringRes
+    val renewalSentenceRes: Int
         get() = when (this) {
-            MONTHLY -> "Renews every month until cancelled."
-            YEARLY -> "Renews every year until cancelled."
+            MONTHLY -> R.string.billing_renews_monthly
+            YEARLY -> R.string.billing_renews_yearly
         }
 
     companion object {
@@ -146,26 +154,16 @@ enum class StorefrontFailure {
     QUERY_FAILED,
     ;
 
-    val message: String
+    @get:StringRes
+    val messageRes: Int
         get() = when (this) {
             // The expected state until the Play Console products are published
             // and live. The copy must not read like a crash, and must not
             // promise a date we do not control.
-            NO_PRODUCTS ->
-                "Subscriptions cannot be bought in the app just yet — Google Play has no Birdo " +
-                    "products to offer on this device. Nothing is wrong with your account, and " +
-                    "anything you already pay for still works. Please try again after the next " +
-                    "update."
-            PLAY_STORE_UNAVAILABLE ->
-                "The Google Play Store is not available on this device, so subscriptions cannot " +
-                    "be bought here. Update or enable the Play Store and try again. Anything " +
-                    "you already pay for still works."
-            SUBSCRIPTIONS_UNSUPPORTED ->
-                "This device's version of Google Play does not support subscriptions. Update " +
-                    "the Play Store and try again. Anything you already pay for still works."
-            QUERY_FAILED ->
-                "Could not reach Google Play to load subscription prices. Check your connection " +
-                    "and try again."
+            NO_PRODUCTS -> R.string.billing_storefront_no_products
+            PLAY_STORE_UNAVAILABLE -> R.string.billing_storefront_play_unavailable
+            SUBSCRIPTIONS_UNSUPPORTED -> R.string.billing_storefront_unsupported
+            QUERY_FAILED -> R.string.billing_storefront_query_failed
         }
 
     /** Is a retry worth offering? Only where the user can plausibly change the answer. */
@@ -193,7 +191,8 @@ sealed interface StorefrontState {
 
     /** The fetch finished (or timed out) and nothing is purchasable. */
     data class Unavailable(val failure: StorefrontFailure) : StorefrontState {
-        val message: String get() = failure.message
+        @get:StringRes
+        val messageRes: Int get() = failure.messageRes
         val canRetry: Boolean get() = failure.isRetryable
     }
 
@@ -334,30 +333,16 @@ enum class StoreLinkRefusal {
      * and the account-sharing one names the way out, including the support
      * transfer.
      */
-    val fallbackMessage: String
+    @get:StringRes
+    val fallbackMessageRes: Int
         get() = when (this) {
-            ALREADY_LINKED_TO_ANOTHER_ACCOUNT ->
-                "This Google Play subscription is already linked to a different Birdo account. " +
-                    "Sign in to that account to use it, or contact support and we can transfer it."
-            PRODUCT_UNMAPPED ->
-                "Birdo does not recognise this Google Play product yet. Your purchase is safe — " +
-                    "please contact support and we will activate it."
-            PURCHASE_NOT_RECOGNISED ->
-                "Google Play has not confirmed this purchase yet. Your purchase is safe — wait " +
-                    "a moment, then tap Restore Purchases."
-            STATE_UNRECOGNISED ->
-                "Google Play reported something Birdo does not yet understand about this " +
-                    "subscription. This is a problem on Birdo's side, not with your account or " +
-                    "your payment. Your purchase is safe; please contact support."
-            NEEDS_SIGN_IN ->
-                "Sign in to Birdo to add this subscription to your account. Your purchase is " +
-                    "safe: tap Restore Purchases once you are signed in."
-            RATE_LIMITED ->
-                "Too many requests in a row. Your purchase is safe — wait a minute, then tap " +
-                    "Restore Purchases."
-            TRANSIENT ->
-                "Your purchase went through, but Birdo could not confirm it just now. Your " +
-                    "purchase is safe — tap Restore Purchases to try again."
+            ALREADY_LINKED_TO_ANOTHER_ACCOUNT -> R.string.billing_refusal_other_account
+            PRODUCT_UNMAPPED -> R.string.billing_refusal_product_unmapped
+            PURCHASE_NOT_RECOGNISED -> R.string.billing_refusal_not_confirmed
+            STATE_UNRECOGNISED -> R.string.billing_refusal_state_unrecognised
+            NEEDS_SIGN_IN -> R.string.billing_refusal_sign_in
+            RATE_LIMITED -> R.string.billing_refusal_rate_limited
+            TRANSIENT -> R.string.billing_refusal_transient
         }
 
     /** Tone for the banner. A refusal the user cannot act on is not an alarm. */
@@ -476,23 +461,14 @@ sealed interface StoreRestoreOutcome {
     /** Could not talk to Play or to the server. */
     data class Failed(val text: String) : StoreRestoreOutcome
 
-    val message: String
-        get() = when (this) {
-            is Restored ->
-                if (count == 1) "Your subscription has been restored to this account."
-                else "$count subscriptions have been restored to this account."
-            NothingToRestore -> NOTHING_TO_RESTORE_MESSAGE
-            is Refused -> text
-            is Failed -> text
-        }
+    fun message(strings: StringLookup): String = when (this) {
+        is Restored -> strings.plural(R.plurals.billing_restored, count, count)
+        NothingToRestore -> strings.get(R.string.billing_nothing_to_restore)
+        is Refused -> text
+        is Failed -> text
+    }
 
     val isSuccess: Boolean get() = this is Restored
-
-    companion object {
-        const val NOTHING_TO_RESTORE_MESSAGE =
-            "No Birdo subscription was found for this Google account. If you bought one with a " +
-                "different Google account, switch to it in the Play Store and try again."
-    }
 }
 
 // ── Purchase banner ─────────────────────────────────────────────────────────

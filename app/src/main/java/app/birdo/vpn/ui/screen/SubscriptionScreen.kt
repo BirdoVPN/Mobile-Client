@@ -322,7 +322,7 @@ fun SubscriptionScreen(
             if (isPlayBuild && storefrontMessage == null && !storefrontLoading) {
                 BirdoBillingPeriod.fromKey(billingPeriod)?.let { period ->
                     Text(
-                        period.renewalSentence,
+                        stringResource(period.renewalSentenceRes),
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.onSurfaceMuted,
                         textAlign = TextAlign.Center,

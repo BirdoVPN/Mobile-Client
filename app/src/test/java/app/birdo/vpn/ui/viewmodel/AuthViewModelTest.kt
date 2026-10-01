@@ -9,6 +9,7 @@ import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.data.repository.FailureReason
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.testing.StringsXml
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -68,7 +69,7 @@ class AuthViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager, oauthStore, prefs)
+    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager, oauthStore, prefs, StringsXml)
 
     /**
      * Helper: create a ViewModel that is already past the init checkSession,
@@ -221,7 +222,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "12345")
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -230,7 +231,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "a")
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -239,7 +240,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "")
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -248,7 +249,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "a".repeat(257))
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -468,7 +469,9 @@ class AuthViewModelTest {
         repeat(6) { viewModel.login("user@birdo.app", "password") }
 
         coVerify(exactly = 5) { repository.login(any(), any()) }
-        assertTrue(viewModel.uiState.value.error!!.startsWith("Too many login attempts"))
+        // Canonical vocabulary: "sign-in", never "login"; the wait is a plural.
+        val error = viewModel.uiState.value.error!!
+        assertTrue(error, Regex("""Too many sign-in attempts\. Please wait \d+ seconds?\.""").matches(error))
     }
 
     @Test
@@ -1164,6 +1167,31 @@ class AuthViewModelTest {
         assertNull(state.pendingAnonymousId)
         assertFalse(state.isLoggedIn)
         assertEquals("Could not create an anonymous account. Please try again.", state.error)
+    }
+
+    // ── Canonical account vocabulary (A2-031) ───────────────────
+
+    @Test
+    fun `a short account number is called an account number, not an Anonymous ID`() = runTest {
+        viewModel = createLoggedOutViewModel()
+
+        viewModel.loginAnonymous("1234 5678")
+
+        assertEquals("Account number must be 24 digits", viewModel.uiState.value.error)
+        coVerify(exactly = 0) { repository.loginAnonymous(any(), any()) }
+    }
+
+    @Test
+    fun `an anonymous sign-in the server declines says sign-in, not login`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.loginAnonymous(any(), any()) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = false)
+        )
+
+        viewModel.loginAnonymous("1".repeat(24))
+
+        assertEquals(StringsXml.text("error_sign_in_failed"), viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.isLoggedIn)
     }
 
     // ── Deletion preflight (second-pass #9) ─────────────────────

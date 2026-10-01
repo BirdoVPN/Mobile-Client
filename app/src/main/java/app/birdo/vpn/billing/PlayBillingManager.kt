@@ -5,9 +5,11 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.data.repository.StringLookup
 import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
@@ -122,6 +124,8 @@ class PlayBillingManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val repository: BirdoRepository,
     private val tokenManager: TokenManager,
+    /** Every notice this class raises is strings.xml copy (A2-031). */
+    private val strings: StringLookup,
 ) : PurchasesUpdatedListener {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -143,6 +147,7 @@ class PlayBillingManager @Inject constructor(
         link = { token -> repository.linkGooglePurchase(token) },
         acknowledge = { token -> acknowledge(token) },
         isSignedIn = { tokenManager.isLoggedIn() },
+        strings = strings,
         refusals = refusals,
     )
 
@@ -441,17 +446,15 @@ class PlayBillingManager @Inject constructor(
         if (intent !is ApiResult.Success) {
             // Nothing has been charged: the Play sheet was never shown, and the
             // copy has to say so rather than leaving the user wondering.
-            val reason = (intent as? ApiResult.Error)?.let {
-                if (it.code == 429) {
-                    "Too many attempts in a row. Wait a minute and try again"
-                } else {
-                    "Birdo could not start the purchase. Check your connection and try again"
-                }
-            } ?: "Birdo could not start the purchase"
+            val notice = when ((intent as? ApiResult.Error)?.code) {
+                null -> R.string.billing_launch_failed
+                429 -> R.string.billing_launch_rate_limited
+                else -> R.string.billing_launch_failed_offline
+            }
             _state.update {
                 it.copy(
                     purchasingProductId = null,
-                    notice = StoreNotice.error("$reason — nothing was charged."),
+                    notice = StoreNotice.error(strings.get(notice)),
                 )
             }
             return
@@ -546,22 +549,20 @@ class PlayBillingManager @Inject constructor(
             }
             BillingClient.BillingResponseCode.BILLING_UNAVAILABLE,
             BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE,
-            -> StoreNotice.error(StorefrontFailure.PLAY_STORE_UNAVAILABLE.message)
+            -> StoreNotice.error(strings.get(StorefrontFailure.PLAY_STORE_UNAVAILABLE.messageRes))
 
             // SERVICE_TIMEOUT is deprecated in PBL 9 and folded into
             // SERVICE_UNAVAILABLE above, so it is deliberately not listed.
             BillingClient.BillingResponseCode.NETWORK_ERROR,
             BillingClient.BillingResponseCode.SERVICE_DISCONNECTED,
-            -> StoreNotice.error(StorefrontFailure.QUERY_FAILED.message)
+            -> StoreNotice.error(strings.get(StorefrontFailure.QUERY_FAILED.messageRes))
 
             BillingClient.BillingResponseCode.ITEM_UNAVAILABLE ->
-                StoreNotice.error("That subscription is not available on Google Play right now.")
+                StoreNotice.error(strings.get(R.string.billing_item_unavailable))
 
             else -> {
                 log("launchBillingFlow failed: ${result.responseCode} ${result.debugMessage}")
-                StoreNotice.error(
-                    "The purchase did not start. If you were charged, tap Restore Purchases.",
-                )
+                StoreNotice.error(strings.get(R.string.billing_did_not_start))
             }
         }
         _state.update { it.copy(purchasingProductId = null, notice = notice ?: it.notice) }
@@ -581,7 +582,9 @@ class PlayBillingManager @Inject constructor(
     private fun reconcileAfterAlreadyOwned() {
         scope.launch {
             if (reconcile(announce = true) is StoreRestoreOutcome.NothingToRestore) {
-                _state.update { it.copy(notice = StoreNotice.info(ALREADY_OWNED_UNSEEN)) }
+                _state.update {
+                    it.copy(notice = StoreNotice.info(strings.get(R.string.billing_already_owned_unseen)))
+                }
             }
         }
     }
@@ -628,7 +631,7 @@ class PlayBillingManager @Inject constructor(
     private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome {
         if (!isRailEnabled) return StoreRestoreOutcome.NothingToRestore
         if (connect() != null) {
-            return StoreRestoreOutcome.Failed(StorefrontFailure.PLAY_STORE_UNAVAILABLE.message)
+            return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.PLAY_STORE_UNAVAILABLE.messageRes))
         }
 
         val params = QueryPurchasesParams.newBuilder()
@@ -641,7 +644,7 @@ class PlayBillingManager @Inject constructor(
         }
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {
             log("queryPurchases failed: ${result.responseCode} ${result.debugMessage}")
-            return StoreRestoreOutcome.Failed(StorefrontFailure.QUERY_FAILED.message)
+            return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.QUERY_FAILED.messageRes))
         }
 
         knownPurchases = purchases
@@ -667,7 +670,7 @@ class PlayBillingManager @Inject constructor(
             return StoreRestoreOutcome.Restored(linked)
         }
         return StoreRestoreOutcome.Refused(
-            firstRefusal ?: StoreLinkRefusal.TRANSIENT.fallbackMessage,
+            firstRefusal ?: strings.get(StoreLinkRefusal.TRANSIENT.fallbackMessageRes),
         )
     }
 
@@ -678,10 +681,10 @@ class PlayBillingManager @Inject constructor(
      */
     suspend fun restorePurchases(): StoreRestoreOutcome {
         if (_state.value.isRestoring) {
-            return StoreRestoreOutcome.Failed("A restore is already running.")
+            return StoreRestoreOutcome.Failed(strings.get(R.string.billing_restore_running))
         }
         if (!tokenManager.isLoggedIn()) {
-            return StoreRestoreOutcome.Failed(StoreLinkRefusal.NEEDS_SIGN_IN.fallbackMessage)
+            return StoreRestoreOutcome.Failed(strings.get(StoreLinkRefusal.NEEDS_SIGN_IN.fallbackMessageRes))
         }
         _state.update { it.copy(isRestoring = true, notice = null) }
         // The user has explicitly asked us to try again, and they may have just
@@ -694,8 +697,8 @@ class PlayBillingManager @Inject constructor(
         }
         _state.update {
             it.copy(
-                notice = if (outcome.isSuccess) StoreNotice.success(outcome.message)
-                else StoreNotice.info(outcome.message),
+                notice = if (outcome.isSuccess) StoreNotice.success(outcome.message(strings))
+                else StoreNotice.info(outcome.message(strings)),
             )
         }
         return outcome
@@ -722,7 +725,7 @@ class PlayBillingManager @Inject constructor(
                 _state.update { st ->
                     st.copy(
                         notice = if (announce) {
-                            StoreNotice.success(PurchaseIngestor.purchasedMessage(outcome.plan))
+                            StoreNotice.success(ingestor.purchasedMessage(outcome.plan))
                         } else {
                             st.notice
                         },
@@ -784,11 +787,6 @@ class PlayBillingManager @Inject constructor(
 
     private companion object {
         const val TAG = "PlayBilling"
-
-        const val ALREADY_OWNED_UNSEEN =
-            "Google Play says you already have this subscription, but Birdo cannot see it on " +
-                "this device yet. Wait a moment and tap Restore Purchases; if it still does not " +
-                "appear, contact support and we will sort it out."
     }
 }
 

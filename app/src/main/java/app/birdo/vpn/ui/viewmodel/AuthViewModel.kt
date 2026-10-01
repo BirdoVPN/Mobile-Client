@@ -7,6 +7,7 @@ import app.birdo.vpn.data.auth.openSsoBroker
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.OAuthStateStore
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -19,6 +20,7 @@ import app.birdo.vpn.utils.PkceGenerator
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.data.repository.StringLookup
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -84,6 +86,8 @@ class AuthViewModel @Inject constructor(
     private val tokenManager: TokenManager,
     private val oauthStore: OAuthStateStore,
     private val prefs: AppPreferences,
+    /** Every sentence this class shows comes from strings.xml through here. */
+    private val strings: StringLookup,
 ) : ViewModel() {
 
     companion object {
@@ -131,7 +135,9 @@ class AuthViewModel @Inject constructor(
         if (loginAttempts.size >= MAX_LOGIN_ATTEMPTS) {
             val oldestInWindow = loginAttempts.first()
             val waitSecs = LOGIN_WINDOW_SECS - java.time.Duration.between(oldestInWindow, now).seconds
-            _uiState.value = _uiState.value.copy(error = "Too many login attempts. Please wait ${waitSecs}s.")
+            _uiState.value = _uiState.value.copy(
+                error = strings.plural(R.plurals.auth_sign_in_throttled, waitSecs.toInt(), waitSecs),
+            )
             return true
         }
         return false
@@ -217,11 +223,11 @@ class AuthViewModel @Inject constructor(
     fun login(email: String, password: String) {
         val trimmedEmail = email.trim()
         if (!InputValidator.isValidEmail(trimmedEmail)) {
-            _uiState.value = _uiState.value.copy(error = "Please enter a valid email address")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_invalid_email))
             return
         }
         if (!InputValidator.isValidPassword(password)) {
-            _uiState.value = _uiState.value.copy(error = "Password must be 6-256 characters")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_password_length))
             return
         }
 
@@ -283,7 +289,7 @@ class AuthViewModel @Inject constructor(
         // Apple is a broker provider on ANDROID only — iOS uses the native
         // ASAuthorization flow and never calls startSso.
         if (provider !in SSO_PROVIDERS) {
-            _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_unsupported))
             return
         }
         val pkce = PkceGenerator.generate()
@@ -303,7 +309,7 @@ class AuthViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(error = null)
         } catch (e: Exception) {
             oauthStore.clear()
-            _uiState.value = _uiState.value.copy(error = "Could not open the browser to sign in.")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_browser))
         }
     }
 
@@ -314,13 +320,13 @@ class AuthViewModel @Inject constructor(
     fun completeSso(code: String, state: String) {
         val pending = oauthStore.load()
         if (pending == null) {
-            _uiState.value = _uiState.value.copy(error = "Sign-in session expired. Please try again.")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_expired))
             return
         }
         val (verifier, savedState) = pending
         if (state != savedState) {
             oauthStore.clear()
-            _uiState.value = _uiState.value.copy(error = "Sign-in could not be verified. Please try again.")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_unverified))
             return
         }
 
@@ -352,7 +358,7 @@ class AuthViewModel @Inject constructor(
     fun verifyTwoFactor(code: String) {
         val token = _uiState.value.challengeToken ?: return
         if (!is2faCodeComplete(code)) {
-            _uiState.value = _uiState.value.copy(error = "Enter a 6-digit code or a backup code")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_2fa_format))
             return
         }
         // Same throttle as the other credential paths, and single-flight so a
@@ -414,7 +420,7 @@ class AuthViewModel @Inject constructor(
             isLoggedIn = false,
             user = null,
             sessionExpired = true,
-            error = app.birdo.vpn.service.SessionCopy.SESSION_EXPIRED,
+            error = strings.get(R.string.error_session_expired),
         )
     }
 
@@ -442,7 +448,7 @@ class AuthViewModel @Inject constructor(
             if (cleanId.length != 24) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    error = "Anonymous ID must be 24 digits",
+                    error = strings.get(R.string.auth_error_account_number_length),
                 )
                 return@launch
             }
@@ -461,7 +467,7 @@ class AuthViewModel @Inject constructor(
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
-                            error = "Anonymous login failed",
+                            error = strings.get(R.string.error_sign_in_failed),
                         )
                     }
                 }
@@ -524,7 +530,7 @@ class AuthViewModel @Inject constructor(
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
-                            error = "Could not create an anonymous account. Please try again.",
+                            error = strings.get(R.string.error_anon_register_failed),
                         )
                     }
                 }
@@ -567,7 +573,7 @@ class AuthViewModel @Inject constructor(
     fun deleteAccount(password: String) {
         val requiresPassword = _uiState.value.user?.hasPassword ?: true
         if (requiresPassword && !InputValidator.isValidPassword(password)) {
-            _uiState.value = _uiState.value.copy(deleteAccountError = "Please enter your password")
+            _uiState.value = _uiState.value.copy(deleteAccountError = strings.get(R.string.auth_error_password_required))
             return
         }
         // Send null for password-less accounts so the backend takes the

@@ -1009,7 +1009,7 @@ fun BirdoNavGraph(
                             }
                         },
                         storefrontMessage =
-                            (storefront as? StorefrontState.Unavailable)?.message,
+                            (storefront as? StorefrontState.Unavailable)?.let { stringResource(it.messageRes) },
                         storefrontLoading = storefront is StorefrontState.Loading,
                         storefrontCanRetry =
                             (storefront as? StorefrontState.Unavailable)?.canRetry == true,

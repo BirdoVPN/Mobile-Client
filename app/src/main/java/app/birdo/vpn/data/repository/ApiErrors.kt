@@ -1,7 +1,10 @@
 package app.birdo.vpn.data.repository
 
+import androidx.annotation.PluralsRes
 import androidx.annotation.StringRes
 import app.birdo.vpn.R
+import app.birdo.vpn.billing.StoreLinkRefusal
+import app.birdo.vpn.utils.InputValidator
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -73,9 +76,19 @@ enum class ErrorContext {
     DELETE_ACCOUNT,
 }
 
-/** Resolves a string resource. The seam that keeps [ApiErrorMapper] a plain JVM class. */
-fun interface StringLookup {
-    fun get(@StringRes id: Int): String
+/**
+ * Resolves the app's copy from strings.xml for code that runs outside Compose:
+ * [ApiErrorMapper], the Play rail, the view models. The seam keeps them plain
+ * JVM classes under unit test. The app binds it to the application's resources
+ * (NetworkModule); JVM tests bind it to the shipped strings.xml (`StringsXml`),
+ * so an assertion about wording is an assertion about what ships.
+ */
+interface StringLookup {
+    /** `Context.getString(id, *args)`; with no [args] the text is returned as written. */
+    fun get(@StringRes id: Int, vararg args: Any): String
+
+    /** `Resources.getQuantityString(id, count, *args)`. */
+    fun plural(@PluralsRes id: Int, count: Int, vararg args: Any): String
 }
 
 /**
@@ -172,6 +185,13 @@ class ApiErrorMapper(private val strings: StringLookup) {
             FailureReason.REFUSED to serverMessage.trim()
         else -> FailureReason.UNEXPECTED to strings.get(R.string.error_connect_failed)
     }
+
+    /**
+     * A Play purchase the server did not link: its own sentence when it wrote a
+     * showable one, otherwise the refusal's copy from strings.xml.
+     */
+    fun storeRefusal(kind: StoreLinkRefusal, serverMessage: String?): String =
+        InputValidator.sanitizeErrorMessage(serverMessage, strings.get(kind.fallbackMessageRes))
 
     // ── Per-context rules ──────────────────────────────────────────────────
 

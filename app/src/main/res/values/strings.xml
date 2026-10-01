@@ -555,4 +555,68 @@
     <string name="app_cover_unlock">Unlock</string>
     <string name="app_cover_prompt_title">Unlock BirdoVPN</string>
     <string name="app_cover_prompt_subtitle">Verify your identity to continue</string>
+
+    <!-- ════ AND-UI-B (2026-10-01): A2-031 copy moved out of Kotlin ════════
+         Every string below used to be a literal in app/src/main/java. Appended
+         as one block so a merge with the other overhaul lanes stays
+         mechanical; HardcodedCopyGuardTest keeps new literals out of ui/**
+         and billing/**. Wording is unchanged except where the canonical
+         vocabulary (CLIENT-OVERHAUL-2026-09-30 P1-parity) required a fix. -->
+
+    <!-- Sign-in validation (AuthViewModel). -->
+    <plurals name="auth_sign_in_throttled">
+        <item quantity="one">Too many sign-in attempts. Please wait %d second.</item>
+        <item quantity="other">Too many sign-in attempts. Please wait %d seconds.</item>
+    </plurals>
+    <string name="auth_error_invalid_email">Please enter a valid email address</string>
+    <string name="auth_error_password_length">Password must be 6–256 characters</string>
+    <string name="auth_error_password_required">Please enter your password</string>
+    <string name="auth_error_account_number_length">Account number must be 24 digits</string>
+    <string name="auth_error_2fa_format">Enter a 6-digit code or a backup code</string>
+    <string name="auth_error_sso_unsupported">Unsupported sign-in provider</string>
+    <string name="auth_error_sso_browser">Could not open the browser to sign in.</string>
+    <string name="auth_error_sso_expired">Sign-in session expired. Please try again.</string>
+    <string name="auth_error_sso_unverified">Sign-in could not be verified. Please try again.</string>
+
+    <!-- Google Play rail (PlayStoreCatalog, PurchaseIngestor, PlayBillingManager).
+         A port of iosApp StoreCatalog.swift: keep the two rails saying the same
+         thing. "Birdo" here is the company that bills and the account system,
+         as in delete_dialog_store_warning; the app is BirdoVPN. -->
+    <string name="billing_renews_monthly">Renews every month until cancelled.</string>
+    <string name="billing_renews_yearly">Renews every year until cancelled.</string>
+    <!-- Why nothing can be bought. NO_PRODUCTS is the expected state until the
+         Play Console products are live: it must not read like a crash, and must
+         not promise a date (PlayStoreCatalogTest). -->
+    <string name="billing_storefront_no_products">Subscriptions cannot be bought in the app just yet — Google Play has no Birdo products to offer on this device. Nothing is wrong with your account, and anything you already pay for still works. Please try again after the next update.</string>
+    <string name="billing_storefront_play_unavailable">The Google Play Store is not available on this device, so subscriptions cannot be bought here. Update or enable the Play Store and try again. Anything you already pay for still works.</string>
+    <string name="billing_storefront_unsupported">This device\'s version of Google Play does not support subscriptions. Update the Play Store and try again. Anything you already pay for still works.</string>
+    <string name="billing_storefront_query_failed">Could not reach Google Play to load subscription prices. Check your connection and try again.</string>
+    <!-- A link refusal the server did not explain in its own words. -->
+    <string name="billing_refusal_other_account">This Google Play subscription is already linked to a different Birdo account. Sign in to that account to use it, or contact support and we can transfer it.</string>
+    <string name="billing_refusal_product_unmapped">Birdo does not recognise this Google Play product yet. Your purchase is safe — please contact support and we will activate it.</string>
+    <string name="billing_refusal_not_confirmed">Google Play has not confirmed this purchase yet. Your purchase is safe — wait a moment, then tap Restore Purchases.</string>
+    <string name="billing_refusal_state_unrecognised">Google Play reported something Birdo does not yet understand about this subscription. This is a problem on Birdo\'s side, not with your account or your payment. Your purchase is safe; please contact support.</string>
+    <string name="billing_refusal_sign_in">Sign in to Birdo to add this subscription to your account. Your purchase is safe: tap Restore Purchases once you are signed in.</string>
+    <string name="billing_refusal_rate_limited">Too many requests in a row. Your purchase is safe — wait a minute, then tap Restore Purchases.</string>
+    <string name="billing_refusal_transient">Your purchase went through, but Birdo could not confirm it just now. Your purchase is safe — tap Restore Purchases to try again.</string>
+    <plurals name="billing_restored">
+        <item quantity="one">Your subscription has been restored to this account.</item>
+        <item quantity="other">%d subscriptions have been restored to this account.</item>
+    </plurals>
+    <string name="billing_nothing_to_restore">No Birdo subscription was found for this Google account. If you bought one with a different Google account, switch to it in the Play Store and try again.</string>
+    <string name="billing_restore_running">A restore is already running.</string>
+    <string name="billing_pending">Your purchase is waiting for approval or payment. Birdo will unlock automatically once Google Play confirms it — you can close the app.</string>
+    <string name="billing_unreadable_purchase">Google Play returned a purchase Birdo could not read. If you were charged, tap Restore Purchases.</string>
+    <!-- %1$s is a plan name (plan_name_*), or billing_new_plan. Canonical
+         vocabulary: the plan's name in prose, never the uppercase slug. -->
+    <string name="billing_purchased">Thank you — %1$s is now active on this Birdo account.</string>
+    <string name="billing_new_plan">your new plan</string>
+    <!-- The Play sheet was never shown, so the copy says nothing was charged. -->
+    <string name="billing_launch_rate_limited">Too many attempts in a row. Wait a minute and try again — nothing was charged.</string>
+    <string name="billing_launch_failed_offline">Birdo could not start the purchase. Check your connection and try again — nothing was charged.</string>
+    <string name="billing_launch_failed">Birdo could not start the purchase — nothing was charged.</string>
+    <string name="billing_item_unavailable">That subscription is not available on Google Play right now.</string>
+    <string name="billing_did_not_start">The purchase did not start. If you were charged, tap Restore Purchases.</string>
+    <string name="billing_already_owned_unseen">Google Play says you already have this subscription, but Birdo cannot see it on this device yet. Wait a moment and tap Restore Purchases; if it still does not appear, contact support and we will sort it out.</string>
+    <!-- ════ end AND-UI-B ════ -->
 </resources>

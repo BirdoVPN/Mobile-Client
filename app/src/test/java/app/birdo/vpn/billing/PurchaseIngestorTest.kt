@@ -1,5 +1,6 @@
 package app.birdo.vpn.billing
 
+import app.birdo.vpn.testing.StringsXml
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,6 +45,7 @@ class PurchaseIngestorTest {
             link = { calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { true },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
@@ -71,10 +73,11 @@ class PurchaseIngestorTest {
             val ingestor = PurchaseIngestor(
                 link = {
                     calls += "link"
-                    StoreLinkOutcome.Refused(refusal, refusal.fallbackMessage)
+                    StoreLinkOutcome.Refused(refusal, StringsXml.get(refusal.fallbackMessageRes))
                 },
                 acknowledge = { calls += "acknowledge"; true },
                 isSignedIn = { true },
+                strings = StringsXml,
                 refusals = PurchaseRefusalMemory { 0L },
             )
 
@@ -101,6 +104,7 @@ class PurchaseIngestorTest {
             link = { calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { true },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
@@ -125,6 +129,7 @@ class PurchaseIngestorTest {
             link = { calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { false },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
@@ -142,6 +147,7 @@ class PurchaseIngestorTest {
             link = { calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { true },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
@@ -162,6 +168,7 @@ class PurchaseIngestorTest {
             link = { accepted },
             acknowledge = { false },
             isSignedIn = { true },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
@@ -186,6 +193,7 @@ class PurchaseIngestorTest {
             },
             acknowledge = { true },
             isSignedIn = { true },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
@@ -207,6 +215,7 @@ class PurchaseIngestorTest {
             },
             acknowledge = { true },
             isSignedIn = { true },
+            strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
         ingestor.ingest(purchased())
@@ -215,10 +224,27 @@ class PurchaseIngestorTest {
 
     // ── Copy ────────────────────────────────────────────────────────────────
 
+    /**
+     * Prose names the plan ("Operative"); the slug ("OPERATIVE") belongs to the
+     * plan chip alone (canonical vocabulary, A2-031). This used to assert the
+     * slug was shouted into the sentence.
+     */
     @Test
-    fun `the success message names the plan without shouting a placeholder`() {
-        assertTrue(PurchaseIngestor.purchasedMessage("operative").contains("OPERATIVE"))
-        val blank = PurchaseIngestor.purchasedMessage("")
+    fun `the success message names the plan, never its slug or a shouted placeholder`() {
+        val ingestor = PurchaseIngestor(
+            link = { accepted },
+            acknowledge = { true },
+            isSignedIn = { true },
+            strings = StringsXml,
+        )
+        assertEquals(
+            "Thank you — Operative is now active on this Birdo account.",
+            ingestor.purchasedMessage("operative"),
+        )
+        val sovereign = ingestor.purchasedMessage("SOVEREIGN")
+        assertTrue(sovereign.contains("Sovereign"))
+        assertFalse(sovereign.contains("SOVEREIGN"))
+        val blank = ingestor.purchasedMessage("")
         assertTrue(blank.contains("your new plan"))
         assertFalse("the placeholder must not be uppercased", blank.contains("YOUR NEW PLAN"))
     }

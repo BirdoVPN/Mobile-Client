@@ -162,12 +162,24 @@ object NetworkModule {
     }
 
     /**
-     * The repository's error copy, read from strings.xml through the
-     * application context. [ApiErrorMapper] only sees a [StringLookup], so the
-     * mapping rules stay a plain JVM class under unit test.
+     * strings.xml, through the application context, for everything that writes
+     * copy outside Compose. Its consumers only see a [StringLookup], so their
+     * rules stay plain JVM classes under unit test.
      */
     @Provides
     @Singleton
-    fun provideApiErrorMapper(@ApplicationContext context: Context): ApiErrorMapper =
-        ApiErrorMapper(StringLookup { id -> context.getString(id) })
+    fun provideStringLookup(@ApplicationContext context: Context): StringLookup = object : StringLookup {
+        // No arguments: the text as written. getString(id, *emptyArray()) would
+        // still run it through String.format, and "Save up to 20%" is not a
+        // valid format string.
+        override fun get(id: Int, vararg args: Any): String =
+            if (args.isEmpty()) context.getString(id) else context.getString(id, *args)
+
+        override fun plural(id: Int, count: Int, vararg args: Any): String =
+            context.resources.getQuantityString(id, count, *args)
+    }
+
+    @Provides
+    @Singleton
+    fun provideApiErrorMapper(strings: StringLookup): ApiErrorMapper = ApiErrorMapper(strings)
 }

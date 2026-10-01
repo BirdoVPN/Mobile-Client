@@ -1,5 +1,8 @@
 package app.birdo.vpn.billing
 
+import app.birdo.vpn.R
+import app.birdo.vpn.data.repository.StringLookup
+
 /**
  * A Play purchase, reduced to the four facts the ingest pipeline actually uses.
  *
@@ -73,11 +76,13 @@ sealed interface IngestOutcome {
  * @param acknowledge BillingClient.acknowledgePurchase; returns true on success.
  * @param isSignedIn  is there a usable Birdo session right now.
  * @param refusals    session memory of refusals; see [PurchaseRefusalMemory].
+ * @param strings     the outcome copy, from strings.xml.
  */
 class PurchaseIngestor(
     private val link: suspend (String) -> StoreLinkOutcome,
     private val acknowledge: suspend (String) -> Boolean,
     private val isSignedIn: () -> Boolean,
+    private val strings: StringLookup,
     private val refusals: PurchaseRefusalMemory = PurchaseRefusalMemory(),
 ) {
 
@@ -92,12 +97,16 @@ class PurchaseIngestor(
             // approved while the app is open, and through the reconcile sweep on
             // the next launch otherwise. That is precisely why the listener is
             // not optional and not tied to a screen.
-            IngestablePurchase.State.PENDING -> return IngestOutcome.Pending(PENDING_MESSAGE)
+            IngestablePurchase.State.PENDING ->
+                return IngestOutcome.Pending(strings.get(R.string.billing_pending))
 
             // Play could not say what this is. Never trusted, never acknowledged;
             // it is re-presented on the next sweep.
             IngestablePurchase.State.UNSPECIFIED ->
-                return IngestOutcome.Rejected(StoreLinkRefusal.TRANSIENT, UNSPECIFIED_MESSAGE)
+                return IngestOutcome.Rejected(
+                    StoreLinkRefusal.TRANSIENT,
+                    strings.get(R.string.billing_unreadable_purchase),
+                )
 
             IngestablePurchase.State.PURCHASED -> Unit
         }
@@ -112,7 +121,7 @@ class PurchaseIngestor(
             // reconcile sweep and by onSignedIn().
             return IngestOutcome.Rejected(
                 StoreLinkRefusal.NEEDS_SIGN_IN,
-                StoreLinkRefusal.NEEDS_SIGN_IN.fallbackMessage,
+                strings.get(StoreLinkRefusal.NEEDS_SIGN_IN.fallbackMessageRes),
             )
         }
 
@@ -146,21 +155,18 @@ class PurchaseIngestor(
     /** The user explicitly asked to try again; forget every suppression. */
     fun forgetRefusals() = refusals.clear()
 
-    companion object {
-        const val PENDING_MESSAGE =
-            "Your purchase is waiting for approval or payment. Birdo will unlock automatically " +
-                "once Google Play confirms it — you can close the app."
-
-        const val UNSPECIFIED_MESSAGE =
-            "Google Play returned a purchase Birdo could not read. If you were charged, tap " +
-                "Restore Purchases."
-
-        /** Copy for a successful link. */
-        fun purchasedMessage(plan: String): String {
-            // Uppercase only a real plan slug. Shouting the placeholder ("YOUR
-            // NEW PLAN") would be worse than the missing name it stands in for.
-            val name = if (plan.isBlank()) "your new plan" else plan.uppercase()
-            return "Thank you — $name is now active on this Birdo account."
+    /**
+     * Copy for a successful link. The plan by its name, as prose uses it
+     * ("Operative"), never the slug ("OPERATIVE"), which the canonical
+     * vocabulary keeps to the plan chip (A2-031). A slug this build does not
+     * know yet is not guessed at: the sentence says "your new plan".
+     */
+    fun purchasedMessage(plan: String): String {
+        val name = when (plan.uppercase()) {
+            BirdoPlayProduct.OPERATIVE.planSlug -> strings.get(R.string.plan_name_operative)
+            BirdoPlayProduct.SOVEREIGN.planSlug -> strings.get(R.string.plan_name_sovereign)
+            else -> strings.get(R.string.billing_new_plan)
         }
+        return strings.get(R.string.billing_purchased, name)
     }
 }

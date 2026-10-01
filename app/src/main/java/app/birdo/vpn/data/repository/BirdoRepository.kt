@@ -12,7 +12,6 @@ import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.shared.model.LoginResult
-import app.birdo.vpn.utils.InputValidator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -1006,8 +1005,7 @@ class BirdoRepository @Inject constructor(
      * when it did not, or when the body is not something we would show a user.
      */
     private fun refusal(kind: StoreLinkRefusal, serverMessage: String?): StoreLinkOutcome.Refused {
-        val text = InputValidator.sanitizeErrorMessage(serverMessage, kind.fallbackMessage)
-        return StoreLinkOutcome.Refused(kind, text)
+        return StoreLinkOutcome.Refused(kind, errors.storeRefusal(kind, serverMessage))
     }
 
     /**
