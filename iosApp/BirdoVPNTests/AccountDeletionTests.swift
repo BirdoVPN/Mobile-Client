@@ -86,6 +86,33 @@ final class AccountDeletionTests: XCTestCase {
                        ["password": "hunter2", "twoFactorCode": "123456"])
     }
 
+    // MARK: - Item 97: Sign in with Apple
+
+    func testAppleCodeUsesTheContractKeyAndIsOmittedWhenAbsent() throws {
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, appleAuthorizationCode: "c0de.1")),
+                       ["appleAuthorizationCode": "c0de.1"])
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, twoFactorCode: "123456",
+                                                     appleAuthorizationCode: nil)),
+                       ["twoFactorCode": "123456"])
+    }
+
+    /// /auth/me does not say whether an account is Apple-linked: offered when
+    /// this device signed in with Apple, or the email is Apple's alias / relay.
+    func testAppleReauthIsOfferedOnlyWhenTheAppKnows() {
+        XCTAssertTrue(AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: true,
+                                                        accountEmail: "person@example.com"))
+        XCTAssertTrue(AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: false,
+                                                        accountEmail: "apple_0123abcd@appleid.local"))
+        XCTAssertTrue(AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: false,
+                                                        accountEmail: "x7y8@PrivateRelay.AppleID.com"))
+        XCTAssertFalse(AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: false,
+                                                         accountEmail: "person@example.com"))
+        XCTAssertFalse(AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: false,
+                                                         accountEmail: "anon_123456789012345678901234@anonymous.local"))
+        XCTAssertFalse(AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: false,
+                                                         accountEmail: nil))
+    }
+
     func testCodeCompleteness() {
         XCTAssertTrue(AccountDeletion.isCompleteTwoFactorCode("123456"))
         XCTAssertTrue(AccountDeletion.isCompleteTwoFactorCode("abcd-ef01-2345-6789"))

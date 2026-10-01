@@ -37,6 +37,22 @@ enum AccountDeletion {
         }
     }
 
+    /// Owner item 97: should deletion re-authenticate with Sign in with Apple
+    /// first?
+    ///
+    /// `/auth/me` does not say whether an account is linked to Apple, so the
+    /// app offers it when it KNOWS: this device's session was signed in with
+    /// Apple, or the account's email is the backend's Apple alias
+    /// (`apple_<hash>@appleid.local`, used when Apple shares no real address)
+    /// or an Apple private-relay address. An Apple-linked account signed in
+    /// some other way on this device is not detected; it deletes as before.
+    static func offersAppleReauth(signedInWithAppleOnThisDevice: Bool, accountEmail: String?) -> Bool {
+        if signedInWithAppleOnThisDevice { return true }
+        guard let email = accountEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !email.isEmpty else { return false }
+        return email.hasSuffix("@appleid.local") || email.hasSuffix("@privaterelay.appleid.com")
+    }
+
     /// Client-side completeness gate for the deletion dialog's code field —
     /// the same rule as the login 2FA step (the server is authoritative): a
     /// 6-digit TOTP, or a hex backup code in 4-character groups, dashes
@@ -61,10 +77,14 @@ struct DeleteAccountBody: Encodable, Equatable {
     /// Owner item 85: a 6-digit TOTP or a backup code, sent after the server
     /// answered `two_factor_required`.
     let twoFactorCode: String?
+    /// Owner item 97: a fresh Sign in with Apple `authorizationCode`, so the
+    /// backend can revoke the app's Apple tokens with the account.
+    let appleAuthorizationCode: String?
 
-    init(password: String?, twoFactorCode: String? = nil) {
+    init(password: String?, twoFactorCode: String? = nil, appleAuthorizationCode: String? = nil) {
         self.password = Self.nonBlank(password)
         self.twoFactorCode = Self.nonBlank(twoFactorCode)
+        self.appleAuthorizationCode = Self.nonBlank(appleAuthorizationCode)
     }
 
     private static func nonBlank(_ value: String?) -> String? {

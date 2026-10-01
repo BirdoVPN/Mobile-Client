@@ -138,6 +138,23 @@ final class AuthViewModel: ObservableObject {
             if oldValue != deleteTwoFactorCode && deleteError != nil { deleteError = nil }
         }
     }
+    /// Owner item 97: a non-error note for the deletion dialog — set when the
+    /// Sign in with Apple re-authentication was cancelled or failed, and the
+    /// next tap deletes without it.
+    @Published private(set) var deleteNotice: String?
+    /// The fresh Apple `authorizationCode` for this deletion attempt, kept
+    /// for a resend after a password or two-factor refusal.
+    private var deletionAppleCode: String?
+    /// The Apple step has run for this attempt (a code, a cancel or a
+    /// failure) — it is offered once, never in a loop.
+    private var deletionAppleStepDone = false
+
+    /// Owner item 97: deletion re-authenticates with Sign in with Apple first
+    /// when the app knows the account is Apple-linked (`AccountDeletion`).
+    var offersAppleReauthForDeletion: Bool {
+        AccountDeletion.offersAppleReauth(signedInWithAppleOnThisDevice: keychain.signedInWithApple,
+                                          accountEmail: user?.email)
+    }
     /// Store subscriptions the server reported as STILL BILLING after a
     /// successful deletion (audit 2026-09-29, A-8 / C-9). Deleting a Birdo
     /// account cannot cancel an App Store or Google Play subscription, so the
@@ -263,6 +280,9 @@ final class AuthViewModel: ObservableObject {
         case anonymousLogin
         case anonymousCreate
         case sso
+        /// Sign in with Apple — told apart from the web SSO providers because
+        /// account deletion re-authenticates with Apple (owner item 97).
+        case apple
     }
 
     // MARK: - Init / Session Restore
@@ -832,7 +852,7 @@ final class AuthViewModel: ObservableObject {
         error = nil
         pendingEmail = nil
         pendingAnonymousId = nil
-        pendingContext = .sso
+        pendingContext = .apple
 
         Task { [weak self] in
             guard let self else { return }
@@ -845,7 +865,7 @@ final class AuthViewModel: ObservableObject {
                     if await completeAuthentication(tokens: tokens,
                                                     knownEmail: nil,
                                                     knownAnonymousId: nil,
-                                                    context: .sso) {
+                                                    context: .apple) {
                         isLoggedIn = true
                         refreshStatsInBackground()
                     }
@@ -950,6 +970,9 @@ final class AuthViewModel: ObservableObject {
         deleteError = nil
         deleteRequiresTwoFactor = false
         deleteTwoFactorCode = ""
+        deleteNotice = nil
+        deletionAppleCode = nil
+        deletionAppleStepDone = false
         isLoading = false
         isDeleting = false
         selectedTab = .email
@@ -1000,9 +1023,15 @@ final class AuthViewModel: ObservableObject {
         deleteError = nil
         Task { [weak self, twoFactorCode] in
             guard let self else { return }
+            // Owner item 97: Apple first, so the code is fresh when it is sent.
+            guard await runAppleReauthStepIfNeeded() else {
+                isDeleting = false
+                return
+            }
             do {
                 let stillBilling = try await api.deleteAccount(password: password,
-                                                               twoFactorCode: twoFactorCode)
+                                                               twoFactorCode: twoFactorCode,
+                                                               appleAuthorizationCode: deletionAppleCode)
                 finishConfirmedDeletion(stillBilling: stillBilling, tearDownTunnel: tearDownTunnel)
             } catch let refusal as DeletionRefusal {
                 // Owner item 85. Nothing was deleted; the user stays as they were.
@@ -1033,6 +1062,36 @@ final class AuthViewModel: ObservableObject {
         deleteRequiresTwoFactor = false
         deleteTwoFactorCode = ""
         deleteError = nil
+        deleteNotice = nil
+        deletionAppleCode = nil
+        deletionAppleStepDone = false
+    }
+
+    /// Owner item 97: re-authenticate with Sign in with Apple and keep the
+    /// fresh `authorizationCode` for the deletion request.
+    ///
+    /// - Returns: true to go on and send the request now. False when the user
+    ///   cancelled Apple's sheet or Apple failed: the dialog then shows a short
+    ///   note, and the NEXT tap deletes without the code. Proceeding straight
+    ///   after a cancel would turn "cancel" into "delete".
+    private func runAppleReauthStepIfNeeded() async -> Bool {
+        guard offersAppleReauthForDeletion, !deletionAppleStepDone else { return true }
+        deletionAppleStepDone = true
+        do {
+            if let code = try await AppleSignInService.shared.authorizationCodeForAccountDeletion() {
+                deletionAppleCode = code
+                deleteNotice = nil
+                return true
+            }
+            deleteNotice = "Sign in with Apple was cancelled. You can still delete your account: tap "
+                + "Delete My Account again. Then remove BirdoVPN under Sign in with Apple in your "
+                + "Apple ID settings."
+        } catch {
+            deleteNotice = "Sign in with Apple is unavailable right now. You can still delete your "
+                + "account: tap Delete My Account again. Then remove BirdoVPN under Sign in with "
+                + "Apple in your Apple ID settings."
+        }
+        return false
     }
 
     /// The server confirmed the erasure: NOW the tunnel goes down, then the
@@ -1122,11 +1181,15 @@ final class AuthViewModel: ObservableObject {
             if let knownAnonymousId {
                 keychain.saveAnonymousId(knownAnonymousId)
             }
-        case .emailLogin, .sso:
+        case .emailLogin, .sso, .apple:
             // A previous anonymous account's ID must not survive into a
             // different identity on this device.
             keychain.clearAnonymousId()
         }
+        // Owner item 97: remember a Sign in with Apple session (and forget one
+        // replaced by any other method), so deletion knows to re-authenticate
+        // with Apple. /auth/me does not say whether an account is Apple-linked.
+        keychain.setSignedInWithApple(context == .apple)
         // Hydration — login NEVER blocks on the profile call: a failure still
         // lands on Home with `user == nil`.
         if let profile = try? await api.fetchProfile() {

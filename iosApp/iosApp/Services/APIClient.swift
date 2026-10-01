@@ -325,6 +325,8 @@ final class APIClient: @unchecked Sendable {
     ///   (no hash on file) — the backend skips the check for those.
     /// - Parameter twoFactorCode: owner item 85 — a 6-digit TOTP or a backup
     ///   code, sent once the server has answered `two_factor_required`.
+    /// - Parameter appleAuthorizationCode: owner item 97 — a fresh Sign in with
+    ///   Apple code, so the backend can revoke the app's Apple tokens.
     /// - Returns: the App Store / Google Play subscriptions the server reports
     ///   as STILL BILLING after the erasure (audit 2026-09-29, A-8 / C-9):
     ///   deleting the account cannot cancel them, so the caller tells the user
@@ -333,7 +335,8 @@ final class APIClient: @unchecked Sendable {
     ///   other failure as before.
     @discardableResult
     func deleteAccount(password: String?,
-                       twoFactorCode: String? = nil) async throws -> [StoreSubscriptionStillBilling] {
+                       twoFactorCode: String? = nil,
+                       appleAuthorizationCode: String? = nil) async throws -> [StoreSubscriptionStillBilling] {
         // AUDIT-M-DRIFT: there is no `/auth/account` route. Erasure lives on the
         // GDPR controller at `@Controller('api/v1/gdpr')` + `@Delete('delete')`.
         // api.birdo.app proxies to Nest verbatim (no `uri strip_prefix /api` in
@@ -357,7 +360,9 @@ final class APIClient: @unchecked Sendable {
         // password (the backend's rotation grace window keeps that safe), which
         // is far better than a permanently un-deletable account.
         let body = try encoder.encode(
-            DeleteAccountBody(password: password, twoFactorCode: twoFactorCode)
+            DeleteAccountBody(password: password,
+                              twoFactorCode: twoFactorCode,
+                              appleAuthorizationCode: appleAuthorizationCode)
         )
         let response = try await performRequest(
             method: "DELETE",

@@ -452,6 +452,7 @@ struct ProfileView: View {
                     .disabled(authVM.isDeleting)
                 }
                 .padding(.bottom, 12)
+                appleReauthNote
                 if requiresPassword {
                     // In the two-factor step the server's message belongs to
                     // the code field below, not to the password.
@@ -479,6 +480,27 @@ struct ProfileView: View {
                 }
             }
             .padding(.top, 4)
+        }
+    }
+
+    /// Owner item 97: say up front that Apple's sheet will appear, and, if it
+    /// was cancelled or failed, that the next tap deletes without it.
+    @ViewBuilder
+    private var appleReauthNote: some View {
+        if let notice = authVM.deleteNotice {
+            Text(notice)
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.yellowLight)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
+        } else if authVM.offersAppleReauthForDeletion {
+            Text("Apple will ask you to confirm first, so Birdo can also unlink Sign in with Apple.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 12)
         }
     }
 

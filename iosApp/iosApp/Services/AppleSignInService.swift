@@ -50,12 +50,15 @@ final class AppleSignInService: NSObject {
 
     enum AppleSignInError: Error, LocalizedError, Sendable {
         case noIdentityToken
+        case noAuthorizationCode
         case unavailable
 
         var errorDescription: String? {
             switch self {
             case .noIdentityToken:
                 return "Apple did not return a sign-in token. Please try again."
+            case .noAuthorizationCode:
+                return "Apple did not return an authorization code. Please try again."
             case .unavailable:
                 return "Sign in with Apple is unavailable on this device."
             }
@@ -103,6 +106,43 @@ final class AppleSignInService: NSObject {
         // RAW to our backend. See the note above.
         let result = try await api.loginWithApple(identityToken: identityToken, nonce: rawNonce)
         return .completed(result)
+    }
+
+    /// Owner item 97: re-authenticate with Apple immediately before an account
+    /// deletion and return the fresh, single-use `authorizationCode` (valid for
+    /// about five minutes). The deletion request carries it as
+    /// `appleAuthorizationCode`, which is what lets the backend exchange it and
+    /// REVOKE the app's Sign in with Apple tokens — Apple requires that of an
+    /// app offering both Sign in with Apple and account deletion. Nothing is
+    /// sent to Birdo from here.
+    ///
+    /// - Returns: the code, or nil when the user cancelled Apple's sheet.
+    /// - Throws: any other Apple failure (no Apple ID on the device, an Apple
+    ///   outage, a credential without a code).
+    func authorizationCodeForAccountDeletion() async throws -> String? {
+        // No scopes: the name and email are not wanted, only the code.
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+
+        let authorization: ASAuthorization? = try await withCheckedThrowingContinuation { cont in
+            self.continuation = cont
+            controller.performRequests()
+        }
+
+        guard let authorization else { return nil }
+
+        guard
+            let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+            let codeData = credential.authorizationCode,
+            let code = String(data: codeData, encoding: .utf8),
+            !code.isEmpty
+        else {
+            throw AppleSignInError.noAuthorizationCode
+        }
+        return code
     }
 
     // MARK: - Nonce
