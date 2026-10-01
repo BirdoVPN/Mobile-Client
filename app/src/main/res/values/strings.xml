@@ -729,5 +729,10 @@
 
     <!-- Login: the 2FA field's placeholder. -->
     <string name="login_2fa_placeholder">000000 or backup code</string>
+
+    <!-- Account deletion with 2FA (ACCOUNT-API-2026-10-01, item 85): the
+         server's own sentence for 403 two_factor_required. A wrong code reads
+         error_invalid_code, as at sign-in. -->
+    <string name="delete_dialog_2fa_required">Enter your two-factor code to delete your account.</string>
     <!-- ════ end AND-UI-B ════ -->
 </resources>

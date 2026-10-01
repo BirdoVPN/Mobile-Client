@@ -1327,4 +1327,87 @@ class AuthViewModelTest {
         assertFalse(viewModel.uiState.value.accountDeleted)
         assertTrue(viewModel.uiState.value.isLoggedIn)
     }
+
+    // ── Deletion with 2FA (ACCOUNT-API-2026-10-01, item 85) ─────
+
+    private val twoFactorRequired = ApiResult.Error(
+        StringsXml.text("delete_dialog_2fa_required"), 403, FailureReason.TWO_FACTOR_REQUIRED,
+    )
+
+    /** Signed in with a password account whose server answers the first delete with "code, please". */
+    private fun viewModelAskedForDeletionCode(): AuthViewModel {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        val vm = createViewModel()
+        coEvery { repository.deleteAccount("password1", null) } returns twoFactorRequired
+        vm.deleteAccount("password1")
+        return vm
+    }
+
+    @Test
+    fun `a deletion the server wants a 2FA code for keeps the account and asks for the code`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.deleteRequiresTwoFactor)
+        assertNull("asking for the code is not an error", state.deleteAccountError)
+        assertFalse(state.isDeletingAccount)
+        assertFalse("nothing is torn down before the server confirms", state.accountDeleted)
+        assertTrue(state.isLoggedIn)
+    }
+
+    @Test
+    fun `once asked, an incomplete code is refused here and never sent`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+
+        viewModel.deleteAccount("password1", "123")
+        viewModel.deleteAccount("password1", null)
+
+        assertEquals(StringsXml.text("auth_error_2fa_format"), viewModel.uiState.value.deleteAccountError)
+        coVerify(exactly = 0) { repository.deleteAccount(any(), "123") }
+        coVerify(exactly = 1) { repository.deleteAccount(any(), null) }
+    }
+
+    @Test
+    fun `a wrong deletion code says so and allows a retry, the right one deletes`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+        coEvery { repository.deleteAccount("password1", "111111") } returns
+            ApiResult.Error(StringsXml.text("error_invalid_code"), 403, FailureReason.INVALID_CODE)
+        coEvery { repository.deleteAccount("password1", "abcd-ef01-2345-6789") } returns
+            ApiResult.Success(app.birdo.vpn.data.model.DeleteAccountResponse(success = true))
+
+        viewModel.deleteAccount("password1", "111111")
+
+        assertEquals("Invalid verification code. Please try again.", viewModel.uiState.value.deleteAccountError)
+        assertTrue(viewModel.uiState.value.deleteRequiresTwoFactor)
+        assertFalse(viewModel.uiState.value.accountDeleted)
+
+        // A backup code is accepted as well as a TOTP, as at sign-in.
+        viewModel.deleteAccount("password1", "abcd-ef01-2345-6789")
+
+        assertTrue(viewModel.uiState.value.accountDeleted)
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+    }
+
+    @Test
+    fun `a rate-limited deletion attempt shows the rate-limit copy and keeps the code field`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+        coEvery { repository.deleteAccount("password1", "123456") } returns
+            ApiResult.Error(StringsXml.text("error_rate_limited"), 429, FailureReason.RATE_LIMITED)
+
+        viewModel.deleteAccount("password1", "123456")
+
+        assertEquals(StringsXml.text("error_rate_limited"), viewModel.uiState.value.deleteAccountError)
+        assertTrue(viewModel.uiState.value.deleteRequiresTwoFactor)
+        assertFalse(viewModel.uiState.value.accountDeleted)
+    }
+
+    @Test
+    fun `closing the deletion dialog forgets the 2FA prompt`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+
+        viewModel.clearDeleteAccountError()
+
+        assertFalse(viewModel.uiState.value.deleteRequiresTwoFactor)
+        assertNull(viewModel.uiState.value.deleteAccountError)
+    }
 }

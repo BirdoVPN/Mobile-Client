@@ -51,7 +51,8 @@ import app.birdo.vpn.ui.viewmodel.AuthViewModel
 import app.birdo.vpn.ui.viewmodel.SettingsViewModel
 import app.birdo.vpn.ui.viewmodel.UpdateViewModel
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
-import app.birdo.vpn.utils.isAnonymousAccountEmail
+import app.birdo.vpn.data.model.UserProfile
+import app.birdo.vpn.utils.isAnonymousUser
 
 /**
  * A2-004: the VPN as seen from Login — "Your VPN is still connected." and a
@@ -547,8 +548,8 @@ fun BirdoNavGraph(
                     HomeScreen(
                         state = vpnState,
                         trafficStats = vpnViewModel.trafficStats.collectAsState().value,
-                        accountLabel = accountLabel(authState.user?.email),
-                        isAnonymousAccount = isAnonymousAccountEmail(authState.user?.email),
+                        accountLabel = accountLabel(authState.user),
+                        isAnonymousAccount = isAnonymousUser(authState.user),
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -634,10 +635,11 @@ fun BirdoNavGraph(
                             vpnViewModel.disconnectForSignOut { authViewModel.logout() }
                         },
                         onOpenUrl = { settingsViewModel.openUrl(it) },
-                        onDeleteAccount = { password -> authViewModel.deleteAccount(password) },
+                        onDeleteAccount = { password, code -> authViewModel.deleteAccount(password, code) },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
-                        isAnonymousAccount = isAnonymousAccountEmail(authState.user?.email),
+                        deleteRequiresTwoFactor = authState.deleteRequiresTwoFactor,
+                        isAnonymousAccount = isAnonymousUser(authState.user),
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                         deletionPreflight = authState.deletionPreflight,
                         onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
@@ -1117,12 +1119,14 @@ private const val PASSWORD_RESET_URL = "https://auth.birdo.app/reset-password"
  * What the Home top bar shows for the signed-in account: the email, or the
  * canonical "Anonymous account" label. Never the synthetic
  * `anon_…@anonymous.local` address, which carries the account number (A2-013).
+ * The server's own anonymous flag decides first (item 86), so an anonymous
+ * account with no email at all (the account API's phase 2) is still labelled.
  */
 @Composable
-private fun accountLabel(email: String?): String? = when {
-    email.isNullOrBlank() -> null
-    isAnonymousAccountEmail(email) -> stringResource(R.string.account_anonymous)
-    else -> email
+private fun accountLabel(user: UserProfile?): String? = when {
+    isAnonymousUser(user) -> stringResource(R.string.account_anonymous)
+    user?.email.isNullOrBlank() -> null
+    else -> user.email
 }
 
 /**

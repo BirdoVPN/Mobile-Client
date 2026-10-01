@@ -90,9 +90,12 @@ import app.birdo.vpn.ui.theme.BirdoWhite60
 import app.birdo.vpn.ui.theme.BirdoWhite80
 import app.birdo.vpn.ui.components.SignOutConfirmDialog
 import app.birdo.vpn.ui.viewmodel.VoucherResult
-import app.birdo.vpn.utils.anonymousAccountNumber
+import app.birdo.vpn.utils.accountNumberOf
 import app.birdo.vpn.utils.copySensitiveToClipboard
-import app.birdo.vpn.utils.isAnonymousAccountEmail
+import app.birdo.vpn.utils.filterTwoFactorInput
+import app.birdo.vpn.utils.formatAnonymousId
+import app.birdo.vpn.utils.is2faCodeComplete
+import app.birdo.vpn.utils.isAnonymousUser
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -114,9 +117,12 @@ fun ProfileScreen(
     onManageOnWeb: () -> Unit,
     onLogout: () -> Unit,
     onOpenUrl: (String) -> Unit = {},
-    onDeleteAccount: (String) -> Unit = {},
+    /** (password, two-factor code): the code only once the server asked for it. */
+    onDeleteAccount: (String, String?) -> Unit = { _, _ -> },
     isDeletingAccount: Boolean = false,
     deleteAccountError: String? = null,
+    /** The server wants the account's 2FA code before it deletes it (item 85). */
+    deleteRequiresTwoFactor: Boolean = false,
     onClearDeleteError: () -> Unit = {},
     // Second-pass #9: fetched when the deletion dialog opens (null while
     // loading or after a failure, when the dialog keeps its static warning).
@@ -186,7 +192,7 @@ fun ProfileScreen(
         // Anonymous accounts carry a synthetic `anon_…@anonymous.local` email —
         // never surface that string; it reads as a bug and carries the number.
         val signOutSubtitle = when {
-            isAnonymousAccountEmail(user?.email) -> stringResource(R.string.account_anonymous)
+            isAnonymousUser(user) -> stringResource(R.string.account_anonymous)
             !user?.email.isNullOrBlank() -> user.email
             else -> stringResource(R.string.sign_out_subtitle)
         }
@@ -223,10 +229,11 @@ fun ProfileScreen(
             // them (GDPR Art. 17); it was this dialog that trapped them, by
             // keeping Delete disabled until a non-blank password was typed.
             requiresPassword = user?.hasPassword ?: true,
+            requiresTwoFactor = deleteRequiresTwoFactor,
             preflight = deletionPreflight,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
-            onConfirm = { password -> onDeleteAccount(password) },
+            onConfirm = onDeleteAccount,
             onDismiss = {
                 showDeleteDialog = false
                 onClearDeleteError()
@@ -260,10 +267,11 @@ private fun ProfileIdentityCard(
 ) {
     val palette = BirdoColors.current
     val rawEmail = user?.email ?: ""
-    // Anonymous accounts carry a synthetic `anon_<24-digit-id>@anonymous.local`
-    // email; the 24-digit id IS the account's recovery credential.
-    val isAnon = isAnonymousAccountEmail(rawEmail)
-    val accountNumber = anonymousAccountNumber(rawEmail)
+    // The 24-digit account number IS an anonymous account's only credential.
+    // The server names it since the 2026-10-01 account API (item 86); an older
+    // one only inside the synthetic `anon_<number>@anonymous.local` email.
+    val isAnon = isAnonymousUser(user)
+    val accountNumber = accountNumberOf(user)
     val displayName = when {
         !user?.name.isNullOrBlank() -> user.name!!
         isAnon -> stringResource(R.string.account_anonymous)
@@ -335,7 +343,8 @@ private fun ProfileIdentityCard(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            text = accountNumber,
+                            // Grouped in fours, as the sign-in field reads it back.
+                            text = formatAnonymousId(accountNumber),
                             color = palette.onBackground,
                             fontSize = 14.sp,
                             fontFamily = FontFamily.Monospace,
@@ -688,18 +697,24 @@ private fun formatRenewalDate(raw: String?): String? {
     return null
 }
 
-/** Confirmation dialog requiring password re-entry before account deletion. */
+/**
+ * Confirmation dialog requiring password re-entry before account deletion,
+ * and the account's 2FA code when the server asks for it (item 85).
+ */
 @Composable
 private fun DeleteAccountDialog(
     requiresPassword: Boolean,
+    requiresTwoFactor: Boolean,
     preflight: DeletionPreflightResponse?,
     isDeletingAccount: Boolean,
     error: String?,
-    onConfirm: (String) -> Unit,
+    onConfirm: (password: String, twoFactorCode: String?) -> Unit,
     onDismiss: () -> Unit,
     onManageStoreSubscription: () -> Unit,
 ) {
     var password by remember { mutableStateOf("") }
+    // Not saved across process death either: a one-time code, like the password.
+    var twoFactorCode by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = { if (!isDeletingAccount) onDismiss() },
@@ -782,11 +797,42 @@ private fun DeleteAccountDialog(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         singleLine = true,
                         enabled = !isDeletingAccount,
-                        isError = error != null,
+                        isError = error != null && !requiresTwoFactor,
                         // A password manager can fill the confirmation (A2-017).
                         modifier = Modifier
                             .fillMaxWidth()
                             .semantics { contentType = ContentType.Password },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BirdoRed,
+                            cursorColor = BirdoWhite80,
+                            focusedLabelColor = BirdoRed,
+                        ),
+                    )
+                }
+                if (requiresTwoFactor) {
+                    // The login 2FA field's rules: a TOTP or a backup code.
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        stringResource(R.string.delete_dialog_2fa_required),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = twoFactorCode,
+                        onValueChange = { twoFactorCode = filterTwoFactorInput(it) },
+                        label = { Text(stringResource(R.string.login_2fa_code_label)) },
+                        placeholder = { Text(stringResource(R.string.login_2fa_placeholder)) },
+                        // Text, not Number: backup codes have hex letters. No
+                        // autocorrect, so the IME cannot rewrite the code.
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Text,
+                            autoCorrectEnabled = false,
+                        ),
+                        singleLine = true,
+                        enabled = !isDeletingAccount,
+                        isError = error != null,
+                        modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BirdoRed,
                             cursorColor = BirdoWhite80,
@@ -802,8 +848,10 @@ private fun DeleteAccountDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(password) },
-                enabled = (!requiresPassword || password.isNotBlank()) && !isDeletingAccount,
+                onClick = { onConfirm(password, twoFactorCode.takeIf { requiresTwoFactor }) },
+                enabled = (!requiresPassword || password.isNotBlank()) &&
+                    (!requiresTwoFactor || is2faCodeComplete(twoFactorCode)) &&
+                    !isDeletingAccount,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = BirdoRed,
                     contentColor = Color.White,

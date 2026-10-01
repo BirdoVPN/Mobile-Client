@@ -260,6 +260,42 @@ class ApiErrorMapperTest {
         assertEquals(FailureReason.SESSION_EXPIRED, session.reason)
     }
 
+    private fun delete(status: Int, body: String) =
+        mapper.fromResponse(status, body, ErrorContext.DELETE_ACCOUNT, R.string.error_delete_failed)
+
+    /** ACCOUNT-API-2026-10-01, item 85: classified by `error`, never by the message. */
+    @Test
+    fun `deletion asks for the 2FA code, says a wrong one is wrong, and keeps the rate limit`() {
+        val required = delete(
+            403,
+            """{"statusCode":403,"error":"two_factor_required","message":"Enter your two-factor code to delete your account."}""",
+        )
+        assertEquals(FailureReason.TWO_FACTOR_REQUIRED, required.reason)
+        assertEquals(text("delete_dialog_2fa_required"), required.message)
+
+        // Whatever the message says: the field decides.
+        val wrong = delete(403, """{"statusCode":403,"error":"two_factor_invalid","message":"Incorrect password or code"}""")
+        assertEquals(FailureReason.INVALID_CODE, wrong.reason)
+        assertEquals(text("error_invalid_code"), wrong.message)
+
+        val limited = delete(429, """{"statusCode":429,"message":"Too many requests"}""")
+        assertEquals(FailureReason.RATE_LIMITED, limited.reason)
+        assertEquals(text("error_rate_limited"), limited.message)
+
+        // Today's server, and an account without 2FA: unchanged.
+        val forbidden = delete(403, """{"statusCode":403,"error":"Forbidden","message":"Incorrect password"}""")
+        assertEquals(FailureReason.INVALID_CREDENTIALS, forbidden.reason)
+    }
+
+    @Test
+    fun `the envelope parser reads the error field`() {
+        assertEquals(
+            "two_factor_required",
+            ApiErrorMapper.parseEnvelope("""{"statusCode":403,"error":"two_factor_required","message":"x"}""")?.error,
+        )
+        assertNull(ApiErrorMapper.parseEnvelope("""{"statusCode":500,"message":"x"}""")?.error)
+    }
+
     // ── A refused connect inside a 200 (A2-030) ─────────────────────────
 
     @Test

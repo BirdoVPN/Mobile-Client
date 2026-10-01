@@ -50,7 +50,9 @@ class OverhaulSourceGuardTest {
                 "carries half its only credential",
             Regex("""HomeScreen\([\s\S]*?userEmail\s*=""").containsMatchIn(graph),
         )
-        assertTrue(graph.contains("accountLabel = accountLabel(authState.user?.email)"))
+        // The label is decided from the whole profile since item 86: the
+        // server's own anonymous flag first, the email's shape as a fallback.
+        assertTrue(graph.contains("accountLabel = accountLabel(authState.user)"))
     }
 
     // ── A2-010 ───────────────────────────────────────────────────────────

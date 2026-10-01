@@ -104,7 +104,13 @@ data class RefreshResponse(
 @Serializable
 data class UserProfile(
     val id: String,
-    val email: String,
+    /**
+     * Defaulted so a null or absent email still decodes (the shared `Json`
+     * coerces null to the default): the account API's phase 2 sends null for
+     * anonymous accounts (ACCOUNT-API-2026-10-01, item 86), and a required
+     * field would fail the whole profile.
+     */
+    val email: String = "",
     val name: String? = null,
     val emailVerified: Boolean = false,
     val createdAt: String = "",
@@ -120,7 +126,24 @@ data class UserProfile(
      */
     val hasPassword: Boolean = true,
     val isSSO: Boolean = false,
-)
+    /**
+     * Item 86 (ACCOUNT-API-2026-10-01): `"anonymous"` or `"standard"`, and the
+     * same fact as a boolean. Both absent from a server older than that API;
+     * `isAnonymousAccount(user)` then falls back to the email's shape.
+     */
+    val accountType: String? = null,
+    val isAnonymous: Boolean? = null,
+    /**
+     * Item 86: an anonymous account's bare 24-digit number, null for a
+     * standard account or an older server. It is the account's ONLY
+     * credential: never log it, never put it in a crash report.
+     */
+    val accountNumber: String? = null,
+) {
+    /** Leaves out [email] and [accountNumber]: either can carry an anonymous account's credential. */
+    override fun toString(): String =
+        "UserProfile(id=$id, accountType=$accountType, isAnonymous=$isAnonymous, hasPassword=$hasPassword, isSSO=$isSSO)"
+}
 
 /**
  * FIX-MOBILE-COMPAT: Realigned with backend `GET /vpn/stats` (VpnQueryService.getUsageStats).
@@ -288,6 +311,13 @@ data class DeleteAccountRequest(
      * to erasure on Android, while iOS already sent nil.
      */
     val password: String? = null,
+    /**
+     * Item 85 (ACCOUNT-API-2026-10-01): the TOTP or backup code an account
+     * with 2FA must add, after the server answered 403 `two_factor_required`.
+     * Null is OMITTED from the body (the shared `Json` does not encode
+     * defaults), so a server older than that API never sees the key.
+     */
+    val twoFactorCode: String? = null,
 )
 
 @Serializable

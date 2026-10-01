@@ -45,6 +45,7 @@ import androidx.compose.ui.window.DialogProperties
 import app.birdo.vpn.R
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.utils.copySensitiveToClipboard
+import app.birdo.vpn.utils.filterTwoFactorInput
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.utils.formatAnonymousId
 import app.birdo.vpn.utils.is2faCodeComplete
@@ -286,13 +287,7 @@ fun LoginScreen(
                         OutlinedTextField(
                             value = twoFactorCode,
                             onValueChange = { newValue ->
-                                // Accept a 6-digit TOTP OR a hex backup code (16 hex,
-                                // up to 19 chars with dashes). Keep digits, hex
-                                // letters and dashes; cap at 19.
-                                val filtered = newValue
-                                    .filter { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == '-' }
-                                    .take(19)
-                                twoFactorCode = filtered
+                                twoFactorCode = filterTwoFactorInput(newValue)
                                 onClearError()
                             },
                             placeholder = {

@@ -17,3 +17,12 @@ private val BACKUP_CODE_SHAPE = Regex("^[0-9A-Fa-f]{4}(?:-?[0-9A-Fa-f]{4})+$")
  */
 fun is2faCodeComplete(code: String): Boolean =
     Regex("^\\d{6}$").matches(code) || BACKUP_CODE_SHAPE.matches(code)
+
+/**
+ * What a 2FA field keeps of what was typed: a 6-digit TOTP or a hex backup
+ * code (16 hex, up to 19 characters with dashes), so digits, hex letters and
+ * dashes, capped at 19. The sign-in and the account-deletion fields share it,
+ * so both accept the same codes.
+ */
+fun filterTwoFactorInput(typed: String): String =
+    typed.filter { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == '-' }.take(19)

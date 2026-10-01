@@ -436,6 +436,18 @@ class BirdoRepositoryTest {
         verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
     }
 
+    /** ACCOUNT-API-2026-10-01, item 85: the code rides the same body, and only when there is one. */
+    @Test
+    fun `deleteAccount sends the 2FA code with the password`() = runTest {
+        coEvery { api.deleteAccount(any()) } returns Response.success(DeleteAccountResponse(success = true))
+
+        repository.deleteAccount("pass123", "123456")
+        repository.deleteAccount("pass123")
+
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", "123456")) }
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", null)) }
+    }
+
     @Test
     fun `failed deleteAccount keeps the device identity`() = runTest {
         val err = "nope".toResponseBody("text/plain".toMediaType())

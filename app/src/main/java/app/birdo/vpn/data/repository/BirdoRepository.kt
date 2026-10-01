@@ -428,9 +428,9 @@ class BirdoRepository @Inject constructor(
      * Requires password re-confirmation to prevent deletion via stolen JWT.
      * On success, clears all local tokens and cached data.
      */
-    suspend fun deleteAccount(password: String?): ApiResult<DeleteAccountResponse> {
+    suspend fun deleteAccount(password: String?, twoFactorCode: String? = null): ApiResult<DeleteAccountResponse> {
         val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
-            api.deleteAccount(DeleteAccountRequest(password))
+            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode))
         }
         if (result is ApiResult.Success) {
             // Clear local state — account no longer exists on the server.

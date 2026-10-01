@@ -55,6 +55,8 @@ enum class FailureReason {
     INVALID_CODE,
     /** 2FA: the challenge from the password step expired or was already used. */
     CHALLENGE_EXPIRED,
+    /** Delete: the account has 2FA and the request carried no code (item 85). */
+    TWO_FACTOR_REQUIRED,
     /** A refusal the server explained in its own words (see [ApiErrorMapper]). */
     REFUSED,
     /** A response we could not make sense of. */
@@ -98,8 +100,10 @@ interface StringLookup {
  * `message` is a string for a thrown HttpException and an ARRAY for a
  * validation failure. The iOS client decodes the same envelope
  * (APIClient.swift, APIErrorBody); Android used to hand the raw body to the UI.
+ * [error] is usually a reason phrase, but the deletion routes put a code there
+ * (`two_factor_required`, ACCOUNT-API-2026-10-01).
  */
-internal data class ErrorEnvelope(val message: String?, val code: String?)
+internal data class ErrorEnvelope(val message: String?, val code: String?, val error: String? = null)
 
 /**
  * THE one place an API failure becomes words on the screen.
@@ -119,13 +123,14 @@ class ApiErrorMapper(private val strings: StringLookup) {
         context: ErrorContext,
         @StringRes fallback: Int,
     ): ApiResult.Error {
-        val server = parseEnvelope(rawBody)?.message?.takeIf(::isPresentable)
+        val envelope = parseEnvelope(rawBody)
+        val server = envelope?.message?.takeIf(::isPresentable)
         val (reason, message) = when (context) {
             ErrorContext.SIGN_IN, ErrorContext.ANONYMOUS_SIGN_IN ->
                 signIn(status, server, anonymous = context == ErrorContext.ANONYMOUS_SIGN_IN)
             ErrorContext.TWO_FACTOR -> twoFactor(status, server)
             ErrorContext.ANONYMOUS_REGISTER -> anonymousRegister(status, server)
-            ErrorContext.DELETE_ACCOUNT -> deleteAccount(status, server)
+            ErrorContext.DELETE_ACCOUNT -> deleteAccount(status, server, envelope?.error)
             ErrorContext.GENERAL -> general(status, server, fallback)
         }
         return ApiResult.Error(message, status, reason)
@@ -272,10 +277,18 @@ class ApiErrorMapper(private val strings: StringLookup) {
         }
     }
 
-    /** gdpr.controller.ts answers a wrong confirmation password with 401 "Incorrect password". */
-    private fun deleteAccount(status: Int, server: String?): Pair<FailureReason, String> {
+    /**
+     * gdpr.controller.ts answers a wrong confirmation password with 401
+     * "Incorrect password". An account with 2FA must also send its code (item
+     * 85): a 403 whose `error` is `two_factor_required` (none sent) or
+     * `two_factor_invalid` (wrong). Classified by that field, never by the
+     * message, as the contract says.
+     */
+    private fun deleteAccount(status: Int, server: String?, error: String?): Pair<FailureReason, String> {
         val lower = server?.lowercase().orEmpty()
         return when {
+            error == ERROR_TWO_FACTOR_REQUIRED -> FailureReason.TWO_FACTOR_REQUIRED.withText()
+            error == ERROR_TWO_FACTOR_INVALID -> FailureReason.INVALID_CODE.withText()
             (status == 401 || status == 403) && "password" in lower ->
                 FailureReason.INVALID_CREDENTIALS to strings.get(R.string.error_incorrect_password)
             status == 401 -> FailureReason.SESSION_EXPIRED.withText()
@@ -306,12 +319,17 @@ class ApiErrorMapper(private val strings: StringLookup) {
             FailureReason.ACCOUNT_BLOCKED -> R.string.error_account_blocked
             FailureReason.INVALID_CODE -> R.string.error_invalid_code
             FailureReason.CHALLENGE_EXPIRED -> R.string.error_challenge_expired
+            FailureReason.TWO_FACTOR_REQUIRED -> R.string.delete_dialog_2fa_required
             FailureReason.REFUSED, FailureReason.UNEXPECTED -> R.string.error_unexpected
         },
     )
 
     internal companion object {
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+        /** The deletion routes' `error` codes for an account with 2FA (ACCOUNT-API-2026-10-01, item 85). */
+        private const val ERROR_TWO_FACTOR_REQUIRED = "two_factor_required"
+        private const val ERROR_TWO_FACTOR_INVALID = "two_factor_invalid"
 
         /**
          * Nest's default messages are the HTTP reason phrase ("Bad Request",
@@ -326,7 +344,7 @@ class ApiErrorMapper(private val strings: StringLookup) {
         )
 
         /**
-         * Reads `{message, details.code}` from a Nest error body. `message` may be
+         * Reads `{message, details.code, error}` from a Nest error body. `message` may be
          * a string or, for validation failures, an array of strings (joined).
          * Anything that is not a JSON object yields null — an HTML 502 page from
          * the edge is not an envelope, and nothing in it is shown.
@@ -341,7 +359,8 @@ class ApiErrorMapper(private val strings: StringLookup) {
                 else -> null
             }
             val code = ((root["details"] as? JsonObject)?.get("code") as? JsonPrimitive)?.contentOrNull
-            return ErrorEnvelope(message, code)
+            val error = (root["error"] as? JsonPrimitive)?.contentOrNull
+            return ErrorEnvelope(message, code, error)
         }
 
         /** Whether a server sentence can be shown as-is. */

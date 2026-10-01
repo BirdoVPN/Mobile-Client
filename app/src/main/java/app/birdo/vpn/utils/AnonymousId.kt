@@ -1,5 +1,7 @@
 package app.birdo.vpn.utils
 
+import app.birdo.vpn.data.model.UserProfile
+
 /** Digits per display group. */
 private const val ANON_ID_GROUP_SIZE = 4
 
@@ -42,3 +44,29 @@ fun isAnonymousAccountEmail(email: String?): Boolean =
 /** The 24-digit account number inside an anonymous account's synthetic email, or null. */
 fun anonymousAccountNumber(email: String?): String? =
     email?.takeIf(::isAnonymousAccountEmail)?.removePrefix(ANON_EMAIL_PREFIX)?.removeSuffix(ANON_EMAIL_SUFFIX)
+
+/**
+ * Whether [user] is an anonymous account. `GET /auth/me` says so outright
+ * since the 2026-10-01 account API (`isAnonymous`, then `accountType`; item
+ * 86); a server older than that only through the synthetic email's shape,
+ * which phase 2 of that API stops sending.
+ */
+fun isAnonymousUser(user: UserProfile?): Boolean {
+    if (user == null) return false
+    user.isAnonymous?.let { return it }
+    user.accountType?.let { return it.equals(ACCOUNT_TYPE_ANONYMOUS, ignoreCase = true) }
+    return isAnonymousAccountEmail(user.email)
+}
+
+/**
+ * An anonymous [user]'s 24-digit account number: the server's `accountNumber`
+ * when it sends one (item 86), else the number inside the synthetic email.
+ * Null for a standard account. The account's only credential: never log it.
+ */
+fun accountNumberOf(user: UserProfile?): String? {
+    if (user == null || !isAnonymousUser(user)) return null
+    return user.accountNumber?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
+        ?: anonymousAccountNumber(user.email)
+}
+
+private const val ACCOUNT_TYPE_ANONYMOUS = "anonymous"
