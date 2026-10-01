@@ -118,6 +118,21 @@ class OverhaulSourceGuardTest {
         )
     }
 
+    // ── LIVE retest 2026-10-02: the revoke sentence ─────────────────────
+
+    @Test
+    fun `a revoke shows the canonical sentence, never the server's message`() {
+        // Today's backend answers a lost key with "Connection not found";
+        // HeartbeatPolicy infers a revoke (the eviction ping-pong's stop) from
+        // it, so showing its message named the wrong thing.
+        val revoked = source("$main/service/VpnManager.kt")
+            .substringAfter("private suspend fun onHeartbeatVerdict(", "")
+            .substringAfter("HeartbeatPolicy.Verdict.REVOKED -> {", "")
+            .substringBefore("HeartbeatPolicy.Verdict.EVICTED ->")
+        assertTrue(revoked.contains("endSessionForServer(SessionCopy.REVOKED, FailureKind.REVOKED)"))
+        assertFalse(revoked.contains("serverMessage") || revoked.contains(".message"))
+    }
+
     // ── A2-035 ───────────────────────────────────────────────────────────
 
     @Test

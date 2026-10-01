@@ -1305,7 +1305,7 @@ class VpnManager @Inject constructor(
         val deadKey = deadSessionKey?.takeIf { it == sessionKeyId }
         deadSessionKey = null
         if (deadKey != null) {
-            val (verdict, message) = probeDeadSession(deadKey)
+            val verdict = probeDeadSession(deadKey)
             // A Disconnect or a newer dial landed while the probe was out.
             if (superseded(gen) || !session.wantUp) return
             val redialHere = when (verdict) {
@@ -1319,7 +1319,7 @@ class VpnManager @Inject constructor(
                 HeartbeatPolicy.Verdict.QUOTA_EXCEEDED -> false
             }
             if (!redialHere) {
-                onHeartbeatVerdict(verdict, message)
+                onHeartbeatVerdict(verdict)
                 return
             }
             if (verdict == HeartbeatPolicy.Verdict.SERVER_GONE) avoidServerId = prefs.lastServerId
@@ -2438,7 +2438,7 @@ class VpnManager @Inject constructor(
                         true
                     }
                     else -> {
-                        withContext(Dispatchers.Main) { onHeartbeatVerdict(verdict, resp.message) }
+                        withContext(Dispatchers.Main) { onHeartbeatVerdict(verdict) }
                         false
                     }
                 }
@@ -2464,7 +2464,7 @@ class VpnManager @Inject constructor(
                             "Connected with no WireGuard key id to heartbeat for — rebuilding before the peer is reaped",
                         )
                         withContext(Dispatchers.Main) {
-                            onHeartbeatVerdict(HeartbeatPolicy.Verdict.REAPED, serverMessage = null)
+                            onHeartbeatVerdict(HeartbeatPolicy.Verdict.REAPED)
                         }
                         false
                     }
@@ -2493,7 +2493,7 @@ class VpnManager @Inject constructor(
      *    server, fail-closed meanwhile; a Multi-Hop route cannot be re-chosen
      *    for the user, so it stops and says which choice to make.
      */
-    private suspend fun onHeartbeatVerdict(verdict: HeartbeatPolicy.Verdict, serverMessage: String?) {
+    private suspend fun onHeartbeatVerdict(verdict: HeartbeatPolicy.Verdict) {
         when (verdict) {
             HeartbeatPolicy.Verdict.ALIVE -> Unit
             HeartbeatPolicy.Verdict.REAPED -> {
@@ -2502,7 +2502,10 @@ class VpnManager @Inject constructor(
             }
             HeartbeatPolicy.Verdict.REVOKED -> {
                 android.util.Log.w("VpnManager", "Heartbeat: connection revoked by the server")
-                endSessionForServer(serverMessage?.takeIf { it.isNotBlank() } ?: SessionCopy.REVOKED, FailureKind.REVOKED)
+                // The canonical sentence, never the server's message: a
+                // revoke is often INFERRED from today's "Connection not
+                // found" reply (HeartbeatPolicy), which would misname it.
+                endSessionForServer(SessionCopy.REVOKED, FailureKind.REVOKED)
             }
             HeartbeatPolicy.Verdict.EVICTED -> {
                 android.util.Log.w("VpnManager", "Heartbeat: another device took this session's slot")
@@ -2537,9 +2540,9 @@ class VpnManager @Inject constructor(
      * can never be answered. It discloses nothing new: the re-dial it precedes
      * goes around the tunnel from the same address.
      *
-     * @return [HeartbeatPolicy.forDeadTunnel]'s verdict, and the server's message.
+     * @return [HeartbeatPolicy.forDeadTunnel]'s verdict.
      */
-    private suspend fun probeDeadSession(key: String): Pair<HeartbeatPolicy.Verdict, String?> {
+    private suspend fun probeDeadSession(key: String): HeartbeatPolicy.Verdict {
         val sinceLastOk = elapsedRealtime() - lastHeartbeatOkAt
         val result = withTimeoutOrNull(DEAD_SESSION_PROBE_TIMEOUT_MS) {
             repository.sendHeartbeat(key, aroundTunnel = true)
@@ -2548,7 +2551,7 @@ class VpnManager @Inject constructor(
         val verdict = HeartbeatPolicy.forDeadTunnel(reply, sinceLastOk)
         // No identifiers in this line (node-agent privacy convention).
         android.util.Log.i("VpnManager", "Dead-tunnel probe: ${if (reply == null) "no answer" else reply.reason} -> $verdict")
-        return verdict to reply?.message
+        return verdict
     }
 
     /**
