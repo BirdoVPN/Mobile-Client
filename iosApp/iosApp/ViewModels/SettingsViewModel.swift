@@ -15,7 +15,7 @@ import SwiftUI
 ///    BirdoShield, custom DNS on/off) → 1200 ms debounced `onSettingsReapplyNeeded` so a
 ///    burst of toggles produces ONE reconnect "blip". The app root wires the
 ///    callback to `VpnViewModel.reapplySettings()` (no-op unless connected).
-/// 3. **Text fields** (DNS addresses, WireGuard port, MTU) → persist
+/// 3. **Text fields** (DNS addresses, MTU) → persist
 ///    immediately (valid values only) but only flag a pending reapply; the
 ///    VPN Settings screen calls `commitPendingReapply()` on dismiss so one
 ///    blip fires with the FINAL value, never per keystroke.
@@ -24,6 +24,10 @@ import SwiftUI
 /// - `stealthModeEnabled` — iOS has no Xray transport; a dead security toggle
 ///   must not ship (platform-constraints spec §3.7). Stored key is cleaned up.
 /// - `notificationsEnabled` — no notification code exists on iOS; ditto.
+/// - `wireGuardPort` — the relays accept WireGuard on 51820 only, so the "53"
+///   preset and a custom port never connected and "51820" was Automatic
+///   (LIVE-PORT53). The port is not a setting; a saved one is retired at init
+///   (`WireGuardPort.retireStoredChoice`) and never read when dialling.
 @MainActor
 final class SettingsViewModel: ObservableObject {
     // MARK: - Kill Switch (default ON)
@@ -146,11 +150,6 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - WireGuard
 
-    /// Persisted port preference: "auto" or a numeric string 1–65535. The
-    /// legacy UI stored the literal "custom" (which VPNManager treats as
-    /// auto); init normalises that away. Mutate via `setWireGuardPortPreset`
-    /// / `applyCustomWireGuardPort` only.
-    @Published private(set) var wireGuardPort: String
     @Published var wireGuardMtu: Int32 {
         didSet {
             guard wireGuardMtu != oldValue else { return }
@@ -222,18 +221,12 @@ final class SettingsViewModel: ObservableObject {
         customDnsPrimary = d.string(forKey: "custom_dns_primary") ?? ""
         customDnsSecondary = d.string(forKey: "custom_dns_secondary") ?? ""
 
-        // T3 normalisation: the old picker persisted the literal "custom",
-        // which `VPNManager.effectivePort` (correctly) treats as auto — so a
-        // "custom" port never took effect. Anything that isn't "auto" or a
-        // valid port number collapses to "auto"; the Custom radio itself is
-        // local UI state on the screen, never derived from this value.
-        let storedPort = d.string(forKey: "wg_port") ?? "auto"
-        if storedPort == "auto" || Self.isValidPortText(storedPort) {
-            wireGuardPort = storedPort
-        } else {
-            wireGuardPort = "auto"
-            d.set("auto", forKey: "wg_port")
-        }
+        // LIVE-PORT53: the WireGuard port is not a setting any more. A "53",
+        // custom port or "51820" preset an older build saved becomes "auto",
+        // once (the next launch finds nothing to do). VPNManager no longer
+        // reads the key at all; this keeps the stored state honest. MTU and
+        // every other setting are left as they are.
+        WireGuardPort.retireStoredChoice(in: d)
 
         // `integer(forKey:)` is an `Int` read straight from a user-writable
         // plist: an out-of-Int32-range value would TRAP the conversion and crash
@@ -298,40 +291,6 @@ final class SettingsViewModel: ObservableObject {
         vpnManager.applyKillSwitchFlag(enabled)
     }
 
-    // MARK: - WireGuard Port API (T3)
-
-    /// Persist a preset ("auto" | "51820" | "53") immediately. The reapply
-    /// fires on screen exit like the other field-style settings.
-    func setWireGuardPortPreset(_ value: String) {
-        guard value == "auto" || Self.isValidPortText(value) else { return }
-        guard value != wireGuardPort else { return }
-        wireGuardPort = value
-        UserDefaults.standard.set(value, forKey: "wg_port")
-        pendingReapplyOnExit = true
-    }
-
-    /// T3 fix: the custom port is persisted HERE the moment it parses to
-    /// 1–65535 — the old screen kept the text in a local @State and never
-    /// wrote it back, so "Custom" silently behaved as Auto forever. Returns
-    /// whether the text is currently a valid port (drives the field's error
-    /// state); invalid/partial text persists nothing.
-    @discardableResult
-    func applyCustomWireGuardPort(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard Self.isValidPortText(trimmed) else { return false }
-        if trimmed != wireGuardPort {
-            wireGuardPort = trimmed
-            UserDefaults.standard.set(trimmed, forKey: "wg_port")
-            pendingReapplyOnExit = true
-        }
-        return true
-    }
-
-    static func isValidPortText(_ text: String) -> Bool {
-        guard let port = Int(text) else { return false }
-        return (1...65535).contains(port)
-    }
-
     /// Same predicate `VPNManager` applies when it builds the tunnel config,
     /// exposed for the DNS fields' inline error state — UI feedback and the
     /// build-time gate can never drift.
@@ -342,8 +301,8 @@ final class SettingsViewModel: ObservableObject {
     // MARK: - Reapply Plumbing (§0.6 paths 2 & 3)
 
     /// The VPN Settings screen MUST call this on dismiss (`.onDisappear`): it
-    /// fires the single pending blip for any field-style edits (DNS, port,
-    /// MTU) made while the screen was open. No-op when nothing changed.
+    /// fires the single pending blip for any field-style edits (DNS, MTU)
+    /// made while the screen was open. No-op when nothing changed.
     func commitPendingReapply() {
         guard pendingReapplyOnExit else { return }
         reapplyDebounceTask?.cancel()
