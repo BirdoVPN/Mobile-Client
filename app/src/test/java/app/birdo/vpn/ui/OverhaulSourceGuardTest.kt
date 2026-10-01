@@ -316,6 +316,31 @@ class OverhaulSourceGuardTest {
         )
     }
 
+    // ── LIVE-PORT53 ──────────────────────────────────────────────────────
+
+    /**
+     * The relays accept WireGuard on 51820 only (fleet check 2026-10-01), so
+     * the port is no setting: no preset or custom entry on the screen, and a
+     * saved one is retired after the settings are verified (the rewrite
+     * re-signs them).
+     */
+    @Test
+    fun `the WireGuard port is not a choice, and a saved one is retired after verification`() {
+        val screen = source("$main/ui/screen/VpnSettingsScreen.kt")
+        assertFalse("a port preset is offered again", screen.contains("PORT_PRESETS"))
+        assertFalse(screen.contains("onWireGuardPortChange"))
+        assertFalse("the 53 preset is back", screen.contains("\"53\""))
+        assertTrue(screen.contains("R.string.vpn_settings_port_fixed"))
+
+        val integrity = source("$main/MainActivity.kt").replace("\r\n", "\n")
+            .substringAfter("private fun verifySettingsIntegrity() {", "")
+            .substringBefore("\n    }\n")
+        val verified = integrity.indexOf("SettingsHmac.verify(prefs)")
+        val retired = integrity.indexOf("appPreferences.retireWireGuardPortChoice()")
+        assertTrue("the saved port is no longer retired at start-up", retired > 0)
+        assertTrue("the port is retired (and the settings re-signed) before they are verified", retired > verified && verified > 0)
+    }
+
     // ── A2-003 ───────────────────────────────────────────────────────────
 
     @Test

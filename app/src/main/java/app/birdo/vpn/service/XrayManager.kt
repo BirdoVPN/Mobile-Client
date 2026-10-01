@@ -121,14 +121,16 @@ object XrayManager {
      * the stealth endpoint, and the port the user overrode, else the port of
      * the server's own WireGuard endpoint. No fallback port: a config with
      * neither cannot say where WireGuard listens, and guessing is how the
-     * hard-coded one broke.
+     * hard-coded one broke. An override is honoured only when it is the
+     * relays' own port (WireGuardConfigBuilder.portOverride, LIVE-PORT53): a
+     * stale "53" forwarded nowhere, over Stealth as directly.
      *
-     * @param portOverride the user's WireGuard port setting ("auto" or a number).
+     * @param portOverride the user's stored WireGuard port setting.
      * @return host and port, or null when either cannot be derived.
      */
     internal fun wireGuardTarget(xrayEndpoint: String?, wireGuardEndpoint: String?, portOverride: String): Pair<String, Int>? {
         val host = xrayEndpoint?.let { parseEndpoint(it) }?.first ?: return null
-        val port = portOverride.toIntOrNull()?.takeIf { it in 1..65535 }
+        val port = WireGuardConfigBuilder.portOverride(portOverride)
             ?: wireGuardEndpoint?.let { parseEndpoint(it) }?.second
             ?: return null
         return host to port
@@ -140,7 +142,7 @@ object XrayManager {
      * @param context  Application context for accessing files
      * @param config   VPN connect response containing Xray parameters (with
      *   the server's own WireGuard endpoint, not the local relay)
-     * @param wireGuardPortOverride the user's WireGuard port setting ("auto" or a number)
+     * @param wireGuardPortOverride the user's stored WireGuard port setting ([wireGuardTarget])
      * @param onExit   called if Xray exits on its own while running (A1-032)
      * @return true if Xray started successfully
      */

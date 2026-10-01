@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,9 +31,6 @@ import app.birdo.vpn.ui.components.BirdoTextField
 import app.birdo.vpn.ui.components.BirdoTopBar
 import app.birdo.vpn.ui.theme.*
 import app.birdo.vpn.ui.viewmodel.SettingsUiState
-
-/** Ports offered as presets. Anything else means the user chose a custom port. */
-private val PORT_PRESETS = listOf("auto", "51820", "53")
 
 /**
  * Everything the BirdoShield row renders, derived in ONE place.
@@ -90,7 +86,6 @@ internal fun birdoShieldRowState(
 fun VpnSettingsScreen(
     state: SettingsUiState,
     onLocalNetworkSharingChange: (Boolean) -> Unit,
-    onWireGuardPortChange: (String) -> Unit,
     onWireGuardMtuChange: (Int) -> Unit,
     onStealthModeChange: (Boolean) -> Unit,
     onDnsFilteringChange: (Boolean) -> Unit,
@@ -107,18 +102,6 @@ fun VpnSettingsScreen(
     // `null` (unknown), which reads as available — see [birdoShieldRowState].
     dnsFilteringAvailable: Boolean? = null,
 ) {
-    // The port radio's selection is LOCAL UI state, deliberately not derived from
-    // the persisted port. Deriving it meant tapping "Custom" with an empty field
-    // wrote "auto" straight back, which re-derived the selection as "auto", so the
-    // custom input never rendered and the radio snapped back — the control was
-    // impossible to reach. Now "custom" is a mode the user is in, and the port is
-    // persisted only once they type a valid one.
-    var portMode by rememberSaveable {
-        mutableStateOf(if (state.wireGuardPort in PORT_PRESETS) state.wireGuardPort else "custom")
-    }
-    var customPortText by rememberSaveable {
-        mutableStateOf(if (state.wireGuardPort in PORT_PRESETS) "" else state.wireGuardPort)
-    }
     var mtuText by rememberSaveable {
         mutableStateOf(if (state.wireGuardMtu > 0) state.wireGuardMtu.toString() else "")
     }
@@ -212,104 +195,36 @@ fun VpnSettingsScreen(
             // ── WireGuard Section ────────────────────────────────
             item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_wireguard)) }
 
-            // Port selection
+            // The WireGuard port: not a choice (LIVE-PORT53). The relays accept
+            // WireGuard on 51820 only, so the port-53 preset and a custom port could
+            // never connect, and "51820" was the same as automatic. The row says
+            // so instead of offering controls that only break the connection.
             item {
                 BirdoCard(
                     modifier = Modifier.fillMaxWidth(),
                     cornerRadius = 14.dp,
                     contentPadding = PaddingValues(16.dp),
                 ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Decorative: the title beside it names the card (A2-032).
-                            Icon(Icons.Default.Router, contentDescription = null, tint = BirdoGreen, modifier = Modifier.size(22.dp))
-                            Spacer(Modifier.width(14.dp))
+                    Row(verticalAlignment = Alignment.Top) {
+                        // Decorative: the title beside it names the card (A2-032).
+                        Icon(Icons.Default.Router, contentDescription = null, tint = BirdoGreen, modifier = Modifier.size(22.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Column {
                             Text(
                                 stringResource(R.string.vpn_settings_port),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = palette.onSurface,
                                 fontWeight = FontWeight.Medium,
                             )
-                        }
-                        Spacer(Modifier.height(12.dp))
-
-                        (PORT_PRESETS + "custom").forEach { option ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    // selectable, not toggleable: these are radios,
-                                    // and re-tapping the selected one must be a no-op
-                                    // rather than an onValueChange(false).
-                                    .selectable(
-                                        selected = portMode == option,
-                                        role = Role.RadioButton,
-                                        onClick = {
-                                            portMode = option
-                                            if (option == "custom") {
-                                                // Persist only once a VALID port is typed.
-                                                // Writing "auto" here (the old behaviour)
-                                                // both clobbered the user's previous choice
-                                                // and made this radio unreachable.
-                                                val port = customPortText.toIntOrNull()
-                                                if (port != null && port in 1..65535) {
-                                                    onWireGuardPortChange(customPortText)
-                                                }
-                                            } else {
-                                                onWireGuardPortChange(option)
-                                            }
-                                        },
-                                    )
-                                    .padding(vertical = 8.dp, horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                RadioButton(
-                                    selected = portMode == option,
-                                    onClick = null,
-                                    colors = RadioButtonDefaults.colors(
-                                        selectedColor = palette.accent,
-                                        unselectedColor = palette.onSurfaceFaint,
-                                    ),
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = when (option) {
-                                        "auto" -> stringResource(R.string.vpn_settings_port_auto)
-                                        "51820" -> "51820"
-                                        "53" -> "53"
-                                        else -> stringResource(R.string.vpn_settings_port_custom)
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = palette.onSurface.copy(alpha = 0.85f),
-                                )
-                            }
-                        }
-
-                        // Custom port text field
-                        if (portMode == "custom") {
-                            Spacer(Modifier.height(8.dp))
-                            val customPortValid =
-                                customPortText.toIntOrNull()?.let { it in 1..65535 } == true
-                            BirdoTextField(
-                                value = customPortText,
-                                onValueChange = { text ->
-                                    val filtered = text.filter { it.isDigit() }.take(5)
-                                    customPortText = filtered
-                                    val port = filtered.toIntOrNull()
-                                    if (port != null && port in 1..65535) {
-                                        onWireGuardPortChange(filtered)
-                                    }
-                                },
-                                label = stringResource(R.string.vpn_settings_port_custom_hint),
-                                keyboardType = KeyboardType.Number,
-                                isError = customPortText.isNotBlank() && !customPortValid,
-                                // Say so while the typed port is not yet in effect,
-                                // rather than letting the UI imply it has been applied.
-                                supportingText = if (customPortValid) {
-                                    null
-                                } else {
-                                    stringResource(R.string.vpn_settings_port_range)
-                                },
+                            Text(
+                                stringResource(R.string.vpn_settings_port_auto),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.onSurface.copy(alpha = 0.85f),
+                            )
+                            Text(
+                                stringResource(R.string.vpn_settings_port_fixed),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.onSurfaceMuted,
                             )
                         }
                     }

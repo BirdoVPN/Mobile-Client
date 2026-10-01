@@ -823,7 +823,6 @@ fun BirdoNavGraph(
                     VpnSettingsScreen(
                         state = settingsState,
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
-                        onWireGuardPortChange = { settingsViewModel.setWireGuardPort(it) },
                         onWireGuardMtuChange = { settingsViewModel.setWireGuardMtu(it) },
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
                         onDnsFilteringChange = { settingsViewModel.setDnsFiltering(it) },

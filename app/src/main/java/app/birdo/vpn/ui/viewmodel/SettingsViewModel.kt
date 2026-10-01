@@ -47,7 +47,6 @@ data class SettingsUiState(
     val customDnsEnabled: Boolean = false,
     val customDnsPrimary: String = "",
     val customDnsSecondary: String = "",
-    val wireGuardPort: String = "auto",
     val wireGuardMtu: Int = 0,
     // Stealth & Quantum settings (post-quantum is ON by default for all users)
     val stealthModeEnabled: Boolean = false,
@@ -87,7 +86,6 @@ class SettingsViewModel @Inject constructor(
             customDnsEnabled = prefs.customDnsEnabled,
             customDnsPrimary = prefs.customDnsPrimary,
             customDnsSecondary = prefs.customDnsSecondary,
-            wireGuardPort = prefs.wireGuardPort,
             wireGuardMtu = prefs.wireGuardMtu,
             stealthModeEnabled = prefs.stealthModeEnabled,
             quantumProtectionEnabled = prefs.quantumProtectionEnabled,
@@ -320,15 +318,6 @@ class SettingsViewModel @Inject constructor(
         if (trimmed.isNotBlank() && !InputValidator.isValidDnsAddress(trimmed)) return
         prefs.customDnsSecondary = trimmed
         _uiState.value = _uiState.value.copy(customDnsSecondary = trimmed)
-        pendingReapplyOnExit = true
-    }
-
-    fun setWireGuardPort(port: String) {
-        if (!InputValidator.isValidPort(port)) return
-        prefs.wireGuardPort = port
-        _uiState.value = _uiState.value.copy(wireGuardPort = port)
-        // Text fields commit on screen exit, not per keystroke — otherwise a
-        // >debounce typing pause rebuilds the live tunnel with a half-typed value.
         pendingReapplyOnExit = true
     }
 

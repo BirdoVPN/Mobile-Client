@@ -90,8 +90,10 @@ class XrayManagerTest {
         assertEquals("203.0.113.7" to 51820, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "auto"))
         // A node on another WireGuard port.
         assertEquals("203.0.113.7" to 443, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:443", "auto"))
-        // The user's custom WireGuard port wins, as on desktop.
-        assertEquals("203.0.113.7" to 53, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "53"))
+        // LIVE-PORT53: a stale "53" (or any custom port) forwards to the
+        // node's real WireGuard port; nothing on the relays listens on 53.
+        assertEquals("203.0.113.7" to 51820, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "53"))
+        assertEquals("203.0.113.7" to 51820, XrayManager.wireGuardTarget("203.0.113.7:8443", "203.0.113.7:51820", "51820"))
         // IPv6.
         assertEquals("2001:db8::7" to 51820, XrayManager.wireGuardTarget("[2001:db8::7]:8443", "[2001:db8::7]:51820", "auto"))
         // Nothing to derive from: refuse, never guess 51820.

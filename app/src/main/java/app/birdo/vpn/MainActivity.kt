@@ -537,6 +537,11 @@ class MainActivity : FragmentActivity() {
                 // silently it reads as the app forgetting the user's settings.
                 appPreferences.settingsResetNoticePending = true
             }
+            // LIVE-PORT53: a saved "53" or custom WireGuard port can never
+            // connect. Retired here, with the protected settings verified (or
+            // reset): the rewrite re-signs them, and before the check it would
+            // sign a tampered set as genuine.
+            appPreferences.retireWireGuardPortChoice()
         } catch (e: Exception) {
             // Neither verify() nor resetToSafeDefaults() reports this one: it
             // is thrown before or between them, so nothing was verified and

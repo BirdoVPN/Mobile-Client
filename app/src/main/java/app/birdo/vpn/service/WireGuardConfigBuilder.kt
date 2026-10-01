@@ -208,19 +208,33 @@ object WireGuardConfigBuilder {
     internal const val IDLE_HANDSHAKE_AGE_PEAK_SEC = REKEY_AFTER_TIME_SEC + MAX_KEEPALIVE_SEC
 
     /**
+     * LIVE-PORT53: the one port the relays accept WireGuard on. Checked on all
+     * ten relays on 2026-10-01: no DNAT from 53, nothing listening on a public
+     * 53, ufw opens only this port. The Windows client on 53 got no handshake,
+     * direct or over Stealth.
+     */
+    internal const val RELAY_WIREGUARD_PORT = 51820
+
+    /**
+     * The port a stored WireGuard port setting may still override, or null.
+     * Only [RELAY_WIREGUARD_PORT]: "auto", the retired "53" preset and any
+     * custom number can never connect, so a value an older build saved (or
+     * one that outlives AppPreferences.retireWireGuardPortChoice) is never
+     * dialled.
+     */
+    fun portOverride(stored: String): Int? = stored.trim().toIntOrNull()?.takeIf { it == RELAY_WIREGUARD_PORT }
+
+    /**
      * Apply the user's WireGuard port override to the endpoint string.
-     * "auto" keeps the server-provided port.
+     * Anything but [RELAY_WIREGUARD_PORT] keeps the server-provided port.
      */
     fun applyPortOverride(endpoint: String, prefs: AppPreferences): String {
-        val portPref = prefs.wireGuardPort
-        if (portPref == "auto") return endpoint
-        val overridePort = portPref.toIntOrNull() ?: return endpoint
-        if (overridePort !in 1..65535) return endpoint
+        val overridePort = portOverride(prefs.wireGuardPort) ?: return endpoint
         // Never rewrite the port of a loopback endpoint. When stealth (Xray
         // Reality) is active the WireGuard endpoint is the LOCAL relay
         // (127.0.0.1:<xrayPort>); rewriting that port would point wg-go at a dead
-        // local port and silently break the tunnel. The port override is meant for
-        // the real server endpoint only (to dodge port-based blocking).
+        // local port and silently break the tunnel. The override is for the real
+        // server endpoint only.
         if (isLoopbackEndpointHost(endpoint)) return endpoint
         val lastColon = endpoint.lastIndexOf(':')
         return if (lastColon > 0) endpoint.substring(0, lastColon + 1) + overridePort

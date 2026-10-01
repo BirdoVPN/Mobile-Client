@@ -232,9 +232,6 @@
     <string name="vpn_settings_section_wireguard">WireGuard</string>
     <string name="vpn_settings_port">WireGuard Port</string>
     <string name="vpn_settings_port_auto">Automatic</string>
-    <string name="vpn_settings_port_custom">Custom</string>
-    <string name="vpn_settings_port_custom_hint">Port number</string>
-    <string name="vpn_settings_port_range">Enter a port between 1 and 65535</string>
     <string name="vpn_settings_mtu">WireGuard MTU</string>
     <string name="vpn_settings_mtu_auto">Automatic (server default)</string>
     <string name="vpn_settings_mtu_hint">e.g. 1420</string>
@@ -782,5 +779,9 @@
          Windows ("Show account number" / "Hide account number"). -->
     <string name="cd_show_account_number">Show account number</string>
     <string name="cd_hide_account_number">Hide account number</string>
+
+    <!-- LIVE-PORT53: the relays accept WireGuard on 51820 only, so the port is
+         no longer a setting (the "53" preset and custom ports never connected). -->
+    <string name="vpn_settings_port_fixed">BirdoVPN servers accept WireGuard on port 51820 only, so there is no port to choose.</string>
     <!-- ════ end AND-FIX-2 ════ -->
 </resources>
