@@ -2079,6 +2079,31 @@ class VpnManagerTest {
         quiesce()
     }
 
+    /**
+     * REVIEW-AND2-012: Quantum turned on while connected, and the server
+     * answered the in-place rebuild with an error: the session is kept, and
+     * nobody asked to switch — "Couldn't switch… previous location" misread it.
+     */
+    @Test
+    fun `a settings change that keeps the session says so, not that a switch failed`() = runTest {
+        val toasts = mutableListOf<String>()
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } answers {
+            toasts += secondArg<CharSequence>().toString()
+            mockk(relaxed = true)
+        }
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Error("The server is busy.", 502))
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(5_000)
+
+        assertTrue("toasts: $toasts", "The server is busy. ${SessionCopy.CONNECTION_UNCHANGED}" in toasts)
+        assertTrue(toasts.none { it.contains("switch") || it.contains("location") })
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+        quiesce()
+    }
+
     @Test
     fun `a headless start that needs the user publishes why and dials nothing`() = runTest {
         vpnManager.reportHeadlessBlocked(FailureKind.SIGN_IN_REQUIRED)

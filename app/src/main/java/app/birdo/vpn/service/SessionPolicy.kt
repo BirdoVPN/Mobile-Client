@@ -622,9 +622,27 @@ internal object SessionCopy {
      */
     const val ENGINE_FAILED = "BirdoVPN couldn't start its secure tunnel. Please try again."
 
-    /** A1-034: a live switch or settings change that did not happen; the session did not move. */
+    /** A1-034: a live switch that did not happen; the session did not move. */
     const val SWITCH_KEPT_PREVIOUS = "Couldn't switch. You're still connected to your previous location."
     const val STILL_ON_PREVIOUS = "You're still connected to your previous location."
+
+    /**
+     * REVIEW-AND2-012: a settings change (MTU, DNS, split tunnelling, Quantum)
+     * that could not be applied in place. No switch was asked for, so the
+     * switch sentence ("your previous location") misread it.
+     */
+    const val SETTINGS_KEPT_PREVIOUS = "Couldn't apply the change. Your connection is unchanged."
+    const val CONNECTION_UNCHANGED = "Your connection is unchanged."
+
+    /**
+     * What a rebuild that kept the live session says: [why] when there is a
+     * reason worth giving, and which kind of change did not happen.
+     */
+    fun keptSession(why: String?, settingsChange: Boolean): String = when {
+        why != null -> "$why ${if (settingsChange) CONNECTION_UNCHANGED else STILL_ON_PREVIOUS}"
+        settingsChange -> SETTINGS_KEPT_PREVIOUS
+        else -> SWITCH_KEPT_PREVIOUS
+    }
 
     /**
      * A1-034: the new peer never answered AFTER the swap, and Android cannot

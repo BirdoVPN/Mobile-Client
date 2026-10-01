@@ -483,6 +483,17 @@ class SessionPolicyTest {
         assertEquals(null, MultiHopPolicy.entitledByPlan(null))
     }
 
+    /** REVIEW-AND2-012: a kept session after a settings change is not a failed switch. */
+    @Test
+    fun `a kept session says which change did not happen`() {
+        assertEquals(SessionCopy.SWITCH_KEPT_PREVIOUS, SessionCopy.keptSession(null, settingsChange = false))
+        assertEquals(SessionCopy.SETTINGS_KEPT_PREVIOUS, SessionCopy.keptSession(null, settingsChange = true))
+        assertEquals("Server busy. ${SessionCopy.STILL_ON_PREVIOUS}", SessionCopy.keptSession("Server busy.", settingsChange = false))
+        assertEquals("Server busy. ${SessionCopy.CONNECTION_UNCHANGED}", SessionCopy.keptSession("Server busy.", settingsChange = true))
+        assertFalse(SessionCopy.keptSession(null, settingsChange = true).contains("switch"))
+        assertFalse(SessionCopy.keptSession("x", settingsChange = true).contains("location"))
+    }
+
     @Test
     fun `a give-up that speaks for the traffic is never contradicted`() {
         val giveUp = SessionCopy.giveUp(FailureKind.DIED_AFTER_HANDSHAKE, 8, lockdown = false)

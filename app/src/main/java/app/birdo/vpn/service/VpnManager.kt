@@ -1635,7 +1635,11 @@ class VpnManager @Inject constructor(
         return directive
     }
 
-    /** What the user is told when the change did not happen but the session did not move. */
+    /**
+     * What the user is told when the change did not happen but the session did
+     * not move: a server switch, or a settings reapply ([reapplyInProgress]),
+     * which is no switch (REVIEW-AND2-012).
+     */
     private fun keptSessionCopy(
         event: LiveRebuildPolicy.Event,
         serverMessage: String?,
@@ -1646,7 +1650,7 @@ class VpnManager @Inject constructor(
             LiveRebuildPolicy.Event.REQUEST_FAILED -> apiError?.let { apiErrorCopy(it.code, it.message) }
             else -> null
         }
-        return if (why != null) "$why ${SessionCopy.STILL_ON_PREVIOUS}" else SessionCopy.SWITCH_KEPT_PREVIOUS
+        return SessionCopy.keptSession(why, settingsChange = reapplyInProgress)
     }
 
     /**
