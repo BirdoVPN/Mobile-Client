@@ -2,6 +2,7 @@ package app.birdo.vpn.data.network
 
 import app.birdo.vpn.BuildConfig
 import okhttp3.CertificatePinner
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
@@ -129,6 +130,13 @@ object DohResolver {
         }
         builder.build()
     }
+
+    /**
+     * The pool of the connections DoH keeps open to its provider, outside any
+     * tunnel. The API's call factory drops its idle ones when the app's
+     * traffic moves into the tunnel (RoutingCallFactory, F3).
+     */
+    val connectionPool: ConnectionPool get() = bootstrapClient.connectionPool
 
     private val cloudflare: DnsOverHttps = DnsOverHttps.Builder()
         .client(bootstrapClient)

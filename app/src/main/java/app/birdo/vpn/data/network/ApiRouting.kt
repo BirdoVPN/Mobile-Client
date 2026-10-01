@@ -2,6 +2,7 @@ package app.birdo.vpn.data.network
 
 import app.birdo.vpn.utils.FaultReporter
 import okhttp3.Call
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.InetAddress
@@ -118,24 +119,42 @@ object AroundTunnel
  * tunnel). Each client has its own pool. On a change of path the pool that is
  * no longer used drops its idle connections, so nothing is left open around the
  * tunnel, or inside one that is going away.
+ *
+ * The bypass client's lookups open connections of their own, to the DoH
+ * provider ([DohResolver], its bootstrap client's pool), and those are
+ * [alsoAroundTunnel]: dropped with the bypass pool. Live on the emulator
+ * (2026-10-01, F3) one idle `wlan0 -> 1.1.1.1:443` DoH connection stayed
+ * ESTABLISHED outside the tunnel for the whole session. The flip to the
+ * tunnel happens at the first call once the tunnel is up, which is the
+ * heartbeat VpnManager sends the moment it is (startHeartbeat).
  */
 class RoutingCallFactory(
     private val tunnel: OkHttpClient,
     private val bypass: OkHttpClient,
+    private val alsoAroundTunnel: List<ConnectionPool> = emptyList(),
     private val useBypass: () -> Boolean,
 ) : Call.Factory {
 
     @Volatile private var lastBypass: Boolean? = null
 
     override fun newCall(request: Request): Call {
-        // Tagged [AroundTunnel]: the bypass client, and the path bookkeeping
-        // left alone — one such call says nothing about where the next goes.
-        if (request.tag(AroundTunnel::class.java) != null) return bypass.newCall(request)
+        // Tagged [AroundTunnel]: the bypass client whatever the path. It is
+        // recorded as a bypass use, nothing more: the next ordinary call on
+        // the tunnel path then drops what this one left open around it.
+        if (request.tag(AroundTunnel::class.java) != null) {
+            lastBypass = true
+            return bypass.newCall(request)
+        }
         val bypassNow = useBypass()
         val previous = lastBypass
         lastBypass = bypassNow
         if (previous != null && previous != bypassNow) {
-            (if (bypassNow) tunnel else bypass).connectionPool.evictAll()
+            if (bypassNow) {
+                tunnel.connectionPool.evictAll()
+            } else {
+                bypass.connectionPool.evictAll()
+                alsoAroundTunnel.forEach { it.evictAll() }
+            }
         }
         return (if (bypassNow) bypass else tunnel).newCall(request)
     }

@@ -207,7 +207,7 @@ object NetworkModule {
         return Retrofit.Builder()
             .baseUrl(BuildConfig.API_BASE_URL + "/")
             .callFactory(
-                RoutingCallFactory(tunnelClient, bypassClient) {
+                RoutingCallFactory(tunnelClient, bypassClient, alsoAroundTunnel = listOf(DohResolver.connectionPool)) {
                     ApiRoutePolicy.currentPath() == ApiRoutePolicy.Path.BYPASS
                 },
             )
