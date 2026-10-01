@@ -339,6 +339,39 @@ fun HomeScreen(
                         )
                     }
 
+                    // birdo-web PR #590: the Free allowance is used and the
+                    // server ends the session when the grace window does. Not
+                    // an error (nothing failed yet): Info, with the way out.
+                    val quotaGrace = state.quotaGrace
+                    if (isConnected && quotaGrace != null) {
+                        HomeBanner(
+                            icon = Icons.Default.DataUsage,
+                            message = quotaGrace.minutesLeft?.let { stringResource(R.string.home_quota_grace, it) }
+                                ?: stringResource(R.string.home_quota_grace_soon),
+                            tone = BannerTone.Info,
+                            action = BannerAction(stringResource(R.string.banner_action_view_plans)) { onViewPlans() },
+                        )
+                    }
+
+                    // A1-025: strict Private DNS sends DNS to its own provider,
+                    // so BirdoShield / Custom DNS do not apply. Said honestly,
+                    // with the way to the setting.
+                    if (isConnected && state.privateDnsOverridesDns) {
+                        val context = LocalContext.current
+                        HomeBanner(
+                            icon = Icons.Default.Dns,
+                            message = stringResource(R.string.home_private_dns_overrides),
+                            tone = BannerTone.Info,
+                            action = BannerAction(stringResource(R.string.home_private_dns_settings)) {
+                                runCatching {
+                                    context.startActivity(
+                                        android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS),
+                                    )
+                                }
+                            },
+                        )
+                    }
+
                     // ADAPTIVE TRANSPORT: the connection is running over the
                     // stealth transport. Passive by design — the user is TOLD,
                     // never asked to decide, because the whole point of the
@@ -716,9 +749,11 @@ private fun MultiHopServerCard(
                     .border(1.dp, BirdoBrand.HairlineSoft, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
             ) {
+                // dp, not sp: the tile is a fixed 44 dp and the flag stands in
+                // for an icon, so it must not outgrow it at 200 % font scale.
                 Text(
                     text = if (server != null) countryCodeToFlag(server.countryCode) else "🌐",
-                    fontSize = 22.sp,
+                    fontSize = with(LocalDensity.current) { 22.dp.toSp() },
                 )
             }
             Spacer(Modifier.width(14.dp))
@@ -1175,7 +1210,8 @@ private fun HomeBanner(
                 }
             }
             if (onDismiss != null) {
-                IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                // 48 dp: the minimum touch target, whatever the icon's size.
+                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
                     Icon(
                         Icons.Default.Close,
                         contentDescription = stringResource(R.string.cd_dismiss_message),
@@ -1292,9 +1328,11 @@ private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> U
                     .border(1.dp, BirdoBrand.HairlineSoft, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
             ) {
+                // dp, not sp: the tile is a fixed 44 dp and the flag stands in
+                // for an icon, so it must not outgrow it at 200 % font scale.
                 Text(
                     text = if (server != null) countryCodeToFlag(server.countryCode) else "🌐",
-                    fontSize = 22.sp,
+                    fontSize = with(LocalDensity.current) { 22.dp.toSp() },
                 )
             }
             Spacer(Modifier.width(14.dp))

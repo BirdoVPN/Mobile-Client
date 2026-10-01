@@ -63,7 +63,14 @@ class TokenManager @VisibleForTesting internal constructor(
         internal const val LEGACY_MASTER_KEY_ALIAS = "_birdo_master_key_"
         private const val KEY_ACCESS_TOKEN = "access_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
-        private const val KEY_WG_PRIVATE_KEY = "wireguard_private_key"
+        /**
+         * A1-041: where builds before 2026-10-01 persisted each connect's
+         * WireGuard private key. Nothing ever read it back (the key lives in
+         * memory for its session only); any copy left on disk is purged at
+         * start-up.
+         */
+        @VisibleForTesting
+        internal const val LEGACY_KEY_WG_PRIVATE_KEY = "wireguard_private_key"
         private const val KEY_LAST_KEY_ID = "last_key_id"
         private const val KEY_PENDING_ANON_ID = "pending_anonymous_id"
         /** Maximum sane token length — prevents storage of garbage data */
@@ -122,7 +129,20 @@ class TokenManager @VisibleForTesting internal constructor(
      * fallback to the Keystore-backed store after a recovery.
      */
     @Volatile
-    private var store: SecureStore = openWithRecovery()
+    private var store: SecureStore = openWithRecovery().also(::purgeWireGuardKey)
+
+    /** A1-041: a session key at rest with no reader is a secret kept for nothing. */
+    private fun purgeWireGuardKey(store: SecureStore) {
+        try {
+            if (store.contains(LEGACY_KEY_WG_PRIVATE_KEY)) store.remove(LEGACY_KEY_WG_PRIVATE_KEY, commit = true)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not purge the legacy WireGuard key — retried on the next start", e)
+        }
+    }
+
+    /** Test seam: whether a WireGuard private key is at rest. */
+    @VisibleForTesting
+    internal fun holdsWireGuardKey(): Boolean = store.contains(LEGACY_KEY_WG_PRIVATE_KEY)
 
     private fun openWithRecovery(): SecureStore {
         val opened = try {
@@ -189,20 +209,10 @@ class TokenManager @VisibleForTesting internal constructor(
     }
 
     // ── WireGuard Key ────────────────────────────────────────────
-
-    fun getWireGuardPrivateKey(): String? = store.get(KEY_WG_PRIVATE_KEY)
-
-    fun setWireGuardPrivateKey(key: String) {
-        store.put(KEY_WG_PRIVATE_KEY, key)
-    }
-
-    /**
-     * FIX-1-8: Clear stored WG private key after disconnect.
-     * Prevents key material from persisting at rest after the VPN session ends.
-     */
-    fun clearWireGuardPrivateKey() {
-        store.remove(KEY_WG_PRIVATE_KEY)
-    }
+    //
+    // Not stored (A1-041). Each connect mints a fresh X25519 pair in
+    // BirdoRepository.connectVpn and hands the private half to the service in
+    // memory; it was also written here on every connect and never read.
 
     // NOTE: the "last server" concept lives in AppPreferences.lastServerId
     // (key "last_server_id") — the getLastServer/setLastServer pair that used

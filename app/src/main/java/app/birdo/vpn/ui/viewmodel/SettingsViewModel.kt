@@ -11,6 +11,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.service.TunnelAppRules
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -197,7 +198,9 @@ class SettingsViewModel @Inject constructor(
                     val iconPx = (ICON_SIZE_DP * context.resources.displayMetrics.density).toInt()
                     pm.getInstalledApplications(0)
                         .filter { app ->
-                            app.packageName != ownPackage &&
+                            // Never BirdoVPN itself: excluding it would take
+                            // the app's own traffic back out of its tunnel (D-6).
+                            TunnelAppRules.selectableForSplitTunnel(app.packageName, ownPackage) &&
                                 pm.getLaunchIntentForPackage(app.packageName) != null
                         }
                         .map { app ->

@@ -59,6 +59,13 @@ enum class FailureKind(val terminal: Boolean) {
     /** `valid = false` while heartbeats were flowing: revoked, or another device took the slot. */
     REVOKED(true),
 
+    /**
+     * The heartbeat said "evicted" (WEB-HB): another device of this account
+     * connected and took the slot. Never re-dialled on its own — that would
+     * evict the other device in turn, the ping-pong of A1-004.
+     */
+    EVICTED(true),
+
     /** 401 after the refresh token was rejected. */
     SIGN_IN_REQUIRED(true),
 
@@ -67,6 +74,14 @@ enum class FailureKind(val terminal: Boolean) {
 
     /** 402: the plan does not cover this. */
     PLAN_REQUIRED(true),
+
+    /**
+     * The heartbeat said the Free plan's monthly data allowance is used and
+     * the grace window is over (birdo-web PR #590): the peer is already gone.
+     * A plan decision like [PLAN_REQUIRED]: never re-dialled on its own, the
+     * block released, "View plans" offered.
+     */
+    QUOTA_EXCEEDED(true),
 
     /** Quantum Protection was requested and could not be completed. Fail-closed by design. */
     QUANTUM_FAILED(true),
@@ -168,6 +183,18 @@ internal object ReconnectPolicy {
         val lastFailureAt: Long = 0L,
         /** When the budget ran out, or null while it has not. */
         val trippedAt: Long? = null,
+        /**
+         * This streak began with a reap: its one rebuild is the whole budget,
+         * so a rebuild that fails gives up instead of retrying under the
+         * failure's own (larger) budget (WEB-HB's client table).
+         */
+        val reapStreak: Boolean = false,
+        /**
+         * The one re-dial the cooldown allows (REVIEW-AND-011): a failure now
+         * gives up again at once instead of starting a fresh eight-attempt
+         * streak, which re-armed the block for ~8.5 min every 15 min.
+         */
+        val lastChance: Boolean = false,
     ) {
         /**
          * A user dial that never connected does NOT heal itself: the user is
@@ -177,7 +204,14 @@ internal object ReconnectPolicy {
         val mayAutoRetry: Boolean
             get() = wantUp && (established || owner == Owner.HEADLESS)
 
-        fun connected(): Session = copy(established = true, failures = 0, lastFailureAt = 0L, trippedAt = null)
+        fun connected(): Session = copy(
+            established = true,
+            failures = 0,
+            lastFailureAt = 0L,
+            trippedAt = null,
+            lastChance = false,
+            reapStreak = false,
+        )
 
         companion object {
             val IDLE = Session()
@@ -240,21 +274,29 @@ internal object ReconnectPolicy {
             )
         }
         if (!online) return Outcome(session, Decision.WaitForNetwork)
+        if (session.lastChance) {
+            return Outcome(
+                session.copy(failures = 1, lastFailureAt = nowMs, trippedAt = nowMs, lastChance = false),
+                Decision.GiveUp(GiveUpReason.BUDGET_EXHAUSTED, kind, 1),
+            )
+        }
 
         val continues = session.failures > 0 && nowMs - session.lastFailureAt <= FAILURE_WINDOW_MS
         val failures = if (continues) session.failures + 1 else 1
+        val reapStreak = kind == FailureKind.REAPED || (continues && session.reapStreak)
         // Judged by the budget of the MOST RECENT kind, as on iOS: a streak
         // that degrades into never-handshaking stops at that kind's smaller
-        // budget instead of riding the larger one it started with.
-        val budget = maxAttempts(kind)
+        // budget instead of riding the larger one it started with. A streak a
+        // reap began keeps the reap's budget whatever its rebuild fails with.
+        val budget = if (reapStreak) maxAttempts(FailureKind.REAPED) else maxAttempts(kind)
         if (failures > budget) {
             return Outcome(
-                session.copy(failures = failures, lastFailureAt = nowMs, trippedAt = nowMs),
+                session.copy(failures = failures, lastFailureAt = nowMs, trippedAt = nowMs, reapStreak = reapStreak),
                 Decision.GiveUp(GiveUpReason.BUDGET_EXHAUSTED, kind, failures - 1),
             )
         }
         return Outcome(
-            session.copy(failures = failures, lastFailureAt = nowMs),
+            session.copy(failures = failures, lastFailureAt = nowMs, reapStreak = reapStreak),
             Decision.Retry(attempt = failures, delayMs = backoffMs(failures, jitter)),
         )
     }
@@ -269,9 +311,124 @@ internal object ReconnectPolicy {
     fun jittered(baseMs: Long, jitter: Double): Long =
         (baseMs * (1.0 + JITTER_FRACTION * jitter.coerceIn(-1.0, 1.0))).toLong()
 
-    /** A fresh streak after the [TRIP_COOLDOWN_MS] cooldown, keeping who owns the session. */
+    /**
+     * After the [TRIP_COOLDOWN_MS] cooldown: ONE more re-dial, keeping who
+     * owns the session. If it fails the supervisor gives up again and waits
+     * another cooldown; if it connects, [Session.connected] starts over.
+     */
     fun afterCooldown(session: Session): Session =
-        session.copy(failures = 0, lastFailureAt = 0L, trippedAt = null)
+        session.copy(failures = 0, lastFailureAt = 0L, trippedAt = null, lastChance = true)
+}
+
+/**
+ * A1-033: when the client may ask Play Integrity for a token.
+ *
+ * Only on a user-initiated FRESH dial with nothing blocked. A re-dial, a
+ * switch, a settings reapply or a fallback runs behind the kill-switch block
+ * (or over a session that is up): Play services run in their own process and
+ * cannot pass the block, so the dial used to wait out Play's own timeout with
+ * the device fully blocked. Attestation is a property of the install, checked
+ * at most monthly (PlayIntegrityManager), so skipping it here costs nothing.
+ */
+internal object AttestationPolicy {
+    fun mayAttest(priorWasLive: Boolean, blockActive: Boolean, automatic: Boolean): Boolean =
+        !priorWasLive && !blockActive && !automatic
+}
+
+/**
+ * A1-031: what proves "Stealth works on this network": a session that reached
+ * Connected over the stealth transport — not a /connect reply that granted it.
+ */
+internal object StealthPreference {
+    fun provenBy(state: VpnState, stealthActive: Boolean): Boolean = state is VpnState.Connected && stealthActive
+}
+
+/**
+ * What a heartbeat reply means for the session (WEB-HB's client table).
+ *
+ * birdo-web now says WHY a key is no longer valid, in `reason`. Absent (an
+ * older backend) or unknown, the answer is exactly today's: phase A's
+ * inference from the gap since the last good beat. Present, it decides:
+ *
+ * | reason | the client |
+ * |---|---|
+ * | ok | nothing |
+ * | server_offline, valid | today (the node is draining; the session lives) |
+ * | server_offline, invalid | re-dial a DIFFERENT server, fail-closed meanwhile |
+ * | revoked | stop, no retry (the owner rule) |
+ * | evicted | stop, never re-dial, say another device took the slot |
+ * | reaped | one quiet rebuild behind the block (the reap budget) |
+ * | not_found | last good beat >= 5 min ago: reaped; else revoked |
+ */
+internal object HeartbeatPolicy {
+
+    enum class Verdict { ALIVE, REAPED, REVOKED, EVICTED, SERVER_GONE, QUOTA_EXCEEDED }
+
+    /** birdo-web's stale-key reap (cleanup.service.ts); the heartbeat runs on awake time only. */
+    const val REAP_WINDOW_MS = 5 * 60_000L
+
+    fun verdict(
+        valid: Boolean,
+        reason: String?,
+        sinceLastOkMs: Long,
+        quotaExceeded: Boolean = false,
+    ): Verdict = when {
+        // birdo-web PR #590: past the grace window the peer is removed. Read
+        // from either field, so a reply that carries only one of them still
+        // ends the session as a plan decision rather than as a revoke.
+        !valid && (reason == "quota_exceeded" || quotaExceeded) -> Verdict.QUOTA_EXCEEDED
+        else -> byReason(valid, reason, sinceLastOkMs)
+    }
+
+    private fun byReason(valid: Boolean, reason: String?, sinceLastOkMs: Long): Verdict = when (reason) {
+        "ok" -> Verdict.ALIVE
+        "server_offline" -> if (valid) Verdict.ALIVE else Verdict.SERVER_GONE
+        "revoked" -> Verdict.REVOKED
+        "evicted" -> Verdict.EVICTED
+        "reaped" -> Verdict.REAPED
+        "not_found" -> inferred(sinceLastOkMs)
+        // Absent or a reason this build does not know: today's handling.
+        else -> if (valid) Verdict.ALIVE else inferred(sinceLastOkMs)
+    }
+
+    /**
+     * Phase A's inference, and WEB-HB's not_found rule: a key gone after the
+     * device went longer than the reap window without a good beat was reaped
+     * while it slept; one gone while beats were flowing was ended on purpose.
+     */
+    private fun inferred(sinceLastOkMs: Long): Verdict =
+        if (sinceLastOkMs >= REAP_WINDOW_MS) Verdict.REAPED else Verdict.REVOKED
+}
+
+/**
+ * The Free plan's grace window (birdo-web PR #590): the allowance is used and
+ * the session ends in [minutesLeft] minutes, or soon when the server did not
+ * say when. Shown as a notice; the session is untouched until it ends.
+ */
+data class QuotaGrace(val minutesLeft: Int?)
+
+internal object QuotaPolicy {
+
+    /**
+     * The grace notice a heartbeat reply asks for, or null. The server's
+     * seconds-remaining wins (its clock, not ours); the end instant is the
+     * fallback; minutes are rounded up so "ends in 0 min" is never said.
+     */
+    fun grace(
+        valid: Boolean,
+        quotaExceeded: Boolean,
+        secondsRemaining: Long?,
+        endsAtIso: String?,
+        nowEpochMs: Long,
+    ): QuotaGrace? {
+        if (!valid || !quotaExceeded) return null
+        val seconds = secondsRemaining
+            ?: endsAtIso?.let { iso ->
+                runCatching { (java.time.Instant.parse(iso).toEpochMilli() - nowEpochMs) / 1000 }.getOrNull()
+            }
+            ?: return QuotaGrace(minutesLeft = null)
+        return QuotaGrace(minutesLeft = ((seconds.coerceAtLeast(1) + 59) / 60).toInt())
+    }
 }
 
 /**
@@ -284,9 +441,25 @@ internal object ReconnectPolicy {
  *    Always-on VPN at boot, on user unlock and when the setting changes
  *    (AOSP Vpn.startAlwaysOnVpn: startService after a 60 s power allowlist);
  *  - [PACKAGE_REPLACED]: BirdoVpnService.ACTION_HEADLESS_CONNECT from
- *    PackageReplacedReceiver after an app update killed the process.
+ *    PackageReplacedReceiver after an app update killed the process;
+ *  - [PROCESS_RESTART]: BirdoVpnService.ACTION_RESUME_SESSION from BirdoApp
+ *    when its process starts and finds the session down.
  */
-enum class SystemStartKind { STICKY_RESTART, ALWAYS_ON, PACKAGE_REPLACED }
+enum class SystemStartKind {
+    STICKY_RESTART,
+    ALWAYS_ON,
+    PACKAGE_REPLACED,
+
+    /**
+     * BirdoApp found, when its process started (the user opened the app, the
+     * widget or the tile woke it), a session the user wanted and no service:
+     * the previous process died — a crash, a low-memory kill — and Android
+     * did not restart the service. Seen live on API 35 (2026-09-30): no
+     * restart after `am crash` or `kill -9`, the device unprotected, and the
+     * dead service's "Protected" notification still showing.
+     */
+    PROCESS_RESTART,
+}
 
 internal object SystemStartPolicy {
 
@@ -330,12 +503,12 @@ internal object SystemStartPolicy {
                 actionNeeded = if (wantUp) FailureKind.VPN_PERMISSION_REQUIRED else null,
             )
         }
-        // A sticky restart re-arms the block whenever the kill switch is on,
-        // as it always has: the process died while the service was running,
-        // and the block was process-local. The other starts block only for a
-        // session somebody actually wants.
-        val armBlock = (killSwitchPref || lockdown) &&
-            (wantUp || kind == SystemStartKind.STICKY_RESTART)
+        // Block only for a session somebody actually wants. A sticky restart
+        // used to arm whenever the kill switch was on, and a service left
+        // foreground after a failed user dial then came back after a process
+        // kill as a full block nobody asked for, with no alert
+        // (REVIEW-AND-004).
+        val armBlock = (killSwitchPref || lockdown) && wantUp
         val actionNeeded = when {
             !wantUp -> null
             // Audit D-12: no request to the backend before the privacy
@@ -350,6 +523,14 @@ internal object SystemStartPolicy {
             actionNeeded = actionNeeded,
         )
     }
+
+    /**
+     * Whether a starting app process must bring the session back itself
+     * ([SystemStartKind.PROCESS_RESTART]): the user wanted it up and no
+     * service is running in this process to hold it.
+     */
+    fun resumeOnProcessStart(sessionShouldBeUp: Boolean, serviceRunning: Boolean): Boolean =
+        sessionShouldBeUp && !serviceRunning
 }
 
 /**
@@ -362,6 +543,13 @@ internal object SessionCopy {
     const val UPDATE_REQUIRED = "This version of BirdoVPN is no longer supported. Update to keep connecting."
     const val RATE_LIMITED = "Too many attempts. Please wait a moment."
     const val REVOKED = "Connection has been revoked. Please reconnect."
+    /** The heartbeat said "evicted" (WEB-HB's canonical sentence). */
+    const val EVICTED =
+        "Another device on your account connected, so this one was disconnected. Tap Connect to take it back."
+    /** The heartbeat said a Multi-Hop node went away for good ("server_offline", valid = false). */
+    const val SERVER_OFFLINE = "This server went offline. Reconnecting to another location…"
+    const val MULTI_HOP_ROUTE_OFFLINE =
+        "A server on your Multi-Hop route went offline. Choose another entry or exit."
     const val REAPED = "The server dropped this connection while the device was idle. Reconnecting…"
     const val NO_TUNNEL = "Couldn't establish a secure tunnel to this server. Try another location."
     const val QUANTUM_FAILED =
@@ -377,7 +565,73 @@ internal object SessionCopy {
     const val INCOMPLETE_MULTI_HOP =
         "Multi-Hop is on but no entry/exit pair is selected. Choose both, or turn Multi-Hop off."
     const val STILL_BLOCKED = "The kill switch is blocking traffic until you reconnect or disconnect."
+
+    /** What a give-up says about the traffic: the app's own block is released... */
+    const val TRAFFIC_RELEASED = "Traffic is no longer being blocked."
+
+    /** ...but Android's lockdown, when it is on, still blocks (the app cannot release it). */
+    const val LOCKDOWN_STILL_BLOCKING = "Android's Block connections without VPN setting is still blocking traffic."
+
+    /** Whether [message] already says whether traffic is blocked, so nothing may append a second claim. */
+    fun speaksForTraffic(message: String): Boolean =
+        message.contains(TRAFFIC_RELEASED) || message.contains(LOCKDOWN_STILL_BLOCKING)
     const val STOPPED_UNEXPECTEDLY = "BirdoVPN could not restart its connection. Open BirdoVPN to reconnect."
+
+    /**
+     * The local tunnel engine failed (the service would not start, wg-go
+     * crashed, its sockets could not be protected). Never the exception's own
+     * text: that is a stack-trace fragment, not something a user can act on
+     * (A2-001's rule, applied to the engine).
+     */
+    const val ENGINE_FAILED = "BirdoVPN couldn't start its secure tunnel. Please try again."
+
+    /** A1-034: a live switch or settings change that did not happen; the session did not move. */
+    const val SWITCH_KEPT_PREVIOUS = "Couldn't switch. You're still connected to your previous location."
+    const val STILL_ON_PREVIOUS = "You're still connected to your previous location."
+
+    /**
+     * A1-034: the new peer never answered AFTER the swap, and Android cannot
+     * swap the previous session back (its key is gone from memory by design).
+     * Failed closed, and said so — iOS #354's rule.
+     */
+    fun switchFailedClosed(killSwitch: Boolean): String = if (killSwitch) {
+        "That server didn't answer, and the switch couldn't be undone. Traffic stays blocked until you " +
+            "reconnect or disconnect."
+    } else {
+        "That server didn't answer, and the switch couldn't be undone. You're not connected. Tap Connect to try again."
+    }
+
+    /** A release build refuses to connect while a debugger is attached (it could read the keys). */
+    const val DEBUGGER_ATTACHED = "BirdoVPN won't connect while a debugger is attached to it."
+
+    /** A native library failed its integrity check (a repackaged APK). */
+    const val INTEGRITY_FAILED =
+        "This copy of BirdoVPN failed its integrity check. Reinstall BirdoVPN from the store you got it from."
+
+    /** The server sent a connection setup that does not validate (REVIEW-AND-006). */
+    const val BAD_SERVER_CONFIG = "The server sent a connection setup BirdoVPN can't use. Try another location."
+
+    /** Quick connect found no server this plan can use. */
+    const val NO_SERVERS = "No server is available for your plan right now. Try again in a moment."
+
+    /** A settings reapply that threw before it could rebuild. */
+    const val SETTINGS_NOT_APPLIED = "Couldn't apply your settings. Please try again."
+
+    /**
+     * A tunnel setup that threw: a configuration the server sent that does not
+     * validate is a refusal (asking again gets the same answer); anything
+     * else is the engine, worth another try. The exception's own text is
+     * never the message: it quotes endpoints and stack fragments
+     * (REVIEW-AND-006).
+     */
+    fun forSetupFailure(e: Throwable): Pair<String, FailureKind> = when (e) {
+        is IllegalArgumentException, is IllegalStateException, is com.wireguard.config.BadConfigException ->
+            BAD_SERVER_CONFIG to FailureKind.REFUSED
+        else -> ENGINE_FAILED to FailureKind.TRANSIENT
+    }
+
+    /** Every network is held behind a sign-in page (hotel, airport Wi-Fi): A1-026. */
+    const val CAPTIVE_PORTAL = "This Wi-Fi network needs you to sign in first. Sign in, then connect."
 
     /** Why a system start cannot bring the session up without the user. */
     fun actionNeeded(kind: FailureKind): String = when (kind) {
@@ -397,11 +651,7 @@ internal object SessionCopy {
      */
     fun giveUp(kind: FailureKind, attempts: Int, lockdown: Boolean): String {
         val plural = if (attempts == 1) "attempt" else "attempts"
-        val traffic = if (lockdown) {
-            "Android's Block connections without VPN setting is still blocking traffic."
-        } else {
-            "Traffic is no longer being blocked."
-        }
+        val traffic = if (lockdown) LOCKDOWN_STILL_BLOCKING else TRAFFIC_RELEASED
         return when (kind) {
             FailureKind.NEVER_ESTABLISHED ->
                 "BirdoVPN stopped reconnecting after $attempts $plural: the tunnel came up but never " +
@@ -444,18 +694,25 @@ internal object QuickToggle {
         NONE,
     }
 
+    /**
+     * @param consentAccepted the CURRENT privacy consent. Without it nothing may
+     *   reach the backend (audit D-12), and a widget or tile tap after a
+     *   consent-version bump used to send /vpn/connect before the user had seen
+     *   the new text (REVIEW-AND-010). Stopping is always allowed.
+     */
     fun decide(
         state: VpnState,
         killSwitchActive: Boolean,
         signedIn: Boolean,
         vpnPermissionGranted: Boolean,
+        consentAccepted: Boolean,
     ): Action = when {
         state is VpnState.Disconnecting -> Action.NONE
         state is VpnState.Connected || state.isConnectingPhase || state is VpnState.Reconnecting ->
             Action.DISCONNECT
         // Blocked with nothing connecting: the tap is the way out of the block.
         killSwitchActive -> Action.DISCONNECT
-        !signedIn || !vpnPermissionGranted -> Action.OPEN_APP
+        !signedIn || !vpnPermissionGranted || !consentAccepted -> Action.OPEN_APP
         else -> Action.CONNECT
     }
 
@@ -483,8 +740,9 @@ internal object QuickToggle {
      */
     fun connectPlan(decision: MultiHopPolicy.NewConnection, plan: String?): ConnectPlan {
         if (decision == MultiHopPolicy.NewConnection.SingleHop) return ConnectPlan.Preferred(multiHopEntitled = false)
-        if (plan == null) return ConnectPlan.OpenApp("Multi-hop armed but entitlement unknown")
-        if (!plan.equals("SOVEREIGN", ignoreCase = true)) return ConnectPlan.Preferred(multiHopEntitled = false)
+        val entitled = MultiHopPolicy.entitledByPlan(plan)
+            ?: return ConnectPlan.OpenApp("Multi-hop armed but entitlement unknown")
+        if (!entitled) return ConnectPlan.Preferred(multiHopEntitled = false)
         return when (decision) {
             is MultiHopPolicy.NewConnection.MultiHop -> ConnectPlan.MultiHop(decision.entryNodeId, decision.exitNodeId)
             // Armed but incomplete (a node was retired, or prefs are

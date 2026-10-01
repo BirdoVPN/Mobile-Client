@@ -115,24 +115,26 @@ class WidgetToggleAction : ActionCallback {
                 VpnManagerEntryPoint::class.java,
             )
             val manager = entryPoint.vpnManager()
+            val prefs = app.birdo.vpn.data.preferences.AppPreferences(context.applicationContext)
             val action = QuickToggle.decide(
                 state = manager.state.value,
                 killSwitchActive = BirdoVpnService.killSwitchActive,
                 signedIn = entryPoint.tokenManager().isLoggedIn(),
                 vpnPermissionGranted = manager.isVpnPermissionGranted(),
+                consentAccepted = prefs.hasAcceptedCurrentConsent,
             )
             when (action) {
                 QuickToggle.Action.DISCONNECT -> manager.requestDisconnect()
                 QuickToggle.Action.OPEN_APP -> openApp(context)
                 QuickToggle.Action.NONE -> Unit
                 QuickToggle.Action.CONNECT -> {
-                    val prefs = app.birdo.vpn.data.preferences.AppPreferences(context.applicationContext)
                     val decision = MultiHopPolicy.forNewConnection(
                         prefs.multiHopEnabled,
                         prefs.multiHopEntryNodeId,
                         prefs.multiHopExitNodeId,
                     )
-                    when (val plan = QuickToggle.connectPlan(decision, entryPoint.repository().cachedSubscriptionOrNull()?.plan)) {
+                    val knownPlan = entryPoint.repository().cachedSubscriptionOrNull()?.plan ?: prefs.lastKnownPlan
+                    when (val plan = QuickToggle.connectPlan(decision, knownPlan)) {
                         is QuickToggle.ConnectPlan.OpenApp -> openApp(context)
                         // connectPreferred dials the armed pair through the
                         // same MultiHopPolicy decision, so the entitled
@@ -195,7 +197,9 @@ private fun BirdoWidgetContent(
     } else {
         context.getString(
             R.string.cd_widget_state,
-            context.getString(model.status),
+            // The format adds its own full stop: "Connecting…." read as a
+            // double stop (REVIEW-AND-021).
+            context.getString(model.status).trimEnd('.', '…'),
             model.hint?.let { context.getString(it) }.orEmpty(),
         ).trim()
     }

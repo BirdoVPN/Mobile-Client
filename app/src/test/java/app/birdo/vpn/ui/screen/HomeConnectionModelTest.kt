@@ -94,6 +94,7 @@ class HomeConnectionModelTest {
     fun `failures offer the action that fixes them (P1-parity-040)`() {
         assertEquals(Remedy.OPEN_SETTINGS, remedyFor(FailureKind.QUANTUM_FAILED))
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.PLAN_REQUIRED))
+        assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.QUOTA_EXCEEDED))
         assertEquals(Remedy.UPDATE, remedyFor(FailureKind.UPDATE_REQUIRED))
         assertEquals(Remedy.CHOOSE_SERVER, remedyFor(FailureKind.NEVER_ESTABLISHED))
         assertNull(remedyFor(FailureKind.STEALTH_FAILED))

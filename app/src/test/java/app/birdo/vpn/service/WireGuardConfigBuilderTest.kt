@@ -253,4 +253,38 @@ class WireGuardConfigBuilderTest {
             serviceSource.substring(dnsResolved, lnsStart).contains("for (dns in tunnelDns)"),
         )
     }
+
+    // ── A1-024: BirdoShield and Custom DNS ──────────────────────────────
+
+    @Test
+    fun `BirdoShield is in effect only while Custom DNS is off`() {
+        assertTrue(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = false))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = true))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = false, customDnsEnabled = false))
+    }
+
+    // ── A1-025: strict Private DNS overrides the tunnel's DNS ──────────
+
+    @Test
+    fun `strict Private DNS is flagged only when it overrides a DNS choice made here`() {
+        assertTrue(WireGuardConfigBuilder.privateDnsOverrides(true, dnsFilteringEnabled = true, customDnsEnabled = false))
+        assertTrue(WireGuardConfigBuilder.privateDnsOverrides(true, dnsFilteringEnabled = false, customDnsEnabled = true))
+        assertFalse("nothing chosen here to override", WireGuardConfigBuilder.privateDnsOverrides(true, false, false))
+        assertFalse("automatic / off Private DNS", WireGuardConfigBuilder.privateDnsOverrides(false, true, true))
+    }
+
+    // ── A1-038: the keepalive ceiling ───────────────────────────────────
+
+    @Test
+    fun `the keepalive is clamped so an idle tunnel stays under the stall backstop`() {
+        fun keepalive(seconds: Int?) =
+            WireGuardConfigBuilder.effectiveKeepaliveSec(response(dns = null).copy(persistentKeepalive = seconds))
+        // The old ceiling was 300: an idle tunnel then re-handshook only every
+        // 300 s, past TunnelMonitor's 180 s backstop, and "died" every few minutes.
+        assertEquals(WireGuardConfigBuilder.MAX_KEEPALIVE_SEC, keepalive(300))
+        assertEquals(25, keepalive(null))
+        assertEquals(25, keepalive(25))
+        assertEquals(10, keepalive(1))
+        assertTrue(WireGuardConfigBuilder.IDLE_HANDSHAKE_AGE_PEAK_SEC < TunnelMonitor.STALL_THRESHOLD_SEC)
+    }
 }

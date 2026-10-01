@@ -145,6 +145,22 @@ class BirdoRepositoryTest {
     }
 
     @Test
+    fun `a 503 that says when to come back carries the wait`() = runTest {
+        // birdo-web PR #590: a free connect while the quota check is down.
+        coEvery { api.getServers() } returns Response.error(
+            503,
+            """{"statusCode":503,"error":"quota_check_unavailable","message":"Try again shortly","details":{"retryable":true,"retryAfterSeconds":30}}"""
+                .toResponseBody("application/json".toMediaType()),
+        )
+
+        val error = repository.getServers(forceRefresh = true) as ApiResult.Error
+
+        assertEquals(503, error.code)
+        assertEquals(30_000L, error.retryAfterMs)
+        assertFalse(error.message.startsWith("{"))
+    }
+
+    @Test
     fun `a cancelled call is rethrown, not reported as a failure`() = runTest {
         coEvery { api.getProfile() } throws kotlinx.coroutines.CancellationException("left the screen")
 
@@ -561,9 +577,9 @@ class BirdoRepositoryTest {
 
         assertTrue(result is ApiResult.Success)
         verify { tokenManager.setLastKeyId("key123") }
-        // Private key is generated locally (not from the server), so verify it's stored but don't
-        // check the exact value — it's a random X25519 key from wireguard-android.
-        verify { tokenManager.setWireGuardPrivateKey(any()) }
+        // The private key is generated locally and handed back for this session
+        // only: it is never written to the token store (A1-041).
+        assertNotNull((result as ApiResult.Success).data.privateKey)
     }
 
     @Test
@@ -668,7 +684,6 @@ class BirdoRepositoryTest {
         late.await()
 
         assertEquals("key-2", storedKey)
-        verify(exactly = 0) { tokenManager.clearWireGuardPrivateKey() }
     }
 
     @Test
@@ -915,6 +930,6 @@ class BirdoRepositoryTest {
 
         assertFalse(result.data.success)
         assertEquals(StringsXml.text("error_device_limit"), result.data.message)
-        verify(exactly = 0) { tokenManager.setWireGuardPrivateKey(any()) }
+        verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
     }
 }

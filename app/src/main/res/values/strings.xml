@@ -143,8 +143,11 @@
          #5). Since the 2026-09-30 overhaul the app releases its own block when
          reconnecting keeps failing (parity with iOS and Windows), and Android's
          Always-on VPN IS supported (SUPPORTS_ALWAYS_ON=true, pinned by
-         ApiLevel36ContractTest), so the system-level block may be named. -->
-    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. If reconnecting keeps failing, the app stops blocking. Protection applies while BirdoVPN\'s VPN service is running. For a block Android enforces at all times, turn on Always-on VPN and Block connections without VPN in Android\'s VPN settings.</string>
+         ApiLevel36ContractTest), so the system-level block may be named.
+         The crash sentence is the live finding of 2026-09-30: after a crash
+         Android did not restart the service, and the app's own block died
+         with its process; only Android's lockdown survives that. -->
+    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. If reconnecting keeps failing, the app stops blocking. Protection applies while BirdoVPN\'s VPN service is running. If a crash or Android closes the app, nothing is blocked until it starts again; to stay blocked through that too, turn on Always-on VPN and Block connections without VPN in Android\'s VPN settings.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
     <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
          Always-on VPN with Block connections without VPN", advice for a setting
@@ -678,7 +681,6 @@
     <string name="profile_display_name_fallback">Account</string>
     <string name="profile_privacy_link" translatable="false">birdo.app/privacy</string>
     <string name="profile_terms_link" translatable="false">birdo.app/terms</string>
-    <string name="profile_public_ip">Public IP · %1$s</string>
     <string name="profile_tap_connect">Tap Connect to start</string>
     <string name="profile_renews">Renews %1$s</string>
     <!-- Cancelled or expiring: the date is when access ENDS, never "Renews". -->
@@ -735,4 +737,42 @@
          error_invalid_code, as at sign-in. -->
     <string name="delete_dialog_2fa_required">Enter your two-factor code to delete your account.</string>
     <!-- ════ end AND-UI-B ════ -->
+
+    <!-- ════ AND-VPN-B (Android connection engine, phase B, 2026-10-01) ════
+         Every string this lane adds, in one block so the merge with the other
+         lanes' blocks stays mechanical. -->
+
+    <!-- A1-026: the session waits behind a captive portal. -->
+    <string name="notif_body_captive_portal">Sign in to this Wi-Fi network to continue.</string>
+
+    <!-- A1-024: the Windows wording (P1-parity), pointing at the Android setting. -->
+    <string name="vpn_settings_birdoshield_custom_dns">Custom DNS overrides BirdoShield. Turn off Custom DNS Servers in Settings to use the filtering resolver.</string>
+
+    <!-- A1-025: strict Private DNS (Android Settings > Network > Private DNS) overrides the tunnel's DNS. -->
+    <string name="home_private_dns_overrides">Android\'s Private DNS is on, so your DNS goes to that provider (through the VPN). BirdoShield and Custom DNS do not apply while it is on.</string>
+    <string name="home_private_dns_settings">Settings</string>
+
+    <!-- A1-020: Profile's session line. The address is the VPN server's, and
+         a Multi-Hop session shows none (it would be the ENTRY node). -->
+    <string name="profile_vpn_server_address">VPN server · %1$s</string>
+    <string name="profile_via_multihop">Via your Multi-Hop route</string>
+
+    <!-- VpnViewModel (A2-031 for this lane's file). -->
+    <string name="vpn_switch_failed">Couldn\'t switch server. Please try again.</string>
+    <string name="multihop_both_retired">Both of your Multi-Hop servers were retired. Pick a new entry and exit.</string>
+    <string name="multihop_entry_retired">Your Multi-Hop entry server was retired. Pick a new one.</string>
+    <string name="multihop_exit_retired">Your Multi-Hop exit server was retired. Pick a new one.</string>
+    <string name="port_forward_create_failed">Couldn\'t create the port forward. Please try again.</string>
+
+    <!-- REVIEW-AND-015: the Login strip says what is actually still up. -->
+    <string name="login_vpn_still_blocking">BirdoVPN is still blocking your traffic.</string>
+    <string name="login_vpn_still_reconnecting">Your VPN is still reconnecting.</string>
+
+    <!-- Free-plan data allowance at check-in (birdo-web PR #590). The grace
+         notice is non-blocking; the end of the session is a plan decision. -->
+    <string name="home_quota_grace">Free data allowance used — your connection ends in %1$d min.</string>
+    <string name="home_quota_grace_soon">Free data allowance used — your connection ends soon.</string>
+    <string name="session_quota_exceeded">You\'ve used this month\'s free data allowance. Upgrade to keep using BirdoVPN.</string>
+    <string name="notif_alert_quota">Free data allowance used</string>
+    <!-- ════ end AND-VPN-B ════ -->
 </resources>

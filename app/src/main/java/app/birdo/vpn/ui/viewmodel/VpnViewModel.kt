@@ -1,8 +1,10 @@
 package app.birdo.vpn.ui.viewmodel
 
+import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.ClientConfigResponse
 import app.birdo.vpn.data.model.PortForward
@@ -14,12 +16,16 @@ import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.MultiHopPolicy
-import app.birdo.vpn.service.RosenpassManager
+import app.birdo.vpn.service.QuotaGrace
+import app.birdo.vpn.service.BirdoPqManager
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
+import app.birdo.vpn.service.WireGuardConfigBuilder
 import app.birdo.vpn.service.isConnectingPhase
+import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +58,12 @@ data class VpnUiState(
     val portForwardError: String? = null,
     val needsVpnPermission: Boolean = false,
     val killSwitchActive: Boolean = false,
+    /** The node the session was dialled to (VpnManager.connectedServerId), for the Servers list's marker. */
+    val connectedServerId: String? = null,
+    /** A1-025: Android's strict Private DNS overrides BirdoShield / Custom DNS on this connection. */
+    val privateDnsOverridesDns: Boolean = false,
+    /** The Free plan's grace window (birdo-web PR #590), while the session is up. */
+    val quotaGrace: QuotaGrace? = null,
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
@@ -60,7 +72,6 @@ data class VpnUiState(
     /**
      * PFA-M9: granular PQ mode for honest UI labelling.
      *  - "BILATERAL"       — genuine end-to-end ML-KEM-1024 PSK derivation
-     *  - "SERVER_PROVIDED" — classical PSK delivered over TLS (NOT post-quantum)
      *  - "DISABLED"        — no PSK
      * Marketing copy MUST distinguish BILATERAL from SERVER_PROVIDED before
      * claiming post-quantum protection to a user.
@@ -189,7 +200,22 @@ class VpnViewModel @Inject constructor(
     private val repository: BirdoRepository,
     private val prefs: AppPreferences,
     private val tokenManager: TokenManager,
+    /** Every sentence this class writes comes from strings.xml through here (A2-031). */
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
+
+    internal companion object {
+        /**
+         * Auto-Connect falls back to the best server only when the saved one
+         * is gone or out of this plan's reach (403/404). Never on the user's
+         * own Cancel or Disconnect (SUPERSEDED), on the connect watchdog, or on
+         * a refusal the next dial would get too: any of those used to start a
+         * fresh dial to the best server against the user's intent
+         * (REVIEW-AND-003).
+         */
+        fun fallsBackToQuickConnect(error: ApiResult.Error): Boolean =
+            error.message != VpnManager.SUPERSEDED && (error.code == 403 || error.code == 404)
+    }
 
     private val _uiState = MutableStateFlow(VpnUiState())
     val uiState: StateFlow<VpnUiState> = _uiState.asStateFlow()
@@ -233,6 +259,8 @@ class VpnViewModel @Inject constructor(
         // where the 401 from an unauthenticated GET /vpn/servers set error="Session expired"
         // before auth had settled. BirdoNavGraph calls loadServers() after login succeeds.
         startStateSync()
+        startPrivateDnsSync()
+        startQuotaSync()
         // Pre-publish any cached subscription so Profile tab is never empty on first paint.
         repository.cachedSubscriptionOrNull()?.let {
             _uiState.value = _uiState.value.copy(subscription = it)
@@ -299,7 +327,7 @@ class VpnViewModel @Inject constructor(
             // other thing is the worst available failure.
             when (
                 val decision = MultiHopPolicy.forNewConnection(
-                    prefs.multiHopEnabled,
+                    multiHopArmedForDial(),
                     prefs.multiHopEntryNodeId,
                     prefs.multiHopExitNodeId,
                 )
@@ -330,8 +358,8 @@ class VpnViewModel @Inject constructor(
                 tracing("Auto-connecting to last server: $lastServerId")
                 when (val result = vpnManager.connect(lastServerId)) {
                     is ApiResult.Success -> { /* state syncs via startStateSync */ }
-                    is ApiResult.Error -> {
-                        tracing("Auto-connect to saved server failed: ${result.message}, trying quick connect")
+                    is ApiResult.Error -> if (fallsBackToQuickConnect(result)) {
+                        tracing("Auto-connect: the saved server is gone or locked, trying quick connect")
                         vpnManager.quickConnect()
                     }
                 }
@@ -366,6 +394,7 @@ class VpnViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(
                         vpnState = input.state,
                         connectedServer = vpnManager.connectedServer.value,
+                        connectedServerId = vpnManager.connectedServerId.value,
                         connectedSince = vpnManager.connectedSince.value,
                         killSwitchActive = input.killSwitchActive,
                         switching = input.switching,
@@ -373,11 +402,35 @@ class VpnViewModel @Inject constructor(
                         liveMultiHopEntryId = if (routeIsLive) route?.first else null,
                         stealthActive = BirdoVpnService.stealthActive,
                         quantumActive = BirdoVpnService.quantumActive,
-                        pqMode = RosenpassManager.modeFlow.value.name,
+                        pqMode = BirdoPqManager.modeFlow.value.name,
                         publicIp = BirdoVpnService.publicIp,
                     )
                     if (input.state is VpnState.Connected) startStatsPolling() else stopStatsPolling()
                 }
+        }
+    }
+
+    /** birdo-web PR #590: the Free allowance's grace window, from the heartbeat. */
+    private fun startQuotaSync() {
+        viewModelScope.launch {
+            vpnManager.quotaGrace.collect { grace ->
+                _uiState.value = _uiState.value.copy(quotaGrace = grace)
+            }
+        }
+    }
+
+    /** A1-025: watch Android's Private DNS under the tunnel. */
+    private fun startPrivateDnsSync() {
+        viewModelScope.launch {
+            BirdoVpnService.privateDnsStrictFlow.collect { strict ->
+                _uiState.value = _uiState.value.copy(
+                    privateDnsOverridesDns = WireGuardConfigBuilder.privateDnsOverrides(
+                        strictPrivateDns = strict,
+                        dnsFilteringEnabled = prefs.dnsFilteringEnabled,
+                        customDnsEnabled = prefs.customDnsEnabled,
+                    ),
+                )
+            }
         }
     }
 
@@ -446,7 +499,14 @@ class VpnViewModel @Inject constructor(
                         // never the first row of a name-sorted list, which was
                         // the same country for every new user. One rule, shared
                         // with VpnManager.quickConnect (VpnManager.bestServer).
-                        selectedServer = _uiState.value.selectedServer ?: VpnManager.bestServer(servers),
+                        // The user's own last server comes first: a fresh
+                        // process selected the best node instead, so the next
+                        // Connect tap moved the user — São Paulo became Toronto
+                        // on the emulator — and an Always-on boot then dialled
+                        // Toronto as "the last server".
+                        selectedServer = _uiState.value.selectedServer
+                            ?: lastUsableServer(servers)
+                            ?: VpnManager.bestServer(servers),
                     )
                     pruneRetiredMultiHopNodes(servers)
                 }
@@ -458,6 +518,11 @@ class VpnViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun lastUsableServer(servers: List<VpnServer>): VpnServer? {
+        val last = prefs.lastServerId ?: return null
+        return servers.firstOrNull { it.id == last && it.accessible && it.isOnline }
     }
 
     /**
@@ -498,9 +563,9 @@ class VpnViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(
             connectError = when {
                 entryGone && exitGone ->
-                    "Both of your Multi-Hop servers were retired. Pick a new entry and exit."
-                entryGone -> "Your Multi-Hop entry server was retired. Pick a new one."
-                else -> "Your Multi-Hop exit server was retired. Pick a new one."
+                    appContext.getString(R.string.multihop_both_retired)
+                entryGone -> appContext.getString(R.string.multihop_entry_retired)
+                else -> appContext.getString(R.string.multihop_exit_retired)
             },
         )
     }
@@ -525,6 +590,9 @@ class VpnViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(isLoadingSubscription = true)
             when (val result = repository.getSubscription(forceRefresh)) {
                 is ApiResult.Success -> {
+                    // What dials with no UI in front of them read to decide
+                    // Multi-Hop (REVIEW-AND-007/-020).
+                    prefs.lastKnownPlan = result.data.plan
                     _uiState.value = _uiState.value.copy(
                         subscription = result.data,
                         isLoadingSubscription = false,
@@ -561,6 +629,10 @@ class VpnViewModel @Inject constructor(
      * forwards (A2-003). iOS does the same in `resetForLogout`.
      */
     fun resetForSignOut() {
+        // The next account must not dial this one's server or inherit its plan
+        // (REVIEW-AND-007).
+        prefs.lastKnownPlan = null
+        prefs.lastServerId = null
         _uiState.value = _uiState.value.copy(
             servers = emptyList(),
             selectedServer = null,
@@ -683,14 +755,22 @@ class VpnViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                // A failure is published by VpnManager as the session's Error.
-                vpnManager.connect(server.id)
+                // A failure is published by VpnManager as the session's Error —
+                // except a live switch that did not happen (A1-034): that one
+                // kept the previous session, so say so and put the selection back.
+                val result = vpnManager.connect(server.id)
+                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED &&
+                    vpnManager.state.value is VpnState.Connected
+                ) {
+                    _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                }
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
-                // Never let a switch failure escape the coroutine and crash the app.
-                _uiState.value = _uiState.value.copy(
-                    connectError = t.message ?: "Couldn't switch server — please try again.",
-                )
+                // Never let a switch failure escape the coroutine and crash the
+                // app, and never show its text: an exception message is not
+                // copy (REVIEW-AND-006).
+                // A switch that threw before VpnManager could publish an Error.
+                _uiState.value = _uiState.value.copy(connectError = appContext.getString(R.string.vpn_switch_failed))
             }
         }
     }
@@ -724,6 +804,15 @@ class VpnViewModel @Inject constructor(
     private fun multiHopArmedAsShown(): Boolean =
         prefs.multiHopEnabled &&
             _uiState.value.subscription?.plan?.equals("SOVEREIGN", ignoreCase = true) == true
+
+    /**
+     * Auto-Connect and quick connect: the same rule, with the persisted plan
+     * standing in until this launch's subscription fetch lands. They used the
+     * raw pref, which a lapsed plan never clears (REVIEW-AND-007).
+     */
+    private fun multiHopArmedForDial(): Boolean =
+        prefs.multiHopEnabled &&
+            MultiHopPolicy.entitledByPlan(_uiState.value.subscription?.plan ?: prefs.lastKnownPlan) == true
 
     fun connect() {
         if (dialInProgress()) return
@@ -780,7 +869,7 @@ class VpnViewModel @Inject constructor(
             // build a single hop while the app keeps displaying the chosen route.
             when (
                 val decision = MultiHopPolicy.forNewConnection(
-                    prefs.multiHopEnabled,
+                    multiHopArmedForDial(),
                     prefs.multiHopEntryNodeId,
                     prefs.multiHopExitNodeId,
                 )
@@ -912,7 +1001,12 @@ class VpnViewModel @Inject constructor(
                         )
                     } else {
                         _uiState.value = _uiState.value.copy(
-                            portForwardError = result.data.message ?: "Failed to create port forward",
+                            // The server's words only when they are words (no
+                            // HTML, no stack trace): REVIEW-AND-006.
+                            portForwardError = InputValidator.sanitizeErrorMessage(
+                                result.data.message,
+                                appContext.getString(R.string.port_forward_create_failed),
+                            ),
                             isLoadingPortForwards = false,
                         )
                     }

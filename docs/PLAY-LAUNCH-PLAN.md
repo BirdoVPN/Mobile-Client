@@ -109,11 +109,15 @@ The app was already hardened across previous work; verified this pass:
    re-locks when the app is backgrounded.
 5. **Profile "Manage on web" link** — was the one purchase-steering link not
    gated by `IS_PLAY_BUILD`; now hidden in the Play build.
-6. **Always-on VPN toggle disabled** (`SUPPORTS_ALWAYS_ON=false`) — the service
-   can't yet self-establish a tunnel on a headless/boot start, so leaving the
-   toggle on let a user enable lockdown and lose connectivity after every
-   reboot. Disabled = fails safe. Proper headless reconnect is a tracked
-   follow-up (see §8).
+6. **Always-on VPN** — first disabled here (`SUPPORTS_ALWAYS_ON=false`): the
+   service could not yet self-establish a tunnel on a headless/boot start.
+   **Superseded by the 2026-09-30 client overhaul:** headless start now works
+   (block first, then a reconnect to the last server, `SystemStartPolicy`),
+   `SUPPORTS_ALWAYS_ON=true` again (pinned by `ApiLevel36ContractTest`), an
+   app update restores the session, and after a crash the session resumes
+   when the app's process next starts. Android does not restart the crashed
+   service (`START_NOT_STICKY`); Always-on with "Block connections without
+   VPN" is what keeps a device blocked through that.
 7. **Sentry scrubber** now also redacts exception/stack-trace messages (the
    real crash-path vector), not just the top-level event message.
 

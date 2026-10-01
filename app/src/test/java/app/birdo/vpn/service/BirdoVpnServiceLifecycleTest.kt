@@ -34,6 +34,12 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class BirdoVpnServiceLifecycleTest {
 
+    private companion object {
+        const val OWN_PACKAGE = "app.birdo.vpn"
+        const val PRIVATE_KEY = "cHJpdmF0ZS1rZXktMzItYnl0ZXMtLS0tLS0tLS0tLS0="
+        const val SERVER_KEY = "c2VydmVyLWtleS0zMi1ieXRlcy0tLS0tLS0tLS0tLS0="
+    }
+
     private lateinit var service: BirdoVpnService
     private lateinit var prefs: AppPreferences
     private lateinit var notifications: VpnNotificationManager
@@ -75,6 +81,7 @@ class BirdoVpnServiceLifecycleTest {
         // A spy, so the stub's null getApplicationContext() can be answered.
         service = spyk(BirdoVpnService())
         every { service.applicationContext } returns mockk(relaxed = true)
+        every { service.packageName } returns OWN_PACKAGE
         setLazy("notifManager", notifications)
         setLazy("appPrefs", prefs)
         val entryPoint = mockk<VpnManagerEntryPoint> {
@@ -89,14 +96,28 @@ class BirdoVpnServiceLifecycleTest {
     @After
     fun tearDown() {
         unmockkAll()
+        setKillSwitchEnabled(true)
         val updateState = BirdoVpnService.Companion::class.java
             .getDeclaredMethod("updateState", VpnState::class.java)
         updateState.isAccessible = true
         updateState.invoke(BirdoVpnService.Companion, VpnState.Disconnected)
-        val flowField = BirdoVpnService::class.java.getDeclaredField("_killSwitchActiveFlow")
-        flowField.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        (flowField.get(null) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>).value = false
+        // Companion flows are compiled onto the outer class; a tunnel this
+        // class brought up must not leak into the next test class.
+        mapOf(
+            "_killSwitchActiveFlow" to false,
+            "_connectedServerFlow" to null,
+            "_connectedSinceFlow" to 0L,
+            "_publicIpFlow" to null,
+            "_rxBytesFlow" to 0L,
+            "_txBytesFlow" to 0L,
+            "_stealthActiveFlow" to false,
+            "_quantumActiveFlow" to false,
+        ).forEach { (name, initial) ->
+            val flowField = BirdoVpnService::class.java.getDeclaredField(name)
+            flowField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            (flowField.get(null) as kotlinx.coroutines.flow.MutableStateFlow<Any?>).value = initial
+        }
     }
 
     /** Kotlin compiles `by lazy` to a `<name>$delegate` field holding the Lazy. */
@@ -141,7 +162,8 @@ class BirdoVpnServiceLifecycleTest {
 
         val result = service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
 
-        assertEquals(Service.START_STICKY, result)
+        // Not sticky any more: see the next section.
+        assertEquals(Service.START_NOT_STICKY, result)
         verify(exactly = 1) { manager.connectHeadless() }
         waitFor("the block") { BirdoVpnService.killSwitchActive }
         // The foreground notification of a start that connects says Connecting
@@ -186,6 +208,88 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 1) { manager.connectHeadless() }
     }
 
+    // ── Process death (live, API 35, 2026-09-30) ────────────────────────
+
+    @Test
+    fun `a new process that finds the session dead resumes it, block first, saying Reconnecting`() {
+        every { prefs.killSwitchEnabled } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { tokens.isLoggedIn() } returns true
+
+        val result = service.onStartCommand(intentWith(BirdoVpnService.ACTION_RESUME_SESSION), 0, 1)
+
+        assertEquals(Service.START_NOT_STICKY, result)
+        verify(exactly = 1) { manager.connectHeadless() }
+        waitFor("the block") { BirdoVpnService.killSwitchActive }
+        // The dead process's "Protected" is replaced from the first frame.
+        verify {
+            notifications.buildForegroundNotification(
+                state = VpnState.Reconnecting(1),
+                body = any(),
+                killSwitchActive = true,
+            )
+        }
+    }
+
+    @Test
+    fun `no command asks Android to restart a dead service with a stale notification`() {
+        // START_STICKY bought no restart on API 35 and kept the dead service's
+        // "Protected" notification on screen; BirdoApp resumes instead.
+        listOf(
+            BirdoVpnService.ACTION_UPDATE_SETTINGS,
+            BirdoVpnService.ACTION_USER_RECONNECT,
+            BirdoVpnService.ACTION_RELEASE_BLOCK,
+        ).forEach { action ->
+            assertEquals(action, Service.START_NOT_STICKY, service.onStartCommand(intentWith(action), 0, 1))
+        }
+    }
+
+    @Test
+    fun `a second system start while the first one's session is in flight changes nothing`() {
+        every { prefs.killSwitchEnabled } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { tokens.isLoggedIn() } returns true
+        every { manager.sessionInProgress() } returns true
+        val generation = field("transitionGen") as AtomicLong
+        val before = generation.get()
+
+        service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
+
+        // REVIEW-AND-022: no second block arm to supersede the first dial.
+        assertEquals(before, generation.get())
+        verify(exactly = 0) { manager.connectHeadless() }
+        verify(exactly = 0) { anyConstructed<VpnService.Builder>().establish() }
+    }
+
+    @Test
+    fun `releasing the block of a session nobody wants any more stops the service`() {
+        every { prefs.sessionShouldBeUp } returns false
+        BirdoVpnService::class.java.getDeclaredMethod("handleReleaseBlock").apply { isAccessible = true }.invoke(service)
+        // REVIEW-AND-004: it used to stay foreground, and come back after a
+        // process kill as a block nobody asked for.
+        verify(exactly = 1) { service.stopSelf() }
+
+        every { prefs.sessionShouldBeUp } returns true
+        BirdoVpnService::class.java.getDeclaredMethod("handleReleaseBlock").apply { isAccessible = true }.invoke(service)
+        // A spent budget keeps the process for the cooldown's re-dial.
+        verify(exactly = 1) { service.stopSelf() }
+    }
+
+    @Test
+    fun `Android's lockdown is read on every command, not only at a system start`() {
+        every { service.isLockdownEnabled } returns true
+        service.onStartCommand(intentWith(BirdoVpnService.ACTION_UPDATE_SETTINGS), 0, 1)
+        assertTrue(BirdoVpnService.lockdownActive)
+
+        // The user turned "Block connections without VPN" off; no system start follows.
+        every { service.isLockdownEnabled } returns false
+        service.onStartCommand(intentWith(BirdoVpnService.ACTION_RELEASE_BLOCK), 0, 1)
+        // REVIEW-AND-005: a give-up must not claim Android still blocks.
+        assertFalse(BirdoVpnService.lockdownActive)
+    }
+
     // ── A1-009: the notification's Disconnect goes through VpnManager ────
 
     @Test
@@ -202,12 +306,11 @@ class BirdoVpnServiceLifecycleTest {
         every { prefs.quantumProtectionEnabled } returns false
         mockkObject(XrayManager)
         every { XrayManager.isAvailable(any()) } returns true
-        every { XrayManager.setVpnService(any()) } just Runs
         every { XrayManager.getLocalPort() } returns 10808
         every { XrayManager.stop() } just Runs
         val generation = field("transitionGen") as AtomicLong
         // The STOP arrives on the main thread while Xray is starting.
-        coEvery { XrayManager.start(any(), any()) } answers { generation.incrementAndGet(); true }
+        coEvery { XrayManager.start(any(), any(), any(), any()) } answers { generation.incrementAndGet(); true }
         BirdoVpnService.setConfig(
             ConnectResponse(
                 success = true,
@@ -258,21 +361,209 @@ class BirdoVpnServiceLifecycleTest {
 
     // ── A1-013: meteredness ──────────────────────────────────────────────
 
+    private fun buildVpnInterface(config: ConnectResponse, stealth: Boolean) {
+        val build = BirdoVpnService::class.java.getDeclaredMethod(
+            "buildVpnInterface",
+            ConnectResponse::class.java,
+            Boolean::class.javaPrimitiveType,
+        )
+        build.isAccessible = true
+        build.invoke(service, config, stealth)
+    }
+
+    private val plainConfig = ConnectResponse(
+        success = true,
+        assignedIp = "10.100.0.2",
+        dns = listOf("1.1.1.1"),
+        allowedIps = listOf("0.0.0.0/0", "::/0"),
+    )
+
     @Test
     fun `the tunnel inherits the meteredness of the network under it`() {
-        val build = BirdoVpnService::class.java.getDeclaredMethod("buildVpnInterface", ConnectResponse::class.java)
-        build.isAccessible = true
+        buildVpnInterface(plainConfig, stealth = false)
 
-        build.invoke(
-            service,
+        verify(exactly = 1) { anyConstructed<VpnService.Builder>().setMetered(false) }
+        // No underlying network is declared: the system default network is
+        // the one wg-go's protected socket uses. Naming the app's "active"
+        // network would name the VPN itself now that the app is inside it.
+        verify(exactly = 0) { anyConstructed<VpnService.Builder>().setUnderlyingNetworks(any()) }
+    }
+
+    // ── D-6 (A1-016): the app's own traffic ─────────────────────────────
+
+    @Test
+    fun `the app is inside its own tunnel but outside the kill-switch block`() {
+        buildVpnInterface(plainConfig, stealth = false)
+        verify(exactly = 0) { anyConstructed<VpnService.Builder>().addDisallowedApplication(OWN_PACKAGE) }
+
+        val activate = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch")
+        activate.isAccessible = true
+        activate.invoke(service)
+        verify(exactly = 1) { anyConstructed<VpnService.Builder>().addDisallowedApplication(OWN_PACKAGE) }
+    }
+
+    @Test
+    fun `Stealth keeps the app out of the tunnel and carves Xray's server out of the routes`() {
+        buildVpnInterface(
+            plainConfig.copy(endpoint = "127.0.0.1:51821", stealthEnabled = true, xrayEndpoint = "203.0.113.7:8443"),
+            stealth = true,
+        )
+
+        verify(exactly = 1) { anyConstructed<VpnService.Builder>().addDisallowedApplication(OWN_PACKAGE) }
+        // API 29-32 (the unit-test SDK level is 0): the default route is split
+        // around the server, so it is never added whole.
+        verify(exactly = 0) { anyConstructed<VpnService.Builder>().addRoute("0.0.0.0", 0) }
+        verify(exactly = 32) {
+            anyConstructed<VpnService.Builder>().addRoute(match<String> { !it.contains(':') }, any())
+        }
+        verify(exactly = 1) { anyConstructed<VpnService.Builder>().addRoute("203.0.113.6", 32) }
+        verify(exactly = 0) { anyConstructed<VpnService.Builder>().addRoute("203.0.113.7", 32) }
+        verify(exactly = 1) { anyConstructed<VpnService.Builder>().addRoute("::", 0) }
+    }
+
+    /** The service-wide kill-switch flag, normally captured from the START intent. */
+    private fun setKillSwitchEnabled(enabled: Boolean) {
+        val field = BirdoVpnService::class.java.getDeclaredField("isKillSwitchEnabled")
+        field.isAccessible = true
+        field.setBoolean(null, enabled)
+    }
+
+    /** Arrange a plain WireGuard setup that reaches wgTurnOn; returns the call order. */
+    private fun arrangeTunnelStart(protectSucceeds: Boolean): MutableList<String> {
+        val order = mutableListOf<String>()
+        setKillSwitchEnabled(true)
+        every { prefs.stealthModeEnabled } returns false
+        every { prefs.quantumProtectionEnabled } returns false
+        every { prefs.killSwitchEnabled } returns true
+        every { WgNative.init() } returns true
+        every { WgNative.turnOn(any(), any(), any()) } answers { order += "turnOn"; 7 }
+        every { WgNative.getSocketV4(7) } returns 41
+        every { WgNative.getSocketV6(7) } returns 42
+        every { service.protect(any<Int>()) } answers { order += "protect:${firstArg<Int>()}"; protectSucceeds }
+        mockkObject(WireGuardConfigBuilder)
+        every { WireGuardConfigBuilder.build(any(), any()) } returns mockk(relaxed = true)
+        BirdoVpnService.setConfig(
             ConnectResponse(
                 success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
                 assignedIp = "10.100.0.2",
-                dns = listOf("1.1.1.1"),
                 allowedIps = listOf("0.0.0.0/0", "::/0"),
             ),
         )
+        return order
+    }
 
-        verify(exactly = 1) { anyConstructed<VpnService.Builder>().setMetered(false) }
+    private fun startTunnel() {
+        val generation = field("transitionGen") as AtomicLong
+        val startTunnel = BirdoVpnService::class.java.getDeclaredMethod("startTunnel", Long::class.javaPrimitiveType)
+        startTunnel.isAccessible = true
+        startTunnel.invoke(service, generation.get())
+    }
+
+    @Test
+    fun `wg-go's sockets are protected once, synchronously, right after wgTurnOn`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+
+        startTunnel()
+
+        // Done before startTunnel returned — nothing left to a poller (A1-037).
+        assertEquals(listOf("turnOn", "protect:41", "protect:42"), order)
+        verify(exactly = 1) { service.protect(41) }
+        verify(exactly = 1) { service.protect(42) }
+        // Let the probe's verdict land before tearDown resets the companion.
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    // ── A1-034: the live rebuild, on the running service ─────────────────
+
+    /** A live, verified session on wg-go handle 7, and a rebuild config waiting. */
+    private fun arrangeLiveSession(order: MutableList<String>): Long {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.turnOff(any()) } answers { order += "turnOff:${firstArg<Int>()}" }
+        every { WgNative.turnOn(any(), any(), any()) } answers { order += "turnOn"; 8 }
+        every { WgNative.getSocketV4(8) } returns 51
+        every { WgNative.getSocketV6(8) } returns -1
+        every { service.protect(any<Int>()) } answers { order += "protect:${firstArg<Int>()}"; true }
+        setField("tunnelHandle", 7)
+        val update = BirdoVpnService.Companion::class.java.getDeclaredMethod("updateState", VpnState::class.java)
+        update.isAccessible = true
+        update.invoke(BirdoVpnService.Companion, VpnState.Connected)
+        BirdoVpnService.setRebuildConfig(
+            ConnectResponse(
+                success = true,
+                keyId = "key-456",
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "198.51.100.9:51820",
+                assignedIp = "10.100.0.9",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+            ),
+        )
+        return (field("transitionGen") as AtomicLong).get()
+    }
+
+    private fun liveRebuild(gen: Long, id: Long) {
+        val intent = mockk<Intent>(relaxed = true) {
+            every { getLongExtra(BirdoVpnService.EXTRA_REBUILD_ID, any()) } returns id
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns true
+            every { getStringArrayExtra(any()) } returns null
+        }
+        val handle = BirdoVpnService::class.java.getDeclaredMethod("handleLiveRebuild", Intent::class.java, Long::class.javaPrimitiveType)
+        handle.isAccessible = true
+        handle.invoke(service, intent, gen)
+    }
+
+    @Test
+    fun `a rebuild establish() refuses keeps the old session untouched`() {
+        val order = mutableListOf<String>()
+        val gen = arrangeLiveSession(order)
+        every { anyConstructed<VpnService.Builder>().establish() } returns null
+        val outcome = BirdoVpnService.expectLiveRebuild(41L)
+
+        liveRebuild(gen, 41L)
+
+        assertTrue(outcome.isCompleted)
+        assertEquals(LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP, kotlinx.coroutines.runBlocking { outcome.await() })
+        // The old wg-go instance was never touched, and nothing was published.
+        assertFalse(order.any { it.startsWith("turnOff") || it == "turnOn" })
+        assertEquals(VpnState.Connected, BirdoVpnService.currentState)
+        assertEquals(7, field("tunnelHandle"))
+    }
+
+    @Test
+    fun `a rebuild swaps on the running service - new interface first, then the old engine out, then the new one in`() {
+        val order = mutableListOf<String>()
+        val gen = arrangeLiveSession(order)
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            order += "establish"
+            mockk<ParcelFileDescriptor>(relaxed = true)
+        }
+        val outcome = BirdoVpnService.expectLiveRebuild(42L)
+
+        liveRebuild(gen, 42L)
+
+        assertEquals(listOf("establish", "turnOff:7", "turnOn", "protect:51"), order)
+        assertEquals(8, field("tunnelHandle"))
+        // The probe's verdict (this build cannot read wg-go's config, so it
+        // reports HANDSHAKE_OK) commits it.
+        waitFor("the rebuild verdict") { outcome.isCompleted }
+        assertEquals(LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED, kotlinx.coroutines.runBlocking { outcome.await() })
+        waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    @Test
+    fun `a socket that cannot be protected fails the connect, block first`() {
+        val order = arrangeTunnelStart(protectSucceeds = false)
+
+        startTunnel()
+
+        assertEquals("turnOn", order.first())
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.ENGINE_FAILED, error.message)
+        // The block went up (kill switch on) and wg-go came down after it.
+        assertTrue(BirdoVpnService.killSwitchActive)
+        verify { WgNative.turnOff(7) }
     }
 }

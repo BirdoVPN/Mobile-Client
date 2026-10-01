@@ -388,8 +388,14 @@ private fun ProfileIdentityCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = publicIp?.let { stringResource(R.string.profile_public_ip, it) }
-                            ?: stringResource(R.string.profile_tap_connect),
+                        // The server's address, labelled as what it is: it is
+                        // not the user's verified egress IP, and for Multi-Hop
+                        // it would be the ENTRY node, so none is shown (A1-020).
+                        text = when {
+                            publicIp != null -> stringResource(R.string.profile_vpn_server_address, publicIp)
+                            isConnected -> stringResource(R.string.profile_via_multihop)
+                            else -> stringResource(R.string.profile_tap_connect)
+                        },
                         color = palette.onSurfaceMuted,
                         fontSize = 11.sp,
                     )

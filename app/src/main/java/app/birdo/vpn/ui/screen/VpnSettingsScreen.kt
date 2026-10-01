@@ -48,6 +48,8 @@ internal data class BirdoShieldRowState(
     val checked: Boolean,
     val enabled: Boolean,
     val unavailable: Boolean,
+    /** Custom DNS replaces the filtering resolver, so the switch would do nothing (A1-024). */
+    val overriddenByCustomDns: Boolean = false,
 )
 
 /**
@@ -68,12 +70,18 @@ internal data class BirdoShieldRowState(
 internal fun birdoShieldRowState(
     dnsFilteringEnabled: Boolean,
     dnsFilteringAvailable: Boolean?,
+    customDnsEnabled: Boolean = false,
 ): BirdoShieldRowState {
     val unavailable = dnsFilteringAvailable == false
+    // A1-024, as Windows does it: with Custom DNS on, the tunnel never asks
+    // the filtering resolver, so the row reads OFF, cannot be switched, and
+    // says why. The stored preference is kept for when Custom DNS goes off.
+    val overridden = !unavailable && customDnsEnabled
     return BirdoShieldRowState(
-        checked = dnsFilteringEnabled && !unavailable,
-        enabled = !unavailable,
+        checked = dnsFilteringEnabled && !unavailable && !overridden,
+        enabled = !unavailable && !overridden,
         unavailable = unavailable,
+        overriddenByCustomDns = overridden,
     )
 }
 
@@ -168,16 +176,16 @@ fun VpnSettingsScreen(
                 // nothing for the user to buy or change, so the row simply
                 // states why. Their stored preference is untouched and returns
                 // on its own when the gate comes back.
-                val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable)
+                val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable, state.customDnsEnabled)
                 VpnToggle(
                     icon = Icons.Default.Shield,
                     iconColor = if (shield.enabled) BirdoGreen else palette.onSurfaceFaint,
                     title = stringResource(R.string.vpn_settings_birdoshield_title),
                     description = stringResource(
-                        if (shield.unavailable) {
-                            R.string.vpn_settings_birdoshield_unavailable
-                        } else {
-                            R.string.vpn_settings_birdoshield_desc
+                        when {
+                            shield.unavailable -> R.string.vpn_settings_birdoshield_unavailable
+                            shield.overriddenByCustomDns -> R.string.vpn_settings_birdoshield_custom_dns
+                            else -> R.string.vpn_settings_birdoshield_desc
                         },
                     ),
                     checked = shield.checked,

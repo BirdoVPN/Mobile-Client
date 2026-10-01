@@ -146,12 +146,139 @@ class SessionPolicyTest {
     }
 
     @Test
-    fun `a spent budget starts a fresh streak after the cooldown`() {
+    fun `after the cooldown exactly one re-dial is allowed`() {
         val tripped = established().copy(failures = 9, lastFailureAt = t0, trippedAt = t0)
         val fresh = ReconnectPolicy.afterCooldown(tripped)
-        assertEquals(0, fresh.failures)
         assertNull(fresh.trippedAt)
         assertTrue(fresh.mayAutoRetry)
+        assertTrue(fresh.lastChance)
+        // That one re-dial fails: give up again at once (REVIEW-AND-011), not a
+        // fresh eight-attempt streak that re-arms the block for ~8.5 min.
+        val later = t0 + ReconnectPolicy.TRIP_COOLDOWN_MS
+        val out = ReconnectPolicy.onFailure(fresh, FailureKind.DIED_AFTER_HANDSHAKE, true, later, 0.0)
+        val giveUp = out.decision as Decision.GiveUp
+        assertEquals(GiveUpReason.BUDGET_EXHAUSTED, giveUp.reason)
+        assertEquals(1, giveUp.attempts)
+        assertFalse(out.session.lastChance)
+        // Offline it still waits for the network instead of spending the chance.
+        assertEquals(
+            Decision.WaitForNetwork,
+            ReconnectPolicy.onFailure(fresh, FailureKind.TRANSIENT, false, later, 0.0).decision,
+        )
+        // A connect ends it.
+        assertFalse(fresh.connected().lastChance)
+    }
+
+    @Test
+    fun `a reap's rebuild is its whole budget, whatever the rebuild fails with`() {
+        // WEB-HB: one quiet rebuild; a failed rebuild goes to Error instead of
+        // retrying under TRANSIENT's eight attempts.
+        var session = established()
+        val reaped = ReconnectPolicy.onFailure(session, FailureKind.REAPED, true, t0, 0.0)
+        assertTrue(reaped.decision is Decision.Retry)
+        session = reaped.session
+        val rebuildFailed = ReconnectPolicy.onFailure(session, FailureKind.TRANSIENT, true, t0 + 5_000, 0.0)
+        assertEquals(GiveUpReason.BUDGET_EXHAUSTED, (rebuildFailed.decision as Decision.GiveUp).reason)
+        // A reap more than ten minutes later is a new streak with its own rebuild.
+        val later = ReconnectPolicy.onFailure(
+            session.connected(), FailureKind.REAPED, true, t0 + ReconnectPolicy.FAILURE_WINDOW_MS + 1, 0.0,
+        )
+        assertTrue(later.decision is Decision.Retry)
+    }
+
+    @Test
+    fun `an eviction is terminal`() {
+        assertTrue(FailureKind.EVICTED.terminal)
+        assertEquals(0, ReconnectPolicy.maxAttempts(FailureKind.EVICTED))
+    }
+
+    // ── HeartbeatPolicy (WEB-HB's client table) ──────────────────────────
+
+    @Test
+    fun `a heartbeat reason decides, and an absent or unknown one keeps today's inference`() {
+        val flowing = 60_000L
+        val slept = HeartbeatPolicy.REAP_WINDOW_MS
+        fun v(valid: Boolean, reason: String?, gap: Long) = HeartbeatPolicy.verdict(valid, reason, gap)
+        // Today's behaviour, for an older backend or a reason this build does not know.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, null, flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, null, flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, v(false, null, slept))
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, "quarantined", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "quarantined", flowing))
+        // The table.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, "ok", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, v(true, "server_offline", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, v(false, "server_offline", flowing))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "revoked", slept))
+        assertEquals(HeartbeatPolicy.Verdict.EVICTED, v(false, "evicted", slept))
+        // A reap is a reap even while beats were flowing (no inference needed).
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, v(false, "reaped", flowing))
+        // not_found: the last good beat 5 min or more ago means reaped, else revoked.
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, v(false, "not_found", slept))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "not_found", slept - 1))
+    }
+
+    // ── Free-plan allowance at check-in (birdo-web PR #590) ─────────────
+
+    @Test
+    fun `an allowance used past its grace ends the session as a plan decision`() {
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, HeartbeatPolicy.verdict(false, "quota_exceeded", 0L))
+        // Either field is enough: a reply that carries only the flag is not a revoke.
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, HeartbeatPolicy.verdict(false, null, 0L, quotaExceeded = true))
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, HeartbeatPolicy.verdict(false, "revoked", 0L, quotaExceeded = true))
+        // Inside the grace window the session is alive.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.verdict(true, null, 0L, quotaExceeded = true))
+        // An unknown reason keeps today's fallback.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.verdict(true, "some_new_reason", 0L))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, HeartbeatPolicy.verdict(false, "some_new_reason", 0L))
+        assertTrue(FailureKind.QUOTA_EXCEEDED.terminal)
+    }
+
+    @Test
+    fun `the grace notice counts whole minutes from the server's clock`() {
+        val now = java.time.Instant.parse("2026-10-01T12:00:00Z").toEpochMilli()
+        assertEquals(QuotaGrace(10), QuotaPolicy.grace(true, true, 600L, null, now))
+        assertEquals(QuotaGrace(2), QuotaPolicy.grace(true, true, 61L, null, now))
+        // Never "ends in 0 min".
+        assertEquals(QuotaGrace(1), QuotaPolicy.grace(true, true, 0L, null, now))
+        // The seconds win over the instant; the instant is the fallback.
+        assertEquals(QuotaGrace(10), QuotaPolicy.grace(true, true, 600L, "2026-10-01T12:05:00Z", now))
+        assertEquals(QuotaGrace(5), QuotaPolicy.grace(true, true, null, "2026-10-01T12:05:00Z", now))
+        // Neither, or an unreadable instant: "soon".
+        assertEquals(QuotaGrace(null), QuotaPolicy.grace(true, true, null, null, now))
+        assertEquals(QuotaGrace(null), QuotaPolicy.grace(true, true, null, "not a date", now))
+        // No notice outside the grace window.
+        assertNull(QuotaPolicy.grace(true, false, 600L, null, now))
+        assertNull(QuotaPolicy.grace(false, true, 600L, null, now))
+    }
+
+    // ── REVIEW-AND-006, A1-031, A1-033 ──────────────────────────────────
+
+    @Test
+    fun `a setup failure is never the exception's own text, and a bad config is a refusal`() {
+        val (badConfig, badKind) = SessionCopy.forSetupFailure(IllegalArgumentException("Invalid endpoint: 203.0.113.7:51820"))
+        assertEquals(SessionCopy.BAD_SERVER_CONFIG, badConfig)
+        assertEquals(FailureKind.REFUSED, badKind)
+        assertEquals(FailureKind.REFUSED, SessionCopy.forSetupFailure(IllegalStateException("No allowedIPs")).second)
+        val (engine, engineKind) = SessionCopy.forSetupFailure(RuntimeException("JNI exploded at 0xdeadbeef"))
+        assertEquals(SessionCopy.ENGINE_FAILED, engine)
+        assertEquals(FailureKind.TRANSIENT, engineKind)
+    }
+
+    @Test
+    fun `attestation runs only on a user's fresh dial with nothing blocked`() {
+        assertTrue(AttestationPolicy.mayAttest(priorWasLive = false, blockActive = false, automatic = false))
+        assertFalse("a switch or a re-dial", AttestationPolicy.mayAttest(true, false, false))
+        assertFalse("behind the block Play cannot reach Google", AttestationPolicy.mayAttest(false, true, false))
+        assertFalse("a fallback or a reapply", AttestationPolicy.mayAttest(false, false, true))
+    }
+
+    @Test
+    fun `only a connected stealth session proves Stealth works here`() {
+        assertTrue(StealthPreference.provenBy(VpnState.Connected, stealthActive = true))
+        assertFalse(StealthPreference.provenBy(VpnState.Connected, stealthActive = false))
+        assertFalse(StealthPreference.provenBy(VpnState.Error("x"), stealthActive = true))
+        assertFalse(StealthPreference.provenBy(VpnState.Connecting, stealthActive = true))
     }
 
     @Test
@@ -204,15 +331,30 @@ class SessionPolicyTest {
     }
 
     @Test
-    fun `a sticky restart re-arms the block for a kill-switch user and restores a wanted session`() {
+    fun `a sticky restart re-arms the block only for a session somebody wants`() {
         assertEquals(SystemStartPolicy.Plan(armBlock = true, connect = true, actionNeeded = null), plan(SystemStartKind.STICKY_RESTART))
-        // Nothing was wanted, but the service was running with the kill switch on.
-        assertEquals(
-            SystemStartPolicy.Plan(armBlock = true, connect = false, actionNeeded = null),
-            plan(SystemStartKind.STICKY_RESTART, sessionShouldBeUp = false),
-        )
-        // Kill switch off and nothing wanted: stop without a trace.
+        // Nothing was wanted (a user dial that never connected left the
+        // service foreground): no block nobody asked for (REVIEW-AND-004).
+        // Changed from phase A, which armed here.
+        assertTrue(plan(SystemStartKind.STICKY_RESTART, sessionShouldBeUp = false).idle)
         assertTrue(plan(SystemStartKind.STICKY_RESTART, sessionShouldBeUp = false, killSwitch = false).idle)
+    }
+
+    @Test
+    fun `a process that finds the session dead resumes it, block first`() {
+        assertEquals(
+            SystemStartPolicy.Plan(armBlock = true, connect = true, actionNeeded = null),
+            plan(SystemStartKind.PROCESS_RESTART),
+        )
+        assertEquals(
+            SystemStartPolicy.Plan(armBlock = false, connect = true, actionNeeded = null),
+            plan(SystemStartKind.PROCESS_RESTART, killSwitch = false),
+        )
+        assertEquals(FailureKind.SIGN_IN_REQUIRED, plan(SystemStartKind.PROCESS_RESTART, signedIn = false).actionNeeded)
+        // BirdoApp asks only for a session the user wanted and no service holds.
+        assertTrue(SystemStartPolicy.resumeOnProcessStart(sessionShouldBeUp = true, serviceRunning = false))
+        assertFalse(SystemStartPolicy.resumeOnProcessStart(sessionShouldBeUp = true, serviceRunning = true))
+        assertFalse(SystemStartPolicy.resumeOnProcessStart(sessionShouldBeUp = false, serviceRunning = false))
     }
 
     @Test
@@ -241,8 +383,13 @@ class SessionPolicyTest {
 
     @Test
     fun `a one-tap surface cancels, disconnects or releases the block, and hands off when it cannot connect`() {
-        fun decide(state: VpnState, blocking: Boolean = false, signedIn: Boolean = true, permission: Boolean = true) =
-            QuickToggle.decide(state, blocking, signedIn, permission)
+        fun decide(
+            state: VpnState,
+            blocking: Boolean = false,
+            signedIn: Boolean = true,
+            permission: Boolean = true,
+            consent: Boolean = true,
+        ) = QuickToggle.decide(state, blocking, signedIn, permission, consent)
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connecting))
         assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Reconnecting(2)))
@@ -252,6 +399,26 @@ class SessionPolicyTest {
         assertEquals(QuickToggle.Action.OPEN_APP, decide(VpnState.Disconnected, permission = false))
         assertEquals(QuickToggle.Action.CONNECT, decide(VpnState.Disconnected))
         assertEquals(QuickToggle.Action.CONNECT, decide(VpnState.Error("x")))
+        // REVIEW-AND-010: no /vpn/connect before the current consent, but
+        // stopping is always allowed.
+        assertEquals(QuickToggle.Action.OPEN_APP, decide(VpnState.Disconnected, consent = false))
+        assertEquals(QuickToggle.Action.DISCONNECT, decide(VpnState.Connected, consent = false))
+    }
+
+    @Test
+    fun `one entitlement rule for every dial`() {
+        assertEquals(true, MultiHopPolicy.entitledByPlan("SOVEREIGN"))
+        assertEquals(true, MultiHopPolicy.entitledByPlan("sovereign"))
+        assertEquals(false, MultiHopPolicy.entitledByPlan("OPERATIVE"))
+        assertEquals(null, MultiHopPolicy.entitledByPlan(null))
+    }
+
+    @Test
+    fun `a give-up that speaks for the traffic is never contradicted`() {
+        val giveUp = SessionCopy.giveUp(FailureKind.DIED_AFTER_HANDSHAKE, 8, lockdown = false)
+        assertTrue(SessionCopy.speaksForTraffic(giveUp))
+        assertTrue(SessionCopy.speaksForTraffic(SessionCopy.giveUp(FailureKind.TRANSIENT, 1, lockdown = true)))
+        assertFalse(SessionCopy.speaksForTraffic(SessionCopy.NO_TUNNEL))
     }
 
     @Test

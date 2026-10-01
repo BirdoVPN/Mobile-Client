@@ -192,6 +192,20 @@ class BirdoShieldAvailabilityTest {
         )
     }
 
+    // -- A1-024: Custom DNS overrides the filtering resolver -----
+
+    @Test
+    fun `with Custom DNS on the row reads off, cannot be switched, says why, and keeps the preference`() {
+        val row = birdoShieldRowState(dnsFilteringEnabled = true, dnsFilteringAvailable = true, customDnsEnabled = true)
+        assertFalse(row.checked)
+        assertFalse(row.enabled)
+        assertTrue(row.overriddenByCustomDns)
+        // Custom DNS off again: the stored choice is back.
+        assertTrue(birdoShieldRowState(true, true, customDnsEnabled = false).checked)
+        // An unavailable fleet says so first.
+        assertFalse(birdoShieldRowState(true, false, customDnsEnabled = true).overriddenByCustomDns)
+    }
+
     // -- 4. The wiring ------------------------------------------
 
     /**

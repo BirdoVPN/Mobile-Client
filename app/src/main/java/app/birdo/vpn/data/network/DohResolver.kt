@@ -69,8 +69,15 @@ object DohResolver {
 
     // Bootstrap client is used for the first DoH connection (before DoH is ready).
     // Cert-pin the DoH provider to prevent MITM during bootstrap.
+    //
+    // D-6: DoH serves only the API's BYPASS client — the paths where the app's
+    // traffic must not ride a tunnel (before one exists, behind the kill-switch
+    // block, on the reconnect path, during Stealth). Its sockets are protected
+    // the same way, so a lookup made while a dead tunnel is still up goes
+    // around it with the request it resolves for.
     private val bootstrapClient: OkHttpClient = run {
         val builder = OkHttpClient.Builder()
+            .socketFactory(ProtectingSocketFactory())
             // Short and explicit, not OkHttp's 10s defaults. Every second spent
             // here is spent inside a Dns.lookup that the API client's phase
             // timeouts do not bound, before the resolver can degrade to the

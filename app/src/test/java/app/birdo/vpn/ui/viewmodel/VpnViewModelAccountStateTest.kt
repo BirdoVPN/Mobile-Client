@@ -38,8 +38,9 @@ import org.junit.Test
  * What VpnViewModel keeps per ACCOUNT, and when it may talk to the backend.
  *
  * The main dispatcher runs on its own scheduler, advanced by hand: the
- * ViewModel starts an endless stats loop in init, and a scheduler the test
- * does not drive leaves it parked at its first delay.
+ * ViewModel's init launches collectors that never complete (the session
+ * state, Private DNS, the quota notice), and the stats loop runs while
+ * Connected; a scheduler the test does not drive leaves them all parked.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class VpnViewModelAccountStateTest {
@@ -49,6 +50,11 @@ class VpnViewModelAccountStateTest {
     private lateinit var repository: BirdoRepository
     private lateinit var prefs: AppPreferences
     private lateinit var tokenManager: TokenManager
+
+    /** The VM reads its copy through the application context: the shipped strings.xml here. */
+    private val appContext: android.content.Context = mockk(relaxed = true) {
+        every { getString(any()) } answers { app.birdo.vpn.testing.StringsXml.get(firstArg()) }
+    }
 
     private val paidServers = listOf(
         VpnServer(id = "de-1", name = "Frankfurt 1", country = "Germany", countryCode = "DE", accessible = true),
@@ -61,6 +67,8 @@ class VpnViewModelAccountStateTest {
         vpnManager = mockk(relaxed = true)
         every { vpnManager.state } returns MutableStateFlow(VpnState.Disconnected)
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
+        every { vpnManager.connectedServerId } returns MutableStateFlow(null)
+        every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
         every { vpnManager.isVpnPermissionGranted() } returns true
         coEvery { vpnManager.connect(any(), any()) } returns ApiResult.Success(ConnectResponse(success = true))
@@ -89,7 +97,7 @@ class VpnViewModelAccountStateTest {
     }
 
     private fun viewModel(): VpnViewModel =
-        VpnViewModel(vpnManager, repository, prefs, tokenManager).also { scheduler.runCurrent() }
+        VpnViewModel(vpnManager, repository, prefs, tokenManager, appContext).also { scheduler.runCurrent() }
 
     // ── A2-003 ───────────────────────────────────────────────────
 

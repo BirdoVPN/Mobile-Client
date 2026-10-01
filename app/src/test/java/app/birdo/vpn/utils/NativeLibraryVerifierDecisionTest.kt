@@ -1,5 +1,6 @@
 package app.birdo.vpn.utils
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -184,5 +185,22 @@ class NativeLibraryVerifierDecisionTest {
                 signatureTrusted = false,
             ),
         )
+    }
+
+    // ── A1-042: a trusted verdict is reached once per process ───────────
+
+    @Test
+    fun `a trusted library is hashed once, a refusal is judged again`() {
+        var hashes = 0
+        val trusted = { hashes++; true }
+        assertTrue(NativeLibraryVerifier.verifyOnce("test-lib-trusted", trusted))
+        assertTrue(NativeLibraryVerifier.verifyOnce("test-lib-trusted", trusted))
+        assertEquals(1, hashes)
+
+        var attempts = 0
+        val refused = { attempts++; false }
+        assertFalse(NativeLibraryVerifier.verifyOnce("test-lib-refused", refused))
+        assertFalse(NativeLibraryVerifier.verifyOnce("test-lib-refused", refused))
+        assertEquals("a refusal never sticks", 2, attempts)
     }
 }

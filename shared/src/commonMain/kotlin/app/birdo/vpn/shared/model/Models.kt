@@ -476,7 +476,7 @@ data class ConnectRequest(
      * When present, the server encapsulates a fresh shared secret against
      * this key and returns the resulting ciphertext in
      * `ConnectResponse.rosenpassPublicKey`. ~2.1 KB Base64 overhead per
-     * connect — see `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt`.
+     * connect — see `app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt`.
      */
     val pqClientPublicKey: String? = null,
     /**
@@ -486,7 +486,7 @@ data class ConnectRequest(
      * That is the actual harvest-now-decrypt-later property the feature is
      * sold on: without it the PSK travels under classical TLS and a recorded
      * session plus a future CRQC recovers it. Only ever set true alongside a
-     * non-null [pqClientPublicKey] (RosenpassManager produced the keypair, so
+     * non-null [pqClientPublicKey] (BirdoPqManager produced the keypair, so
      * the native engine is present); if decapsulation still fails at tunnel
      * time the client fails closed rather than downgrading.
      */
@@ -511,6 +511,15 @@ data class ConnectRequest(
      * when the user has switched it on. Not plan-gated. Twin: [MultiHopConnectRequest].
      */
     val dnsFiltering: Boolean = false,
+    /**
+     * A1-034: this connect REPLACES the live session [currentKeyId] rides,
+     * through that very tunnel (the in-place live rebuild, iOS #350). The
+     * server defers that one key's eviction until the new peer handshakes,
+     * instead of evicting it inline and blackholing the request's own path.
+     * Both off the wire on an ordinary connect (defaults stay off).
+     */
+    val rebuild: Boolean = false,
+    val currentKeyId: String? = null,
 )
 
 @Serializable
@@ -579,11 +588,23 @@ data class ConnectResponse(
     //                          same KEM output. Server may use a timestamp,
     //                          random bytes, or any opaque value.
     //
-    // See `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt` and
+    // See `app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt` and
     // `native/rosenpass-jni/src/lib.rs` for the canonical protocol spec.
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
+    /**
+     * A1-034: echoes [ConnectRequest.currentKeyId] when — and only when — the
+     * server deferred that key's eviction for a rebuild. Anything else means
+     * the old peer was, or may have been, evicted inline.
+     */
+    val deferredKeyId: String? = null,
+    /**
+     * A1-034: beside `success: false`, why a rebuild was refused before the
+     * server touched anything (the schema's RebuildRefusal values, a String so
+     * a new one can never fail the decode).
+     */
+    val rebuildRefused: String? = null,
 )
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
@@ -638,6 +659,9 @@ data class MultiHopConnectRequest(
      * user gets the filtering resolver exactly as a single-hop one does.
      */
     val dnsFiltering: Boolean = false,
+    /** A1-034 — see [ConnectRequest.rebuild]; the multi-hop twin. */
+    val rebuild: Boolean = false,
+    val currentKeyId: String? = null,
 )
 
 @Serializable
@@ -688,6 +712,10 @@ data class MultiHopConnectResponse(
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
+    /** A1-034 — see [ConnectResponse.deferredKeyId]. */
+    val deferredKeyId: String? = null,
+    /** A1-034 — see [ConnectResponse.rebuildRefused]. */
+    val rebuildRefused: String? = null,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────
@@ -717,21 +745,12 @@ data class CreatePortForwardResponse(
     val message: String? = null,
 )
 
-// ─── Key Rotation ────────────────────────────────────────────────────────────
-
-@Serializable
-data class KeyRotationRequest(
-    val clientPublicKey: String,
-)
-
-@Serializable
-data class KeyRotationResponse(
-    val success: Boolean = false,
-    val newKeyId: String = "",
-    val serverPublicKey: String = "",
-    val presharedKey: String? = null,
-    val expiresAt: String = "",
-)
+// ─── Key Rotation ─ REMOVED 2026-10-01 ───────────────────────────────────────
+//
+// KeyRotationRequest/Response described `POST vpn/connections/{keyId}/rotate`,
+// which the backend never shipped; the only caller was gated off by a constant
+// `keyRotationSupported = false` (A2-036). A fresh key per connect is the key
+// lifetime today. Bring the types back with the endpoint, not before it.
 
 // ─── Protocol Error Codes ─ RETIRED 2026-09-20 ─────────────────
 //
@@ -760,4 +779,28 @@ data class HeartbeatResponse(
     val valid: Boolean = true,
     val serverOnline: Boolean = true,
     val message: String? = null,
+    /**
+     * WHY the key is in this state, from a backend with birdo-web's heartbeat
+     * reasons (WEB-HB): "ok", "server_offline", "revoked", "evicted", "reaped"
+     * or "not_found". Absent from an older backend, and a value this build
+     * does not know means the same: today's handling. A plain String, never an
+     * enum, so a new reason can never fail the decode of a whole heartbeat.
+     *
+     * Not in the vendored contract yet: WEB-HB adds it to
+     * backend/contract/vpn-protocol.schema.json, and the copy in contract/ is
+     * re-vendored once that is on birdo-web's main.
+     */
+    val reason: String? = null,
+    /**
+     * The Free plan's monthly data allowance is used (birdo-web PR #590,
+     * enforced at check-in). With `valid: true` the session is inside its
+     * grace window and ends at [quotaGraceEndsAt]; with `valid: false` (and
+     * `reason: "quota_exceeded"`) the peer is already removed. Absent from a
+     * backend without the quota check.
+     */
+    val quotaExceeded: Boolean = false,
+    /** ISO-8601 instant the grace window ends. */
+    val quotaGraceEndsAt: String? = null,
+    /** Seconds left in the grace window, from the server's clock. Preferred over [quotaGraceEndsAt]. */
+    val quotaGraceSecondsRemaining: Long? = null,
 )

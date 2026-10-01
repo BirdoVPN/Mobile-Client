@@ -36,6 +36,8 @@ sealed class ApiResult<out T> {
         val message: String,
         val code: Int = 0,
         val reason: FailureReason = FailureReason.UNEXPECTED,
+        /** How long the server asked to wait before trying again, when it said ([RetryAfter]). */
+        val retryAfterMs: Long? = null,
     ) : ApiResult<Nothing>()
 }
 
@@ -555,7 +557,10 @@ class BirdoRepository @Inject constructor(
     /** Map a non-2xx response. `errorBody()` is one-shot, so it is read here and only here. */
     private fun errorFrom(response: Response<*>, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error {
         val raw = runCatching { response.errorBody()?.string() }.getOrNull()
-        return errors.fromResponse(response.code(), raw, context, fallback)
+        val error = errors.fromResponse(response.code(), raw, context, fallback)
+        val retryAfter = RetryAfter.fromBody(raw)
+            ?: RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull())
+        return if (retryAfter != null) error.copy(retryAfterMs = retryAfter) else error
     }
 
     /**
@@ -711,6 +716,12 @@ class BirdoRepository @Inject constructor(
         integrityToken: String? = null,
         /** BirdoShield (D18): per-device DNS-filtering opt-in — see ConnectRequest.dnsFiltering. */
         dnsFiltering: Boolean = false,
+        /**
+         * A1-034: the key id of the live session this connect rebuilds in
+         * place (ConnectRequest.rebuild/currentKeyId), or null for an ordinary
+         * connect.
+         */
+        rebuildOf: String? = null,
     ): ApiResult<ConnectResponse> {
         // FIX-1-1: Generate X25519 keypair locally — private key never leaves the device.
         // Uses wireguard-android's crypto module which wraps Curve25519.
@@ -739,7 +750,7 @@ class BirdoRepository @Inject constructor(
                     fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
-                    // A non-null key proves RosenpassManager loaded the native
+                    // A non-null key proves BirdoPqManager loaded the native
                     // engine and minted the ML-KEM keypair, so this client WILL
                     // decapsulate — tell the server to withhold the PSK from
                     // the response (the HNDL-safe path). BirdoVpnService fails
@@ -748,6 +759,8 @@ class BirdoRepository @Inject constructor(
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                     dnsFiltering = dnsFiltering,
+                    rebuild = rebuildOf != null,
+                    currentKeyId = rebuildOf,
                 ))
             }
             if (result is ApiResult.Success) {
@@ -758,12 +771,13 @@ class BirdoRepository @Inject constructor(
                 if (!body.success) {
                     return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
                 }
-                // FIX-1-1: Store locally generated private key instead of server-provided one.
+                // FIX-1-1: the locally generated private key, never the server's.
                 // The server no longer returns privateKey when clientPublicKey was sent.
                 val localPrivateKey = String(privateKeyChars)
+                // The private key is NOT persisted (A1-041): it lives in the
+                // returned config for this session only.
                 synchronized(keyIdLock) {
                     body.keyId?.let { tokenManager.setLastKeyId(it) }
-                    tokenManager.setWireGuardPrivateKey(localPrivateKey)
                 }
                 // Inject the locally-generated private key into the response so
                 // VpnManager and BirdoVpnService can build the WireGuard config.
@@ -804,12 +818,17 @@ class BirdoRepository @Inject constructor(
         synchronized(keyIdLock) {
             if (target == null || tokenManager.getLastKeyId() == target) {
                 tokenManager.clearLastKeyId()
-                // FIX-1-8: Clear WG private key from storage after disconnect.
-                // Fresh keys are generated on each new connection.
-                tokenManager.clearWireGuardPrivateKey()
             }
         }
         return serverResult
+    }
+
+    /**
+     * A1-034: a live rebuild that kept the old session puts its key id back,
+     * so a later process's teardown names the peer that is actually up.
+     */
+    fun rememberKeyId(keyId: String) {
+        synchronized(keyIdLock) { tokenManager.setLastKeyId(keyId) }
     }
 
     /**
@@ -818,32 +837,12 @@ class BirdoRepository @Inject constructor(
      */
     suspend fun sendHeartbeat(keyId: String? = null): ApiResult<HeartbeatResponse> {
         val target = keyId ?: tokenManager.getLastKeyId()
-            ?: return ApiResult.Error("No active key ID", CODE_NO_ACTIVE_KEY)
+            // A user-facing sentence like every other error here (REVIEW-AND-021);
+            // callers branch on the code.
+            ?: return errors.unexpected().copy(code = CODE_NO_ACTIVE_KEY)
         return withAutoRefresh(R.string.error_unexpected) {
             api.heartbeat(target)
         }
-    }
-
-    /**
-     * P1-13: Whether in-session WireGuard key rotation is available.
-     *
-     * FIX-MOBILE-COMPAT: Backend currently exposes no `POST vpn/connections/{keyId}/rotate`
-     * endpoint (route is planned as P3-25). Callers should check this before
-     * invoking [rotateKey] and degrade gracefully (keep the existing key) rather
-     * than firing a request that can only ever return 501. No UI surfaces this
-     * action, so there is nothing promising a feature that does not exist yet.
-     */
-    val keyRotationSupported: Boolean = false
-
-    /**
-     * P1-13: Rotate WireGuard key during a long-running session.
-     *
-     * Returns a graceful "not available" error while [keyRotationSupported] is
-     * false so any caller that reaches this anyway keeps the existing key
-     * instead of crashing or spamming the network.
-     */
-    suspend fun rotateKey(): ApiResult<KeyRotationResponse> {
-        return ApiResult.Error("Key rotation not yet supported by backend", 501)
     }
 
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
@@ -866,6 +865,8 @@ class BirdoRepository @Inject constructor(
         integrityToken: String? = null,
         /** BirdoShield (D18) — the twin of [connectVpn]'s dnsFiltering; both dial paths carry it. */
         dnsFiltering: Boolean = false,
+        /** A1-034 — the twin of [connectVpn]'s rebuildOf. */
+        rebuildOf: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
@@ -891,6 +892,8 @@ class BirdoRepository @Inject constructor(
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                     dnsFiltering = dnsFiltering,
+                    rebuild = rebuildOf != null,
+                    currentKeyId = rebuildOf,
                 ))
             }
             if (result is ApiResult.Success) {
@@ -900,9 +903,10 @@ class BirdoRepository @Inject constructor(
                     return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
                 }
                 val localPrivateKey = String(privateKeyChars)
+                // The private key is NOT persisted (A1-041): it lives in the
+                // returned config for this session only.
                 synchronized(keyIdLock) {
                     body.keyId?.let { tokenManager.setLastKeyId(it) }
-                    tokenManager.setWireGuardPrivateKey(localPrivateKey)
                 }
                 return ApiResult.Success(body.copy(privateKey = localPrivateKey))
             }

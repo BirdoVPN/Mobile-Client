@@ -16,14 +16,14 @@ not internal effort.
 | --------------------------------------- | :-----------------------: | :-----: | :-: |
 | WireGuard tunnel                        |                         |        |    |
 | ~~RAM-only entry/exit nodes~~ NOT shipped: nodes are ordinary disk-backed cloud servers (audit 2026-09-29) |                         |        |    |
-| Kill switch (app-level; Android's system Always-on VPN is disabled) |                         |        |    |
+| Kill switch (app-level, releases after repeated failed reconnects; Android also supports system Always-on VPN + "Block connections without VPN") |                         |        |    |
 | LAN passthrough                         |                         |        |    |
 | IPv6 leak protection                    |                         |        |    |
 | DNS leak protection (DNS inside the tunnel; DoH resolves only the API host) |                         |        |    |
 | Multi-hop (entry -> exit)                |                         |       |   |
 | Custom DNS                              |                         |        |    |
 | Split tunnelling                        |        (linux/win)      |        |  ¹ |
-| Auto-connect when the app starts (no launch-on-boot on Android) |                         |        |    |
+| Auto-connect when the app starts; on Android, Always-on VPN reconnects at boot (block first) |                         |        |    |
 
 ¹ Apple does not expose per-app split tunnelling to NetworkExtension; we plan a
   per-domain rule engine instead (see Phase 2).

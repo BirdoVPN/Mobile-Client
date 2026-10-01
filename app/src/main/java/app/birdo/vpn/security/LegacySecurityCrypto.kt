@@ -1,7 +1,7 @@
 // The ONLY remaining use of androidx.security:security-crypto. The library is
 // deprecated upstream with no successor artifact; the app now encrypts with its
 // own Keystore-backed AES-256-GCM (see AesGcmSealer / KeystoreSecureStore), but
-// every install that predates that has its tokens and its Rosenpass secret key
+// every install that predates that has its tokens and its BirdoPQ secret key
 // at rest in the old EncryptedSharedPreferences / EncryptedFile formats. This
 // file reads those formats exactly once, so an upgrade keeps the user logged in
 // and keeps the PQ keypair the servers have pinned, then destroys the legacy

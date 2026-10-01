@@ -1,8 +1,6 @@
 package app.birdo.vpn.service
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.net.VpnService
 import android.util.Log
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
@@ -27,21 +25,17 @@ import java.net.DatagramSocket
  * ```
  * WireGuard → 127.0.0.1:LOCAL_PORT (dokodemo-door, UDP)
  *          → Xray VLESS+Reality → server:8443 (TLS 1.3)
- *          → Server Xray decloaks → 127.0.0.1:51820 (WireGuard)
+ *          → Server Xray decloaks → <node>:<WireGuard port> (see [wireGuardTarget])
  * ```
  *
- * Uses libXray (xray-core compiled for Android via gomobile) which provides:
- * - `Xray.startXray(configJson)` — start Xray with JSON config
- * - `Xray.stopXray()` — stop the running Xray instance
- * - `Xray.initXrayEnv(dataDir)` — initialize data directory for assets
- *
- * If libXray is not available, falls back to managing xray-core binary directly
- * via ProcessBuilder.
- *
- * StaticFieldLeak: the singleton holds [vpnService] only between [start] and
- * [stop] (see the field), so nothing outlives the service that owns it.
+ * Xray is the packaged xray-core executable (libxray.so in the native lib
+ * directory), run as a CHILD PROCESS with ProcessBuilder. It shares this app's
+ * UID, and its socket cannot be protect()ed from here — which is why the
+ * tunnel carves its server out of the routes and, while Stealth is on, keeps
+ * the app's UID out of the tunnel (TunnelRouting.kt, D-6). (A libXray gomobile
+ * binding path used to sit here too; the AAR was never in the build, so it
+ * could not succeed and was removed, A1-039.)
  */
-@SuppressLint("StaticFieldLeak")
 object XrayManager {
 
     private const val TAG = "XrayManager"
@@ -61,16 +55,22 @@ object XrayManager {
     /** Process handle when running xray as external binary */
     private var xrayProcess: Process? = null
 
-    /** Config file written for the binary-fallback path; deleted in [stop]. */
+    /** The config file Xray reads (it carries the VLESS UUID); deleted in [stop]. */
     private var xrayConfigFile: File? = null
 
+    /** Name of [xrayConfigFile] in the app's cache directory. */
+    private const val CONFIG_FILE_NAME = "xray_config.json"
+
     /**
-     * Reference to VpnService for socket protection. Set in [start], cleared
-     * in [stop]; the service outlives every tunnel it protects, so this holds
-     * nothing past the service's own lifetime.
+     * Called when the Xray process exits on its own while stealth is active —
+     * a crash, an OOM kill. Not called for an exit [stop] caused.
      */
-    @SuppressLint("StaticFieldLeak")
-    private var vpnService: VpnService? = null
+    @Volatile
+    private var onUnexpectedExit: (() -> Unit)? = null
+
+    /** Set by [stop] before it kills the process, so that exit is not unexpected. */
+    @Volatile
+    private var stopping = false
 
     /**
      * Get the local port that Xray is listening on.
@@ -83,25 +83,64 @@ object XrayManager {
      */
     fun isActive(): Boolean = isRunning
 
-    /** True when a libXray binding or packaged executable is available. */
-    fun isAvailable(context: Context): Boolean = hasLibXrayBinding() || findXrayBinary(context) != null
+    /** True when the Xray executable is packaged and runnable. */
+    fun isAvailable(context: Context): Boolean = findXrayBinary(context) != null
 
     /**
-     * Set the VPN service reference for socket protection.
-     * Must be called before [start] so Xray's outbound TCP socket can bypass the VPN.
+     * A1-041: the config file carries the VLESS UUID, a stealth credential.
+     * [stop] deletes it, but a process that died with Xray running never got
+     * there, and the file stayed in the cache until the next stealth start.
+     * The service calls this when it is created.
      */
-    fun setVpnService(service: VpnService) {
-        vpnService = service
+    fun deleteStaleConfig(context: Context) {
+        if (isRunning) return
+        try {
+            File(context.cacheDir, CONFIG_FILE_NAME).delete()
+        } catch (_: Exception) { /* best effort, as in stop() */ }
+    }
+
+    /**
+     * Where the server's Xray must forward the WireGuard packets: the node
+     * itself, at its WireGuard port (LIVE-AND-STEALTH-001).
+     *
+     * This used to be a hard-coded 127.0.0.1:51820. Since Xray 26 the
+     * server's freedom outbound refuses private and reserved destinations,
+     * loopback included, for a VLESS inbound — so Stealth on Android passed
+     * no traffic on any relay (an on-node canary: udp to 127.0.0.1:51820
+     * FAILS, udp to <node ip>:51820 PASSES). Derived exactly as the desktop
+     * client does (commands/vpn.rs, P1-dk-xray-wgport-hardcoded): the host of
+     * the stealth endpoint, and the port the user overrode, else the port of
+     * the server's own WireGuard endpoint. No fallback port: a config with
+     * neither cannot say where WireGuard listens, and guessing is how the
+     * hard-coded one broke.
+     *
+     * @param portOverride the user's WireGuard port setting ("auto" or a number).
+     * @return host and port, or null when either cannot be derived.
+     */
+    internal fun wireGuardTarget(xrayEndpoint: String?, wireGuardEndpoint: String?, portOverride: String): Pair<String, Int>? {
+        val host = xrayEndpoint?.let { parseEndpoint(it) }?.first ?: return null
+        val port = portOverride.toIntOrNull()?.takeIf { it in 1..65535 }
+            ?: wireGuardEndpoint?.let { parseEndpoint(it) }?.second
+            ?: return null
+        return host to port
     }
 
     /**
      * Start the Xray Reality stealth tunnel.
      *
      * @param context  Application context for accessing files
-     * @param config   VPN connect response containing Xray parameters
+     * @param config   VPN connect response containing Xray parameters (with
+     *   the server's own WireGuard endpoint, not the local relay)
+     * @param wireGuardPortOverride the user's WireGuard port setting ("auto" or a number)
+     * @param onExit   called if Xray exits on its own while running (A1-032)
      * @return true if Xray started successfully
      */
-    suspend fun start(context: Context, config: ConnectResponse): Boolean = withContext(Dispatchers.IO) {
+    suspend fun start(
+        context: Context,
+        config: ConnectResponse,
+        wireGuardPortOverride: String,
+        onExit: () -> Unit,
+    ): Boolean = withContext(Dispatchers.IO) {
         if (isRunning) {
             Log.w(TAG, "Xray already running, stopping first")
             stop()
@@ -182,6 +221,15 @@ object XrayManager {
             return@withContext false
         }
         val (serverHost, serverPort) = endpoint
+        val target = wireGuardTarget(xrayEndpoint, config.endpoint, wireGuardPortOverride)
+        if (target == null) {
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "stealth_wireguard_target_unknown",
+                "No WireGuard port could be derived for the Xray forward — refusing to guess one",
+            )
+            return@withContext false
+        }
 
         // Find an available local port
         localPort = findAvailablePort(DEFAULT_LOCAL_PORT)
@@ -197,23 +245,24 @@ object XrayManager {
                 publicKey = xrayPublicKey,
                 shortId = xrayShortId,
                 sni = xraySni,
+                targetHost = target.first,
+                targetPort = target.second,
             )
 
-            // Try libXray first (gomobile binding), then fall back to binary
-            val started = startWithLibXray(context, configJson)
-                || startWithBinary(context, configJson)
-
-            if (started) {
+            stopping = false
+            onUnexpectedExit = onExit
+            if (startWithBinary(context, configJson)) {
                 isRunning = true
                 Log.i(TAG, "Xray Reality tunnel started — listening on 127.0.0.1:$localPort")
                 return@withContext true
             } else {
-                // Each method reported its own failure; this is the verdict
+                // startWithBinary reported its own cause; this is the verdict
                 // the service acts on.
+                onUnexpectedExit = null
                 FaultReporter.report(
                     FaultReporter.PATH_STEALTH,
                     "stealth_start_failed_all_methods",
-                    "Failed to start Xray — both the libXray binding and the binary fallback failed",
+                    "Failed to start the Xray executable",
                 )
                 return@withContext false
             }
@@ -233,16 +282,10 @@ object XrayManager {
      */
     fun stop() {
         Log.i(TAG, "Stopping Xray Reality tunnel")
+        // This exit is ours: the stdout thread must not report it.
+        stopping = true
+        onUnexpectedExit = null
         try {
-            // Try libXray stop
-            try {
-                val xrayClass = Class.forName("libXray.Libxray")
-                val stopMethod = xrayClass.getDeclaredMethod("stopXray")
-                stopMethod.invoke(null)
-            } catch (_: Exception) {
-                // libXray not available, try process
-            }
-
             // Kill process if running
             xrayProcess?.let {
                 it.destroyForcibly()
@@ -267,7 +310,6 @@ object XrayManager {
             xrayConfigFile = null
             isRunning = false
             localPort = 0
-            vpnService = null
             Log.i(TAG, "Xray stopped")
         }
     }
@@ -276,80 +318,13 @@ object XrayManager {
     // real TCP connections to the Reality port after the tunnel was up — a
     // distinguishable on-wire pattern on exactly the networks stealth targets,
     // while by its own documentation protecting nothing (it could never reach
-    // Xray's internal fd). The *actual* off-tunnel guarantee is
-    // VpnService.Builder.addDisallowedApplication(packageName) in
-    // BirdoVpnService, which excludes the whole app process (incl. the
-    // in-process/subprocess Xray) from the tunnel by UID. The probe was removed.
+    // Xray's internal fd). What keeps Xray's own connection off the tunnel is
+    // the route carve-out and, while Stealth is on, the app's UID exclusion
+    // (BirdoVpnService.buildVpnInterface, TunnelRouting.kt).
 
-    // ── Xray Startup Methods ────────────────────────────────────
+    // ── Starting the executable ─────────────────────────────────
 
-    /**
-     * Try to start Xray via the libXray gomobile binding.
-     * This is the preferred method as it runs in-process.
-     */
-    private fun startWithLibXray(context: Context, configJson: String): Boolean {
-        return try {
-            val xrayClass = Class.forName("libXray.Libxray")
-
-            // Initialize Xray environment (asset directory for geoip/geosite)
-            val dataDir = File(context.filesDir, XRAY_DIR).apply { mkdirs() }
-            try {
-                val initMethod = xrayClass.getDeclaredMethod("initXrayEnv", String::class.java)
-                initMethod.invoke(null, dataDir.absolutePath)
-            } catch (_: NoSuchMethodException) {
-                Log.w(TAG, "initXrayEnv not available, continuing without init")
-                FaultReporter.trail(FaultReporter.PATH_STEALTH, "libXray has no initXrayEnv — started without asset init")
-            }
-
-            // Start Xray with config
-            val startMethod = xrayClass.getDeclaredMethod("startXray", String::class.java)
-            val result = startMethod.invoke(null, configJson)
-
-            // Check result — libXray returns empty string on success
-            val resultStr = result?.toString() ?: ""
-            if (resultStr.isEmpty() || resultStr == "ok" || resultStr == "true") {
-                Log.i(TAG, "Xray started via libXray")
-                // Wait briefly for Xray to bind
-                Thread.sleep(300)
-                true
-            } else {
-                // The result string is libXray's own error text and can quote
-                // the config (SNI, host) — kept out of the report on purpose.
-                FaultReporter.report(
-                    FaultReporter.PATH_STEALTH,
-                    "stealth_libxray_rejected_config",
-                    "libXray.startXray returned an error",
-                )
-                Log.d(TAG, "libXray.startXray result: $resultStr")
-                false
-            }
-        } catch (e: ClassNotFoundException) {
-            Log.i(TAG, "libXray not available, will try binary fallback")
-            false
-        } catch (e: Exception) {
-            FaultReporter.report(
-                FaultReporter.PATH_STEALTH,
-                "stealth_libxray_start_threw",
-                "Starting Xray via libXray threw",
-                e,
-            )
-            false
-        }
-    }
-
-    private fun hasLibXrayBinding(): Boolean = try {
-        Class.forName("libXray.Libxray")
-        true
-    } catch (_: ClassNotFoundException) {
-        false
-    } catch (_: Throwable) {
-        false
-    }
-
-    /**
-     * Fall back to running xray-core as an external binary.
-     * The binary should be placed in the app's native lib directory or assets.
-     */
+    /** Run the packaged xray-core executable with [configJson]. */
     private fun startWithBinary(context: Context, configJson: String): Boolean {
         return try {
             // Look for xray binary in native libs or extracted assets
@@ -357,7 +332,7 @@ object XrayManager {
                 FaultReporter.report(
                     FaultReporter.PATH_STEALTH,
                     "stealth_binary_missing",
-                    "No Xray binary is packaged and libXray was unavailable",
+                    "No Xray executable is packaged",
                 )
                 return false
             }
@@ -375,7 +350,7 @@ object XrayManager {
 
             // Write config to a temp file (deleted in stop(); delete any stale
             // copy from a previous crashed session before writing anew)
-            val configFile = File(context.cacheDir, "xray_config.json")
+            val configFile = File(context.cacheDir, CONFIG_FILE_NAME)
             configFile.delete()
             configFile.writeText(configJson)
             xrayConfigFile = configFile
@@ -403,6 +378,10 @@ object XrayManager {
                 try {
                     process.waitFor()
                 } catch (_: InterruptedException) { /* shutting down */ }
+                // A1-032: an Xray that died on its own used to be noticed
+                // only by the stall detector, minutes later. Tell the service
+                // now — unless stop() caused it, or a newer Xray replaced it.
+                if (!stopping && xrayProcess === process) onUnexpectedExit?.invoke()
             }, "xray-stdout").apply { isDaemon = true; start() }
 
             // Give it a moment to start and verify
@@ -440,7 +419,7 @@ object XrayManager {
      * Inbound: dokodemo-door on 127.0.0.1:{localPort} accepting WireGuard UDP
      * Outbound: VLESS + XTLS-Reality to server:{serverPort} over TLS 1.3
      */
-    private fun buildXrayConfig(
+    internal fun buildXrayConfig(
         localPort: Int,
         serverHost: String,
         serverPort: Int,
@@ -448,6 +427,8 @@ object XrayManager {
         publicKey: String,
         shortId: String,
         sni: String,
+        targetHost: String,
+        targetPort: Int,
     ): String {
         return JSONObject().apply {
             // Log configuration
@@ -463,8 +444,10 @@ object XrayManager {
                     put("port", localPort)
                     put("protocol", "dokodemo-door")
                     put("settings", JSONObject().apply {
-                        put("address", "127.0.0.1")
-                        put("port", 51820) // Server-side WireGuard port
+                        // Where the SERVER's Xray forwards: the node's own
+                        // WireGuard endpoint, never loopback ([wireGuardTarget]).
+                        put("address", targetHost)
+                        put("port", targetPort)
                         put("network", "udp")
                     })
                 })

@@ -124,7 +124,7 @@ internal class VpnNotificationManager(private val context: Context) {
          * those need the app, which the notification's tap opens.
          */
         private fun offersReconnect(kind: FailureKind): Boolean =
-            !kind.terminal || kind == FailureKind.REVOKED
+            !kind.terminal || kind == FailureKind.REVOKED || kind == FailureKind.EVICTED
 
         /** The body line while connected: "via {location}[ · {IP}]" (P1-parity-028). */
         fun connectedBody(location: String?, ip: String?): String? {
@@ -157,12 +157,17 @@ internal class VpnNotificationManager(private val context: Context) {
             val title = when (state.kind) {
                 FailureKind.SIGN_IN_REQUIRED -> R.string.notif_alert_sign_in
                 FailureKind.UPDATE_REQUIRED -> R.string.notif_alert_update
-                FailureKind.REVOKED -> R.string.notif_alert_revoked
+                FailureKind.REVOKED, FailureKind.EVICTED -> R.string.notif_alert_revoked
+                FailureKind.QUOTA_EXCEEDED -> R.string.notif_alert_quota
                 FailureKind.VPN_TAKEN_OVER -> R.string.notif_alert_turned_off
                 FailureKind.SETUP_REQUIRED, FailureKind.VPN_PERMISSION_REQUIRED -> R.string.notif_alert_open_app
                 else -> R.string.notif_alert_cant_connect
             }
-            val body = if (killSwitchActive) {
+            // A give-up already says what happened to the traffic; its release
+            // is queued behind it, so the block is still up for the first
+            // render and appending "is blocking" contradicted the sentence
+            // before it (REVIEW-AND-014).
+            val body = if (killSwitchActive && !SessionCopy.speaksForTraffic(state.message)) {
                 state.message + " " + SessionCopy.STILL_BLOCKED
             } else {
                 state.message
@@ -173,6 +178,26 @@ internal class VpnNotificationManager(private val context: Context) {
                 body = body,
                 reconnect = offersReconnect(state.kind),
             )
+        }
+
+        /**
+         * The address shown for the session's server (A1-020): the endpoint's IP
+         * literal for a single hop — the node the user picked — and NOTHING for
+         * Multi-Hop, where the endpoint is the ENTRY node: showing it as the
+         * user's address told a Multi-Hop customer they came out in the
+         * entry's country, the opposite of what they bought. The backend sends
+         * `ip:port` (vpn.service.ts), so the hostname branch that used to
+         * resolve names here was dead and is gone.
+         */
+        fun serverAddressForDisplay(endpoint: String?, multiHop: Boolean): String? {
+            if (multiHop || endpoint.isNullOrBlank()) return null
+            val host = if (endpoint.startsWith("[")) {
+                endpoint.substringAfter("[").substringBefore("]")
+            } else {
+                endpoint.substringBeforeLast(":", "")
+            }
+            val ipv4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            return host.takeIf { ipv4.matches(it) || (endpoint.startsWith("[") && it.contains(':')) }
         }
 
         /** Posted when a system start could not bring the service back at all. */
@@ -317,7 +342,9 @@ internal class VpnNotificationManager(private val context: Context) {
         val accentColor = accentFor(model.tone)
         val pendingOpen = openAppIntent()
         val text = body ?: (state as? VpnState.Reconnecting)?.let {
-            if (it.waitingForNetwork) {
+            if (it.waitingForNetwork && it.captivePortal) {
+                context.getString(R.string.notif_body_captive_portal)
+            } else if (it.waitingForNetwork) {
                 context.getString(R.string.notif_body_waiting_network)
             } else {
                 context.getString(R.string.notif_body_attempt, it.attempt)
@@ -414,6 +441,10 @@ internal class VpnNotificationManager(private val context: Context) {
                 .setStyle(NotificationCompat.BigTextStyle().bigText(alert.body))
                 .setContentIntent(openAppIntent())
                 .setAutoCancel(true)
+                // A re-post of the same alert (the block flag flipped, the
+                // service re-rendered) updates it silently instead of
+                // sounding a second time (REVIEW-AND-014).
+                .setOnlyAlertOnce(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_ERROR)
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
@@ -433,6 +464,32 @@ internal class VpnNotificationManager(private val context: Context) {
 
     fun cancelAlert() {
         notificationManager.cancel(ALERT_NOTIFICATION_ID)
+    }
+
+    /**
+     * A new process found no service, yet a dead one's ongoing notification
+     * can still be on screen saying "Protected" (seen live on API 35 after a
+     * crash with START_STICKY). Replace its content with the truth first —
+     * an update is allowed even while the system still counts it as a
+     * foreground-service notification, which an app cannot cancel — then
+     * cancel it, which succeeds once nothing owns it.
+     */
+    fun retractStaleStatus() {
+        try {
+            val honest = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notif_disconnected)
+                .setContentTitle(context.getString(R.string.status_not_connected))
+                .setContentText(SessionCopy.STOPPED_UNEXPECTEDLY)
+                .setContentIntent(openAppIntent())
+                .setSilent(true)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .build()
+            notificationManager.notify(NOTIFICATION_ID, honest)
+            notificationManager.cancel(NOTIFICATION_ID)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not retract the stale status notification", e)
+        }
     }
 
     // ── Post-disconnect notification ─────────────────────────────

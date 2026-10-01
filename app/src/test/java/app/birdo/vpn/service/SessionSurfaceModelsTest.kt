@@ -96,6 +96,45 @@ class SessionSurfaceModelsTest {
             VpnState.Error("BirdoVPN stopped reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE), false, false, false,
         )
         assertTrue(gaveUp!!.reconnect)
+
+        // birdo-web PR #590: the allowance is used. Said as what it is, and no
+        // Reconnect: the server would refuse it.
+        val quota = VpnNotificationManager.alertFor(
+            VpnState.Error("You've used this month's free data allowance.", FailureKind.QUOTA_EXCEEDED), false, false, false,
+        )
+        assertEquals(R.string.notif_alert_quota, quota!!.title)
+        assertFalse(quota.reconnect)
+        assertNull(
+            "never over the app's own screen",
+            VpnNotificationManager.alertFor(VpnState.Error("x", FailureKind.QUOTA_EXCEEDED), false, false, true),
+        )
+    }
+
+    @Test
+    fun `the address shown is the single hop's server, and never a Multi-Hop entry node`() {
+        // A1-020: a Multi-Hop endpoint is the ENTRY node; showing it as the
+        // user's address told them they came out in the entry's country.
+        assertEquals("203.0.113.7", VpnNotificationManager.serverAddressForDisplay("203.0.113.7:51820", multiHop = false))
+        assertNull(VpnNotificationManager.serverAddressForDisplay("203.0.113.7:51820", multiHop = true))
+        assertEquals("2001:db8::7", VpnNotificationManager.serverAddressForDisplay("[2001:db8::7]:51820", multiHop = false))
+        // No name resolution, ever, and nothing for a missing endpoint.
+        assertNull(VpnNotificationManager.serverAddressForDisplay("node.birdo.app:51820", multiHop = false))
+        assertNull(VpnNotificationManager.serverAddressForDisplay(null, multiHop = false))
+    }
+
+    @Test
+    fun `a give-up rendered before its release lands does not also say the block holds`() {
+        // REVIEW-AND-014: the verdict renders while RELEASE_BLOCK is still
+        // queued, so the block flag is still true for that first render.
+        val message = SessionCopy.giveUp(FailureKind.DIED_AFTER_HANDSHAKE, 8, lockdown = false)
+        val alert = VpnNotificationManager.alertFor(
+            VpnState.Error(message, FailureKind.DIED_AFTER_HANDSHAKE),
+            killSwitchActive = true,
+            sessionExpired = false,
+            uiForeground = false,
+        )!!
+        assertEquals(message, alert.body)
+        assertFalse(alert.body.contains(SessionCopy.STILL_BLOCKED))
     }
 
     @Test

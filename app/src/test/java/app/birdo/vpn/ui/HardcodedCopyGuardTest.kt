@@ -46,21 +46,6 @@ class HardcodedCopyGuardTest {
      */
     private val allowed: Set<String> = emptySet()
 
-    /**
-     * Copy in files another 2026-09-30 overhaul lane owns this round
-     * (AND-VPN-B: VpnViewModel). Listed text by text, so a NEW literal in the
-     * same file still fails; delete an entry when its string moves.
-     */
-    private val pendingElsewhere: Map<String, Set<String>> = mapOf(
-        "ui/viewmodel/VpnViewModel.kt" to setOf(
-            "Both of your Multi-Hop servers were retired. Pick a new entry and exit.",
-            "Your Multi-Hop entry server was retired. Pick a new one.",
-            "Your Multi-Hop exit server was retired. Pick a new one.",
-            "Couldn't switch server — please try again.",
-            "Failed to create port forward",
-        ),
-    )
-
     @Test
     fun `no hard-coded user-facing copy under ui and billing`() {
         var files = 0
@@ -70,10 +55,9 @@ class HardcodedCopyGuardTest {
             File(main, dir).walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { f ->
                 files++
                 val path = f.relativeTo(main).invariantSeparatorsPath
-                val pending = pendingElsewhere[path].orEmpty()
                 val found = SourceCopy.scan(f.readText())
                 literals += found.size
-                found.filter { it.isProse && it.text !in allowed && it.text !in pending }
+                found.filter { it.isProse && it.text !in allowed }
                     .forEach { hits += "$path:${it.line}: \"${it.text}\"" }
             }
         }
@@ -134,16 +118,6 @@ class HardcodedCopyGuardTest {
             ),
             prose,
         )
-    }
-
-    @Test
-    fun `every pending entry names a file that exists`() {
-        // Not a stale-text check (the owning lane may move its copy first):
-        // a renamed file must not leave an entry behind that exempts nothing
-        // today and a new file of the same name tomorrow.
-        pendingElsewhere.keys.forEach { path ->
-            assertTrue("pending file is missing: $path", File(main, path).isFile)
-        }
     }
 }
 
