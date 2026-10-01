@@ -74,10 +74,15 @@ interface BirdoApi {
      * backend does not serve: every in-app deletion on Android failed (audit
      * 2026-09-29, P0-6 / C-2). iOS has always sent `/api/v1/gdpr/delete`.
      * Pinned by GdprRouteContractTest.
+     *
+     * @param aroundTunnel always [AroundTunnel] (REVIEW-AND2-002): the server
+     *   revokes every peer of the account, this device's included, before it
+     *   answers, so through the tunnel its success reply would never arrive.
      */
     @HTTP(method = "DELETE", path = GDPR_DELETE_PATH, hasBody = true)
     suspend fun deleteAccount(
         @Body request: DeleteAccountRequest,
+        @Tag aroundTunnel: AroundTunnel,
     ): Response<DeleteAccountResponse>
 
     /**

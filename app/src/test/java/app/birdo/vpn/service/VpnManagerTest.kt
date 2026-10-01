@@ -1934,6 +1934,28 @@ class VpnManagerTest {
         coVerify(exactly = 0) { repository.connectVpn(any(), any()) }
     }
 
+    /**
+     * REVIEW-AND2-002: the deletion's success now arrives while connected, and
+     * the server has already revoked this device's peer. The tunnel comes down
+     * on that success (A2-005), with no DELETE for a key the server removed and
+     * no re-dial when the dead tunnel's own error lands afterwards.
+     */
+    @Test
+    fun `a confirmed account deletion tears the session down without releasing or re-dialling`() = runTest {
+        connectAndEstablish()
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        verify { prefs.sessionShouldBeUp = false }
+
+        tunnelDies()
+        advanceTimeBy(30 * 60_000L)
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        coVerify(exactly = 0) { repository.sendHeartbeat(any(), true) }
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
     @Test
     fun `sign-out waits for the server to release the slot`() = runTest {
         val gate = CompletableDeferred<ApiResult<Unit>>()

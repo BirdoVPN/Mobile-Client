@@ -439,7 +439,7 @@ class BirdoRepositoryTest {
 
     @Test
     fun `deleteAccount success resets the device identity`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(
             DeleteAccountResponse(success = true)
         )
 
@@ -456,19 +456,19 @@ class BirdoRepositoryTest {
     /** ACCOUNT-API-2026-10-01, item 85: the code rides the same body, and only when there is one. */
     @Test
     fun `deleteAccount sends the 2FA code with the password`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(DeleteAccountResponse(success = true))
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(DeleteAccountResponse(success = true))
 
         repository.deleteAccount("pass123", "123456")
         repository.deleteAccount("pass123")
 
-        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", "123456")) }
-        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", null)) }
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", "123456"), AroundTunnel) }
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", null), AroundTunnel) }
     }
 
     @Test
     fun `failed deleteAccount keeps the device identity`() = runTest {
         val err = "nope".toResponseBody("text/plain".toMediaType())
-        coEvery { api.deleteAccount(any()) } returns Response.error(400, err)
+        coEvery { api.deleteAccount(any(), any()) } returns Response.error(400, err)
 
         repository.deleteAccount("wrong-pass")
 
@@ -482,7 +482,7 @@ class BirdoRepositoryTest {
 
     @Test
     fun `deleteAccount success forgets the ML-KEM keypair`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(
             DeleteAccountResponse(success = true)
         )
 

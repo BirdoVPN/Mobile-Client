@@ -430,10 +430,19 @@ class BirdoRepository @Inject constructor(
      * GDPR Art. 17: Delete the user's account and all associated data.
      * Requires password re-confirmation to prevent deletion via stolen JWT.
      * On success, clears all local tokens and cached data.
+     *
+     * Sent around the tunnel even while Connected (REVIEW-AND2-002). The
+     * server revokes every peer of the account before it answers, and since
+     * D-6 the request rode this device's own peer: the success reply was
+     * dropped at the node, the dialog said deletion failed, and nothing below
+     * ran — no Play "still billing" notice, no device-id or ML-KEM rotation,
+     * no sign-out — while the dead tunnel left the device blocked behind a
+     * sign-in prompt for an account that no longer existed. The VPN is still
+     * torn down only after this succeeds (A2-005).
      */
     suspend fun deleteAccount(password: String?, twoFactorCode: String? = null): ApiResult<DeleteAccountResponse> {
         val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
-            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode))
+            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode), AroundTunnel)
         }
         if (result is ApiResult.Success) {
             // Clear local state — account no longer exists on the server.

@@ -1314,6 +1314,33 @@ class AuthViewModelTest {
         assertFalse(viewModel.uiState.value.accountDeleted)
     }
 
+    /**
+     * REVIEW-AND2-002: a deletion's success reply now arrives while connected
+     * (it goes around the tunnel the server revokes). What it carries must
+     * reach the screen: the store subscription that keeps billing, and the
+     * signed-out state the graph tears the VPN down on (onAccountDeleted).
+     */
+    @Test
+    fun `a deletion's success signs out and carries the store subscription that keeps billing`() = runTest {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        viewModel = createViewModel()
+        val stillBilling = app.birdo.vpn.data.model.StoreSubscriptionStillBilling(
+            store = "GOOGLE_PLAY",
+            productId = "birdo_operative",
+        )
+        coEvery { repository.deleteAccount("password1", null) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.DeleteAccountResponse(success = true, storeSubscriptionsStillBilling = listOf(stillBilling)),
+        )
+
+        viewModel.deleteAccount("password1")
+
+        val state = viewModel.uiState.value
+        assertTrue(state.accountDeleted)
+        assertFalse(state.isLoggedIn)
+        assertEquals(listOf(stillBilling), state.storeSubscriptionsStillBilling)
+        assertNull(state.deleteAccountError)
+    }
+
     @Test
     fun `a wrong deletion password shows the mapped message and keeps the account`() = runTest {
         coEvery { repository.getProfile() } returns ApiResult.Success(profile)
