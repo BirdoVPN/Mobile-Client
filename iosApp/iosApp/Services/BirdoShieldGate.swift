@@ -49,7 +49,7 @@ struct ClientConfigResponse: Decodable, Sendable {
         let stringValue: String
         init?(stringValue: String) { self.stringValue = stringValue }
         var intValue: Int? { nil }
-        init?(intValue: Int) { nil }
+        init?(intValue: Int) { return nil }
     }
 
     private struct PlanFeatures: Decodable {
