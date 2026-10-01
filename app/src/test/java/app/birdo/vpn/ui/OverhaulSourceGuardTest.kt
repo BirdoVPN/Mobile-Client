@@ -235,6 +235,35 @@ class OverhaulSourceGuardTest {
         assertEquals("sp-sized Text in a fixed-size tile (A2-024)", emptyMap<String, Set<Int>>(), unexpected)
     }
 
+    // ── D6 (owner decision, 2026-10-01) ──────────────────────────────────
+
+    @Test
+    fun `Custom DNS Servers is on every plan, in Settings and on the paywall`() {
+        val settings = source("$main/ui/screen/SettingsScreen.kt")
+        assertFalse("Custom DNS is plan-gated again", settings.contains("customDnsUnlocked"))
+        val row = settings.substringAfter("title = stringResource(R.string.vpn_settings_custom_dns)")
+            .substringBefore("item")
+        assertFalse("the Custom DNS row is locked again", row.contains("locked"))
+        assertFalse(source("$main/ui/navigation/BirdoNavGraph.kt").contains("customDnsUnlocked"))
+
+        val plans = source("$main/ui/screen/SubscriptionScreen.kt").replace("\r\n", "\n")
+            .substringAfter("private val plans = listOf(").substringBefore("\n)\n")
+        val cards = plans.split("PlanInfo(").drop(1)
+        assertEquals("three plan cards", 3, cards.size)
+        cards.forEach { card ->
+            assertTrue(
+                "a plan card no longer lists Custom DNS Servers",
+                card.contains("R.string.subscription_feature_custom_dns"),
+            )
+        }
+        val listing = source("store-assets/listing/en-US/full-description.txt")
+        assertTrue(listing.contains("Custom DNS servers on every plan"))
+        assertFalse(
+            "the Play listing sells Custom DNS as a Sovereign feature again",
+            Regex("""Sovereign:[^\n]*custom DNS""", RegexOption.IGNORE_CASE).containsMatchIn(listing),
+        )
+    }
+
     // ── A2-003 ───────────────────────────────────────────────────────────
 
     @Test

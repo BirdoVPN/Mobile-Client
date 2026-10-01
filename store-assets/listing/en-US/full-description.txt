@@ -19,12 +19,12 @@ EVERYDAY USE
 • Quick Settings tile and home-screen widget for one-tap connect.
 • Biometric lock: require your fingerprint or face to open the app.
 • Local network sharing, and a custom WireGuard port and MTU.
-• Port forwarding and custom DNS (Sovereign).
+• Custom DNS servers on every plan, and port forwarding (Sovereign).
 
 PLANS
 • Recon (free): 1 device, 10 GB of data a month, core server locations.
 • Operative: 5 devices, unlimited data, all server locations, stealth mode.
-• Sovereign: 10 devices, plus multi-hop, port forwarding and custom DNS.
+• Sovereign: 10 devices, plus multi-hop and port forwarding.
 Subscriptions bought in the app are billed by Google Play in your local currency. Manage or cancel them in the Play Store: deleting your BirdoVPN account does not cancel a Google Play subscription.
 
 OPEN ABOUT WHAT WE ARE

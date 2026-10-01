@@ -717,9 +717,9 @@ fun BirdoNavGraph(
                     DisposableEffect(Unit) {
                         onDispose { settingsViewModel.commitPendingReapply() }
                     }
-                    // Custom DNS and Port Forwarding are SOVEREIGN-only.
-                    // Post-quantum protection is a FREE-tier feature (per the
-                    // pricing/feature lists) so it stays ungated for everyone.
+                    // Port Forwarding is SOVEREIGN-only. Custom DNS Servers is
+                    // on every plan (owner decision D6, 2026-10-01), and so is
+                    // post-quantum protection (per the pricing/feature lists).
                     val settingsPlan = vpnState.subscription?.plan?.uppercase()
                     val settingsIsSovereign = settingsPlan == "SOVEREIGN"
                     SettingsScreen(
@@ -752,7 +752,6 @@ fun BirdoNavGraph(
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
                         onCrashReportsChange = { settingsViewModel.setCrashReports(it) },
-                        customDnsUnlocked = settingsIsSovereign,
                         portForwardUnlocked = settingsIsSovereign,
                         quantumUnlocked = true,
                         onUpgradeRequired = {

@@ -77,7 +77,7 @@ fun SettingsScreen(
     // ── Plan gating ──────────────────────────────────────────────
     // A locked row does not toggle; it taps through to the upgrade flow,
     // the same affordance Stealth Mode uses on the VPN Settings sub-page.
-    customDnsUnlocked: Boolean = true,
+    // Custom DNS Servers is on every plan (owner decision D6, 2026-10-01).
     portForwardUnlocked: Boolean = true,
     quantumUnlocked: Boolean = true,
     onUpgradeRequired: () -> Unit = {},
@@ -291,14 +291,12 @@ fun SettingsScreen(
                     iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_custom_dns),
                     description = stringResource(R.string.settings_custom_dns_desc),
-                    checked = state.customDnsEnabled && customDnsUnlocked,
+                    checked = state.customDnsEnabled,
                     onCheckedChange = onCustomDnsEnabledChange,
-                    locked = !customDnsUnlocked,
-                    onLockedTap = onUpgradeRequired,
                 )
             }
 
-            if (state.customDnsEnabled && customDnsUnlocked) {
+            if (state.customDnsEnabled) {
                 // Keyed: the fields keep their typed text in saved state, and
                 // an item that appears above them (the reset notice, the
                 // notification detail rows) must not hand it to another row.

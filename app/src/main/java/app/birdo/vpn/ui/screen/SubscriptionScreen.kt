@@ -90,6 +90,8 @@ private val plans = listOf(
             PlanFeature.Plain(R.string.subscription_feature_kill_switch),
             PlanFeature.Plain(R.string.subscription_feature_dns_leak),
             PlanFeature.Plain(R.string.subscription_feature_split_tunneling),
+            // Every plan since owner decision D6 (2026-10-01).
+            PlanFeature.Plain(R.string.subscription_feature_custom_dns),
             PlanFeature.Plain(R.string.subscription_feature_two_factor),
             PlanFeature.Plain(R.string.subscription_feature_hide_app_contents),
         ),
@@ -110,6 +112,7 @@ private val plans = listOf(
             PlanFeature.Plain(R.string.subscription_feature_dns_leak),
             PlanFeature.Plain(R.string.subscription_feature_split_tunneling),
             PlanFeature.Plain(R.string.subscription_feature_stealth),
+            PlanFeature.Plain(R.string.subscription_feature_custom_dns),
             PlanFeature.Plain(R.string.subscription_feature_two_factor),
             PlanFeature.Plain(R.string.subscription_feature_hide_app_contents),
             PlanFeature.Plain(R.string.subscription_feature_priority_support),

@@ -634,7 +634,8 @@
 
     <!-- Paywall plan cards (SubscriptionScreen). Feature names are Title Case
          labels (canonical vocabulary). "Recon" is the free card's name, as on
-         iOS. -->
+         iOS. Custom DNS Servers is on every plan (owner decision D6,
+         2026-10-01). -->
     <string name="subscription_plan_recon">Recon</string>
     <string name="subscription_tagline_recon">Test the waters</string>
     <string name="subscription_tagline_operative">Most popular</string>
