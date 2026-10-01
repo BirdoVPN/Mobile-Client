@@ -722,8 +722,15 @@ class VpnViewModel @Inject constructor(
         }
         viewModelScope.launch {
             try {
-                // A failure is published by VpnManager as the session's Error.
-                vpnManager.connect(server.id)
+                // A failure is published by VpnManager as the session's Error —
+                // except a live switch that did not happen (A1-034): that one
+                // kept the previous session, so say so and put the selection back.
+                val result = vpnManager.connect(server.id)
+                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED &&
+                    vpnManager.state.value is VpnState.Connected
+                ) {
+                    _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                }
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 // Never let a switch failure escape the coroutine and crash the

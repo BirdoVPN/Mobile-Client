@@ -712,6 +712,12 @@ class BirdoRepository @Inject constructor(
         integrityToken: String? = null,
         /** BirdoShield (D18): per-device DNS-filtering opt-in — see ConnectRequest.dnsFiltering. */
         dnsFiltering: Boolean = false,
+        /**
+         * A1-034: the key id of the live session this connect rebuilds in
+         * place (ConnectRequest.rebuild/currentKeyId), or null for an ordinary
+         * connect.
+         */
+        rebuildOf: String? = null,
     ): ApiResult<ConnectResponse> {
         // FIX-1-1: Generate X25519 keypair locally — private key never leaves the device.
         // Uses wireguard-android's crypto module which wraps Curve25519.
@@ -749,6 +755,8 @@ class BirdoRepository @Inject constructor(
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                     dnsFiltering = dnsFiltering,
+                    rebuild = rebuildOf != null,
+                    currentKeyId = rebuildOf,
                 ))
             }
             if (result is ApiResult.Success) {
@@ -814,6 +822,14 @@ class BirdoRepository @Inject constructor(
     }
 
     /**
+     * A1-034: a live rebuild that kept the old session puts its key id back,
+     * so a later process's teardown names the peer that is actually up.
+     */
+    fun rememberKeyId(keyId: String) {
+        synchronized(keyIdLock) { tokenManager.setLastKeyId(keyId) }
+    }
+
+    /**
      * FIX-2-10: Send heartbeat to backend to report connection health.
      * P1-9: Returns HeartbeatResponse so callers can act on valid/serverOnline.
      */
@@ -845,6 +861,8 @@ class BirdoRepository @Inject constructor(
         integrityToken: String? = null,
         /** BirdoShield (D18) — the twin of [connectVpn]'s dnsFiltering; both dial paths carry it. */
         dnsFiltering: Boolean = false,
+        /** A1-034 — the twin of [connectVpn]'s rebuildOf. */
+        rebuildOf: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
@@ -870,6 +888,8 @@ class BirdoRepository @Inject constructor(
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                     dnsFiltering = dnsFiltering,
+                    rebuild = rebuildOf != null,
+                    currentKeyId = rebuildOf,
                 ))
             }
             if (result is ApiResult.Success) {

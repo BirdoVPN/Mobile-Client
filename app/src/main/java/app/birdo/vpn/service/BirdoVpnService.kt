@@ -35,6 +35,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -183,6 +184,17 @@ class BirdoVpnService : VpnService() {
 
         /** The notification's Reconnect action: VpnManager.connectPreferred(). */
         const val ACTION_USER_RECONNECT = "app.birdo.vpn.USER_RECONNECT"
+
+        /**
+         * A1-034: rebuild the live session in place with the config set by
+         * [setRebuildConfig]: establish() the new interface on THIS running
+         * service and swap wg-go to it, instead of tearing down to the block.
+         * The outcome goes back through [completeLiveRebuild].
+         */
+        const val ACTION_LIVE_REBUILD = "app.birdo.vpn.LIVE_REBUILD"
+
+        /** LIVE_REBUILD only: the id VpnManager waits on. */
+        const val EXTRA_REBUILD_ID = "rebuild_id"
 
         /**
          * Sent by BirdoApp when its process starts and finds a session the
@@ -368,6 +380,30 @@ class BirdoVpnService : VpnService() {
         private var splitTunnelAppList: Set<String> = emptySet()
 
         fun setConfig(config: ConnectResponse) { activeConfig = config }
+
+        /**
+         * A1-034: the config a live rebuild swaps in. Kept apart from
+         * [activeConfig], which still describes the session that is up until
+         * the swap actually happens (and stays it, if the rebuild never does).
+         */
+        @Volatile private var rebuildConfig: ConnectResponse? = null
+
+        fun setRebuildConfig(config: ConnectResponse) { rebuildConfig = config }
+
+        /** Outcomes VpnManager is waiting for, by rebuild id ([ACTION_LIVE_REBUILD]). */
+        private val pendingRebuilds = ConcurrentHashMap<Long, CompletableDeferred<LiveRebuildPolicy.Event>>()
+
+        /** Register for the outcome of rebuild [id] BEFORE sending it, so it cannot be missed. */
+        internal fun expectLiveRebuild(id: Long): CompletableDeferred<LiveRebuildPolicy.Event> =
+            CompletableDeferred<LiveRebuildPolicy.Event>().also { pendingRebuilds[id] = it }
+
+        internal fun completeLiveRebuild(id: Long, event: LiveRebuildPolicy.Event) {
+            pendingRebuilds.remove(id)?.complete(event)
+        }
+
+        internal fun forgetLiveRebuild(id: Long) {
+            pendingRebuilds.remove(id)
+        }
     }
 
     // ── Dependencies (lazy to avoid init-order crashes) ──────────
@@ -767,6 +803,10 @@ class BirdoVpnService : VpnService() {
             }
             ACTION_RELEASE_BLOCK -> serial { handleReleaseBlock() }
             ACTION_UPDATE_SETTINGS -> serial { handleUpdateSettings(intent) }
+            ACTION_LIVE_REBUILD -> {
+                val gen = transitionGen.incrementAndGet()
+                serial { handleLiveRebuild(intent, gen) }
+            }
             ACTION_USER_DISCONNECT -> {
                 val manager = entryPoint?.vpnManager()
                 if (manager != null) {
@@ -2224,7 +2264,12 @@ class BirdoVpnService : VpnService() {
      *    the ordinary backoff reconnect. Emitting "blocked" instead would ask
      *    VpnManager for a fallback it has already made — a reconnect loop.
      */
-    private fun startTransportProbe(handle: Int, gen: Long, onStealthTransport: Boolean) {
+    private fun startTransportProbe(
+        handle: Int,
+        gen: Long,
+        onStealthTransport: Boolean,
+        liveRebuildId: Long? = null,
+    ) {
         Thread({
             val verdict = try {
                 TransportProbe(
@@ -2241,6 +2286,7 @@ class BirdoVpnService : VpnService() {
                             currentState !is VpnState.Disconnecting &&
                             currentState !is VpnState.Error
                     },
+                    windowMs = if (liveRebuildId != null) LiveRebuildPolicy.PROBE_WINDOW_MS else TransportProbe.WINDOW_MS,
                 ).await()
             } catch (t: Throwable) {
                 // Never strand the connect on an unexpected probe failure: with
@@ -2260,7 +2306,14 @@ class BirdoVpnService : VpnService() {
             }
             // The verdict is a transition like any other: serialised, and
             // dropped if a newer one (a Disconnect, a switch) owns the tunnel.
-            serial { if (isCurrent(gen) && tunnelHandle == handle) onProbeVerdict(verdict, handle, onStealthTransport) }
+            serial {
+                val current = isCurrent(gen) && tunnelHandle == handle
+                when {
+                    liveRebuildId != null && current -> onLiveRebuildVerdict(verdict, handle, gen, liveRebuildId)
+                    liveRebuildId != null -> completeLiveRebuild(liveRebuildId, LiveRebuildPolicy.Event.SUPERSEDED)
+                    current -> onProbeVerdict(verdict, handle, onStealthTransport)
+                }
+            }
         }, "birdo-transport-probe").apply { isDaemon = true }.start()
     }
 
@@ -2298,6 +2351,140 @@ class BirdoVpnService : VpnService() {
             // switch). Whoever tore it down owns the state.
             TransportProbe.Result.ABORTED -> Unit
         }
+    }
+
+    // ── A1-034: the in-place live rebuild ────────────────────────────
+
+    /**
+     * Rebuild the live session in place: the new config is checked first, the
+     * new interface is established on THIS running service — which moves
+     * routing to it atomically and leaves the old one untouched if it fails —
+     * and only then does wg-go move over. The pure rules and why Android fails
+     * closed after the swap instead of reverting: LiveRebuildPolicy.
+     */
+    private fun handleLiveRebuild(intent: Intent, gen: Long) {
+        val id = intent.getLongExtra(EXTRA_REBUILD_ID, -1L)
+        val config = rebuildConfig
+        rebuildConfig = null
+        fun keepOld() = completeLiveRebuild(id, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
+        if (config == null || !isCurrent(gen) || currentState !is VpnState.Connected || tunnelHandle < 0 ||
+            stealthActive
+        ) {
+            keepOld()
+            return
+        }
+        isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
+        isSplitTunnelingEnabled = intent.getBooleanExtra(EXTRA_SPLIT_TUNNEL_ENABLED, isSplitTunnelingEnabled)
+        intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)?.let { splitTunnelAppList = it.toSet() }
+
+        val prepared = prepareLiveRebuild(config) ?: run { keepOld(); return }
+        if (!isCurrent(gen)) {
+            completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
+            return
+        }
+        // establish() on the running service. null leaves "the existing
+        // interface and its file descriptor untouched" (VpnService.Builder
+        // .establish docs): the old session is exactly as it was.
+        val vpnFd = buildVpnInterface(prepared.first, stealth = false) ?: run {
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "live_rebuild_establish_refused",
+                "establish() refused the live rebuild's interface — the live session is kept",
+            )
+            keepOld()
+            return
+        }
+
+        // ── THE SWAP. The new interface carries the traffic from here; the
+        // old one is deactivated, and its wg-go instance goes with it.
+        updateState(VpnState.Connecting)
+        stopNotificationTicker()
+        cleanupTunnelDataPlane()
+        val tunFd = vpnFd.detachFd()
+        val handle = WgNative.turnOn("birdo0", tunFd, prepared.second.toWgUserspaceString())
+        if (handle < 0) {
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "live_rebuild_turn_on_rejected",
+                "wgTurnOn refused the live rebuild's configuration (code $handle) — failing closed",
+            )
+            try { ParcelFileDescriptor.adoptFd(tunFd).close() } catch (_: Exception) {}
+            failLiveRebuildClosed(gen, id)
+            return
+        }
+        tunnelHandle = handle
+        if (!protectTunnelSockets(handle)) {
+            failLiveRebuildClosed(gen, id)
+            return
+        }
+        startTunnelMonitor(handle, WireGuardConfigBuilder.effectiveKeepaliveSec(prepared.first))
+        registerUnderlyingNetworkCallback(handle)
+        activeConfig = prepared.first.copy(privateKey = "", presharedKey = null)
+        _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
+        _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
+        extractServerIp()
+        mainHandler.removeCallbacks(connectTimeoutRunnable)
+        mainHandler.postDelayed(connectTimeoutRunnable, LiveRebuildPolicy.PROBE_WINDOW_MS + CONNECT_TIMEOUT_MS)
+        startTransportProbe(handle, gen, onStealthTransport = false, liveRebuildId = id)
+    }
+
+    /**
+     * Everything a live rebuild can refuse BEFORE the old tunnel is touched:
+     * the requested-vs-granted guards, the PQ derivation, the engine and the
+     * config. Null keeps the live session.
+     */
+    private fun prepareLiveRebuild(config: ConnectResponse): Pair<ConnectResponse, Config>? {
+        if (appPrefs.quantumProtectionEnabled && !config.quantumEnabled) {
+            FaultReporter.report(
+                FaultReporter.PATH_QUANTUM,
+                "live_rebuild_refused_quantum_not_granted",
+                "Live rebuild refused: quantum protection was requested but the server did not grant it",
+            )
+            return null
+        }
+        // Stealth is never rebuilt in place (one Xray process, one port).
+        if (config.stealthEnabled || appPrefs.stealthModeEnabled) return null
+        var psk: String? = null
+        if (config.quantumEnabled) {
+            if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) return null
+            // RosenpassManager reports the specific cause.
+            psk = runBlocking(Dispatchers.IO) { RosenpassManager.performKeyExchange(applicationContext, config) }
+                ?: return null
+        }
+        if (!app.birdo.vpn.utils.NativeLibraryVerifier.verifyLibrary(this, "wg-go") || !WgNative.init()) return null
+        val effective = if (psk != null) config.copy(presharedKey = psk) else config
+        return try {
+            effective to buildWireGuardConfig(effective)
+        } catch (e: Exception) {
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "live_rebuild_config_rejected",
+                "The live rebuild's configuration failed validation — the live session is kept",
+                e,
+            )
+            null
+        }
+    }
+
+    private fun onLiveRebuildVerdict(verdict: TransportProbe.Result, handle: Int, gen: Long, id: Long) {
+        when (verdict) {
+            TransportProbe.Result.HANDSHAKE_OK -> {
+                publishConnected(handle)
+                completeLiveRebuild(id, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+            }
+            TransportProbe.Result.BLOCKED -> failLiveRebuildClosed(gen, id)
+            TransportProbe.Result.ABORTED -> completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
+        }
+    }
+
+    /**
+     * After the swap the old session cannot come back (its key is gone from
+     * memory), so a new peer that does not work fails CLOSED — block first
+     * when the kill switch is on, then the Error — and says so (iOS #354).
+     */
+    private fun failLiveRebuildClosed(gen: Long, id: Long) {
+        failSetup(gen, SessionCopy.switchFailedClosed(isKillSwitchEnabled), FailureKind.NEVER_ESTABLISHED)
+        completeLiveRebuild(id, LiveRebuildPolicy.Event.FAILED_AFTER_SWAP)
     }
 
     /**

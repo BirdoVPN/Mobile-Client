@@ -110,6 +110,10 @@ class DataplaneFaultReportingTest {
             "the dead-tunnel verdict, a pure rule plus a sleep loop with nothing to catch " +
             "since its socket re-protect moved into BirdoVpnService (A1-037). Its verdicts are " +
             "breadcrumbs, and the Error they cause is published by the service's updateState funnel",
+        "LiveRebuild.kt" to
+            "A1-034's decision table (LiveRebuildPolicy) as pure functions: nothing to catch. " +
+            "VpnManager and BirdoVpnService carry the directives out and report there " +
+            "(live_rebuild_* codes)",
         "TunnelRouting.kt" to
             "D-6's routing rules (who is excluded from the tunnel, the Xray carve-out, which API " +
             "client a call uses, the socket-protect verdict) as pure functions: nothing to catch. " +

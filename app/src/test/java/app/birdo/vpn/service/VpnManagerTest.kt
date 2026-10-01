@@ -15,6 +15,7 @@ import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import io.mockk.*
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
@@ -1478,6 +1479,116 @@ class VpnManagerTest {
 
         assertTrue("rebuilt behind the block", BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
         assertFalse("never the revoke teardown", BirdoVpnService.ACTION_STOP in dispatchedActions)
+        quiesce()
+    }
+
+    // ── A1-034: the in-place live rebuild ───────────────────────────────
+
+    private fun rebuildAnswers(result: ApiResult<ConnectResponse>) {
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } returns result
+    }
+
+    private fun rebuiltConfig(deferredKeyId: String? = "key-123") =
+        makeConnectResponse().copy(keyId = "key-456", deferredKeyId = deferredKeyId)
+
+    @Test
+    fun `a switch rides the live tunnel, swaps in place, and releases the old key only after the new peer answers`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // Nothing torn down, nothing released, the swap handed to the service.
+        assertFalse(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+        runCurrent()
+
+        assertTrue(switch.await() is ApiResult.Success)
+        coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
+        verify { prefs.lastServerId = "srv-2" }
+        assertEquals("srv-2", vpnManager.connectedServerId.value)
+        quiesce()
+    }
+
+    @Test
+    fun `a switch whose request fails keeps the live session untouched and says so`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Error("Couldn't reach BirdoVPN.", 0))
+
+        val result = vpnManager.connect("srv-2")
+
+        assertTrue(result is ApiResult.Error)
+        assertTrue((result as ApiResult.Error).message.endsWith(SessionCopy.STILL_ON_PREVIOUS))
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+        assertFalse(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        assertFalse(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK in dispatchedActions)
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a swap the service refuses before touching the tunnel keeps the session and gives the new key back`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
+        runCurrent()
+
+        assertEquals(SessionCopy.SWITCH_KEPT_PREVIOUS, (switch.await() as ApiResult.Error).message)
+        coVerify(exactly = 1) { repository.disconnectVpn("key-456") }
+        coVerify(exactly = 0) { repository.disconnectVpn("key-123") }
+        verify { repository.rememberKeyId("key-123") }
+        quiesce()
+    }
+
+    @Test
+    fun `a server that cannot defer the live key takes today's teardown path`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(makeConnectResponse(success = false).copy(rebuildRefused = "unknown-current-key")))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-2")
+
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a deferral that was not honoured gives the new key back before today's path`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig(deferredKeyId = null)))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-2")
+
+        coVerify { repository.disconnectVpn("key-456") }
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        quiesce()
+    }
+
+    @Test
+    fun `Stealth is never rebuilt in place`() = runTest {
+        connectAndEstablish()
+        every { BirdoVpnService.stealthActive } returns true
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-2")
+
+        assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
         quiesce()
     }
 

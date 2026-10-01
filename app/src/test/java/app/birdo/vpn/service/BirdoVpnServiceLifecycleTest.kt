@@ -476,6 +476,83 @@ class BirdoVpnServiceLifecycleTest {
         waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
     }
 
+    // ── A1-034: the live rebuild, on the running service ─────────────────
+
+    /** A live, verified session on wg-go handle 7, and a rebuild config waiting. */
+    private fun arrangeLiveSession(order: MutableList<String>): Long {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.turnOff(any()) } answers { order += "turnOff:${firstArg<Int>()}" }
+        every { WgNative.turnOn(any(), any(), any()) } answers { order += "turnOn"; 8 }
+        every { WgNative.getSocketV4(8) } returns 51
+        every { WgNative.getSocketV6(8) } returns -1
+        every { service.protect(any<Int>()) } answers { order += "protect:${firstArg<Int>()}"; true }
+        setField("tunnelHandle", 7)
+        val update = BirdoVpnService.Companion::class.java.getDeclaredMethod("updateState", VpnState::class.java)
+        update.isAccessible = true
+        update.invoke(BirdoVpnService.Companion, VpnState.Connected)
+        BirdoVpnService.setRebuildConfig(
+            ConnectResponse(
+                success = true,
+                keyId = "key-456",
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "198.51.100.9:51820",
+                assignedIp = "10.100.0.9",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+            ),
+        )
+        return (field("transitionGen") as AtomicLong).get()
+    }
+
+    private fun liveRebuild(gen: Long, id: Long) {
+        val intent = mockk<Intent>(relaxed = true) {
+            every { getLongExtra(BirdoVpnService.EXTRA_REBUILD_ID, any()) } returns id
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns true
+            every { getStringArrayExtra(any()) } returns null
+        }
+        val handle = BirdoVpnService::class.java.getDeclaredMethod("handleLiveRebuild", Intent::class.java, Long::class.javaPrimitiveType)
+        handle.isAccessible = true
+        handle.invoke(service, intent, gen)
+    }
+
+    @Test
+    fun `a rebuild establish() refuses keeps the old session untouched`() {
+        val order = mutableListOf<String>()
+        val gen = arrangeLiveSession(order)
+        every { anyConstructed<VpnService.Builder>().establish() } returns null
+        val outcome = BirdoVpnService.expectLiveRebuild(41L)
+
+        liveRebuild(gen, 41L)
+
+        assertTrue(outcome.isCompleted)
+        assertEquals(LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP, kotlinx.coroutines.runBlocking { outcome.await() })
+        // The old wg-go instance was never touched, and nothing was published.
+        assertFalse(order.any { it.startsWith("turnOff") || it == "turnOn" })
+        assertEquals(VpnState.Connected, BirdoVpnService.currentState)
+        assertEquals(7, field("tunnelHandle"))
+    }
+
+    @Test
+    fun `a rebuild swaps on the running service - new interface first, then the old engine out, then the new one in`() {
+        val order = mutableListOf<String>()
+        val gen = arrangeLiveSession(order)
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            order += "establish"
+            mockk<ParcelFileDescriptor>(relaxed = true)
+        }
+        val outcome = BirdoVpnService.expectLiveRebuild(42L)
+
+        liveRebuild(gen, 42L)
+
+        assertEquals(listOf("establish", "turnOff:7", "turnOn", "protect:51"), order)
+        assertEquals(8, field("tunnelHandle"))
+        // The probe's verdict (this build cannot read wg-go's config, so it
+        // reports HANDSHAKE_OK) commits it.
+        waitFor("the rebuild verdict") { outcome.isCompleted }
+        assertEquals(LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED, kotlinx.coroutines.runBlocking { outcome.await() })
+        waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
     @Test
     fun `a socket that cannot be protected fails the connect, block first`() {
         val order = arrangeTunnelStart(protectSucceeds = false)

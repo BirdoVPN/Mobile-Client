@@ -120,6 +120,9 @@ class ConnectContractTest {
         pqClientCanDecapsulate = true,
         integrityToken = INTEGRITY_TOKEN,
         dnsFiltering = true,
+        // A1-034: a live rebuild names the key the live tunnel rides.
+        rebuild = true,
+        currentKeyId = "key-123_live",
     )
 
     /** A first attempt on a non-Play build with PQ off: defaults stay off the wire. */
@@ -145,6 +148,8 @@ class ConnectContractTest {
         pqClientCanDecapsulate = true,
         integrityToken = INTEGRITY_TOKEN,
         dnsFiltering = true,
+        rebuild = true,
+        currentKeyId = "key-123_live",
     )
 
     private fun minimalMultiHop() = MultiHopConnectRequest(

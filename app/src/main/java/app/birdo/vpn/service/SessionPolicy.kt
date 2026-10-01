@@ -510,6 +510,22 @@ internal object SessionCopy {
      */
     const val ENGINE_FAILED = "BirdoVPN couldn't start its secure tunnel. Please try again."
 
+    /** A1-034: a live switch or settings change that did not happen; the session did not move. */
+    const val SWITCH_KEPT_PREVIOUS = "Couldn't switch. You're still connected to your previous location."
+    const val STILL_ON_PREVIOUS = "You're still connected to your previous location."
+
+    /**
+     * A1-034: the new peer never answered AFTER the swap, and Android cannot
+     * swap the previous session back (its key is gone from memory by design).
+     * Failed closed, and said so — iOS #354's rule.
+     */
+    fun switchFailedClosed(killSwitch: Boolean): String = if (killSwitch) {
+        "That server didn't answer, and the switch couldn't be undone. Traffic stays blocked until you " +
+            "reconnect or disconnect."
+    } else {
+        "That server didn't answer, and the switch couldn't be undone. You're not connected. Tap Connect to try again."
+    }
+
     /** Every network is held behind a sign-in page (hotel, airport Wi-Fi): A1-026. */
     const val CAPTIVE_PORTAL = "This Wi-Fi network needs you to sign in first. Sign in, then connect."
 

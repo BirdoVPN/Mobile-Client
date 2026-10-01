@@ -481,6 +481,15 @@ data class ConnectRequest(
      * when the user has switched it on. Not plan-gated. Twin: [MultiHopConnectRequest].
      */
     val dnsFiltering: Boolean = false,
+    /**
+     * A1-034: this connect REPLACES the live session [currentKeyId] rides,
+     * through that very tunnel (the in-place live rebuild, iOS #350). The
+     * server defers that one key's eviction until the new peer handshakes,
+     * instead of evicting it inline and blackholing the request's own path.
+     * Both off the wire on an ordinary connect (defaults stay off).
+     */
+    val rebuild: Boolean = false,
+    val currentKeyId: String? = null,
 )
 
 @Serializable
@@ -554,6 +563,18 @@ data class ConnectResponse(
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
+    /**
+     * A1-034: echoes [ConnectRequest.currentKeyId] when — and only when — the
+     * server deferred that key's eviction for a rebuild. Anything else means
+     * the old peer was, or may have been, evicted inline.
+     */
+    val deferredKeyId: String? = null,
+    /**
+     * A1-034: beside `success: false`, why a rebuild was refused before the
+     * server touched anything (the schema's RebuildRefusal values, a String so
+     * a new one can never fail the decode).
+     */
+    val rebuildRefused: String? = null,
 )
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
@@ -608,6 +629,9 @@ data class MultiHopConnectRequest(
      * user gets the filtering resolver exactly as a single-hop one does.
      */
     val dnsFiltering: Boolean = false,
+    /** A1-034 — see [ConnectRequest.rebuild]; the multi-hop twin. */
+    val rebuild: Boolean = false,
+    val currentKeyId: String? = null,
 )
 
 @Serializable
@@ -658,6 +682,10 @@ data class MultiHopConnectResponse(
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
+    /** A1-034 — see [ConnectResponse.deferredKeyId]. */
+    val deferredKeyId: String? = null,
+    /** A1-034 — see [ConnectResponse.rebuildRefused]. */
+    val rebuildRefused: String? = null,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────
