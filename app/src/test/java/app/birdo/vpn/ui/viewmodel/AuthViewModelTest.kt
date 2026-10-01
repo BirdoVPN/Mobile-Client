@@ -1437,4 +1437,36 @@ class AuthViewModelTest {
         assertFalse(viewModel.uiState.value.deleteRequiresTwoFactor)
         assertNull(viewModel.uiState.value.deleteAccountError)
     }
+
+    /**
+     * REVIEW-AND2-008: the server checks the password before the code, so
+     * after the 2FA prompt a wrong password is still the password's error; a
+     * rate limit or an offline error is neither field's.
+     */
+    @Test
+    fun `a deletion error names the field it is about`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+        coEvery { repository.deleteAccount("wrong-password", "123456") } returns
+            ApiResult.Error(StringsXml.text("error_incorrect_password"), 401, FailureReason.INVALID_CREDENTIALS)
+        coEvery { repository.deleteAccount("password1", "111111") } returns
+            ApiResult.Error(StringsXml.text("error_invalid_code"), 403, FailureReason.INVALID_CODE)
+        coEvery { repository.deleteAccount("password1", "123456") } returns
+            ApiResult.Error(StringsXml.text("error_rate_limited"), 429, FailureReason.RATE_LIMITED)
+
+        viewModel.deleteAccount("wrong-password", "123456")
+        assertEquals(DeleteAccountField.PASSWORD, viewModel.uiState.value.deleteErrorField)
+
+        viewModel.deleteAccount("password1", "111111")
+        assertEquals(DeleteAccountField.CODE, viewModel.uiState.value.deleteErrorField)
+
+        viewModel.deleteAccount("password1", "123456")
+        assertNull(viewModel.uiState.value.deleteErrorField)
+
+        // Refused here, before any request: the field that is incomplete.
+        viewModel.deleteAccount("password1", "12")
+        assertEquals(DeleteAccountField.CODE, viewModel.uiState.value.deleteErrorField)
+
+        viewModel.clearDeleteAccountError()
+        assertNull(viewModel.uiState.value.deleteErrorField)
+    }
 }

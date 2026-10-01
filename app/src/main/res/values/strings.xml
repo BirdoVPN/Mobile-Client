@@ -775,4 +775,12 @@
     <string name="session_quota_exceeded">You\'ve used this month\'s free data allowance. Upgrade to keep using BirdoVPN.</string>
     <string name="notif_alert_quota">Free data allowance used</string>
     <!-- ════ end AND-VPN-B ════ -->
+
+    <!-- ════ AND-FIX-2 (2026-10-01) ════ -->
+
+    <!-- REVIEW-AND2-013: Profile masks the account number until asked, as on
+         Windows ("Show account number" / "Hide account number"). -->
+    <string name="cd_show_account_number">Show account number</string>
+    <string name="cd_hide_account_number">Hide account number</string>
+    <!-- ════ end AND-FIX-2 ════ -->
 </resources>

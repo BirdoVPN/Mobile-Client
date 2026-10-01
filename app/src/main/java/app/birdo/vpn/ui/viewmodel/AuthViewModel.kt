@@ -31,6 +31,9 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
 
+/** The field of the deletion dialog an error is about (REVIEW-AND2-008). */
+enum class DeleteAccountField { PASSWORD, CODE }
+
 data class AuthUiState(
     val isLoading: Boolean = false,
     val isLoggedIn: Boolean = false,
@@ -42,6 +45,13 @@ data class AuthUiState(
     /** Account deletion state */
     val isDeletingAccount: Boolean = false,
     val deleteAccountError: String? = null,
+    /**
+     * The field [deleteAccountError] is about, so the dialog outlines that one:
+     * the server checks the password before the code, so after the 2FA prompt
+     * a wrong password used to be drawn on the code field — and so were a rate
+     * limit and an offline error, which are about neither (null).
+     */
+    val deleteErrorField: DeleteAccountField? = null,
     /**
      * The server asked for this account's 2FA code before it deletes it
      * (403 `two_factor_required`, ACCOUNT-API-2026-10-01 item 85). The dialog
@@ -598,14 +608,20 @@ class AuthViewModel @Inject constructor(
     fun deleteAccount(password: String, twoFactorCode: String? = null) {
         val requiresPassword = _uiState.value.user?.hasPassword ?: true
         if (requiresPassword && !InputValidator.isValidPassword(password)) {
-            _uiState.value = _uiState.value.copy(deleteAccountError = strings.get(R.string.auth_error_password_required))
+            _uiState.value = _uiState.value.copy(
+                deleteAccountError = strings.get(R.string.auth_error_password_required),
+                deleteErrorField = DeleteAccountField.PASSWORD,
+            )
             return
         }
         // Once the server has asked for the code, a request without a whole one
         // can only be refused again.
         val code = twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }
         if (_uiState.value.deleteRequiresTwoFactor && (code == null || !is2faCodeComplete(code))) {
-            _uiState.value = _uiState.value.copy(deleteAccountError = strings.get(R.string.auth_error_2fa_format))
+            _uiState.value = _uiState.value.copy(
+                deleteAccountError = strings.get(R.string.auth_error_2fa_format),
+                deleteErrorField = DeleteAccountField.CODE,
+            )
             return
         }
         // Send null for password-less accounts so the backend takes the
@@ -613,7 +629,7 @@ class AuthViewModel @Inject constructor(
         val submitted: String? = if (requiresPassword) password else password.ifBlank { null }
 
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null)
+            _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null, deleteErrorField = null)
             when (val result = repository.deleteAccount(submitted, code)) {
                 is ApiResult.Success -> {
                     _uiState.value = AuthUiState(
@@ -635,6 +651,11 @@ class AuthViewModel @Inject constructor(
                         deleteRequiresTwoFactor = _uiState.value.deleteRequiresTwoFactor || asksForCode ||
                             result.reason == FailureReason.INVALID_CODE,
                         deleteAccountError = if (asksForCode) null else result.message,
+                        deleteErrorField = when (result.reason) {
+                            FailureReason.INVALID_CREDENTIALS -> DeleteAccountField.PASSWORD
+                            FailureReason.INVALID_CODE -> DeleteAccountField.CODE
+                            else -> null
+                        },
                     )
                 }
             }
@@ -662,7 +683,11 @@ class AuthViewModel @Inject constructor(
 
     /** The deletion dialog closed: its error and any 2FA prompt go with it. */
     fun clearDeleteAccountError() {
-        _uiState.value = _uiState.value.copy(deleteAccountError = null, deleteRequiresTwoFactor = false)
+        _uiState.value = _uiState.value.copy(
+            deleteAccountError = null,
+            deleteErrorField = null,
+            deleteRequiresTwoFactor = false,
+        )
     }
 
     /**

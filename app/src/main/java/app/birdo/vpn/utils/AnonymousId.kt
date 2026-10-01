@@ -26,6 +26,20 @@ fun formatAnonymousId(raw: String): String =
         .chunked(ANON_ID_GROUP_SIZE)
         .joinToString(" ")
 
+/**
+ * The account number as Profile shows it until the user asks to see it
+ * (REVIEW-AND2-013): every group masked but the last, so the user can tell
+ * which account this is without exposing the credential to anyone beside
+ * them — `•••• •••• •••• •••• •••• 1234`, the Windows client's form. Copy
+ * still takes all 24 digits.
+ */
+fun maskAnonymousId(raw: String): String {
+    val groups = formatAnonymousId(raw).split(' ').filter { it.isNotEmpty() }
+    return groups.mapIndexed { i, group ->
+        if (i == groups.lastIndex) group else "•".repeat(group.length)
+    }.joinToString(" ")
+}
+
 private const val ANON_EMAIL_PREFIX = "anon_"
 private const val ANON_EMAIL_SUFFIX = "@anonymous.local"
 

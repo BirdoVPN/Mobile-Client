@@ -652,6 +652,7 @@ fun BirdoNavGraph(
                         onDeleteAccount = { password, code -> authViewModel.deleteAccount(password, code) },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
+                        deleteErrorField = authState.deleteErrorField,
                         deleteRequiresTwoFactor = authState.deleteRequiresTwoFactor,
                         isAnonymousAccount = isAnonymousUser(authState.user),
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },

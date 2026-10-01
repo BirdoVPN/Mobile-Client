@@ -251,10 +251,40 @@ class OverhaulSourceGuardTest {
     @Test
     fun `the account number wraps at large font scales instead of being cut short`() {
         val number = source("$main/ui/screen/ProfileScreen.kt")
-            .substringAfter("text = formatAnonymousId(accountNumber),")
+            .substringAfter("text = if (accountNumberShown) {", "")
             .substringBefore("modifier =")
-        assertTrue("the Profile account number is no longer shown grouped", number.contains("maxLines"))
+        assertTrue("the Profile account number is no longer shown grouped", number.contains("formatAnonymousId(accountNumber)"))
+        assertTrue(number.contains("maxLines"))
         assertFalse("a credential the user copies by hand is ellipsized to one line", number.contains("maxLines = 1"))
+    }
+
+    /** REVIEW-AND2-013: masked until asked, as on Windows and in the account API contract. */
+    @Test
+    fun `the account number is masked until the user asks to see it`() {
+        val profile = source("$main/ui/screen/ProfileScreen.kt")
+        assertTrue(profile.contains("var accountNumberShown by rememberSaveable { mutableStateOf(false) }"))
+        val number = profile.substringAfter("text = if (accountNumberShown) {", "").substringBefore("modifier =")
+        assertTrue("the hidden state no longer masks", number.contains("maskAnonymousId(accountNumber)"))
+        assertTrue(profile.contains("R.string.cd_show_account_number"))
+    }
+
+    /** REVIEW-AND2-008/-009: the deletion dialog's errors and its 2FA prompt. */
+    @Test
+    fun `the deletion dialog outlines the field an error is about, and focuses and announces the 2FA prompt`() {
+        val dialog = source("$main/ui/screen/ProfileScreen.kt")
+            .substringAfter("private fun DeleteAccountDialog(", "")
+            .substringBefore("private fun VoucherRedeemDialog(")
+        assertTrue(dialog.contains("isError = errorField == DeleteAccountField.PASSWORD"))
+        assertTrue(dialog.contains("isError = errorField == DeleteAccountField.CODE"))
+        assertFalse("an error is drawn on a field it is not about", dialog.contains("isError = error != null"))
+        val prompt = dialog.substringAfter("if (requiresTwoFactor) {", "")
+        assertTrue("the code field is no longer focused as it appears", prompt.contains("codeFocus.requestFocus()"))
+        assertTrue(prompt.contains(".focusRequester(codeFocus)"))
+        assertTrue(
+            "the 2FA prompt is no longer announced",
+            prompt.substringAfter("R.string.delete_dialog_2fa_required").substringBefore("OutlinedTextField")
+                .contains("liveRegion = LiveRegionMode.Polite"),
+        )
     }
 
     // ── D6 (owner decision, 2026-10-01) ──────────────────────────────────
