@@ -72,6 +72,17 @@ class SessionSurfaceModelsTest {
         assertNull(VpnNotificationManager.connectedBody("", " "))
     }
 
+    /**
+     * REVIEW-AND2-011: the address in that body is the VPN server's (A1-020),
+     * and the setting that shows it used to promise "your public IP address".
+     */
+    @Test
+    fun `the Show IP Address setting says whose address it shows`() {
+        val help = app.birdo.vpn.testing.StringsXml.text("settings_notif_show_ip_desc")
+        assertTrue(help, help.contains("VPN server"))
+        assertFalse(help, help.contains("your public IP", ignoreCase = true))
+    }
+
     // ── Alerts (A1-014 "Action needed", A1-027, A1-029, A1-035) ──────────
 
     @Test

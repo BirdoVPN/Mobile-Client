@@ -102,8 +102,20 @@ class BirdoApp : Application() {
      * when the kill switch or lockdown asks for it, then a headless connect,
      * "Reconnecting…" from the first frame.
      *
-     * When the start is refused (a widget broadcast is not an exemption from
-     * Android 12's background foreground-service ban), the dead service's
+     * Not only after a crash (REVIEW-AND2-005): the intent survives a reboot
+     * and a Force stop, and nothing here can tell those apart from a crash on
+     * every supported API level, so the first process start after either —
+     * a launcher's widget refresh at boot, the user reopening the app —
+     * restores the connection too. Kept, and documented in README.md, rather
+     * than gated: a wrong "this was not a crash" verdict would bring back the
+     * live P1 (a device left unprotected with its intent forgotten), and a
+     * connection the user left on and did not turn off coming back is the
+     * honest reading of that intent. A tap that started the process joins this
+     * resume (VpnManager.claimTapForResume).
+     *
+     * When Android refuses the start (a background start it does not exempt:
+     * a widget refresh is a broadcast, not a user interaction; whether a
+     * consented VPN app is exempt varies by version), the dead service's
      * notification is retracted and the user is told, instead of a stale
      * "Protected".
      */

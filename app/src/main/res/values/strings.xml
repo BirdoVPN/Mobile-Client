@@ -524,7 +524,7 @@
     <string name="settings_hide_app_contents">Hide App Contents</string>
     <string name="settings_hide_app_contents_desc">Covers the screen with your fingerprint, face or screen-lock prompt whenever you return to the app. Hides what is on screen only: it protects no data, and the VPN keeps running behind it, including Auto-Connect.</string>
     <string name="settings_auto_connect_desc">Connect to VPN on app startup.</string>
-    <string name="settings_notif_show_ip_desc">Include your public IP address in the connection notification.</string>
+    <string name="settings_notif_show_ip_desc">Include the VPN server\'s IP address in the connection notification.</string>
     <string name="settings_notif_show_location_desc">Include the server\'s location in the connection notification.</string>
     <string name="settings_notif_system_desc">Open system notification settings</string>
     <string name="settings_vpn_settings_desc">Stealth Mode, BirdoShield, local network, port and MTU</string>

@@ -493,7 +493,9 @@ enum class SystemStartKind {
      * the previous process died — a crash, a low-memory kill — and Android
      * did not restart the service. Seen live on API 35 (2026-09-30): no
      * restart after `am crash` or `kill -9`, the device unprotected, and the
-     * dead service's "Protected" notification still showing.
+     * dead service's "Protected" notification still showing. The same start
+     * follows a reboot or a Force stop, whose intent survives too: a restore
+     * at the next process start, documented as such (REVIEW-AND2-005).
      */
     PROCESS_RESTART,
 }
@@ -564,7 +566,8 @@ internal object SystemStartPolicy {
     /**
      * Whether a starting app process must bring the session back itself
      * ([SystemStartKind.PROCESS_RESTART]): the user wanted it up and no
-     * service is running in this process to hold it.
+     * service is running in this process to hold it — after a crash, and
+     * equally after a reboot or a Force stop (README.md, Always-on VPN).
      */
     fun resumeOnProcessStart(sessionShouldBeUp: Boolean, serviceRunning: Boolean): Boolean =
         sessionShouldBeUp && !serviceRunning
