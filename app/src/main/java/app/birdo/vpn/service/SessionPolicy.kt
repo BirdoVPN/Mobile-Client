@@ -1,5 +1,7 @@
 package app.birdo.vpn.service
 
+import app.birdo.vpn.data.model.HeartbeatResponse
+
 /**
  * The session supervisor's decisions, as pure functions.
  *
@@ -398,6 +400,41 @@ internal object HeartbeatPolicy {
      */
     private fun inferred(sinceLastOkMs: Long): Verdict =
         if (sinceLastOkMs >= REAP_WINDOW_MS) Verdict.REAPED else Verdict.REVOKED
+
+    /**
+     * REVIEW-AND2-001: the answer to the ONE heartbeat VpnManager sends around
+     * the tunnel, before it re-dials, for the key of an established session
+     * the dead-tunnel check declared dead.
+     *
+     * Since D-6 the beats ride the tunnel, and every server-side end of a key —
+     * an eviction, a revoke, a drain, the Free allowance's end — takes the
+     * WireGuard peer off its node before it answers. So none of those replies
+     * ever came back on the live path: the tunnel only went quiet, and the
+     * re-dial that followed evicted the other device in turn (A1-004's
+     * ping-pong), undid a remote Disconnect, or walked into the quota refusal
+     * fully blocked. Asked off the tunnel, the server can say why. Where a dead
+     * tunnel changes the meaning, this differs from [verdict]:
+     *
+     * | reply | verdict |
+     * |---|---|
+     * | none: transport failure, timeout, an HTTP error | ALIVE (re-dial, as before) |
+     * | quota_exceeded | QUOTA_EXCEEDED |
+     * | evicted, revoked | EVICTED, REVOKED |
+     * | reaped, not_found | REAPED (re-dial: a key ended on purpose says so; here not_found is a lost record) |
+     * | server_offline, or a live key on a node that is not online | SERVER_GONE (another server: the connect gate refuses a node that is not online) |
+     * | ok, or a live key | ALIVE (re-dial) |
+     * | no reason (a backend before WEB-HB), not valid | [verdict]'s inference from the last good beat |
+     */
+    fun forDeadTunnel(reply: HeartbeatResponse?, sinceLastOkMs: Long): Verdict = when {
+        reply == null -> Verdict.ALIVE
+        !reply.valid && (reply.reason == "quota_exceeded" || reply.quotaExceeded) -> Verdict.QUOTA_EXCEEDED
+        reply.reason == "evicted" -> Verdict.EVICTED
+        reply.reason == "revoked" -> Verdict.REVOKED
+        reply.reason == "reaped" || reply.reason == "not_found" -> Verdict.REAPED
+        reply.reason == "server_offline" -> Verdict.SERVER_GONE
+        reply.valid -> if (reply.serverOnline) Verdict.ALIVE else Verdict.SERVER_GONE
+        else -> verdict(valid = false, reason = reply.reason, sinceLastOkMs = sinceLastOkMs)
+    }
 }
 
 /**

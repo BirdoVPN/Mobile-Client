@@ -11,6 +11,7 @@ import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -834,14 +835,17 @@ class BirdoRepository @Inject constructor(
     /**
      * FIX-2-10: Send heartbeat to backend to report connection health.
      * P1-9: Returns HeartbeatResponse so callers can act on valid/serverOnline.
+     *
+     * @param aroundTunnel send it around the tunnel whatever the session's
+     *   state ([AroundTunnel]): the dead-tunnel probe (REVIEW-AND2-001).
      */
-    suspend fun sendHeartbeat(keyId: String? = null): ApiResult<HeartbeatResponse> {
+    suspend fun sendHeartbeat(keyId: String? = null, aroundTunnel: Boolean = false): ApiResult<HeartbeatResponse> {
         val target = keyId ?: tokenManager.getLastKeyId()
             // A user-facing sentence like every other error here (REVIEW-AND-021);
             // callers branch on the code.
             ?: return errors.unexpected().copy(code = CODE_NO_ACTIVE_KEY)
         return withAutoRefresh(R.string.error_unexpected) {
-            api.heartbeat(target)
+            api.heartbeat(target, AroundTunnel.takeIf { aroundTunnel })
         }
     }
 

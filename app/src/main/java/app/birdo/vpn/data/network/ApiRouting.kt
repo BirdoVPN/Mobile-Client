@@ -89,6 +89,26 @@ class ProtectingSocketFactory(
 }
 
 /**
+ * A Retrofit `@Tag` that sends ONE call around the tunnel whatever the
+ * session's state (REVIEW-AND2-001, -002).
+ *
+ * D-6 is wrong for exactly the calls whose answer the tunnel cannot carry back.
+ * The server takes a WireGuard peer off its node BEFORE it answers the request
+ * that removed it, and since D-6 that request rides the very peer:
+ *  - an account deletion revokes every peer of the account, then replies
+ *    (birdo-web gdpr.service deleteUserData): through the tunnel the reply is
+ *    dropped at the node, and an erasure that worked reads as a failure, with
+ *    the Play billing notice, the device-id and ML-KEM rotation and the sign-out
+ *    all skipped;
+ *  - an eviction, a revoke, a drain or the Free allowance's end removes the
+ *    peer first, so the one heartbeat that asks why a dead tunnel died can only
+ *    be answered off it.
+ * Both leave from the real IP, as the re-dial that follows a dead tunnel does
+ * anyway, so neither discloses more than the path it replaces.
+ */
+object AroundTunnel
+
+/**
  * Retrofit's call factory: each call goes to the tunnel client or the bypass
  * client, decided when the call is created.
  *
@@ -108,6 +128,9 @@ class RoutingCallFactory(
     @Volatile private var lastBypass: Boolean? = null
 
     override fun newCall(request: Request): Call {
+        // Tagged [AroundTunnel]: the bypass client, and the path bookkeeping
+        // left alone — one such call says nothing about where the next goes.
+        if (request.tag(AroundTunnel::class.java) != null) return bypass.newCall(request)
         val bypassNow = useBypass()
         val previous = lastBypass
         lastBypass = bypassNow

@@ -605,6 +605,14 @@ data class ConnectResponse(
      * a new one can never fail the decode).
      */
     val rebuildRefused: String? = null,
+    /**
+     * Beside `success: false`: the Free plan's data allowance for this period
+     * is used up (birdo-web #590, the connect gate in vpn.service.ts), and
+     * [message] says how much and when it resets. A plan decision that asking
+     * again cannot change, so it ends the session as QUOTA_EXCEEDED rather
+     * than as a generic refusal (REVIEW-AND2-001).
+     */
+    val quotaExceeded: Boolean = false,
 )
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
@@ -716,6 +724,8 @@ data class MultiHopConnectResponse(
     val deferredKeyId: String? = null,
     /** A1-034 — see [ConnectResponse.rebuildRefused]. */
     val rebuildRefused: String? = null,
+    /** See [ConnectResponse.quotaExceeded]: multi-hop passes the single-hop gate's refusal through. */
+    val quotaExceeded: Boolean = false,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────

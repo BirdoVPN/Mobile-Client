@@ -234,6 +234,53 @@ class SessionPolicyTest {
         assertTrue(FailureKind.QUOTA_EXCEEDED.terminal)
     }
 
+    // ── REVIEW-AND2-001: the probe around a dead tunnel ──────────────────
+
+    @Test
+    fun `a dead tunnel's probe stops only for an end the server meant, and re-dials for everything else`() {
+        val flowing = 60_000L
+        val slept = HeartbeatPolicy.REAP_WINDOW_MS
+        fun probe(
+            valid: Boolean,
+            reason: String?,
+            serverOnline: Boolean = valid,
+            quota: Boolean = false,
+            gap: Long = flowing,
+        ) = HeartbeatPolicy.forDeadTunnel(
+            app.birdo.vpn.data.model.HeartbeatResponse(
+                valid = valid,
+                serverOnline = serverOnline,
+                reason = reason,
+                quotaExceeded = quota,
+            ),
+            gap,
+        )
+        // No answer (a transport failure, the 5 s cap, an HTTP error): re-dial, as before.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.forDeadTunnel(null, flowing))
+        // The ends the server meant, which the live path can no longer hear.
+        assertEquals(HeartbeatPolicy.Verdict.EVICTED, probe(false, "evicted"))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, probe(false, "revoked", gap = slept))
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, probe(false, "quota_exceeded"))
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, probe(false, null, quota = true))
+        // A reap, and a record the server lost, re-dial — unlike the live
+        // path, where not_found while beats flowed reads as a revoke.
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, probe(false, "reaped"))
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, probe(false, "not_found"))
+        // A drained node, or a live key on a node that is not online: another
+        // server, because the connect gate refuses the same one.
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, probe(false, "server_offline"))
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, probe(true, "server_offline", serverOnline = false))
+        assertEquals(HeartbeatPolicy.Verdict.SERVER_GONE, probe(true, null, serverOnline = false))
+        // The key is live: the tunnel died for the network's reasons.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, probe(true, "ok"))
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, probe(true, null))
+        // A backend before WEB-HB ("Connection not found", no reason): the
+        // live path's inference, so today's server stops the ping-pong too.
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, probe(false, null, serverOnline = false))
+        assertEquals(HeartbeatPolicy.Verdict.REAPED, probe(false, null, serverOnline = false, gap = slept))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, probe(false, "some_new_reason"))
+    }
+
     @Test
     fun `the grace notice counts whole minutes from the server's clock`() {
         val now = java.time.Instant.parse("2026-10-01T12:00:00Z").toEpochMilli()

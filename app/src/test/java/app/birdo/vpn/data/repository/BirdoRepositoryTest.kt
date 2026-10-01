@@ -5,6 +5,7 @@ import app.birdo.vpn.data.auth.ClientDeviceInfo
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.testing.StringsXml
 import io.mockk.*
@@ -704,18 +705,30 @@ class BirdoRepositoryTest {
         val result = repository.sendHeartbeat()
 
         assertEquals(BirdoRepository.CODE_NO_ACTIVE_KEY, (result as ApiResult.Error).code)
-        coVerify(exactly = 0) { api.heartbeat(any()) }
+        coVerify(exactly = 0) { api.heartbeat(any(), any()) }
     }
 
     @Test
     fun `a heartbeat names the session's own key when given one`() = runTest {
         coEvery { tokenManager.getLastKeyId() } returns "stored"
-        coEvery { api.heartbeat("session-key") } returns Response.success(HeartbeatResponse())
+        coEvery { api.heartbeat("session-key", any()) } returns Response.success(HeartbeatResponse())
 
         repository.sendHeartbeat("session-key")
 
-        coVerify { api.heartbeat("session-key") }
-        coVerify(exactly = 0) { api.heartbeat("stored") }
+        coVerify { api.heartbeat("session-key", null) }
+        coVerify(exactly = 0) { api.heartbeat("stored", any()) }
+    }
+
+    /** REVIEW-AND2-001: the dead-tunnel probe carries the tag that sends it around the tunnel. */
+    @Test
+    fun `only the dead-tunnel probe is tagged to go around the tunnel`() = runTest {
+        coEvery { api.heartbeat(any(), any()) } returns Response.success(HeartbeatResponse())
+
+        repository.sendHeartbeat("session-key", aroundTunnel = true)
+        repository.sendHeartbeat("session-key")
+
+        coVerify(exactly = 1) { api.heartbeat("session-key", AroundTunnel) }
+        coVerify(exactly = 1) { api.heartbeat("session-key", null) }
     }
 
     // ── Anonymous Login ─────────────────────────────────────────

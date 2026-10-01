@@ -116,6 +116,10 @@ class VpnManagerTest {
         // Every Connected session beats at once (WEB-HB); a healthy reply by default.
         coEvery { repository.sendHeartbeat(any()) } returns
             ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse())
+        // …and so does the one probe around a dead tunnel (REVIEW-AND2-001):
+        // the key is still live, so the drop is re-dialled as before.
+        coEvery { repository.sendHeartbeat(any(), true) } returns
+            ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse())
 
         // Mock BirdoVpnService static companion members
         mockkObject(BirdoVpnService.Companion)
@@ -1276,6 +1280,155 @@ class VpnManagerTest {
 
         // REVIEW-AND-013: no revoke teardown over the user's own Disconnect.
         assertEquals(null, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+    }
+
+    // ── REVIEW-AND2-001: the server's reason, heard around a dead tunnel ──
+
+    private fun probeAnswers(reply: ApiResult<app.birdo.vpn.data.model.HeartbeatResponse>) {
+        coEvery { repository.sendHeartbeat(any(), true) } returns reply
+    }
+
+    private fun probeSays(valid: Boolean, reason: String?, serverOnline: Boolean = valid, quota: Boolean = false) =
+        probeAnswers(
+            ApiResult.Success(
+                app.birdo.vpn.data.model.HeartbeatResponse(
+                    valid = valid,
+                    serverOnline = serverOnline,
+                    reason = reason,
+                    quotaExceeded = quota,
+                ),
+            ),
+        )
+
+    private fun tunnelDies() =
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+
+    /**
+     * A1-004's ping-pong, back since D-6. Two devices on a one-device plan:
+     * B connects, the server evicts A's key — taking A's peer off the node
+     * BEFORE it can tell A — and A's tunnel goes quiet. A's re-dial would evict
+     * B, whose own dead tunnel would evict A, forever. Asked around the tunnel,
+     * the server says "evicted", and A stops.
+     */
+    @Test
+    fun `an evicted key's dead tunnel stops there instead of re-dialling into the other device`() = runTest {
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        // Live beats ride the tunnel; none has gone around it.
+        coVerify(exactly = 0) { repository.sendHeartbeat(any(), true) }
+        probeSays(valid = false, reason = "evicted", serverOnline = false)
+
+        tunnelDies()
+        advanceTimeBy(10_000)
+
+        coVerify(exactly = 1) { repository.sendHeartbeat("key-123", true) }
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(SessionCopy.EVICTED, stringExtras[BirdoVpnService.EXTRA_STOP_REASON])
+        assertEquals(FailureKind.EVICTED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+        verify { prefs.sessionShouldBeUp = false }
+        serviceEmits(VpnState.Error(SessionCopy.EVICTED, FailureKind.EVICTED))
+        advanceTimeBy(30 * 60_000L)
+        // B keeps the slot: A never dialled again.
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a remote Disconnect is not undone by the re-dial, on today's backend too`() = runTest {
+        connectAndEstablish()
+        // birdo-web main before WEB-HB: no reason, just a key that is gone
+        // while beats were flowing — the live path's inference, a revoke.
+        probeSays(valid = false, reason = null, serverOnline = false)
+
+        tunnelDies()
+        advanceTimeBy(10_000)
+
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(FailureKind.REVOKED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+        serviceEmits(VpnState.Error(SessionCopy.REVOKED, FailureKind.REVOKED))
+        advanceTimeBy(30 * 60_000L)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `the Free allowance's end is heard around the dead tunnel and releases the block`() = runTest {
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        probeSays(valid = false, reason = "quota_exceeded", serverOnline = true, quota = true)
+
+        tunnelDies()
+        advanceTimeBy(10_000)
+
+        // A full STOP (it releases the block), as a plan decision: View plans.
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(FailureKind.QUOTA_EXCEEDED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    /**
+     * The second line of defence: the probe's answer was lost too, so the
+     * re-dial meets the connect gate's quota refusal. It used to be a generic
+     * REFUSED that kept an established session's block: a Free user fully
+     * blocked behind "can't connect", with no View plans.
+     */
+    @Test
+    fun `a re-dial refused for the Free allowance ends as QUOTA_EXCEEDED and releases the block`() = runTest {
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        probeAnswers(ApiResult.Error("Couldn't reach BirdoVPN.", 0))
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
+            ConnectResponse(success = false, quotaExceeded = true, message = "You've used your free data for this month."),
+        )
+
+        tunnelDies()
+        advanceTimeBy(30 * 60_000L)
+
+        val error = vpnManager.state.value as VpnState.Error
+        assertEquals(FailureKind.QUOTA_EXCEEDED, error.kind)
+        assertEquals("You've used your free data for this month.", error.message)
+        assertTrue(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+        verify { prefs.sessionShouldBeUp = false }
+        // One re-dial, never another.
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a drained server is left for another one instead of re-dialled into a refusal`() = runTest {
+        connectAndEstablish()
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(makeServer(id = "srv-1", load = 1), makeServer(id = "srv-2", load = 50)),
+        )
+        probeSays(valid = false, reason = "server_offline", serverOnline = false)
+
+        tunnelDies()
+        advanceTimeBy(30_000)
+
+        // srv-1 has the lowest load, and is the node that went away.
+        coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a dead tunnel whose key is still live re-dials after one probe, and a silent probe holds it at most 5 s`() = runTest {
+        connectAndEstablish()
+        probeAnswers(ApiResult.Success(app.birdo.vpn.data.model.HeartbeatResponse()))
+        tunnelDies()
+        advanceTimeBy(30_000)
+        coVerify(exactly = 1) { repository.sendHeartbeat("key-123", true) }
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+
+        // The re-dial connected; its tunnel dies too, and this time the probe
+        // never answers: the re-dial waits out the cap, no longer.
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        coEvery { repository.sendHeartbeat(any(), true) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        tunnelDies()
+        // The first re-dial is due ~2 s after the drop; the probe holds it.
+        advanceTimeBy(2_000 + VpnManager.DEAD_SESSION_PROBE_TIMEOUT_MS - 500)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        advanceTimeBy(15_000)
+        coVerify(exactly = 3) { repository.connectVpn(any(), any()) }
+        quiesce()
     }
 
     @Test

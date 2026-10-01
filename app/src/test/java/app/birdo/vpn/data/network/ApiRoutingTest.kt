@@ -69,6 +69,27 @@ class ApiRoutingTest {
         verify(exactly = 1) { tunnelPool.evictAll() }
     }
 
+    /**
+     * REVIEW-AND2-001/-002: an account deletion and the dead-tunnel probe are
+     * answered only off the peer the server removes, so they go around a LIVE
+     * tunnel too — and one such call moves nothing for the calls after it.
+     */
+    @Test
+    fun `a call tagged AroundTunnel goes around a live tunnel and leaves the path alone`() {
+        val tunnelCall = mockk<Call>()
+        val bypassCall = mockk<Call>()
+        val tunnelPool = mockk<ConnectionPool>(relaxed = true)
+        val bypassPool = mockk<ConnectionPool>(relaxed = true)
+        val factory = RoutingCallFactory(client(tunnelCall, tunnelPool), client(bypassCall, bypassPool)) { false }
+        val aroundTunnel = request.newBuilder().tag(AroundTunnel::class.java, AroundTunnel).build()
+
+        assertSame(tunnelCall, factory.newCall(request))
+        assertSame(bypassCall, factory.newCall(aroundTunnel))
+        assertSame(tunnelCall, factory.newCall(request))
+        verify(exactly = 0) { tunnelPool.evictAll() }
+        verify(exactly = 0) { bypassPool.evictAll() }
+    }
+
     @Test
     fun `a bypass socket is protected before anything connects it`() {
         val protectedSockets = mutableListOf<Socket>()

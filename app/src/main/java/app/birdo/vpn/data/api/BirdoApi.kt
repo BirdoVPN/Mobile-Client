@@ -5,6 +5,7 @@ import app.birdo.vpn.billing.GooglePlayLinkResponse
 import app.birdo.vpn.billing.GooglePurchaseIntentResponse
 import app.birdo.vpn.billing.GoogleStoreRoutes
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -163,9 +164,14 @@ interface BirdoApi {
         @Path("keyId") keyId: String,
     ): Response<Unit>
 
+    /**
+     * @param aroundTunnel [AroundTunnel] for the one beat that asks why a dead
+     *   tunnel died (REVIEW-AND2-001); null lets ApiRoutePolicy choose.
+     */
     @POST("vpn/heartbeat/{keyId}")
     suspend fun heartbeat(
         @Path("keyId") keyId: String,
+        @Tag aroundTunnel: AroundTunnel?,
     ): Response<HeartbeatResponse>
 
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
