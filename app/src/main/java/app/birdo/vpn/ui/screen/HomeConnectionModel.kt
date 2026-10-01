@@ -123,7 +123,7 @@ internal enum class Remedy(@param:StringRes val label: Int) {
 internal fun remedyFor(kind: FailureKind): Remedy? = when (kind) {
     // "…turn off Quantum Protection in Settings to connect without it."
     FailureKind.QUANTUM_FAILED -> Remedy.OPEN_SETTINGS
-    FailureKind.PLAN_REQUIRED -> Remedy.VIEW_PLANS
+    FailureKind.PLAN_REQUIRED, FailureKind.QUOTA_EXCEEDED -> Remedy.VIEW_PLANS
     FailureKind.UPDATE_REQUIRED -> Remedy.UPDATE
     // "…Try another location."
     FailureKind.NEVER_ESTABLISHED -> Remedy.CHOOSE_SERVER

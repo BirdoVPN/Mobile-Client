@@ -761,4 +761,16 @@ data class HeartbeatResponse(
      * re-vendored once that is on birdo-web's main.
      */
     val reason: String? = null,
+    /**
+     * The Free plan's monthly data allowance is used (birdo-web PR #590,
+     * enforced at check-in). With `valid: true` the session is inside its
+     * grace window and ends at [quotaGraceEndsAt]; with `valid: false` (and
+     * `reason: "quota_exceeded"`) the peer is already removed. Absent from a
+     * backend without the quota check.
+     */
+    val quotaExceeded: Boolean = false,
+    /** ISO-8601 instant the grace window ends. */
+    val quotaGraceEndsAt: String? = null,
+    /** Seconds left in the grace window, from the server's clock. Preferred over [quotaGraceEndsAt]. */
+    val quotaGraceSecondsRemaining: Long? = null,
 )

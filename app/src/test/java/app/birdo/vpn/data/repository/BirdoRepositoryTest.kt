@@ -145,6 +145,22 @@ class BirdoRepositoryTest {
     }
 
     @Test
+    fun `a 503 that says when to come back carries the wait`() = runTest {
+        // birdo-web PR #590: a free connect while the quota check is down.
+        coEvery { api.getServers() } returns Response.error(
+            503,
+            """{"statusCode":503,"error":"quota_check_unavailable","message":"Try again shortly","details":{"retryable":true,"retryAfterSeconds":30}}"""
+                .toResponseBody("application/json".toMediaType()),
+        )
+
+        val error = repository.getServers(forceRefresh = true) as ApiResult.Error
+
+        assertEquals(503, error.code)
+        assertEquals(30_000L, error.retryAfterMs)
+        assertFalse(error.message.startsWith("{"))
+    }
+
+    @Test
     fun `a cancelled call is rethrown, not reported as a failure`() = runTest {
         coEvery { api.getProfile() } throws kotlinx.coroutines.CancellationException("left the screen")
 

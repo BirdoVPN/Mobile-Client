@@ -42,6 +42,11 @@ class VpnViewModelTest {
     private lateinit var prefs: AppPreferences
     private lateinit var tokenManager: TokenManager
 
+    /** The VM reads its copy through the application context: the shipped strings.xml here. */
+    private val appContext: android.content.Context = mockk(relaxed = true) {
+        every { getString(any()) } answers { app.birdo.vpn.testing.StringsXml.get(firstArg()) }
+    }
+
     @Before
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -54,6 +59,7 @@ class VpnViewModelTest {
         every { vpnManager.sessionExpired } returns sessionExpired
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
         every { vpnManager.connectedServerId } returns MutableStateFlow(null)
+        every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
         every { vpnManager.activeMultiHopRoute } returns null
         every { vpnManager.isVpnPermissionGranted() } returns true
@@ -79,7 +85,7 @@ class VpnViewModelTest {
         (field.get(null) as MutableStateFlow<Boolean>).value = value
     }
 
-    private fun viewModel() = VpnViewModel(vpnManager, repository, prefs, tokenManager)
+    private fun viewModel() = VpnViewModel(vpnManager, repository, prefs, tokenManager, appContext)
 
     private fun server(id: String, country: String, load: Int, accessible: Boolean = true) = VpnServer(
         id = id, name = id, country = country, countryCode = "XX", city = country,

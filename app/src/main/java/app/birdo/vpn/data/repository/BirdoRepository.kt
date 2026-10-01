@@ -37,6 +37,8 @@ sealed class ApiResult<out T> {
         val message: String,
         val code: Int = 0,
         val reason: FailureReason = FailureReason.UNEXPECTED,
+        /** How long the server asked to wait before trying again, when it said ([RetryAfter]). */
+        val retryAfterMs: Long? = null,
     ) : ApiResult<Nothing>()
 }
 
@@ -556,7 +558,10 @@ class BirdoRepository @Inject constructor(
     /** Map a non-2xx response. `errorBody()` is one-shot, so it is read here and only here. */
     private fun errorFrom(response: Response<*>, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error {
         val raw = runCatching { response.errorBody()?.string() }.getOrNull()
-        return errors.fromResponse(response.code(), raw, context, fallback)
+        val error = errors.fromResponse(response.code(), raw, context, fallback)
+        val retryAfter = RetryAfter.fromBody(raw)
+            ?: RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull())
+        return if (retryAfter != null) error.copy(retryAfterMs = retryAfter) else error
     }
 
     /**

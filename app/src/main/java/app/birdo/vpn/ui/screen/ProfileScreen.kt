@@ -376,9 +376,9 @@ private fun ProfileIdentityCard(
                         // not the user's verified egress IP, and for Multi-Hop
                         // it would be the ENTRY node, so none is shown (A1-020).
                         text = when {
-                            publicIp != null -> "VPN server · $publicIp"
-                            isConnected -> "Via your Multi-Hop route"
-                            else -> "Tap Connect to start"
+                            publicIp != null -> stringResource(R.string.profile_vpn_server_address, publicIp)
+                            isConnected -> stringResource(R.string.profile_via_multihop)
+                            else -> stringResource(R.string.profile_connect_hint)
                         },
                         color = palette.onSurfaceMuted,
                         fontSize = 11.sp,

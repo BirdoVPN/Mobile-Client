@@ -94,7 +94,6 @@
     <string name="notif_title_protected">BirdoVPN — Protected</string>
     <string name="notif_title_protected_multihop">BirdoVPN — Protected · Multi-Hop</string>
     <string name="notif_body_waiting_network">Waiting for a network connection…</string>
-    <string name="notif_body_captive_portal">Sign in to this Wi-Fi network to continue.</string>
     <string name="notif_body_attempt">Attempt %1$d</string>
     <string name="notif_action_stop_blocking">Stop blocking</string>
     <string name="notif_action_reconnect">Reconnect</string>
@@ -245,11 +244,6 @@
     <string name="vpn_settings_stealth_title">Stealth Mode</string>
     <string name="vpn_settings_birdoshield_title">BirdoShield</string>
     <string name="vpn_settings_birdoshield_desc">Blocks ads, trackers and malware domains at the VPN\'s DNS resolver.</string>
-    <!-- A1-024: the Windows wording (P1-parity), pointing at the Android setting. -->
-    <!-- A1-025: strict Private DNS (Android Settings > Network > Private DNS) overrides the tunnel's DNS. -->
-    <string name="home_private_dns_overrides">Android\'s Private DNS is on, so your DNS goes to that provider (through the VPN). BirdoShield and Custom DNS do not apply while it is on.</string>
-    <string name="home_private_dns_settings">Settings</string>
-    <string name="vpn_settings_birdoshield_custom_dns">Custom DNS overrides BirdoShield. Turn off Custom DNS Servers in Settings to use the filtering resolver.</string>
     <!-- Shown instead of the description above when GET /api/client-config reports
          dnsFilteringAvailable:false. The user cannot act on this, so the copy does
          not ask them to; it says the preference survives. -->
@@ -564,4 +558,39 @@
     <string name="app_cover_unlock">Unlock</string>
     <string name="app_cover_prompt_title">Unlock BirdoVPN</string>
     <string name="app_cover_prompt_subtitle">Verify your identity to continue</string>
+
+    <!-- ════ AND-VPN-B (Android connection engine, phase B, 2026-10-01) ════
+         Every string this lane adds, in one block so the merge with the other
+         lanes' blocks stays mechanical. -->
+
+    <!-- A1-026: the session waits behind a captive portal. -->
+    <string name="notif_body_captive_portal">Sign in to this Wi-Fi network to continue.</string>
+
+    <!-- A1-024: the Windows wording (P1-parity), pointing at the Android setting. -->
+    <string name="vpn_settings_birdoshield_custom_dns">Custom DNS overrides BirdoShield. Turn off Custom DNS Servers in Settings to use the filtering resolver.</string>
+
+    <!-- A1-025: strict Private DNS (Android Settings > Network > Private DNS) overrides the tunnel's DNS. -->
+    <string name="home_private_dns_overrides">Android\'s Private DNS is on, so your DNS goes to that provider (through the VPN). BirdoShield and Custom DNS do not apply while it is on.</string>
+    <string name="home_private_dns_settings">Settings</string>
+
+    <!-- A1-020: Profile's session line. The address is the VPN server's, and
+         a Multi-Hop session shows none (it would be the ENTRY node). -->
+    <string name="profile_vpn_server_address">VPN server · %1$s</string>
+    <string name="profile_via_multihop">Via your Multi-Hop route</string>
+    <string name="profile_connect_hint">Tap Connect to start</string>
+
+    <!-- VpnViewModel (A2-031 for this lane's file). -->
+    <string name="vpn_switch_failed">Couldn\'t switch server. Please try again.</string>
+    <string name="multihop_both_retired">Both of your Multi-Hop servers were retired. Pick a new entry and exit.</string>
+    <string name="multihop_entry_retired">Your Multi-Hop entry server was retired. Pick a new one.</string>
+    <string name="multihop_exit_retired">Your Multi-Hop exit server was retired. Pick a new one.</string>
+    <string name="port_forward_create_failed">Couldn\'t create the port forward. Please try again.</string>
+
+    <!-- Free-plan data allowance at check-in (birdo-web PR #590). The grace
+         notice is non-blocking; the end of the session is a plan decision. -->
+    <string name="home_quota_grace">Free data allowance used — your connection ends in %1$d min.</string>
+    <string name="home_quota_grace_soon">Free data allowance used — your connection ends soon.</string>
+    <string name="session_quota_exceeded">You\'ve used this month\'s free data allowance. Upgrade to keep using BirdoVPN.</string>
+    <string name="notif_alert_quota">Free data allowance used</string>
+    <!-- ════ end AND-VPN-B ════ -->
 </resources>

@@ -1,6 +1,7 @@
 package app.birdo.vpn.service
 
 import android.content.Context
+import app.birdo.vpn.R
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
@@ -143,6 +144,21 @@ class VpnManager @Inject constructor(
      */
     private val _sessionExpired = MutableStateFlow(false)
     val sessionExpired: StateFlow<Boolean> = _sessionExpired.asStateFlow()
+
+    /**
+     * The Free plan's grace window, from the last heartbeat (birdo-web PR
+     * #590): Home says the connection ends soon, with View plans. Null when
+     * the allowance is not used up, and whenever the session is not up.
+     */
+    private val _quotaGrace = MutableStateFlow<QuotaGrace?>(null)
+    val quotaGrace: StateFlow<QuotaGrace?> = _quotaGrace.asStateFlow()
+
+    /**
+     * The wait the last failed dial's server asked for (a 503
+     * quota_check_unavailable says 30 s). The next automatic re-dial waits at
+     * least this long; consumed by [onFailure].
+     */
+    @Volatile private var retryAfterHintMs = 0L
 
     /** Timestamp when we last entered a transitional state (Connecting/Disconnecting) */
     @Volatile private var transitionStartTime = 0L
@@ -845,6 +861,7 @@ class VpnManager @Inject constructor(
             }
             is ApiResult.Error -> {
                 if (!superseded(gen)) {
+                    retryAfterHintMs = result.retryAfterMs ?: 0L
                     publishError(
                         apiErrorCopy(result.code, result.message),
                         FailureKind.fromHttpStatus(result.code),
@@ -1000,6 +1017,7 @@ class VpnManager @Inject constructor(
             }
             is ApiResult.Error -> {
                 if (!superseded(gen)) {
+                    retryAfterHintMs = result.retryAfterMs ?: 0L
                     publishError(
                         apiErrorCopy(result.code, result.message),
                         FailureKind.fromHttpStatus(result.code),
@@ -1720,6 +1738,7 @@ class VpnManager @Inject constructor(
 
     private fun onStateChanged(vpnState: VpnState) {
         BirdoVpnService.requestTileRefresh()
+        if (vpnState !is VpnState.Connected) _quotaGrace.value = null
         when (vpnState) {
             is VpnState.Error -> {
                 stopHeartbeat()
@@ -1750,8 +1769,11 @@ class VpnManager @Inject constructor(
         // not split or merge a failure streak.
         val outcome = ReconnectPolicy.onFailure(session, kind, online, elapsedRealtime(), jitter())
         session = outcome.session
+        // A server that said when to come back is not asked sooner.
+        val serverWait = retryAfterHintMs
+        retryAfterHintMs = 0L
         when (val decision = outcome.decision) {
-            is ReconnectPolicy.Decision.Retry -> scheduleReconnect(decision.attempt, decision.delayMs)
+            is ReconnectPolicy.Decision.Retry -> scheduleReconnect(decision.attempt, maxOf(decision.delayMs, serverWait))
             ReconnectPolicy.Decision.WaitForNetwork -> waitForNetwork(session.failures + 1)
             is ReconnectPolicy.Decision.GiveUp -> {
                 giveUp(decision, kind)
@@ -2258,9 +2280,17 @@ class VpnManager @Inject constructor(
         when (result) {
             is ApiResult.Success -> {
                 val resp = result.data
-                when (val verdict = HeartbeatPolicy.verdict(resp.valid, resp.reason, sinceLastOk)) {
+                val verdict = HeartbeatPolicy.verdict(resp.valid, resp.reason, sinceLastOk, resp.quotaExceeded)
+                when (verdict) {
                     HeartbeatPolicy.Verdict.ALIVE -> {
                         if (resp.valid) lastHeartbeatOkAt = elapsedRealtime()
+                        _quotaGrace.value = QuotaPolicy.grace(
+                            valid = resp.valid,
+                            quotaExceeded = resp.quotaExceeded,
+                            secondsRemaining = resp.quotaGraceSecondsRemaining,
+                            endsAtIso = resp.quotaGraceEndsAt,
+                            nowEpochMs = System.currentTimeMillis(),
+                        )
                         if (!resp.serverOnline) {
                             android.util.Log.w("VpnManager", "Heartbeat: server going offline")
                         }
@@ -2337,6 +2367,13 @@ class VpnManager @Inject constructor(
                 android.util.Log.w("VpnManager", "Heartbeat: another device took this session's slot")
                 endSessionForServer(SessionCopy.EVICTED, FailureKind.EVICTED)
             }
+            // The Free allowance is used and the grace window is over: the
+            // peer is gone. A plan decision, ended like a revoke (block
+            // released, intent forgotten, never re-dialled).
+            HeartbeatPolicy.Verdict.QUOTA_EXCEEDED -> {
+                android.util.Log.w("VpnManager", "Heartbeat: free data allowance used — session ended by the server")
+                endSessionForServer(context.getString(R.string.session_quota_exceeded), FailureKind.QUOTA_EXCEEDED)
+            }
             HeartbeatPolicy.Verdict.SERVER_GONE -> if (activeMultiHop != null) {
                 sessionDeadTeardown(SessionCopy.MULTI_HOP_ROUTE_OFFLINE, FailureKind.REFUSED)
             } else {
@@ -2352,6 +2389,7 @@ class VpnManager @Inject constructor(
      * [message], forget the intent, and never re-dial on our own.
      */
     private suspend fun endSessionForServer(message: String, kind: FailureKind) {
+        _quotaGrace.value = null
         intentGeneration++
         session = ReconnectPolicy.Session.IDLE
         cancelRecovery()

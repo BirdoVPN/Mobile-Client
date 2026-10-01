@@ -96,6 +96,18 @@ class SessionSurfaceModelsTest {
             VpnState.Error("BirdoVPN stopped reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE), false, false, false,
         )
         assertTrue(gaveUp!!.reconnect)
+
+        // birdo-web PR #590: the allowance is used. Said as what it is, and no
+        // Reconnect: the server would refuse it.
+        val quota = VpnNotificationManager.alertFor(
+            VpnState.Error("You've used this month's free data allowance.", FailureKind.QUOTA_EXCEEDED), false, false, false,
+        )
+        assertEquals(R.string.notif_alert_quota, quota!!.title)
+        assertFalse(quota.reconnect)
+        assertNull(
+            "never over the app's own screen",
+            VpnNotificationManager.alertFor(VpnState.Error("x", FailureKind.QUOTA_EXCEEDED), false, false, true),
+        )
     }
 
     @Test

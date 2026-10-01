@@ -218,6 +218,40 @@ class SessionPolicyTest {
         assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "not_found", slept - 1))
     }
 
+    // ── Free-plan allowance at check-in (birdo-web PR #590) ─────────────
+
+    @Test
+    fun `an allowance used past its grace ends the session as a plan decision`() {
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, HeartbeatPolicy.verdict(false, "quota_exceeded", 0L))
+        // Either field is enough: a reply that carries only the flag is not a revoke.
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, HeartbeatPolicy.verdict(false, null, 0L, quotaExceeded = true))
+        assertEquals(HeartbeatPolicy.Verdict.QUOTA_EXCEEDED, HeartbeatPolicy.verdict(false, "revoked", 0L, quotaExceeded = true))
+        // Inside the grace window the session is alive.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.verdict(true, null, 0L, quotaExceeded = true))
+        // An unknown reason keeps today's fallback.
+        assertEquals(HeartbeatPolicy.Verdict.ALIVE, HeartbeatPolicy.verdict(true, "some_new_reason", 0L))
+        assertEquals(HeartbeatPolicy.Verdict.REVOKED, HeartbeatPolicy.verdict(false, "some_new_reason", 0L))
+        assertTrue(FailureKind.QUOTA_EXCEEDED.terminal)
+    }
+
+    @Test
+    fun `the grace notice counts whole minutes from the server's clock`() {
+        val now = java.time.Instant.parse("2026-10-01T12:00:00Z").toEpochMilli()
+        assertEquals(QuotaGrace(10), QuotaPolicy.grace(true, true, 600L, null, now))
+        assertEquals(QuotaGrace(2), QuotaPolicy.grace(true, true, 61L, null, now))
+        // Never "ends in 0 min".
+        assertEquals(QuotaGrace(1), QuotaPolicy.grace(true, true, 0L, null, now))
+        // The seconds win over the instant; the instant is the fallback.
+        assertEquals(QuotaGrace(10), QuotaPolicy.grace(true, true, 600L, "2026-10-01T12:05:00Z", now))
+        assertEquals(QuotaGrace(5), QuotaPolicy.grace(true, true, null, "2026-10-01T12:05:00Z", now))
+        // Neither, or an unreadable instant: "soon".
+        assertEquals(QuotaGrace(null), QuotaPolicy.grace(true, true, null, null, now))
+        assertEquals(QuotaGrace(null), QuotaPolicy.grace(true, true, null, "not a date", now))
+        // No notice outside the grace window.
+        assertNull(QuotaPolicy.grace(true, false, 600L, null, now))
+        assertNull(QuotaPolicy.grace(false, true, 600L, null, now))
+    }
+
     // ── REVIEW-AND-006, A1-031, A1-033 ──────────────────────────────────
 
     @Test

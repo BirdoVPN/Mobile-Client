@@ -1,8 +1,10 @@
 package app.birdo.vpn.ui.viewmodel
 
+import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.ClientConfigResponse
 import app.birdo.vpn.data.model.PortForward
@@ -14,6 +16,7 @@ import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.MultiHopPolicy
+import app.birdo.vpn.service.QuotaGrace
 import app.birdo.vpn.service.RosenpassManager
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
@@ -22,6 +25,7 @@ import app.birdo.vpn.service.WireGuardConfigBuilder
 import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,6 +62,8 @@ data class VpnUiState(
     val connectedServerId: String? = null,
     /** A1-025: Android's strict Private DNS overrides BirdoShield / Custom DNS on this connection. */
     val privateDnsOverridesDns: Boolean = false,
+    /** The Free plan's grace window (birdo-web PR #590), while the session is up. */
+    val quotaGrace: QuotaGrace? = null,
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
@@ -195,12 +201,11 @@ class VpnViewModel @Inject constructor(
     private val repository: BirdoRepository,
     private val prefs: AppPreferences,
     private val tokenManager: TokenManager,
+    /** Every sentence this class writes comes from strings.xml through here (A2-031). */
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     internal companion object {
-        /** A switch that threw before VpnManager could publish an Error. */
-        const val SWITCH_FAILED = "Couldn't switch server. Please try again."
-
         /**
          * Auto-Connect falls back to the best server only when the saved one
          * is gone or out of this plan's reach (403/404). Never on the user's
@@ -256,6 +261,7 @@ class VpnViewModel @Inject constructor(
         // before auth had settled. BirdoNavGraph calls loadServers() after login succeeds.
         startStateSync()
         startPrivateDnsSync()
+        startQuotaSync()
         // Pre-publish any cached subscription so Profile tab is never empty on first paint.
         repository.cachedSubscriptionOrNull()?.let {
             _uiState.value = _uiState.value.copy(subscription = it)
@@ -405,6 +411,15 @@ class VpnViewModel @Inject constructor(
         }
     }
 
+    /** birdo-web PR #590: the Free allowance's grace window, from the heartbeat. */
+    private fun startQuotaSync() {
+        viewModelScope.launch {
+            vpnManager.quotaGrace.collect { grace ->
+                _uiState.value = _uiState.value.copy(quotaGrace = grace)
+            }
+        }
+    }
+
     /** A1-025: watch Android's Private DNS under the tunnel. */
     private fun startPrivateDnsSync() {
         viewModelScope.launch {
@@ -549,9 +564,9 @@ class VpnViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(
             connectError = when {
                 entryGone && exitGone ->
-                    "Both of your Multi-Hop servers were retired. Pick a new entry and exit."
-                entryGone -> "Your Multi-Hop entry server was retired. Pick a new one."
-                else -> "Your Multi-Hop exit server was retired. Pick a new one."
+                    appContext.getString(R.string.multihop_both_retired)
+                entryGone -> appContext.getString(R.string.multihop_entry_retired)
+                else -> appContext.getString(R.string.multihop_exit_retired)
             },
         )
     }
@@ -755,7 +770,8 @@ class VpnViewModel @Inject constructor(
                 // Never let a switch failure escape the coroutine and crash the
                 // app, and never show its text: an exception message is not
                 // copy (REVIEW-AND-006).
-                _uiState.value = _uiState.value.copy(connectError = SWITCH_FAILED)
+                // A switch that threw before VpnManager could publish an Error.
+                _uiState.value = _uiState.value.copy(connectError = appContext.getString(R.string.vpn_switch_failed))
             }
         }
     }
@@ -990,7 +1006,7 @@ class VpnViewModel @Inject constructor(
                             // HTML, no stack trace): REVIEW-AND-006.
                             portForwardError = InputValidator.sanitizeErrorMessage(
                                 result.data.message,
-                                "Failed to create port forward",
+                                appContext.getString(R.string.port_forward_create_failed),
                             ),
                             isLoadingPortForwards = false,
                         )

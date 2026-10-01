@@ -75,6 +75,14 @@ enum class FailureKind(val terminal: Boolean) {
     /** 402: the plan does not cover this. */
     PLAN_REQUIRED(true),
 
+    /**
+     * The heartbeat said the Free plan's monthly data allowance is used and
+     * the grace window is over (birdo-web PR #590): the peer is already gone.
+     * A plan decision like [PLAN_REQUIRED]: never re-dialled on its own, the
+     * block released, "View plans" offered.
+     */
+    QUOTA_EXCEEDED(true),
+
     /** Quantum Protection was requested and could not be completed. Fail-closed by design. */
     QUANTUM_FAILED(true),
 
@@ -354,12 +362,25 @@ internal object StealthPreference {
  */
 internal object HeartbeatPolicy {
 
-    enum class Verdict { ALIVE, REAPED, REVOKED, EVICTED, SERVER_GONE }
+    enum class Verdict { ALIVE, REAPED, REVOKED, EVICTED, SERVER_GONE, QUOTA_EXCEEDED }
 
     /** birdo-web's stale-key reap (cleanup.service.ts); the heartbeat runs on awake time only. */
     const val REAP_WINDOW_MS = 5 * 60_000L
 
-    fun verdict(valid: Boolean, reason: String?, sinceLastOkMs: Long): Verdict = when (reason) {
+    fun verdict(
+        valid: Boolean,
+        reason: String?,
+        sinceLastOkMs: Long,
+        quotaExceeded: Boolean = false,
+    ): Verdict = when {
+        // birdo-web PR #590: past the grace window the peer is removed. Read
+        // from either field, so a reply that carries only one of them still
+        // ends the session as a plan decision rather than as a revoke.
+        !valid && (reason == "quota_exceeded" || quotaExceeded) -> Verdict.QUOTA_EXCEEDED
+        else -> byReason(valid, reason, sinceLastOkMs)
+    }
+
+    private fun byReason(valid: Boolean, reason: String?, sinceLastOkMs: Long): Verdict = when (reason) {
         "ok" -> Verdict.ALIVE
         "server_offline" -> if (valid) Verdict.ALIVE else Verdict.SERVER_GONE
         "revoked" -> Verdict.REVOKED
@@ -377,6 +398,37 @@ internal object HeartbeatPolicy {
      */
     private fun inferred(sinceLastOkMs: Long): Verdict =
         if (sinceLastOkMs >= REAP_WINDOW_MS) Verdict.REAPED else Verdict.REVOKED
+}
+
+/**
+ * The Free plan's grace window (birdo-web PR #590): the allowance is used and
+ * the session ends in [minutesLeft] minutes, or soon when the server did not
+ * say when. Shown as a notice; the session is untouched until it ends.
+ */
+data class QuotaGrace(val minutesLeft: Int?)
+
+internal object QuotaPolicy {
+
+    /**
+     * The grace notice a heartbeat reply asks for, or null. The server's
+     * seconds-remaining wins (its clock, not ours); the end instant is the
+     * fallback; minutes are rounded up so "ends in 0 min" is never said.
+     */
+    fun grace(
+        valid: Boolean,
+        quotaExceeded: Boolean,
+        secondsRemaining: Long?,
+        endsAtIso: String?,
+        nowEpochMs: Long,
+    ): QuotaGrace? {
+        if (!valid || !quotaExceeded) return null
+        val seconds = secondsRemaining
+            ?: endsAtIso?.let { iso ->
+                runCatching { (java.time.Instant.parse(iso).toEpochMilli() - nowEpochMs) / 1000 }.getOrNull()
+            }
+            ?: return QuotaGrace(minutesLeft = null)
+        return QuotaGrace(minutesLeft = ((seconds.coerceAtLeast(1) + 59) / 60).toInt())
+    }
 }
 
 /**

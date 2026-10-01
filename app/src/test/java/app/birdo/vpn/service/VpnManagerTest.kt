@@ -3,6 +3,7 @@ package app.birdo.vpn.service
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import app.birdo.vpn.R
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.model.ServerNodeInfo
@@ -1030,6 +1031,76 @@ class VpnManagerTest {
         advanceTimeBy(30 * 60_000L)
         // No eviction ping-pong: the other device keeps the slot.
         coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    // ── Free-plan allowance at check-in (birdo-web PR #590) ─────────────
+
+    @Test
+    fun `a heartbeat inside the quota grace window says so and keeps the session`() = runTest {
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        coEvery { repository.sendHeartbeat(any()) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.HeartbeatResponse(
+                valid = true, quotaExceeded = true, quotaGraceSecondsRemaining = 840L,
+            ),
+        )
+
+        advanceTimeBy(61_000)
+
+        assertEquals(QuotaGrace(14), vpnManager.quotaGrace.value)
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+        assertFalse(BirdoVpnService.ACTION_STOP in dispatchedActions)
+        quiesce()
+        serviceEmits(VpnState.Disconnected)
+        assertNull("the notice goes with the session", vpnManager.quotaGrace.value)
+    }
+
+    @Test
+    fun `quota_exceeded ends the session as a plan decision, releases the block and never re-dials`() = runTest {
+        every { context.getString(R.string.session_quota_exceeded) } returns
+            app.birdo.vpn.testing.StringsXml.text("session_quota_exceeded")
+        vpnManager.ioDispatcher = StandardTestDispatcher(testScheduler)
+        connectAndEstablish()
+        coEvery { repository.sendHeartbeat(any()) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.HeartbeatResponse(valid = false, quotaExceeded = true, reason = "quota_exceeded"),
+        )
+
+        advanceTimeBy(61_000)
+
+        // A full STOP (the block released), with the shipped copy and the
+        // plan kind that offers View plans.
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(
+            app.birdo.vpn.testing.StringsXml.text("session_quota_exceeded"),
+            stringExtras[BirdoVpnService.EXTRA_STOP_REASON],
+        )
+        assertEquals(FailureKind.QUOTA_EXCEEDED.name, stringExtras[BirdoVpnService.EXTRA_STOP_KIND])
+        verify { prefs.sessionShouldBeUp = false }
+        // The peer is already gone server-side: nothing to release.
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+
+        serviceEmits(VpnState.Error(app.birdo.vpn.testing.StringsXml.text("session_quota_exceeded"), FailureKind.QUOTA_EXCEEDED))
+        advanceTimeBy(30 * 60_000L)
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a re-dial refused with retryAfterSeconds waits that long before the next one`() = runTest {
+        connectAndEstablish()
+        coEvery { repository.connectVpn(any(), any()) } returns
+            ApiResult.Error("Try again shortly", 503, retryAfterMs = 30_000L)
+
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        // First re-dial ~2 s + the 5 s teardown wait; its 503 asks for 30 s.
+        // Without the hint the second would follow ~4 s (+5 s) later.
+        advanceTimeBy(20_000)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        val reconnecting = vpnManager.state.value
+        assertTrue("TRANSIENT: still recovering, $reconnecting", reconnecting is VpnState.Reconnecting)
+
+        advanceTimeBy(25_000)
+        coVerify(exactly = 3) { repository.connectVpn(any(), any()) }
+        quiesce()
     }
 
     @Test

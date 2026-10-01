@@ -158,6 +158,7 @@ internal class VpnNotificationManager(private val context: Context) {
                 FailureKind.SIGN_IN_REQUIRED -> R.string.notif_alert_sign_in
                 FailureKind.UPDATE_REQUIRED -> R.string.notif_alert_update
                 FailureKind.REVOKED, FailureKind.EVICTED -> R.string.notif_alert_revoked
+                FailureKind.QUOTA_EXCEEDED -> R.string.notif_alert_quota
                 FailureKind.VPN_TAKEN_OVER -> R.string.notif_alert_turned_off
                 FailureKind.SETUP_REQUIRED, FailureKind.VPN_PERMISSION_REQUIRED -> R.string.notif_alert_open_app
                 else -> R.string.notif_alert_cant_connect
