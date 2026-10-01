@@ -87,6 +87,8 @@ struct ProfileView: View {
                         subtitle: "Permanently delete your account and data",
                         destructive: true
                     ) {
+                        // A fresh attempt: no leftover two-factor step.
+                        authVM.resetDeletionFlow()
                         showDeleteDialog = true
                         // Second-pass #9: name the stores still billing before
                         // the user confirms. Never gates the deletion.
@@ -451,17 +453,25 @@ struct ProfileView: View {
                 }
                 .padding(.bottom, 12)
                 if requiresPassword {
+                    // In the two-factor step the server's message belongs to
+                    // the code field below, not to the password.
                     BirdoTextField("Password",
                                    placeholder: "Password",
                                    text: $deletePassword,
                                    isSecure: true,
-                                   error: authVM.deleteError ?? localDeleteError,
+                                   error: authVM.deleteRequiresTwoFactor
+                                       ? localDeleteError
+                                       : (authVM.deleteError ?? localDeleteError),
                                    textContentType: .password)
                         .disabled(authVM.isDeleting)
                         .onChange(of: deletePassword) { _, _ in
                             localDeleteError = nil
                         }
-                } else if let err = authVM.deleteError {
+                }
+                if authVM.deleteRequiresTwoFactor {
+                    twoFactorStep
+                        .padding(.top, requiresPassword ? 12 : 0)
+                } else if !requiresPassword, let err = authVM.deleteError {
                     Text(err)
                         .font(BirdoTheme.Fonts.bodySmall)
                         .foregroundStyle(BirdoTheme.red)
@@ -471,6 +481,36 @@ struct ProfileView: View {
             .padding(.top, 4)
         }
     }
+
+    /// Owner item 85: the server answered `two_factor_required`. The code is
+    /// sent with the next "Delete My Account" tap; the user is still connected
+    /// and signed in meanwhile.
+    private var twoFactorStep: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("This account uses two-factor authentication. Enter the 6-digit code from your authenticator app, or one of your backup codes.")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurface)
+                .fixedSize(horizontal: false, vertical: true)
+            BirdoTextField("Two-factor code",
+                           placeholder: "000000 or backup code",
+                           text: $authVM.deleteTwoFactorCode,
+                           error: authVM.deleteError,
+                           keyboardType: .asciiCapable,
+                           textContentType: .oneTimeCode,
+                           monospaced: true)
+                .disabled(authVM.isDeleting)
+                .accessibilityIdentifier("delete_2fa_code_field")
+                .onChange(of: authVM.deleteTwoFactorCode) { _, newValue in
+                    // Same filter as the login 2FA step: digits, hex a–f,
+                    // dashes; backup codes are at most 19 characters.
+                    let filtered = String(newValue.filter { Self.twoFactorAllowed.contains($0) }.prefix(19))
+                    if filtered != newValue { authVM.deleteTwoFactorCode = filtered }
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static let twoFactorAllowed = Set("0123456789abcdefABCDEF-")
 
     private func confirmDelete() {
         // Local guard ONLY for password accounts — the Android bug ran this
@@ -496,7 +536,7 @@ struct ProfileView: View {
         showDeleteDialog = false
         deletePassword = ""
         localDeleteError = nil
-        authVM.deleteError = nil
+        authVM.resetDeletionFlow()
     }
 
     // MARK: - Actions

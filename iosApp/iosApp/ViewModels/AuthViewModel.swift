@@ -128,6 +128,16 @@ final class AuthViewModel: ObservableObject {
     /// inside the dialog.
     @Published private(set) var isDeleting = false
     @Published var deleteError: String?
+    /// Owner item 85: the server answered `two_factor_required` — the dialog
+    /// shows a code field and the next attempt sends `twoFactorCode`.
+    @Published private(set) var deleteRequiresTwoFactor = false
+    /// Bound to the deletion dialog's code field (6-digit TOTP or backup
+    /// code). Typing clears the error.
+    @Published var deleteTwoFactorCode = "" {
+        didSet {
+            if oldValue != deleteTwoFactorCode && deleteError != nil { deleteError = nil }
+        }
+    }
     /// Store subscriptions the server reported as STILL BILLING after a
     /// successful deletion (audit 2026-09-29, A-8 / C-9). Deleting a Birdo
     /// account cannot cancel an App Store or Google Play subscription, so the
@@ -938,6 +948,8 @@ final class AuthViewModel: ObservableObject {
         pendingContext = .emailLogin
         error = nil
         deleteError = nil
+        deleteRequiresTwoFactor = false
+        deleteTwoFactorCode = ""
         isLoading = false
         isDeleting = false
         selectedTab = .email
@@ -966,18 +978,45 @@ final class AuthViewModel: ObservableObject {
     /// password-less deletes; do not replicate). Results surface via
     /// `deleteError` / `isDeleting` so they render inside the dialog.
     ///
+    /// Owner item 85: an account with two-factor authentication is answered
+    /// `two_factor_required`; the dialog then asks for a code (TOTP or backup)
+    /// and the next call resends with it. The user stays connected and signed
+    /// in throughout — a refusal is not a deletion.
+    ///
     /// - Parameter tearDownTunnel: takes the VPN down locally; returns whether
     ///   one was up. The view owns the VpnViewModel, so it supplies this.
     func deleteAccount(password: String?,
                        tearDownTunnel: @escaping @MainActor @Sendable () -> Bool) {
         guard !isDeleting else { return }
+        var twoFactorCode: String?
+        if deleteRequiresTwoFactor {
+            guard AccountDeletion.isCompleteTwoFactorCode(deleteTwoFactorCode) else {
+                deleteError = "Enter the 6-digit code from your authenticator app, or a backup code."
+                return
+            }
+            twoFactorCode = deleteTwoFactorCode.trimmingCharacters(in: .whitespaces)
+        }
         isDeleting = true
         deleteError = nil
-        Task { [weak self] in
+        Task { [weak self, twoFactorCode] in
             guard let self else { return }
             do {
-                let stillBilling = try await api.deleteAccount(password: password)
+                let stillBilling = try await api.deleteAccount(password: password,
+                                                               twoFactorCode: twoFactorCode)
                 finishConfirmedDeletion(stillBilling: stillBilling, tearDownTunnel: tearDownTunnel)
+            } catch let refusal as DeletionRefusal {
+                // Owner item 85. Nothing was deleted; the user stays as they were.
+                deleteRequiresTwoFactor = true
+                switch refusal {
+                case .twoFactorRequired:
+                    // The first ask is not an error — the dialog explains it
+                    // beside the new field. Asked again WITH a code, say so.
+                    deleteError = twoFactorCode == nil
+                        ? nil
+                        : "Enter the 6-digit code from your authenticator app, or a backup code."
+                case .twoFactorInvalid:
+                    deleteError = "That code is not valid. Check it and try again."
+                }
             } catch let error where AccountDeletion.outcomeIsUnknown(error) {
                 await resolveUnknownDeletionOutcome(tearDownTunnel: tearDownTunnel)
             } catch {
@@ -985,6 +1024,15 @@ final class AuthViewModel: ObservableObject {
             }
             self.isDeleting = false
         }
+    }
+
+    /// The deletion dialog opened or closed: drop any half-finished
+    /// two-factor step so the next attempt starts clean.
+    func resetDeletionFlow() {
+        guard !isDeleting else { return }
+        deleteRequiresTwoFactor = false
+        deleteTwoFactorCode = ""
+        deleteError = nil
     }
 
     /// The server confirmed the erasure: NOW the tunnel goes down, then the
@@ -1345,7 +1393,11 @@ final class AuthViewModel: ObservableObject {
     private static func mapDeleteError(_ error: Error) -> String {
         if let api = error as? APIError {
             switch api {
-            case .serverMessage(let msg, _):
+            case .serverMessage(let msg, let status):
+                // 429 by STATUS first: the two-factor limiter (owner item 85)
+                // answers with copy of its own, which must not fall through to
+                // the generic failure.
+                if status == 429 { return "Too many attempts. Please wait a moment." }
                 if msg.lowercased().contains("password") { return "Incorrect password" }
                 if msg.contains("429") || msg.lowercased().contains("too many") {
                     return "Too many attempts. Please wait a moment."
