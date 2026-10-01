@@ -565,9 +565,9 @@ class BirdoRepositoryTest {
 
         assertTrue(result is ApiResult.Success)
         verify { tokenManager.setLastKeyId("key123") }
-        // Private key is generated locally (not from the server), so verify it's stored but don't
-        // check the exact value — it's a random X25519 key from wireguard-android.
-        verify { tokenManager.setWireGuardPrivateKey(any()) }
+        // The private key is generated locally and handed back for this session
+        // only: it is never written to the token store (A1-041).
+        assertNotNull((result as ApiResult.Success).data.privateKey)
     }
 
     @Test
@@ -672,7 +672,6 @@ class BirdoRepositoryTest {
         late.await()
 
         assertEquals("key-2", storedKey)
-        verify(exactly = 0) { tokenManager.clearWireGuardPrivateKey() }
     }
 
     @Test
@@ -919,6 +918,6 @@ class BirdoRepositoryTest {
 
         assertFalse(result.data.success)
         assertEquals(StringsXml.text("error_device_limit"), result.data.message)
-        verify(exactly = 0) { tokenManager.setWireGuardPrivateKey(any()) }
+        verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
     }
 }

@@ -74,6 +74,9 @@ class VpnManagerTest {
      * would run its own fallback and supervisor on this test's scheduler.
      */
     private val transportBlocked = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+
+    /** Home-screen widget re-renders VpnManager asked for (REVIEW-AND-012). */
+    private var widgetRefreshes = 0
     private val stringExtras = mutableMapOf<String, String?>()
 
     @Before
@@ -130,6 +133,7 @@ class VpnManagerTest {
 
         vpnManager = VpnManager(context, repository, prefs, networkMonitor)
         vpnManager.jitter = { 0.0 }
+        vpnManager.refreshWidget = { widgetRefreshes++ }
     }
 
     @After
@@ -306,8 +310,8 @@ class VpnManagerTest {
     fun `connect forwards stealth quantum and PQ public key when enabled`() = runTest {
         every { prefs.stealthModeEnabled } returns true
         every { prefs.quantumProtectionEnabled } returns true
-        mockkObject(RosenpassManager)
-        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns "pq-public-key"
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns "pq-public-key"
         val response = makeConnectResponse()
         coEvery {
             repository.connectVpn(
@@ -390,8 +394,8 @@ class VpnManagerTest {
     @Test
     fun `connect refuses quantum downgrade when PQ public key is unavailable`() = runTest {
         every { prefs.quantumProtectionEnabled } returns true
-        mockkObject(RosenpassManager)
-        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns null
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns null
 
         val result = vpnManager.connect("srv-1")
 
@@ -432,8 +436,8 @@ class VpnManagerTest {
     fun `connectMultiHop forwards stealth quantum and PQ public key when enabled`() = runTest {
         every { prefs.stealthModeEnabled } returns true
         every { prefs.quantumProtectionEnabled } returns true
-        mockkObject(RosenpassManager)
-        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns "pq-public-key"
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns "pq-public-key"
         val response = makeMultiHopResponse()
         coEvery {
             repository.connectMultiHop(
@@ -544,8 +548,8 @@ class VpnManagerTest {
     @Test
     fun `connectMultiHop refuses quantum downgrade when PQ public key is unavailable`() = runTest {
         every { prefs.quantumProtectionEnabled } returns true
-        mockkObject(RosenpassManager)
-        coEvery { RosenpassManager.getClientPublicKeyB64(context) } returns null
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns null
 
         val result = vpnManager.connectMultiHop("de-1", "nl-1")
 
@@ -667,42 +671,6 @@ class VpnManagerTest {
 
         // Should not throw, disconnect is resilient
         assertEquals(VpnState.Disconnecting, vpnManager.state.value)
-    }
-
-    // ── toggle() ────────────────────────────────────────────────
-
-    @Test
-    fun `toggle disconnects when currently connected`() = runTest {
-        // Simulate Connected state
-        serviceStateFlow.value = VpnState.Connected
-        every { BirdoVpnService.currentState } returns VpnState.Connected
-        advanceUntilIdle()
-
-        val result = vpnManager.toggle()
-
-        assertFalse(result)
-        coVerify { repository.disconnectVpn() }
-    }
-
-    @Test
-    fun `toggle connects when currently disconnected`() = runTest {
-        val servers = listOf(makeServer(id = "srv-1", load = 10))
-        coEvery { repository.getServers() } returns ApiResult.Success(servers)
-        coEvery { repository.connectVpn(any(), any()) } returns
-            ApiResult.Success(makeConnectResponse())
-
-        val result = vpnManager.toggle()
-
-        assertTrue(result)
-    }
-
-    @Test
-    fun `toggle returns false when connect fails`() = runTest {
-        coEvery { repository.getServers() } returns ApiResult.Error("Network error")
-
-        val result = vpnManager.toggle()
-
-        assertFalse(result)
     }
 
     // ── State guard logic ───────────────────────────────────────
@@ -1031,6 +999,47 @@ class VpnManagerTest {
         advanceTimeBy(30 * 60_000L)
         // No eviction ping-pong: the other device keeps the slot.
         coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+    }
+
+    // ── REVIEW-AND-012: the widget follows the manager's own states ─────
+
+    @Test
+    fun `a refusal before the service ever starts re-renders the widget`() = runTest {
+        // A widget tap: no service running, so its render loop cannot refresh
+        // anything. The widget used to stay on "Connecting… Tap to cancel".
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Please update BirdoVPN.", 426)
+
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+
+        assertTrue(vpnManager.state.value is VpnState.Error)
+        assertFalse(BirdoVpnService.ACTION_START in dispatchedActions)
+        // At least the Error's model reached the widget (Connecting may be
+        // conflated away under the test scheduler).
+        assertTrue("refreshes=$widgetRefreshes", widgetRefreshes >= 1)
+    }
+
+    // ── REVIEW-AND-023 (iOS #354): a switch that cannot be undone fails closed ──
+
+    @Test
+    fun `a switch over the teardown path that never connects keeps the block it held, and stops`() = runTest {
+        connectAndEstablish()
+        // Stealth is never rebuilt in place, so this switch tears down first.
+        every { BirdoVpnService.stealthActive } returns true
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.connect("srv-2")
+        every { BirdoVpnService.killSwitchActive } returns true
+
+        serviceEmits(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))
+        advanceTimeBy(10 * 60_000L)
+
+        // The previous session is gone and cannot be swapped back, as on the
+        // live path (SessionCopy.switchFailedClosed): the kill switch's block
+        // holds, and nothing re-dials behind it.
+        assertFalse(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        verify { prefs.sessionShouldBeUp = false }
+        quiesce()
     }
 
     // ── Free-plan allowance at check-in (birdo-web PR #590) ─────────────

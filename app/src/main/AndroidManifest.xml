@@ -5,15 +5,15 @@
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- A1-043: no ACCESS_WIFI_STATE (nothing reads Wi-Fi state; SSIDs are
+         deliberately never read) and no CHANGE_NETWORK_STATE (the app only
+         registers network callbacks; it never requests or binds a network).
+         No library adds either (manifest-merger report, 2026-10-01). -->
 
     <!-- VPN -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- Wifi info for auto-connect -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <!-- FIX-1-10: Replace QUERY_ALL_PACKAGES with targeted <queries> to comply
          with Google Play policy. Only queries launcher apps for split tunneling UI. -->

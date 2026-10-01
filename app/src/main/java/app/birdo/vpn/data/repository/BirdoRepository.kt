@@ -751,7 +751,7 @@ class BirdoRepository @Inject constructor(
                     fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
-                    // A non-null key proves RosenpassManager loaded the native
+                    // A non-null key proves BirdoPqManager loaded the native
                     // engine and minted the ML-KEM keypair, so this client WILL
                     // decapsulate — tell the server to withhold the PSK from
                     // the response (the HNDL-safe path). BirdoVpnService fails
@@ -772,12 +772,13 @@ class BirdoRepository @Inject constructor(
                 if (!body.success) {
                     return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
                 }
-                // FIX-1-1: Store locally generated private key instead of server-provided one.
+                // FIX-1-1: the locally generated private key, never the server's.
                 // The server no longer returns privateKey when clientPublicKey was sent.
                 val localPrivateKey = String(privateKeyChars)
+                // The private key is NOT persisted (A1-041): it lives in the
+                // returned config for this session only.
                 synchronized(keyIdLock) {
                     body.keyId?.let { tokenManager.setLastKeyId(it) }
-                    tokenManager.setWireGuardPrivateKey(localPrivateKey)
                 }
                 // Inject the locally-generated private key into the response so
                 // VpnManager and BirdoVpnService can build the WireGuard config.
@@ -818,9 +819,6 @@ class BirdoRepository @Inject constructor(
         synchronized(keyIdLock) {
             if (target == null || tokenManager.getLastKeyId() == target) {
                 tokenManager.clearLastKeyId()
-                // FIX-1-8: Clear WG private key from storage after disconnect.
-                // Fresh keys are generated on each new connection.
-                tokenManager.clearWireGuardPrivateKey()
             }
         }
         return serverResult
@@ -840,7 +838,9 @@ class BirdoRepository @Inject constructor(
      */
     suspend fun sendHeartbeat(keyId: String? = null): ApiResult<HeartbeatResponse> {
         val target = keyId ?: tokenManager.getLastKeyId()
-            ?: return ApiResult.Error("No active key ID", CODE_NO_ACTIVE_KEY)
+            // A user-facing sentence like every other error here (REVIEW-AND-021);
+            // callers branch on the code.
+            ?: return errors.unexpected().copy(code = CODE_NO_ACTIVE_KEY)
         return withAutoRefresh(R.string.error_unexpected) {
             api.heartbeat(target)
         }
@@ -904,9 +904,10 @@ class BirdoRepository @Inject constructor(
                     return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
                 }
                 val localPrivateKey = String(privateKeyChars)
+                // The private key is NOT persisted (A1-041): it lives in the
+                // returned config for this session only.
                 synchronized(keyIdLock) {
                     body.keyId?.let { tokenManager.setLastKeyId(it) }
-                    tokenManager.setWireGuardPrivateKey(localPrivateKey)
                 }
                 return ApiResult.Success(body.copy(privateKey = localPrivateKey))
             }

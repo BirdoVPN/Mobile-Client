@@ -260,7 +260,7 @@ class BirdoVpnService : VpnService() {
         val privateDnsStrictFlow: StateFlow<Boolean> = _privateDnsStrictFlow.asStateFlow()
 
         private val _quantumActiveFlow = MutableStateFlow(false)
-        /** Whether the current connection is using Rosenpass PQ-PSK */
+        /** Whether the current connection uses a BirdoPQ (ML-KEM-1024) PSK. */
         val quantumActive: Boolean get() = _quantumActiveFlow.value
 
         /**
@@ -1592,12 +1592,13 @@ class BirdoVpnService : VpnService() {
                 _stealthActiveFlow.value = false
             }
 
-            // ── Phase 2: Quantum Protection (Rosenpass PQ-PSK) ──────
-            // When quantum protection is enabled and the server provides a
-            // Rosenpass public key, perform a post-quantum key exchange to
-            // derive a 32-byte PSK. This PSK is injected as WireGuard's
-            // PresharedKey field, providing post-quantum security even if
-            // Curve25519 is broken by a future quantum computer.
+            // ── Phase 2: Quantum Protection (BirdoPQ v1) ──────
+            // When the server enabled quantum protection, its /connect reply
+            // carries an ML-KEM-1024 ciphertext (in the historical
+            // rosenpassPublicKey field) and a nonce (rosenpassEndpoint). The
+            // client decapsulates them LOCALLY — no network exchange — into a
+            // 32-byte PSK injected as WireGuard's PresharedKey, so the session
+            // stays confidential even if Curve25519 is broken later.
             var quantumPsk: String? = null
             if (config.quantumEnabled) {
                 if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) {
@@ -1611,11 +1612,11 @@ class BirdoVpnService : VpnService() {
                     return
                 }
 
-                Log.i(TAG, "Quantum protection enabled — performing PQ key exchange")
+                Log.i(TAG, "Quantum protection enabled — deriving the BirdoPQ PSK")
                 mainHandler.post { updateNotification("Quantum key exchange…") }
 
                 quantumPsk = runBlocking(Dispatchers.IO) {
-                    RosenpassManager.performKeyExchange(applicationContext, config)
+                    BirdoPqManager.performKeyExchange(applicationContext, config)
                 }
                 if (supersededAt(gen, "quantum key exchange")) return
 
@@ -1624,7 +1625,7 @@ class BirdoVpnService : VpnService() {
                     Log.i(TAG, "PQ-PSK derived — quantum protection active")
                 } else {
                     _quantumActiveFlow.value = false
-                    // RosenpassManager reports the specific cause; this is the
+                    // BirdoPqManager reports the specific cause; this is the
                     // refusal count.
                     FaultReporter.report(
                         FaultReporter.PATH_QUANTUM,
@@ -1734,13 +1735,13 @@ class BirdoVpnService : VpnService() {
                 Log.i(TAG, "VPN connected — ${config.assignedIp ?: "?"} → ${effectiveConfig.endpoint}")
             }
             Log.i(TAG, "Kill switch: $isKillSwitchEnabled | Split tunnel: $isSplitTunnelingEnabled (${splitTunnelAppList.size} apps)")
-            Log.i(TAG, "Stealth: $stealthActive | Quantum: $quantumActive (mode=${RosenpassManager.modeFlow.value})")
+            Log.i(TAG, "Stealth: $stealthActive | Quantum: $quantumActive (mode=${BirdoPqManager.modeFlow.value})")
 
             // No PSK rekey loop in BirdoPQ v1: wireguard-android doesn't
             // expose wgSetConfig so live PSK swap isn't possible. Each
             // /connect already derives a fresh per-session PQ-PSK via
             // ML-KEM-1024 decapsulation, which gives the same HNDL guarantee
-            // — see RosenpassManager kdoc + native/ROADMAP.md.
+            // — see BirdoPqManager kdoc + native/ROADMAP.md.
 
             // D-6: the app is inside its own tunnel now, so wg-go's UDP
             // sockets MUST go around it or every WireGuard packet loops back
@@ -2433,8 +2434,8 @@ class BirdoVpnService : VpnService() {
         var psk: String? = null
         if (config.quantumEnabled) {
             if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) return null
-            // RosenpassManager reports the specific cause.
-            psk = runBlocking(Dispatchers.IO) { RosenpassManager.performKeyExchange(applicationContext, config) }
+            // BirdoPqManager reports the specific cause.
+            psk = runBlocking(Dispatchers.IO) { BirdoPqManager.performKeyExchange(applicationContext, config) }
                 ?: return null
         }
         if (!app.birdo.vpn.utils.NativeLibraryVerifier.verifyLibrary(this, "wg-go") || !WgNative.init()) return null
@@ -2494,14 +2495,6 @@ class BirdoVpnService : VpnService() {
 
     private fun buildWireGuardConfig(response: ConnectResponse): Config {
         return WireGuardConfigBuilder.build(response, appPrefs)
-    }
-
-    /**
-     * Apply the user's WireGuard port override to the endpoint string.
-     * "auto" → keep server-provided port.
-     */
-    private fun applyPortOverride(endpoint: String): String {
-        return WireGuardConfigBuilder.applyPortOverride(endpoint, appPrefs)
     }
 
     /**
@@ -2694,10 +2687,10 @@ class BirdoVpnService : VpnService() {
         } catch (_: Exception) { /* already unregistered */ }
     }
 
-    /** Stop Xray Reality and Rosenpass, zeroing all PQ key material. */
+    /** Stop Xray Reality and BirdoPQ, zeroing all PQ key material. */
     private fun cleanupStealthAndQuantum() {
         try { XrayManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping Xray", e) }
-        try { RosenpassManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping Rosenpass", e) }
+        try { BirdoPqManager.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping BirdoPQ", e) }
     }
 
     // ── Widget ───────────────────────────────────────────────────
@@ -2730,16 +2723,6 @@ class BirdoVpnService : VpnService() {
 sealed class VpnState {
     data object Disconnected : VpnState()
     data object Connecting : VpnState()
-    /**
-     * Authenticating with the API server (pre-tunnel).
-     *
-     * DEAD as of 2026-08-27: nothing anywhere calls `updateState(Authenticating)`.
-     * Kept because it is part of the public state surface, but it is NOT in
-     * [isConnectingPhase] — adding an unreachable state to a fail-closed
-     * predicate buys nothing and hides the fact that it is unused. If it is ever
-     * published, add it there and to the UI mapping in the same commit.
-     */
-    data object Authenticating : VpnState()
     /** Establishing stealth tunnel (Xray Reality). */
     data object StealthConnecting : VpnState()
     data object Connected : VpnState()
@@ -2776,7 +2759,7 @@ sealed class VpnState {
  * WHY THIS EXISTS AS ONE PREDICATE.
  *
  * [VpnState.StealthConnecting] is published for the whole stealth setup —
- * Xray start, the Rosenpass exchange, WgNative init/turnOn and establish() —
+ * Xray start, the BirdoPQ derivation, WgNative init/turnOn and establish() —
  * and every single consumer that enumerated transitional states listed only
  * `Connecting` and missed it:
  *

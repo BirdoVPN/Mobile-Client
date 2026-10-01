@@ -122,18 +122,32 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `WireGuard private key, last key id and pending anonymous id round-trip and clear`() {
-        tokenManager.setWireGuardPrivateKey("wg-priv")
+    fun `a WireGuard private key an older build left at rest is purged at start-up`() {
+        // A1-041: every connect used to write its session key here, and
+        // nothing read it back.
+        val prefs = FakeSharedPreferences()
+        val sealed = KeystoreSecureStore(prefs, AesGcmSealer(JceKeySource()))
+        sealed.put(TokenManager.LEGACY_KEY_WG_PRIVATE_KEY, "old-session-key", commit = true)
+        sealed.put("refresh_token", "r", commit = true)
+        backend = FakeBackend(legacy) { sealed }
+
+        tokenManager = TokenManager(backend)
+
+        assertFalse(tokenManager.holdsWireGuardKey())
+        assertFalse(sealed.contains(TokenManager.LEGACY_KEY_WG_PRIVATE_KEY))
+        // Nothing else is touched.
+        assertEquals("r", tokenManager.getRefreshToken())
+    }
+
+    @Test
+    fun `last key id and pending anonymous id round-trip and clear`() {
         tokenManager.setLastKeyId("key-42")
         tokenManager.setPendingAnonymousId("123456789012345678901234")
-        assertEquals("wg-priv", tokenManager.getWireGuardPrivateKey())
         assertEquals("key-42", tokenManager.getLastKeyId())
         assertEquals("123456789012345678901234", tokenManager.getPendingAnonymousId())
 
-        tokenManager.clearWireGuardPrivateKey()
         tokenManager.clearLastKeyId()
         tokenManager.clearPendingAnonymousId()
-        assertNull(tokenManager.getWireGuardPrivateKey())
         assertNull(tokenManager.getLastKeyId())
         assertNull(tokenManager.getPendingAnonymousId())
     }
@@ -141,13 +155,11 @@ class TokenManagerTest {
     @Test
     fun `clearAll wipes every value`() {
         tokenManager.setTokens("a", "r")
-        tokenManager.setWireGuardPrivateKey("wg")
         tokenManager.setLastKeyId("k")
         tokenManager.setPendingAnonymousId("id")
         tokenManager.clearAll()
         assertNull(tokenManager.getAccessToken())
         assertNull(tokenManager.getRefreshToken())
-        assertNull(tokenManager.getWireGuardPrivateKey())
         assertNull(tokenManager.getLastKeyId())
         assertNull(tokenManager.getPendingAnonymousId())
         assertFalse(tokenManager.isLoggedIn())
@@ -171,9 +183,8 @@ class TokenManagerTest {
         assertEquals(0, prefs.applies)
 
         tokenManager.setAccessToken("a2")
-        tokenManager.setWireGuardPrivateKey("wg")
         tokenManager.setLastKeyId("k")
-        assertEquals(3, prefs.applies)
+        assertEquals(2, prefs.applies)
         assertEquals(5, prefs.commits)
     }
 
@@ -243,7 +254,8 @@ class TokenManagerTest {
 
         assertEquals("legacy-access", tokenManager.getAccessToken())
         assertEquals("legacy-refresh", tokenManager.getRefreshToken())
-        assertEquals("legacy-wg", tokenManager.getWireGuardPrivateKey())
+        // A1-041: the session key a pre-2026-10-01 build left at rest is not carried over.
+        assertFalse(tokenManager.holdsWireGuardKey())
         assertEquals("legacy-anon", tokenManager.getPendingAnonymousId())
         assertEquals(1, legacy.destroyed)
         assertEquals(1, legacy.reads)

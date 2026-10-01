@@ -446,7 +446,7 @@ data class ConnectRequest(
      * When present, the server encapsulates a fresh shared secret against
      * this key and returns the resulting ciphertext in
      * `ConnectResponse.rosenpassPublicKey`. ~2.1 KB Base64 overhead per
-     * connect — see `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt`.
+     * connect — see `app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt`.
      */
     val pqClientPublicKey: String? = null,
     /**
@@ -456,7 +456,7 @@ data class ConnectRequest(
      * That is the actual harvest-now-decrypt-later property the feature is
      * sold on: without it the PSK travels under classical TLS and a recorded
      * session plus a future CRQC recovers it. Only ever set true alongside a
-     * non-null [pqClientPublicKey] (RosenpassManager produced the keypair, so
+     * non-null [pqClientPublicKey] (BirdoPqManager produced the keypair, so
      * the native engine is present); if decapsulation still fails at tunnel
      * time the client fails closed rather than downgrading.
      */
@@ -558,7 +558,7 @@ data class ConnectResponse(
     //                          same KEM output. Server may use a timestamp,
     //                          random bytes, or any opaque value.
     //
-    // See `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt` and
+    // See `app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt` and
     // `native/rosenpass-jni/src/lib.rs` for the canonical protocol spec.
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,

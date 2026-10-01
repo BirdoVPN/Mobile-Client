@@ -17,7 +17,7 @@ import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.QuotaGrace
-import app.birdo.vpn.service.RosenpassManager
+import app.birdo.vpn.service.BirdoPqManager
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
@@ -72,7 +72,6 @@ data class VpnUiState(
     /**
      * PFA-M9: granular PQ mode for honest UI labelling.
      *  - "BILATERAL"       — genuine end-to-end ML-KEM-1024 PSK derivation
-     *  - "SERVER_PROVIDED" — classical PSK delivered over TLS (NOT post-quantum)
      *  - "DISABLED"        — no PSK
      * Marketing copy MUST distinguish BILATERAL from SERVER_PROVIDED before
      * claiming post-quantum protection to a user.
@@ -403,7 +402,7 @@ class VpnViewModel @Inject constructor(
                         liveMultiHopEntryId = if (routeIsLive) route?.first else null,
                         stealthActive = BirdoVpnService.stealthActive,
                         quantumActive = BirdoVpnService.quantumActive,
-                        pqMode = RosenpassManager.modeFlow.value.name,
+                        pqMode = BirdoPqManager.modeFlow.value.name,
                         publicIp = BirdoVpnService.publicIp,
                     )
                     if (input.state is VpnState.Connected) startStatsPolling() else stopStatsPolling()

@@ -12,7 +12,7 @@
 #
 # What that cost: `ml-kem` enforces FIPS 203 section 7.3 on load, so a stored
 # ML-KEM key that the old PQClean binding accepted is now a hard rejection.
-# Android self-heals (RosenpassManager discards the sealed pair and re-keys).
+# Android self-heals (BirdoPqManager discards the sealed pair and re-keys).
 # Without the Swift call, iOS would have thrown `quantumHandshakeFailed` on
 # every connect, on every attempt, forever, on any install with such a key --
 # nothing but a logout clears the Keychain item.

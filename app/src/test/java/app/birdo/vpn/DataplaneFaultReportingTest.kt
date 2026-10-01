@@ -74,7 +74,7 @@ class DataplaneFaultReportingTest {
         "app/src/main/java/app/birdo/vpn/service/VpnManager.kt",
         "app/src/main/java/app/birdo/vpn/service/TransportProbe.kt",
         "app/src/main/java/app/birdo/vpn/service/RosenpassNative.kt",
-        "app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt",
+        "app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt",
         "app/src/main/java/app/birdo/vpn/service/XrayManager.kt",
         "app/src/main/java/app/birdo/vpn/service/BirdoTileService.kt",
         "app/src/main/java/app/birdo/vpn/service/WireGuardConfigBuilder.kt",
@@ -97,9 +97,9 @@ class DataplaneFaultReportingTest {
         "VpnNotificationManager.kt" to
             "builds and posts notifications; its one catch is a failed notification post, " +
             "which changes nothing about whether traffic is protected",
-        "RosenpassKeyStore.kt" to
+        "BirdoPqKeyStore.kt" to
             "PQ key persistence. Both catches recover locally (keep on-disk state / delete " +
-            "partial state) and the PQ VERDICT that results is reported by RosenpassManager, " +
+            "partial state) and the PQ VERDICT that results is reported by BirdoPqManager, " +
             "so reporting here would double-count one outcome",
         "MultiHopPolicy.kt" to
             "a pure decision table: no Android, no coroutines, no I/O, and nothing to catch. " +
@@ -997,7 +997,7 @@ class DataplaneFaultReportingTest {
             listOf("pq_native_load_failed", "pq_native_load_threw"),
         )
         assertReports(
-            "app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt",
+            "app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt",
             listOf(
                 "pq_abort_no_bilateral_psk",
                 "pq_nonce_missing",

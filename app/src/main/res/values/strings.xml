@@ -586,6 +586,10 @@
     <string name="multihop_exit_retired">Your Multi-Hop exit server was retired. Pick a new one.</string>
     <string name="port_forward_create_failed">Couldn\'t create the port forward. Please try again.</string>
 
+    <!-- REVIEW-AND-015: the Login strip says what is actually still up. -->
+    <string name="login_vpn_still_blocking">BirdoVPN is still blocking your traffic.</string>
+    <string name="login_vpn_still_reconnecting">Your VPN is still reconnecting.</string>
+
     <!-- Free-plan data allowance at check-in (birdo-web PR #590). The grace
          notice is non-blocking; the end of the session is a plan decision. -->
     <string name="home_quota_grace">Free data allowance used — your connection ends in %1$d min.</string>

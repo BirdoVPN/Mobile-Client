@@ -33,6 +33,7 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.service.VpnState
+import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
 import app.birdo.vpn.billing.BirdoBillingPeriod
@@ -54,11 +55,25 @@ import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.isAnonymousAccountEmail
 
 /**
- * A2-004: the VPN as seen from Login — "Your VPN is still connected." and a
- * Disconnect — for a session that outlived the sign-in behind it.
+ * REVIEW-AND-015: what the Login strip says, by what the VPN is actually
+ * doing. It said "Your VPN is still connected." for a device that was only
+ * blocking, or still reconnecting. Null: nothing is up, no strip.
+ */
+@StringRes
+internal fun loginVpnStripText(state: VpnState, blocking: Boolean): Int? = when {
+    state is VpnState.Connected -> R.string.login_vpn_still_on
+    state is VpnState.Reconnecting || state.isConnectingPhase -> R.string.login_vpn_still_reconnecting
+    blocking -> R.string.login_vpn_still_blocking
+    state is VpnState.Disconnected || state is VpnState.Error -> null
+    else -> R.string.login_vpn_still_on
+}
+
+/**
+ * A2-004: the VPN as seen from Login — what is still up, and a Disconnect —
+ * for a session that outlived the sign-in behind it.
  */
 @Composable
-private fun LoginVpnStatus(onDisconnect: () -> Unit) {
+private fun LoginVpnStatus(@StringRes text: Int, onDisconnect: () -> Unit) {
     val palette = BirdoColors.current
     Surface(
         color = palette.surface,
@@ -78,7 +93,7 @@ private fun LoginVpnStatus(onDisconnect: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = stringResource(R.string.login_vpn_still_on),
+                text = stringResource(text),
                 color = palette.onSurface,
                 fontSize = 13.sp,
                 modifier = Modifier.weight(1f),
@@ -521,11 +536,10 @@ fun BirdoNavGraph(
                 // A2-004: a session that expired can leave the tunnel (or the
                 // kill-switch block) up, and Login has no bottom bar to reach
                 // Home from. Say so here, with the way to stop it.
-                val vpnStillOn = (vpnState.vpnState !is VpnState.Disconnected &&
-                    vpnState.vpnState !is VpnState.Error) || vpnState.killSwitchActive
-                if (vpnStillOn) {
+                val vpnStillOn = loginVpnStripText(vpnState.vpnState, vpnState.killSwitchActive)
+                if (vpnStillOn != null) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                        LoginVpnStatus(onDisconnect = { vpnViewModel.disconnect() })
+                        LoginVpnStatus(text = vpnStillOn, onDisconnect = { vpnViewModel.disconnect() })
                     }
                 }
             }

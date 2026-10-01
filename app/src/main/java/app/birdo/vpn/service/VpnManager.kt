@@ -24,6 +24,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import android.widget.Toast
+import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -41,6 +42,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -223,6 +226,22 @@ class VpnManager @Inject constructor(
     internal var elapsedRealtime: () -> Long = { SystemClock.elapsedRealtime() }
     internal var jitter: () -> Double = { Random.nextDouble(-1.0, 1.0) }
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+
+    /**
+     * REVIEW-AND-012: re-render the home-screen widget. The service's render
+     * loop refreshes it only while the service runs, so an API-phase refusal
+     * from a widget tap (no service yet) left it on "Connecting… Tap to
+     * cancel". A seam so unit tests never drive Glance.
+     */
+    internal var refreshWidget: suspend () -> Unit = {
+        try {
+            app.birdo.vpn.widget.BirdoWidget().updateAll(context)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("VpnManager", "Widget refresh failed", e)
+        }
+    }
 
     // ── Heartbeat keepalive ─────────────────────────────────────────
     private var heartbeatJob: Job? = null
@@ -517,6 +536,16 @@ class VpnManager @Inject constructor(
         scope.launch {
             BirdoVpnService.wakeFlow.collect { heartbeatNow() }
         }
+
+        // REVIEW-AND-012: the widget follows THIS state (its model is read
+        // from it), including the states only the manager publishes.
+        scope.launch {
+            _state
+                .map { app.birdo.vpn.widget.BirdoWidget.widgetModel(it, BirdoVpnService.killSwitchActive) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { withContext(ioDispatcher) { refreshWidget() } }
+        }
     }
 
     fun isVpnPermissionGranted(): Boolean = VpnService.prepare(context) == null
@@ -791,8 +820,8 @@ class VpnManager @Inject constructor(
         // Upload our ML-KEM-1024 client public key when quantum protection is
         // enabled so the server can encapsulate against it (BirdoPQ v1).
         val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
-            RosenpassManager.getClientPublicKeyB64(context) ?: run {
-                // RosenpassNative/RosenpassManager report the cause; this is
+            BirdoPqManager.getClientPublicKeyB64(context) ?: run {
+                // RosenpassNative/BirdoPqManager report the cause; this is
                 // the count of users refused a connection because of it.
                 FaultReporter.report(
                     FaultReporter.PATH_QUANTUM,
@@ -897,7 +926,7 @@ class VpnManager @Inject constructor(
         enterConnecting(gen)
 
         val pqClientPublicKey: String? = if (prefs.quantumProtectionEnabled) {
-            RosenpassManager.getClientPublicKeyB64(context) ?: run {
+            BirdoPqManager.getClientPublicKeyB64(context) ?: run {
                 // Twin of the single-hop connect_refused_pq_engine_unavailable.
                 FaultReporter.report(
                     FaultReporter.PATH_QUANTUM,
@@ -1303,7 +1332,7 @@ class VpnManager @Inject constructor(
      */
     private suspend fun rebuildPqKey(): Pair<String?, LiveRebuildPolicy.Event?> {
         if (!prefs.quantumProtectionEnabled) return null to null
-        val key = RosenpassManager.getClientPublicKeyB64(context)
+        val key = BirdoPqManager.getClientPublicKeyB64(context)
             ?: return null to LiveRebuildPolicy.Event.REQUEST_FAILED
         return key to null
     }
@@ -1719,19 +1748,6 @@ class VpnManager @Inject constructor(
         if (keyId == null) return
         if (sessionKeyId == keyId) sessionKeyId = null
         scope.launch { repository.disconnectVpn(keyId) }
-    }
-
-    /**
-     * Toggle VPN — connect or disconnect.
-     */
-    suspend fun toggle(): Boolean {
-        return if (_state.value is VpnState.Connected) {
-            disconnect()
-            false
-        } else {
-            val result = quickConnect()
-            result is ApiResult.Success
-        }
     }
 
     // ── The supervisor ────────────────────────────────────────────────

@@ -38,8 +38,9 @@ import org.junit.Test
  * What VpnViewModel keeps per ACCOUNT, and when it may talk to the backend.
  *
  * The main dispatcher runs on its own scheduler, advanced by hand: the
- * ViewModel starts an endless stats loop in init, and a scheduler the test
- * does not drive leaves it parked at its first delay.
+ * ViewModel's init launches collectors that never complete (the session
+ * state, Private DNS, the quota notice), and the stats loop runs while
+ * Connected; a scheduler the test does not drive leaves them all parked.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class VpnViewModelAccountStateTest {

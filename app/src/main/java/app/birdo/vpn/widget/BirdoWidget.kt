@@ -197,7 +197,9 @@ private fun BirdoWidgetContent(
     } else {
         context.getString(
             R.string.cd_widget_state,
-            context.getString(model.status),
+            // The format adds its own full stop: "Connecting…." read as a
+            // double stop (REVIEW-AND-021).
+            context.getString(model.status).trimEnd('.', '…'),
             model.hint?.let { context.getString(it) }.orEmpty(),
         ).trim()
     }
