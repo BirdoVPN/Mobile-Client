@@ -101,11 +101,10 @@ Compiled to:
   own IP address, only where they have to: before the first tunnel is up,
   behind the kill switch's block and while reconnecting; for the one heartbeat
   that asks the server why a dead tunnel died; and for an account deletion,
-  whose answer would otherwise be lost with the tunnel the server ends. Its API
-  requests then resolve names over DNS-over-HTTPS (Cloudflare). Exception:
-  during a Stealth Mode session the app's own traffic stays outside the
-  tunnel, as it did before, because Xray runs as a child process of the app
-  and cannot be routed into the tunnel it carries.
+  whose answer would otherwise be lost with the tunnel the server ends.
+  Exception: during a Stealth Mode session the app's own traffic stays outside
+  the tunnel, as it did before, because Xray runs as a child process of the
+  app and cannot be routed into the tunnel it carries.
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,
