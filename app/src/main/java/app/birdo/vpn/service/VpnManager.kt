@@ -662,6 +662,25 @@ class VpnManager @Inject constructor(
     private fun superseded(gen: Long): Boolean = gen != intentGeneration
 
     /**
+     * A1-024: BirdoShield as it will really be: never while Custom DNS
+     * replaces the filtering resolver in the tunnel. The server used to be
+     * told dnsFiltering = true for a tunnel that never asked its resolver.
+     */
+    private fun shieldInEffect(): Boolean =
+        WireGuardConfigBuilder.shieldInEffect(prefs.dnsFilteringEnabled, prefs.customDnsEnabled)
+
+    /**
+     * A1-033: attest only on a user-initiated fresh dial with nothing blocked.
+     * Behind the block Play services cannot reach Google (only BirdoVPN is
+     * exempt), so a re-dial waited out Play's own timeout fully blocked.
+     */
+    private fun mayAttest(prior: VpnState): Boolean = AttestationPolicy.mayAttest(
+        priorWasLive = prior is VpnState.Connected || prior is VpnState.Reconnecting,
+        blockActive = isKillSwitchActive,
+        automatic = fallbackInFlight || reapplyInProgress,
+    )
+
+    /**
      * The words for a failed API call. A transport failure (code 0) while
      * every network is behind a captive portal is the portal, not the server:
      * say so, instead of the generic "couldn't reach" (A1-026).
@@ -769,7 +788,7 @@ class VpnManager @Inject constructor(
             }
         } else null
 
-        val integrityToken = requestAttestationToken()
+        val integrityToken = if (mayAttest(prior)) requestAttestationToken() else null
 
         // ADAPTIVE TRANSPORT: an explicit retry reason wins; otherwise, if a
         // recent fallback proved this network filters WireGuard, skip straight
@@ -790,7 +809,7 @@ class VpnManager @Inject constructor(
             integrityToken = integrityToken,
             // BirdoShield (D18): read at dial time like stealth, so a flip while
             // connected reaches the server on the reapply reconnect, not before.
-            dnsFiltering = prefs.dnsFilteringEnabled,
+            dnsFiltering = shieldInEffect(),
         )
 
         when (result) {
@@ -800,7 +819,7 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val message = config.message ?: "Invalid server response"
+                    val message = config.message ?: SessionCopy.BAD_SERVER_CONFIG
                     if (!superseded(gen)) publishError(message, FailureKind.REFUSED)
                     return ApiResult.Error(message)
                 }
@@ -815,7 +834,7 @@ class VpnManager @Inject constructor(
                 }
 
                 if (!startServiceFor(config, gen)) {
-                    return ApiResult.Error("Couldn't start the VPN service — please try again.")
+                    return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.
@@ -873,7 +892,7 @@ class VpnManager @Inject constructor(
             }
         } else null
 
-        val integrityToken = requestAttestationToken()
+        val integrityToken = if (mayAttest(prior)) requestAttestationToken() else null
 
         // Same skip-the-doomed-probe logic as the single hop: a recent fallback
         // proved this network filters WireGuard, so ask for stealth up front.
@@ -892,7 +911,7 @@ class VpnManager @Inject constructor(
             pqClientPublicKey = pqClientPublicKey,
             integrityToken = integrityToken,
             // BirdoShield (D18) — the multi-hop twin of the single hop's flag.
-            dnsFiltering = prefs.dnsFilteringEnabled,
+            dnsFiltering = shieldInEffect(),
         )
 
         when (result) {
@@ -910,7 +929,7 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val message = config.message ?: "Invalid multi-hop config"
+                    val message = config.message ?: SessionCopy.BAD_SERVER_CONFIG
                     publishError(message, FailureKind.REFUSED)
                     return ApiResult.Error(message)
                 }
@@ -946,8 +965,9 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(msg)
                 }
                 if (mh.entryNode.id != entryNodeId || mh.exitNode.id != exitNodeId) {
-                    val msg = "The server established a different Multi-Hop route (${mh.route}) " +
-                        "than the one selected. Not connecting."
+                    // The server's route string is not shown: it is server text.
+                    val msg = "The server established a different Multi-Hop route than the one " +
+                        "selected. Not connecting."
                     // Node ids deliberately not sent — the fact is the signal.
                     FaultReporter.report(
                         FaultReporter.PATH_CONNECT,
@@ -972,7 +992,7 @@ class VpnManager @Inject constructor(
                 // auto-reconnect storm.
                 activeMultiHop = entryNodeId to exitNodeId
                 if (!startServiceFor(config.toConnectResponse(), gen)) {
-                    return ApiResult.Error("Couldn't start the VPN service — please try again.")
+                    return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
                 _connectedServer.value = "${mh.entryNode.name} → ${mh.exitNode.name}"
                 _connectedServerId.value = entryNodeId
@@ -1058,7 +1078,7 @@ class VpnManager @Inject constructor(
                 e,
             )
             releasePeer(config.keyId)
-            publishError("Couldn't start the VPN service — please try again.", FailureKind.TRANSIENT)
+            publishError(SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT)
             return false
         }
         sessionKeyId = config.keyId
@@ -1100,8 +1120,8 @@ class VpnManager @Inject constructor(
         val servers = (serversResult as ApiResult.Success).data.filter { it.id != exclude }
         val bestServer = bestServer(servers)
         if (bestServer == null) {
-            publishError("No servers available", FailureKind.REFUSED)
-            return ApiResult.Error("No servers available")
+            publishError(SessionCopy.NO_SERVERS, FailureKind.REFUSED)
+            return ApiResult.Error(SessionCopy.NO_SERVERS)
         }
         return dialSingle(bestServer.id, null, gen, prior)
     }
@@ -1217,24 +1237,23 @@ class VpnManager @Inject constructor(
             // The multi-hop route describes the CURRENT session when set (a
             // single-hop dial clears it, a multi-hop dial records it on
             // success), so it wins over the last single-hop server id.
-            val gotStealth = runDial {
+            val dialled = runDial {
                 if (multiHop != null) {
                     dialMultiHop(multiHop.first, multiHop.second, TransportFallbackReason.HANDSHAKE_TIMEOUT, gen, prior)
                 } else {
                     dialSingle(serverId!!, TransportFallbackReason.HANDSHAKE_TIMEOUT, gen, prior)
                 }
-            }.let { result ->
-                when (val data = (result as? ApiResult.Success)?.data) {
-                    is ConnectResponse -> data.stealthEnabled
-                    is MultiHopConnectResponse -> data.stealthEnabled
-                    else -> false
-                }
-            }
+            } is ApiResult.Success
             // Only remember the preference when the fallback actually produced a
-            // stealth connection. Recording it on a failed retry would steer
-            // every future connect onto a transport we have no evidence works,
-            // and would do so for a full TTL.
-            if (gotStealth) {
+            // WORKING stealth tunnel (A1-031). The /connect reply only says the
+            // server granted stealth — before the tunnel has handshaked — and
+            // recording it then switched every connect on this device to the
+            // slower transport for 24 h after a node that was simply down.
+            val stealthWorked = dialled &&
+                waitUntil(CONNECT_SERVICE_TIMEOUT_MS) { !_state.value.isConnectingPhase } &&
+                StealthPreference.provenBy(_state.value, BirdoVpnService.stealthActive) &&
+                !superseded(gen)
+            if (stealthWorked) {
                 prefs.stealthPreferredSince = System.currentTimeMillis()
                 android.util.Log.i(
                     "VpnManager",
@@ -1288,7 +1307,7 @@ class VpnManager @Inject constructor(
                 quantumProtection = prefs.quantumProtectionEnabled,
                 pqClientPublicKey = pqKey,
                 integrityToken = null,
-                dnsFiltering = prefs.dnsFilteringEnabled,
+                dnsFiltering = shieldInEffect(),
                 rebuildOf = oldKey,
             )
         }
@@ -1341,7 +1360,7 @@ class VpnManager @Inject constructor(
                 quantumProtection = prefs.quantumProtectionEnabled,
                 pqClientPublicKey = pqKey,
                 integrityToken = null,
-                dnsFiltering = prefs.dnsFilteringEnabled,
+                dnsFiltering = shieldInEffect(),
                 rebuildOf = oldKey,
             )
         }
@@ -2111,6 +2130,9 @@ class VpnManager @Inject constructor(
             // stay blocked and let the supervisor retry.
             if (_state.value !is VpnState.Connected && !prefs.killSwitchEnabled) {
                 cancelRecovery()
+                // The session ended here, and the app says so: nothing may
+                // restore it later (an app update did, REVIEW-AND-018).
+                endIntent()
                 tearDownTunnel(userInitiated = false)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(
@@ -2135,7 +2157,7 @@ class VpnManager @Inject constructor(
                 e,
             )
             if (_state.value.isConnectingPhase) {
-                publishError("Couldn't apply settings", FailureKind.TRANSIENT)
+                publishError(SessionCopy.SETTINGS_NOT_APPLIED, FailureKind.TRANSIENT)
             }
         } finally {
             reapplyInProgress = false
@@ -2149,10 +2171,17 @@ class VpnManager @Inject constructor(
             ) {
                 withContext(NonCancellable) {
                     cancelRecovery()
+                    endIntent()
                     tearDownTunnel(userInitiated = false)
                 }
             }
         }
+    }
+
+    /** The session is over: nobody wants it back, not the supervisor and not a later system start. */
+    private fun endIntent() {
+        session = ReconnectPolicy.Session.IDLE
+        prefs.sessionShouldBeUp = false
     }
 
     /** Tear the tunnel down to honour a user Disconnect that raced the blip. */

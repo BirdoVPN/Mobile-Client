@@ -18,6 +18,7 @@ import app.birdo.vpn.service.RosenpassManager
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
+import app.birdo.vpn.service.WireGuardConfigBuilder
 import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -55,6 +56,8 @@ data class VpnUiState(
     val killSwitchActive: Boolean = false,
     /** The node the session was dialled to (VpnManager.connectedServerId), for the Servers list's marker. */
     val connectedServerId: String? = null,
+    /** A1-025: Android's strict Private DNS overrides BirdoShield / Custom DNS on this connection. */
+    val privateDnsOverridesDns: Boolean = false,
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
@@ -252,6 +255,7 @@ class VpnViewModel @Inject constructor(
         // where the 401 from an unauthenticated GET /vpn/servers set error="Session expired"
         // before auth had settled. BirdoNavGraph calls loadServers() after login succeeds.
         startStateSync()
+        startPrivateDnsSync()
         // Pre-publish any cached subscription so Profile tab is never empty on first paint.
         repository.cachedSubscriptionOrNull()?.let {
             _uiState.value = _uiState.value.copy(subscription = it)
@@ -398,6 +402,21 @@ class VpnViewModel @Inject constructor(
                     )
                     if (input.state is VpnState.Connected) startStatsPolling() else stopStatsPolling()
                 }
+        }
+    }
+
+    /** A1-025: watch Android's Private DNS under the tunnel. */
+    private fun startPrivateDnsSync() {
+        viewModelScope.launch {
+            BirdoVpnService.privateDnsStrictFlow.collect { strict ->
+                _uiState.value = _uiState.value.copy(
+                    privateDnsOverridesDns = WireGuardConfigBuilder.privateDnsOverrides(
+                        strictPrivateDns = strict,
+                        dnsFilteringEnabled = prefs.dnsFilteringEnabled,
+                        customDnsEnabled = prefs.customDnsEnabled,
+                    ),
+                )
+            }
         }
     }
 

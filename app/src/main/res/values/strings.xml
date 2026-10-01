@@ -245,6 +245,11 @@
     <string name="vpn_settings_stealth_title">Stealth Mode</string>
     <string name="vpn_settings_birdoshield_title">BirdoShield</string>
     <string name="vpn_settings_birdoshield_desc">Blocks ads, trackers and malware domains at the VPN\'s DNS resolver.</string>
+    <!-- A1-024: the Windows wording (P1-parity), pointing at the Android setting. -->
+    <!-- A1-025: strict Private DNS (Android Settings > Network > Private DNS) overrides the tunnel's DNS. -->
+    <string name="home_private_dns_overrides">Android\'s Private DNS is on, so your DNS goes to that provider (through the VPN). BirdoShield and Custom DNS do not apply while it is on.</string>
+    <string name="home_private_dns_settings">Settings</string>
+    <string name="vpn_settings_birdoshield_custom_dns">Custom DNS overrides BirdoShield. Turn off Custom DNS Servers in Settings to use the filtering resolver.</string>
     <!-- Shown instead of the description above when GET /api/client-config reports
          dnsFilteringAvailable:false. The user cannot act on this, so the copy does
          not ask them to; it says the preference survives. -->

@@ -339,6 +339,25 @@ fun HomeScreen(
                         )
                     }
 
+                    // A1-025: strict Private DNS sends DNS to its own provider,
+                    // so BirdoShield / Custom DNS do not apply. Said honestly,
+                    // with the way to the setting.
+                    if (isConnected && state.privateDnsOverridesDns) {
+                        val context = LocalContext.current
+                        HomeBanner(
+                            icon = Icons.Default.Dns,
+                            message = stringResource(R.string.home_private_dns_overrides),
+                            tone = BannerTone.Info,
+                            action = BannerAction(stringResource(R.string.home_private_dns_settings)) {
+                                runCatching {
+                                    context.startActivity(
+                                        android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS),
+                                    )
+                                }
+                            },
+                        )
+                    }
+
                     // ADAPTIVE TRANSPORT: the connection is running over the
                     // stealth transport. Passive by design — the user is TOLD,
                     // never asked to decide, because the whole point of the

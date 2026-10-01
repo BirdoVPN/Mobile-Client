@@ -218,6 +218,35 @@ class SessionPolicyTest {
         assertEquals(HeartbeatPolicy.Verdict.REVOKED, v(false, "not_found", slept - 1))
     }
 
+    // ── REVIEW-AND-006, A1-031, A1-033 ──────────────────────────────────
+
+    @Test
+    fun `a setup failure is never the exception's own text, and a bad config is a refusal`() {
+        val (badConfig, badKind) = SessionCopy.forSetupFailure(IllegalArgumentException("Invalid endpoint: 203.0.113.7:51820"))
+        assertEquals(SessionCopy.BAD_SERVER_CONFIG, badConfig)
+        assertEquals(FailureKind.REFUSED, badKind)
+        assertEquals(FailureKind.REFUSED, SessionCopy.forSetupFailure(IllegalStateException("No allowedIPs")).second)
+        val (engine, engineKind) = SessionCopy.forSetupFailure(RuntimeException("JNI exploded at 0xdeadbeef"))
+        assertEquals(SessionCopy.ENGINE_FAILED, engine)
+        assertEquals(FailureKind.TRANSIENT, engineKind)
+    }
+
+    @Test
+    fun `attestation runs only on a user's fresh dial with nothing blocked`() {
+        assertTrue(AttestationPolicy.mayAttest(priorWasLive = false, blockActive = false, automatic = false))
+        assertFalse("a switch or a re-dial", AttestationPolicy.mayAttest(true, false, false))
+        assertFalse("behind the block Play cannot reach Google", AttestationPolicy.mayAttest(false, true, false))
+        assertFalse("a fallback or a reapply", AttestationPolicy.mayAttest(false, false, true))
+    }
+
+    @Test
+    fun `only a connected stealth session proves Stealth works here`() {
+        assertTrue(StealthPreference.provenBy(VpnState.Connected, stealthActive = true))
+        assertFalse(StealthPreference.provenBy(VpnState.Connected, stealthActive = false))
+        assertFalse(StealthPreference.provenBy(VpnState.Error("x"), stealthActive = true))
+        assertFalse(StealthPreference.provenBy(VpnState.Connecting, stealthActive = true))
+    }
+
     @Test
     fun `a Disconnect wins over any failure that lands after it`() {
         val out = ReconnectPolicy.onFailure(Session.IDLE, FailureKind.TRANSIENT, online = true, nowMs = t0, jitter = 0.0)

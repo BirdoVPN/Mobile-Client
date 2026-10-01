@@ -372,7 +372,14 @@ private fun ProfileIdentityCard(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = publicIp?.let { "Public IP · $it" } ?: "Tap Connect to start",
+                        // The server's address, labelled as what it is: it is
+                        // not the user's verified egress IP, and for Multi-Hop
+                        // it would be the ENTRY node, so none is shown (A1-020).
+                        text = when {
+                            publicIp != null -> "VPN server · $publicIp"
+                            isConnected -> "Via your Multi-Hop route"
+                            else -> "Tap Connect to start"
+                        },
                         color = palette.onSurfaceMuted,
                         fontSize = 11.sp,
                     )

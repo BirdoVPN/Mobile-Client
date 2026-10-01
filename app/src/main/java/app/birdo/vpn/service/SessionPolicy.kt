@@ -313,6 +313,29 @@ internal object ReconnectPolicy {
 }
 
 /**
+ * A1-033: when the client may ask Play Integrity for a token.
+ *
+ * Only on a user-initiated FRESH dial with nothing blocked. A re-dial, a
+ * switch, a settings reapply or a fallback runs behind the kill-switch block
+ * (or over a session that is up): Play services run in their own process and
+ * cannot pass the block, so the dial used to wait out Play's own timeout with
+ * the device fully blocked. Attestation is a property of the install, checked
+ * at most monthly (PlayIntegrityManager), so skipping it here costs nothing.
+ */
+internal object AttestationPolicy {
+    fun mayAttest(priorWasLive: Boolean, blockActive: Boolean, automatic: Boolean): Boolean =
+        !priorWasLive && !blockActive && !automatic
+}
+
+/**
+ * A1-031: what proves "Stealth works on this network": a session that reached
+ * Connected over the stealth transport — not a /connect reply that granted it.
+ */
+internal object StealthPreference {
+    fun provenBy(state: VpnState, stealthActive: Boolean): Boolean = state is VpnState.Connected && stealthActive
+}
+
+/**
  * What a heartbeat reply means for the session (WEB-HB's client table).
  *
  * birdo-web now says WHY a key is no longer valid, in `reason`. Absent (an
@@ -524,6 +547,35 @@ internal object SessionCopy {
             "reconnect or disconnect."
     } else {
         "That server didn't answer, and the switch couldn't be undone. You're not connected. Tap Connect to try again."
+    }
+
+    /** A release build refuses to connect while a debugger is attached (it could read the keys). */
+    const val DEBUGGER_ATTACHED = "BirdoVPN won't connect while a debugger is attached to it."
+
+    /** A native library failed its integrity check (a repackaged APK). */
+    const val INTEGRITY_FAILED =
+        "This copy of BirdoVPN failed its integrity check. Reinstall BirdoVPN from the store you got it from."
+
+    /** The server sent a connection setup that does not validate (REVIEW-AND-006). */
+    const val BAD_SERVER_CONFIG = "The server sent a connection setup BirdoVPN can't use. Try another location."
+
+    /** Quick connect found no server this plan can use. */
+    const val NO_SERVERS = "No server is available for your plan right now. Try again in a moment."
+
+    /** A settings reapply that threw before it could rebuild. */
+    const val SETTINGS_NOT_APPLIED = "Couldn't apply your settings. Please try again."
+
+    /**
+     * A tunnel setup that threw: a configuration the server sent that does not
+     * validate is a refusal (asking again gets the same answer); anything
+     * else is the engine, worth another try. The exception's own text is
+     * never the message: it quotes endpoints and stack fragments
+     * (REVIEW-AND-006).
+     */
+    fun forSetupFailure(e: Throwable): Pair<String, FailureKind> = when (e) {
+        is IllegalArgumentException, is IllegalStateException, is com.wireguard.config.BadConfigException ->
+            BAD_SERVER_CONFIG to FailureKind.REFUSED
+        else -> ENGINE_FAILED to FailureKind.TRANSIENT
     }
 
     /** Every network is held behind a sign-in page (hotel, airport Wi-Fi): A1-026. */

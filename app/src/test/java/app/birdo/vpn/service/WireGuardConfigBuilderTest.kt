@@ -254,6 +254,25 @@ class WireGuardConfigBuilderTest {
         )
     }
 
+    // ── A1-024: BirdoShield and Custom DNS ──────────────────────────────
+
+    @Test
+    fun `BirdoShield is in effect only while Custom DNS is off`() {
+        assertTrue(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = false))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = true))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = false, customDnsEnabled = false))
+    }
+
+    // ── A1-025: strict Private DNS overrides the tunnel's DNS ──────────
+
+    @Test
+    fun `strict Private DNS is flagged only when it overrides a DNS choice made here`() {
+        assertTrue(WireGuardConfigBuilder.privateDnsOverrides(true, dnsFilteringEnabled = true, customDnsEnabled = false))
+        assertTrue(WireGuardConfigBuilder.privateDnsOverrides(true, dnsFilteringEnabled = false, customDnsEnabled = true))
+        assertFalse("nothing chosen here to override", WireGuardConfigBuilder.privateDnsOverrides(true, false, false))
+        assertFalse("automatic / off Private DNS", WireGuardConfigBuilder.privateDnsOverrides(false, true, true))
+    }
+
     // ── A1-038: the keepalive ceiling ───────────────────────────────────
 
     @Test

@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.test.*
@@ -64,6 +65,14 @@ class VpnManagerTest {
      * Intent is a stub here, so the actions are recorded on construction.
      */
     private val dispatchedActions = mutableListOf<String>()
+
+    /**
+     * The service's transport-blocked signal, per test. The real one is a
+     * static flow: every VpnManager an earlier test left behind still
+     * collects it, and (Dispatchers.Main being whatever the CURRENT test set)
+     * would run its own fallback and supervisor on this test's scheduler.
+     */
+    private val transportBlocked = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     private val stringExtras = mutableMapOf<String, String?>()
 
     @Before
@@ -112,6 +121,7 @@ class VpnManagerTest {
         every { BirdoVpnService.connectedSince } returns 0L
         every { BirdoVpnService.killSwitchActive } returns false
         every { BirdoVpnService.setConfig(any()) } just Runs
+        every { BirdoVpnService.transportBlockedFlow } returns transportBlocked
 
         // Mock VpnService.prepare() - returns null when permission is granted
         mockkStatic(VpnService::class)
@@ -608,7 +618,7 @@ class VpnManagerTest {
         val result = vpnManager.quickConnect()
 
         assertTrue(result is ApiResult.Error)
-        assertEquals("No servers available", (result as ApiResult.Error).message)
+        assertEquals(SessionCopy.NO_SERVERS, (result as ApiResult.Error).message)
         assertTrue(vpnManager.state.value is VpnState.Error)
     }
 
@@ -633,7 +643,7 @@ class VpnManagerTest {
         val result = vpnManager.quickConnect()
 
         assertTrue(result is ApiResult.Error)
-        assertEquals("No servers available", (result as ApiResult.Error).message)
+        assertEquals(SessionCopy.NO_SERVERS, (result as ApiResult.Error).message)
     }
 
     // ── disconnect() ────────────────────────────────────────────
@@ -1589,6 +1599,94 @@ class VpnManagerTest {
 
         assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
         assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        quiesce()
+    }
+
+    // ── A1-024: BirdoShield is never claimed for a tunnel that does not use it ──
+
+    @Test
+    fun `with Custom DNS on, the server is not told BirdoShield is on`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.customDnsEnabled } returns true
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connect("srv-1")
+
+        coVerify {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = false, rebuildOf = any(),
+            )
+        }
+    }
+
+    // ── A1-031: "prefer Stealth" only after Stealth actually worked ─────────
+
+    private fun emitTransportBlocked() {
+        assertTrue(transportBlocked.tryEmit(Unit))
+    }
+
+    private suspend fun TestScope.dialThenFallBack() {
+        every { prefs.lastServerId } returns "srv-1"
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse().copy(stealthEnabled = true))
+        vpnManager.connect("srv-1")
+        // The probe found no handshake on plain WireGuard.
+        emitTransportBlocked()
+        advanceTimeBy(6_000)
+    }
+
+    @Test
+    fun `a stealth fallback that never connects does not steer the next 24 h onto Stealth`() = runTest {
+        try {
+            dialThenFallBack()
+            // The server granted stealth, and then nothing handshaked.
+            serviceEmits(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))
+            advanceTimeBy(70_000)
+
+            verify(exactly = 0) { prefs.stealthPreferredSince = any() }
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `a stealth fallback that connects over Stealth is remembered`() = runTest {
+        try {
+            dialThenFallBack()
+            every { BirdoVpnService.stealthActive } returns true
+            serviceEmits(VpnState.Connected)
+            advanceTimeBy(1_000)
+
+            verify(exactly = 1) { prefs.stealthPreferredSince = any() }
+        } finally {
+            // A failed check must not leave a live session re-dialling forever
+            // under runTest's final drain.
+            quiesce()
+        }
+    }
+
+    // ── REVIEW-AND-018 ──────────────────────────────────────────────────
+
+    @Test
+    fun `a settings change that ends a kill-switch-off session ends its intent too`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        every { prefs.killSwitchEnabled } returns false
+        connectAndEstablish()
+        // The server cannot rebuild in place, and the rebuild's fresh dial fails.
+        rebuildAnswers(ApiResult.Success(makeConnectResponse(success = false).copy(rebuildRefused = "unknown-current-key")))
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Error("timeout", 0)
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(60_000)
+
+        // "Couldn't apply settings - disconnected." is the end of the session:
+        // nothing (an app update, a reboot) may bring it back.
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        verify { prefs.sessionShouldBeUp = false }
         quiesce()
     }
 

@@ -179,6 +179,26 @@ internal class VpnNotificationManager(private val context: Context) {
             )
         }
 
+        /**
+         * The address shown for the session's server (A1-020): the endpoint's IP
+         * literal for a single hop — the node the user picked — and NOTHING for
+         * Multi-Hop, where the endpoint is the ENTRY node: showing it as the
+         * user's address told a Multi-Hop customer they came out in the
+         * entry's country, the opposite of what they bought. The backend sends
+         * `ip:port` (vpn.service.ts), so the hostname branch that used to
+         * resolve names here was dead and is gone.
+         */
+        fun serverAddressForDisplay(endpoint: String?, multiHop: Boolean): String? {
+            if (multiHop || endpoint.isNullOrBlank()) return null
+            val host = if (endpoint.startsWith("[")) {
+                endpoint.substringAfter("[").substringBefore("]")
+            } else {
+                endpoint.substringBeforeLast(":", "")
+            }
+            val ipv4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            return host.takeIf { ipv4.matches(it) || (endpoint.startsWith("[") && it.contains(':')) }
+        }
+
         /** Posted when a system start could not bring the service back at all. */
         fun stoppedUnexpectedlyAlert(): AlertModel =
             AlertModel("stopped", R.string.notif_alert_stopped, SessionCopy.STOPPED_UNEXPECTEDLY, reconnect = false)

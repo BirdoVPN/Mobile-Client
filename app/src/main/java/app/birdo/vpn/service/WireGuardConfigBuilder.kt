@@ -247,6 +247,25 @@ object WireGuardConfigBuilder {
     }
 
     /**
+     * A1-024: whether BirdoShield actually filters this tunnel's DNS. Custom
+     * DNS replaces the server's resolvers in [resolveDnsServers] — the
+     * filtering one included — so with it on, BirdoShield does nothing: the
+     * server must not be told it is on, and its row must not read ON.
+     */
+    fun shieldInEffect(dnsFilteringEnabled: Boolean, customDnsEnabled: Boolean): Boolean =
+        dnsFilteringEnabled && !customDnsEnabled
+
+    /**
+     * A1-025: whether to warn that Android's strict Private DNS overrides the
+     * DNS the user chose here. Its DNS-over-TLS goes to the Private DNS
+     * provider (through the tunnel), so neither BirdoShield nor Custom DNS
+     * applies. Said only when one of them is on: otherwise the user asked for
+     * nothing it overrides.
+     */
+    fun privateDnsOverrides(strictPrivateDns: Boolean, dnsFilteringEnabled: Boolean, customDnsEnabled: Boolean): Boolean =
+        strictPrivateDns && (dnsFilteringEnabled || customDnsEnabled)
+
+    /**
      * Resolve DNS servers, preferring user overrides when enabled.
      *
      * SINGLE SOURCE OF TRUTH for tunnel-time DNS selection: [BirdoVpnService]

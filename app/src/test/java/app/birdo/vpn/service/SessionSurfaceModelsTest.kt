@@ -99,6 +99,18 @@ class SessionSurfaceModelsTest {
     }
 
     @Test
+    fun `the address shown is the single hop's server, and never a Multi-Hop entry node`() {
+        // A1-020: a Multi-Hop endpoint is the ENTRY node; showing it as the
+        // user's address told them they came out in the entry's country.
+        assertEquals("203.0.113.7", VpnNotificationManager.serverAddressForDisplay("203.0.113.7:51820", multiHop = false))
+        assertNull(VpnNotificationManager.serverAddressForDisplay("203.0.113.7:51820", multiHop = true))
+        assertEquals("2001:db8::7", VpnNotificationManager.serverAddressForDisplay("[2001:db8::7]:51820", multiHop = false))
+        // No name resolution, ever, and nothing for a missing endpoint.
+        assertNull(VpnNotificationManager.serverAddressForDisplay("node.birdo.app:51820", multiHop = false))
+        assertNull(VpnNotificationManager.serverAddressForDisplay(null, multiHop = false))
+    }
+
+    @Test
     fun `a give-up rendered before its release lands does not also say the block holds`() {
         // REVIEW-AND-014: the verdict renders while RELEASE_BLOCK is still
         // queued, so the block flag is still true for that first render.

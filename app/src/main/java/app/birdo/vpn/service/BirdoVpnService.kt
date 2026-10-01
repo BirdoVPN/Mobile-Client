@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.IpPrefix
+import android.net.LinkProperties
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
@@ -249,6 +250,15 @@ class BirdoVpnService : VpnService() {
         /** Whether the current connection is using Xray Reality stealth tunnel */
         val stealthActive: Boolean get() = _stealthActiveFlow.value
 
+        /**
+         * A1-025: Android's Private DNS is in STRICT mode (a hostname is set)
+         * on the network under the tunnel. Its DNS-over-TLS then goes to that
+         * provider — through the tunnel — instead of to the tunnel's resolver,
+         * so BirdoShield's filtering and Custom DNS servers do not apply.
+         */
+        private val _privateDnsStrictFlow = MutableStateFlow(false)
+        val privateDnsStrictFlow: StateFlow<Boolean> = _privateDnsStrictFlow.asStateFlow()
+
         private val _quantumActiveFlow = MutableStateFlow(false)
         /** Whether the current connection is using Rosenpass PQ-PSK */
         val quantumActive: Boolean get() = _quantumActiveFlow.value
@@ -487,6 +497,9 @@ class BirdoVpnService : VpnService() {
 
     /** The physical networks currently available, maintained by [underlyingNetworkCallback]. */
     private val underlyingNetworks: MutableSet<Network> = ConcurrentHashMap.newKeySet()
+
+    /** Which of them run Private DNS in strict mode (A1-025). */
+    private val strictPrivateDns = ConcurrentHashMap<Network, Boolean>()
 
     /**
      * elapsedRealtime when the last physical network went away, or 0 while
@@ -1082,7 +1095,8 @@ class BirdoVpnService : VpnService() {
             // with no block. Fail closed here too, before publishing Error.
             // activateKillSwitch() does its own ordered teardown (establish
             // the block first, then turn wg-go off) — no teardown here first.
-            failSetup(gen, t.message ?: "Tunnel crashed", FailureKind.TRANSIENT)
+            // Never the throwable's own text on screen (REVIEW-AND-006).
+            failSetup(gen, SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT)
         }
         // No deferred kill-switch release here any more: a settings push that
         // arrived during this setup is queued behind it on the same executor,
@@ -1216,7 +1230,9 @@ class BirdoVpnService : VpnService() {
     /** The body line while connected: "via {location}[ · {IP}]", each part behind its preference. */
     private fun buildConnectedText(): String? {
         val location = if (appPrefs.showLocationInNotification) connectedServer else null
-        val ip = if (appPrefs.showIpInNotification) publicIp ?: activeConfig?.assignedIp else null
+        // Only the server's address, never the tunnel-internal assignedIp the
+        // old fallback showed in its place (A1-020).
+        val ip = if (appPrefs.showIpInNotification) publicIp else null
         return VpnNotificationManager.connectedBody(location, ip)
     }
 
@@ -1296,39 +1312,12 @@ class BirdoVpnService : VpnService() {
     }
 
     /**
-     * Extract the VPN server's public IP from the endpoint.
-     * Format: "ip:port", "[ipv6]:port", or "hostname:port".
+     * The server address the surfaces show ("VPN server · {IP}", the
+     * notification's "via … · {IP}"), from the session's endpoint.
      */
     private fun extractServerIp() {
-        val endpoint = activeConfig?.endpoint ?: return
-        val host = if (endpoint.startsWith("[")) {
-            endpoint.substringAfter("[").substringBefore("]")
-        } else {
-            endpoint.substringBeforeLast(":")
-        }
-        if (host.isBlank()) return
-
-        val ipPattern = Regex("""^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$""")
-        if (ipPattern.matches(host)) {
-            _publicIpFlow.value = host
-            if (BuildConfig.DEBUG) Log.i(TAG, "VPN server IP: $host (from endpoint)")
-            return
-        }
-
-        // Hostname — resolve on background thread
-        serial {
-            try {
-                val resolvedIp = InetAddress.getByName(host).hostAddress
-                if (!resolvedIp.isNullOrBlank()) {
-                    _publicIpFlow.value = resolvedIp
-                    if (BuildConfig.DEBUG) Log.i(TAG, "VPN server IP: $resolvedIp (resolved from $host)")
-                    mainHandler.post { updateNotification() }
-                }
-            } catch (e: Exception) {
-                _publicIpFlow.value = host
-                Log.w(TAG, "Could not resolve $host, using hostname", e)
-            }
-        }
+        val multiHop = entryPoint?.vpnManager()?.activeMultiHopRoute != null
+        _publicIpFlow.value = VpnNotificationManager.serverAddressForDisplay(activeConfig?.endpoint, multiHop)
     }
 
     // ── Kill Switch ──────────────────────────────────────────────
@@ -1488,7 +1477,7 @@ class BirdoVpnService : VpnService() {
                 "connect_no_config",
                 "Tunnel start requested with no or an incomplete VPN configuration",
             )
-            failSetup(gen, "No VPN configuration", FailureKind.TRANSIENT)
+            failSetup(gen, SessionCopy.ENGINE_FAILED, FailureKind.REFUSED)
             return
         }
 
@@ -1500,7 +1489,7 @@ class BirdoVpnService : VpnService() {
                 "connect_refused_debugger",
                 "Refused to start the tunnel: a debugger is attached to a release build",
             )
-            failSetup(gen, "Security check failed", FailureKind.REFUSED)
+            failSetup(gen, SessionCopy.DEBUGGER_ATTACHED, FailureKind.REFUSED)
             return
         }
 
@@ -1536,13 +1525,9 @@ class BirdoVpnService : VpnService() {
                 "connect_refused_quantum_not_granted",
                 "Refused to connect: quantum protection was requested but the server did not grant it",
             )
-            failSetup(
-                gen,
-                "Quantum protection was requested but the server did not enable it. " +
-                    "Not connecting, because that would use weaker encryption than shown. " +
-                    "Try again, or turn off Quantum Protection in Settings.",
-                FailureKind.QUANTUM_FAILED,
-            )
+            // The canonical sentence (P1-parity): the remedy is the same
+            // whichever half of the exchange failed.
+            failSetup(gen, SessionCopy.QUANTUM_FAILED, FailureKind.QUANTUM_FAILED)
             return
         }
         if (appPrefs.stealthModeEnabled && !config.stealthEnabled) {
@@ -1551,13 +1536,7 @@ class BirdoVpnService : VpnService() {
                 "connect_refused_stealth_not_granted",
                 "Refused to connect: stealth mode was requested but the server did not grant it",
             )
-            failSetup(
-                gen,
-                "Stealth mode was requested but the server did not enable it. " +
-                    "Not connecting, because traffic would not be disguised as shown. " +
-                    "Try again, or turn off Stealth Mode in Settings.",
-                FailureKind.STEALTH_FAILED,
-            )
+            failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
             return
         }
 
@@ -1672,7 +1651,7 @@ class BirdoVpnService : VpnService() {
                     "connect_refused_integrity",
                     "Refused to start the tunnel: wg-go integrity verification failed",
                 )
-                failSetup(gen, "Security: library integrity check failed", FailureKind.REFUSED)
+                failSetup(gen, SessionCopy.INTEGRITY_FAILED, FailureKind.REFUSED)
                 return
             }
 
@@ -1688,7 +1667,7 @@ class BirdoVpnService : VpnService() {
                     "connect_engine_unavailable",
                     "Refused to start the tunnel: the WireGuard native bridge is unavailable",
                 )
-                failSetup(gen, "WireGuard engine unavailable", FailureKind.REFUSED)
+                failSetup(gen, SessionCopy.ENGINE_FAILED, FailureKind.REFUSED)
                 return
             }
 
@@ -1745,7 +1724,7 @@ class BirdoVpnService : VpnService() {
                     "wgTurnOn refused the tunnel configuration (code $handle)",
                 )
                 try { ParcelFileDescriptor.adoptFd(tunFd).close() } catch (_: Exception) {}
-                failSetup(gen, "WireGuard tunnel failed to start", FailureKind.NEVER_ESTABLISHED)
+                failSetup(gen, SessionCopy.ENGINE_FAILED, FailureKind.NEVER_ESTABLISHED)
                 return
             }
 
@@ -1855,7 +1834,14 @@ class BirdoVpnService : VpnService() {
             // blocking fd) and only then turns wg-go off, so there is no window
             // where routing reverts to the physical network. Only fully release
             // when the kill switch is OFF. Block first, publish Error last.
-            failSetup(gen, e.message ?: "Tunnel failed", FailureKind.TRANSIENT)
+            //
+            // Never e.message: WireGuardConfigBuilder's validation messages quote
+            // the node's endpoint ("Invalid endpoint: <ip:port>"), and they reached
+            // Home, the notification and the alert (REVIEW-AND-006). A config the
+            // server sent that does not validate is a refusal, not something a
+            // retry fixes, so it no longer spends eight attempts either.
+            val (message, kind) = SessionCopy.forSetupFailure(e)
+            failSetup(gen, message, kind)
         }
     }
 
@@ -2662,9 +2648,17 @@ class BirdoVpnService : VpnService() {
                 _wakeFlow.tryEmit(Unit)
             }
 
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                if (tunnelHandle != handle) return
+                strictPrivateDns[network] = linkProperties.privateDnsServerName != null
+                _privateDnsStrictFlow.value = strictPrivateDns.values.any { it }
+            }
+
             override fun onLost(network: Network) {
                 if (tunnelHandle != handle) return
                 underlyingNetworks.remove(network)
+                strictPrivateDns.remove(network)
+                _privateDnsStrictFlow.value = strictPrivateDns.values.any { it }
                 // Not an error by itself — a roam usually brings the next
                 // network within a second. TunnelMonitor declares the tunnel
                 // dead only when NONE has come back for a while.
@@ -2692,6 +2686,8 @@ class BirdoVpnService : VpnService() {
         underlyingNetworkCallback = null
         underlyingNetworks.clear()
         underlyingMissingSince = 0L
+        strictPrivateDns.clear()
+        _privateDnsStrictFlow.value = false
         try {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             cm?.unregisterNetworkCallback(cb)
