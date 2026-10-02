@@ -21,10 +21,10 @@ import java.io.File
  * edit that breaks a guarantee breaks the build.
  *
  * The manifest invariants pinned here are the ones whose failure mode at API 36
- * is SILENT to the developer but severe for the user: an always-on lockdown with
- * no headless reconnect, an intent-matching opt-in that has never been exercised
- * against the service's custom actions, and an edge-to-edge opt-out that stopped
- * working in Android 16.
+ * is SILENT to the developer but severe for the user: an always-on declaration
+ * without the headless reconnect that makes it safe, an intent-matching opt-in
+ * that has never been exercised against the service's custom actions, and an
+ * edge-to-edge opt-out that stopped working in Android 16.
  */
 class ApiLevel36ContractTest {
 
@@ -58,6 +58,12 @@ class ApiLevel36ContractTest {
 
     private val manifest: String
         get() = readText("app/src/main/AndroidManifest.xml", ".service.BirdoVpnService")
+
+    private val vpnService: String
+        get() = readText(
+            "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt",
+            "class BirdoVpnService : VpnService()",
+        )
 
     // ── The Play deadline itself ─────────────────────────────────────────
 
@@ -102,32 +108,83 @@ class ApiLevel36ContractTest {
 
     // ── Manifest invariants that break users, not builds ─────────────────
 
+    /**
+     * Always-on VPN is SUPPORTED since the 2026-09-30 overhaul (A1-014), and
+     * this pins the pair together: the manifest may declare it only while the
+     * service handles the platform's own start.
+     *
+     * The platform starts an Always-on VPN with an Intent whose action is
+     * android.net.VpnService (AOSP Vpn.startAlwaysOnVpn), at boot, on unlock
+     * and when the setting changes. Before the headless path existed that
+     * action fell through to a generic branch that posted "Connecting…" and
+     * connected nothing — so a user with Always-on + "Block connections
+     * without VPN" would have lost all connectivity after every reboot, with
+     * a notification claiming a connect was under way.
+     */
     @Test
-    fun `always-on VPN stays disabled`() {
-        // BirdoVpnService cannot self-establish a tunnel from a system-initiated
-        // (null-action) start or after reboot: the WireGuard config is fetched per
-        // user-initiated connect and held in memory, and there is no headless
-        // re-auth path. If SUPPORTS_ALWAYS_ON is flipped to true, a user can enable
-        // Always-on VPN + "Block connections without VPN" (lockdown) and then lose
-        // ALL connectivity after every reboot until they manually reconnect — which
-        // they cannot do, because there is no working network to log in over.
+    fun `always-on VPN is declared only with its headless start path`() {
         val declaration = Regex(
             "android:name=\"android\\.net\\.VpnService\\.SUPPORTS_ALWAYS_ON\"" +
                 "\\s*\\n\\s*android:value=\"(\\w+)\"",
         ).find(manifest)
         assertTrue(
-            "The SUPPORTS_ALWAYS_ON meta-data declaration was not found in " +
-                "AndroidManifest.xml. Deleting the element is NOT a safe no-op: " +
-                "without it the system offers the Always-on toggle, which is the " +
-                "exact state this guard exists to prevent.",
+            "The SUPPORTS_ALWAYS_ON meta-data declaration was not found in AndroidManifest.xml",
             declaration != null,
         )
         assertEquals(
-            "android.net.VpnService.SUPPORTS_ALWAYS_ON must remain \"false\" until " +
-                "BirdoVpnService can re-authenticate and re-fetch a config headlessly " +
-                "in onStartCommand. See the comment above the element in the manifest.",
-            "false",
+            "android.net.VpnService.SUPPORTS_ALWAYS_ON must read \"true\": the headless path " +
+                "below exists, and the owner asked for Always-on.",
+            "true",
             declaration!!.groupValues[1],
+        )
+
+        // The three system starts are classified, SERVICE_INTERFACE among them.
+        listOf(
+            "VpnService.SERVICE_INTERFACE -> SystemStartKind.ALWAYS_ON",
+            "null -> SystemStartKind.STICKY_RESTART",
+            "ACTION_HEADLESS_CONNECT -> SystemStartKind.PACKAGE_REPLACED",
+        ).forEach { arm ->
+            assertTrue(
+                "BirdoVpnService.onStartCommand no longer classifies `$arm`. Without it the " +
+                    "platform's Always-on start is not recognised as a system start, and " +
+                    "SUPPORTS_ALWAYS_ON=true strands a lockdown user after every reboot.",
+                vpnService.contains(arm),
+            )
+        }
+        // …and a system start hands VpnManager a headless connect.
+        val handler = vpnService.substringAfter("private fun handleSystemStart(kind: SystemStartKind): Int {", "")
+        assertTrue("handleSystemStart is gone", handler.isNotEmpty())
+        assertTrue(
+            "handleSystemStart no longer calls connectHeadless(kind)",
+            // The start's kind is passed through: a process-start resume is
+            // offered to the tap that may have started it (REVIEW-AND2-004).
+            handler.substringBefore("\n    }\n").contains("connectHeadless(kind)"),
+        )
+        // An app update restores the session too (A1-015).
+        assertTrue(
+            "AndroidManifest.xml no longer registers PackageReplacedReceiver for MY_PACKAGE_REPLACED",
+            manifest.contains(".service.PackageReplacedReceiver") &&
+                manifest.contains("android.intent.action.MY_PACKAGE_REPLACED"),
+        )
+    }
+
+    /**
+     * The headless path never shows a fake "Connecting…". The old generic
+     * branch built a hard-coded "Connecting…" notification for any action it
+     * did not recognise; a system start now shows Connecting only when it is
+     * actually about to connect (see SystemStartPolicy and SessionPolicyTest).
+     */
+    @Test
+    fun `no start shows a hard-coded Connecting notification`() {
+        assertFalse(
+            "BirdoVpnService builds a hard-coded \"Connecting…\" notification again. Draw it from " +
+                "the session state (buildCurrentNotification), so a start that connects nothing " +
+                "cannot claim a connect.",
+            Regex("""buildForegroundNotification\(\s*"Connecting""").containsMatchIn(vpnService),
+        )
+        assertTrue(
+            "handleSystemStart must show Connecting only for a plan that connects",
+            vpnService.contains("plan.connect -> VpnState.Connecting"),
         )
     }
 

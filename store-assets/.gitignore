@@ -8,9 +8,7 @@ thumb-*.png
 icon-play-512.png
 ic_launcher_round-192.png
 
-# Android adaptive-icon layers. Rendered, correct, and deliberately NOT shipped: the app
-# uses legacy mipmaps only. See issue #150 — the adaptive icon was removed because its
-# foreground was an 832-command VectorDrawable that crashed on inflate, not because
-# adaptive icons are unwanted. These PNG layers have no such problem, so enabling them is
-# a real option (it is what stops Android 8+ launchers shrinking the icon onto a white plate).
+# The 432px adaptive-icon layers. Intermediates like the rest: generate_assets.py derives the
+# shipped per-density mipmaps (app/src/main/res/mipmap-*/ic_launcher_{background,foreground,
+# monochrome}.png) from them. Raster on purpose; see issue #150 and generate_assets.py.
 adaptive-*.png

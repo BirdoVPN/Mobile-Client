@@ -6,16 +6,11 @@ import android.util.Base64
 import android.util.Log
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.utils.FaultReporter
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Coordinates BirdoPQ v1 post-quantum WireGuard PSK derivation.
@@ -28,15 +23,18 @@ import javax.crypto.spec.SecretKeySpec
  * | Mode | When | Provides HNDL resistance? |
  * |------|------|---------------------------|
  * | [Mode.BILATERAL] | Native lib loaded AND server returned a valid ML-KEM ciphertext that decapsulates against our local secret key | Yes (post-quantum) |
- * | [Mode.SERVER_PROVIDED] | Server returned a WireGuard-format PSK in [ConnectResponse.presharedKey] but no ciphertext | Partial — relies on TLS for PSK delivery |
- * | [Mode.DISABLED] | Neither bilateral exchange nor server PSK available | No |
+ * | [Mode.DISABLED] | Anything else. A connect that asked for BirdoPQ then fails closed | No |
  *
- * **Honest disclaimer for marketing copy:** Only [Mode.BILATERAL] provides
- * genuine post-quantum protection against Harvest-Now-Decrypt-Later. The
- * BILATERAL path is achieved by uploading our ML-KEM-1024 client public key
- * in the `/connect` request and decapsulating the server's response — no
- * extra UDP, no `rosenpass` binary, no libsodium. See
- * `native/rosenpass-jni/src/lib.rs` for the full protocol spec.
+ * BirdoPQ v1 is a LOCAL derivation, not a network exchange: the client
+ * uploads its ML-KEM-1024 public key in the `/connect` request and
+ * decapsulates the ciphertext the response carries — no extra UDP, no
+ * `rosenpass` binary, no libsodium. The wire fields keep their historical
+ * names (`rosenpassPublicKey` carries the ciphertext, `rosenpassEndpoint` the
+ * nonce), and so does the JNI class ([RosenpassNative], whose symbol names
+ * the Rust side exports). See `native/rosenpass-jni/src/lib.rs` for the
+ * protocol. There is no server-PSK "partial" mode: a classical PSK the server
+ * sends for a non-PQ session is applied by the service directly, and is not
+ * post-quantum (A1-039 removed the unreachable SERVER_PROVIDED mode).
  *
  * ## Lifecycle
  *
@@ -55,9 +53,9 @@ import javax.crypto.spec.SecretKeySpec
  * If wireguard-android exposes live PSK swap in future, add a rekey loop
  * here without changing the protocol.
  */
-object RosenpassManager {
+object BirdoPqManager {
 
-    private const val TAG = "RosenpassManager"
+    private const val TAG = "BirdoPqManager"
 
     /** WireGuard PresharedKey is exactly 32 bytes. */
     private const val PSK_LENGTH_BYTES = 32
@@ -65,35 +63,19 @@ object RosenpassManager {
     /** Upper bound for the server-supplied per-connect nonce (server mints 32 B). */
     private const val MAX_NONCE_BYTES = 64
 
-    enum class Mode { DISABLED, SERVER_PROVIDED, BILATERAL }
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    enum class Mode { DISABLED, BILATERAL }
 
     @Volatile
     private var currentPsk: ByteArray? = null
 
-    // RosenpassKeyStore keeps context.applicationContext only (see its
+    // BirdoPqKeyStore keeps context.applicationContext only (see its
     // constructor), which lives as long as the process: nothing to leak.
     @SuppressLint("StaticFieldLeak")
     @Volatile
-    private var keyStore: RosenpassKeyStore? = null
+    private var keyStore: BirdoPqKeyStore? = null
 
     private val _modeFlow = MutableStateFlow(Mode.DISABLED)
     val modeFlow: StateFlow<Mode> = _modeFlow.asStateFlow()
-
-    /** True when we're currently providing some form of PQ-flavoured protection. */
-    fun isQuantumProtected(): Boolean = currentPsk != null && _modeFlow.value != Mode.DISABLED
-
-    /** True iff we're running the genuine bilateral PQ exchange. */
-    fun isBilateral(): Boolean = _modeFlow.value == Mode.BILATERAL
-
-    fun getCurrentPsk(): String? {
-        val psk = currentPsk ?: return null
-        return Base64.encodeToString(psk, Base64.NO_WRAP)
-    }
-
-    /** Diagnostic: returns the loaded native lib version, or `<not loaded>`. */
-    fun nativeLibVersion(): String = RosenpassNative.getNativeVersion()
 
     // ── public API ─────────────────────────────────────────────────────────
 
@@ -114,19 +96,15 @@ object RosenpassManager {
     }
 
     /**
-     * Performs the BirdoPQ v1 derivation and returns the PSK as Base64,
-     * or `null` if no PQ-flavoured PSK is available.
+     * Performs the BirdoPQ v1 derivation and returns the PSK as Base64, or
+     * `null` when none can be derived.
      *
-     * Implementation order:
-     *   1. If the response contains a Rosenpass ciphertext (re-using the
-     *      `rosenpassPublicKey` field) AND a nonce (re-using
-     *      `rosenpassEndpoint`), and our native lib is loaded, decapsulate
-     *      with our persisted ML-KEM secret key.
-    *   2. If the server explicitly enabled quantum mode, fail closed by
-    *      returning `null`; the classical PSK will not match the server-side
-    *      peer that was reconfigured with the derived BirdoPQ PSK.
-    *   3. Fall back to the server-supplied classic PSK if present.
-    *   4. Otherwise return `null` and the caller MUST use plain WireGuard.
+     * Called only for a session the server enabled BirdoPQ for
+     * (`quantumEnabled`): the ciphertext (in the `rosenpassPublicKey` field)
+     * and the nonce (in `rosenpassEndpoint`) are decapsulated with the
+     * persisted ML-KEM secret key. Anything less fails closed (`null`): a
+     * classical PSK would not match the peer the server configured with the
+     * derived one.
      */
     suspend fun performKeyExchange(context: Context, config: ConnectResponse): String? = withContext(Dispatchers.IO) {
         val bilateralPsk = tryDecapsulate(context, config)
@@ -138,38 +116,19 @@ object RosenpassManager {
             Log.i(TAG, "BirdoPQ v1 BILATERAL — quantum-resistant PSK derived (${bilateralPsk.size} B)")
             return@withContext Base64.encodeToString(bilateralPsk, Base64.NO_WRAP)
         }
-        if (config.quantumEnabled) {
-            currentPsk?.fill(0)
-            currentPsk = null
-            _modeFlow.value = Mode.DISABLED
-            // tryDecapsulate reported the specific cause (or logged at debug
-            // level for the two by-design nulls: lib not loaded, no
-            // ciphertext); this is the abort itself. The service then refuses
-            // the connect and reports that refusal.
-            FaultReporter.report(
-                FaultReporter.PATH_QUANTUM,
-                "pq_abort_no_bilateral_psk",
-                "Server enabled BirdoPQ but no bilateral PSK could be derived — aborting",
-            )
-            return@withContext null
-        }
-        return@withContext fallbackToServerPsk(config)
-    }
-
-    private fun fallbackToServerPsk(config: ConnectResponse): String? {
-        val serverPsk = config.presharedKey
-        if (serverPsk == null) {
-            currentPsk?.fill(0)
-            currentPsk = null
-            _modeFlow.value = Mode.DISABLED
-            Log.w(TAG, "no server-provided PSK either — quantum protection unavailable")
-            return null
-        }
         currentPsk?.fill(0)
-        currentPsk = Base64.decode(serverPsk, Base64.NO_WRAP)
-        _modeFlow.value = Mode.SERVER_PROVIDED
-        Log.i(TAG, "using server-provided PSK (TLS-delivered, NOT HNDL-safe)")
-        return serverPsk
+        currentPsk = null
+        _modeFlow.value = Mode.DISABLED
+        // tryDecapsulate reported the specific cause (or logged at debug
+        // level for the two by-design nulls: lib not loaded, no ciphertext);
+        // this is the abort itself. The service then refuses the connect and
+        // reports that refusal.
+        FaultReporter.report(
+            FaultReporter.PATH_QUANTUM,
+            "pq_abort_no_bilateral_psk",
+            "Server enabled BirdoPQ but no bilateral PSK could be derived — aborting",
+        )
+        return@withContext null
     }
 
     /**
@@ -201,9 +160,9 @@ object RosenpassManager {
      *   - the native call rejects the input (wrong-sized, etc.),
      *   - the derived PSK is wrong-sized (defensive).
      *
-     * On `null` the caller falls back to the server-provided classic PSK; on
-     * crypto errors we log and bail out cleanly so a misconfigured peer
-     * doesn't get masked by a silent downgrade.
+     * On `null` the connect fails closed; on crypto errors we report and
+     * bail out cleanly so a misconfigured peer is never masked by a silent
+     * downgrade.
      */
     private suspend fun tryDecapsulate(context: Context, config: ConnectResponse): ByteArray? {
         // PFA-H7: integrity-verify FIRST (which also performs the hash-then-load
@@ -230,8 +189,7 @@ object RosenpassManager {
         // hard-coded fallback constant did NOT cause cryptographic nonce
         // reuse, but it removed per-connect domain separation and let a
         // misconfigured server silently weaken the protocol. Fail closed
-        // to the server-provided classical PSK path (logged, surfaced via
-        // modeFlow) instead.
+        // instead (reported, surfaced via modeFlow).
         val nonceB64 = config.rosenpassEndpoint
         if (nonceB64.isNullOrBlank()) {
             FaultReporter.report(
@@ -331,7 +289,7 @@ object RosenpassManager {
         } finally {
             // Zero the in-memory copy of the long-lived PQ secret key once the
             // derivation is done — the canonical copy lives Keystore-encrypted
-            // on disk (RosenpassKeyStore) and is re-read per connect, so this
+            // on disk (BirdoPqKeyStore) and is re-read per connect, so this
             // only shortens the window key material sits in process memory.
             keypair.secretKey.fill(0)
         }
@@ -390,49 +348,12 @@ object RosenpassManager {
         return fresh
     }
 
-    private fun ensureKeyStore(context: Context): RosenpassKeyStore {
+    private fun ensureKeyStore(context: Context): BirdoPqKeyStore {
         return keyStore ?: synchronized(this) {
-            keyStore ?: RosenpassKeyStore(context.applicationContext).also { keyStore = it }
+            keyStore ?: BirdoPqKeyStore(context.applicationContext).also { keyStore = it }
         }
     }
 
     // PFA-M5: legacy DEFAULT_NONCE_BYTES constant removed — `tryDecapsulate`
     // now refuses to derive a PSK against a missing/empty per-connect nonce.
-
-    // ── HKDF helpers (kept for tests + future on-wire derivations) ─────────
-
-    internal fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(key, "HmacSHA256"))
-        return mac.doFinal(data)
-    }
-
-    @Suppress("unused")
-    internal fun hkdfExpand(prk: ByteArray, info: ByteArray, length: Int): ByteArray {
-        val result = ByteArray(length)
-        var t = ByteArray(0)
-        var offset = 0
-        var counter: Byte = 1
-        while (offset < length) {
-            val input = ByteArray(t.size + info.size + 1)
-            System.arraycopy(t, 0, input, 0, t.size)
-            System.arraycopy(info, 0, input, t.size, info.size)
-            input[input.size - 1] = counter
-            t = hmacSha256(prk, input)
-            val copyLen = minOf(t.size, length - offset)
-            System.arraycopy(t, 0, result, offset, copyLen)
-            offset += copyLen
-            counter++
-        }
-        return result
-    }
-
-    /** For test teardown only. NOT for runtime use. */
-    internal fun resetForTesting() {
-        scope.coroutineContext.cancel()
-        currentPsk?.fill(0)
-        currentPsk = null
-        keyStore = null
-        _modeFlow.value = Mode.DISABLED
-    }
 }

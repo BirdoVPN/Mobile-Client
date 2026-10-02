@@ -1,5 +1,6 @@
 package app.birdo.vpn.billing
 
+import app.birdo.vpn.testing.StringsXml
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -113,7 +114,7 @@ class PlayStoreCatalogTest {
     @Test
     fun `every refusal carries a fallback message`() {
         StoreLinkRefusal.entries.forEach {
-            assertTrue("$it has no fallback copy", it.fallbackMessage.length > 30)
+            assertTrue("$it has no fallback copy", StringsXml.get(it.fallbackMessageRes).length > 30)
         }
     }
 
@@ -147,11 +148,12 @@ class PlayStoreCatalogTest {
         assertTrue("zero products must not be Ready", state is StorefrontState.Unavailable)
         val unavailable = state as StorefrontState.Unavailable
         assertEquals(StorefrontFailure.NO_PRODUCTS, unavailable.failure)
-        assertTrue(unavailable.message.length > 60)
+        val copy = StringsXml.get(unavailable.messageRes)
+        assertTrue(copy.length > 60)
         // No retry offered: nothing the user does changes an unpublished product.
         assertFalse(unavailable.canRetry)
         // The copy must not read like a crash, and must not promise a date.
-        val lowered = unavailable.message.lowercase()
+        val lowered = copy.lowercase()
         listOf("error", "failed", "crash", "soon", "next week").forEach {
             assertFalse("zero-products copy must not say '$it'", lowered.contains(it))
         }
@@ -179,7 +181,7 @@ class PlayStoreCatalogTest {
      */
     @Test
     fun `each failure has its own distinct copy and its own retryability`() {
-        val messages = StorefrontFailure.entries.map { it.message }
+        val messages = StorefrontFailure.entries.map { StringsXml.get(it.messageRes) }
         assertEquals("failure copy must be distinct", messages.size, messages.toSet().size)
         assertFalse(StorefrontFailure.NO_PRODUCTS.isRetryable)
         assertTrue(StorefrontFailure.QUERY_FAILED.isRetryable)
@@ -310,10 +312,10 @@ class PlayStoreCatalogTest {
     /** Restore must answer in every case, including the common empty one. */
     @Test
     fun `every restore outcome says something`() {
-        assertTrue(StoreRestoreOutcome.Restored(1).message.contains("restored"))
-        assertTrue(StoreRestoreOutcome.Restored(2).message.startsWith("2 "))
-        assertTrue(StoreRestoreOutcome.NothingToRestore.message.length > 40)
-        assertTrue(StoreRestoreOutcome.Refused("x").message == "x")
+        assertTrue(StoreRestoreOutcome.Restored(1).message(StringsXml).contains("restored"))
+        assertTrue(StoreRestoreOutcome.Restored(2).message(StringsXml).startsWith("2 "))
+        assertTrue(StoreRestoreOutcome.NothingToRestore.message(StringsXml).length > 40)
+        assertTrue(StoreRestoreOutcome.Refused("x").message(StringsXml) == "x")
         assertTrue(StoreRestoreOutcome.Restored(1).isSuccess)
         assertFalse(StoreRestoreOutcome.NothingToRestore.isSuccess)
         assertFalse(StoreRestoreOutcome.Failed("x").isSuccess)

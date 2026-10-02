@@ -102,4 +102,22 @@ class AppPreferencesTest {
         verify(exactly = 1) { editor.putBoolean("crash_reports_enabled", false) }
         verify(exactly = 1) { editor.remove("crash_reports_enabled_since") }
     }
+
+    // ── LIVE-PORT53: the port is no longer a setting ────────────────────
+
+    @Test
+    fun `a saved 53 or custom WireGuard port becomes automatic, once, and the MTU stays`() {
+        every { editor.putString(any(), any()) } returns editor
+        for (stale in listOf("53", "4500", "51820")) {
+            every { store.getString("wireguard_port", "auto") } returns stale
+            assertTrue(stale, prefs.retireWireGuardPortChoice())
+        }
+        verify(exactly = 3) { editor.putString("wireguard_port", "auto") }
+        verify(exactly = 0) { editor.putInt(any(), any()) }
+
+        // Already automatic: nothing to rewrite, nothing re-signed.
+        every { store.getString("wireguard_port", "auto") } returns "auto"
+        assertFalse(prefs.retireWireGuardPortChoice())
+        verify(exactly = 3) { editor.putString("wireguard_port", any()) }
+    }
 }

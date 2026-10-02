@@ -62,16 +62,49 @@ Compiled to:
 
 - **WireGuard Protocol** -- ChaCha20-Poly1305 encryption with Curve25519 + Post-Quantum key exchange
 - **Kill Switch** -- if the tunnel drops unexpectedly, the app blocks traffic
-  until it reconnects. Android: protection applies while BirdoVPN's VPN
-  service is running. iOS/macOS: if reconnecting keeps failing, the app stops
-  blocking.
+  until it reconnects. If reconnecting keeps failing, the app stops blocking
+  (Android, iOS/macOS and Windows alike) and says so. Android: protection
+  applies while BirdoVPN's VPN service is running; if a crash or Android
+  closes the app, nothing is blocked until it starts again. For a block
+  Android itself enforces, turn on Always-on VPN and "Block connections
+  without VPN" in Android's VPN settings (supported, see below).
 - **Split Tunneling** -- Per-app VPN routing (Android)
 - **Auto-reconnect** -- the tunnel re-establishes itself after network changes
-  while the app's service is running. (Android's system "Always-on VPN" toggle
-  is deliberately NOT offered: the service cannot yet self-establish a tunnel
-  from a headless boot start, so lockdown would strand users after every
-  reboot — `SUPPORTS_ALWAYS_ON=false` in the manifest, with the TODO to flip
-  it once headless reconnect exists.)
+  and drops. Android notices a dead tunnel from wg-go's handshake and traffic
+  counters: within about 20–30 s while traffic is flowing, about a minute and
+  a half on an idle phone (its once-a-minute heartbeat is then the only
+  traffic to go unanswered), and 10–20 s once no network is left under it.
+  It shows "Reconnecting…", and waits for the network without spending
+  retries while there is none; a captive portal is said as one. Before the
+  first re-dial it asks the server once, around the tunnel, why the tunnel
+  died: a connection the server ended on purpose (another device took the
+  slot, a Disconnect from another device, the Free plan's data used up)
+  stays down with the reason instead of being dialled back.
+- **Always-on VPN (Android)** -- supported: `SUPPORTS_ALWAYS_ON=true`, pinned
+  by `ApiLevel36ContractTest`. When Android starts the service at boot, on
+  unlock or when the setting changes, the service puts its block up first and
+  then reconnects on its own to the last server (`SystemStartPolicy`). An app
+  update restores the session (`PackageReplacedReceiver`). After a crash the
+  service is NOT restarted by Android (`START_NOT_STICKY`, live on API 35).
+  Instead, a connection you left on comes back, block first, the next time
+  BirdoVPN's process starts for any reason: you open the app, tap the widget
+  or the Quick Settings tile, or a home-screen widget refresh starts it. That
+  is not only after a crash: it also happens after a reboot without Always-on
+  (launchers refresh their widgets at boot) and after a Force stop once the app
+  is next opened. Disconnect in BirdoVPN first if you do not want the
+  connection back. A tap on the tile or widget that starts the process joins
+  that resume rather than cancelling it. With "Block connections without VPN"
+  on, Android keeps blocking through the gap.
+- **The app's own traffic** -- while connected, BirdoVPN's own requests (sign-in,
+  the server list, the once-a-minute heartbeat, opted-in crash reports) go
+  through the VPN tunnel like every other app's. They go around it, from your
+  own IP address, only where they have to: before the first tunnel is up,
+  behind the kill switch's block and while reconnecting; for the one heartbeat
+  that asks the server why a dead tunnel died; and for an account deletion,
+  whose answer would otherwise be lost with the tunnel the server ends.
+  Exception: during a Stealth Mode session the app's own traffic stays outside
+  the tunnel, as it did before, because Xray runs as a child process of the
+  app and cannot be routed into the tunnel it carries.
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,

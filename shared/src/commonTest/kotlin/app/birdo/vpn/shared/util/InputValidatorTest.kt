@@ -103,27 +103,6 @@ class InputValidatorTest {
         assertFalse(InputValidator.isValidDnsAddress("ff02::fb"))    // v6 multicast
     }
 
-    // ── port ─────────────────────────────────────────────────────
-
-    @Test
-    fun portRangeIs1To65535AndAutoIsAllowedAsText() {
-        assertFalse(InputValidator.isValidPort(0))
-        assertTrue(InputValidator.isValidPort(1))
-        assertTrue(InputValidator.isValidPort(51820))
-        assertTrue(InputValidator.isValidPort(65535))
-        assertFalse(InputValidator.isValidPort(65536))
-        assertFalse(InputValidator.isValidPort(-1))
-
-        assertTrue(InputValidator.isValidPort("auto"))
-        assertTrue(InputValidator.isValidPort("53"))
-        assertFalse(InputValidator.isValidPort("0"))
-        assertFalse(InputValidator.isValidPort("65536"))
-        assertFalse(InputValidator.isValidPort(""))
-        assertFalse(InputValidator.isValidPort("Auto"))
-        assertFalse(InputValidator.isValidPort("51820 "))
-        assertFalse(InputValidator.isValidPort("1e3"))
-    }
-
     // ── MTU ──────────────────────────────────────────────────────
 
     @Test

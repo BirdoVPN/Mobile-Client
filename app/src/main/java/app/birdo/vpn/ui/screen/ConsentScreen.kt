@@ -20,6 +20,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
@@ -54,6 +56,8 @@ fun ConsentScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // No top or bottom bar here: this screen owns its insets (A2-010).
+            .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(24.dp)
             .verticalScroll(scrollState),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -72,6 +76,7 @@ fun ConsentScreen(
 
         Text(
             text = stringResource(R.string.consent_title),
+            modifier = Modifier.semantics { heading() },
             color = BirdoWhite,
             fontSize = 24.sp,
             fontWeight = FontWeight.Bold,
@@ -148,15 +153,18 @@ fun ConsentScreen(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Accept button
+        // Accept button. Minimum heights, not fixed ones, so the labels grow
+        // with the font instead of being cut off at 200 % scale (A2-024). The
+        // deep emerald of the idle Connect button: white on the brighter
+        // accent measured 2.5:1, under the 4.5:1 text minimum.
         Button(
             onClick = { onAccept(crashReports) },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .heightIn(min = 52.dp)
                 .testTag(TestTags.CONSENT_ACCEPT),
             shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = BirdoAccent),
+            colors = ButtonDefaults.buttonColors(containerColor = BirdoBrand.AccentDeep),
         ) {
             Text(
                 text = stringResource(R.string.consent_agree),
@@ -173,15 +181,15 @@ fun ConsentScreen(
             onClick = onDecline,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .heightIn(min = 48.dp)
                 .testTag(TestTags.CONSENT_DECLINE),
             shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = BirdoWhite40),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = BirdoWhite60),
         ) {
             Text(
                 text = stringResource(R.string.consent_decline),
                 fontSize = 14.sp,
-                color = BirdoWhite40,
+                color = BirdoWhite60,
             )
         }
 
@@ -190,7 +198,7 @@ fun ConsentScreen(
         // What "I Agree & Continue" means, stated next to the button.
         Text(
             text = stringResource(R.string.consent_terms_notice),
-            color = BirdoWhite40,
+            color = BirdoWhite60,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
         )
@@ -199,7 +207,9 @@ fun ConsentScreen(
 
         Text(
             text = stringResource(R.string.consent_required_notice),
-            color = BirdoWhite20,
+            // Was 20 % white: 1.7:1, unreadable, on the one screen every new
+            // user must get through.
+            color = BirdoWhite60,
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
         )

@@ -29,8 +29,12 @@ CI, and all three fail silently in production:
 Everything here is checked against the shipped bytes, not against the build
 configuration, so it stays true regardless of how the rules are written.
 
-It also checks that ``app/src/main/baseline-prof.txt`` has not silently gone
-stale: every rule must still match at least one class that survived R8.
+It also checks the baseline profiles against what survived R8: a HAND-WRITTEN
+``app/src/main/baseline-prof.txt`` rule by rule (every rule must still match a
+shipped class), and the RECORDED profile that actually ships,
+``app/src/release/generated/baselineProfiles/baseline-prof.txt``, by the share
+of its rules that still match (a recording legitimately names classes R8
+removes, so it is held to a floor rather than to every rule).
 
 For an ``.aab`` it additionally pins the Play-facing R8 facts -- the metadata
 Google reads off the upload to decide whether to show the "Improve your app's
@@ -41,6 +45,7 @@ Usage
 -----
     python scripts/check_r8_keeps.py [ARTIFACT] [--mapping PATH]
                                      [--baseline-profile PATH]
+                                     [--recorded-baseline-profile PATH]
                                      [--source-root DIR ...]
                                      [--no-baseline-profile]
 
@@ -127,6 +132,20 @@ DEFAULT_MAPPING = "app/build/outputs/mapping/release/mapping.txt"
 #   * .github/workflows/baseline-profile.yml -- that a fresh recording still
 #     matches the committed one, monthly.
 DEFAULT_BASELINE_PROFILE = "app/src/main/baseline-prof.txt"
+
+# The profile that SHIPS (see above). Until 2026-10-01 nothing here read it, so
+# the "freshness" gate validated a file that does not exist (AND-VPN-B). It is
+# held to a share of matching rules, not to every rule: measured 16,547 of
+# 22,696 (72.9 %) on the #358 recording. A recording that has gone stale in the
+# way that matters -- a package renamed, a startup path rewritten, a recording
+# of another app -- falls far below this floor, while the entries R8 legitimately
+# removes do not trip it.
+RECORDED_BASELINE_PROFILE = "app/src/release/generated/baselineProfiles/baseline-prof.txt"
+RECORDED_PROFILE_MIN_MATCH = 0.60
+# Those that are THIS app's own classes must mostly survive too: a recording
+# whose app classes no longer exist is a recording of an older app.
+RECORDED_PROFILE_APP_PREFIX = "app.birdo.vpn."
+RECORDED_PROFILE_MIN_APP_MATCH = 0.50
 
 
 # --- Minimal DEX reader ----------------------------------------------------
@@ -505,11 +524,61 @@ def check_room_database_constructors(classes: dict[str, dict], failures: list[st
             print(f"  room: {impl} keeps <init>")
 
 
+def check_recorded_profile(profile_path: str, mapping_path: str, failures: list[str]) -> None:
+    """The shipped (recorded) profile still describes the app that ships."""
+    kept = mapping_original_classes(mapping_path)
+    rules = profile_rule_patterns(profile_path)
+    if not rules:
+        failures.append(f"{profile_path} contains no usable rules")
+        return
+    # Thousands of rules against thousands of classes: match exact names by set
+    # lookup, and fall back to the regex only for wildcard rules.
+    def matches(pattern: str) -> bool:
+        if "*" not in pattern:
+            outer = pattern.split("$", 1)[0]
+            return pattern in kept or outer in kept
+        regex = pattern_to_regex(pattern)
+        return any(regex.match(name) for name in kept)
+
+    cache: dict[str, bool] = {}
+    matched = 0
+    app_total = 0
+    app_matched = 0
+    for _number, _raw, pattern in rules:
+        hit = cache.get(pattern)
+        if hit is None:
+            hit = cache[pattern] = matches(pattern)
+        matched += hit
+        if pattern.startswith(RECORDED_PROFILE_APP_PREFIX):
+            app_total += 1
+            app_matched += hit
+    share = matched / len(rules)
+    app_share = app_matched / app_total if app_total else 0.0
+    print(
+        f"  recorded baseline profile: {matched}/{len(rules)} rules match a shipped class "
+        f"({share:.1%}; floor {RECORDED_PROFILE_MIN_MATCH:.0%}), "
+        f"app classes {app_matched}/{app_total} ({app_share:.1%}; floor {RECORDED_PROFILE_MIN_APP_MATCH:.0%})"
+    )
+    if share < RECORDED_PROFILE_MIN_MATCH:
+        failures.append(
+            f"{profile_path}: only {share:.1%} of its rules match a class that shipped "
+            f"(floor {RECORDED_PROFILE_MIN_MATCH:.0%}). The recording is stale: re-run "
+            ":app:generateReleaseBaselineProfile (.github/workflows/baseline-profile.yml)."
+        )
+    if app_total == 0 or app_share < RECORDED_PROFILE_MIN_APP_MATCH:
+        failures.append(
+            f"{profile_path}: {app_matched}/{app_total} of its app.birdo.vpn rules match a "
+            f"shipped class (floor {RECORDED_PROFILE_MIN_APP_MATCH:.0%}). It records an older "
+            "app; re-record it."
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", nargs="?", help="APK, AAB, .dex, or a directory of .dex")
     parser.add_argument("--mapping", default=DEFAULT_MAPPING)
     parser.add_argument("--baseline-profile", default=DEFAULT_BASELINE_PROFILE)
+    parser.add_argument("--recorded-baseline-profile", default=RECORDED_BASELINE_PROFILE)
     parser.add_argument("--source-root", action="append", default=None)
     parser.add_argument(
         "--no-baseline-profile",
@@ -697,6 +766,23 @@ def main() -> int:
                         "weight and decays silently. Fix the package name or delete it."
                     )
             print(f"  baseline profile: {len(rules) - len(unmatched)}/{len(rules)} rules still match")
+
+    # 5b. The RECORDED profile, the one that ships -------------------------
+    recorded_named = args.recorded_baseline_profile != RECORDED_BASELINE_PROFILE
+    if args.no_baseline_profile:
+        pass
+    elif not os.path.exists(args.recorded_baseline_profile):
+        if recorded_named:
+            failures.append(f"recorded baseline profile not found at {args.recorded_baseline_profile}")
+        else:
+            print(f"  recorded baseline profile: none at {args.recorded_baseline_profile} - skipped")
+    elif not os.path.exists(args.mapping):
+        failures.append(
+            f"mapping.txt not found at {args.mapping}; pass --no-baseline-profile "
+            "if the profile check is not wanted here"
+        )
+    else:
+        check_recorded_profile(args.recorded_baseline_profile, args.mapping, failures)
 
     # 6. Play-facing R8 metadata (AAB only) --------------------------------
     check_play_r8_metadata(artifact, failures)

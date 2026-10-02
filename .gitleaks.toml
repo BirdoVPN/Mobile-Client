@@ -77,3 +77,19 @@ paths = [
 regexes = [
   '''^birdo_pq_v1_keypair$''',
 ]
+
+# ── Two commits of the Android overhaul branch (PR #458) ──────────────────
+#
+# BirdoVpnServiceLifecycleTest.kt carried two random 44-character WireGuard-
+# shaped fixture keys there, which generic-api-key reports. They were never
+# real keys: the values appear nowhere else in this repo, birdo-web, the node
+# agent or the desktop client, and they are zero-entropy constants since.
+# secret-scan.yml scans the PR's whole history, so the two commits that still
+# hold them are listed. A commit is immutable, so this hides nothing else, and
+# the gitleaks 8.21 scan of them reports only those fixtures. This repo
+# squash-merges, so neither commit reaches main: delete after the merge.
+# (gitleaks 8.21.2 has no scoped [[allowlists]]; it ignores that table.)
+commits = [
+  "55b593a2294312d37e614eed6dd6ca26634a7964",
+  "bda394580778cb5ab55289ab65faea1ec5a76c11",
+]

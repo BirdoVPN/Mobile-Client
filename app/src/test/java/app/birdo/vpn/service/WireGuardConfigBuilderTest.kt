@@ -253,4 +253,72 @@ class WireGuardConfigBuilderTest {
             serviceSource.substring(dnsResolved, lnsStart).contains("for (dns in tunnelDns)"),
         )
     }
+
+    // ── A1-024: BirdoShield and Custom DNS ──────────────────────────────
+
+    @Test
+    fun `BirdoShield is in effect only while Custom DNS is off`() {
+        assertTrue(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = false))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = true, customDnsEnabled = true))
+        assertFalse(WireGuardConfigBuilder.shieldInEffect(dnsFilteringEnabled = false, customDnsEnabled = false))
+    }
+
+    // ── A1-025: strict Private DNS overrides the tunnel's DNS ──────────
+
+    @Test
+    fun `strict Private DNS is flagged only when it overrides a DNS choice made here`() {
+        assertTrue(WireGuardConfigBuilder.privateDnsOverrides(true, dnsFilteringEnabled = true, customDnsEnabled = false))
+        assertTrue(WireGuardConfigBuilder.privateDnsOverrides(true, dnsFilteringEnabled = false, customDnsEnabled = true))
+        assertFalse("nothing chosen here to override", WireGuardConfigBuilder.privateDnsOverrides(true, false, false))
+        assertFalse("automatic / off Private DNS", WireGuardConfigBuilder.privateDnsOverrides(false, true, true))
+    }
+
+    // ── A1-038: the keepalive ceiling ───────────────────────────────────
+
+    @Test
+    fun `the keepalive is clamped so an idle tunnel stays under the stall backstop`() {
+        fun keepalive(seconds: Int?) =
+            WireGuardConfigBuilder.effectiveKeepaliveSec(response(dns = null).copy(persistentKeepalive = seconds))
+        // The old ceiling was 300: an idle tunnel then re-handshook only every
+        // 300 s, past TunnelMonitor's 180 s backstop, and "died" every few minutes.
+        assertEquals(WireGuardConfigBuilder.MAX_KEEPALIVE_SEC, keepalive(300))
+        assertEquals(25, keepalive(null))
+        assertEquals(25, keepalive(25))
+        assertEquals(10, keepalive(1))
+        assertTrue(WireGuardConfigBuilder.IDLE_HANDSHAKE_AGE_PEAK_SEC < TunnelMonitor.STALL_THRESHOLD_SEC)
+    }
+
+    // ── LIVE-PORT53: the relays accept WireGuard on 51820 only ──────────
+
+    @Test
+    fun `a stale 53 or custom port is never dialled, the relays' own port is`() {
+        fun dialled(stored: String): String {
+            every { prefs.wireGuardPort } returns stored
+            return WireGuardConfigBuilder.applyPortOverride("203.0.113.7:51820", prefs)
+        }
+        // Saved by an older build: on the relays nothing listens there.
+        assertEquals("203.0.113.7:51820", dialled("53"))
+        assertEquals("203.0.113.7:51820", dialled("4500"))
+        assertEquals("203.0.113.7:51820", dialled("65535"))
+        assertEquals("203.0.113.7:51820", dialled("auto"))
+        assertEquals("203.0.113.7:51820", dialled("51820"))
+        // "auto" keeps whatever port the server sends; so does a stale override.
+        every { prefs.wireGuardPort } returns "53"
+        assertEquals("[2001:db8::7]:51820", WireGuardConfigBuilder.applyPortOverride("[2001:db8::7]:51820", prefs))
+        assertEquals(null, WireGuardConfigBuilder.portOverride("53"))
+        assertEquals(51820, WireGuardConfigBuilder.portOverride(" 51820 "))
+    }
+
+    @Test
+    fun `the whole config dials 51820 for a stale 53`() {
+        stubAndroidBase64()
+        every { prefs.wireGuardPort } returns "53"
+
+        val config = WireGuardConfigBuilder.build(
+            keyedResponse(listOf("1.1.1.1")).copy(endpoint = "203.0.113.7:51820"),
+            prefs,
+        )
+
+        assertEquals(51820, config.peers.single().endpoint.get().port)
+    }
 }

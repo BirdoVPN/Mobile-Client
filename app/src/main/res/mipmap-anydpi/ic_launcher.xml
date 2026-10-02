@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive launcher icon (A2-025). All three layers are RASTER PNGs generated
+     by store-assets/generate_assets.py. The first adaptive icon was removed
+     (issue #150) because its foreground was an 832-command VectorDrawable that
+     failed to inflate; that cannot happen with bitmaps. The monochrome layer is
+     what Android 13+ tints for themed icons. The in-app mark does NOT use this
+     resource: AppIconMark draws @drawable/app_mark, so the launcher icon can
+     change without touching any screen. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
+</adaptive-icon>

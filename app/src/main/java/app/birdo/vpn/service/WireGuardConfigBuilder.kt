@@ -128,12 +128,7 @@ object WireGuardConfigBuilder {
         val peerBuilder = Peer.Builder()
             .parsePublicKey(peerPublicKey.toBase64())
             .parseEndpoint(effectiveEndpoint)
-            // Floor the keepalive at 10s: a keepalive of 1-2s wakes the radio
-            // every second or two (heavy battery drain) for no benefit, and the
-            // value is server-supplied — clamp defensively so a misconfigured or
-            // compromised backend can never drive the client's radio that hard.
-            // Default WireGuard keepalive is 25s; 10s honours any sane override.
-            .parsePersistentKeepalive("${(response.persistentKeepalive ?: 25).coerceIn(10, 300)}")
+            .parsePersistentKeepalive("${effectiveKeepaliveSec(response)}")
         var allowedIpCount = 0
         for (cidr in response.allowedIps ?: listOf("0.0.0.0/0", "::/0")) {
             try {
@@ -183,20 +178,63 @@ object WireGuardConfigBuilder {
         return config
     }
 
+    /** WireGuard's REKEY_AFTER_TIME: an idle peer re-handshakes on the first send after this. */
+    private const val REKEY_AFTER_TIME_SEC = 120
+
+    /** Keepalive floor: a keepalive of 1-2 s would wake the radio every second or two for nothing. */
+    private const val MIN_KEEPALIVE_SEC = 10
+
+    /**
+     * Keepalive ceiling (A1-038). An idle tunnel re-handshakes only on a send
+     * after [REKEY_AFTER_TIME_SEC], and the keepalive is its only send, so the
+     * handshake age of a healthy idle tunnel peaks at 120 s + the keepalive.
+     * TunnelMonitor's idle backstop declares a tunnel dead at 180 s; the old
+     * ceiling of 300 s would have let a backend change to a long keepalive
+     * condemn every idle tunnel every few minutes. 55 keeps the peak at 175 s.
+     */
+    internal const val MAX_KEEPALIVE_SEC = 55
+
+    /**
+     * The persistent keepalive wg-go runs with: the server's value (25 s
+     * today, iOS hard-codes the same), clamped to [MIN_KEEPALIVE_SEC]..
+     * [MAX_KEEPALIVE_SEC]. Server-supplied, so clamped defensively either way.
+     * TunnelMonitor reads the same number to tell a keepalive from a send
+     * that expects an answer.
+     */
+    fun effectiveKeepaliveSec(response: ConnectResponse): Int =
+        (response.persistentKeepalive ?: 25).coerceIn(MIN_KEEPALIVE_SEC, MAX_KEEPALIVE_SEC)
+
+    /** The idle handshake-age peak [MAX_KEEPALIVE_SEC] allows; pinned below TunnelMonitor's backstop by a test. */
+    internal const val IDLE_HANDSHAKE_AGE_PEAK_SEC = REKEY_AFTER_TIME_SEC + MAX_KEEPALIVE_SEC
+
+    /**
+     * LIVE-PORT53: the one port the relays accept WireGuard on. Checked on all
+     * ten relays on 2026-10-01: no DNAT from 53, nothing listening on a public
+     * 53, ufw opens only this port. The Windows client on 53 got no handshake,
+     * direct or over Stealth.
+     */
+    internal const val RELAY_WIREGUARD_PORT = 51820
+
+    /**
+     * The port a stored WireGuard port setting may still override, or null.
+     * Only [RELAY_WIREGUARD_PORT]: "auto", the retired "53" preset and any
+     * custom number can never connect, so a value an older build saved (or
+     * one that outlives AppPreferences.retireWireGuardPortChoice) is never
+     * dialled.
+     */
+    fun portOverride(stored: String): Int? = stored.trim().toIntOrNull()?.takeIf { it == RELAY_WIREGUARD_PORT }
+
     /**
      * Apply the user's WireGuard port override to the endpoint string.
-     * "auto" keeps the server-provided port.
+     * Anything but [RELAY_WIREGUARD_PORT] keeps the server-provided port.
      */
     fun applyPortOverride(endpoint: String, prefs: AppPreferences): String {
-        val portPref = prefs.wireGuardPort
-        if (portPref == "auto") return endpoint
-        val overridePort = portPref.toIntOrNull() ?: return endpoint
-        if (overridePort !in 1..65535) return endpoint
+        val overridePort = portOverride(prefs.wireGuardPort) ?: return endpoint
         // Never rewrite the port of a loopback endpoint. When stealth (Xray
         // Reality) is active the WireGuard endpoint is the LOCAL relay
         // (127.0.0.1:<xrayPort>); rewriting that port would point wg-go at a dead
-        // local port and silently break the tunnel. The port override is meant for
-        // the real server endpoint only (to dodge port-based blocking).
+        // local port and silently break the tunnel. The override is for the real
+        // server endpoint only.
         if (isLoopbackEndpointHost(endpoint)) return endpoint
         val lastColon = endpoint.lastIndexOf(':')
         return if (lastColon > 0) endpoint.substring(0, lastColon + 1) + overridePort
@@ -221,6 +259,25 @@ object WireGuardConfigBuilder {
             host == "::1" ||
             host.startsWith("127.")
     }
+
+    /**
+     * A1-024: whether BirdoShield actually filters this tunnel's DNS. Custom
+     * DNS replaces the server's resolvers in [resolveDnsServers] — the
+     * filtering one included — so with it on, BirdoShield does nothing: the
+     * server must not be told it is on, and its row must not read ON.
+     */
+    fun shieldInEffect(dnsFilteringEnabled: Boolean, customDnsEnabled: Boolean): Boolean =
+        dnsFilteringEnabled && !customDnsEnabled
+
+    /**
+     * A1-025: whether to warn that Android's strict Private DNS overrides the
+     * DNS the user chose here. Its DNS-over-TLS goes to the Private DNS
+     * provider (through the tunnel), so neither BirdoShield nor Custom DNS
+     * applies. Said only when one of them is on: otherwise the user asked for
+     * nothing it overrides.
+     */
+    fun privateDnsOverrides(strictPrivateDns: Boolean, dnsFilteringEnabled: Boolean, customDnsEnabled: Boolean): Boolean =
+        strictPrivateDns && (dnsFilteringEnabled || customDnsEnabled)
 
     /**
      * Resolve DNS servers, preferring user overrides when enabled.

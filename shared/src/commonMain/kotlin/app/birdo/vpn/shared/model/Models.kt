@@ -104,7 +104,13 @@ data class RefreshResponse(
 @Serializable
 data class UserProfile(
     val id: String,
-    val email: String,
+    /**
+     * Defaulted so a null or absent email still decodes (the shared `Json`
+     * coerces null to the default): the account API's phase 2 sends null for
+     * anonymous accounts (ACCOUNT-API-2026-10-01, item 86), and a required
+     * field would fail the whole profile.
+     */
+    val email: String = "",
     val name: String? = null,
     val emailVerified: Boolean = false,
     val createdAt: String = "",
@@ -120,7 +126,24 @@ data class UserProfile(
      */
     val hasPassword: Boolean = true,
     val isSSO: Boolean = false,
-)
+    /**
+     * Item 86 (ACCOUNT-API-2026-10-01): `"anonymous"` or `"standard"`, and the
+     * same fact as a boolean. Both absent from a server older than that API;
+     * `isAnonymousAccount(user)` then falls back to the email's shape.
+     */
+    val accountType: String? = null,
+    val isAnonymous: Boolean? = null,
+    /**
+     * Item 86: an anonymous account's bare 24-digit number, null for a
+     * standard account or an older server. It is the account's ONLY
+     * credential: never log it, never put it in a crash report.
+     */
+    val accountNumber: String? = null,
+) {
+    /** Leaves out [email] and [accountNumber]: either can carry an anonymous account's credential. */
+    override fun toString(): String =
+        "UserProfile(id=$id, accountType=$accountType, isAnonymous=$isAnonymous, hasPassword=$hasPassword, isSSO=$isSSO)"
+}
 
 /**
  * FIX-MOBILE-COMPAT: Realigned with backend `GET /vpn/stats` (VpnQueryService.getUsageStats).
@@ -174,7 +197,15 @@ data class AnonymousLoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
-)
+) {
+    /**
+     * Leaves out [anonymousId] (the account's only credential), [password]
+     * and [deviceId] (a per-install identifier), like [UserProfile]
+     * (REVIEW-AND2-010).
+     */
+    override fun toString(): String =
+        "AnonymousLoginRequest(platform=$platform, platformVersion=$platformVersion, appVersion=$appVersion)"
+}
 
 /** Body for POST /auth/register/anonymous — device context only (all optional);
  *  the server mints the 24-digit ID. Response reuses [AnonymousLoginResponse]. */
@@ -195,7 +226,11 @@ data class AnonymousLoginResponse(
     val tokens: TokenPair? = null,
     @SerialName("requiresTwoFactor") val requiresTwoFactor: Boolean = false,
     @SerialName("challengeToken") val challengeToken: String? = null,
-)
+) {
+    /** Leaves out the account number, the tokens and the 2FA challenge (REVIEW-AND2-010). */
+    override fun toString(): String =
+        "AnonymousLoginResponse(ok=$ok, hasTokens=${tokens != null}, requiresTwoFactor=$requiresTwoFactor)"
+}
 
 // ─── Vouchers ────────────────────────────────────────────────────────────────
 //
@@ -288,6 +323,13 @@ data class DeleteAccountRequest(
      * to erasure on Android, while iOS already sent nil.
      */
     val password: String? = null,
+    /**
+     * Item 85 (ACCOUNT-API-2026-10-01): the TOTP or backup code an account
+     * with 2FA must add, after the server answered 403 `two_factor_required`.
+     * Null is OMITTED from the body (the shared `Json` does not encode
+     * defaults), so a server older than that API never sees the key.
+     */
+    val twoFactorCode: String? = null,
 )
 
 @Serializable
@@ -415,10 +457,11 @@ data class ConnectRequest(
     val serverNodeId: String? = null,
     val deviceName: String? = null,
     /**
-     * Stable device identity (see DeviceInfoProvider). Survives app UPDATE and
-     * REINSTALL, so the backend reclaims THIS device's own connection slot on
-     * reconnect instead of treating it as a new device (which used to trip
-     * "device limit reached" after every update).
+     * Stable device identity (see DeviceInfoProvider). Survives an app UPDATE,
+     * so the backend reclaims THIS device's own connection slot on reconnect
+     * instead of treating it as a new device (which used to trip "device limit
+     * reached" after every update). A REINSTALL mints a new one, deliberately:
+     * see DeviceInfoProvider's "KNOWN COST".
      */
     val deviceId: String? = null,
     val preferredRegion: String? = null,
@@ -445,7 +488,7 @@ data class ConnectRequest(
      * When present, the server encapsulates a fresh shared secret against
      * this key and returns the resulting ciphertext in
      * `ConnectResponse.rosenpassPublicKey`. ~2.1 KB Base64 overhead per
-     * connect — see `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt`.
+     * connect — see `app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt`.
      */
     val pqClientPublicKey: String? = null,
     /**
@@ -455,7 +498,7 @@ data class ConnectRequest(
      * That is the actual harvest-now-decrypt-later property the feature is
      * sold on: without it the PSK travels under classical TLS and a recorded
      * session plus a future CRQC recovers it. Only ever set true alongside a
-     * non-null [pqClientPublicKey] (RosenpassManager produced the keypair, so
+     * non-null [pqClientPublicKey] (BirdoPqManager produced the keypair, so
      * the native engine is present); if decapsulation still fails at tunnel
      * time the client fails closed rather than downgrading.
      */
@@ -480,6 +523,15 @@ data class ConnectRequest(
      * when the user has switched it on. Not plan-gated. Twin: [MultiHopConnectRequest].
      */
     val dnsFiltering: Boolean = false,
+    /**
+     * A1-034: this connect REPLACES the live session [currentKeyId] rides,
+     * through that very tunnel (the in-place live rebuild, iOS #350). The
+     * server defers that one key's eviction until the new peer handshakes,
+     * instead of evicting it inline and blackholing the request's own path.
+     * Both off the wire on an ordinary connect (defaults stay off).
+     */
+    val rebuild: Boolean = false,
+    val currentKeyId: String? = null,
 )
 
 @Serializable
@@ -548,22 +600,34 @@ data class ConnectResponse(
     //                          same KEM output. Server may use a timestamp,
     //                          random bytes, or any opaque value.
     //
-    // See `app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt` and
+    // See `app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt` and
     // `native/rosenpass-jni/src/lib.rs` for the canonical protocol spec.
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
+    /**
+     * A1-034: echoes [ConnectRequest.currentKeyId] when — and only when — the
+     * server deferred that key's eviction for a rebuild. Anything else means
+     * the old peer was, or may have been, evicted inline.
+     */
+    val deferredKeyId: String? = null,
+    /**
+     * A1-034: beside `success: false`, why a rebuild was refused before the
+     * server touched anything (the schema's RebuildRefusal values, a String so
+     * a new one can never fail the decode).
+     */
+    val rebuildRefused: String? = null,
+    /**
+     * Beside `success: false`: the Free plan's data allowance for this period
+     * is used up (birdo-web #590, the connect gate in vpn.service.ts), and
+     * [message] says how much and when it resets. A plan decision that asking
+     * again cannot change, so it ends the session as QUOTA_EXCEEDED rather
+     * than as a generic refusal (REVIEW-AND2-001).
+     */
+    val quotaExceeded: Boolean = false,
 )
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
-
-@Serializable
-data class MultiHopRoute(
-    val entryNodeId: String,
-    val exitNodeId: String,
-    val entryCountry: String,
-    val exitCountry: String,
-)
 
 @Serializable
 data class MultiHopConnectRequest(
@@ -615,6 +679,9 @@ data class MultiHopConnectRequest(
      * user gets the filtering resolver exactly as a single-hop one does.
      */
     val dnsFiltering: Boolean = false,
+    /** A1-034 — see [ConnectRequest.rebuild]; the multi-hop twin. */
+    val rebuild: Boolean = false,
+    val currentKeyId: String? = null,
 )
 
 @Serializable
@@ -665,6 +732,12 @@ data class MultiHopConnectResponse(
     val quantumEnabled: Boolean = false,
     val rosenpassPublicKey: String? = null,
     val rosenpassEndpoint: String? = null,
+    /** A1-034 — see [ConnectResponse.deferredKeyId]. */
+    val deferredKeyId: String? = null,
+    /** A1-034 — see [ConnectResponse.rebuildRefused]. */
+    val rebuildRefused: String? = null,
+    /** See [ConnectResponse.quotaExceeded]: multi-hop passes the single-hop gate's refusal through. */
+    val quotaExceeded: Boolean = false,
 )
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────
@@ -694,24 +767,12 @@ data class CreatePortForwardResponse(
     val message: String? = null,
 )
 
-// ─── Google Play Billing ─────────────────────────────────────────────────────
-// Removed: Android distributed as APK from GitHub Releases; no Play Billing.
-
-// ─── Key Rotation ────────────────────────────────────────────────────────────
-
-@Serializable
-data class KeyRotationRequest(
-    val clientPublicKey: String,
-)
-
-@Serializable
-data class KeyRotationResponse(
-    val success: Boolean = false,
-    val newKeyId: String = "",
-    val serverPublicKey: String = "",
-    val presharedKey: String? = null,
-    val expiresAt: String = "",
-)
+// ─── Key Rotation ─ REMOVED 2026-10-01 ───────────────────────────────────────
+//
+// KeyRotationRequest/Response described `POST vpn/connections/{keyId}/rotate`,
+// which the backend never shipped; the only caller was gated off by a constant
+// `keyRotationSupported = false` (A2-036). A fresh key per connect is the key
+// lifetime today. Bring the types back with the endpoint, not before it.
 
 // ─── Protocol Error Codes ─ RETIRED 2026-09-20 ─────────────────
 //
@@ -740,16 +801,28 @@ data class HeartbeatResponse(
     val valid: Boolean = true,
     val serverOnline: Boolean = true,
     val message: String? = null,
+    /**
+     * WHY the key is in this state, from a backend with birdo-web's heartbeat
+     * reasons (WEB-HB): "ok", "server_offline", "revoked", "evicted", "reaped"
+     * or "not_found". Absent from an older backend, and a value this build
+     * does not know means the same: today's handling. A plain String, never an
+     * enum, so a new reason can never fail the decode of a whole heartbeat.
+     *
+     * Not in the vendored contract yet: WEB-HB adds it to
+     * backend/contract/vpn-protocol.schema.json, and the copy in contract/ is
+     * re-vendored once that is on birdo-web's main.
+     */
+    val reason: String? = null,
+    /**
+     * The Free plan's monthly data allowance is used (birdo-web PR #590,
+     * enforced at check-in). With `valid: true` the session is inside its
+     * grace window and ends at [quotaGraceEndsAt]; with `valid: false` (and
+     * `reason: "quota_exceeded"`) the peer is already removed. Absent from a
+     * backend without the quota check.
+     */
+    val quotaExceeded: Boolean = false,
+    /** ISO-8601 instant the grace window ends. */
+    val quotaGraceEndsAt: String? = null,
+    /** Seconds left in the grace window, from the server's clock. Preferred over [quotaGraceEndsAt]. */
+    val quotaGraceSecondsRemaining: Long? = null,
 )
-
-// ─── Connection State ────────────────────────────────────────────────────────
-
-/** Cross-platform VPN connection state. */
-enum class VpnState {
-    DISCONNECTED,
-    CONNECTING,
-    CONNECTED,
-    DISCONNECTING,
-    ERROR,
-    KILL_SWITCH_ACTIVE,
-}

@@ -1,6 +1,5 @@
 package app.birdo.vpn.ui.components
 
-import android.animation.ValueAnimator
 import android.app.ActivityManager
 import android.content.Context
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -13,14 +12,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
@@ -131,42 +126,27 @@ fun WorldGlobe(
     // Power: the globe is a full-screen Canvas driven by an animation clock.
     // Compose keeps invalidating it at the display refresh rate (90/120 Hz on
     // modern phones) for as long as it is composed — even while the Activity is
-    // STOPPED, because an animation is not lifecycle-aware. Gate the whole thing
-    // on the lifecycle: when the app isn't at least STARTED (screen off, recents,
-    // another app on top) we stop driving the animation entirely and draw one
-    // static frame. Leaving composition (navigating away, or HomeScreen swapping
-    // the globe out for a flat backdrop while the server sheet is open) cancels
-    // the driver outright, because it lives in a LaunchedEffect.
+    // STOPPED, because an animation is not lifecycle-aware. So the clock runs
+    // only while [rememberDecorativeMotionAllowed] allows it: the app is at
+    // least STARTED (not screen off, recents or another app on top), nothing
+    // covers it (the Hide App Contents cover keeps this screen composed
+    // underneath now, A2-009), and the user has not turned animations off
+    // ("Remove animations" sets the animator duration scale to 0, which
+    // Compose's own tweens honour but this hand-rolled clock would not).
+    // Otherwise one static frame is drawn. Leaving composition (navigating
+    // away, or HomeScreen swapping the globe out for a flat backdrop while the
+    // server sheet is open) cancels the driver outright, because it lives in a
+    // LaunchedEffect.
+    //
+    // It keeps turning while connected, as on iOS (P1-041): that is the look
+    // the owner signed off, and with the gates above plus the cadence cap below
+    // it costs nothing whenever it cannot be seen.
     //
     // The idle rotation is also intentionally slow (a 90s revolution), so
     // redrawing 21k land cells 120x/second buys nothing visible. We snap the
     // animation clock to ~30 fps (20 on the lite path), which is smooth for this
     // content and cuts globe frame work by 2-4x on a high-refresh display.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var started by remember { mutableStateOf(true) }
-    // Accessibility / battery saver: "Remove animations" sets the system
-    // animator duration scale to 0. Compose's own tween animations already
-    // honour it through MotionDurationScale, but our hand-rolled clock does not
-    // — so a user who has asked for no animation would still get a spinning
-    // planet, and would still pay for it. Re-read on every ON_START because the
-    // setting can change while we are away.
-    var animatorsEnabled by remember { mutableStateOf(true) }
-    DisposableEffect(lifecycleOwner) {
-        animatorsEnabled = ValueAnimator.areAnimatorsEnabled()
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> {
-                    started = true
-                    animatorsEnabled = ValueAnimator.areAnimatorsEnabled()
-                }
-                Lifecycle.Event.ON_STOP -> started = false
-                else -> Unit
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    val animating = started && animatorsEnabled
+    val animating = rememberDecorativeMotionAllowed()
 
     // ONE animation clock. Every cyclic value below is a pure function of
     // elapsed time, so a single monotonic millisecond counter reproduces them
@@ -200,15 +180,6 @@ fun WorldGlobe(
             }
         }
     }
-
-    val pulse = cyclePhase(clockMs, 1800L)
-    val arcShimmer = cyclePhase(clockMs, 2400L)
-    val twinkle = cyclePhase(clockMs, 3600L)
-    val idleSpin = cyclePhase(clockMs, 90_000L) * 360f
-    // Day/night terminator: the sun's longitude sweeps a full revolution
-    // every 2 minutes. Independent of the camera so you can see the shadow
-    // crawl across continents while the globe is still / focused.
-    val sunSpin = cyclePhase(clockMs, 120_000L) * 360f
 
     // One-shot precomputation. ~21 k land cells (~5 k on the lite path) stored
     // as packed floats.
@@ -266,12 +237,12 @@ fun WorldGlobe(
         focusLonTarget = (uLon + shiftedSLon) / 2f
     }
 
-    val focus by animateFloatAsState(
+    val focusState = animateFloatAsState(
         targetValue = if (hasFocus) 1f else 0f,
         animationSpec = tween(1400, easing = FastOutSlowInEasing),
         label = "focus",
     )
-    val zoom by animateFloatAsState(
+    val zoomState = animateFloatAsState(
         targetValue = when {
             isConnected -> 1.20f
             hasFocus -> 1.06f
@@ -280,15 +251,11 @@ fun WorldGlobe(
         animationSpec = tween(1200, easing = FastOutSlowInEasing),
         label = "zoom",
     )
-    val arcProgress by animateFloatAsState(
+    val arcProgressState = animateFloatAsState(
         targetValue = if (isConnected && hasFocus) 1f else 0f,
         animationSpec = tween(900, delayMillis = if (isConnected) 400 else 0),
         label = "arcProgress",
     )
-
-    val idleLon = if (autoRotate) (idleSpin + userLon.toFloat() - 25f) else userLon.toFloat()
-    val effectiveLat = focusLatTarget * focus
-    val effectiveLon = lerpAngleDeg(idleLon, focusLonTarget, focus)
 
     // NOTE: the "light" theme here is Birdo's DIM-light theme (a slate near-dark,
     // #1B1C24) — not a true white theme. These used to be a daylight globe on a
@@ -316,12 +283,31 @@ fun WorldGlobe(
     // they miss only while the zoom tween is running.
     val brushes = remember(isLight, atmosphere, oceanCore, oceanRim) { GlobeBrushes() }
 
-    // Sun position: slow east-to-west drift in longitude with a small
-    // seasonal-ish latitude tilt so the terminator isn't a perfect vertical.
-    val sunLonDeg = 180f - sunSpin
-    val sunLatDeg = 12f
-
     Canvas(modifier = modifier.fillMaxSize()) {
+        // Every value derived from the animation clock is read HERE, in the
+        // draw phase. Read in composition (as it was), each ~30 Hz publish of
+        // clockMs re-ran this whole composable, remember lookups, focus maths
+        // and animate*AsState included, on top of the draw (A2-041). Read here,
+        // a tick only invalidates drawing.
+        val clock = clockMs
+        val pulse = cyclePhase(clock, 1800L)
+        val arcShimmer = cyclePhase(clock, 2400L)
+        val twinkle = cyclePhase(clock, 3600L)
+        val idleSpin = cyclePhase(clock, 90_000L) * 360f
+        // Day/night terminator: the sun's longitude sweeps a full revolution
+        // every 2 minutes. Independent of the camera so you can see the shadow
+        // crawl across continents while the globe is still / focused.
+        val sunSpin = cyclePhase(clock, 120_000L) * 360f
+        // Sun position: slow east-to-west drift in longitude with a small
+        // seasonal-ish latitude tilt so the terminator isn't a perfect vertical.
+        val sunLonDeg = 180f - sunSpin
+        val sunLatDeg = 12f
+
+        val focusNow = focusState.value
+        val idleLon = if (autoRotate) (idleSpin + userLon.toFloat() - 25f) else userLon.toFloat()
+        val effectiveLat = focusLatTarget * focusNow
+        val effectiveLon = lerpAngleDeg(idleLon, focusLonTarget, focusNow)
+
         renderGlobe(
             stars = stars,
             landSamples = landSamples,
@@ -344,11 +330,11 @@ fun WorldGlobe(
             isConnected = isConnected,
             focusLatDeg = effectiveLat,
             focusLonDeg = effectiveLon,
-            zoom = zoom,
+            zoom = zoomState.value,
             twinkle = twinkle,
             pulse = pulse,
             arcShimmer = arcShimmer,
-            arcProgress = arcProgress,
+            arcProgress = arcProgressState.value,
             serverIds = serverIds,
             serverGeom = serverGeom,
             selectedServerId = selectedServerId,

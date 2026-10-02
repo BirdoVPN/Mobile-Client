@@ -11,7 +11,7 @@ import app.birdo.vpn.utils.NativeLibraryVerifier
  * JNI bridge to `librosenpass_jni.so` — BirdoPQ v1 (ML-KEM-1024).
  *
  * This is the **only** Kotlin call site that talks to the native PQ KEM
- * code. [RosenpassManager] uses it via reflection so the app keeps loading
+ * code. [BirdoPqManager] uses it via reflection so the app keeps loading
  * even on devices/builds where the .so is absent (e.g. local debug builds
  * without the Rust toolchain installed).
  *
@@ -26,7 +26,7 @@ import app.birdo.vpn.utils.NativeLibraryVerifier
  *
  * `nativeGenerateKeypair` is the only CPU-heavy call (~10–50 ms on a phone
  * for ML-KEM-1024). All native methods MUST be called off the main thread —
- * [RosenpassManager] dispatches them on `Dispatchers.IO`.
+ * [BirdoPqManager] dispatches them on `Dispatchers.IO`.
  *
  * ## Why not upstream Rosenpass?
  *
@@ -74,7 +74,7 @@ object RosenpassNative {
      * hash check against the absolute path under nativeLibraryDir, and
      * only on success does it call `System.load(absolutePath)`.
      *
-     * Callers (only [RosenpassManager]) MUST call [verifyIntegrity] first
+     * Callers (only [BirdoPqManager]) MUST call [verifyIntegrity] first
      * and then check [isLoaded] before invoking any `native*` method.
      */
     @Synchronized
@@ -191,7 +191,7 @@ object RosenpassNative {
      * Generates a long-lived ML-KEM-1024 keypair.
      *
      * @return 2-element array `[publicKey (~1568 B), secretKey (~3168 B)]`.
-     *         Caller MUST persist via [RosenpassKeyStore] (sealed under an
+     *         Caller MUST persist via [BirdoPqKeyStore] (sealed under an
      *         Android Keystore key) and zeroize the in-memory secret key copy after
      *         writing it to encrypted storage.
      * @throws RuntimeException if the underlying KEM call fails.
@@ -260,7 +260,7 @@ object RosenpassNative {
 
     /**
      * Long-lived ML-KEM-1024 keypair. The secret key half is sensitive
-     * material — callers MUST persist via [RosenpassKeyStore] (sealed under
+     * material — callers MUST persist via [BirdoPqKeyStore] (sealed under
      * an Android Keystore key) and zeroize the in-memory copy as soon as it's
      * been handed to the native derive call.
      */

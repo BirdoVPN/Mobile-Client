@@ -77,7 +77,10 @@ fun BirdoSegmentedControl(
                     text = label,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 40.dp)
+                        // A 48 dp minimum: each segment is a touch target, and a
+                        // min (not a fixed) height lets the label grow with the
+                        // font scale (A2-024).
+                        .heightIn(min = 48.dp)
                         .selectable(
                             selected = isSelected,
                             role = Role.RadioButton,

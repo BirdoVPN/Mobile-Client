@@ -72,13 +72,15 @@ class DataplaneFaultReportingTest {
         "app/src/main/java/app/birdo/vpn/service/WgNative.kt",
         "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt",
         "app/src/main/java/app/birdo/vpn/service/VpnManager.kt",
-        "app/src/main/java/app/birdo/vpn/service/TunnelMonitor.kt",
         "app/src/main/java/app/birdo/vpn/service/TransportProbe.kt",
         "app/src/main/java/app/birdo/vpn/service/RosenpassNative.kt",
-        "app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt",
+        "app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt",
         "app/src/main/java/app/birdo/vpn/service/XrayManager.kt",
         "app/src/main/java/app/birdo/vpn/service/BirdoTileService.kt",
         "app/src/main/java/app/birdo/vpn/service/WireGuardConfigBuilder.kt",
+        // Restarts the session after an app update; a failed start is a
+        // session the user wanted up that stays down (A1-015).
+        "app/src/main/java/app/birdo/vpn/service/PackageReplacedReceiver.kt",
         "app/src/main/java/app/birdo/vpn/utils/NativeLibraryVerifier.kt",
         "app/src/main/java/app/birdo/vpn/utils/SettingsHmac.kt",
     )
@@ -95,15 +97,31 @@ class DataplaneFaultReportingTest {
         "VpnNotificationManager.kt" to
             "builds and posts notifications; its one catch is a failed notification post, " +
             "which changes nothing about whether traffic is protected",
-        "RosenpassKeyStore.kt" to
+        "BirdoPqKeyStore.kt" to
             "PQ key persistence. Both catches recover locally (keep on-disk state / delete " +
-            "partial state) and the PQ VERDICT that results is reported by RosenpassManager, " +
+            "partial state) and the PQ VERDICT that results is reported by BirdoPqManager, " +
             "so reporting here would double-count one outcome",
         "MultiHopPolicy.kt" to
             "a pure decision table: no Android, no coroutines, no I/O, and nothing to catch. " +
             "It returns what SHOULD happen; every caller reports what DID. Reporting here " +
             "would fire on a correct refusal and double-count the callers' outcomes " +
             "(Mobile-Client#336)",
+        "TunnelMonitor.kt" to
+            "the dead-tunnel verdict, a pure rule plus a sleep loop with nothing to catch " +
+            "since its socket re-protect moved into BirdoVpnService (A1-037). Its verdicts are " +
+            "breadcrumbs, and the Error they cause is published by the service's updateState funnel",
+        "LiveRebuild.kt" to
+            "A1-034's decision table (LiveRebuildPolicy) as pure functions: nothing to catch. " +
+            "VpnManager and BirdoVpnService carry the directives out and report there " +
+            "(live_rebuild_* codes)",
+        "TunnelRouting.kt" to
+            "D-6's routing rules (who is excluded from the tunnel, the Xray carve-out, which API " +
+            "client a call uses, the socket-protect verdict) as pure functions: nothing to catch. " +
+            "BirdoVpnService reports what they lead to (socket_protect_failed)",
+        "SessionPolicy.kt" to
+            "the session supervisor's verdicts (reconnect budget, system-start plan, " +
+            "one-tap toggle) as pure functions: no Android, no I/O, nothing to catch. " +
+            "VpnManager and BirdoVpnService carry the verdicts out and report there",
     )
 
     private fun source(path: String): String {
@@ -801,15 +819,19 @@ class DataplaneFaultReportingTest {
     }
 
     /**
-     * FaultReporter's own throttle exists because "socket protect runs every
-     * cycle" — yet only WgNative's JNI *getter* throw was reported. These are
-     * the two actual protect() call sites; when protect() itself throws,
-     * wg-go's own UDP socket is routed back into the tunnel.
+     * There is ONE protect of wg-go's sockets now, right after wgTurnOn
+     * (A1-037: the 2 s poller, the 30 s monitor loop and the per-capability
+     * re-protect are gone). Since D-6 the app is inside its own tunnel, so a
+     * socket left unprotected sends WireGuard's own packets into the tunnel:
+     * the connect is refused and that refusal must reach us.
      */
     @Test
-    fun `both socket protect call sites report`() {
-        assertReports("app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt", listOf("socket_reprotect_failed"))
-        assertReports("app/src/main/java/app/birdo/vpn/service/TunnelMonitor.kt", listOf("socket_protect_failed"))
+    fun `the one socket protect site reports`() {
+        assertReports("app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt", listOf("socket_protect_failed"))
+        assertFalse(
+            "a periodic re-protect is back in TunnelMonitor; protect() once, after wgTurnOn",
+            source("app/src/main/java/app/birdo/vpn/service/TunnelMonitor.kt").contains(".protect("),
+        )
     }
 
     /** Native-integrity verdicts only ever happen on builds we did not ship. */
@@ -880,7 +902,7 @@ class DataplaneFaultReportingTest {
             1,
             constructions.size,
         )
-        val funnelStart = text.indexOf("private fun publishError(message: String) {")
+        val funnelStart = text.indexOf("private fun publishError(message: String")
         assertTrue("$path has lost its publishError funnel", funnelStart >= 0)
         val funnelEnd = text.indexOf("\n    }", funnelStart)
         assertTrue("publishError has no closing brace", funnelEnd > funnelStart)
@@ -895,9 +917,15 @@ class DataplaneFaultReportingTest {
         assertReports(
             path,
             listOf(
+                // One START dispatch (startServiceFor) serves both dial paths
+                // now, so the single-hop and multi-hop codes are one: a guard
+                // written once cannot drift between two parallel copies.
                 "service_start_dispatch_failed",
-                "service_start_dispatch_failed_multihop",
                 "service_stop_dispatch_failed",
+                // The supervisor gave up and could not take its own block down.
+                "release_block_dispatch_failed",
+                // Connected with no key id to heartbeat for (A1-005's invariant).
+                "heartbeat_no_key_id",
                 // The jurisdiction-leak guard: the user cannot observe their own egress country.
                 "multihop_route_unconfirmed",
                 "multihop_route_mismatch",
@@ -907,6 +935,28 @@ class DataplaneFaultReportingTest {
                 "manager_state_collector_threw",
                 "settings_reapply_threw",
             ),
+        )
+    }
+
+    /**
+     * The system starts (Always-on, a sticky restart, an app update) happen
+     * with nobody watching, so the ways they can fail to restore a session
+     * are reported rather than only logged (A1-014, A1-015).
+     */
+    @Test
+    fun `system starts report what they cannot restore`() {
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt",
+            listOf(
+                // A sticky restart is not on the background-FGS exemption list.
+                "system_start_foreground_refused",
+                // No VpnManager: no headless connect, no state rendering.
+                "service_entry_point_unavailable",
+            ),
+        )
+        assertReports(
+            "app/src/main/java/app/birdo/vpn/service/PackageReplacedReceiver.kt",
+            listOf("package_replaced_restart_failed"),
         )
     }
 
@@ -930,8 +980,8 @@ class DataplaneFaultReportingTest {
                 "stealth_start_failed_all_methods",
                 "stealth_start_threw",
                 "stealth_stop_failed",
-                "stealth_libxray_rejected_config",
-                "stealth_libxray_start_threw",
+                // No WireGuard port to forward to: refused, never guessed (LIVE-AND-STEALTH-001).
+                "stealth_wireguard_target_unknown",
                 "stealth_binary_missing",
                 "stealth_binary_exited",
                 "stealth_binary_start_threw",
@@ -947,7 +997,7 @@ class DataplaneFaultReportingTest {
             listOf("pq_native_load_failed", "pq_native_load_threw"),
         )
         assertReports(
-            "app/src/main/java/app/birdo/vpn/service/RosenpassManager.kt",
+            "app/src/main/java/app/birdo/vpn/service/BirdoPqManager.kt",
             listOf(
                 "pq_abort_no_bilateral_psk",
                 "pq_nonce_missing",

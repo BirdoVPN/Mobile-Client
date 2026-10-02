@@ -5,11 +5,16 @@ import app.birdo.vpn.data.auth.ClientDeviceInfo
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
+import app.birdo.vpn.testing.StringsXml
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -37,7 +42,7 @@ class BirdoRepositoryTest {
             platformVersion = "15",
             appVersion = "1.0.0",
         )
-        repository = BirdoRepository(api, tokenManager, deviceInfoProvider)
+        repository = BirdoRepository(api, tokenManager, deviceInfoProvider, ApiErrorMapper(StringsXml))
     }
 
     // ── Login ────────────────────────────────────────────────────
@@ -72,71 +77,158 @@ class BirdoRepositoryTest {
     }
 
     /**
-     * The half of the lockout fix that AuthViewModelTest cannot see.
-     *
-     * parseLoginError distinguishes a lockout from a wrong password by matching
-     * the SERVER'S SENTENCE inside the error body. Those ViewModel tests feed
-     * the sentence in by hand (they mock `repository.login`), so they prove the
-     * mapping and nothing about whether the sentence ever arrives.
-     *
-     * It arrives through [InputValidator.sanitizeErrorMessage], which is a
-     * FILTER, not a passthrough: it discards the body wholesale — substituting
-     * the bland "Login failed" fallback — when it exceeds 200 chars or contains
-     * "<html", "Exception", "at " or "stackTrace". Any of those and every
-     * lockout, ban and suspension collapses back into the generic bucket,
-     * parseLoginError's careful arms never fire, and the locked-out user is
-     * told to retype their password again — with the whole suite still green,
-     * because nothing else exercises this seam.
-     *
-     * So pin the real Nest bodies verbatim (auth.controller validateLoginAttempt,
-     * lockout.service isLockedOut, auth.service validateUser) and assert the
-     * distinguishing sentence survives to the string parseLoginError is handed.
+     * The seam end to end: the real Nest bodies (auth.controller
+     * validateLoginAttempt, lockout.service isLockedOut, auth.service
+     * validateUser), read off the wire by login(), come out as the right
+     * reason and the right sentence. ApiErrorMapperTest pins the mapping
+     * itself; this pins that login() actually hands it the body.
      */
     @Test
-    fun `real server lockout and ban bodies survive sanitization intact`() = runTest {
+    fun `real server lockout and ban bodies reach the user as the right sentence`() = runTest {
         val bodies = mapOf(
-            // lockout.service: Redis + DB lockout reason
             """{"message":"Too many failed login attempts","error":"Unauthorized","statusCode":401}"""
-                to "Too many failed login attempts",
-            // auth.controller: the fallback when isLockedOut supplies no reason
+                to FailureReason.ACCOUNT_LOCKED,
             """{"message":"Account locked due to multiple failed login attempts","error":"Unauthorized","statusCode":401}"""
-                to "Account locked",
-            // auth.service.validateUser: the timed variant, thrown as 403
+                to FailureReason.ACCOUNT_LOCKED,
             """{"message":"Account locked. Try again in 12 minutes.","error":"Forbidden","statusCode":403}"""
-                to "Account locked",
-            // auth.service.validateUser: untimed fallback
+                to FailureReason.ACCOUNT_LOCKED,
             """{"message":"Account is locked","error":"Forbidden","statusCode":403}"""
-                to "Account is locked",
-            // lockout.service: banned AND suspended share one uniform sentence
+                to FailureReason.ACCOUNT_LOCKED,
             """{"message":"Unable to sign in. Please contact support.","error":"Unauthorized","statusCode":401}"""
-                to "Unable to sign in",
+                to FailureReason.ACCOUNT_BLOCKED,
         )
 
-        for ((body, sentence) in bodies) {
+        for ((body, reason) in bodies) {
             clearMocks(api, answers = false)
             coEvery { api.login(any()) } returns Response.error(
                 401, body.toResponseBody("application/json".toMediaType()),
             )
 
-            val result = repository.login("user@birdo.app", "password")
+            val error = repository.login("user@birdo.app", "password") as ApiResult.Error
 
-            val message = (result as ApiResult.Error).message
-            assertTrue(
-                "sanitizeErrorMessage swallowed the body parseLoginError needs — " +
-                    "expected \"$sentence\" to survive, got: $message",
-                message.contains(sentence),
-            )
+            assertEquals(body, reason, error.reason)
+            assertFalse("raw body reached the user: ${error.message}", "statusCode" in error.message)
         }
     }
 
     @Test
-    fun `login network exception returns error`() = runTest {
+    fun `login network exception is mapped, never shown as exception text`() = runTest {
         coEvery { api.login(any()) } throws java.net.SocketTimeoutException("Connection timed out")
 
         val result = repository.login("user@test.com", "pass")
 
-        assertTrue(result is ApiResult.Error)
-        assertEquals("Connection timed out", (result as ApiResult.Error).message)
+        val error = result as ApiResult.Error
+        assertEquals(FailureReason.UNREACHABLE, error.reason)
+        assertEquals(StringsXml.text("error_unreachable"), error.message)
+    }
+
+    @Test
+    fun `login with no network says so instead of the resolver's text`() = runTest {
+        coEvery { api.login(any()) } throws java.net.UnknownHostException("Unable to resolve host \"api.birdo.app\"")
+
+        val error = repository.login("user@test.com", "pass") as ApiResult.Error
+
+        assertEquals(FailureReason.OFFLINE, error.reason)
+        assertEquals(StringsXml.text("error_offline"), error.message)
+    }
+
+    @Test
+    fun `a 5xx JSON body never reaches the user as JSON`() = runTest {
+        coEvery { api.getServers() } returns Response.error(
+            500, """{"statusCode":500,"message":"Internal server error"}""".toResponseBody("application/json".toMediaType()),
+        )
+
+        val error = repository.getServers(forceRefresh = true) as ApiResult.Error
+
+        assertEquals(500, error.code)
+        assertFalse(error.message.startsWith("{"))
+        assertEquals(StringsXml.text("error_server_unavailable"), error.message)
+    }
+
+    @Test
+    fun `a 503 that says when to come back carries the wait`() = runTest {
+        // birdo-web PR #590: a free connect while the quota check is down.
+        coEvery { api.getServers() } returns Response.error(
+            503,
+            """{"statusCode":503,"error":"quota_check_unavailable","message":"Try again shortly","details":{"retryable":true,"retryAfterSeconds":30}}"""
+                .toResponseBody("application/json".toMediaType()),
+        )
+
+        val error = repository.getServers(forceRefresh = true) as ApiResult.Error
+
+        assertEquals(503, error.code)
+        assertEquals(30_000L, error.retryAfterMs)
+        assertFalse(error.message.startsWith("{"))
+    }
+
+    @Test
+    fun `a cancelled call is rethrown, not reported as a failure`() = runTest {
+        coEvery { api.getProfile() } throws kotlinx.coroutines.CancellationException("left the screen")
+
+        val thrown = runCatching { repository.getProfile() }.exceptionOrNull()
+
+        assertTrue("got $thrown", thrown is kotlinx.coroutines.CancellationException)
+    }
+
+    // ── Single-flight refresh (A2-007) ──────────────────────────
+
+    /**
+     * Four requests fired together with an expired access token — the cold
+     * start after the one-hour lifetime: profile, plan, servers, update check.
+     * The server 401s every request carrying the old token. Exactly ONE
+     * rotation may happen; the other three callers must find the token already
+     * replaced and retry on it.
+     */
+    @Test
+    fun `concurrent 401s share one refresh`() = runTest {
+        var access = "old_access"
+        var refresh = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.setTokens(any(), any()) } answers {
+            access = firstArg()
+            refresh = secondArg()
+        }
+        fun <T> unauthorized(): Response<T> =
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        coEvery { api.getProfile() } coAnswers {
+            if (access == "old_access") unauthorized() else Response.success(UserProfile(id = "1", email = "a@b.c"))
+        }
+        coEvery { api.getSubscription() } coAnswers {
+            if (access == "old_access") unauthorized() else Response.success(SubscriptionStatus())
+        }
+        coEvery { api.getServers() } coAnswers {
+            if (access == "old_access") unauthorized() else Response.success(emptyList())
+        }
+        coEvery { api.checkAppUpdate(any()) } coAnswers {
+            if (access == "old_access") unauthorized() else Response.success(AppUpdateInfo())
+        }
+        coEvery { api.refreshToken(any()) } coAnswers {
+            delay(100) // the others pile up on the lock meanwhile
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+
+        val results = listOf(
+            async { repository.getProfile() },
+            async { repository.getSubscription(forceRefresh = true) },
+            async { repository.getServers(forceRefresh = true) },
+            async { repository.checkAppUpdate() },
+        ).awaitAll()
+
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        assertTrue("every caller must succeed on the retry: $results", results.all { it is ApiResult.Success })
+    }
+
+    @Test
+    fun `a refresh for a token that is still current does rotate`() = runTest {
+        coEvery { tokenManager.getAccessToken() } returns "stale"
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "new_access", expiresIn = 3600)
+        )
+
+        assertEquals(RefreshOutcome.SUCCESS, repository.refreshToken(staleAccessToken = "stale"))
+        coVerify(exactly = 1) { api.refreshToken(any()) }
     }
 
     // ── Refresh Token ───────────────────────────────────────────
@@ -314,10 +406,10 @@ class BirdoRepositoryTest {
      * must never fail because the network is down".
      *
      * A server that accepts the connection and then never answers does not
-     * throw — it just sits there. NetworkModule sets no OkHttp `callTimeout`,
-     * so before [BirdoRepository.LOGOUT_SERVER_CALL_TIMEOUT_MS] nothing bounded
-     * this at all, and routing logout through withAutoRefresh made it worse by
-     * turning one stalled round trip into up to three.
+     * throw — it just sits there. NetworkModule's `callTimeout` bounds each
+     * round trip at 45 s, and routing logout through the refresh path turns
+     * one stalled round trip into up to three, so
+     * [BirdoRepository.LOGOUT_SERVER_CALL_TIMEOUT_MS] is what bounds the whole.
      *
      * runTest's virtual clock makes the wait free but still real to the code
      * under test, so asserting `currentTime` pins the actual budget rather than
@@ -347,7 +439,7 @@ class BirdoRepositoryTest {
 
     @Test
     fun `deleteAccount success resets the device identity`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(
             DeleteAccountResponse(success = true)
         )
 
@@ -361,10 +453,22 @@ class BirdoRepositoryTest {
         verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
     }
 
+    /** ACCOUNT-API-2026-10-01, item 85: the code rides the same body, and only when there is one. */
+    @Test
+    fun `deleteAccount sends the 2FA code with the password`() = runTest {
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(DeleteAccountResponse(success = true))
+
+        repository.deleteAccount("pass123", "123456")
+        repository.deleteAccount("pass123")
+
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", "123456"), AroundTunnel) }
+        coVerify(exactly = 1) { api.deleteAccount(DeleteAccountRequest("pass123", null), AroundTunnel) }
+    }
+
     @Test
     fun `failed deleteAccount keeps the device identity`() = runTest {
         val err = "nope".toResponseBody("text/plain".toMediaType())
-        coEvery { api.deleteAccount(any()) } returns Response.error(400, err)
+        coEvery { api.deleteAccount(any(), any()) } returns Response.error(400, err)
 
         repository.deleteAccount("wrong-pass")
 
@@ -378,7 +482,7 @@ class BirdoRepositoryTest {
 
     @Test
     fun `deleteAccount success forgets the ML-KEM keypair`() = runTest {
-        coEvery { api.deleteAccount(any()) } returns Response.success(
+        coEvery { api.deleteAccount(any(), any()) } returns Response.success(
             DeleteAccountResponse(success = true)
         )
 
@@ -474,9 +578,9 @@ class BirdoRepositoryTest {
 
         assertTrue(result is ApiResult.Success)
         verify { tokenManager.setLastKeyId("key123") }
-        // Private key is generated locally (not from the server), so verify it's stored but don't
-        // check the exact value — it's a random X25519 key from wireguard-android.
-        verify { tokenManager.setWireGuardPrivateKey(any()) }
+        // The private key is generated locally and handed back for this session
+        // only: it is never written to the token store (A1-041).
+        assertNotNull((result as ApiResult.Success).data.privateKey)
     }
 
     @Test
@@ -557,6 +661,76 @@ class BirdoRepositoryTest {
         coVerify(exactly = 0) { api.disconnect(any()) }
     }
 
+    /**
+     * A1-005: Disconnect then a quick Connect. The Disconnect's DELETE was
+     * still in flight when the new connect stored its key id — and on return
+     * the old DELETE cleared it unconditionally: the new session stopped
+     * heartbeating and its live peer was reaped five minutes later.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a late DELETE never clears the next session's key id`() = runTest {
+        var storedKey: String? = "key-1"
+        every { tokenManager.getLastKeyId() } answers { storedKey }
+        every { tokenManager.setLastKeyId(any()) } answers { storedKey = firstArg() }
+        every { tokenManager.clearLastKeyId() } answers { storedKey = null }
+        val gate = kotlinx.coroutines.CompletableDeferred<Response<Unit>>()
+        coEvery { api.disconnect("key-1") } coAnswers { gate.await() }
+        coEvery { api.connect(any()) } returns Response.success(ConnectResponse(success = true, keyId = "key-2"))
+
+        val late = async { repository.disconnectVpn() }
+        runCurrent()
+        repository.connectVpn("server_1")
+        gate.complete(Response.success(Unit))
+        late.await()
+
+        assertEquals("key-2", storedKey)
+    }
+
+    @Test
+    fun `disconnectVpn releases the key it is named, and clears the stored id only when it matches`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns "key-other"
+        coEvery { api.disconnect("key-explicit") } returns Response.success(Unit)
+
+        repository.disconnectVpn("key-explicit")
+
+        coVerify { api.disconnect("key-explicit") }
+        verify(exactly = 0) { tokenManager.clearLastKeyId() }
+    }
+
+    @Test
+    fun `a heartbeat with no key id says so with its own code`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns null
+
+        val result = repository.sendHeartbeat()
+
+        assertEquals(BirdoRepository.CODE_NO_ACTIVE_KEY, (result as ApiResult.Error).code)
+        coVerify(exactly = 0) { api.heartbeat(any(), any()) }
+    }
+
+    @Test
+    fun `a heartbeat names the session's own key when given one`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns "stored"
+        coEvery { api.heartbeat("session-key", any()) } returns Response.success(HeartbeatResponse())
+
+        repository.sendHeartbeat("session-key")
+
+        coVerify { api.heartbeat("session-key", null) }
+        coVerify(exactly = 0) { api.heartbeat("stored", any()) }
+    }
+
+    /** REVIEW-AND2-001: the dead-tunnel probe carries the tag that sends it around the tunnel. */
+    @Test
+    fun `only the dead-tunnel probe is tagged to go around the tunnel`() = runTest {
+        coEvery { api.heartbeat(any(), any()) } returns Response.success(HeartbeatResponse())
+
+        repository.sendHeartbeat("session-key", aroundTunnel = true)
+        repository.sendHeartbeat("session-key")
+
+        coVerify(exactly = 1) { api.heartbeat("session-key", AroundTunnel) }
+        coVerify(exactly = 1) { api.heartbeat("session-key", null) }
+    }
+
     // ── Anonymous Login ─────────────────────────────────────────
 
     @Test
@@ -587,19 +761,6 @@ class BirdoRepositoryTest {
     }
 
     // ── Multi-Hop ───────────────────────────────────────────────
-
-    @Test
-    fun `getMultiHopRoutes returns routes`() = runTest {
-        val routes = listOf(
-            MultiHopRoute(entryNodeId = "de-1", exitNodeId = "us-1", entryCountry = "DE", exitCountry = "US"),
-        )
-        coEvery { api.getMultiHopRoutes() } returns Response.success(routes)
-
-        val result = repository.getMultiHopRoutes()
-
-        assertTrue(result is ApiResult.Success)
-        assertEquals(1, (result as ApiResult.Success).data.size)
-    }
 
     @Test
     fun `connectMultiHop forwards stealth quantum and PQ public key`() = runTest {
@@ -701,5 +862,87 @@ class BirdoRepositoryTest {
 
         assertTrue(result is ApiResult.Success)
         coVerify { api.deletePortForward("pf-1") }
+    }
+
+    /**
+     * A2-038: the hand-rolled copy of the refresh policy reported a failed
+     * retry after a SUCCESSFUL refresh as "Session expired" 401, which signs a
+     * user out of a session that was just proven good.
+     */
+    @Test
+    fun `deletePortForward reports the retry's real status after a good refresh`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "new_access", expiresIn = 3600)
+        )
+        coEvery { api.deletePortForward("pf-1") } returnsMany listOf(
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType())),
+            Response.error(503, "down".toResponseBody("text/plain".toMediaType())),
+        )
+
+        val error = repository.deletePortForward("pf-1") as ApiResult.Error
+
+        assertEquals(503, error.code)
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, error.reason)
+    }
+
+    @Test
+    fun `a 204 from a no-body route is a success`() = runTest {
+        coEvery { tokenManager.getLastKeyId() } returns "key123"
+        coEvery { api.disconnect("key123") } returns Response.success(204, null as Unit?)
+        coEvery { api.deletePortForward("pf-1") } returns Response.success(204, null as Unit?)
+
+        assertTrue(repository.disconnectVpn() is ApiResult.Success)
+        assertTrue(repository.deletePortForward("pf-1") is ApiResult.Success)
+    }
+
+    // ── Vouchers (A2-027) ───────────────────────────────────────
+
+    @Test
+    fun `a voucher redeemed with an expired access token refreshes and succeeds`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "new_access", expiresIn = 3600)
+        )
+        coEvery { api.redeemVoucher(any()) } returnsMany listOf(
+            Response.error(401, """{"statusCode":401,"message":"Unauthorized"}""".toResponseBody("application/json".toMediaType())),
+            Response.success(RedeemVoucherResponse(ok = true, plan = "OPERATIVE", durationDays = 30)),
+        )
+
+        val result = repository.redeemVoucher("BIRD-AAAA-BBBB-CCCC")
+
+        assertTrue(result is ApiResult.Success)
+        assertTrue((result as ApiResult.Success).data.ok)
+    }
+
+    @Test
+    fun `a voucher refusal keeps its slug, and an outage is not reported as the code`() = runTest {
+        coEvery { api.redeemVoucher(any()) } returns Response.error(
+            409, """{"error":"already_redeemed"}""".toResponseBody("application/json".toMediaType()),
+        )
+        val refused = repository.redeemVoucher("BIRD-AAAA-BBBB-CCCC") as ApiResult.Success
+        assertEquals("already_redeemed", refused.data.error)
+        assertFalse(refused.data.ok)
+
+        coEvery { api.redeemVoucher(any()) } returns Response.error(
+            503, "<html>down</html>".toResponseBody("text/html".toMediaType()),
+        )
+        val outage = repository.redeemVoucher("BIRD-AAAA-BBBB-CCCC") as ApiResult.Error
+        assertEquals(StringsXml.text("error_server_unavailable"), outage.message)
+    }
+
+    // ── A connect refused inside a 200 (A2-030) ─────────────────
+
+    @Test
+    fun `a device-limit refusal carries the canonical sentence and stores no key`() = runTest {
+        coEvery { api.connect(any()) } returns Response.success(
+            ConnectResponse(success = false, message = "Device limit reached (5 devices for OPERATIVE plan)")
+        )
+
+        val result = repository.connectVpn("server_1") as ApiResult.Success
+
+        assertFalse(result.data.success)
+        assertEquals(StringsXml.text("error_device_limit"), result.data.message)
+        verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
     }
 }

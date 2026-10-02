@@ -8,9 +8,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import app.birdo.vpn.ui.theme.BirdoColors
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
@@ -24,6 +21,13 @@ import kotlin.random.Random
  * Performance: Only ~0.1% of pixels change per frame. We use a flat IntArray
  * for alpha values (0-255 range mapped to 0-0.25 opacity) and redraw at
  * ~15 fps to keep GPU/CPU usage minimal.
+ *
+ * COST WHEN NOT SEEN (A2-019). The twinkle is a 15 Hz full-screen redraw, so
+ * it runs only while [rememberDecorativeMotionAllowed] says the app is visible,
+ * uncovered and animations are on; otherwise the last frame stays up, static,
+ * which is exactly what "Remove animations" asks for. The nav graph also stops
+ * composing it at all on the Connect tab, where the globe paints over every
+ * pixel of it.
  */
 @Composable
 fun PixelCanvas(
@@ -37,25 +41,7 @@ fun PixelCanvas(
     // Grid data — lazy-init on first composition
     val gridState = remember { PixelGridState() }
 
-    // Power: this canvas sits behind EVERY screen, and its ticker is a plain
-    // `while (true)` in a LaunchedEffect — which keeps running for as long as
-    // the composition is alive, i.e. while the Activity is merely STOPPED.
-    // That is 15 wakeups a second, each walking the whole grid, while the phone
-    // is in the user's pocket and nothing is on screen. Gate it on the
-    // lifecycle: no frames unless we are actually visible.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var animating by remember { mutableStateOf(true) }
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> animating = true
-                Lifecycle.Event.ON_STOP -> animating = false
-                else -> Unit
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    val animating = rememberDecorativeMotionAllowed()
 
     // Animation loop at ~15 fps (66ms) — enough for subtle twinkling
     LaunchedEffect(animating) {

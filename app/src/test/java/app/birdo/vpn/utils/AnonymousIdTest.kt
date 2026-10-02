@@ -53,4 +53,14 @@ class AnonymousIdTest {
         assertEquals("", formatAnonymousId(""))
         assertEquals("", formatAnonymousId("no digits here"))
     }
+
+    /** REVIEW-AND2-013: Profile's default, the Windows client's form. */
+    @Test
+    fun `the masked id shows only the last group`() {
+        assertEquals("•••• •••• •••• •••• •••• 1234", maskAnonymousId("123456789012345678901234"))
+        // Same shape as the grouped id, so revealing it does not reflow the row.
+        assertEquals(formatAnonymousId("123456789012345678901234").length, maskAnonymousId("123456789012345678901234").length)
+        assertEquals("1234", maskAnonymousId("1234"))
+        assertEquals("", maskAnonymousId(""))
+    }
 }
