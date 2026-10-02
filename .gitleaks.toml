@@ -78,22 +78,18 @@ regexes = [
   '''^birdo_pq_v1_keypair$''',
 ]
 
-# ── Fixture keys in two commits of the Android overhaul branch ───────────
+# ── Two commits of the Android overhaul branch (PR #458) ──────────────────
 #
 # BirdoVpnServiceLifecycleTest.kt carried two random 44-character WireGuard-
-# shaped fixture keys (never a real key: they appear nowhere else in this
-# repo, birdo-web, the node agent or the desktop client). They are now
-# zero-entropy constants. The two commits below still hold the old values,
-# and secret-scan.yml scans a PR's whole history. Scoped to those commits AND
-# that file: this repo squash-merges, so neither commit ever reaches main, and
-# this entry matches nothing once the PR lands. Safe to delete after merge.
-[[allowlists]]
-description = "Overhaul branch fixture keys (pre-squash commits only)"
-condition = "AND"
+# shaped fixture keys there, which generic-api-key reports. They were never
+# real keys: the values appear nowhere else in this repo, birdo-web, the node
+# agent or the desktop client, and they are zero-entropy constants since.
+# secret-scan.yml scans the PR's whole history, so the two commits that still
+# hold them are listed. A commit is immutable, so this hides nothing else, and
+# the gitleaks 8.21 scan of them reports only those fixtures. This repo
+# squash-merges, so neither commit reaches main: delete after the merge.
+# (gitleaks 8.21.2 has no scoped [[allowlists]]; it ignores that table.)
 commits = [
   "55b593a2294312d37e614eed6dd6ca26634a7964",
   "bda394580778cb5ab55289ab65faea1ec5a76c11",
-]
-paths = [
-  '''^app[/\\]src[/\\]test[/\\]java[/\\]app[/\\]birdo[/\\]vpn[/\\]service[/\\]BirdoVpnServiceLifecycleTest\.kt$''',
 ]
