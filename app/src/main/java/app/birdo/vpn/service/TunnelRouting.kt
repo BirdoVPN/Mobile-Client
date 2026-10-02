@@ -113,8 +113,10 @@ internal object XrayCarveOut {
 
     private fun mask(prefix: Int): Long = if (prefix == 0) 0L else (0xFFFFFFFFL shl (32 - prefix)) and 0xFFFFFFFFL
 
-    private fun contains(network: Long, prefix: Int, ip: Long): Boolean =
-        (network and mask(prefix)) == (ip and mask(prefix))
+    private fun contains(network: Long, prefix: Int, ip: Long): Boolean {
+        val bits = mask(prefix)
+        return network.and(bits) == ip.and(bits)
+    }
 
     private fun parseIpv4(s: String): Long? {
         val parts = s.split('.')
