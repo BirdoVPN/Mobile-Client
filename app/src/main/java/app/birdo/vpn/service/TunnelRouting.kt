@@ -114,8 +114,12 @@ internal object XrayCarveOut {
     private fun mask(prefix: Int): Long = if (prefix == 0) 0L else (0xFFFFFFFFL shl (32 - prefix)) and 0xFFFFFFFFL
 
     private fun contains(network: Long, prefix: Int, ip: Long): Boolean {
+        // One operator per statement: CodeQL's precedence check misreads the
+        // nested form in Kotlin (alerts #41, #42).
         val bits = mask(prefix)
-        return network.and(bits) == ip.and(bits)
+        val networkPart = network and bits
+        val ipPart = ip and bits
+        return networkPart == ipPart
     }
 
     private fun parseIpv4(s: String): Long? {
