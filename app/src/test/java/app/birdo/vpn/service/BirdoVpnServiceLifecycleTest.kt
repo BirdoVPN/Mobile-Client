@@ -36,8 +36,10 @@ class BirdoVpnServiceLifecycleTest {
 
     private companion object {
         const val OWN_PACKAGE = "app.birdo.vpn"
-        const val PRIVATE_KEY = "cHJpdmF0ZS1rZXktMzItYnl0ZXMtLS0tLS0tLS0tLS0="
-        const val SERVER_KEY = "c2VydmVyLWtleS0zMi1ieXRlcy0tLS0tLS0tLS0tLS0="
+        // Fixture keys: 32 bytes of 0x01 / 0x02. Valid WireGuard key shapes
+        // with no entropy, so no secret scanner mistakes them for real keys.
+        const val PRIVATE_KEY = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+        const val SERVER_KEY = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
     }
 
     private lateinit var service: BirdoVpnService
@@ -314,7 +316,7 @@ class BirdoVpnServiceLifecycleTest {
         BirdoVpnService.setConfig(
             ConnectResponse(
                 success = true,
-                privateKey = "cHJpdmF0ZS1rZXktMzItYnl0ZXMtLS0tLS0tLS0tLS0=",
+                privateKey = PRIVATE_KEY,
                 serverPublicKey = "c2VydmVyLWtleS0zMi1ieXRlcy0tLS0tLS0tLS0tLS0=",
                 endpoint = "1.2.3.4:51820",
                 assignedIp = "10.100.0.2",
