@@ -40,11 +40,14 @@
 #     CONDITIONS stay Release's (no DEBUG), so the code CodeQL sees is the code
 #     that ships; only the optimiser level and batching differ, and neither
 #     changes the source being analysed.
-#   * Package graph: resolving it BEFORE tracing does not help (measured on
-#     #464: still 530 s under the tracer), because the traced build evaluates
-#     Package.swift again. That evaluation runs in SwiftPM's manifest sandbox,
-#     which the injected tracer has to work against; the sandbox is turned off
-#     for this analysis build only (the manifest is our own vendored file).
+#   * Package graph: still ~8 min under the tracer, and NOT for the two
+#     obvious reasons -- both were measured on #464 and refuted: resolving the
+#     graph before tracing starts (traced step still 530 s; the traced build
+#     evaluates Package.swift again) and turning off SwiftPM's manifest sandbox
+#     (466 s). Removing SwiftPM from the build (WireGuardKit as a project
+#     target instead of a local package) would remove it; that is a project
+#     change, not a CI one. Meanwhile this scan runs only when Swift changes,
+#     and it is not a required check.
 name: CodeQL Swift
 
 on:
@@ -190,7 +193,6 @@ jobs:
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
-            -IDEPackageSupportDisableManifestSandbox=YES \
             SYMROOT="$PWD/build" \
             MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
