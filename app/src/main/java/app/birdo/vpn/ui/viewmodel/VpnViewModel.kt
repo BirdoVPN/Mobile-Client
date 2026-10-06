@@ -73,6 +73,8 @@ data class VpnUiState(
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
+    /** Asked for Stealth, connected without it for the plan (VpnManager.stealthNotice). */
+    val stealthNotice: String? = null,
     /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
     val quantumActive: Boolean = false,
     /**
@@ -423,6 +425,11 @@ class VpnViewModel @Inject constructor(
         viewModelScope.launch {
             vpnManager.quotaGrace.collect { grace ->
                 _uiState.value = _uiState.value.copy(quotaGrace = grace)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.stealthNotice.collect { notice ->
+                _uiState.value = _uiState.value.copy(stealthNotice = notice)
             }
         }
     }

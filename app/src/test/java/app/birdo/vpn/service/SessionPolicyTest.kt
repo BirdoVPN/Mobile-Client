@@ -532,4 +532,39 @@ class SessionPolicyTest {
             QuickToggle.connectPlan(MultiHopPolicy.NewConnection.SingleHop, null),
         )
     }
+
+    // ── Stealth: requested vs granted (review of #463, P1 on main) ───────
+
+    @Test
+    fun `a plan without Stealth does not ask for it, whatever the stored setting`() {
+        // The Settings toggle's own rule: OPERATIVE and above.
+        assertFalse(StealthPolicy.requested(setting = true, plan = "RECON"))
+        assertTrue(StealthPolicy.requested(setting = true, plan = "OPERATIVE"))
+        assertTrue(StealthPolicy.requested(setting = true, plan = "sovereign"))
+        // Unknown (before the first plan fetch): ask, and let the reply decide.
+        assertTrue(StealthPolicy.requested(setting = true, plan = null))
+        assertTrue(StealthPolicy.requested(setting = true, plan = " "))
+        assertFalse(StealthPolicy.requested(setting = false, plan = "SOVEREIGN"))
+    }
+
+    @Test
+    fun `the service judges the reply against what the dial asked for`() {
+        fun t(requested: Boolean, granted: Boolean, endpoint: String?, reason: String?) =
+            StealthPolicy.transport(requested, granted, endpoint, reason)
+        val ep = "203.0.113.7:443"
+        assertEquals(StealthPolicy.Transport.STEALTH, t(true, true, ep, null))
+        // A fallback grant the dial did not ask for runs too.
+        assertEquals(StealthPolicy.Transport.STEALTH, t(false, true, ep, null))
+        // Not asked for: direct, whatever the reply says.
+        assertEquals(StealthPolicy.Transport.DIRECT, t(false, false, null, null))
+        assertEquals(StealthPolicy.Transport.DIRECT, t(false, true, null, null))
+        // Asked for and refused for the plan: direct, and said so — never a
+        // terminal refusal the user cannot fix from a locked toggle.
+        assertEquals(StealthPolicy.Transport.DIRECT_NOT_IN_PLAN, t(true, false, null, "entitlement"))
+        // Asked for and not granted otherwise, or granted with nowhere to run
+        // it: fail-closed.
+        assertEquals(StealthPolicy.Transport.REFUSE_NOT_GRANTED, t(true, false, null, "unconfigured"))
+        assertEquals(StealthPolicy.Transport.REFUSE_NOT_GRANTED, t(true, false, null, null))
+        assertEquals(StealthPolicy.Transport.REFUSE_NO_ENDPOINT, t(true, true, null, null))
+    }
 }

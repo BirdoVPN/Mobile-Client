@@ -230,6 +230,13 @@ class BirdoVpnService : VpnService() {
         const val ACTION_RESUME_SESSION = "app.birdo.vpn.RESUME_SESSION"
 
         const val EXTRA_KILL_SWITCH = "kill_switch"
+        /**
+         * START and LIVE_REBUILD: whether THIS dial asked the server for
+         * Stealth (VpnManager, StealthPolicy.requested). The service's
+         * requested-vs-granted guard compares against it, never against the
+         * stored setting, which a plan downgrade leaves on.
+         */
+        const val EXTRA_STEALTH_REQUESTED = "stealth_requested"
         const val EXTRA_SPLIT_TUNNEL_ENABLED = "split_tunnel_enabled"
         const val EXTRA_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
         /** STOP only: the user asked for this teardown (no "Not connected" notice follows it). */
@@ -569,6 +576,9 @@ class BirdoVpnService : VpnService() {
      * the one it installed.
      */
     private val bypassProtector: (Socket) -> Boolean = { socket -> protect(socket) }
+
+    /** Whether the dial being set up asked for Stealth ([EXTRA_STEALTH_REQUESTED]). */
+    @Volatile private var stealthRequested = false
 
     /** Single-thread executor for tunnel operations — avoids ANR on main thread. */
     private val tunnelExecutor = Executors.newSingleThreadExecutor { r ->
@@ -1110,6 +1120,9 @@ class BirdoVpnService : VpnService() {
         notifManager.cancelDisconnected()
 
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, true)
+        // A START without the extra (none is sent today) falls back to the
+        // stored setting: the old, fail-closed reading.
+        stealthRequested = intent.getBooleanExtra(EXTRA_STEALTH_REQUESTED, appPrefs.stealthModeEnabled)
         isSplitTunnelingEnabled = intent.getBooleanExtra(EXTRA_SPLIT_TUNNEL_ENABLED, false)
         splitTunnelAppList = intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)
             ?.toSet() ?: emptySet()
@@ -1725,39 +1738,52 @@ class BirdoVpnService : VpnService() {
             failSetup(gen, SessionCopy.QUANTUM_FAILED, FailureKind.QUANTUM_FAILED)
             return
         }
-        if (appPrefs.stealthModeEnabled && !config.stealthEnabled) {
-            FaultReporter.report(
-                FaultReporter.PATH_STEALTH,
-                "connect_refused_stealth_not_granted",
-                "Refused to connect: stealth mode was requested but the server did not grant it",
-            )
-            failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
-            return
-        }
-        // GRANTED BUT UNUSABLE (P1-dk-probe-skip-on-unstarted-stealth): the
-        // server said Stealth is on and sent no Xray endpoint to run it to. The
-        // Phase 1 gate below needs both, so this fell through to its else and
-        // dialled plain WireGuard to the normal endpoint — the unwrapped
-        // connection a Stealth user asked not to make, on the networks where
-        // it is most likely to be seen. Same answer as the guard above.
-        //
-        // Only when the USER asked for Stealth. A grant the client did not ask
-        // for by preference (an Adaptive Transport fallback, or the 24 h
-        // stealth preference after one) still goes direct: nothing on screen
-        // claims Stealth (_stealthActiveFlow stays false), and the probe judges
-        // that tunnel as a direct one (onStealthTransport below), so a blocked
-        // network is still noticed.
-        if (appPrefs.stealthModeEnabled && config.xrayEndpoint == null) {
-            FaultReporter.report(
-                FaultReporter.PATH_STEALTH,
-                "connect_refused_stealth_no_endpoint",
-                "Refused to connect: the server granted stealth mode but sent no Xray endpoint",
-            )
-            failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
-            return
-        }
-        if (config.stealthEnabled && config.xrayEndpoint == null) {
-            FaultReporter.trail(FaultReporter.PATH_STEALTH, "stealth granted with no Xray endpoint — dialling direct")
+        // Stealth, against what THIS dial asked for (StealthPolicy) — never the
+        // stored setting, which a plan downgrade leaves on: reading it refused
+        // every connect of a user whose plan no longer had Stealth.
+        val stealthTransport = StealthPolicy.transport(
+            requested = stealthRequested,
+            granted = config.stealthEnabled,
+            xrayEndpoint = config.xrayEndpoint,
+            unavailableReason = config.stealthUnavailableReason,
+        )
+        when (stealthTransport) {
+            StealthPolicy.Transport.REFUSE_NOT_GRANTED -> {
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "connect_refused_stealth_not_granted",
+                    "Refused to connect: stealth mode was requested but the server did not grant it",
+                )
+                failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
+                return
+            }
+            // GRANTED BUT UNUSABLE (P1-dk-probe-skip-on-unstarted-stealth):
+            // Stealth on, and no Xray endpoint to run it to. The Phase 1 gate
+            // below needs both, so this fell through to its else and dialled
+            // plain WireGuard to the normal endpoint — the unwrapped connection
+            // a Stealth user asked not to make. Same answer as not granted.
+            StealthPolicy.Transport.REFUSE_NO_ENDPOINT -> {
+                FaultReporter.report(
+                    FaultReporter.PATH_STEALTH,
+                    "connect_refused_stealth_no_endpoint",
+                    "Refused to connect: the server granted stealth mode but sent no Xray endpoint",
+                )
+                failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
+                return
+            }
+            // The plan does not include Stealth: the server connected this
+            // dial without it, which is what Settings shows (the toggle is off
+            // and locked). VpnManager tells the user on Home.
+            StealthPolicy.Transport.DIRECT_NOT_IN_PLAN ->
+                FaultReporter.trail(FaultReporter.PATH_STEALTH, "stealth not in the plan — dialling direct")
+            // A grant the dial did not ask for (an Adaptive Transport
+            // fallback, the 24 h stealth preference) with nowhere to run it:
+            // direct, as before. Nothing claims Stealth, and the probe judges
+            // the tunnel as a direct one.
+            StealthPolicy.Transport.DIRECT -> if (config.stealthEnabled) {
+                FaultReporter.trail(FaultReporter.PATH_STEALTH, "stealth granted with no Xray endpoint — dialling direct")
+            }
+            StealthPolicy.Transport.STEALTH -> Unit
         }
 
         try {
@@ -1767,7 +1793,7 @@ class BirdoVpnService : VpnService() {
             // VLESS + XTLS-Reality TLS 1.3, making traffic appear as HTTPS
             // to www.microsoft.com (or configured SNI domain).
             var stealthEndpointOverride: String? = null
-            if (config.stealthEnabled && config.xrayEndpoint != null) {
+            if (stealthTransport == StealthPolicy.Transport.STEALTH) {
                 Log.i(TAG, "Stealth mode enabled — starting Xray Reality tunnel")
                 updateState(VpnState.StealthConnecting)
                 mainHandler.post { updateNotification("Starting stealth tunnel…") }
@@ -2625,8 +2651,9 @@ class BirdoVpnService : VpnService() {
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
         isSplitTunnelingEnabled = intent.getBooleanExtra(EXTRA_SPLIT_TUNNEL_ENABLED, isSplitTunnelingEnabled)
         intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)?.let { splitTunnelAppList = it.toSet() }
+        val rebuildAskedForStealth = intent.getBooleanExtra(EXTRA_STEALTH_REQUESTED, appPrefs.stealthModeEnabled)
 
-        val prepared = prepareLiveRebuild(config) ?: run { keepOld(); return }
+        val prepared = prepareLiveRebuild(config, rebuildAskedForStealth) ?: run { keepOld(); return }
         if (!isCurrent(gen)) {
             completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
             return
@@ -2682,7 +2709,7 @@ class BirdoVpnService : VpnService() {
      * the requested-vs-granted guards, the PQ derivation, the engine and the
      * config. Null keeps the live session.
      */
-    private fun prepareLiveRebuild(config: ConnectResponse): Pair<ConnectResponse, Config>? {
+    private fun prepareLiveRebuild(config: ConnectResponse, askedForStealth: Boolean): Pair<ConnectResponse, Config>? {
         if (appPrefs.quantumProtectionEnabled && !config.quantumEnabled) {
             FaultReporter.report(
                 FaultReporter.PATH_QUANTUM,
@@ -2692,7 +2719,7 @@ class BirdoVpnService : VpnService() {
             return null
         }
         // Stealth is never rebuilt in place (one Xray process, one port).
-        if (config.stealthEnabled || appPrefs.stealthModeEnabled) return null
+        if (config.stealthEnabled || askedForStealth) return null
         var psk: String? = null
         if (config.quantumEnabled) {
             if (config.rosenpassPublicKey == null || config.rosenpassEndpoint == null) return null

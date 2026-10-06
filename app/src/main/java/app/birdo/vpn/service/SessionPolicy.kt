@@ -338,6 +338,66 @@ internal object AttestationPolicy {
 }
 
 /**
+ * Stealth: what a dial ASKS for, and what the service does with the answer.
+ *
+ * Pre-existing on main since 2026-07-28 (review of #463, P1): a user whose
+ * plan lost Stealth kept the stored setting (nothing clears it), so every
+ * dial asked for it; the backend connects such a request WITHOUT Stealth
+ * (stealthEnabled = false, stealthUnavailableReason = "entitlement") rather
+ * than refusing; and the service's requested-vs-granted guard, reading the
+ * raw setting, then refused EVERY connect with a terminal STEALTH_FAILED —
+ * while Settings showed the toggle OFF and locked, so there was nothing to
+ * turn off.
+ *
+ * The request is GATED on the plan rather than the setting cleared on a
+ * downgrade: the gate is the Settings toggle's own rule (`checked = stored &&
+ * unlocked`, OPERATIVE and above), it is the rule Multi-Hop already follows
+ * (REVIEW-AND-007: a lapsed plan never clears the pref), and the user's choice
+ * comes back by itself on a re-upgrade. Clearing would lose that choice, and
+ * would need an HMAC-signed write from a background dial.
+ */
+internal object StealthPolicy {
+    /** The backend's stealthUnavailableReason for a plan without Stealth. */
+    const val UNAVAILABLE_ENTITLEMENT = "entitlement"
+
+    /** Stealth is OPERATIVE and above (the Settings toggle, BirdoNavGraph). Null while the plan is unknown. */
+    fun entitledByPlan(plan: String?): Boolean? {
+        val known = plan?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+        return known == "OPERATIVE" || known == "SOVEREIGN"
+    }
+
+    /**
+     * What a dial asks for: the stored setting, unless the plan is KNOWN not
+     * to include Stealth. Unknown (before the first plan fetch) still asks;
+     * the backend's answer then decides ([transport]).
+     */
+    fun requested(setting: Boolean, plan: String?): Boolean = setting && entitledByPlan(plan) != false
+
+    enum class Transport {
+        /** Granted with an endpoint: run Xray. */
+        STEALTH,
+        /** Not asked for (a fallback grant without an endpoint included): plain WireGuard. */
+        DIRECT,
+        /** Asked for, refused for the plan: plain WireGuard, and the user is told. */
+        DIRECT_NOT_IN_PLAN,
+        /** Asked for and not granted for any other reason: refuse, fail-closed. */
+        REFUSE_NOT_GRANTED,
+        /** Granted with nowhere to run it: refuse, fail-closed. */
+        REFUSE_NO_ENDPOINT,
+    }
+
+    /** The service's verdict, against what THIS dial [requested] — never the raw setting. */
+    fun transport(requested: Boolean, granted: Boolean, xrayEndpoint: String?, unavailableReason: String?): Transport =
+        when {
+            granted && xrayEndpoint != null -> Transport.STEALTH
+            !requested -> Transport.DIRECT
+            !granted && unavailableReason == UNAVAILABLE_ENTITLEMENT -> Transport.DIRECT_NOT_IN_PLAN
+            !granted -> Transport.REFUSE_NOT_GRANTED
+            else -> Transport.REFUSE_NO_ENDPOINT
+        }
+}
+
+/**
  * A1-031: what proves "Stealth works on this network": a session that reached
  * Connected over the stealth transport — not a /connect reply that granted it.
  */
@@ -604,6 +664,9 @@ internal object SessionCopy {
         "Stealth Mode couldn't start. Not connecting, so your traffic isn't sent unprotected. " +
             "Try again, choose another location, or turn off Stealth Mode in Settings to connect without it."
     const val VPN_PERMISSION = "BirdoVPN needs VPN permission to connect."
+
+    /** Asked for Stealth, connected without it because the plan does not include it (StealthPolicy). */
+    const val STEALTH_NOT_IN_PLAN = "Stealth Mode isn't included in your plan, so this connection isn't disguised."
     const val SETUP_REQUIRED = "Open BirdoVPN to finish setting up before it can connect."
     const val VPN_TAKEN_OVER =
         "Android turned BirdoVPN off: another VPN app took over, or VPN permission was removed."

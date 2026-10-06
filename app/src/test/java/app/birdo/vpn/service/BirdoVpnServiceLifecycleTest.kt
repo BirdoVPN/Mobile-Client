@@ -873,7 +873,7 @@ class BirdoVpnServiceLifecycleTest {
     @Test
     fun `a Stealth grant with no endpoint is refused, never dialled as plain WireGuard`() {
         arrangeTunnelStart(protectSucceeds = true)
-        every { prefs.stealthModeEnabled } returns true
+        setField("stealthRequested", true)
         mockkObject(XrayManager)
         every { XrayManager.stop() } just Runs
         BirdoVpnService.setConfig(stealthGrantWithoutEndpoint())
@@ -888,6 +888,70 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 0) { WgNative.turnOn(any(), any(), any()) }
         assertTrue(BirdoVpnService.killSwitchActive)
         assertFalse(BirdoVpnService.stealthActive)
+    }
+
+    // ── Stealth on a plan without it (review of #463, P1 on main) ────────
+
+    @Test
+    fun `a stored Stealth setting this dial did not ask for is no refusal`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        // The downgraded user's stored setting; VpnManager did not ask for it.
+        every { prefs.stealthModeEnabled } returns true
+        setField("stealthRequested", false)
+
+        startTunnel()
+
+        // The service used to re-read the setting and refuse every connect
+        // with a terminal STEALTH_FAILED the user could not turn off.
+        assertEquals("turnOn", order.first())
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    @Test
+    fun `a Stealth request refused for the plan connects direct instead of failing`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        setField("stealthRequested", true)
+        BirdoVpnService.setConfig(
+            ConnectResponse(
+                success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
+                assignedIp = "10.100.0.2",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+                stealthEnabled = false,
+                stealthUnavailableReason = "entitlement",
+            ),
+        )
+
+        startTunnel()
+
+        assertEquals("turnOn", order.first())
+        assertFalse(BirdoVpnService.stealthActive)
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    @Test
+    fun `a Stealth request not granted for any other reason still fails closed`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        setField("stealthRequested", true)
+        BirdoVpnService.setConfig(
+            ConnectResponse(
+                success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
+                assignedIp = "10.100.0.2",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+                stealthEnabled = false,
+                stealthUnavailableReason = "unconfigured",
+            ),
+        )
+
+        startTunnel()
+
+        assertTrue(order.isEmpty())
+        assertEquals(FailureKind.STEALTH_FAILED, (BirdoVpnService.currentState as VpnState.Error).kind)
     }
 
     @Test

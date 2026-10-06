@@ -158,6 +158,25 @@ class VpnManager @Inject constructor(
     val quotaGrace: StateFlow<QuotaGrace?> = _quotaGrace.asStateFlow()
 
     /**
+     * The dial asked for Stealth and the server connected it without, for the
+     * plan ([StealthPolicy.Transport.DIRECT_NOT_IN_PLAN]): Home says so while
+     * the session is up, so nobody believes their traffic is disguised when
+     * it is not. Set by each dial, cleared by a Disconnect.
+     */
+    private val _stealthNotice = MutableStateFlow<String?>(null)
+    val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
+
+    /** What a dial asks for (StealthPolicy): the setting, unless the plan is known not to include Stealth. */
+    private fun stealthRequested(): Boolean = StealthPolicy.requested(prefs.stealthModeEnabled, prefs.lastKnownPlan)
+
+    /** The Home notice for a dial that asked for Stealth and got [config]. */
+    private fun stealthNoticeFor(requested: Boolean, config: ConnectResponse): String? =
+        SessionCopy.STEALTH_NOT_IN_PLAN.takeIf {
+            StealthPolicy.transport(requested, config.stealthEnabled, config.xrayEndpoint, config.stealthUnavailableReason) ==
+                StealthPolicy.Transport.DIRECT_NOT_IN_PLAN
+        }
+
+    /**
      * The wait the last failed dial's server asked for (a 503
      * quota_check_unavailable says 30 s). The next automatic re-dial waits at
      * least this long; consumed by [onFailure].
@@ -921,10 +940,12 @@ class VpnManager @Inject constructor(
             ?: TransportFallbackReason.TRANSPORT_BLOCKED.takeIf { prefs.shouldStartOnStealth }
 
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
+        // Asked once, and the same answer goes to the service with the config.
+        val askedForStealth = stealthRequested()
         val result = repository.connectVpn(
             serverNodeId = serverId,
             deviceName = deviceName,
-            stealthMode = prefs.stealthModeEnabled,
+            stealthMode = askedForStealth,
             fallbackReason = effectiveFallbackReason,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
@@ -955,9 +976,10 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(SUPERSEDED)
                 }
 
-                if (!startServiceFor(config, gen)) {
+                if (!startServiceFor(config, gen, askedForStealth)) {
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
+                _stealthNotice.value = stealthNoticeFor(askedForStealth, config)
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.
                 _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
@@ -1024,11 +1046,12 @@ class VpnManager @Inject constructor(
 
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+        val askedForStealth = stealthRequested()
         val result = repository.connectMultiHop(
             entryNodeId = entryNodeId,
             exitNodeId = exitNodeId,
             deviceName = deviceName,
-            stealthMode = prefs.stealthModeEnabled,
+            stealthMode = askedForStealth,
             fallbackReason = effectiveFallbackReason,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
@@ -1114,9 +1137,10 @@ class VpnManager @Inject constructor(
                 // FAILED cold-start multi-hop connect can't arm a futile
                 // auto-reconnect storm.
                 activeMultiHop = entryNodeId to exitNodeId
-                if (!startServiceFor(config.toConnectResponse(), gen)) {
+                if (!startServiceFor(config.toConnectResponse(), gen, askedForStealth)) {
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
+                _stealthNotice.value = stealthNoticeFor(askedForStealth, config.toConnectResponse())
                 _connectedServer.value = "${mh.entryNode.name} → ${mh.exitNode.name}"
                 _connectedServerId.value = entryNodeId
                 return result
@@ -1184,11 +1208,12 @@ class VpnManager @Inject constructor(
      * is (re)started rapidly during a server switch: a recoverable error
      * instead of a crash.
      */
-    private fun startServiceFor(config: ConnectResponse, gen: Long): Boolean {
+    private fun startServiceFor(config: ConnectResponse, gen: Long, askedForStealth: Boolean): Boolean {
         BirdoVpnService.setConfig(config)
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_START
             putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
+            putExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, askedForStealth)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_ENABLED, prefs.splitTunnelingEnabled)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_APPS, prefs.splitTunnelApps.toTypedArray())
         }
@@ -1428,7 +1453,7 @@ class VpnManager @Inject constructor(
         sessionConnected = prior is VpnState.Connected,
         currentKeyId = sessionKeyId,
         stealthActive = BirdoVpnService.stealthActive,
-        stealthWanted = prefs.stealthModeEnabled || prefs.shouldStartOnStealth,
+        stealthWanted = stealthRequested() || prefs.shouldStartOnStealth,
         blockActive = isKillSwitchActive,
     )
 
@@ -1570,6 +1595,9 @@ class VpnManager @Inject constructor(
             action = BirdoVpnService.ACTION_LIVE_REBUILD
             putExtra(BirdoVpnService.EXTRA_REBUILD_ID, id)
             putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
+            // A live rebuild never asks for Stealth (its /connect sends
+            // stealthMode = false; Stealth is not rebuilt in place).
+            putExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, false)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_ENABLED, prefs.splitTunnelingEnabled)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_APPS, prefs.splitTunnelApps.toTypedArray())
         }
@@ -1706,6 +1734,7 @@ class VpnManager @Inject constructor(
         connectWatchdogJob?.cancel()
         _switching.value = false
         prefs.sessionShouldBeUp = false
+        _stealthNotice.value = null
         // The not-armed warning describes the session the user just ended.
         // Cleared here, not only when the service's stop lands: Home must not
         // keep saying it over the user's own Disconnect.

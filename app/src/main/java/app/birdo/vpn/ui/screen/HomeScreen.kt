@@ -399,6 +399,20 @@ fun HomeScreen(
                         )
                     }
 
+                    // The inverse: Stealth was asked for and the plan does not
+                    // include it, so the server connected without it. Told,
+                    // not refused (StealthPolicy) — the same rule the backend
+                    // follows: never let a user be wrong about what is
+                    // carrying their traffic.
+                    val stealthNotice = state.stealthNotice
+                    AnimatedVisibility(visible = isConnected && stealthNotice != null && !state.stealthActive) {
+                        HomeBanner(
+                            icon = Icons.Default.VisibilityOff,
+                            message = stealthNotice.orEmpty(),
+                            tone = BannerTone.Info,
+                        )
+                    }
+
                     // ONE message banner (A2-011): a message of the Connect
                     // screen's own (dismissible), else the session's Error with
                     // the action that fixes it (P1-parity-040). The two used to

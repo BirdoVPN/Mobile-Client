@@ -69,6 +69,7 @@ class VpnViewModelAccountStateTest {
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
         every { vpnManager.connectedServerId } returns MutableStateFlow(null)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
+        every { vpnManager.stealthNotice } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
         every { vpnManager.isVpnPermissionGranted() } returns true
         coEvery { vpnManager.connect(any(), any()) } returns ApiResult.Success(ConnectResponse(success = true))
