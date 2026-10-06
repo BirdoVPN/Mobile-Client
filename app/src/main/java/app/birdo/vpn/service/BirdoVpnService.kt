@@ -792,7 +792,7 @@ class BirdoVpnService : VpnService() {
         val killSwitchActive: Boolean,
         val sessionExpired: Boolean,
         val switching: Boolean,
-        /** Not read here: a change of it re-renders the ongoing notification. */
+        /** Re-renders the ongoing notification when it changes, and holds back an alert withdraw. */
         val killSwitchNotArmed: String?,
     )
 
@@ -806,8 +806,13 @@ class BirdoVpnService : VpnService() {
         )
         if (alert == null) {
             // Only withdraw once the session is healthy again; an alert the
-            // user has not seen yet must survive "Connecting…".
-            if (input.state is VpnState.Connected && postedAlertKey != null) {
+            // user has not seen yet must survive "Connecting…". Never while
+            // the kill switch could not be armed: that warning goes up before
+            // VpnManager has seen the Error, so this collector can run with it
+            // set over the manager's last (stale) Connected — and withdrawing
+            // there, for the Error to post the alert again a moment later,
+            // fired it twice. A real Connected clears the warning first.
+            if (input.state is VpnState.Connected && input.killSwitchNotArmed == null && postedAlertKey != null) {
                 notifManager.cancelAlert()
                 postedAlertKey = null
             }

@@ -805,6 +805,25 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     @Test
+    fun `the alert is not withdrawn over a stale Connected while the kill switch could not be armed`() {
+        val inputClass = Class.forName("app.birdo.vpn.service.BirdoVpnService\$RenderInput")
+        val ctor = inputClass.declaredConstructors.single().apply { isAccessible = true }
+        val render = BirdoVpnService::class.java.getDeclaredMethod("renderAlert", inputClass).apply { isAccessible = true }
+        BirdoVpnService.uiForeground = false
+        setField("postedAlertKey", "posted")
+
+        // The warning is up; VpnManager has not seen the Error yet and still
+        // says Connected. Withdrawing here, and re-posting for the Error a
+        // moment later, fired the alert twice.
+        render.invoke(service, ctor.newInstance(VpnState.Connected, false, false, false, SessionCopy.KILL_SWITCH_NOT_ARMED))
+        verify(exactly = 0) { notifications.cancelAlert() }
+
+        // A real Connected comes with the warning cleared: withdrawn then.
+        render.invoke(service, ctor.newInstance(VpnState.Connected, false, false, false, null))
+        verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
     fun `under Android's lockdown the failure does not claim traffic is unprotected`() {
         arrangeTunnelStart(protectSucceeds = false)
         var establishes = 0
