@@ -191,9 +191,11 @@ cosign verify-blob \
 
 | Workflow | Trigger | Platforms |
 |----------|---------|-----------|
-| [Android CI](.github/workflows/android.yml) | Push to `main`, `android-v*` tags, PRs | Lint, test, build APK + AAB, Sigstore sign |
-| [macOS CI](.github/workflows/macos.yml) | `mac-v*` tags, PRs touching `iosApp/`, `shared/`, `native/` | Build the macOS app, UI screenshots |
-| [iOS CI](.github/workflows/ios.yml) | `android-v*` tags, manual dispatch | Build the iOS app + .ipa, simulator tests |
+| [Android CI](.github/workflows/android-ci.yml) | PRs (any base branch), push to `main` | Lint, unit tests, CodeQL, debug APK + R8, native gates |
+| [Android Release](.github/workflows/android.yml) | Push to `main` (dry run), `android-v*` tags, manual dispatch | Signed APK + AAB, Sigstore + GPG, draft release, Play upload |
+| [Apple CI](.github/workflows/apple-ci.yml) | PRs and `main` pushes touching `iosApp/`, `shared/`, `native/birdo-pq-ios/` | iOS simulator tests, unsigned macOS build |
+| [iOS Release](.github/workflows/ios.yml) | `android-v*` tags, manual dispatch | Unsigned .ipa on the release, TestFlight upload |
+| [macOS Release](.github/workflows/macos.yml) | `mac-v*` tags, manual dispatch | Mac App Store upload, UI screenshots |
 
 All workflows use pinned action SHAs, minimal permissions, and Sigstore cosign for artifact signing.
 
@@ -221,8 +223,10 @@ All workflows use pinned action SHAs, minimal permissions, and Sigstore cosign f
 
 ```
 .github/workflows/
-  android.yml          Android CI: lint, test, build, sign
-  ios.yml              iOS CI: shared framework, build, test
+  android-ci.yml       Android CI: lint, test, CodeQL, debug APK, R8, native gates
+  android.yml          Android release: signed APK + AAB, draft release, Play upload
+  apple-ci.yml         Apple CI: iOS simulator tests, macOS build
+  ios.yml              iOS release: .ipa, TestFlight
 app/
   src/main/            Android app source (Kotlin + Compose)
   build.gradle.kts     Android app build config

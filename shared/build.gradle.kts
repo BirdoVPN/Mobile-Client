@@ -21,8 +21,8 @@ kotlin {
         }
         // commonTest (FlagUtils/FormatUtils/InputValidator) runs on the JVM as
         // `:shared:testAndroidHostTest`. The root `testDebugUnitTest` COMPILES
-        // this module but runs no test task inside it, so android.yml names the
-        // host-test task explicitly.
+        // this module but runs no test task inside it, so android-ci.yml (and
+        // android.yml's release gate) name the host-test task explicitly.
         withHostTestBuilder { }
         lint {
             abortOnError = true

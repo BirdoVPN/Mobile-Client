@@ -5,9 +5,9 @@
 # WHY THIS EXISTS. Apple has shipped bash 3.2 (2007) as /bin/bash since 2019
 # and never will ship a newer one (GPLv3). On GitHub's macOS runners `bash` on
 # PATH resolves to that 3.2, while on ubuntu-latest it is bash 5. So a script
-# that is exercised on every PR by android.yml (ubuntu) can still be broken on
+# that is exercised on every PR by android-ci.yml (ubuntu) can still be broken on
 # the ONE place it matters for iOS: ios.yml, which only runs on an android-v*
-# tag push and workflow_dispatch.
+# tag push and workflow_dispatch (apple-ci.yml runs only some of them on PRs).
 #
 # That is exactly what happened on android-v1.4.29 (2026-09-17):
 #

@@ -49,14 +49,14 @@ PROFILE_FLAG=""
 
 # All four live Android ABIs. cargo-ndk names its targets exactly as the
 # jniLibs subdirectories are named, so the output lands where AGP expects it.
-echo ">>> cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 build $PROFILE_FLAG"
+echo ">>> cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 build --locked $PROFILE_FLAG"
 cargo ndk \
   -t arm64-v8a \
   -t armeabi-v7a \
   -t x86_64 \
   -t x86 \
   -o "$JNI_LIBS_DIR" \
-  build $PROFILE_FLAG
+  build --locked $PROFILE_FLAG
 
 echo ">>> built .so files:"
 find "$JNI_LIBS_DIR" -name "librosenpass_jni.so" -exec ls -lh {} \;
@@ -70,7 +70,7 @@ find "$JNI_LIBS_DIR" -name "librosenpass_jni.so" -exec ls -lh {} \;
 # (found through ANDROID_NDK_HOME, which this script already requires) or
 # `rustup component add llvm-tools`. The script discovers both.
 #
-# ROSENPASS_ISA_GATE_REQUIRED=1 (set by android.yml) turns "no disassembler"
+# ROSENPASS_ISA_GATE_REQUIRED=1 (set by android-ci.yml and android.yml) turns "no disassembler"
 # into a hard failure; locally it is a loud warning, because a laptop without
 # the tool should still be able to build -- but never silently.
 GATE="$ROOT/scripts/check_no_sha3_ext.sh"

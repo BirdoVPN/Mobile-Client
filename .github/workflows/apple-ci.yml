@@ -1,0 +1,307 @@
+name: Apple CI
+
+# Pull-request and main-branch CI for the Apple apps: the iOS app's unit tests
+# on a simulator, and the macOS app's unsigned build.
+#
+# Until this workflow, the iOS simulator suite ran only when ios.yml did -- on
+# an android-v* tag or a manual dispatch (27 runs in the 30 days before, 22 of
+# them dispatches), never on a pull request. It now runs on every pull request
+# that can affect it. The macOS build moved here from
+# macos.yml, which is now release-only and cache-free.
+#
+# Not a required check, so a workflow-level `paths` filter is fine: a pull
+# request that cannot affect the Apple apps does not start this at all.
+# Nothing here signs or uploads anything.
+
+on:
+  pull_request:
+    paths:
+      - 'iosApp/**'
+      - 'shared/**'
+      - 'native/birdo-pq-ios/**'
+      - 'contract/**'
+      - 'scripts/build-birdo-pq-xcframework.sh'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'version.properties'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/apple-ci.yml'
+      - '.github/actions/apple-toolchain/**'
+      - '.github/scripts/pick-simulator.py'
+  push:
+    branches: [main]
+    paths:
+      - 'iosApp/**'
+      - 'shared/**'
+      - 'native/birdo-pq-ios/**'
+      - 'contract/**'
+      - 'scripts/build-birdo-pq-xcframework.sh'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'version.properties'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/apple-ci.yml'
+      - '.github/actions/apple-toolchain/**'
+      - '.github/scripts/pick-simulator.py'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+  # Must track project.yml's deploymentTarget (see macos.yml).
+  MAC_DEPLOYMENT_TARGET: '14.0'
+
+jobs:
+  ios:
+    name: iOS simulator tests
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      # Before the Kotlin/Native link, which uses the active Xcode's SDK.
+      - uses: ./.github/actions/apple-toolchain
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Build shared framework for iOS Simulator
+        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
+
+      # Compiled dependencies of the BirdoPQ crate for its five Apple slices.
+      # Restored on every run, saved only from main. The crate itself is always
+      # rebuilt (its sources are newer than any cached artifact), and the
+      # script's ISA census and export check run on every build regardless.
+      - name: Restore the BirdoPQ Rust cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/birdo-pq-ios/target
+          key: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'native/birdo-pq-ios/Cargo.lock', 'scripts/build-birdo-pq-xcframework.sh') }}
+          restore-keys: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build BirdoPQNative.xcframework
+        run: bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Save the BirdoPQ Rust cache
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/birdo-pq-ios/target
+          key: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'native/birdo-pq-ios/Cargo.lock', 'scripts/build-birdo-pq-xcframework.sh') }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache-dependency-path: iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum
+
+      # Simulator slice. The upstream Makefile maps GOOS only for
+      # macosx/iphoneos, so iphonesimulator must be passed explicitly, and the
+      # deployment target must track project.yml (ios.yml explains the SIGILL
+      # that taught us).
+      - name: Build libwg-go.a (simulator)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphonesimulator"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS=arm64 PLATFORM_NAME=iphonesimulator GOOS_iphonesimulator=ios \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mios-simulator-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=IPHONEOS_DEPLOYMENT_TARGET \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+            SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-sim"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
+      - name: Derive iOS version from version.properties
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      # Same invocation as ios.yml's test-ios: the simulator is RESOLVED, not
+      # named (a hard-coded device silently stopped matching once), only the
+      # UNIT bundle runs (the UI bundle needs the screenshot secret), and the
+      # step's status is xcodebuild's, not xcpretty's.
+      - name: Run iOS tests
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json | python3 "$GITHUB_WORKSPACE/.github/scripts/pick-simulator.py")
+          if [ -z "$UDID" ]; then
+            echo "::error::No available iPhone simulator on this runner"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Testing on simulator $UDID"
+          xcodebuild test \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -only-testing:BirdoVPNTests \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -configuration Debug \
+            ARCHS=arm64 \
+            EXCLUDED_ARCHS=x86_64 \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/iostest.log" | xcpretty
+
+      # A green xcodebuild proves the run did not FAIL; it does not prove a
+      # single test EXECUTED. Assert the suites the bundle must contain reported.
+      - name: Assert the test bundle actually ran
+        run: |
+          set -euo pipefail
+          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
+            if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
+              echo "::error::$suite never reported — the test bundle did not run"
+              exit 1
+            fi
+          done
+          echo "Suites that reported:"
+          grep -oE "Test Suite '[A-Za-z]+Tests'" "$RUNNER_TEMP/iostest.log" | sort -u
+
+  macos:
+    name: macOS build (unsigned)
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - uses: ./.github/actions/apple-toolchain
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Build shared framework (macOS)
+        run: ./gradlew :shared:linkReleaseFrameworkMacosArm64
+
+      - name: Restore the BirdoPQ Rust cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/birdo-pq-ios/target
+          key: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'native/birdo-pq-ios/Cargo.lock', 'scripts/build-birdo-pq-xcframework.sh') }}
+          restore-keys: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build BirdoPQNative.xcframework
+        run: |
+          rustc --version
+          bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+          cache-dependency-path: iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum
+
+      - name: Build libwg-go.a (macOS, universal)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/macosx"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          # Universal, with the deployment target set: see macos.yml.
+          make ARCHS="arm64 x86_64" PLATFORM_NAME=macosx \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
+            MACOSX_DEPLOYMENT_TARGET="$MAC_DEPLOYMENT_TARGET" \
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+          lipo -info "$WG_LIB_DIR/libwg-go.a"
+
+      - name: Derive version from version.properties
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build (unsigned) — verifies the source compiles for macOS
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/build.log" | xcpretty
+
+      - name: Build diagnostics (on failure)
+        if: ${{ failure() }}
+        run: |
+          grep -iE "error|warning: .*deprecated" "$RUNNER_TEMP/build.log" | tail -40 || echo "(none)"
