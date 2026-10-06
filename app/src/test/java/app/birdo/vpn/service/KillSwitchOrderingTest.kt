@@ -89,11 +89,11 @@ class KillSwitchOrderingTest {
         field.set(service, value)
     }
 
-    /** Whether the block came up. A Unit return (the old signature) fails the cast, by design. */
-    private fun invokeActivateKillSwitch(): Boolean {
+    /** What the arm achieved. A Unit return (the old signature) fails the cast, by design. */
+    private fun invokeActivateKillSwitch(): BlockArm {
         val m = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch")
         m.isAccessible = true
-        return m.invoke(service) as Boolean
+        return m.invoke(service) as BlockArm
     }
 
     @Test
@@ -103,7 +103,7 @@ class KillSwitchOrderingTest {
             mockk<ParcelFileDescriptor>(relaxed = true)
         }
 
-        assertTrue("an armed block must say so", invokeActivateKillSwitch())
+        assertEquals("an armed block must say so", BlockArm.ARMED, invokeActivateKillSwitch())
 
         // The blocking interface must be up (superseding the live tun) before
         // the live tunnel's fd is closed — never the reverse.
@@ -120,7 +120,7 @@ class KillSwitchOrderingTest {
 
         // P1-dk-killswitch-establish-failure-silent: the failure is the
         // RESULT now, not a report nobody downstream could see.
-        assertFalse("a refused block must not read as armed", invokeActivateKillSwitch())
+        assertEquals("a refused block must not read as armed", BlockArm.FAILED, invokeActivateKillSwitch())
 
         // Even when the block cannot be established (e.g. consent revoked) the
         // data plane must still be torn down — and still only after the
@@ -137,7 +137,7 @@ class KillSwitchOrderingTest {
             throw IllegalStateException("VPN not prepared")
         }
 
-        assertFalse("a block that threw must not read as armed", invokeActivateKillSwitch())
+        assertEquals("a block that threw must not read as armed", BlockArm.FAILED, invokeActivateKillSwitch())
 
         // The catch path preserves the always-tear-down contract.
         assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
@@ -152,7 +152,7 @@ class KillSwitchOrderingTest {
             if (attempts == 1) null else mockk<ParcelFileDescriptor>(relaxed = true)
         }
 
-        assertTrue(invokeActivateKillSwitch())
+        assertEquals(BlockArm.ARMED, invokeActivateKillSwitch())
 
         assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
         assertTrue(BirdoVpnService.killSwitchActive)
@@ -171,5 +171,52 @@ class KillSwitchOrderingTest {
         // Two calls, two attempts each: a refusal that will not change (a
         // revoked consent) costs one short retry per arm, never a spin.
         assertEquals(4, callOrder.count { it == "establish" })
+    }
+
+    // ── P2-1: the retry and onDestroy (A1-012) ───────────────────────────
+
+    @Test
+    fun `onDestroy beginning during the retry's wait stops the second establish`() {
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            // onDestroy lands on the main thread while the retry sleeps.
+            Thread {
+                Thread.sleep(80)
+                setInstanceField("destroyed", true)
+            }.start()
+            null
+        }
+
+        // A teardown, not a failure: nothing to tell the user about.
+        assertEquals(BlockArm.SERVICE_GONE, invokeActivateKillSwitch())
+
+        // The check used to run only BEFORE the 250 ms sleep, so the retry
+        // called establish() on a service onDestroy had already reached.
+        assertEquals(listOf("establish", "turnOff"), callOrder)
+    }
+
+    @Test
+    fun `an interrupt during the retry stops it, and is restored only after the teardown`() {
+        var interruptedAtTeardown: Boolean? = null
+        every { WgNative.turnOff(any()) } answers {
+            callOrder += "turnOff"
+            interruptedAtTeardown = Thread.currentThread().isInterrupted
+        }
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            Thread.currentThread().interrupt()
+            null
+        }
+
+        try {
+            assertEquals(BlockArm.FAILED, invokeActivateKillSwitch())
+            assertEquals(listOf("establish", "turnOff"), callOrder)
+            // Set during the teardown, the flag made its bounded probe join
+            // throw at once instead of waiting for the probe to exit.
+            assertEquals(false, interruptedAtTeardown)
+            assertTrue("the interrupt must not be swallowed", Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
     }
 }

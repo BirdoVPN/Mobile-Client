@@ -622,6 +622,54 @@ class BirdoVpnServiceLifecycleTest {
         verify { WgNative.turnOff(7) }
     }
 
+    // ── P2-1: a teardown is not a failure of the control ─────────────────
+
+    @Test
+    fun `a service destroyed while it arms publishes no kill-switch failure`() {
+        setKillSwitchEnabled(true)
+        BirdoVpnService.uiForeground = false
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            // onDestroy lands while the retry waits.
+            Thread {
+                Thread.sleep(80)
+                setField("destroyed", true)
+            }.start()
+            null
+        }
+        setField("tunnelHandle", 7)
+        val verdict = BirdoVpnService::class.java.getDeclaredMethod(
+            "onProbeVerdict",
+            TransportProbe.Result::class.java,
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        )
+        verdict.isAccessible = true
+
+        verdict.invoke(service, TransportProbe.Result.BLOCKED, 7, true)
+
+        // "Traffic is NOT protected" over a teardown was an alarm about nothing.
+        assertFalse(
+            "a teardown published the kill-switch failure",
+            (BirdoVpnService.currentState as? VpnState.Error)?.message?.startsWith("Kill switch could not be armed") == true,
+        )
+        verify(exactly = 0) { notifications.postAlert(any()) }
+    }
+
+    @Test
+    fun `the block flag is cleared when onDestroy closes a held block`() {
+        setField("vpnInterface", mockk<ParcelFileDescriptor>(relaxed = true))
+        val flag = BirdoVpnService::class.java.getDeclaredField("_killSwitchActiveFlow")
+        flag.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (flag.get(null) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>).value = true
+
+        service.onDestroy()
+
+        // Process-wide, it outlived the instance: VpnManager went on believing
+        // in a block that onDestroy's cleanup had closed.
+        assertFalse(BirdoVpnService.killSwitchActive)
+    }
+
     // ── P1-dk-orphan-daemon-threads ──────────────────────────────────────
 
     private fun probeThreads(): Set<Thread> =

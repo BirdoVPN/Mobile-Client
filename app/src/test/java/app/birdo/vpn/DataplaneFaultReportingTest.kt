@@ -614,7 +614,9 @@ class DataplaneFaultReportingTest {
      * to the user. It returns whether the block is up now, and a call whose
      * result is dropped is exactly how that comes back: a statement
      * `activateKillSwitch()`, or `if (isKillSwitchEnabled) activateKillSwitch()`.
-     * Every call must USE the result (`!`, `=`, a condition, an operand).
+     * Every call must USE the result (`!`, `=`, a condition, an operand). It
+     * is a [app.birdo.vpn.service.BlockArm] now, so a teardown (onDestroy
+     * reached the arm) is told apart from a failure of the control.
      */
     @Test
     fun `no caller ignores whether the kill switch armed`() {

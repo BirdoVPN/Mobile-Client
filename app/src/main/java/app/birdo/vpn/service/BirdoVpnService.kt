@@ -1002,7 +1002,7 @@ class BirdoVpnService : VpnService() {
     private fun armBlockForSystemStart() {
         Log.i(TAG, "System start with the kill switch or lockdown on — arming the block first")
         isKillSwitchEnabled = true
-        if (!activateKillSwitch()) {
+        if (activateKillSwitch() == BlockArm.FAILED) {
             // Silent failure of a security control is worse than a loud one:
             // the user believes they are fail-closed and they are not.
             // "Loud" has to mean loud to the OPERATOR too — Log.e is
@@ -1027,7 +1027,7 @@ class BirdoVpnService : VpnService() {
         // guard on one of several parallel paths is how a fail-open window
         // gets reintroduced here.
         isKillSwitchEnabled = true
-        if (!activateKillSwitch()) {
+        if (activateKillSwitch() == BlockArm.FAILED) {
             // establish() refused (in practice: VPN consent revoked).
             // activateKillSwitch has already torn the data plane down,
             // so traffic is in the clear while currentState still reads
@@ -1365,16 +1365,19 @@ class BirdoVpnService : VpnService() {
      * [blockThenPublish], which publishes the kill-switch failure in place of
      * its own Error; the other callers check the result themselves.
      *
-     * @return true when the block is up. False when it is not — establish()
-     *   refused or threw on both attempts, or the service is destroyed — and
-     *   the data plane is down, so traffic is NOT blocked.
+     * @return [BlockArm.ARMED] when the block is up; [BlockArm.FAILED] when
+     *   establish() refused or threw on both attempts, and traffic is NOT
+     *   blocked; [BlockArm.SERVICE_GONE] when onDestroy has begun, before or
+     *   during the attempts, so nothing was established. The data plane is
+     *   down on every outcome.
      */
-    private fun activateKillSwitch(): Boolean {
+    private fun activateKillSwitch(): BlockArm {
         if (destroyed) {
             // Nothing may establish() on a destroyed service (A1-012): the
-            // interface would outlive its owner. Tear down what is ours.
+            // interface would outlive its owner. Tear down what is ours; a held
+            // block is closed by onDestroy's own cleanupTunnel.
             cleanupTunnelDataPlane()
-            return false
+            return BlockArm.SERVICE_GONE
         }
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
         // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
@@ -1397,7 +1400,29 @@ class BirdoVpnService : VpnService() {
         val stale = vpnInterface
         var established: ParcelFileDescriptor? = null
         var threw: Exception? = null
+        var interrupted = false
         for (attempt in 1..KILL_SWITCH_ARM_ATTEMPTS) {
+            if (attempt > 1) {
+                FaultReporter.trail(
+                    FaultReporter.PATH_KILL_SWITCH,
+                    "block establish() ${if (threw != null) "threw" else "refused"} — retrying once",
+                )
+                try {
+                    Thread.sleep(KILL_SWITCH_RETRY_MS)
+                } catch (_: InterruptedException) {
+                    // Nothing in this service interrupts the tunnel executor:
+                    // onDestroy drains it with shutdown(), not shutdownNow().
+                    // Whoever did, stop retrying. The flag is restored only
+                    // after the teardown below, whose probe join an interrupt
+                    // would cut short.
+                    interrupted = true
+                    break
+                }
+                // onDestroy sets [destroyed] on the main thread, so it can
+                // begin DURING the sleep. Checked again here, after it: nothing
+                // may establish() once it has (A1-012).
+                if (destroyed) break
+            }
             threw = null
             try {
                 established = Builder()
@@ -1424,25 +1449,14 @@ class BirdoVpnService : VpnService() {
             } catch (e: Exception) {
                 threw = e
             }
-            if (established != null || attempt == KILL_SWITCH_ARM_ATTEMPTS || destroyed) break
-            FaultReporter.trail(
-                FaultReporter.PATH_KILL_SWITCH,
-                "block establish() ${if (threw != null) "threw" else "refused"} — retrying once",
-            )
-            try {
-                Thread.sleep(KILL_SWITCH_RETRY_MS)
-            } catch (_: InterruptedException) {
-                // Only an executor shutdown interrupts this thread: the
-                // service is going away, so there is nothing to retry for.
-                Thread.currentThread().interrupt()
-                break
-            }
+            if (established != null) break
         }
         // The routing decision is made (block up, or establish() refused) —
         // only now tear down wg-go / monitor / callbacks. On EVERY outcome,
         // a throw included: the contract is that this call tears the data
         // plane down.
         cleanupTunnelDataPlane()
+        if (interrupted) Thread.currentThread().interrupt()
         if (established != null) {
             vpnInterface = established
             // Release the stale interface — the OS atomically replaced its
@@ -1454,7 +1468,15 @@ class BirdoVpnService : VpnService() {
             updateState(VpnState.KillSwitchActive)
             Log.i(TAG, "Kill switch active — all traffic blocked")
             mainHandler.post { updateNotification() }
-            return true
+            return BlockArm.ARMED
+        }
+        if (destroyed) {
+            // A teardown, not a failure of the control: the service went away
+            // while this waited to retry. A block still held stays in
+            // vpnInterface for onDestroy's cleanupTunnel to close (and clear
+            // the flag), exactly as on the early return above.
+            FaultReporter.trail(FaultReporter.PATH_KILL_SWITCH, "block not retried — the service is being destroyed")
+            return BlockArm.SERVICE_GONE
         }
         _killSwitchActiveFlow.value = false
         if (threw != null) {
@@ -1478,7 +1500,7 @@ class BirdoVpnService : VpnService() {
                 "VpnService.Builder.establish() returned null for the blocking interface — traffic is NOT blocked",
             )
         }
-        return false
+        return BlockArm.FAILED
     }
 
     /**
@@ -1492,6 +1514,11 @@ class BirdoVpnService : VpnService() {
      * traffic until you reconnect") over a device whose traffic is in the
      * clear. [publishKillSwitchFailure] goes out in its place.
      *
+     * A service that onDestroy reached while it armed publishes nothing at
+     * all ([BlockArm.SERVICE_GONE]): that is a teardown, and "traffic is NOT
+     * protected" over it would be an alarm about nothing the user can act on
+     * (A1-012: an abandoned setup leaves no Error).
+     *
      * @param releaseWhenOff tear the tunnel down when the kill switch is off
      *   (every caller but the dead-tunnel handler, which leaves that to the
      *   re-dial's own teardown).
@@ -1501,16 +1528,19 @@ class BirdoVpnService : VpnService() {
         releaseWhenOff: Boolean = true,
         beforePublish: () -> Unit = {},
     ) {
-        val blockFailed = when {
-            isKillSwitchEnabled -> !activateKillSwitch()
-            releaseWhenOff -> {
-                cleanupTunnel()
-                false
-            }
-            else -> false
+        if (!isKillSwitchEnabled) {
+            if (releaseWhenOff) cleanupTunnel()
+            beforePublish()
+            updateState(error)
+            return
         }
+        val arm = activateKillSwitch()
         beforePublish()
-        if (blockFailed) publishKillSwitchFailure(error.kind) else updateState(error)
+        when (arm) {
+            BlockArm.ARMED -> updateState(error)
+            BlockArm.FAILED -> publishKillSwitchFailure(error.kind)
+            BlockArm.SERVICE_GONE -> Log.i(TAG, "Service destroyed while arming — no Error for a teardown")
+        }
     }
 
     /**
@@ -1962,10 +1992,12 @@ class BirdoVpnService : VpnService() {
             startTransportProbe(handle, gen, onStealthTransport = stealthEndpointOverride != null)
 
         } catch (e: InterruptedException) {
-            // Only an executor shutdown interrupts this thread, and that means
-            // the service is going away: a user abort, not a failure. No block
-            // on a destroyed service, no Error for VpnManager to answer with a
-            // re-dial (A1-012).
+            // Nothing in this service interrupts the tunnel executor (onDestroy
+            // drains it with shutdown(), not shutdownNow()), so this is someone
+            // else asking the thread to stop: abandon, as a user abort. No
+            // block, no Error for VpnManager to answer with a re-dial (A1-012).
+            // The throw cleared the flag, so the teardown's probe join below
+            // runs in full; the flag is restored after it.
             Log.i(TAG, "Tunnel setup interrupted — abandoning")
             cleanupStealthAndQuantum()
             cleanupTunnelDataPlane()
@@ -2757,6 +2789,11 @@ class BirdoVpnService : VpnService() {
         cleanupTunnelDataPlane()
         try { vpnInterface?.close() } catch (e: Exception) { Log.w(TAG, "Error closing VPN", e) }
         vpnInterface = null
+        // Whatever interface this service held is closed now, a block
+        // included, so nothing is blocking. The flag is process-wide and
+        // outlives this instance: onDestroy's cleanup used to leave it true
+        // over a closed block, and VpnManager went on believing in it.
+        _killSwitchActiveFlow.value = false
     }
 
     /**
@@ -2779,7 +2816,7 @@ class BirdoVpnService : VpnService() {
         // blocking interface is already up from TunnelMonitor.onUnexpectedExit, so
         // this is a no-op there. establish() for the new tunnel supersedes it.
         if ((isKillSwitchEnabled || forceBlock) && vpnInterface == null) {
-            if (!activateKillSwitch() && isKillSwitchEnabled) {
+            if (activateKillSwitch() == BlockArm.FAILED && isKillSwitchEnabled) {
                 // The user's kill switch could not hold the rebuild window.
                 // Not an Error: VpnManager is waiting for the Disconnected
                 // below to send the rebuild, and an Error here would start its
@@ -2917,6 +2954,21 @@ class BirdoVpnService : VpnService() {
             Log.w(TAG, "Widget state update failed", e)
         }
     }
+}
+
+/** What [BirdoVpnService]'s kill-switch arm achieved. */
+internal enum class BlockArm {
+    /** The block is up. */
+    ARMED,
+
+    /** establish() refused or threw, the retry included: traffic is NOT blocked. */
+    FAILED,
+
+    /**
+     * onDestroy began before or during the attempts, so nothing was (or may
+     * be) established (A1-012). A teardown, not a failure of the control.
+     */
+    SERVICE_GONE,
 }
 
 // ── VPN State Sealed Class ──────────────────────────────────────
