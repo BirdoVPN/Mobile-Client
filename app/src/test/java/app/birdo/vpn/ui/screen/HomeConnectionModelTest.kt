@@ -98,7 +98,9 @@ class HomeConnectionModelTest {
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.QUOTA_EXCEEDED))
         assertEquals(Remedy.UPDATE, remedyFor(FailureKind.UPDATE_REQUIRED))
         assertEquals(Remedy.CHOOSE_SERVER, remedyFor(FailureKind.NEVER_ESTABLISHED))
-        assertNull(remedyFor(FailureKind.STEALTH_FAILED))
+        // Fail-closed like Quantum, so the same way out (review of #463, P3-7).
+        assertEquals(Remedy.OPEN_SETTINGS, remedyFor(FailureKind.STEALTH_FAILED))
+        assertTrue(SessionCopy.STEALTH_FAILED.contains("turn off Stealth Mode in Settings"))
     }
 
     /**

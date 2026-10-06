@@ -122,8 +122,8 @@ internal enum class Remedy(@param:StringRes val label: Int) {
  * the fix (try again) or the app handles it on its own (sign-in).
  */
 internal fun remedyFor(kind: FailureKind): Remedy? = when (kind) {
-    // "…turn off Quantum Protection in Settings to connect without it."
-    FailureKind.QUANTUM_FAILED -> Remedy.OPEN_SETTINGS
+    // "…turn off Quantum Protection / Stealth Mode in Settings to connect without it."
+    FailureKind.QUANTUM_FAILED, FailureKind.STEALTH_FAILED -> Remedy.OPEN_SETTINGS
     FailureKind.PLAN_REQUIRED, FailureKind.QUOTA_EXCEEDED -> Remedy.VIEW_PLANS
     FailureKind.UPDATE_REQUIRED -> Remedy.UPDATE
     // "…Try another location."

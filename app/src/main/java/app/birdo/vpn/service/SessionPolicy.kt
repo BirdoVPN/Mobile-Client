@@ -595,9 +595,14 @@ internal object SessionCopy {
     const val QUANTUM_FAILED =
         "Quantum-protected handshake failed. Not connecting, because continuing would fall back to " +
             "weaker encryption. Try again, or turn off Quantum Protection in Settings to connect without it."
+    /**
+     * Fail-closed, so it has to name the way out, as [QUANTUM_FAILED] does: a
+     * node that cannot run Stealth refuses every connect until the user
+     * changes location or turns the feature off.
+     */
     const val STEALTH_FAILED =
         "Stealth Mode couldn't start. Not connecting, so your traffic isn't sent unprotected. " +
-            "Try again, or choose another location."
+            "Try again, choose another location, or turn off Stealth Mode in Settings to connect without it."
     const val VPN_PERMISSION = "BirdoVPN needs VPN permission to connect."
     const val SETUP_REQUIRED = "Open BirdoVPN to finish setting up before it can connect."
     const val VPN_TAKEN_OVER =
