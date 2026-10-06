@@ -730,6 +730,8 @@ data class MultiHopConnectResponse(
     val persistentKeepalive: Int? = null,
     val multiHop: MultiHopInfo? = null,
     val stealthEnabled: Boolean = false,
+    /** As [ConnectResponse.stealthUnavailableReason]; carried into the service's config. */
+    val stealthUnavailableReason: String? = null,
     val xrayEndpoint: String? = null,
     val xrayUuid: String? = null,
     val xrayPublicKey: String? = null,

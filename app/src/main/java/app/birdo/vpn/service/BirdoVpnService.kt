@@ -232,9 +232,9 @@ class BirdoVpnService : VpnService() {
         const val EXTRA_KILL_SWITCH = "kill_switch"
         /**
          * START and LIVE_REBUILD: whether THIS dial asked the server for
-         * Stealth (VpnManager: the stored setting at dial time). The service's
-         * requested-vs-granted guard compares against it, never against the
-         * stored setting, which a plan downgrade leaves on.
+         * Stealth (VpnManager: the stored setting at dial time). The service
+         * judges the server's answer against it — what was asked, when it was
+         * asked — rather than re-reading the setting during the setup.
          */
         const val EXTRA_STEALTH_REQUESTED = "stealth_requested"
         const val EXTRA_SPLIT_TUNNEL_ENABLED = "split_tunnel_enabled"
@@ -1762,9 +1762,10 @@ class BirdoVpnService : VpnService() {
             failSetup(gen, SessionCopy.QUANTUM_FAILED, FailureKind.QUANTUM_FAILED)
             return
         }
-        // Stealth, against what THIS dial asked for (StealthPolicy) — never the
-        // stored setting, which a plan downgrade leaves on: reading it refused
-        // every connect of a user whose plan no longer had Stealth.
+        // Stealth: the server's answer, judged against what THIS dial asked for
+        // (StealthPolicy). A plan downgrade is no refusal: it used to refuse
+        // every connect of a user whose plan no longer had Stealth, while
+        // Settings showed the toggle off and locked.
         val stealthTransport = StealthPolicy.transport(
             requested = stealthRequested,
             granted = config.stealthEnabled,

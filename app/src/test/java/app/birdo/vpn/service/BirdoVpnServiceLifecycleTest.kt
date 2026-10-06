@@ -1009,6 +1009,38 @@ class BirdoVpnServiceLifecycleTest {
     // ── Stealth on a plan without it (review of #463, P1 on main) ────────
 
     @Test
+    fun `a START's Stealth request is what the service judges by`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        // The stored setting is OFF; the dial asked for Stealth anyway (it was
+        // on when VpnManager dialled), and the server did not grant it.
+        every { prefs.stealthModeEnabled } returns false
+        BirdoVpnService.setConfig(
+            ConnectResponse(
+                success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
+                assignedIp = "10.100.0.2",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+                stealthEnabled = false,
+            ),
+        )
+        val start = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, any()) } returns true
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns true
+            every { getStringArrayExtra(any()) } returns null
+        }
+        val handleStart = BirdoVpnService::class.java.getDeclaredMethod("handleStart", Intent::class.java, Long::class.javaPrimitiveType)
+        handleStart.isAccessible = true
+
+        handleStart.invoke(service, start, (field("transitionGen") as AtomicLong).get())
+
+        // Read from the intent, not the setting: refused, never dialled direct.
+        assertTrue(order.isEmpty())
+        assertEquals(FailureKind.STEALTH_FAILED, (BirdoVpnService.currentState as VpnState.Error).kind)
+    }
+
+    @Test
     fun `a stored Stealth setting this dial did not ask for is no refusal`() {
         val order = arrangeTunnelStart(protectSucceeds = true)
         // The downgraded user's stored setting; VpnManager did not ask for it.

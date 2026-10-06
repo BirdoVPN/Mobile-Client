@@ -1194,6 +1194,9 @@ class VpnManager @Inject constructor(
             ServerNodeInfo(id = it.entryNode.id, name = "${it.entryNode.name} → ${it.exitNode.name}")
         },
         stealthEnabled = stealthEnabled,
+        // Dropped here, the service read a plan downgrade on a Multi-Hop dial
+        // as "not granted" and refused it.
+        stealthUnavailableReason = stealthUnavailableReason,
         xrayEndpoint = xrayEndpoint,
         xrayUuid = xrayUuid,
         xrayPublicKey = xrayPublicKey,

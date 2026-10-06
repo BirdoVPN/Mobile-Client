@@ -2223,4 +2223,19 @@ class VpnManagerTest {
         vpnManager.disconnect()
         assertNull(vpnManager.stealthNotice.value)
     }
+
+    @Test
+    fun `a Multi-Hop dial carries the server's Stealth downgrade to the service and to Home`() = runTest {
+        every { prefs.stealthModeEnabled } returns true
+        coEvery { repository.connectMultiHop(any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeMultiHopResponse().copy(stealthEnabled = false, stealthUnavailableReason = "entitlement"))
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        // toConnectResponse() dropped the reason: the service then read the
+        // downgrade as "not granted" and refused (second review of #463, N8).
+        verify { BirdoVpnService.setConfig(match { it.stealthUnavailableReason == "entitlement" }) }
+        assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
+    }
 }
