@@ -109,6 +109,18 @@ class BirdoVpnService : VpnService() {
         /** Reads of wg-go's socket descriptors before the protect gives up (see protectTunnelSockets). */
         private const val PROTECT_ATTEMPTS = 10
         private const val PROTECT_RETRY_MS = 50L
+
+        /**
+         * establish() attempts for the kill-switch block: the first, and ONE
+         * retry after [KILL_SWITCH_RETRY_MS]. A refusal from a revoked consent
+         * will not change in a quarter of a second, but a throw from the
+         * platform's interface setup can, and the retry costs no exposure —
+         * whatever interface was up (the live tunnel, or an older block) stays
+         * up until the attempts are over (see [activateKillSwitch]).
+         */
+        private const val KILL_SWITCH_ARM_ATTEMPTS = 2
+        private const val KILL_SWITCH_RETRY_MS = 250L
+
         /**
          * POWER: the notification-refresh cadence drives a blocking wg-go
          * getConfig JNI read (readTrafficStats) on every tick, 24/7 while
@@ -667,13 +679,9 @@ class BirdoVpnService : VpnService() {
             //
             // BLOCK FIRST, THEN PUBLISH Error — see the ordering contract on
             // [activateKillSwitch].
-            if (isKillSwitchEnabled) {
-                activateKillSwitch()
-            } else {
-                cleanupTunnel()
+            blockThenPublish(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
+                cleanupStealthAndQuantum()
             }
-            cleanupStealthAndQuantum()
-            updateState(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))
         }
     }
 
@@ -975,8 +983,7 @@ class BirdoVpnService : VpnService() {
     private fun armBlockForSystemStart() {
         Log.i(TAG, "System start with the kill switch or lockdown on — arming the block first")
         isKillSwitchEnabled = true
-        activateKillSwitch()
-        if (!killSwitchActive) {
+        if (!activateKillSwitch()) {
             // Silent failure of a security control is worse than a loud one:
             // the user believes they are fail-closed and they are not.
             // "Loud" has to mean loud to the OPERATOR too — Log.e is
@@ -986,12 +993,7 @@ class BirdoVpnService : VpnService() {
                 "kill_switch_rearm_failed_restart",
                 "Kill switch could not be re-armed after a system restart — traffic is NOT blocked",
             )
-            updateState(
-                VpnState.Error(
-                    "Kill switch could not be armed — traffic is NOT protected",
-                    FailureKind.VPN_PERMISSION_REQUIRED,
-                ),
-            )
+            publishKillSwitchFailure(FailureKind.VPN_PERMISSION_REQUIRED)
         }
     }
 
@@ -1006,8 +1008,7 @@ class BirdoVpnService : VpnService() {
         // guard on one of several parallel paths is how a fail-open window
         // gets reintroduced here.
         isKillSwitchEnabled = true
-        activateKillSwitch()
-        if (!killSwitchActive) {
+        if (!activateKillSwitch()) {
             // establish() refused (in practice: VPN consent revoked).
             // activateKillSwitch has already torn the data plane down,
             // so traffic is in the clear while currentState still reads
@@ -1023,12 +1024,7 @@ class BirdoVpnService : VpnService() {
                 "kill_switch_rearm_failed_invalidated",
                 "Kill switch could not be armed for an invalidated session — traffic is NOT blocked",
             )
-            updateState(
-                VpnState.Error(
-                    "Kill switch could not be armed — traffic is NOT protected",
-                    FailureKind.VPN_PERMISSION_REQUIRED,
-                ),
-            )
+            publishKillSwitchFailure(FailureKind.VPN_PERMISSION_REQUIRED)
         }
         // The tunnel is gone on BOTH branches (activateKillSwitch tears
         // wg-go down either way), but the widget's "Protected" flag
@@ -1336,95 +1332,199 @@ class BirdoVpnService : VpnService() {
      * blocked" in the notification, and no retry, indefinitely, until the user
      * intervened by hand. Arming first makes Error the terminal state, so the
      * block is held AND auto-reconnect runs — fail-closed and self-healing.
+     *
+     * THE RESULT IS NOT OPTIONAL (P1-dk-killswitch-establish-failure-silent).
+     * This used to return Unit. A refused or throwing establish() was reported
+     * to FaultReporter and then nearly every caller went on to publish its
+     * usual Error — "Connection lost. Reconnecting…", the setup's own reason —
+     * as if the block had come up, so the user who turned the kill switch on
+     * was never told it had failed. A failure path goes through
+     * [blockThenPublish], which publishes the kill-switch failure in place of
+     * its own Error; the other callers check the result themselves.
+     *
+     * @return true when the block is up. False when it is not — establish()
+     *   refused or threw on both attempts, or the service is destroyed — and
+     *   the data plane is down, so traffic is NOT blocked.
      */
-    private fun activateKillSwitch() {
+    private fun activateKillSwitch(): Boolean {
         if (destroyed) {
             // Nothing may establish() on a destroyed service (A1-012): the
             // interface would outlive its owner. Tear down what is ours.
             cleanupTunnelDataPlane()
-            return
+            return false
         }
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
-        try {
-            // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
-            // (server switch, connect timeout, KILL_SWITCH_BLOCK, stall) the sole
-            // tun fd lives inside wg-go — startTunnel detachFd()s it and nulls
-            // vpnInterface — so running cleanupTunnelDataPlane() first had
-            // WgNative.turnOff close that fd and destroy the interface, reverting
-            // routing to the physical network for the whole wg-go-shutdown +
-            // establish() window: a cleartext leak at the exact moment the user
-            // asked to be blocked. establish() below atomically supersedes
-            // whatever interface is up — the live tunnel's OR a previous blocking
-            // one (the same semantic startTunnel relies on when its new tunnel
-            // supersedes this block) — so tearing wg-go down AFTER it can never
-            // expose traffic. Callers therefore must NOT tear down first either.
-            val stale = vpnInterface
-            val builder = Builder()
-                .setSession("BirdoVPN Kill Switch")
-                .setMtu(1420)
-                .addAddress("10.255.255.1", 32)
-                .addAddress("fd00::1", 128)
-                // Route all IPv4 + IPv6 into the blocking VPN — this covers:
-                // - All TCP/UDP (including STUN ports 3478-3479, 5349)
-                // - All WebRTC ICE candidates (STUN/TURN)
-                // - DNS (prevents leaks to system resolver)
-                .addRoute("0.0.0.0", 0)
-                .addRoute("::", 0)
-                // Point DNS at the blocking interface so queries don't leak
-                .addDnsServer("10.255.255.1")
-                .setBlocking(true)
-                // BirdoVPN itself stays OUTSIDE the block — unlike the tunnel
-                // (D-6). The block is not a tunnel, it carries nothing; the
-                // app has to reach the API through it to sign in, re-dial and
-                // release peers. Android's own lockdown exempts the VPN
-                // package for the same reason (AOSP Vpn.setVpnForcedLocked).
-                .addDisallowedApplication(packageName)
-
-            val established = builder.establish()
-            // The routing decision is made (block up, or establish() refused) —
-            // only now tear down wg-go / monitor / callbacks.
-            cleanupTunnelDataPlane()
-            if (established != null) {
-                vpnInterface = established
-                // Release the stale interface — the OS atomically replaced its
-                // routing with the new blocking interface above.
-                if (stale != null && stale !== established) {
-                    try { stale.close() } catch (_: Exception) {}
-                }
-                _killSwitchActiveFlow.value = true
-                updateState(VpnState.KillSwitchActive)
-                Log.i(TAG, "Kill switch active — all traffic blocked")
-                mainHandler.post { updateNotification() }
-            } else {
-                // establish() failed (e.g. permission revoked) — don't hold a dead fd.
-                if (stale != null) { try { stale.close() } catch (_: Exception) {} }
-                vpnInterface = null
-                _killSwitchActiveFlow.value = false
-                // Reported HERE, at the root, and not only at the two callers
-                // that check killSwitchActive afterwards: this method has ~8
-                // callers and a guard on some of them is how the fail-open
-                // window gets reintroduced. There is no throwable on this
-                // branch — establish() returns null rather than throwing — so
-                // without this the refusal is invisible in every channel.
-                FaultReporter.report(
-                    FaultReporter.PATH_KILL_SWITCH,
-                    "kill_switch_establish_refused",
-                    "VpnService.Builder.establish() returned null for the blocking interface — traffic is NOT blocked",
-                )
+        // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
+        // (server switch, connect timeout, KILL_SWITCH_BLOCK, stall) the sole
+        // tun fd lives inside wg-go — startTunnel detachFd()s it and nulls
+        // vpnInterface — so running cleanupTunnelDataPlane() first had
+        // WgNative.turnOff close that fd and destroy the interface, reverting
+        // routing to the physical network for the whole wg-go-shutdown +
+        // establish() window: a cleartext leak at the exact moment the user
+        // asked to be blocked. establish() below atomically supersedes
+        // whatever interface is up — the live tunnel's OR a previous blocking
+        // one (the same semantic startTunnel relies on when its new tunnel
+        // supersedes this block) — so tearing wg-go down AFTER it can never
+        // expose traffic. Callers therefore must NOT tear down first either.
+        //
+        // The retry sits inside the same window: a failed establish() leaves
+        // the existing interface untouched (VpnService.Builder.establish
+        // docs), so whatever was carrying or blocking traffic keeps doing so
+        // until the last attempt is over.
+        val stale = vpnInterface
+        var established: ParcelFileDescriptor? = null
+        var threw: Exception? = null
+        for (attempt in 1..KILL_SWITCH_ARM_ATTEMPTS) {
+            threw = null
+            try {
+                established = Builder()
+                    .setSession("BirdoVPN Kill Switch")
+                    .setMtu(1420)
+                    .addAddress("10.255.255.1", 32)
+                    .addAddress("fd00::1", 128)
+                    // Route all IPv4 + IPv6 into the blocking VPN — this covers:
+                    // - All TCP/UDP (including STUN ports 3478-3479, 5349)
+                    // - All WebRTC ICE candidates (STUN/TURN)
+                    // - DNS (prevents leaks to system resolver)
+                    .addRoute("0.0.0.0", 0)
+                    .addRoute("::", 0)
+                    // Point DNS at the blocking interface so queries don't leak
+                    .addDnsServer("10.255.255.1")
+                    .setBlocking(true)
+                    // BirdoVPN itself stays OUTSIDE the block — unlike the tunnel
+                    // (D-6). The block is not a tunnel, it carries nothing; the
+                    // app has to reach the API through it to sign in, re-dial and
+                    // release peers. Android's own lockdown exempts the VPN
+                    // package for the same reason (AOSP Vpn.setVpnForcedLocked).
+                    .addDisallowedApplication(packageName)
+                    .establish()
+            } catch (e: Exception) {
+                threw = e
             }
-        } catch (e: Exception) {
+            if (established != null || attempt == KILL_SWITCH_ARM_ATTEMPTS || destroyed) break
+            FaultReporter.trail(
+                FaultReporter.PATH_KILL_SWITCH,
+                "block establish() ${if (threw != null) "threw" else "refused"} — retrying once",
+            )
+            try {
+                Thread.sleep(KILL_SWITCH_RETRY_MS)
+            } catch (_: InterruptedException) {
+                // Only an executor shutdown interrupts this thread: the
+                // service is going away, so there is nothing to retry for.
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+        // The routing decision is made (block up, or establish() refused) —
+        // only now tear down wg-go / monitor / callbacks. On EVERY outcome,
+        // a throw included: the contract is that this call tears the data
+        // plane down.
+        cleanupTunnelDataPlane()
+        if (established != null) {
+            vpnInterface = established
+            // Release the stale interface — the OS atomically replaced its
+            // routing with the new blocking interface above.
+            if (stale != null && stale !== established) {
+                try { stale.close() } catch (_: Exception) {}
+            }
+            _killSwitchActiveFlow.value = true
+            updateState(VpnState.KillSwitchActive)
+            Log.i(TAG, "Kill switch active — all traffic blocked")
+            mainHandler.post { updateNotification() }
+            return true
+        }
+        _killSwitchActiveFlow.value = false
+        if (threw != null) {
             FaultReporter.report(
                 FaultReporter.PATH_KILL_SWITCH,
                 "kill_switch_activate_threw",
                 "Failed to activate the kill switch — traffic is NOT blocked",
-                e,
+                threw,
             )
-            _killSwitchActiveFlow.value = false
-            // Preserve the contract that this call always tears down the data
-            // plane, even when Builder setup / establish() threw before the
-            // ordered teardown above ran. Idempotent if it already did.
-            cleanupTunnelDataPlane()
+        } else {
+            // establish() failed (e.g. permission revoked) — don't hold a dead fd.
+            if (stale != null) { try { stale.close() } catch (_: Exception) {} }
+            vpnInterface = null
+            // Reported HERE, at the root, as well as through the result: there
+            // is no throwable on this branch — establish() returns null rather
+            // than throwing — so without this the refusal is invisible to the
+            // operator in every channel.
+            FaultReporter.report(
+                FaultReporter.PATH_KILL_SWITCH,
+                "kill_switch_establish_refused",
+                "VpnService.Builder.establish() returned null for the blocking interface — traffic is NOT blocked",
+            )
         }
+        return false
+    }
+
+    /**
+     * The failure-path idiom, written once: block FIRST — when the kill switch
+     * is on — and only THEN publish [error] (the ordering contract on
+     * [activateKillSwitch]). [beforePublish] is the caller's own teardown,
+     * run between the two.
+     *
+     * When the block cannot be armed, [error] is NOT published: it would tell
+     * the user the usual story ("Reconnecting…", the kill switch "is blocking
+     * traffic until you reconnect") over a device whose traffic is in the
+     * clear. [publishKillSwitchFailure] goes out in its place.
+     *
+     * @param releaseWhenOff tear the tunnel down when the kill switch is off
+     *   (every caller but the dead-tunnel handler, which leaves that to the
+     *   re-dial's own teardown).
+     */
+    private fun blockThenPublish(
+        error: VpnState.Error,
+        releaseWhenOff: Boolean = true,
+        beforePublish: () -> Unit = {},
+    ) {
+        val blockFailed = when {
+            isKillSwitchEnabled -> !activateKillSwitch()
+            releaseWhenOff -> {
+                cleanupTunnel()
+                false
+            }
+            else -> false
+        }
+        beforePublish()
+        if (blockFailed) publishKillSwitchFailure(error.kind) else updateState(error)
+    }
+
+    /**
+     * The kill switch could not be armed: say so, loudly — the Error AND the
+     * alert. Silent failure of a security control is worse than a loud one.
+     *
+     * Alerted here rather than only through the render collector, which draws
+     * from VpnManager and so says nothing when the entry point is unavailable.
+     * The shared key keeps the collector from posting it a second time.
+     *
+     * @param kind what the supervisor decides on. A failure path passes its
+     *   own, so recovery runs exactly as it would have — a retryable drop
+     *   still re-dials behind it, and the user's wish to be connected is kept.
+     *   The two re-arm paths pass VPN_PERMISSION_REQUIRED, as they always did.
+     */
+    private fun publishKillSwitchFailure(kind: FailureKind) {
+        val error = VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, kind)
+        // No tunnel is up on any path that gets here; a green widget would be
+        // a false safety signal.
+        updateWidgetState(false, null)
+        updateState(error)
+        postKillSwitchAlert(kind)
+        mainHandler.post { updateNotification() }
+    }
+
+    /** The alert half of [publishKillSwitchFailure], posted at most once per key. */
+    private fun postKillSwitchAlert(kind: FailureKind) {
+        val error = VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, kind)
+        val alert = VpnNotificationManager.alertFor(
+            state = error,
+            killSwitchActive = false,
+            sessionExpired = false,
+            uiForeground = uiForeground,
+        ) ?: return
+        if (alert.key == postedAlertKey) return
+        notifManager.postAlert(alert)
+        postedAlertKey = alert.key
     }
 
     private fun deactivateKillSwitch() {
@@ -1439,9 +1539,10 @@ class BirdoVpnService : VpnService() {
     /**
      * The shared failure path of a tunnel setup, so the kill-switch ordering
      * contract is written once: block FIRST (or a full cleanup for a fail-open
-     * user), THEN publish the Error. A setup that a newer transition has
-     * already superseded publishes nothing at all — the newer one owns the
-     * tunnel and the state (A1-012).
+     * user), THEN publish the Error — or the kill-switch failure in its place
+     * ([blockThenPublish]). A setup that a newer transition has already
+     * superseded publishes nothing at all — the newer one owns the tunnel and
+     * the state (A1-012).
      */
     private fun failSetup(gen: Long, message: String, kind: FailureKind) {
         mainHandler.removeCallbacks(connectTimeoutRunnable)
@@ -1450,8 +1551,7 @@ class BirdoVpnService : VpnService() {
             Log.i(TAG, "Failed setup was already superseded — no block, no Error")
             return
         }
-        if (isKillSwitchEnabled) activateKillSwitch() else cleanupTunnel()
-        updateState(VpnState.Error(message, kind))
+        blockThenPublish(VpnState.Error(message, kind))
     }
 
     /** A checkpoint in [startTunnel]: true (and the setup abandoned) when a newer transition owns the tunnel. */
@@ -2191,20 +2291,20 @@ class BirdoVpnService : VpnService() {
                     // reconnect. Emitting Error drives VpnManager's recovery
                     // (which holds the block across each re-dial and clears it
                     // on a successful connect), matching the desktop client's
-                    // behaviour on the same drop.
-                    if (isKillSwitchEnabled) activateKillSwitch()
-                    // The tunnel is no longer carrying traffic — clear the
-                    // widget's "Protected" so it doesn't keep asserting a
-                    // connection through the whole reconnect window.
-                    // Unconditional: even with the kill switch OFF the tunnel is
-                    // down, so a green widget would be a false safety signal.
-                    updateWidgetState(false, null)
-                    updateState(
-                        VpnState.Error(
-                            "Connection lost. Reconnecting…",
-                            if (neverHandshook) FailureKind.NEVER_ESTABLISHED else FailureKind.DIED_AFTER_HANDSHAKE,
-                        ),
+                    // behaviour on the same drop. A block that cannot be armed
+                    // says so instead of "Reconnecting…" (blockThenPublish).
+                    val error = VpnState.Error(
+                        "Connection lost. Reconnecting…",
+                        if (neverHandshook) FailureKind.NEVER_ESTABLISHED else FailureKind.DIED_AFTER_HANDSHAKE,
                     )
+                    blockThenPublish(error, releaseWhenOff = false) {
+                        // The tunnel is no longer carrying traffic — clear the
+                        // widget's "Protected" so it doesn't keep asserting a
+                        // connection through the whole reconnect window.
+                        // Unconditional: even with the kill switch OFF the tunnel is
+                        // down, so a green widget would be a false safety signal.
+                        updateWidgetState(false, null)
+                    }
                 }
             },
         ).also { it.start() }
@@ -2222,10 +2322,10 @@ class BirdoVpnService : VpnService() {
         serial {
             if (!isCurrent(gen) || tunnelHandle < 0 || !stealthActive) return@serial
             FaultReporter.trail(FaultReporter.PATH_STEALTH, "xray exited on its own — tunnel declared dead")
-            if (isKillSwitchEnabled) activateKillSwitch() else cleanupTunnel()
-            cleanupStealthAndQuantum()
-            updateWidgetState(false, null)
-            updateState(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+            blockThenPublish(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE)) {
+                cleanupStealthAndQuantum()
+                updateWidgetState(false, null)
+            }
         }
     }
 
@@ -2324,14 +2424,10 @@ class BirdoVpnService : VpnService() {
                 // tun fd, so activateKillSwitch() must do its own ordered
                 // establish-then-teardown — a teardown here first would
                 // revert routing to the physical network before the block.
-                if (isKillSwitchEnabled) {
-                    activateKillSwitch()
-                } else {
-                    cleanupTunnel()
+                blockThenPublish(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
+                    cleanupStealthAndQuantum()
+                    mainHandler.removeCallbacks(connectTimeoutRunnable)
                 }
-                cleanupStealthAndQuantum()
-                mainHandler.removeCallbacks(connectTimeoutRunnable)
-                updateState(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))
             }
 
             // The tunnel went away while probing (disconnect, switch, kill
@@ -2589,7 +2685,18 @@ class BirdoVpnService : VpnService() {
         // blocking interface is already up from TunnelMonitor.onUnexpectedExit, so
         // this is a no-op there. establish() for the new tunnel supersedes it.
         if ((isKillSwitchEnabled || forceBlock) && vpnInterface == null) {
-            activateKillSwitch()
+            if (!activateKillSwitch() && isKillSwitchEnabled) {
+                // The user's kill switch could not hold the rebuild window.
+                // Not an Error: VpnManager is waiting for the Disconnected
+                // below to send the rebuild, and an Error here would start its
+                // recovery in parallel with that dial. So the alert alone, now;
+                // the rebuild then either connects (which withdraws it) or
+                // fails through failSetup, whose own block attempt publishes
+                // the failure as the session's Error. (A forced block for a
+                // fail-open user's settings blip is not a promise they relied
+                // on, so it raises nothing.)
+                postKillSwitchAlert(FailureKind.VPN_PERMISSION_REQUIRED)
+            }
         } else {
             // wg-go may still be running (user switch from a live tunnel); tear the
             // data plane down but keep the interface (blocking, if armed) up.

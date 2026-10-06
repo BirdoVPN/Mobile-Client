@@ -606,6 +606,13 @@ internal object SessionCopy {
         "Multi-Hop is on but no entry/exit pair is selected. Choose both, or turn Multi-Hop off."
     const val STILL_BLOCKED = "The kill switch is blocking traffic until you reconnect or disconnect."
 
+    /**
+     * The kill switch is on and its block could not be armed
+     * (P1-dk-killswitch-establish-failure-silent). Published in place of the
+     * failure path's own Error, which would otherwise claim the usual story.
+     */
+    const val KILL_SWITCH_NOT_ARMED = "Kill switch could not be armed — traffic is NOT protected"
+
     /** What a give-up says about the traffic: the app's own block is released... */
     const val TRAFFIC_RELEASED = "Traffic is no longer being blocked."
 
@@ -614,7 +621,8 @@ internal object SessionCopy {
 
     /** Whether [message] already says whether traffic is blocked, so nothing may append a second claim. */
     fun speaksForTraffic(message: String): Boolean =
-        message.contains(TRAFFIC_RELEASED) || message.contains(LOCKDOWN_STILL_BLOCKING)
+        message.contains(TRAFFIC_RELEASED) || message.contains(LOCKDOWN_STILL_BLOCKING) ||
+            message.contains(KILL_SWITCH_NOT_ARMED)
     const val STOPPED_UNEXPECTEDLY = "BirdoVPN could not restart its connection. Open BirdoVPN to reconnect."
 
     /**

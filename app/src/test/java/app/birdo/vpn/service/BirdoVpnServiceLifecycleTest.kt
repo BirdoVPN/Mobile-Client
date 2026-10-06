@@ -568,4 +568,57 @@ class BirdoVpnServiceLifecycleTest {
         assertTrue(BirdoVpnService.killSwitchActive)
         verify { WgNative.turnOff(7) }
     }
+
+    // ── P1-dk-killswitch-establish-failure-silent ────────────────────────
+
+    @Test
+    fun `a setup failure whose block cannot be armed says traffic is NOT protected, not its own reason`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        BirdoVpnService.uiForeground = false
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            // The tunnel's own interface comes up; the block after it is refused.
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+
+        startTunnel()
+
+        // It used to publish ENGINE_FAILED here, whose story is "try again" —
+        // over a device whose kill switch had just failed to block anything.
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+        // The failure's own kind, so the supervisor recovers exactly as before.
+        assertEquals(FailureKind.TRANSIENT, error.kind)
+        assertFalse(BirdoVpnService.killSwitchActive)
+        assertEquals("the tunnel, then the block and its one retry", 3, establishes)
+        // Alerted by the service itself, not only through VpnManager's state.
+        verify(exactly = 1) {
+            notifications.postAlert(match { it.body == SessionCopy.KILL_SWITCH_NOT_ARMED })
+        }
+    }
+
+    @Test
+    fun `a dead stealth tunnel whose block cannot be armed says so instead of the tunnel error`() {
+        setKillSwitchEnabled(true)
+        every { anyConstructed<VpnService.Builder>().establish() } returns null
+        setField("tunnelHandle", 7)
+        val verdict = BirdoVpnService::class.java.getDeclaredMethod(
+            "onProbeVerdict",
+            TransportProbe.Result::class.java,
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        )
+        verdict.isAccessible = true
+
+        // No handshake over the last transport there is: the path that used
+        // to arm the block and publish NO_TUNNEL whatever the arm did.
+        verdict.invoke(service, TransportProbe.Result.BLOCKED, 7, true)
+
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+        assertEquals(FailureKind.NEVER_ESTABLISHED, error.kind)
+        // Still torn down: the tunnel that never handshook is gone either way.
+        verify { WgNative.turnOff(7) }
+    }
 }

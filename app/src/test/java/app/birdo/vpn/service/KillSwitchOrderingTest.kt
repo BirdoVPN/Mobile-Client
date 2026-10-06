@@ -10,6 +10,8 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -87,10 +89,11 @@ class KillSwitchOrderingTest {
         field.set(service, value)
     }
 
-    private fun invokeActivateKillSwitch() {
+    /** Whether the block came up. A Unit return (the old signature) fails the cast, by design. */
+    private fun invokeActivateKillSwitch(): Boolean {
         val m = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch")
         m.isAccessible = true
-        m.invoke(service)
+        return m.invoke(service) as Boolean
     }
 
     @Test
@@ -100,7 +103,7 @@ class KillSwitchOrderingTest {
             mockk<ParcelFileDescriptor>(relaxed = true)
         }
 
-        invokeActivateKillSwitch()
+        assertTrue("an armed block must say so", invokeActivateKillSwitch())
 
         // The blocking interface must be up (superseding the live tun) before
         // the live tunnel's fd is closed — never the reverse.
@@ -115,11 +118,16 @@ class KillSwitchOrderingTest {
             null
         }
 
-        invokeActivateKillSwitch()
+        // P1-dk-killswitch-establish-failure-silent: the failure is the
+        // RESULT now, not a report nobody downstream could see.
+        assertFalse("a refused block must not read as armed", invokeActivateKillSwitch())
 
         // Even when the block cannot be established (e.g. consent revoked) the
-        // data plane must still be torn down — and still only after the attempt.
-        assertEquals(listOf("establish", "turnOff"), callOrder)
+        // data plane must still be torn down — and still only after the
+        // attempts (the first and its one retry), with the live tun still up
+        // in between.
+        assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
+        assertFalse(BirdoVpnService.killSwitchActive)
     }
 
     @Test
@@ -129,9 +137,39 @@ class KillSwitchOrderingTest {
             throw IllegalStateException("VPN not prepared")
         }
 
-        invokeActivateKillSwitch()
+        assertFalse("a block that threw must not read as armed", invokeActivateKillSwitch())
 
         // The catch path preserves the always-tear-down contract.
-        assertEquals(listOf("establish", "turnOff"), callOrder)
+        assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
+    }
+
+    @Test
+    fun `a block refused once is armed by the one retry, before wg-go comes down`() {
+        var attempts = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            attempts++
+            if (attempts == 1) null else mockk<ParcelFileDescriptor>(relaxed = true)
+        }
+
+        assertTrue(invokeActivateKillSwitch())
+
+        assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
+        assertTrue(BirdoVpnService.killSwitchActive)
+    }
+
+    @Test
+    fun `the retry is bounded - one, not a loop`() {
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            null
+        }
+
+        invokeActivateKillSwitch()
+        invokeActivateKillSwitch()
+
+        // Two calls, two attempts each: a refusal that will not change (a
+        // revoked consent) costs one short retry per arm, never a spin.
+        assertEquals(4, callOrder.count { it == "establish" })
     }
 }
