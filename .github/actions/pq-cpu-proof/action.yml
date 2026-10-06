@@ -1,0 +1,113 @@
+name: PQ KEM on a CPU without FEAT_SHA3 (QEMU)
+description: >-
+  Builds birdo-pq-smoke for aarch64 and EXECUTES it under qemu-user on a core without
+  ARMv8.2 FEAT_SHA3 (cortex-a53) and on one with it (max), and proves a +sha3 build SIGILLs.
+  Shared by android-ci.yml (every PR) and android.yml (a release gate). No cache.
+  The job comment in android-ci.yml says why a whole job exists for this.
+
+runs:
+  using: composite
+  steps:
+    - name: Install QEMU user-mode and an aarch64 cross toolchain
+      shell: bash
+      run: |
+        sudo apt-get update
+        # libc6-dev-arm64-cross is NOT optional and is NOT pulled in by
+        # gcc-aarch64-linux-gnu under --no-install-recommends: without it the
+        # link dies on "cannot find Scrt1.o". It is also what provides the
+        # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
+        # to find the dynamic loader.
+        sudo apt-get install -y --no-install-recommends \
+          qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+          libc6-dev-arm64-cross
+        qemu-aarch64 --version | head -1
+        ls /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
+
+    - name: Add the aarch64 Rust target
+      shell: bash
+      run: rustup target add aarch64-unknown-linux-gnu
+
+    - name: Build birdo-pq-smoke for aarch64
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd native/birdo-pq-server
+        cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
+        cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-gated"
+
+    # If the binary has no FEAT_SHA3 instructions at all, every run below
+    # passes for the wrong reason and proves nothing. Assert the thing we are
+    # testing is present BEFORE testing it.
+    - name: Assert the gated build really contains FEAT_SHA3 instructions
+      shell: bash
+      run: |
+        set -euo pipefail
+        n=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" \
+              | awk '{print $3}' | grep -cE '^(eor3|rax1|xar|bcax)$' || true)
+        echo "FEAT_SHA3 instructions in the gated build: $n"
+        if [ "$n" -eq 0 ]; then
+          echo "::error::the aarch64 smoke binary contains no eor3/rax1/xar/bcax, so running it on a core without FEAT_SHA3 proves nothing. Either keccak stopped shipping its aarch64 backend (good news, but this job must be rewritten) or the build picked up the soft-backend cfg."
+          exit 1
+        fi
+        g=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" | grep -c getauxval || true)
+        echo "getauxval call sites: $g"
+        if [ "$g" -eq 0 ]; then
+          echo "::error::no getauxval in the gated build: the FEAT_SHA3 instructions above are present with NO runtime CPU check. That is the exact shape of the 1.4.25 SIGILL."
+          exit 1
+        fi
+
+    - name: Run on a core WITHOUT FEAT_SHA3 (cortex-a53) — must exit 0
+      shell: bash
+      run: |
+        set -euo pipefail
+        qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 \
+          "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-a53.txt"
+
+    - name: Run on a core WITH FEAT_SHA3 (max) — must exit 0 and agree
+      shell: bash
+      run: |
+        set -euo pipefail
+        qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu max \
+          "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-max.txt"
+        # The random round trip differs per run by design, so compare the
+        # deterministic lines: same KEM answer on both dispatch paths.
+        for key in KAT_PSK STORED_PQCLEAN_PSK; do
+          a=$(grep "^$key=" "$RUNNER_TEMP/out-a53.txt")
+          b=$(grep "^$key=" "$RUNNER_TEMP/out-max.txt")
+          if [ "$a" != "$b" ]; then
+            echo "::error::$key differs between the soft and FEAT_SHA3 Keccak backends: '$a' vs '$b'. The fast path computes a DIFFERENT answer, which would mean half the fleet cannot complete a handshake."
+            exit 1
+          fi
+          echo "  ok: $a (identical on cortex-a53 and max)"
+        done
+
+    # THE NEGATIVE CASE. Without it, the three runs above could all be
+    # passing because the harness never reaches Keccak at all.
+    #
+    # -C target-feature=+sha3 makes cpufeatures' __unless_target_features!
+    # macro elide the HWCAP check and return a constant true, so the fast
+    # backend runs unconditionally. On cortex-a53 the first eor3 must SIGILL
+    # (exit 132 = 128 + SIGILL(4)).
+    - name: A +sha3 build MUST SIGILL on cortex-a53 (negative case)
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd native/birdo-pq-server
+        cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
+        cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-ungated"
+        cd "$GITHUB_WORKSPACE"
+        set +e
+        qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 "$RUNNER_TEMP/smoke-ungated"
+        rc=$?
+        set -e
+        echo "exit code: $rc"
+        if [ "$rc" -ne 132 ]; then
+          echo "::error::a build with -C target-feature=+sha3 did NOT SIGILL (exit 132) on cortex-a53; it exited $rc. Either QEMU is not enforcing the ISA of the core it was told to emulate, or this binary never reaches Keccak -- in which case the positive runs above prove nothing and this job is worthless as written."
+          exit 1
+        fi
+        echo "  ok: exit 132 (SIGILL), as it must be — the harness does reach Keccak"

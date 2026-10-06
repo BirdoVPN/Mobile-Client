@@ -74,6 +74,12 @@ Output is written directly to `app/src/main/jniLibs/<abi>/librosenpass_jni.so`,
 which Gradle picks up automatically on the next `:app:assembleRelease` /
 `:app:bundleRelease`.
 
+`build.sh` / `build.ps1` (and therefore `:app:buildRustLibs`) build with
+`cargo ... --locked`, exactly as CI does. After you edit a crate's `Cargo.toml`,
+regenerate its `Cargo.lock` (`cargo update -p <crate>` or `cargo generate-lockfile`
+in that crate's directory) and commit it with the change; otherwise the build
+stops with "the lock file needs to be updated but --locked was passed".
+
 These files keep their symbol table -- `native/rosenpass-jni/Cargo.toml` sets
 `strip = "debuginfo"` so that AGP's `debugSymbolLevel = "FULL"` can bundle the
 symbols into the AAB for Play Console native crash symbolication. AGP strips
@@ -133,7 +139,7 @@ short version, in the order the facts actually go:
 - **The one known way to re-arm the crash.** `RUSTFLAGS='-C target-feature=+sha3'`
   (or any `-C target-cpu` above the fleet floor): `cpufeatures`' internal
   `__unless_target_features!` macro elides the HWCAP check entirely and returns
-  a constant `true` when the feature is statically enabled. `android.yml` builds
+  a constant `true` when the feature is statically enabled. `android-ci.yml` builds
   that configuration on purpose and asserts the ISA gate **fails** on it.
 - **Cost:** the FEAT_SHA3 Keccak speedup on devices that have the extension.
   ML-KEM keygen runs once per connect, next to a network round trip. No
@@ -145,13 +151,13 @@ Seven controls keep it this way; every one fails the build, none is advisory:
 
 | Control | What it proves | Where it runs |
 |---|---|---|
-| [`scripts/check_pq_features.sh`](../scripts/check_pq_features.sh) | `pqcrypto-*` is absent from every native crate's graph on every shipped target; `ml-kem` resolves to exactly the pinned version with exactly `{alloc, getrandom, zeroize}` outside dev-dependencies and `hazmat` only inside them; `keccak` and `cpufeatures` are present on aarch64; and the soft-Keccak `--cfg` — which `cargo tree` cannot see, because it is a cfg and not a feature — is in `.cargo/config.toml` and nowhere else. Catches feature unification and a dropped build flag before anything is built. | `android.yml` build + release jobs, before `cargo ndk` |
-| [`scripts/check_pq_docs.sh`](../scripts/check_pq_docs.sh) | No file in the repo still claims the post-migration build is CLEAN-only, that the C/asm path is "removed entirely", or that the crash class is "structurally impossible". Three of those were true of `pqcrypto-mlkem`; one was never true of anything. A per-line `PQ-DOCS-OK` marker exempts text that quotes a claim in order to refute it. | `android.yml` build job |
-| `cargo test` / `clippy` / `fmt` for all three native crates | The KAT against the server's own `@noble` fixture, the PQClean install-base guard, the 3168-byte store-length assertion, the implicit-rejection and re-key behaviours, and the `nativeImplName` assertion all still hold — with a minimum test count, so deleting a `#[cfg(test)]` module reports 0 tests and FAILS instead of silently passing. | `android.yml` build job |
-| [`scripts/check_pq_rng_panics.sh`](../scripts/check_pq_rng_panics.sh) | No production path generates a keypair through `DecapsulationKey::generate()`, which is `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common 0.2.2 `src/generate.rs:42`) under a literal `# Panics` doc. Both native crates set `panic = "abort"`, so that is a process abort mid-connect with no error for Kotlin or Swift to read — the same defect `pqcrypto-internals` had (`getrandom::fill(buf).expect("RNG Failed")`). The migration MOVED that panic before this gate existed; `try_generate()` removes it. `encapsulate()` is explicitly out of scope and the script says why. | `android.yml` build + release jobs |
-| [`scripts/check_pq_ios_wiring.sh`](../scripts/check_pq_ios_wiring.sh) | Every production `birdo_pq_*` export declared in `birdo_pq_ios.h` is CALLED from a non-comment line of Swift under `iosApp/`. `birdo_pq_stored_key_usable` shipped written, declared, exported and symbol-checked in all three Apple slices — and called from nowhere, because every other control looks at the LIBRARY and none asked whether the app used it. Runs on ubuntu in `android.yml` because `ios.yml` fires only on `android-v*` tags, and a gate that cannot run on a PR does not gate the PR. | `android.yml` build + release jobs, `ios.yml` test job |
-| [`scripts/check_no_sha3_ext.sh`](../scripts/check_no_sha3_ext.sh) | Every shipped `.so` disassembled (arm64/x86_64/x86) or attribute-checked (armeabi-v7a); any optional-extension opcode outside a runtime guard the script can verify per site fails. STRICT by default; only `libwg-go.so` and `libxray.so` (Go, `internal/cpu` dispatch) are allowlisted. | `native/build.sh` / `build.ps1` on their own output (so `:app:buildRustLibs` runs it), `android.yml` on the PR debug APK, the release APK and the Play AAB |
-| [`scripts/tests/check_no_sha3_ext_test.sh`](../scripts/tests/check_no_sha3_ext_test.sh) | The gate bites: fails on a hand-assembled `eor3`/`rax1`/`xar`/`bcax`, an inline `ldadd`, an AVX2/BMI2/AES-NI x86_64 object, a v8-attributed armeabi-v7a object, a 32-bit `popcnt`; passes a stripped compiler-rt-shaped outlined-atomics helper and the sha2 crate's pinned SHA-NI count. Fixtures in [`scripts/testdata/isa-gate/`](../scripts/testdata/isa-gate/). | `android.yml` build job, before the gate is trusted |
+| [`scripts/check_pq_features.sh`](../scripts/check_pq_features.sh) | `pqcrypto-*` is absent from every native crate's graph on every shipped target; `ml-kem` resolves to exactly the pinned version with exactly `{alloc, getrandom, zeroize}` outside dev-dependencies and `hazmat` only inside them; `keccak` and `cpufeatures` are present on aarch64; and the soft-Keccak `--cfg` — which `cargo tree` cannot see, because it is a cfg and not a feature — is in `.cargo/config.toml` and nowhere else. Catches feature unification and a dropped build flag before anything is built. | `android-ci.yml` `native` job (every PR) and `android.yml` release job + release gate, before `cargo ndk` |
+| [`scripts/check_pq_docs.sh`](../scripts/check_pq_docs.sh) | No file in the repo still claims the post-migration build is CLEAN-only, that the C/asm path is "removed entirely", or that the crash class is "structurally impossible". Three of those were true of `pqcrypto-mlkem`; one was never true of anything. A per-line `PQ-DOCS-OK` marker exempts text that quotes a claim in order to refute it. | `android-ci.yml` Lint Check (every PR, docs-only included) and `android.yml` release job |
+| `cargo test` / `clippy` / `fmt` for all three native crates | The KAT against the server's own `@noble` fixture, the PQClean install-base guard, the 3168-byte store-length assertion, the implicit-rejection and re-key behaviours, and the `nativeImplName` assertion all still hold — with a minimum test count, so deleting a `#[cfg(test)]` module reports 0 tests and FAILS instead of silently passing. | `android-ci.yml` `native` job (every PR) and `android.yml` release gate |
+| [`scripts/check_pq_rng_panics.sh`](../scripts/check_pq_rng_panics.sh) | No production path generates a keypair through `DecapsulationKey::generate()`, which is `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common 0.2.2 `src/generate.rs:42`) under a literal `# Panics` doc. Both native crates set `panic = "abort"`, so that is a process abort mid-connect with no error for Kotlin or Swift to read — the same defect `pqcrypto-internals` had (`getrandom::fill(buf).expect("RNG Failed")`). The migration MOVED that panic before this gate existed; `try_generate()` removes it. `encapsulate()` is explicitly out of scope and the script says why. | `android-ci.yml` Lint Check (every PR) and `android.yml` release job |
+| [`scripts/check_pq_ios_wiring.sh`](../scripts/check_pq_ios_wiring.sh) | Every production `birdo_pq_*` export declared in `birdo_pq_ios.h` is CALLED from a non-comment line of Swift under `iosApp/`. `birdo_pq_stored_key_usable` shipped written, declared, exported and symbol-checked in all three Apple slices — and called from nowhere, because every other control looks at the LIBRARY and none asked whether the app used it. Runs on ubuntu in `android.yml` because `ios.yml` fires only on `android-v*` tags, and a gate that cannot run on a PR does not gate the PR. | `android-ci.yml` Lint Check (every PR), `android.yml` release job, `ios.yml` test job |
+| [`scripts/check_no_sha3_ext.sh`](../scripts/check_no_sha3_ext.sh) | Every shipped `.so` disassembled (arm64/x86_64/x86) or attribute-checked (armeabi-v7a); any optional-extension opcode outside a runtime guard the script can verify per site fails. STRICT by default; only `libwg-go.so` and `libxray.so` (Go, `internal/cpu` dispatch) are allowlisted. | `native/build.sh` / `build.ps1` on their own output (so `:app:buildRustLibs` runs it), `android-ci.yml` on the PR debug APK, `android.yml` on the release APK and the Play AAB (one library per invocation, via `.github/scripts/isa-gate.sh`) |
+| [`scripts/tests/check_no_sha3_ext_test.sh`](../scripts/tests/check_no_sha3_ext_test.sh) | The gate bites: fails on a hand-assembled `eor3`/`rax1`/`xar`/`bcax`, an inline `ldadd`, an AVX2/BMI2/AES-NI x86_64 object, a v8-attributed armeabi-v7a object, a 32-bit `popcnt`; passes a stripped compiler-rt-shaped outlined-atomics helper and the sha2 crate's pinned SHA-NI count. Fixtures in [`scripts/testdata/isa-gate/`](../scripts/testdata/isa-gate/). | `android-ci.yml` `native` job and `android.yml` release gate, before the gate is trusted |
 
 Attribution for the next incident: `nativeCpuFeatures()` returns
 `getauxval(AT_HWCAP/AT_HWCAP2)` and `nativeImplName()` returns
@@ -174,10 +180,15 @@ loud warning and CI — where the tool is mandatory (`ROSENPASS_ISA_GATE_REQUIRE
 
 ## CI integration
 
-[`.github/workflows/android.yml`](../.github/workflows/android.yml) installs
-Rust + cargo-ndk before the Gradle build and invokes `native/build.sh release`
-so every signed AAB contains the native module for all four ABIs. This adds
-~3 minutes to the CI run.
+[`.github/actions/android-native-libs`](../.github/actions/android-native-libs/action.yml)
+installs the Rust Android targets + cargo-ndk and runs `:app:buildRustLibs`
+(`native/build.sh release`, `--locked`) for every job that needs the native
+payload: the debug APK and R8 jobs in
+[`android-ci.yml`](../.github/workflows/android-ci.yml) and the signed release in
+[`android.yml`](../.github/workflows/android.yml), so every signed AAB contains
+the native module for all four ABIs. The host-side gates (fmt, clippy, tests,
+`cargo audit`, the ISA negative case, the declared `rust-version`) run as their
+own `android-ci.yml` jobs.
 
 ## Graceful degradation
 

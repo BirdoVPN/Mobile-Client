@@ -16,7 +16,7 @@ name = "birdo-pq-server"
 path = "src/main.rs"
 
 # The QEMU CPU proof. Built for aarch64 and run under `qemu-aarch64 -cpu
-# cortex-a53` (no FEAT_SHA3) and `-cpu max` (FEAT_SHA3) in android.yml; see the
+# cortex-a53` (no FEAT_SHA3) and `-cpu max` (FEAT_SHA3) in android-ci.yml; see the
 # module docs. It lives in this crate rather than in rosenpass-jni because
 # rosenpass-jni is a cdylib with a JNI surface and cannot produce a runnable
 # binary.

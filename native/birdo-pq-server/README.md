@@ -7,7 +7,7 @@
 > This crate is **never deployed and never invoked** (no subprocess is spawned
 > per `/connect`). CI does build one thing out of it: the second binary,
 > `birdo-pq-smoke`, is cross-compiled for aarch64 and run under QEMU for the
-> FEAT_SHA3 CPU proof (`android.yml`), and the crate's tests/clippy run in the
+> FEAT_SHA3 CPU proof (`android-ci.yml`), and the crate's tests/clippy run in the
 > same Rust matrix. The `birdo-pq-server` binary itself ships nowhere. The "shells out to `birdo-pq-server
 > encap`" flow described below is the ORIGINAL design and is **not** how
 > production works. Do not chase this binary during a PQ-handshake incident;

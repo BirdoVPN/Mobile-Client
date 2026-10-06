@@ -44,8 +44,7 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   # One at a time per platform. Two concurrent creates of the same version race
@@ -53,23 +52,35 @@ concurrency:
   group: asc-create-version-${{ inputs.platform }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   create:
     name: Create ${{ inputs.platform }} version ${{ inputs.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Create the version
         env:
           APPSTORE_API_KEY_BASE64: ${{ secrets.APPSTORE_API_KEY_BASE64 }}
           APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          # Inputs reach the shell as data, never as script text.
+          PLATFORM: ${{ inputs.platform }}
+          VERSION: ${{ inputs.version }}
+          BUILD: ${{ inputs.build }}
+          WHATS_NEW: ${{ inputs.whats_new }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          python3 scripts/asc_create_version.py \
-            --platform "${{ inputs.platform }}" \
-            --version "${{ inputs.version }}" \
-            --build "${{ inputs.build }}" \
-            --whats-new "${{ inputs.whats_new }}" \
-            ${{ inputs.dry_run && '--dry-run' || '' }}
+          args=(--platform "$PLATFORM" --version "$VERSION" --build "$BUILD" --whats-new "$WHATS_NEW")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 scripts/asc_create_version.py "${args[@]}"
