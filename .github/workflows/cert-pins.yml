@@ -30,15 +30,29 @@ on:
     - cron: '17 6 * * *'   # daily 06:17 UTC — catches a CA migration we did not make
   workflow_dispatch: {}
 
-permissions:
-  contents: read
+permissions: {}
+
+# The event is part of the group: the scheduled run and main pushes share a
+# ref, and one would otherwise displace the other's pending run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   divergence:
     name: Pin sets agree with the SSOT
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: check-cert-pins.sh --offline
         run: bash scripts/check-cert-pins.sh --offline
 
@@ -46,9 +60,15 @@ jobs:
     name: Live chains still satisfy the pins
     # Only on the schedule / manual runs: a PR must never go red because a
     # third-party CDN was briefly unreachable from a runner.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # The daily run happens only in this repository, never in a fork.
+    if: ${{ (github.event_name == 'schedule' && github.repository == 'BirdoVPN/Mobile-Client') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: check-cert-pins.sh (full, incl. live chains)
         run: bash scripts/check-cert-pins.sh

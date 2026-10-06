@@ -7,53 +7,80 @@
 # paths-ignore. macOS ships from the same sources, so the gap covered two
 # products.
 #
-# WHY THIS IS ITS OWN WORKFLOW, and not a job in ios.yml
-# ------------------------------------------------------
-# ios.yml fires on `android-v*` tags: its jobs assume a release is happening
-# (TestFlight upload, release-asset attach). Adding a pull_request trigger
-# there to get PR coverage would arm the release path on every PR. This file
-# borrows only the BUILD half.
+# WHY THIS IS ITS OWN WORKFLOW, and not a job in ios.yml or apple-ci.yml
+# ----------------------------------------------------------------------
+# ios.yml is the release pipeline (tags, TestFlight). apple-ci.yml is the fast
+# PR signal; a traced CodeQL build is several times slower than a plain one and
+# must not hold that signal up. Not a required check.
 #
 # WHY THE BUILD CHAIN IS REPEATED HERE
 # ------------------------------------
 # CodeQL's Swift extractor observes a real compile — there is no build-mode
 # `none` for Swift — and `BirdoVPN.xcodeproj` does not exist in git: XcodeGen
 # generates it, and the project links two artefacts that are also generated
-# (BirdoPQNative.xcframework from Rust, libwg-go.a from Go). So the four
+# (BirdoPQNative.xcframework from Rust, libwg-go.a from Go). So the
 # prerequisite steps below mirror ios.yml's `build-ios` job. **If that job's
 # build chain changes, change it here too** — the failure mode is this scan
 # going red, not a silent gap, because a broken chain cannot produce a
 # database.
 #
-# COST
-# ----
-# A macOS runner for ~20 minutes. Triggered only on PRs that touch Swift or
-# the shared framework, plus a weekly sweep and on demand — not on every PR.
+# WHEN IT RUNS
+# ------------
+# Pull requests and main pushes that change Swift sources or this scan's own
+# configuration, a weekly sweep, and on demand. A Kotlin-only change to
+# shared/ changes no Swift source; apple-ci.yml still compiles the Swift
+# against it.
+#
+# WHERE THE TIME WENT (run 37057051350, 31.6 min, 23.4 of them in the traced
+# xcodebuild): ~8 min in "Resolve Package Graph" for the one LOCAL Swift
+# package, and ~9 min of single-threaded extraction of whole-module (WMO)
+# compiles.
+#   * Extraction: the traced build compiles in batch mode, so extraction runs
+#     on every core (measured on #464: ~9 -> ~4.5 min). The compilation
+#     CONDITIONS stay Release's (no DEBUG), so the code CodeQL sees is the code
+#     that ships; only the optimiser level and batching differ, and neither
+#     changes the source being analysed.
+#   * Package graph: still ~8 min under the tracer, and NOT for the two
+#     obvious reasons -- both were measured on #464 and refuted: resolving the
+#     graph before tracing starts (traced step still 530 s; the traced build
+#     evaluates Package.swift again) and turning off SwiftPM's manifest sandbox
+#     (466 s). Removing SwiftPM from the build (WireGuardKit as a project
+#     target instead of a local package) would remove it; that is a project
+#     change, not a CI one. Meanwhile this scan runs only when Swift changes,
+#     and it is not a required check.
 name: CodeQL Swift
 
 on:
   pull_request:
-    branches: [main]
     paths:
-      - 'iosApp/**'
-      - 'shared/**'
+      - 'iosApp/**/*.swift'
+      - 'iosApp/project.yml'
       - '.github/workflows/codeql-swift.yml'
       - '.github/codeql/codeql-config-swift.yml'
+      - '.github/actions/apple-toolchain/**'
   push:
     branches: [main]
     paths:
-      - 'iosApp/**'
-      - 'shared/**'
+      - 'iosApp/**/*.swift'
+      - 'iosApp/project.yml'
+      - '.github/workflows/codeql-swift.yml'
+      - '.github/codeql/codeql-config-swift.yml'
+      - '.github/actions/apple-toolchain/**'
   schedule:
     - cron: '0 7 * * 1'   # Mondays 07:00 UTC — same slot the retired codeql.yml used
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
+# The event is part of the group: the scheduled run and main pushes share a
+# ref, and one would otherwise displace the other's pending run.
 concurrency:
-  group: codeql-swift-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
 
 env:
   JAVA_VERSION: '17'
@@ -62,6 +89,8 @@ env:
 jobs:
   analyze:
     name: Analyze (swift)
+    # The weekly sweep runs only in this repository, never in a fork.
+    if: ${{ github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client' }}
     runs-on: macos-26
     timeout-minutes: 60
     permissions:
@@ -70,7 +99,9 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -78,37 +109,29 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # The same pinned Xcode the shipped build uses, so the Swift version the
+      # extractor sees is identical to the one that ships. Selected before the
+      # Kotlin/Native link, which uses the active Xcode's SDK.
+      - uses: ./.github/actions/apple-toolchain
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-ios-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-ios-${{ runner.os }}-
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
       # ── prerequisites: mirror of ios.yml's build-ios job ──────────────────
       - name: Build shared framework for iOS
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkReleaseFrameworkIosArm64
+        run: ./gradlew :shared:linkReleaseFrameworkIosArm64
 
-      # Xcode 26+ for the same reason ios.yml pins it: the iOS 26 SDK. Here it
-      # also keeps the Swift version the extractor sees identical to the one
-      # that ships.
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26+ on this runner; available:"
-            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Restore the BirdoPQ Rust cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            native/birdo-pq-ios/target
+          key: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'native/birdo-pq-ios/Cargo.lock', 'scripts/build-birdo-pq-xcframework.sh') }}
+          restore-keys: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build BirdoPQNative.xcframework
         run: |
@@ -119,7 +142,7 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: 'stable'
-          cache: false
+          cache-dependency-path: iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum
 
       - name: Build libwg-go.a (device)
         run: |
@@ -159,6 +182,10 @@ jobs:
           build-mode: manual
           config-file: ./.github/codeql/codeql-config-swift.yml
 
+      # Release configuration (same compilation conditions as the shipped app),
+      # but SWIFT_COMPILATION_MODE=singlefile and -Onone: whole-module mode put
+      # each module's extraction on one core for minutes at a time, and the
+      # optimiser output is not something CodeQL reads.
       - name: Build iOS app for CodeQL (no signing)
         working-directory: iosApp
         run: |
@@ -173,6 +200,9 @@ jobs:
             CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
             ARCHS=arm64 \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            SWIFT_COMPILATION_MODE=singlefile \
+            SWIFT_OPTIMIZATION_LEVEL=-Onone \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \

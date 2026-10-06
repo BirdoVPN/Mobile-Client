@@ -34,7 +34,7 @@ checked=0
 # Collect distinct (repo, sha, comment) triples across every workflow.
 mapfile -t pins < <(
     grep -rhoE 'uses:[[:space:]]*[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}[[:space:]]*#[[:space:]]*[^[:space:]]+' \
-        .github/workflows 2>/dev/null \
+        .github/workflows .github/actions 2>/dev/null \
     | sed -E 's/uses:[[:space:]]*//; s/[[:space:]]*#[[:space:]]*/ /' \
     | sort -u
 )
