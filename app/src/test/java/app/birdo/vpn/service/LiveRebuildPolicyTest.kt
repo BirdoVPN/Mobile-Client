@@ -20,7 +20,7 @@ class LiveRebuildPolicyTest {
     fun `only a server that cannot defer, or a tunnel that cannot carry the request, reaches the teardown path`() {
         val stopping = Event.entries.filter { LiveRebuildPolicy.directive(it) == Directive.LEGACY_TEARDOWN }
         assertEquals(
-            setOf(Event.CANNOT_REBUILD_HERE, Event.DEFERRAL_NOT_HONOURED, Event.REQUEST_UNANSWERED),
+            setOf(Event.CANNOT_REBUILD_HERE, Event.NO_LIVE_SESSION, Event.DEFERRAL_NOT_HONOURED, Event.REQUEST_UNANSWERED),
             stopping.toSet(),
         )
     }
@@ -67,9 +67,18 @@ class LiveRebuildPolicyTest {
 
     @Test
     fun `a minted key nothing rides is given back`() {
-        listOf(Event.DEFERRAL_NOT_HONOURED, Event.ROUTE_NOT_CONFIRMED, Event.FAILED_BEFORE_SWAP, Event.SUPERSEDED).forEach {
+        listOf(
+            Event.NO_LIVE_SESSION,
+            Event.DEFERRAL_NOT_HONOURED,
+            Event.ROUTE_NOT_CONFIRMED,
+            Event.FAILED_BEFORE_SWAP,
+            Event.SUPERSEDED,
+        ).forEach {
             assertTrue("$it", LiveRebuildPolicy.release(it).newKey)
         }
+        // The service found no session after the server minted one: the old
+        // key goes through today's teardown, never through the release list.
+        assertFalse(LiveRebuildPolicy.release(Event.NO_LIVE_SESSION).oldKey)
         // Nothing was minted on a refusal or a failed request.
         listOf(Event.CANNOT_REBUILD_HERE, Event.REFUSED, Event.REQUEST_FAILED).forEach {
             assertFalse("$it", LiveRebuildPolicy.release(it).newKey)

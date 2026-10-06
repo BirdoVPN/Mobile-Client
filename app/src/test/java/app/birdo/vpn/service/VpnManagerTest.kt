@@ -1953,6 +1953,29 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a rebuild the service finds no session for takes today's path and gives both keys back`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // The server minted key-456 and held key-123 back; the device has no
+        // live session left to move.
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        switch.await()
+
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        coVerify(exactly = 1) { repository.disconnectVpn("key-456") }
+        // The teardown releases the session key, put back to the old one: as
+        // CANNOT_REBUILD_HERE it released key-456 a second time and left
+        // key-123 out until the stale sweep (second-pass review, NEW-2).
+        coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
+        quiesce()
+    }
+
+    @Test
     fun `a server that cannot defer the live key takes today's teardown path`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(makeConnectResponse(success = false).copy(rebuildRefused = "unknown-current-key")))

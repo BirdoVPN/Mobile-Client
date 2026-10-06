@@ -566,7 +566,7 @@ class BirdoVpnServiceLifecycleTest {
         // …and the rebuild, finding no session to move, sends VpnManager down
         // today's path rather than keeping (and re-marking connected) a dead one.
         waitFor("the rebuild's answer") { outcome.isCompleted }
-        assertEquals(LiveRebuildPolicy.Event.CANNOT_REBUILD_HERE, kotlinx.coroutines.runBlocking { outcome.await() })
+        assertEquals(LiveRebuildPolicy.Event.NO_LIVE_SESSION, kotlinx.coroutines.runBlocking { outcome.await() })
     }
 
     @Test

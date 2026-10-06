@@ -36,9 +36,21 @@ internal object LiveRebuildPolicy {
          * `success: false` with a `rebuildRefused` the server will refuse the
          * same way every time: it holds no live session under the key we ride
          * (`unknown-current-key`), or will not move a Multi-Hop entry's exit in
-         * place (`same-entry-exit-change`). Nothing was evicted or minted.
+         * place (`same-entry-exit-change`). The SERVER's answer: nothing was
+         * evicted or minted.
          */
         CANNOT_REBUILD_HERE,
+
+        /**
+         * The SERVICE's answer, after the server minted the new key and held
+         * the old one back: there is no live session on the device to move
+         * (the dead-tunnel handler or a block got there first, or it runs
+         * Stealth). Today's path, like [CANNOT_REBUILD_HERE] — but the new key
+         * is given back, and the teardown releases the old one, which the
+         * session key is put back to (VpnManager.finishLiveRebuild). Answered
+         * as CANNOT_REBUILD_HERE, both keys stayed out until the stale sweep.
+         */
+        NO_LIVE_SESSION,
 
         /** Any other `success: false` (a device cap, a plan, a lookup error): nothing was touched. */
         REFUSED,
@@ -110,7 +122,8 @@ internal object LiveRebuildPolicy {
     data class Release(val newKey: Boolean, val oldKey: Boolean)
 
     fun directive(event: Event): Directive = when (event) {
-        Event.CANNOT_REBUILD_HERE, Event.DEFERRAL_NOT_HONOURED, Event.REQUEST_UNANSWERED -> Directive.LEGACY_TEARDOWN
+        Event.CANNOT_REBUILD_HERE, Event.NO_LIVE_SESSION, Event.DEFERRAL_NOT_HONOURED, Event.REQUEST_UNANSWERED ->
+            Directive.LEGACY_TEARDOWN
         Event.REFUSED, Event.REQUEST_FAILED, Event.ROUTE_NOT_CONFIRMED, Event.FAILED_BEFORE_SWAP ->
             Directive.KEEP_OLD_SESSION
         Event.NEW_PEER_HANDSHAKED -> Directive.COMMIT_NEW
@@ -126,7 +139,7 @@ internal object LiveRebuildPolicy {
     fun release(event: Event): Release = when (event) {
         Event.CANNOT_REBUILD_HERE, Event.REFUSED, Event.REQUEST_FAILED, Event.REQUEST_UNANSWERED ->
             Release(newKey = false, oldKey = false)
-        Event.DEFERRAL_NOT_HONOURED, Event.ROUTE_NOT_CONFIRMED, Event.FAILED_BEFORE_SWAP ->
+        Event.NO_LIVE_SESSION, Event.DEFERRAL_NOT_HONOURED, Event.ROUTE_NOT_CONFIRMED, Event.FAILED_BEFORE_SWAP ->
             Release(newKey = true, oldKey = false)
         Event.NEW_PEER_HANDSHAKED -> Release(newKey = false, oldKey = true)
         Event.FAILED_AFTER_SWAP -> Release(newKey = true, oldKey = true)

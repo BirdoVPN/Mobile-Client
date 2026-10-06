@@ -1663,7 +1663,11 @@ class VpnManager @Inject constructor(
                 _switching.value = false
             }
             LiveRebuildPolicy.Directive.FAILED_CLOSED -> sessionKeyId = null
-            LiveRebuildPolicy.Directive.LEGACY_TEARDOWN,
+            // Today's path releases the session key in its teardown. That must
+            // be the OLD key, the one still held back for us: swapInService
+            // had already moved the session to the new one, which the line
+            // above gave back, and the old one stayed out until the stale sweep.
+            LiveRebuildPolicy.Directive.LEGACY_TEARDOWN -> sessionKeyId = oldKey
             LiveRebuildPolicy.Directive.COMMIT_NEW,
             LiveRebuildPolicy.Directive.ABANDON -> Unit
         }

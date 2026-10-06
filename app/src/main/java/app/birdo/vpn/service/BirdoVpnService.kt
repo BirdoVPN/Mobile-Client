@@ -2679,10 +2679,11 @@ class BirdoVpnService : VpnService() {
         // No live session to move here — the dead-tunnel handler or a block got
         // to it first, or it is a Stealth session (never rebuilt in place).
         // FAILED_BEFORE_SWAP would tell VpnManager to KEEP the old session,
-        // and it marked a dead one connected again; CANNOT_REBUILD_HERE takes
-        // today's path instead: the fail-closed teardown, then a fresh dial.
+        // and it marked a dead one connected again; NO_LIVE_SESSION takes
+        // today's path instead (the fail-closed teardown, then a fresh dial)
+        // and gives both keys back.
         if (config == null || currentState !is VpnState.Connected || tunnelHandle < 0 || stealthActive) {
-            completeLiveRebuild(id, LiveRebuildPolicy.Event.CANNOT_REBUILD_HERE)
+            completeLiveRebuild(id, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
             return
         }
         // Committed to it: claim the tunnel. On the executor, so nothing that
