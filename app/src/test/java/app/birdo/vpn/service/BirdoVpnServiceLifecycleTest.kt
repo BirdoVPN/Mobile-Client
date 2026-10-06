@@ -21,6 +21,7 @@ import io.mockk.verify
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -114,6 +115,7 @@ class BirdoVpnServiceLifecycleTest {
             "_txBytesFlow" to 0L,
             "_stealthActiveFlow" to false,
             "_quantumActiveFlow" to false,
+            "_killSwitchNotArmedFlow" to null,
         ).forEach { (name, initial) ->
             val flowField = BirdoVpnService::class.java.getDeclaredField(name)
             flowField.isAccessible = true
@@ -671,6 +673,61 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 1) {
             notifications.postAlert(match { it.body == SessionCopy.KILL_SWITCH_NOT_ARMED })
         }
+    }
+
+    @Test
+    fun `the not-armed warning stays until a block comes up, and a stop ends it`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+
+        startTunnel()
+
+        // Sticky: the Error that said it is replaced by Reconnecting at once.
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, BirdoVpnService.killSwitchNotArmedFlow.value)
+
+        // The re-dial's block comes up.
+        every { anyConstructed<VpnService.Builder>().establish() } returns mockk(relaxed = true)
+        val activate = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch")
+        activate.isAccessible = true
+        activate.invoke(service)
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+
+        // …and a stop ends a warning that is still up.
+        val notArmed = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        notArmed.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (notArmed.get(null) as kotlinx.coroutines.flow.MutableStateFlow<String?>).value = SessionCopy.KILL_SWITCH_NOT_ARMED
+        val stop = BirdoVpnService::class.java.getDeclaredMethod("stopTunnel", VpnState.Error::class.java, Boolean::class.javaPrimitiveType)
+        stop.isAccessible = true
+        stop.invoke(service, null, true)
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+    }
+
+    @Test
+    fun `under Android's lockdown the failure does not claim traffic is unprotected`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+        val lockdown = BirdoVpnService::class.java.getDeclaredField("lockdownActive")
+        lockdown.isAccessible = true
+        lockdown.setBoolean(null, true)
+        try {
+            startTunnel()
+        } finally {
+            lockdown.setBoolean(null, false)
+        }
+
+        // REVIEW-AND-005: the OS is still blocking.
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN, error.message)
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN, BirdoVpnService.killSwitchNotArmedFlow.value)
     }
 
     @Test

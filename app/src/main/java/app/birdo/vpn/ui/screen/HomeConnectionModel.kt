@@ -3,6 +3,7 @@ package app.birdo.vpn.ui.screen
 import androidx.annotation.StringRes
 import app.birdo.vpn.R
 import app.birdo.vpn.service.FailureKind
+import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.ui.components.BadgeTone
@@ -132,7 +133,30 @@ internal fun remedyFor(kind: FailureKind): Remedy? = when (kind) {
 
 /**
  * The Connect screen's one message banner (A2-011): its own message first
- * (dismissible), else the session's Error. Never both.
+ * (dismissible), else a kill switch that could not be armed, else the
+ * session's Error. Never two.
  */
 internal fun homeMessage(state: VpnUiState): String? =
-    state.connectError ?: (state.vpnState as? VpnState.Error)?.message
+    state.connectError ?: killSwitchWarning(state) ?: (state.vpnState as? VpnState.Error)?.message
+
+/**
+ * P2-2: the kill switch could not be armed, said over the states that carry
+ * no message of their own: Reconnecting, the re-dial, a switch. Its Error said
+ * it first, but the supervisor answers a retryable failure with Reconnecting
+ * at once, and the alert is held back while the app is on screen, so a user
+ * watching Home never saw it. An Error speaks for itself; Connected ends it.
+ */
+internal fun killSwitchWarning(state: VpnUiState): String? =
+    state.killSwitchNotArmed?.takeIf { state.vpnState !is VpnState.Connected && state.vpnState !is VpnState.Error }
+
+/**
+ * The banner's action, or null. None for the kill-switch failure (P3-4):
+ * NEVER_ESTABLISHED's "Choose server" is no remedy for a block Android
+ * refused, and nothing on Home is.
+ */
+internal fun homeRemedy(state: VpnUiState): Remedy? {
+    if (state.connectError != null || killSwitchWarning(state) != null) return null
+    val error = state.vpnState as? VpnState.Error ?: return null
+    if (SessionCopy.isKillSwitchNotArmed(error.message)) return null
+    return remedyFor(error.kind)
+}

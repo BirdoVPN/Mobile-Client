@@ -405,8 +405,7 @@ fun HomeScreen(
                     // render side by side, often with the same text.
                     val message = homeMessage(state)
                     if (message != null) {
-                        val sessionError = state.vpnState as? VpnState.Error
-                        val remedy = if (state.connectError == null) sessionError?.kind?.let { remedyFor(it) } else null
+                        val remedy = homeRemedy(state)
                         HomeBanner(
                             icon = Icons.Default.ErrorOutline,
                             message = message,

@@ -76,6 +76,14 @@ class VpnViewModelTest {
         Dispatchers.resetMain()
         unmockkAll()
         setKillSwitchFlow(false)
+        setNotArmedFlow(null)
+    }
+
+    private fun setNotArmedFlow(value: String?) {
+        val field = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (field.get(null) as MutableStateFlow<String?>).value = value
     }
 
     private fun setKillSwitchFlow(value: Boolean) {
@@ -299,5 +307,23 @@ class VpnViewModelTest {
 
         released.complete(Unit)
         assertTrue(signedOut)
+    }
+
+    // ── P2-2: a kill switch that could not be armed stays on Home ────────
+
+    @Test
+    fun `Home keeps saying the kill switch could not be armed while the supervisor reconnects`() = runTest {
+        val vm = viewModel()
+        state.value = VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, app.birdo.vpn.service.FailureKind.DIED_AFTER_HANDSHAKE)
+        setNotArmedFlow(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        // VpnManager answers the retryable failure at once.
+        state.value = VpnState.Reconnecting(1)
+
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, vm.uiState.value.killSwitchNotArmed)
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, app.birdo.vpn.ui.screen.homeMessage(vm.uiState.value))
+
+        // A block that comes up (or a Connected, or a stop) clears it.
+        setNotArmedFlow(null)
+        assertNull(app.birdo.vpn.ui.screen.homeMessage(vm.uiState.value))
     }
 }

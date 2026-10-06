@@ -610,6 +610,7 @@ internal object SessionCopy {
      * The kill switch is on and its block could not be armed
      * (P1-dk-killswitch-establish-failure-silent). Published in place of the
      * failure path's own Error, which would otherwise claim the usual story.
+     * Use [killSwitchNotArmed], which picks this or the lockdown variant.
      */
     const val KILL_SWITCH_NOT_ARMED = "Kill switch could not be armed — traffic is NOT protected"
 
@@ -618,6 +619,21 @@ internal object SessionCopy {
 
     /** ...but Android's lockdown, when it is on, still blocks (the app cannot release it). */
     const val LOCKDOWN_STILL_BLOCKING = "Android's Block connections without VPN setting is still blocking traffic."
+
+    /**
+     * The same failure under Android's "Block connections without VPN": the
+     * OS is still blocking, so "traffic is NOT protected" would be false
+     * (REVIEW-AND-005's rule, as for the give-up copy).
+     */
+    const val KILL_SWITCH_NOT_ARMED_LOCKDOWN = "Kill switch could not be armed. $LOCKDOWN_STILL_BLOCKING"
+
+    /** What to say when the block could not be armed, [lockdown] being Android's own block. */
+    fun killSwitchNotArmed(lockdown: Boolean): String =
+        if (lockdown) KILL_SWITCH_NOT_ARMED_LOCKDOWN else KILL_SWITCH_NOT_ARMED
+
+    /** Whether [message] is the not-armed sentence, either variant. */
+    fun isKillSwitchNotArmed(message: String): Boolean =
+        message == KILL_SWITCH_NOT_ARMED || message == KILL_SWITCH_NOT_ARMED_LOCKDOWN
 
     /** Whether [message] already says whether traffic is blocked, so nothing may append a second claim. */
     fun speaksForTraffic(message: String): Boolean =

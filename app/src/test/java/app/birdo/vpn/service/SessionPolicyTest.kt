@@ -503,6 +503,22 @@ class SessionPolicyTest {
     }
 
     @Test
+    fun `a kill switch that could not be armed never denies Android's own block (REVIEW-AND-005)`() {
+        val lockdown = SessionCopy.killSwitchNotArmed(lockdown = true)
+        // Under "Block connections without VPN" the OS still blocks, so
+        // "traffic is NOT protected" would be false.
+        assertFalse(lockdown.contains("NOT protected"))
+        assertTrue(lockdown.contains(SessionCopy.LOCKDOWN_STILL_BLOCKING))
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, SessionCopy.killSwitchNotArmed(lockdown = false))
+        listOf(lockdown, SessionCopy.KILL_SWITCH_NOT_ARMED).forEach {
+            assertTrue(SessionCopy.isKillSwitchNotArmed(it))
+            // Nothing may append "the kill switch is blocking traffic" to it.
+            assertTrue(SessionCopy.speaksForTraffic(it))
+        }
+        assertFalse(SessionCopy.isKillSwitchNotArmed(SessionCopy.NO_TUNNEL))
+    }
+
+    @Test
     fun `a one-tap connect never guesses at a Multi-Hop entitlement`() {
         val armed = MultiHopPolicy.NewConnection.MultiHop("de-1", "nl-1")
         assertEquals(QuickToggle.ConnectPlan.MultiHop("de-1", "nl-1"), QuickToggle.connectPlan(armed, "SOVEREIGN"))

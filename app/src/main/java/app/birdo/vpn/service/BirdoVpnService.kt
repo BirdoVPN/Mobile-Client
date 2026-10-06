@@ -258,6 +258,26 @@ class BirdoVpnService : VpnService() {
         val killSwitchActive: Boolean get() = _killSwitchActiveFlow.value
         val killSwitchActiveFlow: StateFlow<Boolean> = _killSwitchActiveFlow.asStateFlow()
 
+        /**
+         * The kill switch could not be armed, as the sentence to show
+         * ([SessionCopy.killSwitchNotArmed]); null otherwise. STICKY, unlike
+         * the Error that first says it: VpnManager answers a retryable failure
+         * with Reconnecting at once, and the alert is held back while the app
+         * is on screen, so a user watching Home never saw it. Home and the
+         * ongoing notification show it over Reconnecting and the re-dial.
+         *
+         * Cleared when a block comes up, when a session connects, and when
+         * the service stops (VpnManager clears it too, the moment the user
+         * disconnects).
+         */
+        private val _killSwitchNotArmedFlow = MutableStateFlow<String?>(null)
+        val killSwitchNotArmedFlow: StateFlow<String?> = _killSwitchNotArmedFlow.asStateFlow()
+
+        /** The user ended the session: the not-armed warning is about a session that is gone. */
+        internal fun clearKillSwitchNotArmed() {
+            _killSwitchNotArmedFlow.value = null
+        }
+
         private val _publicIpFlow = MutableStateFlow<String?>(null)
         val publicIp: String? get() = _publicIpFlow.value
 
@@ -744,7 +764,8 @@ class BirdoVpnService : VpnService() {
                 killSwitchActiveFlow,
                 manager.sessionExpired,
                 manager.switching,
-            ) { state, blocking, expired, switching -> RenderInput(state, blocking, expired, switching) }
+                killSwitchNotArmedFlow,
+            ) { state, blocking, expired, switching, notArmed -> RenderInput(state, blocking, expired, switching, notArmed) }
                 .collect { input ->
                     updateNotification()
                     renderAlert(input)
@@ -758,6 +779,8 @@ class BirdoVpnService : VpnService() {
         val killSwitchActive: Boolean,
         val sessionExpired: Boolean,
         val switching: Boolean,
+        /** Not read here: a change of it re-renders the ongoing notification. */
+        val killSwitchNotArmed: String?,
     )
 
     /** Post, replace or withdraw the high-importance alert for [input]. */
@@ -1059,6 +1082,9 @@ class BirdoVpnService : VpnService() {
      */
     private fun handleReleaseBlock() {
         if (currentState is VpnState.Connected || currentState.isConnectingPhase) return
+        // The supervisor let the block go on purpose; its Error says what
+        // that means for the traffic.
+        _killSwitchNotArmedFlow.value = null
         deactivateKillSwitch()
         cleanupTunnel()
         cleanupStealthAndQuantum()
@@ -1264,12 +1290,12 @@ class BirdoVpnService : VpnService() {
     private fun buildCurrentNotification(): android.app.Notification {
         val manager = entryPoint?.vpnManager()
         val state = displayState()
-        val body = when {
-            state is VpnState.Connected -> buildConnectedText()
-            state is VpnState.Error -> state.message
-            state.isConnectingPhase -> notificationDetail
-            else -> null
-        }
+        val body = VpnNotificationManager.ongoingBody(
+            state = state,
+            connectedText = if (state is VpnState.Connected) buildConnectedText() else null,
+            setupDetail = notificationDetail,
+            killSwitchNotArmed = killSwitchNotArmedFlow.value,
+        )
         return notifManager.buildForegroundNotification(
             state = state,
             body = body,
@@ -1465,6 +1491,7 @@ class BirdoVpnService : VpnService() {
                 try { stale.close() } catch (_: Exception) {}
             }
             _killSwitchActiveFlow.value = true
+            _killSwitchNotArmedFlow.value = null
             updateState(VpnState.KillSwitchActive)
             Log.i(TAG, "Kill switch active — all traffic blocked")
             mainHandler.post { updateNotification() }
@@ -1567,18 +1594,20 @@ class BirdoVpnService : VpnService() {
      *   The two re-arm paths pass VPN_PERMISSION_REQUIRED, as they always did.
      */
     private fun publishKillSwitchFailure(kind: FailureKind) {
-        val error = VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, kind)
+        // Android's own lockdown still blocks when it is on (REVIEW-AND-005).
+        val message = SessionCopy.killSwitchNotArmed(lockdownActive)
         // No tunnel is up on any path that gets here; a green widget would be
         // a false safety signal.
         updateWidgetState(false, null)
-        postKillSwitchAlert(kind)
-        updateState(error)
+        _killSwitchNotArmedFlow.value = message
+        postKillSwitchAlert(message, kind)
+        updateState(VpnState.Error(message, kind))
         mainHandler.post { updateNotification() }
     }
 
     /** The alert half of [publishKillSwitchFailure], posted at most once per key. */
-    private fun postKillSwitchAlert(kind: FailureKind) {
-        val error = VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, kind)
+    private fun postKillSwitchAlert(message: String, kind: FailureKind) {
+        val error = VpnState.Error(message, kind)
         val alert = VpnNotificationManager.alertFor(
             state = error,
             killSwitchActive = false,
@@ -2713,6 +2742,7 @@ class BirdoVpnService : VpnService() {
     private fun publishConnected(handle: Int) {
         // A switch/reconnect may have superseded this tunnel while we probed.
         if (tunnelHandle != handle) return
+        _killSwitchNotArmedFlow.value = null
         _connectedSinceFlow.value = System.currentTimeMillis()
         updateState(VpnState.Connected)
         updateWidgetState(true, connectedServer)
@@ -2754,6 +2784,9 @@ class BirdoVpnService : VpnService() {
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
         _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
         updateWidgetState(false, null)
+        // No session is left for a not-armed warning to describe; the stop's
+        // own reason, if any, is what is shown now.
+        _killSwitchNotArmedFlow.value = null
         if (userInitiated) {
             // The user acted: an alert about the session they just ended
             // ("Kill switch could not be armed", "Can't connect") is stale
@@ -2844,8 +2877,12 @@ class BirdoVpnService : VpnService() {
                 // fails through failSetup, whose own block attempt publishes
                 // the failure as the session's Error. (A forced block for a
                 // fail-open user's settings blip is not a promise they relied
-                // on, so it raises nothing.)
-                postKillSwitchAlert(FailureKind.VPN_PERMISSION_REQUIRED)
+                // on, so it raises nothing.) The sticky warning carries it onto
+                // Home and the ongoing notification, where the user watching
+                // the switch is, until the rebuild settles it.
+                val message = SessionCopy.killSwitchNotArmed(lockdownActive)
+                _killSwitchNotArmedFlow.value = message
+                postKillSwitchAlert(message, FailureKind.VPN_PERMISSION_REQUIRED)
             }
         } else {
             // wg-go may still be running (user switch from a live tunnel); tear the

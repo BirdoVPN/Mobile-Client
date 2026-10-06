@@ -2151,4 +2151,24 @@ class VpnManagerTest {
         runCurrent()
         assertTrue(signOut.isCompleted)
     }
+
+    // ── P2-2: the not-armed warning ends with the user's Disconnect ──────
+
+    @Test
+    fun `a user Disconnect clears the kill-switch warning at once`() = runTest {
+        val field = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val notArmed = field.get(null) as MutableStateFlow<String?>
+        notArmed.value = SessionCopy.KILL_SWITCH_NOT_ARMED
+        try {
+            vpnManager.disconnect()
+
+            // Not only when the service's stop lands: Home must not keep
+            // saying it over the user's own Disconnect.
+            assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            notArmed.value = null
+        }
+    }
 }

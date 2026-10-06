@@ -1706,6 +1706,10 @@ class VpnManager @Inject constructor(
         connectWatchdogJob?.cancel()
         _switching.value = false
         prefs.sessionShouldBeUp = false
+        // The not-armed warning describes the session the user just ended.
+        // Cleared here, not only when the service's stop lands: Home must not
+        // keep saying it over the user's own Disconnect.
+        BirdoVpnService.clearKillSwitchNotArmed()
         tearDownTunnel(userInitiated = true)
     }
 

@@ -58,6 +58,12 @@ data class VpnUiState(
     val portForwardError: String? = null,
     val needsVpnPermission: Boolean = false,
     val killSwitchActive: Boolean = false,
+    /**
+     * The kill switch could not be armed, as the sentence to show, or null
+     * (BirdoVpnService.killSwitchNotArmedFlow). Sticky across Reconnecting
+     * and the re-dial, which have no message of their own (P2-2).
+     */
+    val killSwitchNotArmed: String? = null,
     /** The node the session was dialled to (VpnManager.connectedServerId), for the Servers list's marker. */
     val connectedServerId: String? = null,
     /** A1-025: Android's strict Private DNS overrides BirdoShield / Custom DNS on this connection. */
@@ -387,7 +393,8 @@ class VpnViewModel @Inject constructor(
                 BirdoVpnService.killSwitchActiveFlow,
                 vpnManager.switching,
                 vpnManager.sessionExpired,
-            ) { state, blocking, switching, expired -> SyncInput(state, blocking, switching, expired) }
+                BirdoVpnService.killSwitchNotArmedFlow,
+            ) { state, blocking, switching, expired, notArmed -> SyncInput(state, blocking, switching, expired, notArmed) }
                 .collect { input ->
                     val route = vpnManager.activeMultiHopRoute
                     val routeIsLive = input.state is VpnState.Connected || input.state.isConnectingPhase
@@ -397,6 +404,7 @@ class VpnViewModel @Inject constructor(
                         connectedServerId = vpnManager.connectedServerId.value,
                         connectedSince = vpnManager.connectedSince.value,
                         killSwitchActive = input.killSwitchActive,
+                        killSwitchNotArmed = input.killSwitchNotArmed,
                         switching = input.switching,
                         sessionExpired = input.sessionExpired,
                         liveMultiHopEntryId = if (routeIsLive) route?.first else null,
@@ -439,6 +447,7 @@ class VpnViewModel @Inject constructor(
         val killSwitchActive: Boolean,
         val switching: Boolean,
         val sessionExpired: Boolean,
+        val killSwitchNotArmed: String?,
     )
 
     /**
