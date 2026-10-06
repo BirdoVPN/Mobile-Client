@@ -18,7 +18,7 @@
 //! wrong answer is an instant crash on seven device models, so it gets executed,
 //! not read.
 //!
-//! ## What CI asserts with it (`.github/workflows/android.yml`)
+//! ## What CI asserts with it (`.github/workflows/android-ci.yml`)
 //!
 //! 1. `-cpu cortex-a53` (no FEAT_SHA3): exit 0. The gate took the soft path.
 //! 2. `-cpu max` (FEAT_SHA3 present): exit 0 AND the same PSK. The fast path

@@ -81,7 +81,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #    The known way to re-arm the crash is RUSTFLAGS='-C target-feature=+sha3'
 #    (or any -C target-cpu above the fleet floor): cpufeatures' internal
 #    __unless_target_features! macro ELIDES the HWCAP check and returns a
-#    constant true when the feature is statically enabled. android.yml builds
+#    constant true when the feature is statically enabled. android-ci.yml builds
 #    that configuration on purpose and asserts the ISA gate FAILS on it.
 #
 # 4. THE PIN IS A CRYPTO DECISION, NOT A DEPENDENCY ONE.

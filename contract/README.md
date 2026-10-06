@@ -25,7 +25,7 @@ git -C ../birdo-web rev-parse origin/main:backend/contract/vpn-protocol.schema.j
 | consumer | what it proves |
 |---|---|
 | `app/src/test/java/app/birdo/vpn/data/model/ConnectContractTest.kt` (Android, `./gradlew :app:testDebugUnitTest`) | the real `ConnectRequest` / `MultiHopConnectRequest`, encoded by the app's own `NetworkModule.json`, validate against `$defs.ConnectRequest` / `$defs.MultiHopConnectRequest` with a Draft 2020-12 validator; every model field has a schema twin; an unknown key, a renamed key, a broken pattern and an explicit null are refused. |
-| `iosApp/BirdoVPNTests/ConnectContractTests.swift` (iOS/macOS, `ios.yml` / `macos.yml` — iOS is never built in PR CI) | the real `ConnectBody` / `MultiHopBody` (`iosApp/Services/ConnectWire.swift`), encoded by the encoder `APIClient` uses, have keys that are a subset of the schema's properties, carry the required hop ids, and satisfy `type` / `minLength` / `maxLength` / `pattern` / `enum`; the same mutations are refused. The file reaches the test bundle as a resource (`project.yml`). |
+| `iosApp/BirdoVPNTests/ConnectContractTests.swift` (iOS/macOS; on pull requests by `apple-ci.yml`, on release by `ios.yml`) | the real `ConnectBody` / `MultiHopBody` (`iosApp/Services/ConnectWire.swift`), encoded by the encoder `APIClient` uses, have keys that are a subset of the schema's properties, carry the required hop ids, and satisfy `type` / `minLength` / `maxLength` / `pattern` / `enum`; the same mutations are refused. The file reaches the test bundle as a resource (`project.yml`). |
 
 Both routes refuse unknown properties (`additionalProperties: false`), so a
 field renamed on either side is not ignored — it is a 400 on every connect.

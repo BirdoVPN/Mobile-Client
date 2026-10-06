@@ -8,7 +8,8 @@
 #
 # The file name is historical: it started as a FEAT_SHA3-only check after the
 # 1.4.25 crash and is now the single ISA-baseline gate for all four ABIs. Every
-# caller (android.yml PR build, android.yml release APK + AAB, native/build.sh,
+# caller (android-ci.yml PR build, android.yml release APK + AAB -- both via
+# .github/scripts/isa-gate.sh, one library per invocation -- native/build.sh,
 # native/build.ps1 via :app:buildRustLibs) runs THIS file, so there is exactly
 # one rule table to reason about. scripts/tests/check_no_sha3_ext_test.sh runs
 # it against hand-assembled fixtures and must stay green.
@@ -40,7 +41,7 @@
 # the fleet and a SIGILL. The known way to defeat both at once is
 # RUSTFLAGS='-C target-feature=+sha3', which additionally makes cpufeatures'
 # __unless_target_features! elide the HWCAP check and return a constant true;
-# android.yml builds exactly that and asserts THIS SCRIPT FAILS on it.
+# android-ci.yml builds exactly that and asserts THIS SCRIPT FAILS on it.
 #
 # FEAT_SHA3 is OPTIONAL in ARMv8.2-A. On an arm64 device without it the first
 # `eor3` raises SIGILL and the process dies. That crash shipped in every Android

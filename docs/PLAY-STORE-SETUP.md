@@ -83,7 +83,7 @@ job is skipped and nothing reaches Play.
   (`status: completed`, so internal testers get it immediately). It also drafts
   a GitHub Release with the sideload APK.
 
-- **Promote to another track:** Actions -> *Mobile CI (Android + iOS)* ->
+- **Promote to another track:** Actions -> *Android Release* ->
   **Run workflow** -> pick `play_track` = `alpha` / `beta` / `production`.
   (For production, consider a **staged rollout** — set `status: inProgress` +
   a `userFraction` in the `play-upload` step instead of `completed`.)

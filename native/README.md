@@ -133,7 +133,7 @@ short version, in the order the facts actually go:
 - **The one known way to re-arm the crash.** `RUSTFLAGS='-C target-feature=+sha3'`
   (or any `-C target-cpu` above the fleet floor): `cpufeatures`' internal
   `__unless_target_features!` macro elides the HWCAP check entirely and returns
-  a constant `true` when the feature is statically enabled. `android.yml` builds
+  a constant `true` when the feature is statically enabled. `android-ci.yml` builds
   that configuration on purpose and asserts the ISA gate **fails** on it.
 - **Cost:** the FEAT_SHA3 Keccak speedup on devices that have the extension.
   ML-KEM keygen runs once per connect, next to a network round trip. No
@@ -174,10 +174,15 @@ loud warning and CI — where the tool is mandatory (`ROSENPASS_ISA_GATE_REQUIRE
 
 ## CI integration
 
-[`.github/workflows/android.yml`](../.github/workflows/android.yml) installs
-Rust + cargo-ndk before the Gradle build and invokes `native/build.sh release`
-so every signed AAB contains the native module for all four ABIs. This adds
-~3 minutes to the CI run.
+[`.github/actions/android-native-libs`](../.github/actions/android-native-libs/action.yml)
+installs the Rust Android targets + cargo-ndk and runs `:app:buildRustLibs`
+(`native/build.sh release`, `--locked`) for every job that needs the native
+payload: the debug APK and R8 jobs in
+[`android-ci.yml`](../.github/workflows/android-ci.yml) and the signed release in
+[`android.yml`](../.github/workflows/android.yml), so every signed AAB contains
+the native module for all four ABIs. The host-side gates (fmt, clippy, tests,
+`cargo audit`, the ISA negative case, the declared `rust-version`) run as their
+own `android-ci.yml` jobs.
 
 ## Graceful degradation
 
