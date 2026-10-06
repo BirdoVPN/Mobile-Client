@@ -26,7 +26,7 @@
 # library on the Application path shifts tens of percent -- not to police noise.
 #
 # HARDWARE: this needs a full x86_64 emulator, so it needs KVM.
-# GitHub's ubuntu-latest runners expose /dev/kvm, but only to the `kvm` group,
+# GitHub's hosted ubuntu runners expose /dev/kvm, but only to the `kvm` group,
 # which the runner user is not in by default -- hence the udev step below. That
 # step is not decoration: without it the emulator falls back to software
 # emulation and the boot times out. macOS runners are NOT an alternative here
@@ -41,8 +41,15 @@ on:
     # does not pile onto the same runner minute as every other cron in the org.
     - cron: '20 4 3 * *'
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 env:
   JAVA_VERSION: '17'
@@ -51,13 +58,19 @@ env:
 jobs:
   generate:
     name: Record baseline profile on a managed device
-    runs-on: ubuntu-latest
+    # The monthly run happens only in this repository, never in a fork.
+    if: ${{ github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     # An emulator boot plus 12 recording iterations plus a nonMinifiedRelease
     # build. The default 360 minutes would let a hung emulator burn an entire
     # billing afternoon.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -65,14 +78,10 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
       # Hardware acceleration. Assert it rather than hope for it: a missing
       # /dev/kvm does not fail here, it fails 40 minutes later as an emulator
@@ -94,22 +103,12 @@ jobs:
       # with an empty jniLibs/ still installs and still launches, and would
       # produce a plausible-looking profile of an app that is missing its VPN
       # stack -- another silently-wrong profile, which is the whole failure mode
-      # this workflow exists to avoid. Same provisioning as the `build` job in
-      # android.yml.
-      - name: Install Rust Android toolchain
-        run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi \
-                            x86_64-linux-android i686-linux-android
-          cargo install cargo-ndk --locked --version 4.1.2
-
-      - name: Set up Go (the 32-bit Xray engines are built from source)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.25'
-          cache: false
-
-      - name: Cache Go build for the Xray engines
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # this workflow exists to avoid. Same native payload, built the same way,
+      # as android-ci.yml's debug APK and android.yml's release
+      # (.github/actions/android-native-libs). Nothing recorded here ships except
+      # the profile text, which a human commits.
+      - name: Restore the Go cache for the Xray engines
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/go-build
@@ -117,17 +116,7 @@ jobs:
           key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
           restore-keys: xray-go-${{ runner.os }}-
 
-      - name: Provision Xray Reality engines for every shipped ABI
-        run: |
-          set -euo pipefail
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/provision_xray_engines.sh
-          scripts/provision_xray_engines.sh
-
-      - name: Build the Rosenpass JNI engine for every shipped ABI
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :app:buildRustLibs
+      - uses: ./.github/actions/android-native-libs
 
       # No signing secrets are needed: app/build.gradle.kts re-points the
       # nonMinifiedRelease/benchmarkRelease build types at the debug key
@@ -156,9 +145,10 @@ jobs:
       # is the fix, and re-running the whole 40-minute job to obtain it would be
       # absurd.
       - name: Upload the recorded profile
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: baseline-profile
           path: app/src/release/generated/baselineProfiles/
           if-no-files-found: warn
+          retention-days: 30

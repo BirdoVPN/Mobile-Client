@@ -33,13 +33,24 @@ on:
   schedule:
     - cron: '0 9 1 * *'
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   verify:
     name: Send one test event through the real secret
-    runs-on: ubuntu-latest
+    # The monthly run happens only in this repository, never in a fork.
+    if: ${{ github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Send and check
         env:
@@ -84,12 +95,14 @@ jobs:
           # Capture the status on its OWN line. `curl ... | tail` would report
           # tail's exit code, which is the trap that has produced false PASSes in
           # this repo before.
-          CODE=$(curl -s -o /tmp/sentry-resp.txt -w '%{http_code}' --max-time 30 \
+          # `|| RC=$?`, not a bare `RC=$?` on the next line: the step shell runs
+          # with -e, so a failing curl would end the step before RC was read.
+          RC=0
+          CODE=$(curl -s -o "$RUNNER_TEMP/sentry-resp.txt" -w '%{http_code}' --max-time 30 \
             -X POST "https://$HOST/api/$PROJ/store/" \
             -H 'Content-Type: application/json' \
             -H "X-Sentry-Auth: Sentry sentry_version=7, sentry_key=$KEY, sentry_client=birdo-ci-check/1.0" \
-            --data "$BODY")
-          RC=$?
+            --data "$BODY") || RC=$?
 
           if [ "$RC" -ne 0 ]; then
             echo "::error::curl itself failed (exit $RC) — could not reach $HOST"
@@ -108,12 +121,12 @@ jobs:
               ;;
             401|403)
               echo "::error::Sentry REJECTED the key (HTTP $CODE). The secret is present but not usable — wrong project, revoked key, or a truncated paste."
-              head -c 300 /tmp/sentry-resp.txt
+              head -c 300 "$RUNNER_TEMP/sentry-resp.txt"
               exit 1
               ;;
             *)
               echo "::error::Unexpected response HTTP $CODE from $HOST"
-              head -c 300 /tmp/sentry-resp.txt
+              head -c 300 "$RUNNER_TEMP/sentry-resp.txt"
               exit 1
               ;;
           esac

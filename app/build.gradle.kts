@@ -85,8 +85,8 @@ val sentryDsnLiteral = sentryDsn.replace("\\", "\\\\").replace("\"", "\\\"")
 // account at all (reproducible/F-Droid-style source builds, a contributor
 // checking that minification still works). The build shouts whenever it is used.
 //
-// CI DOES SET THIS, in exactly one place. .github/workflows/android.yml runs
-// `:app:minifyReleaseWithR8 -PallowMissingSentryDsn=true` in the `build` job, so
+// CI DOES SET THIS, in exactly one place. .github/workflows/android-ci.yml runs
+// `:app:minifyReleaseWithR8 -PallowMissingSentryDsn=true` in the `r8` job, so
 // it is passed on EVERY pull request. That is deliberate and safe: the R8-on-PR
 // step runs the shrinker only — it never reaches packageRelease, produces no
 // APK or AAB, and a fork or dependabot PR has neither the Azure keystore nor the

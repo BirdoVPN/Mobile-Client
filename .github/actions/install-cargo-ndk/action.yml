@@ -1,0 +1,32 @@
+name: Rust Android targets + cargo-ndk
+description: >-
+  Adds the four shipped Android Rust targets to the toolchain rust-toolchain.toml pins and
+  installs cargo-ndk from upstream's release binary, pinned by SHA-256. No cache.
+
+runs:
+  using: composite
+  steps:
+    # One Rust target per shipped ABI, so native/build.sh produces a
+    # librosenpass_jni.so for every entry in app/build.gradle.kts abiFilters. A
+    # missing target does not fail the Rust build -- it silently yields one fewer
+    # .so, caught much later by scripts/verify_android_release_apk.py.
+    #
+    # cargo-ndk was `cargo install cargo-ndk --locked --version 4.1.2`, which
+    # compiled the same release from source on every run. This is the binary
+    # upstream publishes for that release, checked against its SHA-256.
+    - name: Install the Rust Android targets and cargo-ndk
+      shell: bash
+      env:
+        CARGO_NDK_VERSION: 4.1.2
+        CARGO_NDK_SHA256: dc148bebbfcd7d5355e9858530d5a69c20ce69cf3268c54b9f63c60cb4c9a966
+      run: |
+        set -euo pipefail
+        rustup target add aarch64-linux-android armv7-linux-androideabi \
+                          x86_64-linux-android i686-linux-android
+        name="cargo-ndk-x86_64-unknown-linux-musl-v${CARGO_NDK_VERSION}"
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tgz" \
+          "https://github.com/bbqsrc/cargo-ndk/releases/download/v${CARGO_NDK_VERSION}/$name.tgz"
+        echo "${CARGO_NDK_SHA256}  $RUNNER_TEMP/$name.tgz" | sha256sum -c -
+        tar -xzf "$RUNNER_TEMP/$name.tgz" -C "$RUNNER_TEMP"
+        install -m 0755 "$RUNNER_TEMP/$name"/cargo-ndk* "$HOME/.cargo/bin/"
+        cargo ndk --version
