@@ -757,6 +757,53 @@ class BirdoVpnServiceLifecycleTest {
         assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
     }
 
+    private fun setNotArmed(value: String?) {
+        val f = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        f.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (f.get(null) as kotlinx.coroutines.flow.MutableStateFlow<String?>).value = value
+    }
+
+    @Test
+    fun `the not-armed warning ends when the re-dial's tunnel takes the traffic`() {
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+
+        // The tunnel is up and the probe is still waiting for its handshake.
+        startTunnelWithPollingProbe()
+        try {
+            assertEquals(VpnState.Connecting, BirdoVpnService.currentState)
+            // It used to clear only at Connected: up to the whole probe window
+            // of "traffic is NOT protected" over a tunnel carrying it.
+            assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            BirdoVpnService::class.java.getDeclaredMethod("cleanupTunnel").apply { isAccessible = true }.invoke(service)
+        }
+    }
+
+    @Test
+    fun `turning the kill switch off ends the not-armed warning, unless Android's lockdown is on`() {
+        val update = BirdoVpnService::class.java.getDeclaredMethod("handleUpdateSettings", Intent::class.java)
+        update.isAccessible = true
+        val off = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns false
+        }
+        val lockdown = BirdoVpnService::class.java.getDeclaredField("lockdownActive").apply { isAccessible = true }
+
+        lockdown.setBoolean(null, true)
+        try {
+            setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN)
+            update.invoke(service, off)
+            // The OS is still blocking; the warning about it stands.
+            assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN, BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            lockdown.setBoolean(null, false)
+        }
+
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        update.invoke(service, off)
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+    }
+
     @Test
     fun `under Android's lockdown the failure does not claim traffic is unprotected`() {
         arrangeTunnelStart(protectSucceeds = false)

@@ -1186,6 +1186,10 @@ class BirdoVpnService : VpnService() {
     private fun handleUpdateSettings(intent: Intent) {
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
         Log.i(TAG, "Runtime settings update (flag-only): killSwitchEnabled=$isKillSwitchEnabled")
+        // The user turned the kill switch off: a warning that it could not be
+        // armed is about a control they no longer want. Kept under Android's
+        // lockdown, whose variant is about the OS's own block.
+        if (!isKillSwitchEnabled && !lockdownActive) _killSwitchNotArmedFlow.value = null
 
         // Kill switch turned OFF while it's actively blocking a DEAD tunnel:
         // honour fail-open by releasing the block. This runs on the tunnel
@@ -2032,6 +2036,10 @@ class BirdoVpnService : VpnService() {
             // blocked" at the same time — a flatly contradictory claim about
             // whether the user's traffic was flowing. Observed on-device.
             _killSwitchActiveFlow.value = false
+            // …and the not-armed warning with it: the tunnel interface now
+            // captures the traffic, so "traffic is NOT protected" is no longer
+            // true, even while the probe waits for the handshake.
+            _killSwitchNotArmedFlow.value = null
 
             _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
             _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
