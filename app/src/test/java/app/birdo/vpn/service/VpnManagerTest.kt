@@ -1975,6 +1975,75 @@ class VpnManagerTest {
         quiesce()
     }
 
+    // ── NEW-1: one recovery when the old tunnel dies under a live rebuild ──
+
+    @Test
+    fun `a switch whose old tunnel dies during the rebuild recovers once, and stays wanted`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // The dead-tunnel handler's Error lands while the swap is with the
+        // service, which then finds no session to move.
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        switch.await()
+        advanceTimeBy(30_000)
+
+        // The supervisor used to take the Error first: a user switch had not
+        // connected yet, so it gave up as NEVER_CONNECTED and cleared the
+        // intent; the legacy dial then ran on a session nobody wanted.
+        verify(exactly = 0) { prefs.sessionShouldBeUp = false }
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a settings rebuild whose old tunnel dies does not race a second recovery dial`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(1_500)
+        assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        advanceTimeBy(30_000)
+
+        // The first dial and today's path — not a supervisor re-dial ~2 s
+        // later racing it (two STARTs, two peers).
+        coVerify(exactly = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
+        runCurrent()
+        switch.await()
+        advanceTimeBy(30_000)
+
+        // Kept, but dead: the supervisor re-dials it.
+        coVerify(atLeast = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
     @Test
     fun `a server that cannot defer the live key takes today's teardown path`() = runTest {
         connectAndEstablish()
