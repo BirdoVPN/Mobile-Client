@@ -519,6 +519,56 @@ class BirdoVpnServiceLifecycleTest {
         handle.invoke(service, intent, gen)
     }
 
+    // ── N1: a live rebuild must not silence a handler mid-arm ────────────
+
+    @Test
+    fun `a live rebuild arriving while the dead-tunnel handler arms neither silences it nor keeps the dead session`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        BirdoVpnService.uiForeground = false
+        startTunnel()
+        waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+        val monitor = field("tunnelMonitor") as TunnelMonitor
+        val exit = TunnelMonitor::class.java.getDeclaredField("onUnexpectedExit")
+            .apply { isAccessible = true }.get(monitor)
+        @Suppress("UNCHECKED_CAST")
+        val onUnexpectedExit = exit as (Boolean) -> Unit
+        val outcome = BirdoVpnService.expectLiveRebuild(77L)
+        BirdoVpnService.setRebuildConfig(
+            ConnectResponse(
+                success = true,
+                keyId = "key-777",
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "198.51.100.9:51820",
+                assignedIp = "10.100.0.9",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+            ),
+        )
+        val rebuild = mockk<Intent>(relaxed = true) {
+            every { action } returns BirdoVpnService.ACTION_LIVE_REBUILD
+            every { getLongExtra(BirdoVpnService.EXTRA_REBUILD_ID, any()) } returns 77L
+        }
+        var arms = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            // The user's server switch lands while the block is being armed,
+            // and the block is refused.
+            if (arms++ == 0) service.onStartCommand(rebuild, 0, 1)
+            null
+        }
+
+        onUnexpectedExit(false)
+
+        // The handler's verdict stands. It used to be swallowed (the rebuild
+        // bumped the generation on arrival), leaving Connected over a device
+        // with no tunnel and no block: a silent fail-open.
+        waitFor("the handler's verdict") { BirdoVpnService.currentState is VpnState.Error }
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, (BirdoVpnService.currentState as VpnState.Error).message)
+        // …and the rebuild, finding no session to move, sends VpnManager down
+        // today's path rather than keeping (and re-marking connected) a dead one.
+        waitFor("the rebuild's answer") { outcome.isCompleted }
+        assertEquals(LiveRebuildPolicy.Event.CANNOT_REBUILD_HERE, kotlinx.coroutines.runBlocking { outcome.await() })
+    }
+
     @Test
     fun `a rebuild establish() refuses keeps the old session untouched`() {
         val order = mutableListOf<String>()

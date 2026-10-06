@@ -880,8 +880,17 @@ class BirdoVpnService : VpnService() {
             ACTION_RELEASE_BLOCK -> serial { handleReleaseBlock() }
             ACTION_UPDATE_SETTINGS -> serial { handleUpdateSettings(intent) }
             ACTION_LIVE_REBUILD -> {
-                val gen = transitionGen.incrementAndGet()
-                serial { handleLiveRebuild(intent, gen) }
+                // NOT bumped on arrival, unlike the transitions above. A bump
+                // tells whatever is running "a newer transition owns the state
+                // now — publish nothing", and a live rebuild may decline to run
+                // at all (the session it was asked to move is gone). Bumped on
+                // arrival, it silenced a dead-tunnel handler arming the block at
+                // that moment: its Error swallowed, and with the block refused
+                // the device sat at Connected with no tunnel and no block. The
+                // rebuild claims the generation in handleLiveRebuild, on the
+                // executor, once it is going to swap.
+                val seen = transitionGen.get()
+                serial { handleLiveRebuild(intent, seen) }
             }
             ACTION_USER_DISCONNECT -> {
                 val manager = entryPoint?.vpnManager()
@@ -2637,17 +2646,28 @@ class BirdoVpnService : VpnService() {
      * and only then does wg-go move over. The pure rules and why Android fails
      * closed after the swap instead of reverting: LiveRebuildPolicy.
      */
-    private fun handleLiveRebuild(intent: Intent, gen: Long) {
+    private fun handleLiveRebuild(intent: Intent, seen: Long) {
         val id = intent.getLongExtra(EXTRA_REBUILD_ID, -1L)
         val config = rebuildConfig
         rebuildConfig = null
         fun keepOld() = completeLiveRebuild(id, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
-        if (config == null || !isCurrent(gen) || currentState !is VpnState.Connected || tunnelHandle < 0 ||
-            stealthActive
-        ) {
-            keepOld()
+        // A transition that arrived after this rebuild owns the tunnel.
+        if (!isCurrent(seen)) {
+            completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
             return
         }
+        // No live session to move here — the dead-tunnel handler or a block got
+        // to it first, or it is a Stealth session (never rebuilt in place).
+        // FAILED_BEFORE_SWAP would tell VpnManager to KEEP the old session,
+        // and it marked a dead one connected again; CANNOT_REBUILD_HERE takes
+        // today's path instead: the fail-closed teardown, then a fresh dial.
+        if (config == null || currentState !is VpnState.Connected || tunnelHandle < 0 || stealthActive) {
+            completeLiveRebuild(id, LiveRebuildPolicy.Event.CANNOT_REBUILD_HERE)
+            return
+        }
+        // Committed to it: claim the tunnel. On the executor, so nothing that
+        // is mid-way through a transition can be silenced by it.
+        val gen = transitionGen.incrementAndGet()
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
         isSplitTunnelingEnabled = intent.getBooleanExtra(EXTRA_SPLIT_TUNNEL_ENABLED, isSplitTunnelingEnabled)
         intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)?.let { splitTunnelAppList = it.toSet() }
