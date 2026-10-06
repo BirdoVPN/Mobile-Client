@@ -182,9 +182,41 @@ class OverhaulSourceGuardTest {
     @Test
     fun `a settings-integrity reset leaves a notice for Settings`() {
         val activity = source("$main/MainActivity.kt")
-        val reset = activity.indexOf("SettingsHmac.resetToSafeDefaults(prefs)")
+        val reset = activity.indexOf("appPreferences.resetProtectedSettingsToSafeDefaults()")
         assertTrue(reset > 0)
         assertTrue(activity.indexOf("appPreferences.settingsResetNoticePending = true", reset) > reset)
+    }
+
+    // ── P1-dk-dead-lastserver-verifyintegrity ────────────────────────────
+
+    /**
+     * AppPreferences owns "birdo_vpn_prefs". MainActivity re-opened the file
+     * by its literal name to run the integrity check itself — once under the
+     * WRONG name, which checked an empty file and never saw tampering — while
+     * AppPreferences.verifyIntegrity() had no caller at all.
+     */
+    @Test
+    fun `the settings integrity check goes through the injected AppPreferences`() {
+        val integrity = source("$main/MainActivity.kt").replace("\r\n", "\n")
+            .substringAfter("private fun verifySettingsIntegrity() {", "")
+            .substringBefore("\n    }\n")
+        assertTrue("verifySettingsIntegrity is gone", integrity.isNotEmpty())
+        assertTrue(integrity.contains("appPreferences.verifyIntegrity()"))
+        assertTrue(integrity.contains("appPreferences.resetProtectedSettingsToSafeDefaults()"))
+        assertFalse(
+            "MainActivity opens the settings store itself again; AppPreferences is its one owner",
+            integrity.contains("getSharedPreferences("),
+        )
+        assertFalse(
+            "MainActivity runs SettingsHmac on its own copy of the store again",
+            integrity.contains("SettingsHmac."),
+        )
+        // The name lives in exactly one main-source file: the owner's.
+        val opened = File(repoRoot, main).walkTopDown()
+            .filter { it.isFile && it.extension == "kt" && it.readText().contains("\"birdo_vpn_prefs\"") }
+            .map { it.name }
+            .toList()
+        assertEquals(listOf("AppPreferences.kt"), opened)
     }
 
     // ── A2-024 ───────────────────────────────────────────────────────────
@@ -350,7 +382,7 @@ class OverhaulSourceGuardTest {
         val integrity = source("$main/MainActivity.kt").replace("\r\n", "\n")
             .substringAfter("private fun verifySettingsIntegrity() {", "")
             .substringBefore("\n    }\n")
-        val verified = integrity.indexOf("SettingsHmac.verify(prefs)")
+        val verified = integrity.indexOf("appPreferences.verifyIntegrity()")
         val retired = integrity.indexOf("appPreferences.retireWireGuardPortChoice()")
         assertTrue("the saved port is no longer retired at start-up", retired > 0)
         assertTrue("the port is retired (and the settings re-signed) before they are verified", retired > verified && verified > 0)

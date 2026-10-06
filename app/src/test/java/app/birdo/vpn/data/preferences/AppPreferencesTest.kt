@@ -120,4 +120,28 @@ class AppPreferencesTest {
         assertFalse(prefs.retireWireGuardPortChoice())
         verify(exactly = 3) { editor.putString("wireguard_port", any()) }
     }
+
+    // ── P1-dk-dead-lastserver-verifyintegrity: one owner of the store ────
+
+    @Test
+    fun `the integrity check reads the store AppPreferences owns`() {
+        // Protected settings and no HMAC: deleted, so treated as tampered.
+        every { store.getString("settings_hmac_sha256", null) } returns null
+        every { store.contains("kill_switch_enabled") } returns true
+
+        assertFalse(prefs.verifyIntegrity())
+        verify { store.getString("settings_hmac_sha256", null) }
+    }
+
+    @Test
+    fun `the tamper reset rewrites the store AppPreferences owns, durably`() {
+        prefs.resetProtectedSettingsToSafeDefaults()
+
+        // The safe defaults land in the store every getter here reads, and
+        // with commit(): the tunnel that reads them may start right after.
+        verify(exactly = 1) { editor.putBoolean("kill_switch_enabled", true) }
+        verify(exactly = 1) { editor.putBoolean("local_network_sharing", false) }
+        verify(atLeast = 1) { editor.commit() }
+        verify(exactly = 0) { editor.apply() }
+    }
 }
