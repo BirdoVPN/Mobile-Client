@@ -99,7 +99,8 @@ class HomeConnectionModelTest {
         assertEquals(Remedy.UPDATE, remedyFor(FailureKind.UPDATE_REQUIRED))
         assertEquals(Remedy.CHOOSE_SERVER, remedyFor(FailureKind.NEVER_ESTABLISHED))
         // Fail-closed like Quantum, so the same way out (review of #463, P3-7).
-        assertEquals(Remedy.OPEN_SETTINGS, remedyFor(FailureKind.STEALTH_FAILED))
+        // …on the VPN Settings screen, where the toggle is (second review, N6).
+        assertEquals(Remedy.OPEN_VPN_SETTINGS, remedyFor(FailureKind.STEALTH_FAILED))
         assertTrue(SessionCopy.STEALTH_FAILED.contains("turn off Stealth Mode in Settings"))
     }
 

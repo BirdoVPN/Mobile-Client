@@ -536,6 +536,17 @@ class SessionPolicyTest {
     // ── Stealth: requested vs granted (review of #463, P1 on main) ───────
 
     @Test
+    fun `the Stealth toggle is offered while the plan is loading`() {
+        // OFF-and-locked before the plan loaded told every paying user, on
+        // every cold start, that they had lost Stealth (second review, N6).
+        assertTrue(StealthPolicy.toggleUnlocked(null))
+        assertTrue(StealthPolicy.toggleUnlocked(" "))
+        assertTrue(StealthPolicy.toggleUnlocked("operative"))
+        assertTrue(StealthPolicy.toggleUnlocked("SOVEREIGN"))
+        assertFalse(StealthPolicy.toggleUnlocked("RECON"))
+    }
+
+    @Test
     fun `the service judges the reply against what the dial asked for`() {
         fun t(requested: Boolean, granted: Boolean, endpoint: String?, reason: String?) =
             StealthPolicy.transport(requested, granted, endpoint, reason)

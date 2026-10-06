@@ -396,4 +396,17 @@ class OverhaulSourceGuardTest {
         assertTrue(graph.contains("vpnViewModel.resetForSignOut()"))
         assertTrue(graph.contains("vpnViewModel.onEntitlementChanged()"))
     }
+
+    // ── Second review of #463, N6 ────────────────────────────────────────
+
+    @Test
+    fun `a Stealth refusal opens VPN Settings, and the toggle is not locked while the plan loads`() {
+        val graph = source("$main/ui/navigation/BirdoNavGraph.kt")
+        assertTrue(
+            "Home's Stealth remedy no longer lands on the VPN Settings screen, where the toggle is",
+            Regex("""onOpenVpnSettings\s*=\s*\{\s*navController\.navigate\(Screen\.VpnSettings\.route\)""").containsMatchIn(graph),
+        )
+        assertTrue(graph.contains("stealthUnlocked = StealthPolicy.toggleUnlocked(plan)"))
+        assertTrue(source("$main/ui/screen/HomeScreen.kt").contains("Remedy.OPEN_VPN_SETTINGS -> onOpenVpnSettings()"))
+    }
 }

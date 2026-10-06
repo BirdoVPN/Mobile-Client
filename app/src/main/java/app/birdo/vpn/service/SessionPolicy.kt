@@ -366,6 +366,18 @@ internal object StealthPolicy {
     /** The backend's stealthUnavailableReason for a plan without Stealth. */
     const val UNAVAILABLE_ENTITLEMENT = "entitlement"
 
+    /**
+     * Whether the Settings toggle is offered (OPERATIVE and above). While the
+     * plan is not loaded it is: showing OFF-and-locked then told every paying
+     * user, on every cold start, that they had lost Stealth. A toggle a plan
+     * does not cover costs nothing to show now — the server answers a request
+     * it does not cover with a direct connection and a notice.
+     */
+    fun toggleUnlocked(plan: String?): Boolean {
+        val known = plan?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return true
+        return known == "OPERATIVE" || known == "SOVEREIGN"
+    }
+
     enum class Transport {
         /** Granted with an endpoint: run Xray. */
         STEALTH,

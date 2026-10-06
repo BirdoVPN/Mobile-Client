@@ -89,6 +89,8 @@ fun HomeScreen(
     onUpdateApp: () -> Unit = {},
     onDismissUpdate: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    /** The VPN Settings screen (the Stealth toggle), for a Stealth refusal's banner. */
+    onOpenVpnSettings: () -> Unit = {},
     /** The upgrade flow: the device-limit refusal and locked servers route here. */
     onViewPlans: () -> Unit = {},
     onDismissMessage: () -> Unit = {},
@@ -427,6 +429,7 @@ fun HomeScreen(
                                 BannerAction(stringResource(r.label)) {
                                     when (r) {
                                         Remedy.OPEN_SETTINGS -> onOpenSettings()
+                                        Remedy.OPEN_VPN_SETTINGS -> onOpenVpnSettings()
                                         Remedy.VIEW_PLANS -> onViewPlans()
                                         Remedy.UPDATE -> onUpdateApp()
                                         Remedy.CHOOSE_SERVER ->

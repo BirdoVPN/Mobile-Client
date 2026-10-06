@@ -112,6 +112,8 @@ internal fun ctaModel(c: HomeConnection, multiHopArmed: Boolean, multiHopReady: 
 /** What fixes a session Error, offered on its banner (P1-parity-040). */
 internal enum class Remedy(@param:StringRes val label: Int) {
     OPEN_SETTINGS(R.string.banner_action_open_settings),
+    /** The VPN Settings screen, where the Stealth toggle is (root Settings has Quantum). */
+    OPEN_VPN_SETTINGS(R.string.banner_action_open_settings),
     VIEW_PLANS(R.string.banner_action_view_plans),
     UPDATE(R.string.update_action),
     CHOOSE_SERVER(R.string.banner_action_choose_server),
@@ -122,8 +124,10 @@ internal enum class Remedy(@param:StringRes val label: Int) {
  * the fix (try again) or the app handles it on its own (sign-in).
  */
 internal fun remedyFor(kind: FailureKind): Remedy? = when (kind) {
-    // "…turn off Quantum Protection / Stealth Mode in Settings to connect without it."
-    FailureKind.QUANTUM_FAILED, FailureKind.STEALTH_FAILED -> Remedy.OPEN_SETTINGS
+    // "…turn off Quantum Protection in Settings to connect without it."
+    FailureKind.QUANTUM_FAILED -> Remedy.OPEN_SETTINGS
+    // "…or turn off Stealth Mode in Settings": straight to the toggle.
+    FailureKind.STEALTH_FAILED -> Remedy.OPEN_VPN_SETTINGS
     FailureKind.PLAN_REQUIRED, FailureKind.QUOTA_EXCEEDED -> Remedy.VIEW_PLANS
     FailureKind.UPDATE_REQUIRED -> Remedy.UPDATE
     // "…Try another location."
