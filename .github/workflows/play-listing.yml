@@ -25,8 +25,10 @@ on:
 permissions: {}
 
 # apply commits a Play edit: one Play edit at a time, repo-wide (android.yml's
-# upload and play-release.yml halt/promote hold the same lock). probe and
-# dry-run discard their edit, so they never wait on -- or displace -- a writer.
+# upload and play-release.yml promote hold the same lock). A group keeps one
+# pending run, so a newer pending writer displaces an older one (it shows as
+# cancelled and must be re-run). probe and dry-run discard their edit, so they
+# never wait on -- or displace -- a writer.
 concurrency:
   group: ${{ inputs.mode == 'apply' && 'google-play-edit' || format('play-listing-{0}', github.run_id) }}
   cancel-in-progress: false

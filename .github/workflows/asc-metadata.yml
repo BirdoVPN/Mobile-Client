@@ -42,10 +42,12 @@ on:
 
 permissions: {}
 
-# The apply/attach/resubmit modes write to App Store Connect: one at a time,
-# never cancelled half-way.
+# The writing modes (apply, attach, resubmit-ios-apply, fix-purchase-note-apply)
+# share one group: one at a time, never cancelled half-way. Read-only modes get
+# a group of their own per run, so a read neither waits behind a write nor, as
+# a pending run, displaces one (a group keeps a single pending run).
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ contains(fromJSON('["apply","attach","resubmit-ios-apply","fix-purchase-note-apply"]'), inputs.mode) && 'asc-metadata-write' || format('asc-metadata-read-{0}', github.run_id) }}
   cancel-in-progress: false
 
 defaults:

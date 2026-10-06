@@ -72,10 +72,13 @@ on:
 
 permissions: {}
 
-# One release pipeline per ref at a time, never cancelled mid-flight. The Play
-# upload additionally holds the repo-wide google-play-edit lock below.
+# One release pipeline per event and ref at a time, never cancelled mid-flight.
+# The event is in the group so a main push (dry run) can never displace a
+# pending dispatched release from main: a group keeps only ONE pending run, and
+# a newer pending run cancels the older one. The Play upload additionally holds
+# the repo-wide google-play-edit lock below.
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: android-release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
@@ -88,10 +91,11 @@ env:
 
 jobs:
   # -- Release gates ----------------------------------------------------------
-  # Nothing is published unless lint and the unit tests pass on the exact
-  # commit being released. They run in parallel with the release build (the
-  # publish jobs wait for all three), uncached like everything in this file.
-  # Skipped on a plain main push, where android-ci.yml has just run them.
+  # Nothing is published unless lint, the unit tests, the native crate gates and
+  # the FEAT_SHA3 CPU proof pass on the exact commit being released. They run in
+  # parallel with the release build (the publish jobs wait for all of them),
+  # uncached like everything in this file. Skipped on a plain main push, where
+  # android-ci.yml has just run them.
   lint:
     name: 'Release gate: Lint'
     if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
@@ -167,6 +171,37 @@ jobs:
       # testDebugUnitTest compiles :shared but runs no test task in it.
       - name: Run Unit Tests
         run: ./gradlew testDebugUnitTest :shared:testAndroidHostTest
+
+  # The native crate gates and the FEAT_SHA3 CPU proof that every pull request
+  # runs (android-ci.yml), run again on the exact commit being released, from
+  # the same composite actions, without caches: cargo audit --deny warnings,
+  # fmt/clippy/tests with pinned minimum counts, the PQ dependency graph, the
+  # ISA gate's negative cases, and the QEMU run on a core without FEAT_SHA3.
+  native:
+    name: 'Release gate: Native crates'
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-gates
+
+  pq-cpu-proof:
+    name: 'Release gate: PQ KEM on a CPU without FEAT_SHA3 (QEMU)'
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pq-cpu-proof
 
   release:
     name: Build Release APK
@@ -569,7 +604,7 @@ jobs:
     name: Publish Draft GitHub Release
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [release, lint, test]
+    needs: [release, lint, test, native, pq-cpu-proof]
     if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: write
@@ -655,7 +690,7 @@ jobs:
     name: Upload AAB to Google Play
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    needs: [release, lint, test]
+    needs: [release, lint, test, native, pq-cpu-proof]
     if: ${{ vars.PLAY_UPLOAD_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch') }}
     # P5-CICD-18: production uploads run in the `production` environment so
     # required-reviewer protection can gate them. The protection rule itself
@@ -664,9 +699,12 @@ jobs:
     # an ungated environment, so CONFIGURE IT. Test tracks (manual dispatch,
     # default 'internal') bind to `play-testing` and stay frictionless.
     environment: ${{ (github.event.inputs.play_track || 'production') == 'production' && 'production' || 'play-testing' }}
-    # One Play edit at a time, repo-wide: play-release.yml and play-listing.yml
-    # hold the same lock. Two overlapping edits race and the loser's state is
-    # undefined. Never cancel a running upload.
+    # One Play edit at a time, repo-wide: play-release.yml (promote) and
+    # play-listing.yml (apply) hold the same lock; play-release halt has its own
+    # so the emergency brake never queues. Two overlapping edits race and the
+    # loser's state is undefined. Never cancel a running upload. A group keeps
+    # one pending run: a newer pending writer cancels an older pending one,
+    # which then shows as cancelled and must be re-run.
     concurrency:
       group: google-play-edit
       cancel-in-progress: false

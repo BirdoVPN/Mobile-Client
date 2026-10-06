@@ -27,12 +27,19 @@ on:
 
 permissions: {}
 
-# halt and promote open a Play edit and commit it: one Play edit at a time,
-# repo-wide (android.yml's upload and play-listing.yml apply hold the same
-# lock). probe only reads and discards its edit, so it never waits on -- or,
-# as a pending run, displaces -- a real writer.
+# promote opens a Play edit and commits it: one Play edit at a time, repo-wide
+# (android.yml's upload and play-listing.yml apply hold the same lock). A group
+# keeps one running and ONE pending run; a newer pending run cancels the older
+# one, so a third writer displaces a queued second (it shows as cancelled and
+# must be re-run -- it never runs concurrently).
+#
+# halt is the emergency brake and has a group of its own: it must never wait
+# behind, or be displaced by, a queued upload. If it does overlap a running
+# edit, Play commits one edit and rejects the other, loudly.
+#
+# probe only reads and discards its edit, so it takes no lock at all.
 concurrency:
-  group: ${{ inputs.mode == 'probe' && format('play-probe-{0}', github.run_id) || 'google-play-edit' }}
+  group: ${{ inputs.mode == 'probe' && format('play-probe-{0}', github.run_id) || (inputs.mode == 'halt' && 'google-play-halt' || 'google-play-edit') }}
   cancel-in-progress: false
 
 defaults:

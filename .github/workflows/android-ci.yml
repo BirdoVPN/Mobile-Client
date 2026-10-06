@@ -18,9 +18,20 @@ name: Android CI
 # Runs for pull requests into ANY branch, so a PR stacked on another PR's
 # branch gets the same checks as one into main. Pushes run only for main, so a
 # PR branch never runs everything twice.
+#
+# `edited` is included so that RETARGETING a pull request (changing its base)
+# re-runs everything against the new base: the change classification and the
+# required results were computed against the old one. Every edited event runs
+# the full workflow, title and body edits included, on purpose. Skipping them
+# would not be free: a job skipped by `if:` still posts a check run, a skipped
+# required check counts as PASSING, and the newest check run of a name is the
+# one branch protection reads -- so an edit after a red run would turn it
+# green. Same-PR runs share one concurrency group, so an edit replaces an
+# in-flight run instead of adding one.
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
@@ -65,37 +76,25 @@ jobs:
           # the diff needs.
           fetch-depth: 2
 
+      # .github/scripts/classify-changes.sh diffs with --no-renames: with git's
+      # rename detection, `git mv app/src/Foo.kt docs/Foo.md` would list only
+      # docs/Foo.md and skip two required checks. Lint Check runs its self-test.
       - id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          android=true
-          jvm=true
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            if files=$(git diff --name-only HEAD^1 HEAD) && [ -n "$files" ]; then
-              android=false
-              jvm=false
-              while IFS= read -r f; do
-                case "$f" in
-                  docs/*|*.md|LICENSE) continue ;;
-                esac
-                jvm=true
-                case "$f" in
-                  iosApp/*|setup-ios.sh) ;;
-                  *) android=true ;;
-                esac
-              done <<< "$files"
-              printf 'Changed files:\n%s\n' "$files"
-            else
-              echo "::warning::could not list this PR's changes; running every job"
-            fi
+            git diff --no-renames --name-only HEAD^1 HEAD || true
+            result=$(bash .github/scripts/classify-changes.sh --git-range HEAD^1 HEAD)
+          else
+            result=$'android=true\njvm=true'
           fi
-          echo "android=$android" >> "$GITHUB_OUTPUT"
-          echo "jvm=$jvm" >> "$GITHUB_OUTPUT"
+          echo "$result" >> "$GITHUB_OUTPUT"
           {
             echo "### Change detection"
-            echo "- Android build, lint, CodeQL, native: \`$android\`"
-            echo "- JVM unit tests: \`$jvm\`"
+            echo '```'
+            echo "$result"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The cheap repository gates run on EVERY pull request, docs-only included:
@@ -120,6 +119,11 @@ jobs:
       - name: Validate the Gradle wrapper
         uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
+      # The classifier above decides which REQUIRED checks a PR may skip, so its
+      # own test is part of a required check.
+      - name: Change classifier self-test
+        run: bash .github/scripts/classify-changes-test.sh
+
       # distributionSha256Sum makes the wrapper refuse a substituted Gradle
       # distribution. When it is present it must be the official checksum of
       # the distributionUrl. It may never be REMOVED: a pull request whose base
@@ -134,6 +138,12 @@ jobs:
           props=gradle/wrapper/gradle-wrapper.properties
           sum=$(sed -n 's/^distributionSha256Sum=\([0-9a-f]\{64\}\)[[:space:]]*$/\1/p' "$props")
           url=$(sed -n 's/^distributionUrl=//p' "$props" | tr -d '\r' | sed 's#\\:#:#g')
+          # Only Gradle's own distribution host. The checksum below is fetched
+          # from next to the distribution, so any other host could vouch for itself.
+          if ! printf '%s' "$url" | grep -Eq '^https://services\.gradle\.org/distributions/gradle-[0-9A-Za-z.+-]+-(bin|all)\.zip$'; then
+            echo "::error file=$props::distributionUrl must be a Gradle distribution on https://services.gradle.org/distributions/, got: $url"
+            exit 1
+          fi
           if grep -q '^distributionSha256Sum=' "$props" && [ -z "$sum" ]; then
             echo "::error file=$props::distributionSha256Sum is present but is not a 64-character lowercase hex SHA-256"
             exit 1
@@ -370,139 +380,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Resolve the Android NDK
-        run: |
-          ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
-            echo "::error::no Android NDK on this runner"
-            exit 1
-          fi
-          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
-
-      - uses: ./.github/actions/install-cargo-ndk
-
-      - name: Assert the PQ KEM dependency graph is exactly what was reviewed
-        run: bash scripts/check_pq_features.sh
-
-      # Host-target, so no NDK is involved and the crypto actually executes.
-      # MIN_TESTS is per crate and is the point of the step: `cargo test` on a
-      # crate whose test module was deleted exits 0 with "0 tests".
-      - name: Native crates — fmt, clippy and tests
-        run: |
-          set -euo pipefail
-          declare -A MIN_TESTS=(
-            [rosenpass-jni]=12
-            [birdo-pq-ios]=13
-            [birdo-pq-server]=10
-          )
-          rustup component add rustfmt clippy
-          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
-            echo "::group::native/$crate"
-            (
-              cd "native/$crate"
-              cargo fmt --check
-              cargo clippy --all-targets --locked -- -D warnings
-              cargo test --locked 2>&1 | tee "$RUNNER_TEMP/$crate-tests.log"
-            )
-            passed=$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/$crate-tests.log" | awk '{s+=$1} END {print s+0}')
-            want="${MIN_TESTS[$crate]}"
-            if [ "$passed" -lt "$want" ]; then
-              echo "::error::native/$crate ran $passed test(s), expected at least $want. A deleted #[cfg(test)] module exits 0 with '0 tests'; that is why this number is pinned. If tests were deliberately removed, say which and why, and lower the number in the same commit."
-              exit 1
-            fi
-            echo "  ok: native/$crate ran $passed test(s) (minimum $want)"
-            echo "::endgroup::"
-          done
-
-      # The advisory check the ml-kem migration was FOR: pqcrypto-mlkem,
-      # pqcrypto-traits and pqcrypto-internals are unmaintained by advisory
-      # (RUSTSEC-2026-0161/-0162/-0163). `--deny warnings` on purpose: a crypto
-      # dependency nobody maintains is a build failure here.
-      #
-      # cargo-audit 0.22.0 is rustsec's own release binary, pinned by SHA-256,
-      # instead of `cargo install` compiling the same version for ~2 minutes.
-      - name: cargo audit for every native crate
-        env:
-          CARGO_AUDIT_VERSION: 0.22.0
-          CARGO_AUDIT_SHA256: 0ea7a15f67d5007af5bd18f89be38a90ebd004f149dc36ebfab0aedba24cbb4f
-        run: |
-          set -euo pipefail
-          name="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tgz" \
-            "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/$name.tgz"
-          echo "${CARGO_AUDIT_SHA256}  $RUNNER_TEMP/$name.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$name.tgz" -C "$RUNNER_TEMP"
-          install -m 0755 "$RUNNER_TEMP/$name/cargo-audit" "$HOME/.cargo/bin/cargo-audit"
-          cargo audit --version
-          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
-            echo "::group::cargo audit native/$crate"
-            ( cd "native/$crate" && cargo audit --deny warnings -f Cargo.lock )
-            echo "::endgroup::"
-          done
-
-      # The gate's own self-test proves, on this runner with this disassembler,
-      # that scripts/check_no_sha3_ext.sh fails on a hand-assembled eor3 and
-      # passes a HWCAP-gated LSE helper. A gate never shown to bite is a gate
-      # nobody can trust green.
-      - name: ISA gate self-test against committed fixtures
-        run: bash scripts/tests/check_no_sha3_ext_test.sh
-
-      # THE NEGATIVE CASE. The only step that catches the one known way to
-      # silently re-arm the 1.4.25 crash class.
-      #
-      # ml-kem's Keccak backend is gated at runtime on cpufeatures'
-      # getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). But cpufeatures'
-      # internal __unless_target_features! macro ELIDES that check and returns a
-      # constant `true` when the feature is statically enabled -- so a +sha3
-      # target feature (or any -C target-cpu above the fleet floor) produces a
-      # library that executes eor3/rax1/xar/bcax unconditionally, on every
-      # device, with no check left to fail.
-      #
-      # So we build exactly that configuration on purpose and assert the ISA
-      # gate FAILS on it -- both the gate itself and the parallel wrapper every
-      # APK/AAB check now goes through. If either starts PASSING, it has stopped
-      # reading the shipped library and every green run above it is worthless.
-      - name: ISA gate must FAIL a deliberately +sha3 build (negative case)
-        env:
-          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/sha3-negative/arm64-v8a"
-          mkdir -p "$out"
-          # RUSTFLAGS as an env var REPLACES .cargo/config.toml's target
-          # rustflags, so this build has neither the soft-Keccak cfg nor the
-          # 16 KB alignment flag -- which is the point: it is the shape a
-          # careless export actually produces.
-          ( cd native/rosenpass-jni && cargo ndk -t arm64-v8a -o "$out/.." build --locked --release )
-          test -f "$out/librosenpass_jni.so" || {
-            echo "::error::the negative-case build produced no library, so nothing was tested"; exit 1; }
-          if bash scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/sha3-negative"; then
-            echo "::error::check_no_sha3_ext PASSED a library built with -C target-feature=+sha3. That build statically enables FEAT_SHA3, which makes cpufeatures elide the HWCAP check entirely -- the exact shape of the 1.4.25 SIGILL. The gate is not reading the shipped library, or its rule table no longer covers eor3/rax1/xar/bcax. Every green ISA-gate run is worthless until this is fixed."
-            exit 1
-          fi
-          echo "  ok: the ISA gate rejects a +sha3 build, as it must"
-          if bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/sha3-negative"; then
-            echo "::error::.github/scripts/isa-gate.sh PASSED the +sha3 library that scripts/check_no_sha3_ext.sh rejects. The wrapper is losing the gate's verdict, so every APK/AAB ISA check is worthless until it is fixed."
-            exit 1
-          fi
-          echo "  ok: the parallel wrapper rejects it too"
-
-      # The wrapper must also fail closed on the shapes the gate itself fails
-      # closed on: an ABI directory with no library, and an ABI it has no rule for.
-      - name: The parallel ISA wrapper fails closed
-        run: |
-          set -euo pipefail
-          t="$RUNNER_TEMP/isa-wrapper-cases"
-          mkdir -p "$t/empty-abi/arm64-v8a" "$t/unknown-abi/mips" "$t/no-abi"
-          cp "$RUNNER_TEMP/sha3-negative/arm64-v8a/librosenpass_jni.so" "$t/unknown-abi/mips/"
-          for c in empty-abi unknown-abi no-abi; do
-            if bash .github/scripts/isa-gate.sh "$t/$c" > "$t/$c.log" 2>&1; then
-              cat "$t/$c.log"
-              echo "::error::.github/scripts/isa-gate.sh PASSED the '$c' case; it must fail closed"
-              exit 1
-            fi
-            echo "  ok: '$c' fails, as it must"
-          done
+      # The same gates android.yml runs before any release is published.
+      - uses: ./.github/actions/native-gates
 
   # Every native crate declares `rust-version` (its MSRV), and until this job
   # nothing ever built at that version: rust-toolchain.toml pins the newer
@@ -572,102 +451,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install QEMU user-mode and an aarch64 cross toolchain
-        run: |
-          sudo apt-get update
-          # libc6-dev-arm64-cross is NOT optional and is NOT pulled in by
-          # gcc-aarch64-linux-gnu under --no-install-recommends: without it the
-          # link dies on "cannot find Scrt1.o". It is also what provides the
-          # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
-          # to find the dynamic loader.
-          sudo apt-get install -y --no-install-recommends \
-            qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross
-          qemu-aarch64 --version | head -1
-          ls /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
-
-      - name: Add the aarch64 Rust target
-        run: rustup target add aarch64-unknown-linux-gnu
-
-      - name: Build birdo-pq-smoke for aarch64
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: |
-          set -euo pipefail
-          cd native/birdo-pq-server
-          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
-          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-gated"
-
-      # If the binary has no FEAT_SHA3 instructions at all, every run below
-      # passes for the wrong reason and proves nothing. Assert the thing we are
-      # testing is present BEFORE testing it.
-      - name: Assert the gated build really contains FEAT_SHA3 instructions
-        run: |
-          set -euo pipefail
-          n=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" \
-                | awk '{print $3}' | grep -cE '^(eor3|rax1|xar|bcax)$' || true)
-          echo "FEAT_SHA3 instructions in the gated build: $n"
-          if [ "$n" -eq 0 ]; then
-            echo "::error::the aarch64 smoke binary contains no eor3/rax1/xar/bcax, so running it on a core without FEAT_SHA3 proves nothing. Either keccak stopped shipping its aarch64 backend (good news, but this job must be rewritten) or the build picked up the soft-backend cfg."
-            exit 1
-          fi
-          g=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" | grep -c getauxval || true)
-          echo "getauxval call sites: $g"
-          if [ "$g" -eq 0 ]; then
-            echo "::error::no getauxval in the gated build: the FEAT_SHA3 instructions above are present with NO runtime CPU check. That is the exact shape of the 1.4.25 SIGILL."
-            exit 1
-          fi
-
-      - name: Run on a core WITHOUT FEAT_SHA3 (cortex-a53) — must exit 0
-        run: |
-          set -euo pipefail
-          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 \
-            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-a53.txt"
-
-      - name: Run on a core WITH FEAT_SHA3 (max) — must exit 0 and agree
-        run: |
-          set -euo pipefail
-          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu max \
-            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-max.txt"
-          # The random round trip differs per run by design, so compare the
-          # deterministic lines: same KEM answer on both dispatch paths.
-          for key in KAT_PSK STORED_PQCLEAN_PSK; do
-            a=$(grep "^$key=" "$RUNNER_TEMP/out-a53.txt")
-            b=$(grep "^$key=" "$RUNNER_TEMP/out-max.txt")
-            if [ "$a" != "$b" ]; then
-              echo "::error::$key differs between the soft and FEAT_SHA3 Keccak backends: '$a' vs '$b'. The fast path computes a DIFFERENT answer, which would mean half the fleet cannot complete a handshake."
-              exit 1
-            fi
-            echo "  ok: $a (identical on cortex-a53 and max)"
-          done
-
-      # THE NEGATIVE CASE. Without it, the three runs above could all be
-      # passing because the harness never reaches Keccak at all.
-      #
-      # -C target-feature=+sha3 makes cpufeatures' __unless_target_features!
-      # macro elide the HWCAP check and return a constant true, so the fast
-      # backend runs unconditionally. On cortex-a53 the first eor3 must SIGILL
-      # (exit 132 = 128 + SIGILL(4)).
-      - name: A +sha3 build MUST SIGILL on cortex-a53 (negative case)
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
-        run: |
-          set -euo pipefail
-          cd native/birdo-pq-server
-          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
-          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-ungated"
-          cd "$GITHUB_WORKSPACE"
-          set +e
-          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 "$RUNNER_TEMP/smoke-ungated"
-          rc=$?
-          set -e
-          echo "exit code: $rc"
-          if [ "$rc" -ne 132 ]; then
-            echo "::error::a build with -C target-feature=+sha3 did NOT SIGILL (exit 132) on cortex-a53; it exited $rc. Either QEMU is not enforcing the ISA of the core it was told to emulate, or this binary never reaches Keccak -- in which case the positive runs above prove nothing and this job is worthless as written."
-            exit 1
-          fi
-          echo "  ok: exit 132 (SIGILL), as it must be — the harness does reach Keccak"
+      # The same proof android.yml runs before any release is published.
+      - uses: ./.github/actions/pq-cpu-proof
 
   # The debug APK -- the only Android artifact a pull request can produce --
   # with the real native payload, checked the way the release job checks its

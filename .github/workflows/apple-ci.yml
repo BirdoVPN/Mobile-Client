@@ -3,9 +3,10 @@ name: Apple CI
 # Pull-request and main-branch CI for the Apple apps: the iOS app's unit tests
 # on a simulator, and the macOS app's unsigned build.
 #
-# Until this workflow, the iOS simulator suite ran ONLY on an android-v* tag
-# (ios.yml), so a broken iOS test was discovered on release day. It now runs
-# on every pull request that can affect it. The macOS build moved here from
+# Until this workflow, the iOS simulator suite ran only when ios.yml did -- on
+# an android-v* tag or a manual dispatch (27 runs in the 30 days before, 22 of
+# them dispatches), never on a pull request. It now runs on every pull request
+# that can affect it. The macOS build moved here from
 # macos.yml, which is now release-only and cache-free.
 #
 # Not a required check, so a workflow-level `paths` filter is fine: a pull
@@ -18,6 +19,7 @@ on:
       - 'iosApp/**'
       - 'shared/**'
       - 'native/birdo-pq-ios/**'
+      - 'contract/**'
       - 'scripts/build-birdo-pq-xcframework.sh'
       - 'gradle/**'
       - '*.gradle.kts'
@@ -33,6 +35,7 @@ on:
       - 'iosApp/**'
       - 'shared/**'
       - 'native/birdo-pq-ios/**'
+      - 'contract/**'
       - 'scripts/build-birdo-pq-xcframework.sh'
       - 'gradle/**'
       - '*.gradle.kts'
