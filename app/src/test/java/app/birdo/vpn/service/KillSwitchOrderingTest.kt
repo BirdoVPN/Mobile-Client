@@ -209,9 +209,10 @@ class KillSwitchOrderingTest {
         }
 
         try {
-            // An abort, as startTunnel treats an interrupt: not a refusal to
-            // shout about (second review of #463, N7). It used to come back
-            // FAILED after one attempt, and "Kill switch could not be armed".
+            // Given up, not refused (N7). Whether that is silent is the
+            // caller's call: only for a teardown or a superseded transition;
+            // on a live, current one it is a failure to arm (NEW-3, pinned in
+            // BirdoVpnServiceLifecycleTest).
             assertEquals(BlockArm.ABANDONED, invokeActivateKillSwitch())
             assertEquals(listOf("establish", "turnOff"), callOrder)
             // Set during the teardown, the flag made its bounded probe join

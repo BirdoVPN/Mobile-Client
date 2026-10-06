@@ -862,6 +862,48 @@ class BirdoVpnServiceLifecycleTest {
         verify { WgNative.turnOff(7) }
     }
 
+    // ── NEW-3: an interrupted arm on a live transition is not silent ─────
+
+    @Test
+    fun `an interrupted arm on a live, current transition is a failure to arm, said out loud`() {
+        setKillSwitchEnabled(true)
+        BirdoVpnService.uiForeground = false
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            Thread.currentThread().interrupt()
+            null
+        }
+        setField("tunnelHandle", 7)
+        try {
+            probeVerdict(TransportProbe.Result.BLOCKED, onStealthTransport = true)
+
+            // ABANDONED used to publish nothing here: the handler's tunnel was
+            // gone, no block, and the state stayed what it was.
+            val error = BirdoVpnService.currentState as VpnState.Error
+            assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun `an interrupted re-arm for an invalidated session says the block is not up`() {
+        BirdoVpnService.uiForeground = false
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            Thread.currentThread().interrupt()
+            null
+        }
+        val block = BirdoVpnService::class.java.getDeclaredMethod("handleKillSwitchBlock").apply { isAccessible = true }
+        try {
+            block.invoke(service)
+
+            val error = BirdoVpnService.currentState as VpnState.Error
+            assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+            assertEquals(FailureKind.VPN_PERMISSION_REQUIRED, error.kind)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
     // ── P2-1: a teardown is not a failure of the control ─────────────────
 
     @Test

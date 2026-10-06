@@ -1052,7 +1052,7 @@ class BirdoVpnService : VpnService() {
     private fun armBlockForSystemStart() {
         Log.i(TAG, "System start with the kill switch or lockdown on — arming the block first")
         isKillSwitchEnabled = true
-        if (activateKillSwitch() == BlockArm.FAILED) {
+        if (notArmed(activateKillSwitch())) {
             // Silent failure of a security control is worse than a loud one:
             // the user believes they are fail-closed and they are not.
             // "Loud" has to mean loud to the OPERATOR too — Log.e is
@@ -1077,7 +1077,7 @@ class BirdoVpnService : VpnService() {
         // guard on one of several parallel paths is how a fail-open window
         // gets reintroduced here.
         isKillSwitchEnabled = true
-        if (activateKillSwitch() == BlockArm.FAILED) {
+        if (notArmed(activateKillSwitch())) {
             // establish() refused (in practice: VPN consent revoked).
             // activateKillSwitch has already torn the data plane down,
             // so traffic is in the clear while currentState still reads
@@ -1610,12 +1610,25 @@ class BirdoVpnService : VpnService() {
         }
         val arm = activateKillSwitch()
         beforePublish()
-        if (arm == BlockArm.ABANDONED || !isCurrent(gen)) {
+        // Silent only when the service is going away or a newer transition
+        // owns the state. An ABANDONED arm on a live, current transition (an
+        // interrupt nobody in this service sends) left the dead-tunnel handler
+        // publishing nothing over a stale Connected: a failure to arm, said
+        // out loud like any other.
+        if (!isCurrent(gen)) {
             Log.i(TAG, "Superseded while arming ($arm) — the newer transition owns the state")
             return
         }
         if (arm == BlockArm.ARMED) updateState(error) else publishKillSwitchFailure(error.kind)
     }
+
+    /**
+     * For the callers that arm without a generation of their own: the block
+     * is NOT up, and it is not because the service is going away. An
+     * interrupted arm on a live service counts (see [BlockArm.ABANDONED]).
+     */
+    private fun notArmed(arm: BlockArm): Boolean =
+        arm == BlockArm.FAILED || (arm == BlockArm.ABANDONED && !destroyed)
 
     /**
      * The kill switch could not be armed: say so, loudly — the Error AND the
@@ -2939,7 +2952,7 @@ class BirdoVpnService : VpnService() {
         // blocking interface is already up from TunnelMonitor.onUnexpectedExit, so
         // this is a no-op there. establish() for the new tunnel supersedes it.
         if ((isKillSwitchEnabled || forceBlock) && vpnInterface == null) {
-            if (activateKillSwitch() == BlockArm.FAILED && isKillSwitchEnabled) {
+            if (notArmed(activateKillSwitch()) && isKillSwitchEnabled) {
                 // The user's kill switch could not hold the rebuild window.
                 // Not an Error: VpnManager is waiting for the Disconnected
                 // below to send the rebuild, and an Error here would start its
@@ -3094,7 +3107,9 @@ internal enum class BlockArm {
     /**
      * Given up, not refused: onDestroy began before or during the attempts
      * (nothing may be established then, A1-012), or the thread was
-     * interrupted. A teardown or an abort, not a failure of the control.
+     * interrupted. Callers stay silent only when that is a teardown (the
+     * service destroyed) or a newer transition owns the state; on a live,
+     * current transition an interrupted arm is a failure to arm like FAILED.
      */
     ABANDONED,
 }
