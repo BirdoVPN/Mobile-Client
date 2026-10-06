@@ -124,11 +124,14 @@ class BirdoVpnService : VpnService() {
 
         /**
          * How long a teardown waits for the interrupted transport probe to
-         * exit. The probe's only blocking work is a 500 ms poll sleep (which
-         * the interrupt ends at once) and a wg-go getConfig read, so this is a
+         * exit. The probe's only blocking work is its poll sleep, which the
+         * interrupt ends at once, and a wg-go getConfig read, which takes
+         * microseconds unless wg-go is wedged — and then no wait helps. The
+         * wait runs on the tunnel executor (every transition queues behind
+         * it) or on the main thread (onDestroy), so it is kept short: a
          * bound, not an expected wait.
          */
-        private const val PROBE_JOIN_MS = 500L
+        private const val PROBE_JOIN_MS = 100L
 
         /**
          * POWER: the notification-refresh cadence drives a blocking wg-go

@@ -816,6 +816,39 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     @Test
+    fun `a wedged wg-go read holds a teardown for a tenth of a second, not half of one`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.canReadConfig() } returns true
+        val inRead = java.util.concurrent.CountDownLatch(1)
+        val released = java.util.concurrent.atomic.AtomicBoolean(false)
+        every { WgNative.getConfig(7) } answers {
+            inRead.countDown()
+            // A JNI read that does not answer an interrupt.
+            val giveUpAt = System.currentTimeMillis() + 3_000
+            while (!released.get() && System.currentTimeMillis() < giveUpAt) {
+                try { Thread.sleep(5) } catch (_: InterruptedException) { /* wedged: ignores it */ }
+            }
+            "last_handshake_time_sec=0\n"
+        }
+        startTunnel()
+        assertTrue("the probe never reached wg-go", inRead.await(2, java.util.concurrent.TimeUnit.SECONDS))
+
+        val cleanup = BirdoVpnService::class.java.getDeclaredMethod("cleanupTunnel")
+        cleanup.isAccessible = true
+        val started = System.nanoTime()
+        try {
+            cleanup.invoke(service)
+        } finally {
+            released.set(true)
+        }
+        val waitedMs = (System.nanoTime() - started) / 1_000_000
+
+        // The join runs on the tunnel executor or the main thread; every
+        // transition waited out its 500 ms cap behind a wedged read.
+        assertTrue("the teardown waited $waitedMs ms on a wedged probe", waitedMs < 350)
+    }
+
+    @Test
     fun `onDestroy leaves no transport probe running`() {
         val probe = startTunnelWithPollingProbe()
 
