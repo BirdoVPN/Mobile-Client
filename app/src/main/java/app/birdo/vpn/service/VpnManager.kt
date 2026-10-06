@@ -166,8 +166,12 @@ class VpnManager @Inject constructor(
     private val _stealthNotice = MutableStateFlow<String?>(null)
     val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
 
-    /** What a dial asks for (StealthPolicy): the setting, unless the plan is known not to include Stealth. */
-    private fun stealthRequested(): Boolean = StealthPolicy.requested(prefs.stealthModeEnabled, prefs.lastKnownPlan)
+    /**
+     * What a dial asks for: the stored setting. The server decides entitlement
+     * and the service acts on its answer (StealthPolicy) — no client-side plan
+     * gate, which a stale lastKnownPlan turned against a re-upgraded user.
+     */
+    private fun stealthRequested(): Boolean = prefs.stealthModeEnabled
 
     /** The Home notice for a dial that asked for Stealth and got [config]. */
     private fun stealthNoticeFor(requested: Boolean, config: ConnectResponse): String? =

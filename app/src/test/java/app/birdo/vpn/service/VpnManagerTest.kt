@@ -2185,29 +2185,31 @@ class VpnManagerTest {
     }
 
     @Test
-    fun `a plan without Stealth does not ask for it, and the service is told so`() = runTest {
-        // A downgraded user: the stored setting is still on, and nothing clears it.
+    fun `the stored Stealth setting is asked for, whatever a stale plan says`() = runTest {
+        // Re-upgraded on the web while the app slept: lastKnownPlan still says
+        // RECON. The server is the one fresh authority on the plan.
         every { prefs.stealthModeEnabled } returns true
         every { prefs.lastKnownPlan } returns "RECON"
         val extras = recordBooleanExtras()
         coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
-            ApiResult.Success(makeConnectResponse())
+            ApiResult.Success(makeConnectResponse().copy(stealthEnabled = true, xrayEndpoint = "203.0.113.7:443"))
 
         vpnManager.connect("srv-1")
 
-        // It used to send the stored setting, and the service then refused the
-        // connect the backend had made without Stealth — on every dial.
-        coVerify { repository.connectVpn(serverNodeId = "srv-1", deviceName = any(), stealthMode = false, fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(), dnsFiltering = any(), rebuildOf = any()) }
-        assertEquals(false, extras[BirdoVpnService.EXTRA_STEALTH_REQUESTED])
+        // A plan gate here dialled direct, with no notice, a user who had
+        // just paid for Stealth (second review of #463, N4).
+        coVerify { repository.connectVpn(serverNodeId = "srv-1", deviceName = any(), stealthMode = true, fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(), dnsFiltering = any(), rebuildOf = any()) }
+        assertEquals(true, extras[BirdoVpnService.EXTRA_STEALTH_REQUESTED])
         assertNull(vpnManager.stealthNotice.value)
     }
 
     @Test
     fun `a Stealth request the server turns down for the plan connects, and Home is told`() = runTest {
-        // Plan not known yet: the dial asks, and the backend connects it
-        // WITHOUT Stealth (birdo-web vpn.service.ts).
+        // A downgraded user: the stored setting is still on (nothing clears
+        // it), the dial asks, and the backend connects it WITHOUT Stealth
+        // (birdo-web vpn.service.ts).
         every { prefs.stealthModeEnabled } returns true
-        every { prefs.lastKnownPlan } returns null
+        every { prefs.lastKnownPlan } returns "RECON"
         val extras = recordBooleanExtras()
         coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
             ApiResult.Success(makeConnectResponse().copy(stealthEnabled = false, stealthUnavailableReason = "entitlement"))

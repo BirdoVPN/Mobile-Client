@@ -349,29 +349,22 @@ internal object AttestationPolicy {
  * while Settings showed the toggle OFF and locked, so there was nothing to
  * turn off.
  *
- * The request is GATED on the plan rather than the setting cleared on a
- * downgrade: the gate is the Settings toggle's own rule (`checked = stored &&
- * unlocked`, OPERATIVE and above), it is the rule Multi-Hop already follows
- * (REVIEW-AND-007: a lapsed plan never clears the pref), and the user's choice
- * comes back by itself on a re-upgrade. Clearing would lose that choice, and
- * would need an HMAC-signed write from a background dial.
+ * What a dial asks for is the stored setting, as it always was; what
+ * changed is that the SERVER decides entitlement and the client acts on its
+ * answer. A plan-gated request (the first fix) was dropped on review: the
+ * client's view of the plan (lastKnownPlan, written only when the app loads
+ * the subscription) can be stale, and stale in the upgrade direction it
+ * withheld a feature the user had just paid for — direct, with no notice —
+ * while an unknown plan name could only be guessed at. The server is the one
+ * fresh authority, and its "entitlement" answer is no longer fatal here
+ * ([Transport.DIRECT_NOT_IN_PLAN]: connect direct, say so on Home), so
+ * asking costs a downgraded user nothing but the notice. Clearing the setting
+ * on a downgrade was rejected too: the choice would not come back on a
+ * re-upgrade, and it needs an HMAC-signed write from a background dial.
  */
 internal object StealthPolicy {
     /** The backend's stealthUnavailableReason for a plan without Stealth. */
     const val UNAVAILABLE_ENTITLEMENT = "entitlement"
-
-    /** Stealth is OPERATIVE and above (the Settings toggle, BirdoNavGraph). Null while the plan is unknown. */
-    fun entitledByPlan(plan: String?): Boolean? {
-        val known = plan?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
-        return known == "OPERATIVE" || known == "SOVEREIGN"
-    }
-
-    /**
-     * What a dial asks for: the stored setting, unless the plan is KNOWN not
-     * to include Stealth. Unknown (before the first plan fetch) still asks;
-     * the backend's answer then decides ([transport]).
-     */
-    fun requested(setting: Boolean, plan: String?): Boolean = setting && entitledByPlan(plan) != false
 
     enum class Transport {
         /** Granted with an endpoint: run Xray. */

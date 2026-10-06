@@ -232,7 +232,7 @@ class BirdoVpnService : VpnService() {
         const val EXTRA_KILL_SWITCH = "kill_switch"
         /**
          * START and LIVE_REBUILD: whether THIS dial asked the server for
-         * Stealth (VpnManager, StealthPolicy.requested). The service's
+         * Stealth (VpnManager: the stored setting at dial time). The service's
          * requested-vs-granted guard compares against it, never against the
          * stored setting, which a plan downgrade leaves on.
          */

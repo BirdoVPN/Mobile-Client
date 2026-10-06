@@ -536,18 +536,6 @@ class SessionPolicyTest {
     // ── Stealth: requested vs granted (review of #463, P1 on main) ───────
 
     @Test
-    fun `a plan without Stealth does not ask for it, whatever the stored setting`() {
-        // The Settings toggle's own rule: OPERATIVE and above.
-        assertFalse(StealthPolicy.requested(setting = true, plan = "RECON"))
-        assertTrue(StealthPolicy.requested(setting = true, plan = "OPERATIVE"))
-        assertTrue(StealthPolicy.requested(setting = true, plan = "sovereign"))
-        // Unknown (before the first plan fetch): ask, and let the reply decide.
-        assertTrue(StealthPolicy.requested(setting = true, plan = null))
-        assertTrue(StealthPolicy.requested(setting = true, plan = " "))
-        assertFalse(StealthPolicy.requested(setting = false, plan = "SOVEREIGN"))
-    }
-
-    @Test
     fun `the service judges the reply against what the dial asked for`() {
         fun t(requested: Boolean, granted: Boolean, endpoint: String?, reason: String?) =
             StealthPolicy.transport(requested, granted, endpoint, reason)
