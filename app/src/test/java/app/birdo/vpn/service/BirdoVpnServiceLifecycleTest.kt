@@ -571,6 +571,81 @@ class BirdoVpnServiceLifecycleTest {
 
     // ── P1-dk-killswitch-establish-failure-silent ────────────────────────
 
+    /** The probe's verdict for wg-go handle 7, as the current transition. */
+    private fun probeVerdict(verdict: TransportProbe.Result, onStealthTransport: Boolean) {
+        val m = BirdoVpnService::class.java.getDeclaredMethod(
+            "onProbeVerdict",
+            TransportProbe.Result::class.java,
+            Int::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        )
+        m.isAccessible = true
+        m.invoke(service, verdict, 7, (field("transitionGen") as AtomicLong).get(), onStealthTransport)
+    }
+
+    @Test
+    fun `a Disconnect that lands while the block is retried leaves no stale failure`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        BirdoVpnService.uiForeground = false
+        val generation = field("transitionGen") as AtomicLong
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            when (establishes) {
+                1 -> mockk<ParcelFileDescriptor>(relaxed = true)
+                // The block is refused, and the user's Disconnect arrives (on
+                // the main thread, bumping the generation) during the retry.
+                2 -> { generation.incrementAndGet(); null }
+                else -> null
+            }
+        }
+
+        startTunnel()
+
+        // The queued stop owns the state now. The failure used to be published
+        // anyway, and its alert outlived the Disconnect.
+        assertFalse(
+            "a superseded setup published its failure",
+            BirdoVpnService.currentState is VpnState.Error,
+        )
+        verify(exactly = 0) { notifications.postAlert(any()) }
+    }
+
+    @Test
+    fun `a user stop withdraws the alert`() {
+        val stop = BirdoVpnService::class.java.getDeclaredMethod(
+            "stopTunnel",
+            VpnState.Error::class.java,
+            Boolean::class.javaPrimitiveType,
+        )
+        stop.isAccessible = true
+
+        stop.invoke(service, null, true)
+
+        verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
+    fun `the kill-switch alert and its key go out before the state the collector renders`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        BirdoVpnService.uiForeground = false
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+        var stateWhenAlerted: VpnState? = null
+        every { notifications.postAlert(any()) } answers { stateWhenAlerted = BirdoVpnService.currentState }
+
+        startTunnel()
+
+        // The main-thread collector reacts to the state; a key set after it
+        // was a race that could post the same alert twice.
+        assertTrue(BirdoVpnService.currentState is VpnState.Error)
+        assertFalse("the state was published before the alert", stateWhenAlerted is VpnState.Error)
+    }
+
     @Test
     fun `a setup failure whose block cannot be armed says traffic is NOT protected, not its own reason`() {
         arrangeTunnelStart(protectSucceeds = false)
@@ -603,17 +678,9 @@ class BirdoVpnServiceLifecycleTest {
         setKillSwitchEnabled(true)
         every { anyConstructed<VpnService.Builder>().establish() } returns null
         setField("tunnelHandle", 7)
-        val verdict = BirdoVpnService::class.java.getDeclaredMethod(
-            "onProbeVerdict",
-            TransportProbe.Result::class.java,
-            Int::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-        )
-        verdict.isAccessible = true
-
         // No handshake over the last transport there is: the path that used
         // to arm the block and publish NO_TUNNEL whatever the arm did.
-        verdict.invoke(service, TransportProbe.Result.BLOCKED, 7, true)
+        probeVerdict(TransportProbe.Result.BLOCKED, onStealthTransport = true)
 
         val error = BirdoVpnService.currentState as VpnState.Error
         assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
@@ -637,15 +704,8 @@ class BirdoVpnServiceLifecycleTest {
             null
         }
         setField("tunnelHandle", 7)
-        val verdict = BirdoVpnService::class.java.getDeclaredMethod(
-            "onProbeVerdict",
-            TransportProbe.Result::class.java,
-            Int::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-        )
-        verdict.isAccessible = true
 
-        verdict.invoke(service, TransportProbe.Result.BLOCKED, 7, true)
+        probeVerdict(TransportProbe.Result.BLOCKED, onStealthTransport = true)
 
         // "Traffic is NOT protected" over a teardown was an alarm about nothing.
         assertFalse(

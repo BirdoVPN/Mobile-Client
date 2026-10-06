@@ -698,7 +698,7 @@ class BirdoVpnService : VpnService() {
             //
             // BLOCK FIRST, THEN PUBLISH Error — see the ordering contract on
             // [activateKillSwitch].
-            blockThenPublish(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
+            blockThenPublish(gen, VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
                 cleanupStealthAndQuantum()
             }
         }
@@ -1514,16 +1514,23 @@ class BirdoVpnService : VpnService() {
      * traffic until you reconnect") over a device whose traffic is in the
      * clear. [publishKillSwitchFailure] goes out in its place.
      *
-     * A service that onDestroy reached while it armed publishes nothing at
-     * all ([BlockArm.SERVICE_GONE]): that is a teardown, and "traffic is NOT
-     * protected" over it would be an alarm about nothing the user can act on
-     * (A1-012: an abandoned setup leaves no Error).
+     * Nothing is published, either, when a newer transition arrived while
+     * this armed ([gen] no longer current): the arm can take a 250 ms retry,
+     * and a Disconnect landing in it used to be followed by this path's
+     * Error and alert, stale over the Disconnected the queued stop then
+     * published. The same check covers a service onDestroy reached
+     * ([BlockArm.SERVICE_GONE]): a teardown, over which "traffic is NOT
+     * protected" would be an alarm about nothing the user can act on (A1-012:
+     * an abandoned setup leaves no Error).
      *
+     * @param gen the transition this failure belongs to; re-checked after the
+     *   arm, before anything is published.
      * @param releaseWhenOff tear the tunnel down when the kill switch is off
      *   (every caller but the dead-tunnel handler, which leaves that to the
      *   re-dial's own teardown).
      */
     private fun blockThenPublish(
+        gen: Long,
         error: VpnState.Error,
         releaseWhenOff: Boolean = true,
         beforePublish: () -> Unit = {},
@@ -1531,16 +1538,16 @@ class BirdoVpnService : VpnService() {
         if (!isKillSwitchEnabled) {
             if (releaseWhenOff) cleanupTunnel()
             beforePublish()
-            updateState(error)
+            if (isCurrent(gen)) updateState(error)
             return
         }
         val arm = activateKillSwitch()
         beforePublish()
-        when (arm) {
-            BlockArm.ARMED -> updateState(error)
-            BlockArm.FAILED -> publishKillSwitchFailure(error.kind)
-            BlockArm.SERVICE_GONE -> Log.i(TAG, "Service destroyed while arming — no Error for a teardown")
+        if (arm == BlockArm.SERVICE_GONE || !isCurrent(gen)) {
+            Log.i(TAG, "Superseded while arming ($arm) — the newer transition owns the state")
+            return
         }
+        if (arm == BlockArm.ARMED) updateState(error) else publishKillSwitchFailure(error.kind)
     }
 
     /**
@@ -1549,7 +1556,10 @@ class BirdoVpnService : VpnService() {
      *
      * Alerted here rather than only through the render collector, which draws
      * from VpnManager and so says nothing when the entry point is unavailable.
-     * The shared key keeps the collector from posting it a second time.
+     * The shared key keeps the collector from posting it a second time — so
+     * the alert, and the key with it, go out BEFORE the state: the collector
+     * runs on the main thread the moment the state lands, and a key set after
+     * that was a check-then-set race it could lose, posting the alert twice.
      *
      * @param kind what the supervisor decides on. A failure path passes its
      *   own, so recovery runs exactly as it would have — a retryable drop
@@ -1561,8 +1571,8 @@ class BirdoVpnService : VpnService() {
         // No tunnel is up on any path that gets here; a green widget would be
         // a false safety signal.
         updateWidgetState(false, null)
-        updateState(error)
         postKillSwitchAlert(kind)
+        updateState(error)
         mainHandler.post { updateNotification() }
     }
 
@@ -1604,7 +1614,7 @@ class BirdoVpnService : VpnService() {
             Log.i(TAG, "Failed setup was already superseded — no block, no Error")
             return
         }
-        blockThenPublish(VpnState.Error(message, kind))
+        blockThenPublish(gen, VpnState.Error(message, kind))
     }
 
     /** A checkpoint in [startTunnel]: true (and the setup abandoned) when a newer transition owns the tunnel. */
@@ -2362,6 +2372,7 @@ class BirdoVpnService : VpnService() {
                 // tunnel is no longer the live one by the time it runs.
                 serial {
                     if (tunnelHandle != handle || destroyed) return@serial
+                    val gen = transitionGen.get()
                     // Fail closed FIRST (block all traffic), THEN hand off to
                     // the supervisor. Activating the kill switch alone tears
                     // wg-go down and latches the state at KillSwitchActive,
@@ -2377,7 +2388,7 @@ class BirdoVpnService : VpnService() {
                         "Connection lost. Reconnecting…",
                         if (neverHandshook) FailureKind.NEVER_ESTABLISHED else FailureKind.DIED_AFTER_HANDSHAKE,
                     )
-                    blockThenPublish(error, releaseWhenOff = false) {
+                    blockThenPublish(gen, error, releaseWhenOff = false) {
                         // The tunnel is no longer carrying traffic — clear the
                         // widget's "Protected" so it doesn't keep asserting a
                         // connection through the whole reconnect window.
@@ -2402,7 +2413,7 @@ class BirdoVpnService : VpnService() {
         serial {
             if (!isCurrent(gen) || tunnelHandle < 0 || !stealthActive) return@serial
             FaultReporter.trail(FaultReporter.PATH_STEALTH, "xray exited on its own — tunnel declared dead")
-            blockThenPublish(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE)) {
+            blockThenPublish(gen, VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE)) {
                 cleanupStealthAndQuantum()
                 updateWidgetState(false, null)
             }
@@ -2522,12 +2533,12 @@ class BirdoVpnService : VpnService() {
             when {
                 liveRebuildId != null && current -> onLiveRebuildVerdict(verdict, handle, gen, liveRebuildId)
                 liveRebuildId != null -> completeLiveRebuild(liveRebuildId, LiveRebuildPolicy.Event.SUPERSEDED)
-                current -> onProbeVerdict(verdict, handle, onStealthTransport)
+                current -> onProbeVerdict(verdict, handle, gen, onStealthTransport)
             }
         }
     }
 
-    private fun onProbeVerdict(verdict: TransportProbe.Result, handle: Int, onStealthTransport: Boolean) {
+    private fun onProbeVerdict(verdict: TransportProbe.Result, handle: Int, gen: Long, onStealthTransport: Boolean) {
         when (verdict) {
             TransportProbe.Result.HANDSHAKE_OK -> publishConnected(handle)
 
@@ -2547,7 +2558,7 @@ class BirdoVpnService : VpnService() {
                 // tun fd, so activateKillSwitch() must do its own ordered
                 // establish-then-teardown — a teardown here first would
                 // revert routing to the physical network before the block.
-                blockThenPublish(VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
+                blockThenPublish(gen, VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED)) {
                     cleanupStealthAndQuantum()
                     mainHandler.removeCallbacks(connectTimeoutRunnable)
                 }
@@ -2743,6 +2754,14 @@ class BirdoVpnService : VpnService() {
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
         _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
         updateWidgetState(false, null)
+        if (userInitiated) {
+            // The user acted: an alert about the session they just ended
+            // ("Kill switch could not be armed", "Can't connect") is stale
+            // the moment they did. The render collector only withdraws one on
+            // Connected, so a Disconnect left it in the shade.
+            notifManager.cancelAlert()
+            postedAlertKey = null
+        }
         if (reason != null) {
             val alert = VpnNotificationManager.alertFor(reason, killSwitchActive = false, sessionExpired = false, uiForeground = uiForeground)
             if (alert != null) {
