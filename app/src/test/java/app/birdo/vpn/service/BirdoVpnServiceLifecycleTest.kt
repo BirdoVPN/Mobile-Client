@@ -621,4 +621,41 @@ class BirdoVpnServiceLifecycleTest {
         // Still torn down: the tunnel that never handshook is gone either way.
         verify { WgNative.turnOff(7) }
     }
+
+    // ── P1-dk-orphan-daemon-threads ──────────────────────────────────────
+
+    private fun probeThreads(): Set<Thread> =
+        Thread.getAllStackTraces().keys.filter { it.name == "birdo-transport-probe" && it.isAlive }.toSet()
+
+    /** A tunnel up on handle 7 whose probe is mid-window: wg-go readable, no handshake yet. */
+    private fun startTunnelWithPollingProbe(): Thread {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.canReadConfig() } returns true
+        every { WgNative.getConfig(7) } returns "last_handshake_time_sec=0\n"
+        val before = probeThreads()
+        startTunnel()
+        return (probeThreads() - before).single()
+    }
+
+    @Test
+    fun `tearing the data plane down stops the transport probe instead of leaving it to run out`() {
+        val probe = startTunnelWithPollingProbe()
+
+        val cleanup = BirdoVpnService::class.java.getDeclaredMethod("cleanupTunnel")
+        cleanup.isAccessible = true
+        cleanup.invoke(service)
+
+        // Interrupted and joined before cleanup returned. Untracked, it slept
+        // on to its next poll (and up to the whole window), holding the service.
+        assertFalse("the transport probe outlived the data plane it was probing", probe.isAlive)
+    }
+
+    @Test
+    fun `onDestroy leaves no transport probe running`() {
+        val probe = startTunnelWithPollingProbe()
+
+        service.onDestroy()
+
+        assertFalse("the transport probe outlived the service", probe.isAlive)
+    }
 }

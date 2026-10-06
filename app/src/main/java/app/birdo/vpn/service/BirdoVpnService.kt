@@ -53,6 +53,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Android VPN Service with WireGuard tunnel, Kill Switch, and Split Tunneling.
@@ -120,6 +121,14 @@ class BirdoVpnService : VpnService() {
          */
         private const val KILL_SWITCH_ARM_ATTEMPTS = 2
         private const val KILL_SWITCH_RETRY_MS = 250L
+
+        /**
+         * How long a teardown waits for the interrupted transport probe to
+         * exit. The probe's only blocking work is a 500 ms poll sleep (which
+         * the interrupt ends at once) and a wg-go getConfig read, so this is a
+         * bound, not an expected wait.
+         */
+        private const val PROBE_JOIN_MS = 500L
 
         /**
          * POWER: the notification-refresh cadence drives a blocking wg-go
@@ -487,6 +496,16 @@ class BirdoVpnService : VpnService() {
     @Volatile private var tunnelHandle: Int = -1
     /** Monitors the tunnel and re-protects sockets. */
     @Volatile private var tunnelMonitor: TunnelMonitor? = null
+
+    /**
+     * The running transport probe ([startTransportProbe]), so teardown can
+     * stop it (P1-dk-orphan-daemon-threads). It was a fire-and-forget daemon:
+     * up to [TransportProbe.WINDOW_MS] — longer for a live rebuild — of wg-go
+     * reads against a handle that might already be gone, holding the service
+     * and its whole object graph after onDestroy. An AtomicReference so the
+     * probe can clear itself on exit without erasing a newer one.
+     */
+    private val transportProbe = AtomicReference<Thread?>(null)
 
     /**
      * Watches the PHYSICAL networks under the tunnel (NOT_VPN + INTERNET; see
@@ -1217,6 +1236,10 @@ class BirdoVpnService : VpnService() {
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
+        // The queued cleanup above stops the transport probe when it runs;
+        // this covers a cleanup still stuck behind a setup that outlived the
+        // wait. Nothing this service started may keep running after it.
+        stopTransportProbe()
         statsExecutor.shutdownNow()
         super.onDestroy()
     }
@@ -2340,7 +2363,9 @@ class BirdoVpnService : VpnService() {
      *
      * Runs on its own short-lived daemon thread — [TransportProbe.await] blocks
      * for up to [TransportProbe.WINDOW_MS], and doing that on the caller would
-     * stall tunnel setup and risk an ANR.
+     * stall tunnel setup and risk an ANR. The thread is tracked in
+     * [transportProbe]: every data-plane teardown and onDestroy interrupt it
+     * (the probe answers ABORTED) and wait for it, bounded ([stopTransportProbe]).
      *
      * The probe now runs for stealth connections too, because the gate applies
      * to every transport. `onStealthTransport` no longer skips it; it selects
@@ -2357,51 +2382,92 @@ class BirdoVpnService : VpnService() {
         onStealthTransport: Boolean,
         liveRebuildId: Long? = null,
     ) {
-        Thread({
-            val verdict = try {
-                TransportProbe(
-                    handle = handle,
-                    // True while THIS tunnel is the live one and nothing has
-                    // torn it down. Deliberately not `is Connected`: during the
-                    // verify window the state is Connecting by design, and
-                    // gating on Connected would abort the probe instantly and
-                    // strand the connect. A kill-switch arm clears tunnelHandle,
-                    // so it is covered by the handle check.
-                    isAlive = {
-                        tunnelHandle == handle &&
-                            currentState !is VpnState.Disconnected &&
-                            currentState !is VpnState.Disconnecting &&
-                            currentState !is VpnState.Error
-                    },
-                    windowMs = if (liveRebuildId != null) LiveRebuildPolicy.PROBE_WINDOW_MS else TransportProbe.WINDOW_MS,
-                ).await()
-            } catch (t: Throwable) {
-                // Never strand the connect on an unexpected probe failure: with
-                // no evidence either way, fall back to the pre-gate behaviour
-                // and let TunnelMonitor's stall detection own the tunnel.
-                // Reported, not only logged: this is the one branch that tells
-                // the user "Connected" with no evidence, and because it
-                // publishes Connected rather than Error the updateState
-                // breadcrumb never fires for it.
-                FaultReporter.report(
-                    FaultReporter.PATH_CONNECT,
-                    "transport_probe_threw",
-                    "Transport probe threw — publishing Connected unverified",
-                    t,
-                )
-                TransportProbe.Result.HANDSHAKE_OK
+        // One probe at a time. The teardown in front of every caller has
+        // already stopped the last one; this is the backstop.
+        stopTransportProbe()
+        val probe = Thread({
+            try {
+                runTransportProbe(handle, gen, onStealthTransport, liveRebuildId)
+            } finally {
+                // Clear our own entry only: a newer probe may already own it.
+                transportProbe.compareAndSet(Thread.currentThread(), null)
             }
-            // The verdict is a transition like any other: serialised, and
-            // dropped if a newer one (a Disconnect, a switch) owns the tunnel.
-            serial {
-                val current = isCurrent(gen) && tunnelHandle == handle
-                when {
-                    liveRebuildId != null && current -> onLiveRebuildVerdict(verdict, handle, gen, liveRebuildId)
-                    liveRebuildId != null -> completeLiveRebuild(liveRebuildId, LiveRebuildPolicy.Event.SUPERSEDED)
-                    current -> onProbeVerdict(verdict, handle, onStealthTransport)
-                }
+        }, "birdo-transport-probe").apply { isDaemon = true }
+        transportProbe.set(probe)
+        probe.start()
+    }
+
+    /**
+     * Interrupt the running transport probe and wait for it to exit, bounded
+     * by [PROBE_JOIN_MS]. Interrupted, it returns ABORTED from its poll sleep,
+     * and its verdict hop finds the tunnel superseded and does nothing.
+     * Reachable from the main thread (onDestroy) and from the tunnel executor
+     * (every data-plane teardown); never from the probe itself, which hands
+     * its verdict to the executor rather than acting on it, but guarded the
+     * way TunnelMonitor.stop is, since joining yourself is a no-op that leaks
+     * an interrupt.
+     */
+    private fun stopTransportProbe() {
+        val probe = transportProbe.getAndSet(null) ?: return
+        if (probe === Thread.currentThread()) return
+        probe.interrupt()
+        try {
+            probe.join(PROBE_JOIN_MS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /** The body of the [startTransportProbe] thread: probe, then hand the verdict to the executor. */
+    private fun runTransportProbe(
+        handle: Int,
+        gen: Long,
+        onStealthTransport: Boolean,
+        liveRebuildId: Long?,
+    ) {
+        val verdict = try {
+            TransportProbe(
+                handle = handle,
+                // True while THIS tunnel is the live one and nothing has
+                // torn it down. Deliberately not `is Connected`: during the
+                // verify window the state is Connecting by design, and
+                // gating on Connected would abort the probe instantly and
+                // strand the connect. A kill-switch arm clears tunnelHandle,
+                // so it is covered by the handle check.
+                isAlive = {
+                    tunnelHandle == handle &&
+                        currentState !is VpnState.Disconnected &&
+                        currentState !is VpnState.Disconnecting &&
+                        currentState !is VpnState.Error
+                },
+                windowMs = if (liveRebuildId != null) LiveRebuildPolicy.PROBE_WINDOW_MS else TransportProbe.WINDOW_MS,
+            ).await()
+        } catch (t: Throwable) {
+            // Never strand the connect on an unexpected probe failure: with
+            // no evidence either way, fall back to the pre-gate behaviour
+            // and let TunnelMonitor's stall detection own the tunnel.
+            // Reported, not only logged: this is the one branch that tells
+            // the user "Connected" with no evidence, and because it
+            // publishes Connected rather than Error the updateState
+            // breadcrumb never fires for it.
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "transport_probe_threw",
+                "Transport probe threw — publishing Connected unverified",
+                t,
+            )
+            TransportProbe.Result.HANDSHAKE_OK
+        }
+        // The verdict is a transition like any other: serialised, and
+        // dropped if a newer one (a Disconnect, a switch) owns the tunnel.
+        serial {
+            val current = isCurrent(gen) && tunnelHandle == handle
+            when {
+                liveRebuildId != null && current -> onLiveRebuildVerdict(verdict, handle, gen, liveRebuildId)
+                liveRebuildId != null -> completeLiveRebuild(liveRebuildId, LiveRebuildPolicy.Event.SUPERSEDED)
+                current -> onProbeVerdict(verdict, handle, onStealthTransport)
             }
-        }, "birdo-transport-probe").apply { isDaemon = true }.start()
+        }
     }
 
     private fun onProbeVerdict(verdict: TransportProbe.Result, handle: Int, onStealthTransport: Boolean) {
@@ -2649,6 +2715,9 @@ class BirdoVpnService : VpnService() {
      * itself, AFTER its blocking interface is established.
      */
     private fun cleanupTunnelDataPlane() {
+        // The probe first, while the handle it reads is still valid; it is
+        // gone (bounded wait) before wg-go is turned off below.
+        stopTransportProbe()
         unregisterUnderlyingNetworkCallback()
         tunnelMonitor?.stop()
         tunnelMonitor = null
