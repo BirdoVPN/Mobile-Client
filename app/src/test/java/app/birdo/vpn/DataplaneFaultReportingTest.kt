@@ -661,6 +661,8 @@ class DataplaneFaultReportingTest {
                 "connect_refused_stealth_not_granted",
                 "connect_refused_stealth_unavailable",
                 "connect_refused_stealth_start_failed",
+                // Granted, but with no Xray endpoint: never dialled direct for a Stealth user.
+                "connect_refused_stealth_no_endpoint",
                 "connect_refused_pq_payload_missing",
                 "connect_refused_pq_exchange_failed",
                 "connect_refused_integrity",

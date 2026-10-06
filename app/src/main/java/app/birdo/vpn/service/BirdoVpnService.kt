@@ -1662,6 +1662,31 @@ class BirdoVpnService : VpnService() {
             failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
             return
         }
+        // GRANTED BUT UNUSABLE (P1-dk-probe-skip-on-unstarted-stealth): the
+        // server said Stealth is on and sent no Xray endpoint to run it to. The
+        // Phase 1 gate below needs both, so this fell through to its else and
+        // dialled plain WireGuard to the normal endpoint — the unwrapped
+        // connection a Stealth user asked not to make, on the networks where
+        // it is most likely to be seen. Same answer as the guard above.
+        //
+        // Only when the USER asked for Stealth. A grant the client did not ask
+        // for by preference (an Adaptive Transport fallback, or the 24 h
+        // stealth preference after one) still goes direct: nothing on screen
+        // claims Stealth (_stealthActiveFlow stays false), and the probe judges
+        // that tunnel as a direct one (onStealthTransport below), so a blocked
+        // network is still noticed.
+        if (appPrefs.stealthModeEnabled && config.xrayEndpoint == null) {
+            FaultReporter.report(
+                FaultReporter.PATH_STEALTH,
+                "connect_refused_stealth_no_endpoint",
+                "Refused to connect: the server granted stealth mode but sent no Xray endpoint",
+            )
+            failSetup(gen, SessionCopy.STEALTH_FAILED, FailureKind.STEALTH_FAILED)
+            return
+        }
+        if (config.stealthEnabled && config.xrayEndpoint == null) {
+            FaultReporter.trail(FaultReporter.PATH_STEALTH, "stealth granted with no Xray endpoint — dialling direct")
+        }
 
         try {
             // ── Phase 1: Stealth Tunnel (Xray Reality) ──────────────

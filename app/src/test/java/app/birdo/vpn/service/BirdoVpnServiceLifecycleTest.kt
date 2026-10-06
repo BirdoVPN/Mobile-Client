@@ -658,4 +658,52 @@ class BirdoVpnServiceLifecycleTest {
 
         assertFalse("the transport probe outlived the service", probe.isAlive)
     }
+
+    // ── P1-dk-probe-skip-on-unstarted-stealth ────────────────────────────
+
+    private fun stealthGrantWithoutEndpoint() = ConnectResponse(
+        success = true,
+        privateKey = PRIVATE_KEY,
+        serverPublicKey = SERVER_KEY,
+        endpoint = "203.0.113.7:51820",
+        assignedIp = "10.100.0.2",
+        allowedIps = listOf("0.0.0.0/0", "::/0"),
+        stealthEnabled = true,
+        xrayEndpoint = null,
+    )
+
+    @Test
+    fun `a Stealth grant with no endpoint is refused, never dialled as plain WireGuard`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { prefs.stealthModeEnabled } returns true
+        mockkObject(XrayManager)
+        every { XrayManager.stop() } just Runs
+        BirdoVpnService.setConfig(stealthGrantWithoutEndpoint())
+
+        startTunnel()
+
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.STEALTH_FAILED, error.message)
+        assertEquals(FailureKind.STEALTH_FAILED, error.kind)
+        // Nothing went out unwrapped: no Xray, no wg-go, and the block is up.
+        io.mockk.coVerify(exactly = 0) { XrayManager.start(any(), any(), any(), any()) }
+        verify(exactly = 0) { WgNative.turnOn(any(), any(), any()) }
+        assertTrue(BirdoVpnService.killSwitchActive)
+        assertFalse(BirdoVpnService.stealthActive)
+    }
+
+    @Test
+    fun `a stealth grant the user did not ask for still dials direct, and is probed as direct`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        BirdoVpnService.setConfig(stealthGrantWithoutEndpoint())
+
+        startTunnel()
+
+        // An Adaptive Transport fallback, say: nothing on screen claims
+        // Stealth, and the probe's verdict decides (this build cannot read
+        // wg-go's config, so it reports HANDSHAKE_OK).
+        assertEquals("turnOn", order.first())
+        assertFalse(BirdoVpnService.stealthActive)
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
 }
