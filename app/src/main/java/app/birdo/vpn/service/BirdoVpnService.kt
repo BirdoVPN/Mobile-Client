@@ -1427,9 +1427,9 @@ class BirdoVpnService : VpnService() {
      *
      * @return [BlockArm.ARMED] when the block is up; [BlockArm.FAILED] when
      *   establish() refused or threw on both attempts, and traffic is NOT
-     *   blocked; [BlockArm.SERVICE_GONE] when onDestroy has begun, before or
-     *   during the attempts, so nothing was established. The data plane is
-     *   down on every outcome.
+     *   blocked; [BlockArm.ABANDONED] when onDestroy has begun, before or
+     *   during the attempts, or the thread was interrupted, so the arm was
+     *   given up rather than refused. The data plane is down on every outcome.
      */
     private fun activateKillSwitch(): BlockArm {
         if (destroyed) {
@@ -1437,7 +1437,7 @@ class BirdoVpnService : VpnService() {
             // interface would outlive its owner. Tear down what is ours; a held
             // block is closed by onDestroy's own cleanupTunnel.
             cleanupTunnelDataPlane()
-            return BlockArm.SERVICE_GONE
+            return BlockArm.ABANDONED
         }
         Log.i(TAG, "Activating kill switch — blocking all traffic (including STUN/WebRTC)")
         // ESTABLISH FIRST, TEAR DOWN SECOND. When arming over a LIVE tunnel
@@ -1531,13 +1531,18 @@ class BirdoVpnService : VpnService() {
             mainHandler.post { updateNotification() }
             return BlockArm.ARMED
         }
-        if (destroyed) {
-            // A teardown, not a failure of the control: the service went away
-            // while this waited to retry. A block still held stays in
-            // vpnInterface for onDestroy's cleanupTunnel to close (and clear
-            // the flag), exactly as on the early return above.
-            FaultReporter.trail(FaultReporter.PATH_KILL_SWITCH, "block not retried — the service is being destroyed")
-            return BlockArm.SERVICE_GONE
+        if (destroyed || interrupted) {
+            // Given up, not refused: the service went away while this waited
+            // to retry, or the thread was asked to stop — which startTunnel
+            // treats as a silent abort too. Neither is a failure of the
+            // control to tell the user about. A block still held stays in
+            // vpnInterface (onDestroy's cleanupTunnel closes it and clears the
+            // flag), exactly as on the early return above.
+            FaultReporter.trail(
+                FaultReporter.PATH_KILL_SWITCH,
+                if (destroyed) "block not retried — the service is being destroyed" else "block not retried — interrupted",
+            )
+            return BlockArm.ABANDONED
         }
         _killSwitchActiveFlow.value = false
         if (threw != null) {
@@ -1579,8 +1584,9 @@ class BirdoVpnService : VpnService() {
      * this armed ([gen] no longer current): the arm can take a 250 ms retry,
      * and a Disconnect landing in it used to be followed by this path's
      * Error and alert, stale over the Disconnected the queued stop then
-     * published. The same check covers a service onDestroy reached
-     * ([BlockArm.SERVICE_GONE]): a teardown, over which "traffic is NOT
+     * published. The same check covers an arm that was given up
+     * ([BlockArm.ABANDONED]: onDestroy reached it, or its thread was
+     * interrupted): a teardown or an abort, over which "traffic is NOT
      * protected" would be an alarm about nothing the user can act on (A1-012:
      * an abandoned setup leaves no Error).
      *
@@ -1604,7 +1610,7 @@ class BirdoVpnService : VpnService() {
         }
         val arm = activateKillSwitch()
         beforePublish()
-        if (arm == BlockArm.SERVICE_GONE || !isCurrent(gen)) {
+        if (arm == BlockArm.ABANDONED || !isCurrent(gen)) {
             Log.i(TAG, "Superseded while arming ($arm) — the newer transition owns the state")
             return
         }
@@ -3084,10 +3090,11 @@ internal enum class BlockArm {
     FAILED,
 
     /**
-     * onDestroy began before or during the attempts, so nothing was (or may
-     * be) established (A1-012). A teardown, not a failure of the control.
+     * Given up, not refused: onDestroy began before or during the attempts
+     * (nothing may be established then, A1-012), or the thread was
+     * interrupted. A teardown or an abort, not a failure of the control.
      */
-    SERVICE_GONE,
+    ABANDONED,
 }
 
 // ── VPN State Sealed Class ──────────────────────────────────────

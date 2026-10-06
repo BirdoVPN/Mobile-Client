@@ -188,7 +188,7 @@ class KillSwitchOrderingTest {
         }
 
         // A teardown, not a failure: nothing to tell the user about.
-        assertEquals(BlockArm.SERVICE_GONE, invokeActivateKillSwitch())
+        assertEquals(BlockArm.ABANDONED, invokeActivateKillSwitch())
 
         // The check used to run only BEFORE the 250 ms sleep, so the retry
         // called establish() on a service onDestroy had already reached.
@@ -209,7 +209,10 @@ class KillSwitchOrderingTest {
         }
 
         try {
-            assertEquals(BlockArm.FAILED, invokeActivateKillSwitch())
+            // An abort, as startTunnel treats an interrupt: not a refusal to
+            // shout about (second review of #463, N7). It used to come back
+            // FAILED after one attempt, and "Kill switch could not be armed".
+            assertEquals(BlockArm.ABANDONED, invokeActivateKillSwitch())
             assertEquals(listOf("establish", "turnOff"), callOrder)
             // Set during the teardown, the flag made its bounded probe join
             // throw at once instead of waiting for the probe to exit.
