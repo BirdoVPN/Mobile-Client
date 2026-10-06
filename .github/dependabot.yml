@@ -9,6 +9,11 @@ updates:
       time: "06:00"
       timezone: "UTC"
     open-pull-requests-limit: 10
+    # A release must be a week old before Dependabot proposes it, so a
+    # compromised or yanked version has time to be caught upstream first.
+    # Security updates are not delayed by this.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "android"
@@ -125,6 +130,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "ci"
@@ -141,4 +148,12 @@ updates:
       # them means one PR moves the whole pair atomically.
       codeql:
         patterns:
+          - "github/codeql-action*"
+      # Everything else in one weekly PR: each action bump touches several
+      # workflows, and one PR per action meant a rebase treadmill under the
+      # strict up-to-date rule on main.
+      actions:
+        patterns:
+          - "*"
+        exclude-patterns:
           - "github/codeql-action*"

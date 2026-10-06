@@ -1,4 +1,4 @@
-name: macOS CI & Release
+name: macOS Release
 
 # ============================================================================
 # Mac App Store pipeline.
@@ -20,18 +20,15 @@ name: macOS CI & Release
 # Triggers:
 #   * push of a mac-v* tag        -> build, sign, upload to App Store Connect
 #   * manual workflow_dispatch    -> build only, unless upload_appstore is set
+# The pull-request build of the macOS app is apple-ci.yml. This file uses NO
+# caches: it signs and uploads, and nothing a pull request could have written
+# may reach that.
 # ============================================================================
 
 on:
   push:
     tags:
       - 'mac-v*'
-  pull_request:
-    paths:
-      - 'iosApp/**'
-      - 'shared/**'
-      - 'native/**'
-      - '.github/workflows/macos.yml'
   workflow_dispatch:
     inputs:
       upload_appstore:
@@ -45,12 +42,17 @@ on:
         default: false
         type: boolean
 
-permissions:
-  contents: read
+permissions: {}
 
+# One macOS release run per ref, never cancelled: a cancelled upload leaves App
+# Store Connect holding a build number that can never be used again.
 concurrency:
-  group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 env:
   JAVA_VERSION: '17'
@@ -64,8 +66,13 @@ jobs:
   build-macos:
     name: Build macOS App
     runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -73,37 +80,10 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-macos-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-macos-${{ runner.os }}-
-
-      # Xcode 26+ is mandatory: App Store Connect rejects anything built against
-      # an older SDK ("must be built with the iOS 26 SDK or later"). sort -V, not
-      # sort -r — lexically "Xcode_26.6" sorts above "Xcode_26.10".
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26+ on this runner; available:"
-            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-          echo "macOS SDK: $(xcrun --sdk macosx --show-sdk-version)"
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - uses: ./.github/actions/apple-toolchain
 
       - name: Build shared framework (macOS)
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkReleaseFrameworkMacosArm64
+        run: ./gradlew :shared:linkReleaseFrameworkMacosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: |
@@ -132,7 +112,7 @@ jobs:
           make ARCHS="arm64 x86_64" PLATFORM_NAME=macosx \
             DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
             DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
-            MACOSX_DEPLOYMENT_TARGET="${{ env.MAC_DEPLOYMENT_TARGET }}" \
+            MACOSX_DEPLOYMENT_TARGET="$MAC_DEPLOYMENT_TARGET" \
             SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
             CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
@@ -172,7 +152,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/build.log" | xcpretty
 
       - name: Build diagnostics (on failure)
-        if: failure()
+        if: ${{ failure() }}
         run: |
           grep -iE "error|warning: .*deprecated" "$RUNNER_TEMP/build.log" | tail -40 || echo "(none)"
 
@@ -185,18 +165,27 @@ jobs:
   # while enabling automation mode". A CI runner has it already.
   #
   # It doubles as the first proof the macOS app actually LAUNCHES: everything
-  # before this verified only that it compiles, signs and packages.
+  # before this verified only that it compiles, signs and packages. So it must
+  # be able to FAIL: a failed UI test, a missing result manifest or zero
+  # captured screenshots turns the job red. The extraction and upload steps
+  # still run after a failure, because partial captures and the raw log are
+  # exactly what a failure needs.
   # ==========================================================================
   screenshots-macos:
     name: Capture Mac App Store Screenshots
     runs-on: macos-26
-    if: github.event_name == 'workflow_dispatch' && inputs.capture_screenshots
+    timeout-minutes: 60
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_screenshots }}
+    permissions:
+      contents: read
     env:
       # A throwaway anonymous account supplied for exactly this purpose. Held as
       # a secret rather than inlined so the suite carries no credential.
       BIRDO_ANON_ID: ${{ secrets.BIRDO_SCREENSHOT_ANON_ID }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -204,31 +193,10 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-macos-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-macos-${{ runner.os }}-
-
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26+ on this runner"; exit 1
-          fi
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - uses: ./.github/actions/apple-toolchain
 
       - name: Build shared framework (macOS)
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkDebugFrameworkMacosArm64
+        run: ./gradlew :shared:linkDebugFrameworkMacosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
@@ -248,7 +216,7 @@ jobs:
           make ARCHS="arm64" PLATFORM_NAME=macosx \
             DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
             DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
-            MACOSX_DEPLOYMENT_TARGET="${{ env.MAC_DEPLOYMENT_TARGET }}" \
+            MACOSX_DEPLOYMENT_TARGET="$MAC_DEPLOYMENT_TARGET" \
             SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
             CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
@@ -282,8 +250,9 @@ jobs:
           rm -f "$RUNNER_TEMP/mac-dev.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -k "$KC_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
-          security list-keychain -d user -s "$KEYCHAIN_PATH" \
-            $(security list-keychains -d user | tr -d '"')
+          existing=$(security list-keychains -d user | tr -d '"')
+          # shellcheck disable=SC2086  # one keychain path per word, split on purpose
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $existing
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
           echo "--- identities ---"
           security find-identity -v "$KEYCHAIN_PATH"
@@ -335,14 +304,20 @@ jobs:
           echo "runner UDID: $UDID"
           node scripts/register-ci-device.js "$UDID" "birdo-ci-$(date +%Y%m%d-%H%M%S)"
 
+      # The test's own exit status decides this step. Raw output is tee'd
+      # before xcpretty so the log survives for the diagnostics step; each
+      # stage's status is read from PIPESTATUS, so neither tee nor xcpretty can
+      # stand in for xcodebuild.
       - name: Run the screenshot UI test
         working-directory: iosApp
         env:
           # Xcode forwards only TEST_RUNNER_-prefixed variables into the test
           # process; the bare name arrives empty and the test asserts on it.
           TEST_RUNNER_BIRDO_ANON_ID: ${{ secrets.BIRDO_SCREENSHOT_ANON_ID }}
+          ASC_KEY_ID:    ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
         run: |
-          set -o pipefail
+          set +e
           xcodebuild test \
             -project BirdoVPN.xcodeproj \
             -scheme BirdoVPN \
@@ -351,14 +326,25 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/mac.xcresult" \
             -only-testing:BirdoVPNUITests \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${{ secrets.APPSTORE_API_KEY_ID }}.p8" \
-            -authenticationKeyID "${{ secrets.APPSTORE_API_KEY_ID }}" \
-            -authenticationKeyIssuerID "${{ secrets.APPSTORE_API_ISSUER_ID }}" \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
             CODE_SIGN_STYLE=Automatic \
             DEVELOPMENT_TEAM=KPUFGR98A5 \
             GENERATE_INFOPLIST_FILE=YES \
-            2>&1 | tee "$RUNNER_TEMP/uitest.log" | xcpretty || true
+            2>&1 | tee "$RUNNER_TEMP/uitest.log" | xcpretty
+          status=("${PIPESTATUS[@]}")
+          set -e
+          echo "xcodebuild exit ${status[0]}, tee exit ${status[1]}, xcpretty exit ${status[2]}"
+          if [ "${status[0]}" -ne 0 ]; then
+            echo "::error::xcodebuild test exited ${status[0]} — the screenshot UI test failed (see 'UI test diagnostics' and the raw log)"
+            exit 1
+          fi
+          if [ "${status[2]}" -ne 0 ]; then
+            echo "::error::xcpretty exited ${status[2]}"
+            exit 1
+          fi
           # NOTE: CODE_SIGN_ENTITLEMENTS is deliberately NOT passed here.
           # Command-line build settings apply to EVERY target, so doing that
           # handed the app's entitlements to the UI-test runner too — giving it
@@ -366,24 +352,32 @@ jobs:
           # launchd refused to spawn it ("Runningboard has returned error 5").
           # The prepare script assigns entitlements per target instead.
 
+      # Runs after a failed test as well: partial captures are still worth
+      # having. But a missing result bundle, a missing manifest or zero
+      # captures is a failure in its own right, never a warning.
       - name: Extract screenshots
+        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           OUT="$RUNNER_TEMP/screenshots"
           mkdir -p "$OUT"
+          if [ ! -d "$RUNNER_TEMP/mac.xcresult" ]; then
+            echo "::error::no result bundle at $RUNNER_TEMP/mac.xcresult — the UI test never produced one"
+            exit 1
+          fi
           # Must start from a clean directory: xcresulttool refuses with
           # "Failed to generate manifest.json: file already exists".
           rm -rf "$RUNNER_TEMP/att"
           xcrun xcresulttool export attachments \
             --path "$RUNNER_TEMP/mac.xcresult" \
-            --output-path "$RUNNER_TEMP/att" || true
+            --output-path "$RUNNER_TEMP/att"
           python3 - "$RUNNER_TEMP/att" "$OUT" <<'PYEOF'
           import json, os, shutil, sys
           att, out = sys.argv[1], sys.argv[2]
           man = os.path.join(att, "manifest.json")
           if not os.path.exists(man):
-              print("::warning::no manifest.json — the test attached nothing")
-              raise SystemExit
+              print("::error::no manifest.json in the exported attachments — the test attached nothing")
+              raise SystemExit(1)
           n = 0
           for entry in json.load(open(man)):
               for a in entry.get("attachments", []):
@@ -397,27 +391,39 @@ jobs:
                       shutil.copy(src, os.path.join(out, "mac-%s.png" % human.split("_")[0]))
                       n += 1
           print("extracted %d screenshots" % n)
+          if n == 0:
+              print("::error::the result bundle holds no named screenshot (00-/01-/02-/03-/99-)")
+              raise SystemExit(1)
           PYEOF
-          ls -la "$OUT" || true
+          ls -la "$OUT"
 
       - name: UI test diagnostics
-        if: always()
+        if: ${{ always() }}
         run: |
           grep -iE "error:|Testing failed|XCTAssert|Never reached|failed to launch|automation mode|signal kill" \
             "$RUNNER_TEMP/uitest.log" | grep -viE "warning:" | sort -u | tail -20 || echo "(none)"
 
       - name: Upload screenshots
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: birdo-vpn-macos-screenshots
           path: ${{ runner.temp }}/screenshots/*.png
           retention-days: 30
           if-no-files-found: warn
 
+      - name: Cleanup keychain & API key
+        if: ${{ always() }}
+        env:
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/screenshots.keychain-db" || true
+          rm -f "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
+
   release-macos:
     name: Codesign & Upload to App Store Connect
     runs-on: macos-26
+    timeout-minutes: 60
     needs: [build-macos]
     # A mac-v* tag, or a dispatch that explicitly asked to upload. A bare
     # dispatch builds only: uploading must stay a deliberate act, and a Mac App
@@ -431,7 +437,9 @@ jobs:
       APPLE_TEAM_ID:   ${{ vars.APPLE_TEAM_ID }}
       APPLE_BUNDLE_ID: ${{ vars.APPLE_BUNDLE_ID }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set keychain path
         run: echo "KEYCHAIN_PATH=$RUNNER_TEMP/birdo-mac.keychain-db" >> "$GITHUB_ENV"
@@ -442,19 +450,10 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          [ -z "$XCODE_PATH" ] && { echo "::error::No Xcode 26+"; exit 1; }
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - uses: ./.github/actions/apple-toolchain
 
       - name: Build shared framework (macOS)
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkReleaseFrameworkMacosArm64
+        run: ./gradlew :shared:linkReleaseFrameworkMacosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
@@ -474,7 +473,7 @@ jobs:
           make ARCHS="arm64 x86_64" PLATFORM_NAME=macosx \
             DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mmacosx-version-min \
             DEPLOYMENT_TARGET_CLANG_ENV_NAME=MACOSX_DEPLOYMENT_TARGET \
-            MACOSX_DEPLOYMENT_TARGET="${{ env.MAC_DEPLOYMENT_TARGET }}" \
+            MACOSX_DEPLOYMENT_TARGET="$MAC_DEPLOYMENT_TARGET" \
             SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" \
             CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
             CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-mac"
@@ -486,6 +485,10 @@ jobs:
           MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
           MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
           PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties"
+            exit 1
+          fi
           echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
           echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
 
@@ -533,7 +536,9 @@ jobs:
           import_cert "$INSTALLER_B64" "mac-installer"
 
           security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KC_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          existing=$(security list-keychains -d user | tr -d '"')
+          # shellcheck disable=SC2086  # one keychain path per word, split on purpose
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $existing
           echo "--- identities ---"
           security find-identity -v "$KEYCHAIN_PATH"
 
@@ -580,7 +585,7 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/archive.log" | xcpretty
 
       - name: Archive diagnostics (on failure)
-        if: failure()
+        if: ${{ failure() }}
         run: |
           grep -iE "error|provisioning|profile|signing|entitlement" "$RUNNER_TEMP/archive.log" | tail -40 || echo "(none)"
           ls -la "$HOME/Library/MobileDevice/Provisioning Profiles/" || true
@@ -629,7 +634,7 @@ jobs:
           ls -la "$RUNNER_TEMP/export"
 
       - name: Export diagnostics (on failure)
-        if: failure()
+        if: ${{ failure() }}
         run: |
           cat "$RUNNER_TEMP/ExportOptions.plist" || true
           grep -iE "error|profile|signing|account|entitlement" "$RUNNER_TEMP/export.log" | tail -40 || echo "(none)"
@@ -688,15 +693,16 @@ jobs:
         # and the only way to check them is to open the package — but this step
         # ran after the upload, so the two rejections so far both discarded the
         # artifact and the structure had to be reconstructed from a local build.
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: birdo-vpn-macos-signed
           path: ${{ runner.temp }}/export/*.pkg
           retention-days: 30
+          compression-level: 0
 
       - name: Cleanup keychain & API keys
-        if: always()
+        if: ${{ always() }}
         env:
           API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
         run: |

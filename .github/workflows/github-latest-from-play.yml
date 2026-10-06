@@ -24,19 +24,30 @@ on:
     - cron: '17 */6 * * *'  # every 6 h, off the hour
   workflow_dispatch:
 
-permissions:
-  contents: write
-  actions: write  # to dispatch fdroid.yml
+permissions: {}
 
 concurrency:
   group: github-latest-from-play
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    name: Move GitHub Latest to Play's 100% build
+    # The 6-hourly run happens only in this repository, never in a fork.
+    if: ${{ github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # gh release edit / make_latest
+      actions: write   # to dispatch fdroid.yml
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install deps
         run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
@@ -48,8 +59,8 @@ jobs:
           TRACK: production
         run: |
           set -euo pipefail
-          python3 scripts/play_release.py | tee out.txt
-          grep -q 'probe only' out.txt || { echo "::error::play_release.py probe did not complete"; exit 1; }
+          python3 scripts/play_release.py | tee "$RUNNER_TEMP/out.txt"
+          grep -q 'probe only' "$RUNNER_TEMP/out.txt" || { echo "::error::play_release.py probe did not complete"; exit 1; }
 
       - name: Move GitHub Latest to the 100% production build
         env:
@@ -58,7 +69,7 @@ jobs:
           set -euo pipefail
           # Probe lines look like:
           #   production   completed    versionCodes=['10430'] userFraction=-
-          vc=$(awk '$1 == "production" && $2 == "completed"' out.txt | grep -oE '[0-9]{5,}' | sort -n | tail -1 || true)
+          vc=$(awk '$1 == "production" && $2 == "completed"' "$RUNNER_TEMP/out.txt" | grep -oE '[0-9]{5,}' | sort -n | tail -1 || true)
           if [ -z "$vc" ]; then
             echo "No completed production release on Play; nothing to do."
             exit 0

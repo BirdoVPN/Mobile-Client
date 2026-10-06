@@ -56,8 +56,8 @@ try {
     # All four live Android ABIs.
     $abis = @("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
-    Write-Host ">>> cargo ndk -t $($abis -join ' -t ') build $profileFlag" -ForegroundColor Cyan
-    & cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o $jniLibsDir build $profileFlag
+    Write-Host ">>> cargo ndk -t $($abis -join ' -t ') build --locked $profileFlag" -ForegroundColor Cyan
+    & cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -t x86 -o $jniLibsDir build --locked $profileFlag
     if ($LASTEXITCODE -ne 0) {
         throw "cargo ndk build failed (exit $LASTEXITCODE)"
     }
@@ -80,7 +80,7 @@ finally {
 # developer's machine. It needs bash (Git for Windows ships one) and a
 # disassembler: the NDK's llvm-objdump.exe (via ANDROID_NDK_HOME) or
 # `rustup component add llvm-tools`. Missing either is a LOUD warning locally
-# and a hard failure when ROSENPASS_ISA_GATE_REQUIRED=1 (android.yml).
+# and a hard failure when ROSENPASS_ISA_GATE_REQUIRED=1 (android-ci.yml, android.yml).
 $gate = Join-Path $root "scripts\check_no_sha3_ext.sh"
 if (-not (Test-Path $gate)) {
     throw "$gate is missing -- the ISA-baseline gate cannot run"

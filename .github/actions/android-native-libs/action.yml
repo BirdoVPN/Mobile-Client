@@ -1,0 +1,58 @@
+name: Android native libraries
+description: >-
+  Puts the shipped native payload into app/src/main/jniLibs for all four ABIs:
+  librosenpass_jni.so (cargo-ndk via :app:buildRustLibs, ISA-gated by native/build.sh)
+  and libxray.so (scripts/provision_xray_engines.sh). One definition for every job that
+  needs it: android-ci.yml (debug APK, R8), android.yml (signed release) and
+  baseline-profile.yml. This action uses NO cache. A CI caller may restore a Go cache
+  before it; a release caller must not.
+
+runs:
+  using: composite
+  steps:
+    # The runner image sets ANDROID_NDK_HOME. Each step below falls back to
+    # the versioned ANDROID_NDK_LATEST_HOME itself (no GITHUB_ENV write), so a
+    # script never fails later with a bare "not set".
+    - name: Check the Android NDK
+      shell: bash
+      run: |
+        ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+          echo "::error::no Android NDK on this runner (ANDROID_NDK_HOME / ANDROID_NDK_LATEST_HOME unset)"
+          exit 1
+        fi
+        echo "NDK: $ndk"
+
+    - uses: ./.github/actions/install-cargo-ndk
+
+    # BEFORE the Xray provisioning, on purpose. native/build.sh runs the ISA
+    # gate over everything in app/src/main/jniLibs, and libxray.so was about 7
+    # of that gate's 7.5 minutes. Built first, the in-build gate sees only what
+    # this step produced (librosenpass_jni.so); libxray.so is gated where it
+    # ships -- every caller runs .github/scripts/isa-gate.sh over the packaged
+    # APK/AAB, which also covers the AAR-provided libraries jniLibs never holds.
+    - name: Build the Rosenpass JNI engine for every shipped ABI
+      shell: bash
+      env:
+        ROSENPASS_ISA_GATE_REQUIRED: "1"
+      run: |
+        export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        ./gradlew :app:buildRustLibs
+
+    # XTLS ships an Android binary for arm64-v8a and amd64 only, so the two
+    # 32-bit ABIs are built from the same pinned Xray-core commit with the NDK's
+    # clang. Go refuses to internally link GOOS=android outside arm64, which is
+    # why cgo and the NDK are involved at all. Pins live in the script. The
+    # engines themselves are never cached: a cache hit would hand over a binary
+    # that never went through the script's commit-SHA assertion.
+    - name: Set up Go (the 32-bit Xray engines are built from source)
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: '1.25'
+        cache: false
+
+    - name: Provision Xray Reality engines for every shipped ABI
+      shell: bash
+      run: |
+        export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        bash scripts/provision_xray_engines.sh

@@ -22,23 +22,34 @@ on:
     types: [published]
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: fdroid-pages
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build and publish the F-Droid repo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # contents: write ONLY to push the gh-pages branch below; the checkout
+    # itself keeps no credentials.
+    permissions:
+      contents: write
     # Only index stable, published releases into the repo. Skip drafts and
     # prereleases; always allow manual (workflow_dispatch) runs.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.release.draft == false && github.event.release.prerelease == false)
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -51,7 +62,8 @@ jobs:
           set -euo pipefail
           : "${ANDROID_HOME:=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          BT=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          [ -n "$BT" ] || { echo "::error::no Android build-tools under $ANDROID_HOME"; exit 1; }
           echo "Using build-tools: $BT"
           echo "$BT" >> "$GITHUB_PATH"
 

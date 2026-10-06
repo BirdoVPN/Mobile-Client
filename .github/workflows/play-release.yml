@@ -25,25 +25,46 @@ on:
         required: false
         default: ""
 
-permissions:
-  contents: read
+permissions: {}
+
+# halt and promote open a Play edit and commit it: one Play edit at a time,
+# repo-wide (android.yml's upload and play-listing.yml apply hold the same
+# lock). probe only reads and discards its edit, so it never waits on -- or,
+# as a pending run, displaces -- a real writer.
+concurrency:
+  group: ${{ inputs.mode == 'probe' && format('play-probe-{0}', github.run_id) || 'google-play-edit' }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   control:
     name: Play ${{ inputs.mode }} (${{ inputs.track }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install deps
         run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
       - name: Fetch the AAB
-        if: inputs.mode == 'promote'
+        if: ${{ inputs.mode == 'promote' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          test -n "${{ inputs.release_tag }}" || { echo "::error::release_tag is required for promote"; exit 1; }
-          gh release download "${{ inputs.release_tag }}" -R "${{ github.repository }}" -p 'app-release.aab' -D aab
+          test -n "$RELEASE_TAG" || { echo "::error::release_tag is required for promote"; exit 1; }
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^android-v[0-9A-Za-z._-]{1,56}$'; then
+            echo "::error::release_tag must be an android-v* tag, got: $RELEASE_TAG"
+            exit 1
+          fi
+          gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" -p 'app-release.aab' -D aab
           ls -la aab/
       - name: Run
         env:
@@ -53,10 +74,10 @@ jobs:
           AAB_PATH: aab/app-release.aab
         run: |
           set -euo pipefail
-          python3 scripts/play_release.py | tee out.txt
+          python3 scripts/play_release.py | tee "$RUNNER_TEMP/out.txt"
           # A workflow whose steps were deleted still reports success. Assert the
           # script actually ran and reached its own end marker.
           # probe discards its edit and returns before any AFTER block, so it
           # has its own end marker. Accepting only 'AFTER:' made every probe
           # report failure on a run that did exactly what it should.
-          grep -qE 'AFTER:|probe only' out.txt             || { echo "::error::play_release.py reached no end marker - it did not run to completion"; exit 1; }
+          grep -qE 'AFTER:|probe only' "$RUNNER_TEMP/out.txt"             || { echo "::error::play_release.py reached no end marker - it did not run to completion"; exit 1; }

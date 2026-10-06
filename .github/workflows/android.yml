@@ -1,36 +1,23 @@
-name: Mobile CI (Android + iOS)
+name: Android Release
 
-on:
-  push:
-    branches: [main]
-    tags:
-      - 'android-v*'   # e.g. android-v1.2.0 - triggers release + Play Store upload
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: 'Tag name for the draft release (e.g. android-v0.1.0). If empty, uses run id.'
-        required: false
-        default: ''
-      play_track:
-        description: 'Google Play track (only used when PLAY_UPLOAD_ENABLED=true)'
-        required: false
-        default: 'internal'
-        type: choice
-        options:
-          - internal
-          - alpha
-          - beta
-          - production
-
-# FIX CI: Minimum permissions by default
-permissions:
-  contents: read
-
+# The signed Android release: build, verify, sign, publish. Pull-request CI
+# (lint, unit tests, CodeQL, debug APK, R8, native gates) is android-ci.yml.
+#
+#   push to main           -> signed release build + every release gate, as a
+#                             dry run. Nothing is published.
+#   push of android-v* tag -> the same build, then a DRAFT GitHub release and
+#                             (with PLAY_UPLOAD_ENABLED) a staged Play upload.
+#   workflow_dispatch      -> the same as a tag, for inputs.release_tag /
+#                             inputs.play_track.
+#
+# NO CACHES anywhere in this file, on purpose. A cache written by any run that
+# executed pull-request code must never be restored into a build that is then
+# signed and shipped (zizmor: cache-poisoning). A release is rare; a slower,
+# clean build is the right trade.
+#
 # -- Azure Key Vault (release signing) ------------------------------------------
-# The release and release-aab jobs retrieve the Android signing keystore from
-# Azure Key Vault using OIDC federation - no stored credentials in GitHub secrets.
+# The release job retrieves the Android signing keystore from Azure Key Vault
+# using OIDC federation - no stored credentials in GitHub secrets.
 #
 # Required GitHub repository SECRETS:
 #   AZURE_TENANT_ID   - Azure Active Directory tenant ID
@@ -49,68 +36,93 @@ permissions:
 # Federated credentials with issuer https://token.actions.githubusercontent.com):
 #   Subject for main-branch builds:  repo:<org>/<repo>:ref:refs/heads/main
 #   Subject for tag-triggered builds: repo:<org>/<repo>:ref:refs/tags/*
+# The release job therefore declares NO `environment:` -- one would change the
+# OIDC subject to environment:<name> and Azure would refuse the token.
 #
 # Role assignment: grant the app "Key Vault Secrets User" on the Key Vault resource.
 # -------------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'android-v*'   # e.g. android-v1.2.0 - triggers release + Play Store upload
+    # Docs cannot change a signed build. (Path filters are never evaluated for
+    # tag pushes, so a release tag always runs.)
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag name for the draft release (e.g. android-v0.1.0). If empty, uses run id.'
+        required: false
+        default: ''
+      play_track:
+        description: 'Google Play track (only used when PLAY_UPLOAD_ENABLED=true)'
+        required: false
+        default: 'internal'
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+
+permissions: {}
+
+# One release pipeline per ref at a time, never cancelled mid-flight. The Play
+# upload additionally holds the repo-wide google-play-edit lock below.
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 env:
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
 
 jobs:
+  # -- Release gates ----------------------------------------------------------
+  # Nothing is published unless lint and the unit tests pass on the exact
+  # commit being released. They run in parallel with the release build (the
+  # publish jobs wait for all three), uncached like everything in this file.
+  # Skipped on a plain main push, where android-ci.yml has just run them.
   lint:
-    name: Lint Check
-    runs-on: ubuntu-latest
+    name: 'Release gate: Lint'
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          persist-credentials: false
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
-      # Every action here is SHA-pinned, which is correct. But a SHA is opaque, so
-      # the trailing `# vX` comment is the only readable handle on what actually
-      # runs -- and a bad action ref fails as `startup_failure`: zero jobs, no
-      # logs, YAML still valid. On 2026-09-10 two of twelve pins were lying, one
-      # of them in fourteen places, and one had survived four Dependabot bumps
-      # (Dependabot rewrites the SHA and leaves the comment alone). This resolves
-      # every pin against the upstream tags API so that cannot recur silently.
       - name: Action pin comments match their SHAs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/check-action-pins.sh
 
-      # ios.yml and macos.yml run scripts under Apple's /bin/bash 3.2, and only
-      # on a tag push. android-v1.4.29's iOS build died on `mapfile: command
-      # not found` after every ubuntu PR run of the same script had passed.
-      # This reads every script those workflows invoke for bash-4-only
-      # constructs, on every PR, so the next one fails here instead of on
-      # release day.
       - name: Scripts run on macOS are bash 3.2-clean
         run: bash scripts/check_macos_bash_compat.sh
 
       - name: Check certificate pin expiry
         run: |
-          # Extract pin-set expiration date from network_security_config.xml
           EXPIRY=$(grep -oP 'expiration="\K[^"]+' app/src/main/res/xml/network_security_config.xml)
           if [ -z "$EXPIRY" ]; then
             echo "::error::No pin-set expiration found in network_security_config.xml"
             exit 1
           fi
-          EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s)
-          NOW_EPOCH=$(date +%s)
-          DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+          DAYS_LEFT=$(( ($(date -d "$EXPIRY" +%s) - $(date +%s)) / 86400 ))
           echo "Certificate pins expire: $EXPIRY ($DAYS_LEFT days remaining)"
           if [ "$DAYS_LEFT" -lt 0 ]; then
             echo "::error::Certificate pins EXPIRED on $EXPIRY! App will fail to connect."
@@ -119,192 +131,31 @@ jobs:
             echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Rotate pins NOW!"
           elif [ "$DAYS_LEFT" -lt 90 ]; then
             echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Plan pin rotation soon."
-          else
-            echo "Pin expiry OK: $DAYS_LEFT days remaining"
           fi
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
 
       - name: Run Lint
-        run: |
-          chmod +x ./gradlew
-          ./gradlew lintDebug
-
-      - name: Upload Lint Report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: lint-report
-          path: app/build/reports/lint-results-debug.html
+        run: ./gradlew lintDebug
 
   test:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
-
-      - name: Run Unit Tests
-        run: |
-          chmod +x ./gradlew
-          # :shared:testAndroidHostTest is named explicitly: the root
-          # testDebugUnitTest compiles :shared but runs no test task in it.
-          ./gradlew testDebugUnitTest :shared:testAndroidHostTest
-
-      - name: Upload Test Results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: test-results
-          path: app/build/reports/tests/testDebugUnitTest/
-
-  pq-cpu-proof:
-    name: PQ KEM on a CPU without FEAT_SHA3 (QEMU)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # WHY A WHOLE JOB FOR THIS
-    #
-    # Every other PQ control in this workflow reads bytes: resolved Cargo
-    # features, a --cfg in a config file, a disassembly census. None of them can
-    # answer the only question that actually killed users in 1.4.25 -- does this
-    # code run on a core that lacks ARMv8.2 FEAT_SHA3?
-    #
-    # The KEM is RustCrypto ml-kem, whose Keccak backend (keccak 0.2.2,
-    # backends/aarch64_sha3.rs) carries the SAME four mnemonics PQClean's
-    # keccak2x/feat.S did -- eor3/rax1/xar/bcax -- behind a runtime check on
-    # cpufeatures' getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). That check is
-    # now a single point of failure whose wrong answer is an instant SIGILL on
-    # seven device models. So it gets EXECUTED here, on a core that does not have
-    # the extension, exactly the way the 1.4.25 fix was proved.
-    #
-    # Target note: aarch64-unknown-linux-gnu, not aarch64-linux-android. The
-    # instruction selection, the keccak backend and the cpufeatures HWCAP path
-    # are identical (cpufeatures reads AT_HWCAP through getauxval on both); what
-    # differs is the libc, which is not what is under test, and gnu runs under
-    # plain qemu-user with no bionic loader to stage.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Install QEMU user-mode and an aarch64 cross toolchain
-        run: |
-          sudo apt-get update
-          # libc6-dev-arm64-cross is NOT optional and is NOT pulled in by
-          # gcc-aarch64-linux-gnu under --no-install-recommends: without it the
-          # link dies on "cannot find Scrt1.o". It is also what provides the
-          # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
-          # to find the dynamic loader.
-          sudo apt-get install -y --no-install-recommends \
-            qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
-            libc6-dev-arm64-cross
-          qemu-aarch64 --version | head -1
-          ls /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
-
-      - name: Add the aarch64 Rust target
-        run: rustup target add aarch64-unknown-linux-gnu
-
-      - name: Build birdo-pq-smoke for aarch64
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: |
-          set -euo pipefail
-          cd native/birdo-pq-server
-          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
-          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-gated"
-
-      # If the binary has no FEAT_SHA3 instructions at all, every run below
-      # passes for the wrong reason and proves nothing. Assert the thing we are
-      # testing is present BEFORE testing it.
-      - name: Assert the gated build really contains FEAT_SHA3 instructions
-        run: |
-          set -euo pipefail
-          n=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" \
-                | awk '{print $3}' | grep -cE '^(eor3|rax1|xar|bcax)$' || true)
-          echo "FEAT_SHA3 instructions in the gated build: $n"
-          if [ "$n" -eq 0 ]; then
-            echo "::error::the aarch64 smoke binary contains no eor3/rax1/xar/bcax, so running it on a core without FEAT_SHA3 proves nothing. Either keccak stopped shipping its aarch64 backend (good news, but this job must be rewritten) or the build picked up the soft-backend cfg."
-            exit 1
-          fi
-          g=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" | grep -c getauxval || true)
-          echo "getauxval call sites: $g"
-          if [ "$g" -eq 0 ]; then
-            echo "::error::no getauxval in the gated build: the FEAT_SHA3 instructions above are present with NO runtime CPU check. That is the exact shape of the 1.4.25 SIGILL."
-            exit 1
-          fi
-
-      - name: Run on a core WITHOUT FEAT_SHA3 (cortex-a53) — must exit 0
-        run: |
-          set -euo pipefail
-          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 \
-            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-a53.txt"
-
-      - name: Run on a core WITH FEAT_SHA3 (max) — must exit 0 and agree
-        run: |
-          set -euo pipefail
-          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu max \
-            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-max.txt"
-          # The random round trip differs per run by design, so compare the
-          # deterministic lines: same KEM answer on both dispatch paths.
-          for key in KAT_PSK STORED_PQCLEAN_PSK; do
-            a=$(grep "^$key=" "$RUNNER_TEMP/out-a53.txt")
-            b=$(grep "^$key=" "$RUNNER_TEMP/out-max.txt")
-            if [ "$a" != "$b" ]; then
-              echo "::error::$key differs between the soft and FEAT_SHA3 Keccak backends: '$a' vs '$b'. The fast path computes a DIFFERENT answer, which would mean half the fleet cannot complete a handshake."
-              exit 1
-            fi
-            echo "  ok: $a (identical on cortex-a53 and max)"
-          done
-
-      # THE NEGATIVE CASE. Without it, the three runs above could all be
-      # passing because the harness never reaches Keccak at all.
-      #
-      # -C target-feature=+sha3 makes cpufeatures' __unless_target_features!
-      # macro elide the HWCAP check and return a constant true, so the fast
-      # backend runs unconditionally. On cortex-a53 the first eor3 must SIGILL
-      # (exit 132 = 128 + SIGILL(4)).
-      - name: A +sha3 build MUST SIGILL on cortex-a53 (negative case)
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
-        run: |
-          set -euo pipefail
-          cd native/birdo-pq-server
-          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
-          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-ungated"
-          cd "$GITHUB_WORKSPACE"
-          set +e
-          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 "$RUNNER_TEMP/smoke-ungated"
-          rc=$?
-          set -e
-          echo "exit code: $rc"
-          if [ "$rc" -ne 132 ]; then
-            echo "::error::a build with -C target-feature=+sha3 did NOT SIGILL (exit 132) on cortex-a53; it exited $rc. Either QEMU is not enforcing the ISA of the core it was told to emulate, or this binary never reaches Keccak -- in which case the positive runs above prove nothing and this job is worthless as written."
-            exit 1
-          fi
-          echo "  ok: exit 132 (SIGILL), as it must be — the harness does reach Keccak"
-
-  codeql-java-kotlin:
-    name: Analyze (java-kotlin)
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+    name: 'Release gate: Unit Tests'
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
-      security-events: write
-      packages: read
-      actions: read
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -312,401 +163,23 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-codeql-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-codeql-${{ runner.os }}-
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          languages: java-kotlin
-          build-mode: manual
-          config-file: ./.github/codeql/codeql-config.yml
-
-      - name: Build Android for CodeQL
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :app:compileDebugKotlin :shared:compileAndroidMain \
-            -Pkotlin.native.ignoreDisabledTargets=true \
-            --no-daemon
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
-        with:
-          category: '/language:java-kotlin'
-
-  build:
-    name: Build APK
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
-
-      - name: Install Rust Android toolchain
-        run: |
-          # One Rust target per shipped ABI, so native/build.sh produces a
-          # librosenpass_jni.so for every entry in app/build.gradle.kts
-          # abiFilters. A missing target here does not fail the Rust build — it
-          # silently yields one fewer .so, which is caught much later by
-          # scripts/verify_android_release_apk.py.
-          rustup target add aarch64-linux-android armv7-linux-androideabi \
-                            x86_64-linux-android i686-linux-android
-          cargo install cargo-ndk --locked --version 4.1.2
-
-      # XTLS ships an Android binary for arm64-v8a and amd64 only, so the two
-      # 32-bit ABIs are built from the same pinned Xray-core commit with the
-      # NDK's clang. Go refuses to internally link GOOS=android outside arm64,
-      # which is why cgo and the NDK are involved at all. Pins live in the
-      # script.
-      - name: Set up Go (the 32-bit Xray engines are built from source)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.25'
-          cache: false
-
-      # Only the Go module + build caches. The engines themselves are NOT cached:
-      # a cache hit would hand us a binary that never went through the commit-SHA
-      # assertion in the script, which is the whole provenance story for the two
-      # ABIs we build.
-      - name: Cache Go build for the Xray engines
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
-          restore-keys: xray-go-${{ runner.os }}-
-
-      - name: Provision Xray Reality engines for every shipped ABI
-        run: |
-          set -euo pipefail
-          # The runner image sets ANDROID_NDK_HOME; fall back to the versioned
-          # variable rather than letting the script fail with a bare "not set".
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/provision_xray_engines.sh
-          scripts/provision_xray_engines.sh
-
-      # WHY THE DEBUG BUILD BUILDS THE RUST ENGINE TOO
-      #
-      # The debug APK is the ONLY Android artifact a pull request can produce:
-      # the release job needs Azure Key Vault and is gated on
-      # main/tags/workflow_dispatch. Until this step existed, `assembleDebug`
-      # packaged no librosenpass_jni.so at all, so nothing on a PR could tell
-      # you whether a newly added ABI actually carries a complete engine set —
-      # that was discovered only by the release job, i.e. after merge to the
-      # branch that deploys. Building it here costs a cargo-ndk cross-compile
-      # and buys a real artifact to gate on.
-      # Four controls that run BEFORE the cross-compile, in seconds:
-      #
-      #   1. check_pq_features.sh asks Cargo what the KEM dependency actually
-      #      resolves to, per crate and target: pqcrypto-* absent, ml-kem at
-      #      the exact pinned version with exactly the reviewed features, and
-      #      -- because it is a --cfg and not a feature, so cargo tree cannot
-      #      see it -- the soft-Keccak backend flag present in
-      #      .cargo/config.toml and nowhere else. Cargo feature unification can
-      #      turn a feature back on from ANY crate in the graph while our own
-      #      Cargo.toml line still reads `default-features = false`. The
-      #      disassembly gate below would catch the consequence too -- after a
-      #      full cargo-ndk build, with a less specific error.
-      #   2. check_pq_docs.sh fails if any file still claims the post-migration
-      #      build is CLEAN-only (PQ-DOCS-OK: named, not claimed), that the
-      #      C/asm path is "removed entirely", or that the crash class is
-      #      "structurally impossible" (PQ-DOCS-OK: named, not claimed). The 1.4.25
-      #      SIGILL was attributed by a human reading docs/SENTRY-SETUP.md;
-      #      wrong docs mis-attribute the next incident.
-      #   3. cargo test/clippy/fmt for all three native crates. Until 2026-09
-      #      no cargo test EVER ran in this workflow, so the KAT that proves
-      #      byte-compatibility with the @noble server would have been
-      #      decoration. The minimum test count is part of the assertion:
-      #      deleting a #[cfg(test)] module reports "0 tests" and would
-      #      otherwise be a silent pass.
-      #   4. The gate's own self-test proves, on this runner with this
-      #      disassembler, that scripts/check_no_sha3_ext.sh fails on a
-      #      hand-assembled eor3 and passes a HWCAP-gated LSE helper. A gate
-      #      that is never shown to bite is a gate nobody can trust green.
-      - name: Assert the PQ KEM dependency graph is exactly what was reviewed
-        run: |
-          chmod +x scripts/check_pq_features.sh
-          scripts/check_pq_features.sh
-
-      - name: Assert no falsified PQ claims survive in the tree
-        run: |
-          chmod +x scripts/check_pq_docs.sh
-          scripts/check_pq_docs.sh
-
-      # Two gates over the parts of the migration that a library-side check
-      # cannot see, both added because the first cut of this PR failed them:
-      #
-      #   check_pq_rng_panics.sh -- the migration was sold as removing "an FFI
-      #     panic on RNG failure". `DecapsulationKey::generate()` is
-      #     `generate_from_rng(&mut UnwrapErr(SysRng))` (crypto-common 0.2.2
-      #     src/generate.rs:42) under a literal "# Panics" doc, and both native
-      #     crates set panic = "abort": the panic had been MOVED, not removed.
-      #     Production code must call try_generate().
-      #
-      #   check_pq_ios_wiring.sh -- birdo_pq_stored_key_usable was written,
-      #     declared, exported and symbol-checked in all three Apple slices,
-      #     and called from nowhere. iosApp/ was not touched at all. Every
-      #     existing check looked at the LIBRARY; none asked whether the app
-      #     used it. An export nobody calls is not a mitigation, and on iOS
-      #     that one would have meant quantumHandshakeFailed on every connect,
-      #     forever, for any install with a stored key ml-kem now rejects.
-      #     Runs here, on ubuntu, because ios.yml fires only on android-v*
-      #     tags -- a gate that cannot run on a PR does not gate the PR.
-      - name: Assert the PQ mitigations are wired, not merely exported
-        run: |
-          chmod +x scripts/check_pq_rng_panics.sh scripts/check_pq_ios_wiring.sh
-          scripts/check_pq_rng_panics.sh
-          scripts/check_pq_ios_wiring.sh
-
-      # Host-target, so no NDK is involved and the crypto actually executes.
-      # MIN_TESTS is per crate and is the point of the step: `cargo test` on a
-      # crate whose test module was deleted exits 0 with "0 tests".
-      - name: Native crates — fmt, clippy and tests
-        run: |
-          set -euo pipefail
-          declare -A MIN_TESTS=(
-            [rosenpass-jni]=12
-            [birdo-pq-ios]=13
-            [birdo-pq-server]=10
-          )
-          rustup component add rustfmt clippy
-          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
-            echo "::group::native/$crate"
-            (
-              cd "native/$crate"
-              cargo fmt --check
-              cargo clippy --all-targets --locked -- -D warnings
-              cargo test --locked 2>&1 | tee "$RUNNER_TEMP/$crate-tests.log"
-            )
-            passed=$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/$crate-tests.log" | awk '{s+=$1} END {print s+0}')
-            want="${MIN_TESTS[$crate]}"
-            if [ "$passed" -lt "$want" ]; then
-              echo "::error::native/$crate ran $passed test(s), expected at least $want. A deleted #[cfg(test)] module exits 0 with '0 tests'; that is why this number is pinned. If tests were deliberately removed, say which and why, and lower the number in the same commit."
-              exit 1
-            fi
-            echo "  ok: native/$crate ran $passed test(s) (minimum $want)"
-            echo "::endgroup::"
-          done
-
-      # The advisory check the migration was FOR. pqcrypto-mlkem,
-      # pqcrypto-traits and pqcrypto-internals are unmaintained by advisory
-      # (RUSTSEC-2026-0161/-0162/-0163, 2026-06-04) because PQClean upstream was
-      # archived read-only on 2026-08-04; RUSTSEC-2026-0161's own remediation
-      # text says "Users should migrate to the `ml-kem` crate." Running the
-      # check is what stops the same thing accumulating silently again.
-      #
-      # `--deny warnings` on purpose: "unmaintained" is a warning, not a
-      # vulnerability, and it was a warning for three months before anyone
-      # noticed. A crypto dependency nobody maintains is a build failure here.
-      - name: cargo audit for every native crate
-        run: |
-          set -euo pipefail
-          cargo install cargo-audit --locked --version 0.22.0
-          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
-            echo "::group::cargo audit native/$crate"
-            ( cd "native/$crate" && cargo audit --deny warnings -f Cargo.lock )
-            echo "::endgroup::"
-          done
-
-      - name: ISA gate self-test against committed fixtures
-        run: |
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/check_no_sha3_ext.sh scripts/tests/check_no_sha3_ext_test.sh
-          scripts/tests/check_no_sha3_ext_test.sh
-
-      # THE NEGATIVE CASE. This is the only step that catches the one known way
-      # to silently re-arm the 1.4.25 crash class.
-      #
-      # ml-kem's Keccak backend is gated at runtime on cpufeatures'
-      # getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). But cpufeatures'
-      # internal __unless_target_features! macro ELIDES that check and returns a
-      # constant `true` when the feature is statically enabled -- so
-      # RUSTFLAGS='-C target-feature=+sha3' (or any -C target-cpu above the
-      # fleet floor) produces a library that executes eor3/rax1/xar/bcax
-      # unconditionally, on every device, with no check left to fail.
-      #
-      # So we build exactly that configuration on purpose and assert the ISA
-      # gate FAILS on it. A gate that has never been shown to bite on the real
-      # library -- as opposed to a hand-assembled fixture -- is a gate nobody
-      # can trust green. If this step starts PASSING, the gate has stopped
-      # reading the shipped library and every green run above it is worthless.
-      - name: ISA gate must FAIL a deliberately +sha3 build (negative case)
-        env:
-          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
-        run: |
-          set -euo pipefail
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/check_no_sha3_ext.sh
-          out="$RUNNER_TEMP/sha3-negative/arm64-v8a"
-          mkdir -p "$out"
-          # RUSTFLAGS as an env var REPLACES .cargo/config.toml's target
-          # rustflags, so this build has neither the soft-Keccak cfg nor the
-          # 16 KB alignment flag -- which is the point: it is the shape a
-          # careless RUSTFLAGS export actually produces.
-          ( cd native/rosenpass-jni && cargo ndk -t arm64-v8a -o "$out/.." build --release )
-          test -f "$out/librosenpass_jni.so" || {
-            echo "::error::the negative-case build produced no library, so nothing was tested"; exit 1; }
-          if scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/sha3-negative"; then
-            echo "::error::check_no_sha3_ext PASSED a library built with -C target-feature=+sha3. That build statically enables FEAT_SHA3, which makes cpufeatures elide the HWCAP check entirely -- the exact shape of the 1.4.25 SIGILL. The gate is not reading the shipped library, or its rule table no longer covers eor3/rax1/xar/bcax. Every green ISA-gate run is worthless until this is fixed."
-            exit 1
-          fi
-          echo "  ok: the ISA gate rejects a +sha3 build, as it must"
-
-      # native/build.sh runs scripts/check_no_sha3_ext.sh on its own output
-      # (app/src/main/jniLibs) when it can find a disassembler; on this runner
-      # it must, so a missing tool is a build failure rather than a warning.
-      - name: Build Rosenpass JNI engine for every shipped ABI
-        env:
-          ROSENPASS_ISA_GATE_REQUIRED: "1"
-        run: |
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x ./gradlew
-          ./gradlew :app:buildRustLibs
-
-      - name: Build Debug APK
-        run: |
-          chmod +x ./gradlew
-          ./gradlew assembleDebug
-
-      # Same ABI x engine contract the release job enforces, run here on the
-      # artifact a PR can actually build. --native-libs-only because a debug APK
-      # legitimately has no signing-fingerprint constant.
-      - name: Verify every shipped ABI carries the complete engine set
-        run: |
-          python3 scripts/verify_android_release_apk.py --native-libs-only             app/build/outputs/apk/debug/app-debug.apk
-
-      # The SHA3/extended-ISA gate was release-only too, so a PR re-enabling
-      # pqcrypto-mlkem's `neon` feature passed every check and broke only on
-      # main. The native libraries in the debug APK are byte-identical to the
-      # ones the release build packages (native/build.sh builds the release
-      # profile, and the Xray engines come from the same provisioning step), so
-      # this is the same binary being checked, one merge earlier.
-      #
-      # The APK's lib/ is what AGP actually packaged (stripped, every ABI,
-      # every AAR-provided .so included), which the jniLibs pass inside
-      # buildRustLibs cannot see. Same script, same rule table.
-      - name: Verify no ungated extended-ISA instructions in shipped libraries
-        run: |
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/check_no_sha3_ext.sh
-          rm -rf "$RUNNER_TEMP/debug-apk-libs"
-          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*'             -d "$RUNNER_TEMP/debug-apk-libs"
-          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/debug-apk-libs/lib"
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: debug-apk
-          path: app/build/outputs/apk/debug/*.apk
-
-      # -- R8 on the pull-request path -----------------------------------
-      #
-      # Until this step existed, R8 NEVER RAN ON A PULL REQUEST. This job builds
-      # only assembleDebug, and the `release` job below is gated on
-      # `github.ref == refs/heads/main`, a tag, or workflow_dispatch -- which a
-      # pull_request event never satisfies. Every change to
-      # app/proguard-rules.pro therefore merged green without the shrinker
-      # having looked at it once, and the first minified build was the release.
-      #
-      # We run the R8 TASK, not assembleRelease: packageRelease needs the Azure
-      # keystore, which a fork or dependabot PR does not have, whereas
-      # minifyReleaseWithR8 produces the shrunk DEX plus
-      # mapping/seeds/usage/configuration with no signing material at all. The
-      # two -P flags exist only to get past validateReleaseSecurityConfig and
-      # validateSentryDsn; nothing is packaged, so neither value ships.
-      - name: Run R8 (minified release) - proves shrinker changes on the PR
-        run: |
-          ./gradlew :app:minifyReleaseWithR8 \
-            -PbirdoSigningCertFingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00 \
-            -PallowMissingSentryDsn=true
-
-      # Asserts against the shrunk DEX that R8 did not silently delete the
-      # WireGuard/Rosenpass JNI bindings or a kotlinx.serialization serializer.
-      # Both break only at runtime, on a user's device, with no logcat --
-      # -assumenosideeffects strips every Log.* call from release builds -- so
-      # this is the only place they can be caught.
-      #
-      # Demonstrated, not assumed: deleting the GoBackend keep produces a build
-      # that SUCCEEDS and a DEX with wgTurnOn, wgGetSocketV4 and wgGetSocketV6
-      # gone. This step returns 1 on that build.
-      - name: Verify R8 keeps
-        run: python3 scripts/check_r8_keeps.py
-
-      # Asserts the baked NATIVE_HASH_* constants equal the SHA-256 of the .so
-      # files that actually ship, so NativeLibraryVerifier can match them on a
-      # device instead of silently degrading to the signature-only check.
-      #
-      # Two disarmed-but-green releases motivated this. The constants were first
-      # written through `android.defaultConfig.buildConfigField` from a task
-      # doFirst and shipped as "" for every release; then they were computed from
-      # merge<Variant>NativeLibs, which is the wrong stage -- AGP's
-      # strip<Variant>DebugSymbols runs afterwards and is what packaging copies
-      # into the APK. Measured with NDK 29.0.13846066, librosenpass_jni.so goes
-      # 469480 -> 325280 bytes across that step and libxray.so changes hash at
-      # the same size, so two of the three engines could never match.
-      #
-      # Neither failure was visible in a build log: the build succeeded both
-      # times. This step is the only thing that looks at the values themselves.
-      #
-      # :app:generateReleaseBuildConfig depends on :app:stripReleaseDebugSymbols
-      # (app/build.gradle.kts), and minifyReleaseWithR8 above needs BuildConfig,
-      # so both artifacts this script reads already exist by now -- it needs no
-      # signing material and no extra Gradle invocation.
-      - name: Verify native integrity hashes match the shipped .so files
-        run: python3 scripts/check_native_hashes.py
-
-      # seeds.txt / usage.txt / configuration.txt are written by AGP next to
-      # mapping.txt on every minified build, with no extra ProGuard directives
-      # needed. They are how the next person measures a rule change instead of
-      # guessing: configuration.txt is the fully merged rule set naming the
-      # source file of every rule, seeds.txt is everything R8 was forbidden to
-      # touch, usage.txt is everything it removed.
-      - name: Upload R8 reports
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: r8-reports-pr
-          path: app/build/outputs/mapping/release/
+      # :shared:testAndroidHostTest is named explicitly: the root
+      # testDebugUnitTest compiles :shared but runs no test task in it.
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest :shared:testAndroidHostTest
 
   release:
     name: Build Release APK
-    runs-on: ubuntu-latest
-    needs: [lint, test]
-    # Skip when Azure Key Vault is not configured (forks, dependabot PRs, contributors).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Skip when Azure Key Vault is not configured (forks, contributors).
     if: ${{ vars.AZURE_KEY_VAULT_NAME != '' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch') }}
-    # Azure OIDC setup (keystore retrieved from Azure Key Vault - no GitHub secrets needed):
-    #   Secrets:   AZURE_TENANT_ID, AZURE_CLIENT_ID
-    #   Variables: AZURE_KEY_VAULT_NAME  (e.g. "birdovpn-keyvault")
     # Key Vault secrets required (names are case-sensitive):
     #   android-keystore-base64   - base64-encoded release keystore (.jks)
     #   android-store-password    - keystore password
     #   android-key-alias         - signing key alias inside the keystore
     #   android-key-password      - signing key password
     #   android-signing-cert-fingerprint - optional SHA-256 fingerprint allow-list override
-    # OIDC federated credential subject (add in Azure App Registration):
-    #   repo:<org>/<repo>:ref:refs/heads/main
-    #   repo:<org>/<repo>:ref:refs/tags/*
     permissions:
       contents: read
       id-token: write  # Required for both Sigstore (Fulcio OIDC) and Azure AD OIDC
@@ -728,7 +201,12 @@ jobs:
     env:
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -736,58 +214,18 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
-
-      - name: Install Rust Android toolchain
+      # The same pre-build assertions the PR path runs (android-ci.yml), before
+      # a single native byte is built.
+      - name: Pre-build PQ assertions
         run: |
-          # One Rust target per shipped ABI, so native/build.sh produces a
-          # librosenpass_jni.so for every entry in app/build.gradle.kts
-          # abiFilters. A missing target here does not fail the Rust build — it
-          # silently yields one fewer .so, which is caught much later by
-          # scripts/verify_android_release_apk.py.
-          rustup target add aarch64-linux-android armv7-linux-androideabi \
-                            x86_64-linux-android i686-linux-android
-          cargo install cargo-ndk --locked --version 4.1.2
+          bash scripts/check_pq_features.sh
+          bash scripts/check_pq_docs.sh
+          bash scripts/check_pq_rng_panics.sh
+          bash scripts/check_pq_ios_wiring.sh
 
-      # XTLS ships an Android binary for arm64-v8a and amd64 only, so the two
-      # 32-bit ABIs are built from the same pinned Xray-core commit with the
-      # NDK's clang. Go refuses to internally link GOOS=android outside arm64,
-      # which is why cgo and the NDK are involved at all. Pins live in the
-      # script.
-      - name: Set up Go (the 32-bit Xray engines are built from source)
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.25'
-          cache: false
-
-      # Only the Go module + build caches. The engines themselves are NOT cached:
-      # a cache hit would hand us a binary that never went through the commit-SHA
-      # assertion in the script, which is the whole provenance story for the two
-      # ABIs we build.
-      - name: Cache Go build for the Xray engines
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
-          restore-keys: xray-go-${{ runner.os }}-
-
-      - name: Provision Xray Reality engines for every shipped ABI
-        run: |
-          set -euo pipefail
-          # The runner image sets ANDROID_NDK_HOME; fall back to the versioned
-          # variable rather than letting the script fail with a bare "not set".
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/provision_xray_engines.sh
-          scripts/provision_xray_engines.sh
+      # librosenpass_jni.so (ISA-gated inside native/build.sh) and libxray.so
+      # for all four ABIs. No cache: see the header.
+      - uses: ./.github/actions/android-native-libs
 
       # Log in to Azure using OIDC - no stored client secrets required.
       - name: Azure Login (OIDC)
@@ -800,42 +238,44 @@ jobs:
       # Retrieve encrypted keystore + signing credentials from Azure Key Vault.
       # SEC: All secrets are masked with ::add-mask:: so they never appear in logs.
       # The keystore file is written to $RUNNER_TEMP (not the workspace) to prevent
-      # accidental artifact upload or caching.
+      # accidental artifact upload.
       - name: Retrieve Android keystore from Azure Key Vault
         env:
+          VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
           SIGNING_CERT_FINGERPRINT_VAR: ${{ vars.BIRDO_SIGNING_CERT_FINGERPRINT }}
           SIGNING_CERT_FINGERPRINT_SECRET: ${{ secrets.BIRDO_SIGNING_CERT_FINGERPRINT }}
         run: |
           KS_B64=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --vault-name "$VAULT_NAME" \
             --name "android-keystore-base64" \
             --query value --output tsv)
           echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/birdo-release.jks"
           echo "RELEASE_STORE_FILE=$RUNNER_TEMP/birdo-release.jks" >> "$GITHUB_ENV"
 
           STORE_PASS=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --vault-name "$VAULT_NAME" \
             --name "android-store-password" \
             --query value --output tsv)
           echo "::add-mask::$STORE_PASS"
           echo "RELEASE_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
 
           KEY_ALIAS=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --vault-name "$VAULT_NAME" \
             --name "android-key-alias" \
             --query value --output tsv)
           echo "::add-mask::$KEY_ALIAS"
           echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
 
           KEY_PASS=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --vault-name "$VAULT_NAME" \
             --name "android-key-password" \
             --query value --output tsv)
           echo "::add-mask::$KEY_PASS"
           echo "RELEASE_KEY_PASSWORD=$KEY_PASS" >> "$GITHUB_ENV"
 
+          # Optional override; absent is normal, so a failed lookup falls back.
           SIGNING_FP=$(az keyvault secret show \
-            --vault-name "${{ vars.AZURE_KEY_VAULT_NAME }}" \
+            --vault-name "$VAULT_NAME" \
             --name "android-signing-cert-fingerprint" \
             --query value --output tsv 2>/dev/null || true)
           if [ -z "$SIGNING_FP" ]; then SIGNING_FP="$SIGNING_CERT_FINGERPRINT_SECRET"; fi
@@ -868,17 +308,7 @@ jobs:
         #   • AAB  (bundleRelease -PplayBuild=true, IS_PLAY_BUILD=true) → Play
         #     Console. Strips all external-purchase steering to comply with the
         #     Play Payments policy.
-        env:
-          ROSENPASS_ISA_GATE_REQUIRED: "1"
         run: |
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x ./gradlew scripts/check_pq_features.sh scripts/check_pq_docs.sh scripts/check_pq_rng_panics.sh scripts/check_pq_ios_wiring.sh
-          # Same pre-build assertions as the PR path (see the build job).
-          scripts/check_pq_features.sh
-          scripts/check_pq_docs.sh
-          scripts/check_pq_rng_panics.sh
-          scripts/check_pq_ios_wiring.sh
-          ./gradlew :app:buildRustLibs
           ./gradlew assembleRelease
           # -PplayBuild flips BuildConfig.IS_PLAY_BUILD, so the bundle is a
           # SECOND, DIFFERENT R8 run: different constant folding, different
@@ -920,10 +350,9 @@ jobs:
       # jniLibs dir does not contain.
       - name: Verify 16 KB native library alignment (64-bit ABIs)
         run: |
-          chmod +x scripts/check_16kb_alignment.sh
           rm -rf "$RUNNER_TEMP/aab-libs"
           unzip -q -o app/build/outputs/bundle/release/*.aab 'base/lib/*' -d "$RUNNER_TEMP/aab-libs"
-          scripts/check_16kb_alignment.sh "$RUNNER_TEMP/aab-libs/base/lib"
+          bash scripts/check_16kb_alignment.sh "$RUNNER_TEMP/aab-libs/base/lib"
 
       # A SIGILL crash shipped in 1.4.25: pqcrypto-mlkem's default `neon` feature
       # compiled PQClean's AArch64 ML-KEM, which reaches 64 ARMv8.2 SHA3-extension
@@ -936,30 +365,22 @@ jobs:
       # The KEM is now RustCrypto ml-kem, which does NOT remove those mnemonics
       # -- keccak 0.2.2 ships the same four, from the same XKCP source -- but
       # gates them on getauxval(AT_HWCAP), and .cargo/config.toml additionally
-      # pins --cfg keccak_backend="soft" so the linker drops them. This step
-      # asserts the opcodes are absent from what actually ships, so a dropped
-      # cfg or a stray RUSTFLAGS fails the build instead of the user's phone.
+      # pins the soft Keccak backend so the linker drops them. This step asserts
+      # the opcodes are absent from what actually ships, so a dropped cfg or a
+      # stray RUSTFLAGS fails the build instead of the user's phone.
       #
       # BOTH shipped artifacts, each from its own bytes. The AAB is what Play
-      # serves and the sideload APK is what the GitHub release serves; they
-      # come out of two separate Gradle invocations, and "the native payload
-      # is the same by construction" is exactly the kind of sentence this gate
-      # exists to stop relying on. Same script, same rule table, twice.
-      - name: Verify no ungated extended-ISA instructions in shipped libraries (Play AAB)
+      # serves and the sideload APK is what the GitHub release serves; they come
+      # out of two separate Gradle invocations, and "the native payload is the
+      # same by construction" is exactly the kind of sentence this gate exists to
+      # stop relying on. Same script, same rule table, every library of both --
+      # one gate invocation per library, in parallel (.github/scripts/isa-gate.sh).
+      - name: Verify no ungated extended-ISA instructions in shipped libraries (Play AAB + sideload APK)
         run: |
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/check_no_sha3_ext.sh
-          rm -rf "$RUNNER_TEMP/aab-libs-sha3"
+          rm -rf "$RUNNER_TEMP/aab-libs-sha3" "$RUNNER_TEMP/apk-libs-sha3"
           unzip -q -o app/build/outputs/bundle/release/*.aab 'base/lib/*' -d "$RUNNER_TEMP/aab-libs-sha3"
-          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/aab-libs-sha3/base/lib"
-
-      - name: Verify no ungated extended-ISA instructions in shipped libraries (sideload APK)
-        run: |
-          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
-          chmod +x scripts/check_no_sha3_ext.sh
-          rm -rf "$RUNNER_TEMP/apk-libs-sha3"
           unzip -q -o app/build/outputs/apk/release/app-release.apk 'lib/*' -d "$RUNNER_TEMP/apk-libs-sha3"
-          scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/apk-libs-sha3/lib"
+          bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/aab-libs-sha3/base/lib" "$RUNNER_TEMP/apk-libs-sha3/lib"
 
       - name: Verify release APK payload
         run: python3 scripts/verify_android_release_apk.py app/build/outputs/apk/release/app-release.apk
@@ -998,12 +419,16 @@ jobs:
 
       - name: Verify R8 keeps (Play AAB)
         run: |
-          set -euo pipefail
-          AAB=$(ls app/build/outputs/bundle/release/*.aab | head -n1)
-          python3 scripts/check_r8_keeps.py "$AAB"
+          shopt -s nullglob
+          aabs=(app/build/outputs/bundle/release/*.aab)
+          if [ "${#aabs[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one release AAB, found ${#aabs[@]}"
+            exit 1
+          fi
+          python3 scripts/check_r8_keeps.py "${aabs[0]}"
 
       - name: Clean up keystore
-        if: always()
+        if: ${{ always() }}
         run: rm -f "$RUNNER_TEMP/birdo-release.jks"
 
       # -- Sigstore keyless signing --------------------------------------
@@ -1017,7 +442,7 @@ jobs:
         run: |
           for artifact in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
             cosign sign-blob --yes --bundle "${artifact}.sigstore" "$artifact"
-            echo "Signed $(basename $artifact) -> $(basename $artifact).sigstore"
+            echo "Signed $(basename "$artifact") -> $(basename "$artifact").sigstore"
           done
 
       - name: Generate SHA256 checksums
@@ -1062,22 +487,28 @@ jobs:
 
       - name: GPG-sign release APK and AAB (detached .asc)
         if: ${{ env.HAS_GPG == 'true' }}
+        env:
+          GPG_PASSPHRASE: ${{ secrets.ANDROID_GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.ANDROID_GPG_KEY_ID }}
         run: |
           for apk in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
             gpg --batch --yes --pinentry-mode loopback \
-                --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
-                --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
+                --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$GPG_KEY_ID" \
                 --armor --detach-sign --output "${apk}.asc" "$apk"
-            echo "GPG-signed $(basename $apk) -> $(basename $apk).asc"
+            echo "GPG-signed $(basename "$apk") -> $(basename "$apk").asc"
           done
 
       - name: GPG-sign SHA256SUMS (detached .asc)
         if: ${{ env.HAS_GPG == 'true' }}
+        env:
+          GPG_PASSPHRASE: ${{ secrets.ANDROID_GPG_PASSPHRASE }}
+          GPG_KEY_ID: ${{ secrets.ANDROID_GPG_KEY_ID }}
         run: |
           SUMS="app/build/release-artifacts/SHA256SUMS.txt"
           gpg --batch --yes --pinentry-mode loopback \
-              --passphrase "${{ secrets.ANDROID_GPG_PASSPHRASE }}" \
-              --local-user "${{ secrets.ANDROID_GPG_KEY_ID }}" \
+              --passphrase "$GPG_PASSPHRASE" \
+              --local-user "$GPG_KEY_ID" \
               --armor --detach-sign --output "${SUMS}.asc" "$SUMS"
 
       - name: Collect release artifacts
@@ -1094,12 +525,17 @@ jobs:
           done
           ls -la app/build/release-artifacts
 
+      # Consumed by draft-release and play-upload in the same run; kept 30 days
+      # for a release as an audit trail, 7 for a main dry run.
       - name: Upload Release APK
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-apk
           path: |
             app/build/release-artifacts/*
+          if-no-files-found: error
+          retention-days: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 7 || 30 }}
+          compression-level: 0
 
       # The whole directory, not just mapping.txt. AGP writes seeds.txt,
       # usage.txt, configuration.txt and resources.txt alongside it on every
@@ -1111,11 +547,15 @@ jobs:
       - name: Stage the APK mapping alongside the bundle's
         run: cp "$RUNNER_TEMP/mapping-apk.txt" app/build/outputs/mapping/release/mapping-apk.txt
 
+      # A released build's mapping is the only way to symbolicate its crashes,
+      # so a release keeps it for the maximum 90 days; a main dry run for 14.
       - name: Upload Mapping and R8 reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mapping
           path: app/build/outputs/mapping/release/
+          if-no-files-found: error
+          retention-days: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 14 || 90 }}
 
   # -- GitHub Draft Release (sideload APK for phone install) ----------
   # Publishes the signed release APK + sigstore bundle + GPG .asc + checksums
@@ -1127,16 +567,15 @@ jobs:
   #   - manual workflow_dispatch (uses inputs.release_tag, falling back to run id)
   draft-release:
     name: Publish Draft GitHub Release
-    runs-on: ubuntu-latest
-    needs: [release]
-    if: startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [release, lint, test]
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - name: Download release APK artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-apk
           path: release-apk/
@@ -1146,13 +585,15 @@ jobs:
 
       - name: Determine release tag
         id: tag
-        # PFA-CI: pass user input via env (NOT direct ${{ }} expansion in
-        # `run:` body — that would be a script-injection sink). Then enforce
-        # a strict tag regex before letting it touch any downstream tool.
+        # PFA-CI: user input reaches the shell only via env (never direct
+        # ${{ }} expansion in the run body, which is a script-injection sink),
+        # and is allowlist-validated before it touches any downstream tool.
         env:
           INPUT_TAG: ${{ github.event.inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ -n "$INPUT_TAG" ]; then
               # Allowlist: alnum, dot, dash, underscore, max 64 chars.
               # Rejects shell metachars ($, `, ;, |, &, <, >, quotes, newline).
@@ -1163,7 +604,7 @@ jobs:
               fi
               TAG="$INPUT_TAG"
             else
-              TAG="android-dispatch-${{ github.run_number }}"
+              TAG="android-dispatch-${RUN_NUMBER}"
             fi
           else
             TAG="${GITHUB_REF##*/}"
@@ -1212,8 +653,9 @@ jobs:
 
   play-upload:
     name: Upload AAB to Google Play
-    runs-on: ubuntu-latest
-    needs: [release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [release, lint, test]
     if: ${{ vars.PLAY_UPLOAD_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch') }}
     # P5-CICD-18: production uploads run in the `production` environment so
     # required-reviewer protection can gate them. The protection rule itself
@@ -1222,17 +664,21 @@ jobs:
     # an ungated environment, so CONFIGURE IT. Test tracks (manual dispatch,
     # default 'internal') bind to `play-testing` and stay frictionless.
     environment: ${{ (github.event.inputs.play_track || 'production') == 'production' && 'production' || 'play-testing' }}
-    # One Play edit at a time: two overlapping tag pushes would race the same
-    # edit and the loser's state is undefined. Never cancel a running upload.
+    # One Play edit at a time, repo-wide: play-release.yml and play-listing.yml
+    # hold the same lock. Two overlapping edits race and the loser's state is
+    # undefined. Never cancel a running upload.
     concurrency:
-      group: play-upload
+      group: google-play-edit
       cancel-in-progress: false
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # distribution/whatsnew is read from the checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Download release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-apk
           path: release-apk/
@@ -1253,10 +699,12 @@ jobs:
       # the Play edit in the state that BLOCKS the next release until resolved
       # by hand (it bit this project before — see docs/PLAY-LAUNCH-PLAN.md),
       # and the old fallback fired it automatically while the workflow
-      # reported success. A refused auto-submit now fails the job loudly and
-      # the operator submits from the Console.
+      # reported success. A refused auto-submit now fails the job loudly (the
+      # step below) and the operator submits from the Console.
       - name: Upload AAB to Google Play (auto-submit for review)
         id: play_auto
+        # Not a silenced gate: the next step turns a failure here into a red
+        # job with an explicit operator instruction.
         continue-on-error: true
         uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5 (node24)
         with:
@@ -1270,17 +718,17 @@ jobs:
           changesNotSentForReview: false
 
       - name: Fail the run — auto-submit was refused (submit from the Play Console)
-        if: steps.play_auto.outcome == 'failure'
+        if: ${{ steps.play_auto.outcome == 'failure' }}
         run: |
           echo "::error::The Play API refused the upload/auto-submit. NOT retrying with changesNotSentForReview: true — that flag parks the Play edit in a state that blocks the NEXT release until manually resolved, and it must never be set by automation. Upload and submit this AAB from the Play Console instead (asset: release-apk/*.aab, also attached to the GitHub release)."
           exit 1
 
       - name: Report Play upload
+        env:
+          TRACK: ${{ github.event.inputs.play_track || 'production' }}
         run: |
-          track="${{ github.event.inputs.play_track || 'production' }}"
-          if [ "$track" = "production" ]; then
+          if [ "$TRACK" = "production" ]; then
             echo "::notice::AAB uploaded and sent for review on PRODUCTION as a staged 10% rollout. Complete (or halt) the rollout from the Play Console once the canary looks healthy."
           else
-            echo "::notice::AAB uploaded and sent for review on the '$track' track."
+            echo "::notice::AAB uploaded and sent for review on the '$TRACK' track."
           fi
-

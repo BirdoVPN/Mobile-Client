@@ -20,6 +20,10 @@ name: iOS CI & Build
 #                                     Pass upload_testflight=true to also cut a
 #                                     signed TestFlight build without pushing a
 #                                     tag (a tag would release Android to Play).
+#
+# The pull-request build and simulator tests of the same app are apple-ci.yml.
+# This file uses NO caches: it signs, uploads to TestFlight and attaches to a
+# public release, and nothing a pull request could have written may reach that.
 # ============================================================================
 
 on:
@@ -38,13 +42,18 @@ on:
         default: false
         type: boolean
 
-# Minimum permissions - each job declares its own (publish-ios needs write).
-permissions:
-  contents: read
+# Each job declares exactly what it uses (publish-ios needs write).
+permissions: {}
 
+# One iOS release run per ref, never cancelled: a cancelled TestFlight upload
+# burns a CFBundleVersion, and a cancelled attach leaves a release half-built.
 concurrency:
-  group: ios-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ios-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 env:
   JAVA_VERSION: '17'
@@ -55,8 +64,13 @@ jobs:
   shared-framework:
     name: Build Shared Framework (iOS)
     runs-on: macos-26  # Apple Silicon for arm64 builds
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -64,66 +78,42 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-ios-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-ios-${{ runner.os }}-
+      # Selected BEFORE the Kotlin/Native link, which uses the active Xcode's SDK.
+      - uses: ./.github/actions/apple-toolchain
 
       - name: Build shared framework for iOS
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkReleaseFrameworkIosArm64
+        run: ./gradlew :shared:linkReleaseFrameworkIosArm64
 
       - name: Upload shared framework
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: shared-framework-ios
           path: shared/build/bin/iosArm64/releaseFramework/
-          retention-days: 5
+          if-no-files-found: error
+          retention-days: 3
 
   # -- Build iOS App (no signing) --------------------------------------
   build-ios:
     name: Build iOS App
     runs-on: macos-26
+    timeout-minutes: 45
     needs: shared-framework
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download shared framework
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: shared-framework-ios
           path: shared/build/bin/iosArm64/releaseFramework/
 
-      # Xcode 26+ is MANDATORY, not a preference. App Store Connect rejects an
-      # upload built against an older SDK outright:
-      #   "This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps
-      #    must be built with the iOS 26 SDK or later" (409, STATE_ERROR)
-      # Xcode 16 built and signed perfectly and was refused at the very last
-      # step, so this fails loudly here rather than 20 minutes later.
-      #
-      # sort -V, not sort -r: lexically "Xcode_26.6" sorts above "Xcode_26.10",
-      # so a plain reverse sort silently picks the older toolchain once a .10
-      # release lands.
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26+ on this runner. App Store Connect requires the iOS 26 SDK; available:"
-            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
-          echo "Using $XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      # One pinned Xcode (with the iOS 26 SDK App Store Connect requires) and
+      # one pinned XcodeGen, shared by every macOS job in the repo.
+      - uses: ./.github/actions/apple-toolchain
 
       # BirdoPQNative.xcframework is a gitignored build artifact that
       # project.yml links against — without it the build fails with
@@ -271,7 +261,7 @@ jobs:
           fi
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: birdo-vpn-ios-unsigned
           path: iosApp/build/Release-iphoneos/
@@ -289,7 +279,9 @@ jobs:
   # release's draft/published state, notes, or the Android assets.
   publish-ios:
     name: Attach unsigned iOS .ipa to release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # The attach step below waits up to 30 minutes for the Android job's draft.
+    timeout-minutes: 45
     # P5-CICD-20: the publicly-downloadable unsigned .ipa must carry the same
     # test gate as the TestFlight build (release-ios) from the same commit —
     # previously it attached even when the simulator suite failed.
@@ -312,7 +304,7 @@ jobs:
       id-token: write    # Sigstore keyless signing
     steps:
       - name: Download unsigned iOS build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: birdo-vpn-ios-unsigned
           path: ios-build/
@@ -324,9 +316,10 @@ jobs:
         # before touching any tool (same pattern as android.yml draft-release).
         env:
           INPUT_TAG: ${{ github.event.inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             if [ -z "$INPUT_TAG" ]; then
               echo "::error::workflow_dispatch requires the release_tag input (an existing android-v* tag)."
               exit 1
@@ -374,9 +367,11 @@ jobs:
 
       - name: Sigstore-sign the .ipa (keyless)
         working-directory: ios-dist
+        env:
+          IPA_PATH: ${{ steps.pkg.outputs.ipa }}
         run: |
           set -euo pipefail
-          IPA="$(basename "${{ steps.pkg.outputs.ipa }}")"
+          IPA="$(basename "$IPA_PATH")"
           cosign sign-blob --yes --bundle "${IPA}.sigstore" "$IPA"
           cosign sign-blob --yes --bundle "SHA256SUMS-ios.txt.sigstore" "SHA256SUMS-ios.txt"
 
@@ -465,8 +460,13 @@ jobs:
   test-ios:
     name: iOS Simulator Tests
     runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -474,45 +474,11 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Cache Gradle
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-ios-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-ios-${{ runner.os }}-
+      # Selected BEFORE the Kotlin/Native link, which uses the active Xcode's SDK.
+      - uses: ./.github/actions/apple-toolchain
 
       - name: Build shared framework for iOS Simulator
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
-
-      # Xcode 26+ is MANDATORY, not a preference. App Store Connect rejects an
-      # upload built against an older SDK outright:
-      #   "This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps
-      #    must be built with the iOS 26 SDK or later" (409, STATE_ERROR)
-      # Xcode 16 built and signed perfectly and was refused at the very last
-      # step, so this fails loudly here rather than 20 minutes later.
-      #
-      # sort -V, not sort -r: lexically "Xcode_26.6" sorts above "Xcode_26.10",
-      # so a plain reverse sort silently picks the older toolchain once a .10
-      # release lands.
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26+ on this runner. App Store Connect requires the iOS 26 SDK; available:"
-            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
-          echo "Using $XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
 
       # An exported BirdoPQ symbol with no Swift call site is not a mitigation
       # -- birdo_pq_stored_key_usable shipped that way once. android.yml runs
@@ -669,6 +635,7 @@ jobs:
   release-ios:
     name: Codesign & Upload to TestFlight
     runs-on: macos-26
+    timeout-minutes: 60
     needs: [shared-framework, build-ios, test-ios]
     # A release tag, or a dispatch that explicitly asked for a TestFlight build.
     #
@@ -692,7 +659,9 @@ jobs:
       APPLE_TEAM_ID:    ${{ vars.APPLE_TEAM_ID }}
       APPLE_BUNDLE_ID:  ${{ vars.APPLE_BUNDLE_ID }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # KEYCHAIN_PATH must be set in a step (the `runner` context is not
       # available at job-level `env:`). Persist via $GITHUB_ENV so all later
@@ -706,36 +675,11 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
+      # Selected BEFORE the Kotlin/Native link, which uses the active Xcode's SDK.
+      - uses: ./.github/actions/apple-toolchain
+
       - name: Build shared framework (Release, iosArm64)
-        run: |
-          chmod +x ./gradlew
-          ./gradlew :shared:linkReleaseFrameworkIosArm64
-
-      # Xcode 26+ is MANDATORY, not a preference. App Store Connect rejects an
-      # upload built against an older SDK outright:
-      #   "This app was built with the iOS 18.2 SDK. All iOS and iPadOS apps
-      #    must be built with the iOS 26 SDK or later" (409, STATE_ERROR)
-      # Xcode 16 built and signed perfectly and was refused at the very last
-      # step, so this fails loudly here rather than 20 minutes later.
-      #
-      # sort -V, not sort -r: lexically "Xcode_26.6" sorts above "Xcode_26.10",
-      # so a plain reverse sort silently picks the older toolchain once a .10
-      # release lands.
-      - name: Select Xcode 26+
-        run: |
-          XCODE_PATH=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE_PATH" ]; then
-            echo "::error::No Xcode 26+ on this runner. App Store Connect requires the iOS 26 SDK; available:"
-            ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
-            exit 1
-          fi
-          echo "Using $XCODE_PATH"
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
-          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
+        run: ./gradlew :shared:linkReleaseFrameworkIosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
@@ -839,7 +783,9 @@ jobs:
             -A -t agg -f pkcs12 \
             -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          existing=$(security list-keychains -d user | tr -d '"')
+          # shellcheck disable=SC2086  # one keychain path per word, split on purpose
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $existing
           rm -f "$CERT_PATH"
 
       # BOTH profiles, because this is a two-target app: the host app
@@ -1053,7 +999,7 @@ jobs:
           exit 1
 
       - name: Upload signed IPA artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: birdo-vpn-ios-signed
           path: |
@@ -1069,6 +1015,6 @@ jobs:
           API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
         run: |
           security delete-keychain "$KEYCHAIN_PATH" || true
-          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/birdo.mobileprovision"
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/birdo-"*.mobileprovision
           rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
 

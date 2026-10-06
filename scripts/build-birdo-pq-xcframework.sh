@@ -46,11 +46,11 @@ rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
 cd "${CRATE_DIR}"
 
 # Build the static archive for every target.
-cargo build --release --target aarch64-apple-ios       --lib
-cargo build --release --target aarch64-apple-ios-sim   --lib
-cargo build --release --target x86_64-apple-ios        --lib
-cargo build --release --target aarch64-apple-darwin    --lib
-cargo build --release --target x86_64-apple-darwin     --lib
+cargo build --locked --release --target aarch64-apple-ios       --lib
+cargo build --locked --release --target aarch64-apple-ios-sim   --lib
+cargo build --locked --release --target x86_64-apple-ios        --lib
+cargo build --locked --release --target aarch64-apple-darwin    --lib
+cargo build --locked --release --target x86_64-apple-darwin     --lib
 
 # -- ISA census for every Apple aarch64 slice -------------------------------
 #

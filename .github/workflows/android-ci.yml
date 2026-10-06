@@ -1,0 +1,846 @@
+name: Android CI
+
+# Pull-request and main-branch CI for the Android app, the shared KMP module and
+# the native crates. Nothing here signs, publishes or uploads to a store: the
+# signed release build and every publish step live in android.yml, which uses
+# no caches. This workflow does use caches, which is why the two are separate
+# files -- a cache a pull request can influence must never be able to reach a
+# signed artifact.
+#
+# REQUIRED CHECKS (branch protection on main, strict). The job NAMES below are
+# the contract; do not rename them:
+#   "Lint Check", "Unit Tests", "Analyze (java-kotlin)"   (here)
+#   "Gitleaks"                                             (secret-scan.yml)
+# There is deliberately no workflow-level `paths:` filter: a required check
+# that never starts blocks the merge. Work a change cannot affect is skipped
+# at JOB level instead (see `changes`), and a skipped job counts as passing.
+#
+# Runs for pull requests into ANY branch, so a PR stacked on another PR's
+# branch gets the same checks as one into main. Pushes run only for main, so a
+# PR branch never runs everything twice.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+
+jobs:
+  # Which jobs a pull request actually needs. Fails OPEN: every consumer runs
+  # unless this job positively said 'false', so a broken classifier costs
+  # minutes, never coverage. Pushes and dispatches always run everything.
+  #
+  # The skip list is short on purpose. JVM tests read far more than Kotlin
+  # (Swift sources, fdroid/, store-assets/, distribution/, contract/, the
+  # workflows themselves), so only docs/, *.md and LICENSE are inert for them;
+  # iosApp/ is additionally inert for the Android build, lint and CodeQL.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      android: ${{ steps.classify.outputs.android }}
+      jvm: ${{ steps.classify.outputs.jvm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The PR merge commit plus its first parent (the base tip) is all
+          # the diff needs.
+          fetch-depth: 2
+
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          android=true
+          jvm=true
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if files=$(git diff --name-only HEAD^1 HEAD) && [ -n "$files" ]; then
+              android=false
+              jvm=false
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/*|*.md|LICENSE) continue ;;
+                esac
+                jvm=true
+                case "$f" in
+                  iosApp/*|setup-ios.sh) ;;
+                  *) android=true ;;
+                esac
+              done <<< "$files"
+              printf 'Changed files:\n%s\n' "$files"
+            else
+              echo "::warning::could not list this PR's changes; running every job"
+            fi
+          fi
+          echo "android=$android" >> "$GITHUB_OUTPUT"
+          echo "jvm=$jvm" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Change detection"
+            echo "- Android build, lint, CodeQL, native: \`$android\`"
+            echo "- JVM unit tests: \`$jvm\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The cheap repository gates run on EVERY pull request, docs-only included:
+  # check_pq_docs.sh exists precisely to stop a falsified claim landing in
+  # docs/. Only the Gradle lint itself is skipped when nothing it reads moved.
+  lint:
+    name: Lint Check
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Every gradle-wrapper.jar in the tree must be a published Gradle
+      # release's. setup-gradle repeats this in each Gradle job; this one makes
+      # it part of a required check.
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      # distributionSha256Sum makes the wrapper refuse a substituted Gradle
+      # distribution. When it is present it must be the official checksum of
+      # the distributionUrl. It may never be REMOVED: a pull request whose base
+      # pins it, or a main push whose parent pinned it, fails without it. Until
+      # the line first lands (Mobile #459), its absence is reported, not failed.
+      - name: The wrapper pins the Gradle distribution's SHA-256
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          props=gradle/wrapper/gradle-wrapper.properties
+          sum=$(sed -n 's/^distributionSha256Sum=\([0-9a-f]\{64\}\)[[:space:]]*$/\1/p' "$props")
+          url=$(sed -n 's/^distributionUrl=//p' "$props" | tr -d '\r' | sed 's#\\:#:#g')
+          if grep -q '^distributionSha256Sum=' "$props" && [ -z "$sum" ]; then
+            echo "::error file=$props::distributionSha256Sum is present but is not a 64-character lowercase hex SHA-256"
+            exit 1
+          fi
+          if [ -n "$sum" ]; then
+            official=$(curl -fsSL --retry 3 "${url}.sha256" | tr -d '[:space:]')
+            if [ "$sum" != "$official" ]; then
+              echo "::error file=$props::distributionSha256Sum is not the published checksum of $url ($official)"
+              exit 1
+            fi
+            echo "ok: $url pinned to its published SHA-256"
+            exit 0
+          fi
+          # Absent. Is that a removal?
+          prev=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            prev="$BASE_SHA"
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            prev="$BEFORE_SHA"
+          fi
+          if [ -n "$prev" ]; then
+            git fetch --quiet --depth=1 origin "$prev"
+            if git show "$prev:$props" | grep -q '^distributionSha256Sum='; then
+              echo "::error file=$props::distributionSha256Sum was removed. $prev pins the Gradle distribution; restore the line."
+              exit 1
+            fi
+          fi
+          echo "::warning file=$props::distributionSha256Sum is not set yet, so the wrapper would run any distribution served at $url. Mobile #459 adds it; from then on removing it fails this check."
+
+      # Every action here is SHA-pinned, which is correct. But a SHA is opaque, so
+      # the trailing `# vX` comment is the only readable handle on what actually
+      # runs -- and a bad action ref fails as `startup_failure`: zero jobs, no
+      # logs, YAML still valid. On 2026-09-10 two of twelve pins were lying, one
+      # of them in fourteen places, and one had survived four Dependabot bumps
+      # (Dependabot rewrites the SHA and leaves the comment alone). This resolves
+      # every pin against the upstream tags API so that cannot recur silently.
+      - name: Action pin comments match their SHAs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-action-pins.sh
+
+      # ios.yml, macos.yml and apple-ci.yml run scripts under Apple's /bin/bash
+      # 3.2. android-v1.4.29's iOS build died on `mapfile: command not found`
+      # after every ubuntu PR run of the same script had passed. This reads every
+      # script those workflows invoke for bash-4-only constructs, on every PR.
+      - name: Scripts run on macOS are bash 3.2-clean
+        run: bash scripts/check_macos_bash_compat.sh
+
+      - name: Check certificate pin expiry
+        run: |
+          # Extract pin-set expiration date from network_security_config.xml
+          EXPIRY=$(grep -oP 'expiration="\K[^"]+' app/src/main/res/xml/network_security_config.xml)
+          if [ -z "$EXPIRY" ]; then
+            echo "::error::No pin-set expiration found in network_security_config.xml"
+            exit 1
+          fi
+          EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s)
+          NOW_EPOCH=$(date +%s)
+          DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
+          echo "Certificate pins expire: $EXPIRY ($DAYS_LEFT days remaining)"
+          if [ "$DAYS_LEFT" -lt 0 ]; then
+            echo "::error::Certificate pins EXPIRED on $EXPIRY! App will fail to connect."
+            exit 1
+          elif [ "$DAYS_LEFT" -lt 60 ]; then
+            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Rotate pins NOW!"
+          elif [ "$DAYS_LEFT" -lt 90 ]; then
+            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Plan pin rotation soon."
+          else
+            echo "Pin expiry OK: $DAYS_LEFT days remaining"
+          fi
+
+      # check_pq_docs.sh fails if any file still claims the post-migration
+      # build is CLEAN-only (PQ-DOCS-OK: named, not claimed), that the
+      # C/asm path is "removed entirely", or that the crash class is
+      # "structurally impossible" (PQ-DOCS-OK: named, not claimed). The 1.4.25
+      # SIGILL was attributed by a human reading docs/SENTRY-SETUP.md; wrong
+      # docs mis-attribute the next incident.
+      - name: Assert no falsified PQ claims survive in the tree
+        run: bash scripts/check_pq_docs.sh
+
+      # check_pq_rng_panics.sh -- DecapsulationKey::generate() is
+      #   generate_from_rng(&mut UnwrapErr(SysRng)) under a literal "# Panics"
+      #   doc, and both native crates set panic = "abort": production code must
+      #   call try_generate().
+      # check_pq_ios_wiring.sh -- every birdo_pq_* export the iOS header
+      #   declares must be CALLED from Swift. An export nobody calls is not a
+      #   mitigation; it reads only sources, so it runs here on every PR.
+      - name: Assert the PQ mitigations are wired, not merely exported
+        run: |
+          bash scripts/check_pq_rng_panics.sh
+          bash scripts/check_pq_ios_wiring.sh
+
+      - name: Set up JDK
+        if: ${{ needs.changes.outputs.android != 'false' }}
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Set up Gradle
+        if: ${{ needs.changes.outputs.android != 'false' }}
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Run Lint
+        if: ${{ needs.changes.outputs.android != 'false' }}
+        run: ./gradlew lintDebug
+
+      - name: Upload Lint Report
+        if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-debug.html
+          retention-days: 7
+
+  test:
+    name: Unit Tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.jvm != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      # Dependency/wrapper cache only. The Gradle BUILD cache stays off on
+      # purpose: 23 test classes read repo files (Swift sources, workflows,
+      # fdroid/, store-assets/) that are not declared test-task inputs, so a
+      # cached test result would be replayed after exactly the change it guards.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # :shared:testAndroidHostTest is named explicitly: the root
+      # testDebugUnitTest compiles :shared but runs no test task in it.
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest :shared:testAndroidHostTest
+
+      - name: Upload Test Results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results
+          path: app/build/reports/tests/testDebugUnitTest/
+          retention-days: 7
+
+  # The ONLY java-kotlin CodeQL analysis in this repo: code-scanning default
+  # setup is not configured, and the dynamic "CodeQL - Code Quality" workflow
+  # GitHub runs here analyses python and javascript-typescript only.
+  codeql-java-kotlin:
+    name: Analyze (java-kotlin)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          config-file: ./.github/codeql/codeql-config.yml
+
+      # --no-build-cache: CodeQL extracts what the compiler actually compiles.
+      # A FROM-CACHE compile task compiles nothing, and the database would be
+      # silently empty for every module the cache served.
+      - name: Build Android for CodeQL
+        run: |
+          ./gradlew :app:compileDebugKotlin :shared:compileAndroidMain \
+            -Pkotlin.native.ignoreDisabledTargets=true \
+            --no-daemon --no-build-cache
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: '/language:java-kotlin'
+
+  # Host-target Rust gates for all three native crates. No NDK build of the
+  # shipped library happens here; that is `build`. Four controls, in seconds:
+  #
+  #   1. check_pq_features.sh asks Cargo what the KEM dependency actually
+  #      resolves to, per crate and target: pqcrypto-* absent, ml-kem at the
+  #      exact pinned version with exactly the reviewed features, and -- because
+  #      it is a --cfg and not a feature, so cargo tree cannot see it -- the
+  #      soft-Keccak backend flag present in .cargo/config.toml and nowhere else.
+  #   2. cargo fmt/clippy/test, with a pinned minimum test count per crate:
+  #      deleting a #[cfg(test)] module reports "0 tests" and exits 0.
+  #   3. cargo audit --deny warnings: "unmaintained" is a warning, and it was a
+  #      warning for three months before anyone noticed.
+  #   4. The ISA gate is shown to BITE -- on hand-assembled fixtures, and on a
+  #      real library built the one known way to re-arm the 1.4.25 crash.
+  native:
+    name: Native crates (fmt, clippy, tests, audit, ISA gate)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the Android NDK
+        run: |
+          ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+            echo "::error::no Android NDK on this runner"
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/install-cargo-ndk
+
+      - name: Assert the PQ KEM dependency graph is exactly what was reviewed
+        run: bash scripts/check_pq_features.sh
+
+      # Host-target, so no NDK is involved and the crypto actually executes.
+      # MIN_TESTS is per crate and is the point of the step: `cargo test` on a
+      # crate whose test module was deleted exits 0 with "0 tests".
+      - name: Native crates — fmt, clippy and tests
+        run: |
+          set -euo pipefail
+          declare -A MIN_TESTS=(
+            [rosenpass-jni]=12
+            [birdo-pq-ios]=13
+            [birdo-pq-server]=10
+          )
+          rustup component add rustfmt clippy
+          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+            echo "::group::native/$crate"
+            (
+              cd "native/$crate"
+              cargo fmt --check
+              cargo clippy --all-targets --locked -- -D warnings
+              cargo test --locked 2>&1 | tee "$RUNNER_TEMP/$crate-tests.log"
+            )
+            passed=$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/$crate-tests.log" | awk '{s+=$1} END {print s+0}')
+            want="${MIN_TESTS[$crate]}"
+            if [ "$passed" -lt "$want" ]; then
+              echo "::error::native/$crate ran $passed test(s), expected at least $want. A deleted #[cfg(test)] module exits 0 with '0 tests'; that is why this number is pinned. If tests were deliberately removed, say which and why, and lower the number in the same commit."
+              exit 1
+            fi
+            echo "  ok: native/$crate ran $passed test(s) (minimum $want)"
+            echo "::endgroup::"
+          done
+
+      # The advisory check the ml-kem migration was FOR: pqcrypto-mlkem,
+      # pqcrypto-traits and pqcrypto-internals are unmaintained by advisory
+      # (RUSTSEC-2026-0161/-0162/-0163). `--deny warnings` on purpose: a crypto
+      # dependency nobody maintains is a build failure here.
+      #
+      # cargo-audit 0.22.0 is rustsec's own release binary, pinned by SHA-256,
+      # instead of `cargo install` compiling the same version for ~2 minutes.
+      - name: cargo audit for every native crate
+        env:
+          CARGO_AUDIT_VERSION: 0.22.0
+          CARGO_AUDIT_SHA256: 0ea7a15f67d5007af5bd18f89be38a90ebd004f149dc36ebfab0aedba24cbb4f
+        run: |
+          set -euo pipefail
+          name="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tgz" \
+            "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/$name.tgz"
+          echo "${CARGO_AUDIT_SHA256}  $RUNNER_TEMP/$name.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tgz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/$name/cargo-audit" "$HOME/.cargo/bin/cargo-audit"
+          cargo audit --version
+          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+            echo "::group::cargo audit native/$crate"
+            ( cd "native/$crate" && cargo audit --deny warnings -f Cargo.lock )
+            echo "::endgroup::"
+          done
+
+      # The gate's own self-test proves, on this runner with this disassembler,
+      # that scripts/check_no_sha3_ext.sh fails on a hand-assembled eor3 and
+      # passes a HWCAP-gated LSE helper. A gate never shown to bite is a gate
+      # nobody can trust green.
+      - name: ISA gate self-test against committed fixtures
+        run: bash scripts/tests/check_no_sha3_ext_test.sh
+
+      # THE NEGATIVE CASE. The only step that catches the one known way to
+      # silently re-arm the 1.4.25 crash class.
+      #
+      # ml-kem's Keccak backend is gated at runtime on cpufeatures'
+      # getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). But cpufeatures'
+      # internal __unless_target_features! macro ELIDES that check and returns a
+      # constant `true` when the feature is statically enabled -- so a +sha3
+      # target feature (or any -C target-cpu above the fleet floor) produces a
+      # library that executes eor3/rax1/xar/bcax unconditionally, on every
+      # device, with no check left to fail.
+      #
+      # So we build exactly that configuration on purpose and assert the ISA
+      # gate FAILS on it -- both the gate itself and the parallel wrapper every
+      # APK/AAB check now goes through. If either starts PASSING, it has stopped
+      # reading the shipped library and every green run above it is worthless.
+      - name: ISA gate must FAIL a deliberately +sha3 build (negative case)
+        env:
+          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/sha3-negative/arm64-v8a"
+          mkdir -p "$out"
+          # RUSTFLAGS as an env var REPLACES .cargo/config.toml's target
+          # rustflags, so this build has neither the soft-Keccak cfg nor the
+          # 16 KB alignment flag -- which is the point: it is the shape a
+          # careless export actually produces.
+          ( cd native/rosenpass-jni && cargo ndk -t arm64-v8a -o "$out/.." build --locked --release )
+          test -f "$out/librosenpass_jni.so" || {
+            echo "::error::the negative-case build produced no library, so nothing was tested"; exit 1; }
+          if bash scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/sha3-negative"; then
+            echo "::error::check_no_sha3_ext PASSED a library built with -C target-feature=+sha3. That build statically enables FEAT_SHA3, which makes cpufeatures elide the HWCAP check entirely -- the exact shape of the 1.4.25 SIGILL. The gate is not reading the shipped library, or its rule table no longer covers eor3/rax1/xar/bcax. Every green ISA-gate run is worthless until this is fixed."
+            exit 1
+          fi
+          echo "  ok: the ISA gate rejects a +sha3 build, as it must"
+          if bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/sha3-negative"; then
+            echo "::error::.github/scripts/isa-gate.sh PASSED the +sha3 library that scripts/check_no_sha3_ext.sh rejects. The wrapper is losing the gate's verdict, so every APK/AAB ISA check is worthless until it is fixed."
+            exit 1
+          fi
+          echo "  ok: the parallel wrapper rejects it too"
+
+      # The wrapper must also fail closed on the shapes the gate itself fails
+      # closed on: an ABI directory with no library, and an ABI it has no rule for.
+      - name: The parallel ISA wrapper fails closed
+        run: |
+          set -euo pipefail
+          t="$RUNNER_TEMP/isa-wrapper-cases"
+          mkdir -p "$t/empty-abi/arm64-v8a" "$t/unknown-abi/mips" "$t/no-abi"
+          cp "$RUNNER_TEMP/sha3-negative/arm64-v8a/librosenpass_jni.so" "$t/unknown-abi/mips/"
+          for c in empty-abi unknown-abi no-abi; do
+            if bash .github/scripts/isa-gate.sh "$t/$c" > "$t/$c.log" 2>&1; then
+              cat "$t/$c.log"
+              echo "::error::.github/scripts/isa-gate.sh PASSED the '$c' case; it must fail closed"
+              exit 1
+            fi
+            echo "  ok: '$c' fails, as it must"
+          done
+
+  # Every native crate declares `rust-version` (its MSRV), and until this job
+  # nothing ever built at that version: rust-toolchain.toml pins the newer
+  # toolchain every other job uses, so the declaration was a claim, not a fact.
+  # The version is READ from each Cargo.toml, so raising it is a one-line
+  # change there and this job follows. Library + binaries only: dev-dependencies
+  # are not part of an MSRV promise.
+  msrv:
+    name: Native crates build at their declared rust-version
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: cargo check --locked at each crate's rust-version
+        run: |
+          set -euo pipefail
+          for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+            msrv=$(grep -m1 -E '^rust-version[[:space:]]*=' "native/$crate/Cargo.toml" | cut -d'"' -f2 || true)
+            if [ -z "$msrv" ]; then
+              echo "::error file=native/$crate/Cargo.toml::native/$crate declares no rust-version; declare the MSRV this job should hold it to"
+              exit 1
+            fi
+            echo "::group::native/$crate at rust $msrv"
+            rustup toolchain install "$msrv" --profile minimal --no-self-update
+            ( cd "native/$crate" && cargo +"$msrv" check --locked )
+            echo "::endgroup::"
+            echo "  ok: native/$crate builds with rust $msrv, the version it declares"
+          done
+
+  pq-cpu-proof:
+    name: PQ KEM on a CPU without FEAT_SHA3 (QEMU)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # WHY A WHOLE JOB FOR THIS
+    #
+    # Every other PQ control in this workflow reads bytes: resolved Cargo
+    # features, a --cfg in a config file, a disassembly census. None of them can
+    # answer the only question that actually killed users in 1.4.25 -- does this
+    # code run on a core that lacks ARMv8.2 FEAT_SHA3?
+    #
+    # The KEM is RustCrypto ml-kem, whose Keccak backend (keccak 0.2.2,
+    # backends/aarch64_sha3.rs) carries the SAME four mnemonics PQClean's
+    # keccak2x/feat.S did -- eor3/rax1/xar/bcax -- behind a runtime check on
+    # cpufeatures' getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). That check is
+    # now a single point of failure whose wrong answer is an instant SIGILL on
+    # seven device models. So it gets EXECUTED here, on a core that does not have
+    # the extension, exactly the way the 1.4.25 fix was proved.
+    #
+    # Target note: aarch64-unknown-linux-gnu, not aarch64-linux-android. The
+    # instruction selection, the keccak backend and the cpufeatures HWCAP path
+    # are identical (cpufeatures reads AT_HWCAP through getauxval on both); what
+    # differs is the libc, which is not what is under test, and gnu runs under
+    # plain qemu-user with no bionic loader to stage.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU user-mode and an aarch64 cross toolchain
+        run: |
+          sudo apt-get update
+          # libc6-dev-arm64-cross is NOT optional and is NOT pulled in by
+          # gcc-aarch64-linux-gnu under --no-install-recommends: without it the
+          # link dies on "cannot find Scrt1.o". It is also what provides the
+          # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
+          # to find the dynamic loader.
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
+          qemu-aarch64 --version | head -1
+          ls /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1
+
+      - name: Add the aarch64 Rust target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      - name: Build birdo-pq-smoke for aarch64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          cd native/birdo-pq-server
+          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
+          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-gated"
+
+      # If the binary has no FEAT_SHA3 instructions at all, every run below
+      # passes for the wrong reason and proves nothing. Assert the thing we are
+      # testing is present BEFORE testing it.
+      - name: Assert the gated build really contains FEAT_SHA3 instructions
+        run: |
+          set -euo pipefail
+          n=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" \
+                | awk '{print $3}' | grep -cE '^(eor3|rax1|xar|bcax)$' || true)
+          echo "FEAT_SHA3 instructions in the gated build: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::the aarch64 smoke binary contains no eor3/rax1/xar/bcax, so running it on a core without FEAT_SHA3 proves nothing. Either keccak stopped shipping its aarch64 backend (good news, but this job must be rewritten) or the build picked up the soft-backend cfg."
+            exit 1
+          fi
+          g=$(aarch64-linux-gnu-objdump -d "$RUNNER_TEMP/smoke-gated" | grep -c getauxval || true)
+          echo "getauxval call sites: $g"
+          if [ "$g" -eq 0 ]; then
+            echo "::error::no getauxval in the gated build: the FEAT_SHA3 instructions above are present with NO runtime CPU check. That is the exact shape of the 1.4.25 SIGILL."
+            exit 1
+          fi
+
+      - name: Run on a core WITHOUT FEAT_SHA3 (cortex-a53) — must exit 0
+        run: |
+          set -euo pipefail
+          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 \
+            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-a53.txt"
+
+      - name: Run on a core WITH FEAT_SHA3 (max) — must exit 0 and agree
+        run: |
+          set -euo pipefail
+          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu max \
+            "$RUNNER_TEMP/smoke-gated" | tee "$RUNNER_TEMP/out-max.txt"
+          # The random round trip differs per run by design, so compare the
+          # deterministic lines: same KEM answer on both dispatch paths.
+          for key in KAT_PSK STORED_PQCLEAN_PSK; do
+            a=$(grep "^$key=" "$RUNNER_TEMP/out-a53.txt")
+            b=$(grep "^$key=" "$RUNNER_TEMP/out-max.txt")
+            if [ "$a" != "$b" ]; then
+              echo "::error::$key differs between the soft and FEAT_SHA3 Keccak backends: '$a' vs '$b'. The fast path computes a DIFFERENT answer, which would mean half the fleet cannot complete a handshake."
+              exit 1
+            fi
+            echo "  ok: $a (identical on cortex-a53 and max)"
+          done
+
+      # THE NEGATIVE CASE. Without it, the three runs above could all be
+      # passing because the harness never reaches Keccak at all.
+      #
+      # -C target-feature=+sha3 makes cpufeatures' __unless_target_features!
+      # macro elide the HWCAP check and return a constant true, so the fast
+      # backend runs unconditionally. On cortex-a53 the first eor3 must SIGILL
+      # (exit 132 = 128 + SIGILL(4)).
+      - name: A +sha3 build MUST SIGILL on cortex-a53 (negative case)
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
+        run: |
+          set -euo pipefail
+          cd native/birdo-pq-server
+          cargo build --locked --release --target aarch64-unknown-linux-gnu --bin birdo-pq-smoke
+          cp target/aarch64-unknown-linux-gnu/release/birdo-pq-smoke "$RUNNER_TEMP/smoke-ungated"
+          cd "$GITHUB_WORKSPACE"
+          set +e
+          qemu-aarch64 -L /usr/aarch64-linux-gnu -cpu cortex-a53 "$RUNNER_TEMP/smoke-ungated"
+          rc=$?
+          set -e
+          echo "exit code: $rc"
+          if [ "$rc" -ne 132 ]; then
+            echo "::error::a build with -C target-feature=+sha3 did NOT SIGILL (exit 132) on cortex-a53; it exited $rc. Either QEMU is not enforcing the ISA of the core it was told to emulate, or this binary never reaches Keccak -- in which case the positive runs above prove nothing and this job is worthless as written."
+            exit 1
+          fi
+          echo "  ok: exit 132 (SIGILL), as it must be — the harness does reach Keccak"
+
+  # The debug APK -- the only Android artifact a pull request can produce --
+  # with the real native payload, checked the way the release job checks its
+  # artifacts. R8 runs in its own job (`r8`) in parallel: it compiles the
+  # release variant, which shares nothing with this one but the native libs.
+  build:
+    name: Build APK
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # Go module + build caches for the two 32-bit Xray engines built from
+      # source. Never the engines themselves (see the action). Restored on
+      # every run, saved only from main, so a pull request can read main's
+      # cache but never write one main will use.
+      - name: Restore the Go cache for the Xray engines
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+          restore-keys: xray-go-${{ runner.os }}-
+
+      - uses: ./.github/actions/android-native-libs
+
+      - name: Save the Go cache for the Xray engines
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      # Same ABI x engine contract the release job enforces, run here on the
+      # artifact a PR can actually build. --native-libs-only because a debug APK
+      # legitimately has no signing-fingerprint constant.
+      - name: Verify every shipped ABI carries the complete engine set
+        run: |
+          python3 scripts/verify_android_release_apk.py --native-libs-only \
+            app/build/outputs/apk/debug/app-debug.apk
+
+      # The native libraries in the debug APK are byte-identical to the ones the
+      # release build packages (native/build.sh builds the release profile, and
+      # the Xray engines come from the same provisioning step), so this is the
+      # same binary being checked, one merge earlier. The APK's lib/ is what AGP
+      # actually packaged (stripped, every ABI, every AAR-provided .so), which
+      # the jniLibs pass inside buildRustLibs cannot see. Same gate, same rule
+      # table, one library per invocation in parallel (.github/scripts/isa-gate.sh).
+      - name: Verify no ungated extended-ISA instructions in shipped libraries
+        run: |
+          rm -rf "$RUNNER_TEMP/debug-apk-libs"
+          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*' -d "$RUNNER_TEMP/debug-apk-libs"
+          bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/debug-apk-libs/lib"
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # -- R8 on the pull-request path ---------------------------------------
+  #
+  # Until this existed, R8 NEVER RAN ON A PULL REQUEST: the signed release job
+  # in android.yml only runs on main, tags and dispatch. Every change to
+  # app/proguard-rules.pro merged green without the shrinker having looked at
+  # it once, and the first minified build was the release.
+  #
+  # We run the R8 TASK, not assembleRelease: packageRelease needs the Azure
+  # keystore, which a fork or dependabot PR does not have, whereas
+  # minifyReleaseWithR8 produces the shrunk DEX plus
+  # mapping/seeds/usage/configuration with no signing material at all. The two
+  # -P flags exist only to get past validateReleaseSecurityConfig and
+  # validateSentryDsn; nothing is packaged, so neither value ships.
+  r8:
+    name: R8 (minified release)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Restore the Go cache for the Xray engines
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
+          restore-keys: xray-go-${{ runner.os }}-
+
+      # The native payload is needed here too: the release BuildConfig carries
+      # the NATIVE_HASH_* constants of the stripped .so files, and the hash
+      # check below compares them against those files.
+      - uses: ./.github/actions/android-native-libs
+
+      - name: Run R8 (minified release) - proves shrinker changes on the PR
+        run: |
+          ./gradlew :app:minifyReleaseWithR8 \
+            -PbirdoSigningCertFingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00 \
+            -PallowMissingSentryDsn=true
+
+      # Asserts against the shrunk DEX that R8 did not silently delete the
+      # WireGuard/Rosenpass JNI bindings or a kotlinx.serialization serializer.
+      # Both break only at runtime, on a user's device, with no logcat --
+      # -assumenosideeffects strips every Log.* call from release builds -- so
+      # this is the only place they can be caught.
+      #
+      # Demonstrated, not assumed: deleting the GoBackend keep produces a build
+      # that SUCCEEDS and a DEX with wgTurnOn, wgGetSocketV4 and wgGetSocketV6
+      # gone. This step returns 1 on that build.
+      - name: Verify R8 keeps
+        run: python3 scripts/check_r8_keeps.py
+
+      # Asserts the baked NATIVE_HASH_* constants equal the SHA-256 of the .so
+      # files that actually ship, so NativeLibraryVerifier can match them on a
+      # device instead of silently degrading to the signature-only check. Two
+      # disarmed-but-green releases motivated this; neither failure was visible
+      # in a build log. :app:generateReleaseBuildConfig depends on
+      # :app:stripReleaseDebugSymbols, and minifyReleaseWithR8 above needs
+      # BuildConfig, so both artifacts this script reads already exist.
+      - name: Verify native integrity hashes match the shipped .so files
+        run: python3 scripts/check_native_hashes.py
+
+      # seeds.txt / usage.txt / configuration.txt are written by AGP next to
+      # mapping.txt on every minified build: configuration.txt is the merged
+      # rule set naming the source file of every rule, seeds.txt is everything
+      # R8 was forbidden to touch, usage.txt is everything it removed.
+      - name: Upload R8 reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: r8-reports-pr
+          path: app/build/outputs/mapping/release/
+          retention-days: 7
