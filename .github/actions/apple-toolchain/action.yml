@@ -1,0 +1,76 @@
+name: Apple toolchain
+description: >-
+  Selects ONE pinned Xcode and installs ONE pinned XcodeGen, for every macOS job in this
+  repo (apple-ci.yml, codeql-swift.yml, ios.yml, macos.yml). The run steps here execute
+  under macOS /bin/bash 3.2: keep them free of bash-4 constructs (mapfile, declare -A,
+  ${x,,}, |&), the same rule scripts/check_macos_bash_compat.sh enforces on scripts.
+
+inputs:
+  xcode-version:
+    description: >-
+      Exact Xcode to select, as named under /Applications/Xcode_<version>.app on the
+      runner image. Bump it deliberately, in this file, after checking the image README.
+    required: false
+    default: '26.6'
+
+runs:
+  using: composite
+  steps:
+    # Xcode 26+ is MANDATORY: App Store Connect rejects an upload built against
+    # an older SDK ("This app was built with the iOS 18.2 SDK. All iOS and iPadOS
+    # apps must be built with the iOS 26 SDK or later", 409 STATE_ERROR). Xcode 16
+    # built and signed perfectly and was refused at the very last step.
+    #
+    # PINNED, not "newest Xcode_26*": the old `ls | sort -V | tail -1` changed
+    # toolchains whenever the image added a 26.x -- including a beta -- so the
+    # same commit could build with a different compiler from one day to the
+    # next, and the shipped build and the CodeQL scan could disagree. A missing
+    # pin fails here, loudly, with the list of what the image does have.
+    - name: Select Xcode ${{ inputs.xcode-version }}
+      shell: bash
+      env:
+        XCODE_VERSION: ${{ inputs.xcode-version }}
+      run: |
+        set -euo pipefail
+        XCODE_PATH="/Applications/Xcode_${XCODE_VERSION}.app"
+        if [ ! -d "$XCODE_PATH" ]; then
+          echo "::error::Xcode ${XCODE_VERSION} is not on this runner image. Pick one of these and change xcode-version in .github/actions/apple-toolchain/action.yml:"
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "  (none)"
+          exit 1
+        fi
+        sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+        xcodebuild -version
+        echo "iOS SDK:   $(xcrun --sdk iphoneos --show-sdk-version)"
+        echo "macOS SDK: $(xcrun --sdk macosx --show-sdk-version)"
+        case "$(xcrun --sdk iphoneos --show-sdk-version)" in
+          2[6-9].*|[3-9][0-9].*) ;;
+          *) echo "::error::Xcode ${XCODE_VERSION} does not carry the iOS 26 SDK that App Store Connect requires"; exit 1 ;;
+        esac
+
+    # Upstream's release zip, pinned by SHA-256 (GitHub's own asset digest),
+    # instead of whatever `brew install xcodegen` resolves to that day. Laid
+    # out under /usr/local exactly as the zip's own install.sh does (bin/ and
+    # share/xcodegen/SettingPresets), so it is on PATH without touching
+    # GITHUB_PATH.
+    - name: Install XcodeGen
+      shell: bash
+      env:
+        XCODEGEN_VERSION: 2.46.0
+        XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      run: |
+        set -euo pipefail
+        zip="$RUNNER_TEMP/xcodegen-${XCODEGEN_VERSION}.zip"
+        curl -fsSL --retry 3 -o "$zip" \
+          "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+        echo "${XCODEGEN_SHA256}  $zip" | shasum -a 256 -c -
+        rm -rf "$RUNNER_TEMP/xcodegen"
+        unzip -q "$zip" -d "$RUNNER_TEMP"
+        sudo mkdir -p /usr/local/bin /usr/local/share
+        sudo rm -rf /usr/local/share/xcodegen
+        sudo cp -R "$RUNNER_TEMP/xcodegen/share/xcodegen" /usr/local/share/
+        sudo install -m 0755 "$RUNNER_TEMP/xcodegen/bin/xcodegen" /usr/local/bin/xcodegen
+        if [ "$(command -v xcodegen)" != "/usr/local/bin/xcodegen" ]; then
+          echo "::error::another xcodegen shadows the pinned one on PATH: $(command -v xcodegen)"
+          exit 1
+        fi
+        xcodegen --version

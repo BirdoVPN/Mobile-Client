@@ -1,0 +1,173 @@
+name: Native crate gates
+description: >-
+  Host-side gates for all three native crates, shared by android-ci.yml (every PR) and
+  android.yml (a release gate the publish jobs wait for): the PQ dependency graph,
+  fmt/clippy/tests with pinned minimum test counts, cargo audit --deny warnings, and proof
+  that the ISA gate -- and the parallel wrapper around it -- rejects a deliberately +sha3
+  library. Uses NO cache, so a release may run it.
+
+runs:
+  using: composite
+  steps:
+    # The runner image sets ANDROID_NDK_HOME (the ISA gate's disassembler and
+    # cargo-ndk come from it). Steps that need it fall back to the versioned
+    # variable themselves rather than writing GITHUB_ENV.
+    - name: Check the Android NDK
+      shell: bash
+      run: |
+        ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
+          echo "::error::no Android NDK on this runner"
+          exit 1
+        fi
+        echo "NDK: $ndk"
+
+    - uses: ./.github/actions/install-cargo-ndk
+
+    # check_pq_features.sh asks Cargo what the KEM dependency actually resolves
+    # to, per crate and target: pqcrypto-* absent, ml-kem at the exact pinned
+    # version with exactly the reviewed features, and -- because it is a --cfg
+    # and not a feature, so cargo tree cannot see it -- the soft-Keccak backend
+    # flag present in .cargo/config.toml and nowhere else.
+    - name: Assert the PQ KEM dependency graph is exactly what was reviewed
+      shell: bash
+      run: bash scripts/check_pq_features.sh
+
+    # Host-target, so no NDK is involved and the crypto actually executes.
+    # MIN_TESTS is per crate and is the point of the step: `cargo test` on a
+    # crate whose test module was deleted exits 0 with "0 tests".
+    - name: Native crates — fmt, clippy and tests
+      shell: bash
+      run: |
+        set -euo pipefail
+        declare -A MIN_TESTS=(
+          [rosenpass-jni]=12
+          [birdo-pq-ios]=13
+          [birdo-pq-server]=10
+        )
+        rustup component add rustfmt clippy
+        for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+          echo "::group::native/$crate"
+          (
+            cd "native/$crate"
+            cargo fmt --check
+            cargo clippy --all-targets --locked -- -D warnings
+            cargo test --locked 2>&1 | tee "$RUNNER_TEMP/$crate-tests.log"
+          )
+          passed=$(sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/$crate-tests.log" | awk '{s+=$1} END {print s+0}')
+          want="${MIN_TESTS[$crate]}"
+          if [ "$passed" -lt "$want" ]; then
+            echo "::error::native/$crate ran $passed test(s), expected at least $want. A deleted #[cfg(test)] module exits 0 with '0 tests'; that is why this number is pinned. If tests were deliberately removed, say which and why, and lower the number in the same commit."
+            exit 1
+          fi
+          echo "  ok: native/$crate ran $passed test(s) (minimum $want)"
+          echo "::endgroup::"
+        done
+
+    # The advisory check the ml-kem migration was FOR: pqcrypto-mlkem,
+    # pqcrypto-traits and pqcrypto-internals are unmaintained by advisory
+    # (RUSTSEC-2026-0161/-0162/-0163). `--deny warnings` on purpose: a crypto
+    # dependency nobody maintains is a build failure here.
+    #
+    # cargo-audit 0.22.0 is rustsec's own release binary, pinned by SHA-256,
+    # instead of `cargo install` compiling the same version for ~2 minutes.
+    - name: cargo audit for every native crate
+      shell: bash
+      env:
+        CARGO_AUDIT_VERSION: 0.22.0
+        CARGO_AUDIT_SHA256: 0ea7a15f67d5007af5bd18f89be38a90ebd004f149dc36ebfab0aedba24cbb4f
+      run: |
+        set -euo pipefail
+        name="cargo-audit-x86_64-unknown-linux-musl-v${CARGO_AUDIT_VERSION}"
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.tgz" \
+          "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/$name.tgz"
+        echo "${CARGO_AUDIT_SHA256}  $RUNNER_TEMP/$name.tgz" | sha256sum -c -
+        tar -xzf "$RUNNER_TEMP/$name.tgz" -C "$RUNNER_TEMP"
+        install -m 0755 "$RUNNER_TEMP/$name/cargo-audit" "$HOME/.cargo/bin/cargo-audit"
+        cargo audit --version
+        for crate in rosenpass-jni birdo-pq-ios birdo-pq-server; do
+          echo "::group::cargo audit native/$crate"
+          ( cd "native/$crate" && cargo audit --deny warnings -f Cargo.lock )
+          echo "::endgroup::"
+        done
+
+    # The gate's own self-test proves, on this runner with this disassembler,
+    # that scripts/check_no_sha3_ext.sh fails on a hand-assembled eor3 and
+    # passes a HWCAP-gated LSE helper. A gate never shown to bite is a gate
+    # nobody can trust green.
+    - name: ISA gate self-test against committed fixtures
+      shell: bash
+      run: |
+        export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        bash scripts/tests/check_no_sha3_ext_test.sh
+
+    # THE NEGATIVE CASE. The only step that catches the one known way to
+    # silently re-arm the 1.4.25 crash class.
+    #
+    # ml-kem's Keccak backend is gated at runtime on cpufeatures'
+    # getauxval(AT_HWCAP) & (HWCAP_SHA3|HWCAP_SHA512). But cpufeatures'
+    # internal __unless_target_features! macro ELIDES that check and returns a
+    # constant `true` when the feature is statically enabled -- so a +sha3
+    # target feature (or any -C target-cpu above the fleet floor) produces a
+    # library that executes eor3/rax1/xar/bcax unconditionally, on every
+    # device, with no check left to fail.
+    #
+    # So we build exactly that configuration on purpose and assert the ISA
+    # gate FAILS on it -- both the gate itself and the parallel wrapper every
+    # APK/AAB check goes through. If either starts PASSING, it has stopped
+    # reading the shipped library and every green run above it is worthless.
+    #
+    # The expected failures' output goes to a file and is replayed with the
+    # workflow-command prefix neutralised: it is evidence, and its ::error::
+    # lines must not paint a green run with annotations.
+    - name: ISA gate must FAIL a deliberately +sha3 build (negative case)
+      shell: bash
+      env:
+        RUSTFLAGS: "-C target-feature=+sha3"  # RUSTFLAGS-NEGATIVE-CASE-OK: builds a library ON PURPOSE to prove a gate rejects it; nothing here ships.
+      run: |
+        set -euo pipefail
+        export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        out="$RUNNER_TEMP/sha3-negative/arm64-v8a"
+        mkdir -p "$out"
+        # RUSTFLAGS as an env var REPLACES .cargo/config.toml's target
+        # rustflags, so this build has neither the soft-Keccak cfg nor the
+        # 16 KB alignment flag -- which is the point: it is the shape a
+        # careless export actually produces.
+        ( cd native/rosenpass-jni && cargo ndk -t arm64-v8a -o "$out/.." build --locked --release )
+        test -f "$out/librosenpass_jni.so" || {
+          echo "::error::the negative-case build produced no library, so nothing was tested"; exit 1; }
+        log="$RUNNER_TEMP/sha3-negative.gate.log"
+        if bash scripts/check_no_sha3_ext.sh "$RUNNER_TEMP/sha3-negative" > "$log" 2>&1; then
+          cat "$log"
+          echo "::error::check_no_sha3_ext PASSED a library built with -C target-feature=+sha3. That build statically enables FEAT_SHA3, which makes cpufeatures elide the HWCAP check entirely -- the exact shape of the 1.4.25 SIGILL. The gate is not reading the shipped library, or its rule table no longer covers eor3/rax1/xar/bcax. Every green ISA-gate run is worthless until this is fixed."
+          exit 1
+        fi
+        sed 's/::error/(expected) error/' "$log"
+        echo "  ok: the ISA gate rejects a +sha3 build, as it must"
+        log="$RUNNER_TEMP/sha3-negative.wrapper.log"
+        if bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/sha3-negative" > "$log" 2>&1; then
+          cat "$log"
+          echo "::error::.github/scripts/isa-gate.sh PASSED the +sha3 library that scripts/check_no_sha3_ext.sh rejects. The wrapper is losing the gate's verdict, so every APK/AAB ISA check is worthless until it is fixed."
+          exit 1
+        fi
+        sed 's/::error/(expected) error/' "$log"
+        echo "  ok: the parallel wrapper rejects it too"
+
+    # The wrapper must also fail closed on the shapes the gate itself fails
+    # closed on: an ABI directory with no library, and an ABI it has no rule for.
+    - name: The parallel ISA wrapper fails closed
+      shell: bash
+      run: |
+        set -euo pipefail
+        export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+        t="$RUNNER_TEMP/isa-wrapper-cases"
+        mkdir -p "$t/empty-abi/arm64-v8a" "$t/unknown-abi/mips" "$t/no-abi"
+        cp "$RUNNER_TEMP/sha3-negative/arm64-v8a/librosenpass_jni.so" "$t/unknown-abi/mips/"
+        for c in empty-abi unknown-abi no-abi; do
+          if bash .github/scripts/isa-gate.sh "$t/$c" > "$t/$c.log" 2>&1; then
+            cat "$t/$c.log"
+            echo "::error::.github/scripts/isa-gate.sh PASSED the '$c' case; it must fail closed"
+            exit 1
+          fi
+          echo "  ok: '$c' fails, as it must"
+        done

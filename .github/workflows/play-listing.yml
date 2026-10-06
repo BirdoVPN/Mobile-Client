@@ -22,20 +22,32 @@ on:
         type: choice
         options: [probe, dry-run, apply]
 
-permissions:
-  contents: read
+permissions: {}
 
+# apply commits a Play edit: one Play edit at a time, repo-wide (android.yml's
+# upload and play-release.yml promote hold the same lock). A group keeps one
+# pending run, so a newer pending writer displaces an older one (it shows as
+# cancelled and must be re-run). probe and dry-run discard their edit, so they
+# never wait on -- or displace -- a writer.
 concurrency:
-  group: play-listing
+  group: ${{ inputs.mode == 'apply' && 'google-play-edit' || format('play-listing-{0}', github.run_id) }}
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   listing:
     name: Play listing (${{ inputs.mode }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install pinned deps
         run: python3 -m pip install --user 'google-auth==2.40.3' 'requests==2.32.3'
@@ -43,4 +55,10 @@ jobs:
       - name: Run play_listing.py --${{ inputs.mode }}
         env:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
-        run: python3 scripts/play_listing.py --${{ inputs.mode }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          case "$MODE" in
+            probe|dry-run|apply) ;;
+            *) echo "::error::unknown mode: $MODE"; exit 1 ;;
+          esac
+          python3 scripts/play_listing.py "--$MODE"
