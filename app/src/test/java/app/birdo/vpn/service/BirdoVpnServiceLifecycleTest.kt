@@ -570,6 +570,33 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     @Test
+    fun `a transition that lands between the rebuild's check and its claim still supersedes it`() {
+        val order = mutableListOf<String>()
+        val gen = arrangeLiveSession(order)
+        val generation = field("transitionGen") as AtomicLong
+        var checks = 0
+        // A STOP arrives on the main thread just after the rebuild's
+        // "still current?" check passed.
+        every { service["isCurrent"](any<Long>()) } answers {
+            if (checks++ == 0) {
+                generation.incrementAndGet()
+                true
+            } else {
+                callOriginal()
+            }
+        }
+        val outcome = BirdoVpnService.expectLiveRebuild(43L)
+
+        liveRebuild(gen, 43L)
+
+        // incrementAndGet claimed the tunnel over it and swapped anyway
+        // (second-pass review, NEW-4); the claim is a compare-and-set now.
+        assertTrue(outcome.isCompleted)
+        assertEquals(LiveRebuildPolicy.Event.SUPERSEDED, kotlinx.coroutines.runBlocking { outcome.await() })
+        assertFalse(order.any { it == "turnOn" || it.startsWith("turnOff") })
+    }
+
+    @Test
     fun `a rebuild establish() refuses keeps the old session untouched`() {
         val order = mutableListOf<String>()
         val gen = arrangeLiveSession(order)

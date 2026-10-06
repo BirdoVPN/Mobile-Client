@@ -2700,8 +2700,15 @@ class BirdoVpnService : VpnService() {
             return
         }
         // Committed to it: claim the tunnel. On the executor, so nothing that
-        // is mid-way through a transition can be silenced by it.
-        val gen = transitionGen.incrementAndGet()
+        // is mid-way through a transition can be silenced by it — and from the
+        // generation it saw, atomically: a STOP or a START bumps on the main
+        // thread at any moment, and one that landed after the check above must
+        // still win (a check, then a separate incrementAndGet, let it lose).
+        if (destroyed || !transitionGen.compareAndSet(seen, seen + 1)) {
+            completeLiveRebuild(id, LiveRebuildPolicy.Event.SUPERSEDED)
+            return
+        }
+        val gen = seen + 1
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
         isSplitTunnelingEnabled = intent.getBooleanExtra(EXTRA_SPLIT_TUNNEL_ENABLED, isSplitTunnelingEnabled)
         intent.getStringArrayExtra(EXTRA_SPLIT_TUNNEL_APPS)?.let { splitTunnelAppList = it.toSet() }
