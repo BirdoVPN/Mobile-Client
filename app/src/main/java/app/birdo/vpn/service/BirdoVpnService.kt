@@ -1192,9 +1192,17 @@ class BirdoVpnService : VpnService() {
         isKillSwitchEnabled = intent.getBooleanExtra(EXTRA_KILL_SWITCH, isKillSwitchEnabled)
         Log.i(TAG, "Runtime settings update (flag-only): killSwitchEnabled=$isKillSwitchEnabled")
         // The user turned the kill switch off: a warning that it could not be
-        // armed is about a control they no longer want. Kept under Android's
-        // lockdown, whose variant is about the OS's own block.
-        if (!isKillSwitchEnabled && !lockdownActive) _killSwitchNotArmedFlow.value = null
+        // armed is about a control they no longer want — and so is its alert,
+        // which would otherwise stay in the shade (only Connected withdraws
+        // one). Kept under Android's lockdown, whose variant is about the OS's
+        // own block.
+        if (!isKillSwitchEnabled && !lockdownActive && _killSwitchNotArmedFlow.value != null) {
+            _killSwitchNotArmedFlow.value = null
+            if (postedAlertKey?.contains(SessionCopy.KILL_SWITCH_NOT_ARMED) == true) {
+                notifManager.cancelAlert()
+                postedAlertKey = null
+            }
+        }
 
         // Kill switch turned OFF while it's actively blocking a DEAD tunnel:
         // honour fail-open by releasing the block. This runs on the tunnel

@@ -311,6 +311,20 @@ class ConnectContractTest {
         assertEquals("entitlement", reply.stealthUnavailableReason)
     }
 
+    /**
+     * The contract has no Multi-Hop response of its own: the route's reply is
+     * the connect reply plus the confirmed route block. So every other field
+     * the client decodes from it must carry ConnectResponse's wire name, or
+     * it decodes as null on every Multi-Hop reply.
+     */
+    @Test
+    fun `every MultiHopConnectResponse field but its route block is named as the server names it`() {
+        val fields = serializer<MultiHopConnectResponse>().descriptor.elementNames.toSet() - "multiHop"
+        val schema = schemaProperties("ConnectResponse")
+        assertTrue("MultiHopConnectResponse fields the server never sends: ${fields - schema}", fields.all { it in schema })
+        assertTrue("stealthUnavailableReason" in fields)
+    }
+
     // ── BirdoShield (D18): dnsFiltering on both routes ──────────────────
 
     @Test

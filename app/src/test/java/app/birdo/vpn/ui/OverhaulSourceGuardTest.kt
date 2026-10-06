@@ -404,7 +404,8 @@ class OverhaulSourceGuardTest {
         val graph = source("$main/ui/navigation/BirdoNavGraph.kt")
         assertTrue(
             "Home's Stealth remedy no longer lands on the VPN Settings screen, where the toggle is",
-            Regex("""onOpenVpnSettings\s*=\s*\{\s*navController\.navigate\(Screen\.VpnSettings\.route\)""").containsMatchIn(graph),
+            Regex("""onOpenVpnSettings\s*=\s*\{[^}]*?navController\.navigate\(Screen\.VpnSettings\.route\)\s*\{\s*launchSingleTop\s*=\s*true\s*\}""")
+                .containsMatchIn(graph),
         )
         assertTrue(graph.contains("stealthUnlocked = StealthPolicy.toggleUnlocked(plan)"))
         assertTrue(source("$main/ui/screen/HomeScreen.kt").contains("Remedy.OPEN_VPN_SETTINGS -> onOpenVpnSettings()"))

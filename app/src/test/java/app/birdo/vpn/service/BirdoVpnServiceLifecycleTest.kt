@@ -832,6 +832,23 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     @Test
+    fun `turning the kill switch off also withdraws the could-not-be-armed alert`() {
+        val update = BirdoVpnService::class.java.getDeclaredMethod("handleUpdateSettings", Intent::class.java)
+        update.isAccessible = true
+        val off = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns false
+        }
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        setField("postedAlertKey", "DIED_AFTER_HANDSHAKE:${SessionCopy.KILL_SWITCH_NOT_ARMED}:false")
+
+        update.invoke(service, off)
+
+        // The warning went (N5); its alert stayed in the shade.
+        verify(exactly = 1) { notifications.cancelAlert() }
+        assertNull(field("postedAlertKey"))
+    }
+
+    @Test
     fun `the alert is not withdrawn over a stale Connected while the kill switch could not be armed`() {
         val inputClass = Class.forName("app.birdo.vpn.service.BirdoVpnService\$RenderInput")
         val ctor = inputClass.declaredConstructors.single().apply { isAccessible = true }

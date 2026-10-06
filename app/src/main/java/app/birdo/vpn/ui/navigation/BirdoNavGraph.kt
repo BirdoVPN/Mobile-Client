@@ -599,7 +599,10 @@ fun BirdoNavGraph(
                             }
                         },
                         // A Stealth refusal's "Open settings" lands on the toggle itself.
-                        onOpenVpnSettings = { navController.navigate(Screen.VpnSettings.route) },
+                        onOpenVpnSettings = {
+                            // Single top: a second tap must not stack another copy.
+                            navController.navigate(Screen.VpnSettings.route) { launchSingleTop = true }
+                        },
                         onTurnOffStealth = { vpnViewModel.turnOffStealthNotInPlan() },
                         onDismissMessage = { vpnViewModel.dismissConnectError() },
                         updateInfo = updateState.info,
