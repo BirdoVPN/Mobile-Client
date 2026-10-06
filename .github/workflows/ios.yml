@@ -1,4 +1,4 @@
-name: iOS CI & Build
+name: iOS Release
 
 # ============================================================================
 # iOS ships on the android-v* release train, UNSIGNED.

@@ -32,13 +32,19 @@
 # against it.
 #
 # WHERE THE TIME WENT (run 37057051350, 31.6 min, 23.4 of them in the traced
-# xcodebuild): 7.6 min resolving the one LOCAL Swift package under the tracer,
-# and ~13 min of single-threaded extraction of whole-module (WMO) compiles.
-# So the package graph is resolved before CodeQL starts tracing, and the
-# traced build compiles in batch mode so extraction runs on every core. The
-# compilation CONDITIONS stay Release's (no DEBUG), so the code CodeQL sees
-# is the code that ships; only the optimiser level and batching differ, and
-# neither changes the source being analysed.
+# xcodebuild): ~8 min in "Resolve Package Graph" for the one LOCAL Swift
+# package, and ~9 min of single-threaded extraction of whole-module (WMO)
+# compiles.
+#   * Extraction: the traced build compiles in batch mode, so extraction runs
+#     on every core (measured on #464: ~9 -> ~4.5 min). The compilation
+#     CONDITIONS stay Release's (no DEBUG), so the code CodeQL sees is the code
+#     that ships; only the optimiser level and batching differ, and neither
+#     changes the source being analysed.
+#   * Package graph: resolving it BEFORE tracing does not help (measured on
+#     #464: still 530 s under the tracer), because the traced build evaluates
+#     Package.swift again. That evaluation runs in SwiftPM's manifest sandbox,
+#     which the injected tracer has to work against; the sandbox is turned off
+#     for this analysis build only (the manifest is our own vendored file).
 name: CodeQL Swift
 
 on:
@@ -163,20 +169,6 @@ jobs:
         working-directory: iosApp
         run: xcodegen generate
 
-      # BEFORE CodeQL starts tracing. Under the tracer, resolving this one
-      # local package (iosApp/Vendor/wireguard-apple) took 7.6 minutes; outside
-      # it, seconds. The traced build below reuses this DerivedData and refuses
-      # to resolve again.
-      - name: Resolve Swift packages (untraced)
-        working-directory: iosApp
-        run: |
-          set -o pipefail
-          xcodebuild -resolvePackageDependencies \
-            -project BirdoVPN.xcodeproj \
-            -scheme BirdoVPN \
-            -derivedDataPath "$RUNNER_TEMP/dd" \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm"
-
       # ── the scan ──────────────────────────────────────────────────────────
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
@@ -198,9 +190,7 @@ jobs:
             -scheme BirdoVPN \
             -destination 'generic/platform=iOS' \
             -configuration Release \
-            -derivedDataPath "$RUNNER_TEMP/dd" \
-            -clonedSourcePackagesDirPath "$RUNNER_TEMP/spm" \
-            -disableAutomaticPackageResolution \
+            -IDEPackageSupportDisableManifestSandbox=YES \
             SYMROOT="$PWD/build" \
             MARKETING_VERSION="$BIRDO_MARKETING_VERSION" \
             CURRENT_PROJECT_VERSION="$BIRDO_PROJECT_VERSION" \
