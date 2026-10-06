@@ -600,6 +600,7 @@ fun BirdoNavGraph(
                         },
                         // A Stealth refusal's "Open settings" lands on the toggle itself.
                         onOpenVpnSettings = { navController.navigate(Screen.VpnSettings.route) },
+                        onTurnOffStealth = { vpnViewModel.turnOffStealthNotInPlan() },
                         onDismissMessage = { vpnViewModel.dismissConnectError() },
                         updateInfo = updateState.info,
                         showUpdateBanner = updateState.showBanner,

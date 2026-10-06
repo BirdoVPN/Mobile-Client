@@ -547,6 +547,16 @@ class SessionPolicyTest {
     }
 
     @Test
+    fun `the Stealth row locks only the ON direction`() {
+        // A downgrade's stored ON is drawn ON and can be turned off; it used
+        // to be drawn OFF and locked, so it could never be cleared (NEW-5).
+        assertEquals(StealthPolicy.ToggleRow(checked = true, locked = false), StealthPolicy.toggleRow(stored = true, unlocked = false))
+        assertEquals(StealthPolicy.ToggleRow(checked = false, locked = true), StealthPolicy.toggleRow(stored = false, unlocked = false))
+        assertEquals(StealthPolicy.ToggleRow(checked = true, locked = false), StealthPolicy.toggleRow(stored = true, unlocked = true))
+        assertEquals(StealthPolicy.ToggleRow(checked = false, locked = false), StealthPolicy.toggleRow(stored = false, unlocked = true))
+    }
+
+    @Test
     fun `the service judges the reply against what the dial asked for`() {
         fun t(requested: Boolean, granted: Boolean, endpoint: String?, reason: String?) =
             StealthPolicy.transport(requested, granted, endpoint, reason)

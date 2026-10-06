@@ -409,4 +409,16 @@ class OverhaulSourceGuardTest {
         assertTrue(graph.contains("stealthUnlocked = StealthPolicy.toggleUnlocked(plan)"))
         assertTrue(source("$main/ui/screen/HomeScreen.kt").contains("Remedy.OPEN_VPN_SETTINGS -> onOpenVpnSettings()"))
     }
+
+    // ── NEW-5: a downgraded user's way out ───────────────────────────────
+
+    @Test
+    fun `the not-in-plan notice can turn Stealth off, and the row locks only the ON direction`() {
+        val home = source("$main/ui/screen/HomeScreen.kt")
+        assertTrue(home.contains("R.string.banner_action_turn_off_stealth"))
+        assertTrue(source("$main/ui/navigation/BirdoNavGraph.kt").contains("onTurnOffStealth = { vpnViewModel.turnOffStealthNotInPlan() }"))
+        val settings = source("$main/ui/screen/VpnSettingsScreen.kt")
+        assertTrue(settings.contains("StealthPolicy.toggleRow(state.stealthModeEnabled, stealthUnlocked)"))
+        assertFalse("the row draws a stored ON as OFF again", settings.contains("checked = state.stealthModeEnabled && stealthUnlocked"))
+    }
 }

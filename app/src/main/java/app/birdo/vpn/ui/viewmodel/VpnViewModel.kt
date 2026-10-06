@@ -420,6 +420,9 @@ class VpnViewModel @Inject constructor(
         }
     }
 
+    /** Home's "Stealth isn't in your plan" notice: turn the stored setting off. */
+    fun turnOffStealthNotInPlan() = vpnManager.turnOffStealthNotInPlan()
+
     /** birdo-web PR #590: the Free allowance's grace window, from the heartbeat. */
     private fun startQuotaSync() {
         viewModelScope.launch {

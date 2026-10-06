@@ -85,6 +85,7 @@
     <string name="banner_action_open_settings">Open Settings</string>
     <string name="banner_action_view_plans">View plans</string>
     <string name="banner_action_choose_server">Choose server</string>
+    <string name="banner_action_turn_off_stealth">Turn off Stealth</string>
     <string name="cd_dismiss_message">Dismiss message</string>
     <!-- A1-027: the alerts that say the VPN stopped or needs the user are notifications. -->
     <string name="home_notifications_off">Notifications are off, so BirdoVPN can\'t alert you when the VPN stops or needs you.</string>

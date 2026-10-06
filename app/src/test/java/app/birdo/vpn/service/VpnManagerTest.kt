@@ -2330,4 +2330,47 @@ class VpnManagerTest {
         verify { BirdoVpnService.setConfig(match { it.stealthUnavailableReason == "entitlement" }) }
         assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
     }
+
+    // ── NEW-5: a downgraded user's way out ───────────────────────────────
+
+    /** Connected on a dial the server answered "Stealth is not in your plan". */
+    private suspend fun TestScope.connectDowngraded() {
+        every { prefs.stealthModeEnabled } returns true
+        every { prefs.lastServerId } returns "srv-1"
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse().copy(stealthEnabled = false, stealthUnavailableReason = "entitlement"))
+        vpnManager.connect("srv-1")
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
+    }
+
+    @Test
+    fun `a downgraded session's switch still rides the live rebuild`() = runTest {
+        connectDowngraded()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+
+        // Its stored Stealth setting made it "Stealth-wanted", so every switch
+        // went through the legacy teardown: a blackout each time.
+        assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        assertFalse(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+        runCurrent()
+        switch.await()
+        quiesce()
+    }
+
+    @Test
+    fun `the notice's action turns Stealth off and ends the notice`() = runTest {
+        connectDowngraded()
+
+        vpnManager.turnOffStealthNotInPlan()
+
+        verify { prefs.stealthModeEnabled = false }
+        assertNull(vpnManager.stealthNotice.value)
+        quiesce()
+    }
 }

@@ -378,6 +378,22 @@ internal object StealthPolicy {
         return known == "OPERATIVE" || known == "SOVEREIGN"
     }
 
+    /** How the Settings row draws: what it shows, and whether a tap goes to the upgrade flow instead. */
+    data class ToggleRow(val checked: Boolean, val locked: Boolean)
+
+    /**
+     * Lock only the ON direction. A downgrade leaves the stored setting on,
+     * and the row used to draw it OFF and locked: the setting could not be
+     * cleared, so Home's "not in your plan" notice came back on every connect
+     * and every switch took the legacy teardown. Shown as it is stored, the
+     * user can turn it off; only turning it on needs the plan.
+     */
+    fun toggleRow(stored: Boolean, unlocked: Boolean): ToggleRow = when {
+        unlocked -> ToggleRow(checked = stored, locked = false)
+        stored -> ToggleRow(checked = true, locked = false)
+        else -> ToggleRow(checked = false, locked = true)
+    }
+
     enum class Transport {
         /** Granted with an endpoint: run Xray. */
         STEALTH,

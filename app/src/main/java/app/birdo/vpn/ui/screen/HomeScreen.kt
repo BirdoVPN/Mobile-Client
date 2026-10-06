@@ -91,6 +91,8 @@ fun HomeScreen(
     onOpenSettings: () -> Unit = {},
     /** The VPN Settings screen (the Stealth toggle), for a Stealth refusal's banner. */
     onOpenVpnSettings: () -> Unit = {},
+    /** Turns the stored Stealth setting off, from the "not in your plan" notice. */
+    onTurnOffStealth: () -> Unit = {},
     /** The upgrade flow: the device-limit refusal and locked servers route here. */
     onViewPlans: () -> Unit = {},
     onDismissMessage: () -> Unit = {},
@@ -412,6 +414,11 @@ fun HomeScreen(
                             icon = Icons.Default.VisibilityOff,
                             message = stealthNotice.orEmpty(),
                             tone = BannerTone.Info,
+                            // The way out for a downgraded user: without it the
+                            // notice came back on every connect.
+                            action = BannerAction(stringResource(R.string.banner_action_turn_off_stealth)) {
+                                onTurnOffStealth()
+                            },
                         )
                     }
 
