@@ -14,8 +14,10 @@ import app.birdo.vpn.data.model.*
 import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import retrofit2.Response
 import java.util.concurrent.atomic.AtomicLong
@@ -258,76 +260,84 @@ class BirdoRepository @Inject constructor(
         // Captured BEFORE the network round-trip; compared after, so a sign-out
         // that lands mid-flight is detected.
         val genAtStart = sessionGeneration.get()
-        return@withLock try {
-            val response = api.refreshToken(RefreshRequest(presented))
-            if (response.isSuccessful && response.body() != null) {
-                val body = response.body()!!
-                // Logout fence + CAS: if a logout/delete bumped the generation,
-                // or the stored refresh token no longer matches the one we
-                // presented, a sign-out (or a competing refresh) landed while we
-                // were in flight — drop the rotated pair rather than re-persist
-                // a signed-out session. Treated as TRANSIENT so it neither forces
-                // a second logout nor resurrects the session.
-                if (sessionGeneration.get() != genAtStart ||
-                    tokenManager.getRefreshToken() != presented
-                ) {
-                    RefreshOutcome.TRANSIENT
-                } else {
-                    // DURABILITY: the server has CONSUMED the presented refresh
-                    // token by the time this response arrives. Persist the rotated
-                    // pair through ONE synchronous commit (setTokens) — the old
-                    // setAccessToken/setRefreshToken pair used apply(), so an
-                    // Android process kill before the async flush replayed the
-                    // consumed token on next launch and tripped server-side theft
-                    // detection (account-wide revocation incl. WG peers).
-                    val rotated = body.refreshToken
-                    if (rotated != null) {
-                        tokenManager.setTokens(body.accessToken, rotated)
+        // NonCancellable: by the time the server answers, it has already
+        // CONSUMED the presented refresh token. A caller cancelled mid-flight
+        // (a live rebuild's /connect cut short, round 6 P3-3) used to drop the
+        // rotated pair here, and the next refresh replayed the used token —
+        // which the server reads as theft and answers with an account-wide
+        // revoke. The rotation is finished and saved whoever stopped waiting.
+        return@withLock withContext(NonCancellable) {
+            try {
+                val response = api.refreshToken(RefreshRequest(presented))
+                if (response.isSuccessful && response.body() != null) {
+                    val body = response.body()!!
+                    // Logout fence + CAS: if a logout/delete bumped the generation,
+                    // or the stored refresh token no longer matches the one we
+                    // presented, a sign-out (or a competing refresh) landed while we
+                    // were in flight — drop the rotated pair rather than re-persist
+                    // a signed-out session. Treated as TRANSIENT so it neither forces
+                    // a second logout nor resurrects the session.
+                    if (sessionGeneration.get() != genAtStart ||
+                        tokenManager.getRefreshToken() != presented
+                    ) {
+                        RefreshOutcome.TRANSIENT
                     } else {
-                        tokenManager.setAccessToken(body.accessToken)
+                        // DURABILITY: the server has CONSUMED the presented refresh
+                        // token by the time this response arrives. Persist the rotated
+                        // pair through ONE synchronous commit (setTokens) — the old
+                        // setAccessToken/setRefreshToken pair used apply(), so an
+                        // Android process kill before the async flush replayed the
+                        // consumed token on next launch and tripped server-side theft
+                        // detection (account-wide revocation incl. WG peers).
+                        val rotated = body.refreshToken
+                        if (rotated != null) {
+                            tokenManager.setTokens(body.accessToken, rotated)
+                        } else {
+                            tokenManager.setAccessToken(body.accessToken)
+                        }
+                        RefreshOutcome.SUCCESS
                     }
-                    RefreshOutcome.SUCCESS
+                } else if (response.code() == 401) {
+                    // Definitive: the server rejected this refresh token — so DISCARD it.
+                    //
+                    // Not clearing it is what turned one dead token into a storm. The
+                    // VPN heartbeat runs every 30s and, on 401, called refreshToken()
+                    // with the SAME stored token, forever: nothing here cleared it and
+                    // the loop only logs the failure. Server-side, every replay of a
+                    // consumed jti re-ran reuse detection and revoked the account's
+                    // sessions AND every WireGuard peer — four revocations in one
+                    // minute in production on 2026-07-28, for one anonymous session,
+                    // while the user sat behind a tunnel whose peer was already gone.
+                    //
+                    // The server is now idempotent about this, but the client must not
+                    // replay either: already-shipped app versions cannot be fixed by a
+                    // release, so both halves need to hold on their own.
+                    //
+                    // Bump BEFORE clearing, matching logout()/deleteAccount(): an
+                    // in-flight refresh completing after this point then sees the new
+                    // generation and drops its rotated tokens instead of resurrecting
+                    // a dead session.
+                    sessionGeneration.incrementAndGet()
+                    tokenManager.clearAll()
+                    RefreshOutcome.UNAUTHORIZED
+                } else if (response.code() == 403) {
+                    // Also non-retryable, but deliberately does NOT destroy the tokens.
+                    // A 403 on this path is not always the token's fault: an
+                    // infrastructure-level block returns it too — the Caddy client-ip
+                    // regression put every user into one rate-limit bucket and the API
+                    // answered 403 across the board. Wiping credentials on that would
+                    // have irrecoverably signed out the entire userbase during an
+                    // outage that had nothing to do with their tokens. Sign out, but
+                    // leave the tokens alone so recovery is possible.
+                    RefreshOutcome.UNAUTHORIZED
+                } else {
+                    // 5xx / unexpected status — the credentials may still be valid.
+                    RefreshOutcome.TRANSIENT
                 }
-            } else if (response.code() == 401) {
-                // Definitive: the server rejected this refresh token — so DISCARD it.
-                //
-                // Not clearing it is what turned one dead token into a storm. The
-                // VPN heartbeat runs every 30s and, on 401, called refreshToken()
-                // with the SAME stored token, forever: nothing here cleared it and
-                // the loop only logs the failure. Server-side, every replay of a
-                // consumed jti re-ran reuse detection and revoked the account's
-                // sessions AND every WireGuard peer — four revocations in one
-                // minute in production on 2026-07-28, for one anonymous session,
-                // while the user sat behind a tunnel whose peer was already gone.
-                //
-                // The server is now idempotent about this, but the client must not
-                // replay either: already-shipped app versions cannot be fixed by a
-                // release, so both halves need to hold on their own.
-                //
-                // Bump BEFORE clearing, matching logout()/deleteAccount(): an
-                // in-flight refresh completing after this point then sees the new
-                // generation and drops its rotated tokens instead of resurrecting
-                // a dead session.
-                sessionGeneration.incrementAndGet()
-                tokenManager.clearAll()
-                RefreshOutcome.UNAUTHORIZED
-            } else if (response.code() == 403) {
-                // Also non-retryable, but deliberately does NOT destroy the tokens.
-                // A 403 on this path is not always the token's fault: an
-                // infrastructure-level block returns it too — the Caddy client-ip
-                // regression put every user into one rate-limit bucket and the API
-                // answered 403 across the board. Wiping credentials on that would
-                // have irrecoverably signed out the entire userbase during an
-                // outage that had nothing to do with their tokens. Sign out, but
-                // leave the tokens alone so recovery is possible.
-                RefreshOutcome.UNAUTHORIZED
-            } else {
-                // 5xx / unexpected status — the credentials may still be valid.
+            } catch (_: Exception) {
+                // Network error / timeout — transient, keep the session.
                 RefreshOutcome.TRANSIENT
             }
-        } catch (_: Exception) {
-            // Network error / timeout — transient, keep the session.
-            RefreshOutcome.TRANSIENT
         }
     }
 

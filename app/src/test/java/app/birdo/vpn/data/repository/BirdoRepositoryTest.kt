@@ -9,10 +9,12 @@ import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.testing.StringsXml
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -244,6 +246,31 @@ class BirdoRepositoryTest {
 
         assertEquals(RefreshOutcome.SUCCESS, result)
         verify { tokenManager.setAccessToken("new_access") }
+    }
+
+    /**
+     * Round 6, P3-3. The server has consumed the presented refresh token by
+     * the time it answers. A caller cancelled mid-flight (a live rebuild's
+     * /connect cut short) used to drop the rotated pair, and the next refresh
+     * replayed the used token: the server's theft detection, an account-wide
+     * revoke.
+     */
+    @Test
+    fun `a refresh in flight when its caller is cancelled still stores the rotated tokens`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        caller.cancel()
+        answer.complete(Unit)
+        runCurrent()
+
+        verify(exactly = 1) { tokenManager.setTokens("new_access", "new_refresh") }
     }
 
     @Test
