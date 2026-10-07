@@ -1553,13 +1553,23 @@ class VpnManager @Inject constructor(
      * with a misleading kill-switch alert. It goes to the supervisor, and it
      * is returned so the caller skips the legacy dial.
      *
-     * @return the terminal failure that stops today's path, or null.
+     * Nor is a request that was cut short while the device is OFFLINE
+     * (round 6, P3-1): today's dial would fail at once, and as a fresh user
+     * dial it "never connected", so the supervisor gave the session up
+     * (NEVER_CONNECTED, the intent cleared) where the same drop outside a
+     * rebuild waits for the network. The session the rebuild was moving WAS
+     * up, so the supervisor takes the failure as that session's: it waits for
+     * the network and re-dials when it returns.
+     *
+     * @return the failure that stops today's path, or null.
      */
     private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive): VpnState.Error? {
         val held = hold.held ?: return null
         hold.held = null
         val legacy = directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN
-        if (legacy && !held.kind.terminal) return null
+        val offline = legacy && hold.cutShort && !online
+        if (legacy && !held.kind.terminal && !offline) return null
+        if (offline) session = session.connected()
         if (_state.value == held) onStateChanged(held)
         return held.takeIf { legacy }
     }

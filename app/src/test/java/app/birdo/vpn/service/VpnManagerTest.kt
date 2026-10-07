@@ -2147,6 +2147,42 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a rebuild cut short while offline waits for the network, then re-dials`() = runTest {
+        connectAndEstablish()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { awaitCancellation() }
+        // Offline, today's dial fails at once.
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Error("Couldn't reach BirdoVPN.", 0)
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // The network drops under the switch; the old tunnel dies with it.
+        onlineFlow.value = false
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        advanceTimeBy(6_000)
+        switch.await()
+
+        // Today's dial ran as a fresh user dial that "never connected": the
+        // supervisor gave up and cleared the intent (round 6, P3-1). Now it
+        // waits for the network instead.
+        verify(exactly = 0) { prefs.sessionShouldBeUp = false }
+        val waiting = vpnManager.state.value as VpnState.Reconnecting
+        assertTrue(waiting.waitingForNetwork)
+
+        // …and re-dials the session when the network returns.
+        onlineFlow.value = true
+        advanceTimeBy(6_000)
+        coVerify(atLeast = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
+    @Test
     fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(rebuiltConfig()))
