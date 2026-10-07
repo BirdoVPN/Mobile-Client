@@ -2118,6 +2118,35 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a rebuild whose old tunnel dies during its connect takes today's path at once`() = runTest {
+        connectAndEstablish()
+        // The rebuild's /connect rides the tunnel that is about to die: no
+        // answer is ever coming (the API's 45 s callTimeout in production).
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { awaitCancellation() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        // Today's teardown waits up to 5 s for the service's Disconnected
+        // (nothing emits it here); far inside the 45 s the request would hold.
+        advanceTimeBy(6_000)
+
+        // No waiting out the timeout: the request is cut short and today's
+        // path recovers now (final review, #4).
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        switch.await()
+        quiesce()
+    }
+
+    @Test
     fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(rebuiltConfig()))

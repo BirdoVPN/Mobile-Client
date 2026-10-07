@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -1481,6 +1482,12 @@ class VpnManager @Inject constructor(
     private class RebuildHold {
         /** The Error that landed while this rebuild owned the hold. */
         var held: VpnState.Error? = null
+        /** The swap is with the service, which will answer it. */
+        var swapping = false
+        /** The old tunnel died before the swap was sent: the /connect is cut short. */
+        var cutShort = false
+        /** The rebuild's /connect while it is out ([rebuildRequest]). */
+        var request: Job? = null
     }
 
     /**
@@ -1492,6 +1499,25 @@ class VpnManager @Inject constructor(
      * the hold only if it still owns it, and settles only what it held.
      */
     private var rebuildHold: RebuildHold? = null
+
+    /**
+     * The rebuild's /connect, cut short when the old tunnel dies under it
+     * (final review of #463, #4). The request rides that tunnel, so it would
+     * only time out — the API's 45 s callTimeout — while the device waited
+     * dead. Null when cut short; the rebuild then takes today's path at once.
+     */
+    private suspend fun <T> rebuildRequest(hold: RebuildHold, call: suspend () -> ApiResult<T>): ApiResult<T>? =
+        coroutineScope {
+            val request = async { call() }
+            hold.request = request
+            try {
+                request.await()
+            } catch (e: CancellationException) {
+                if (hold.cutShort && isActive) null else throw e
+            } finally {
+                hold.request = null
+            }
+        }
 
     /** Take the hold for a rebuild that is starting. */
     private fun holdFailuresForRebuild(): RebuildHold = RebuildHold().also { rebuildHold = it }
@@ -1568,25 +1594,30 @@ class VpnManager @Inject constructor(
             // Through the live tunnel (ApiRoutePolicy: still Connected), naming the
             // key it rides. No attestation: the session is live, and attestation is
             // a property of the install, not of each switch (A1-033).
-            val result = if (pqRefusal != null) {
+            val result = if (pqRefusal != null || hold.cutShort) {
                 null
             } else {
-                repository.connectVpn(
-                    serverNodeId = serverId,
-                    deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-                    stealthMode = false,
-                    fallbackReason = null,
-                    quantumProtection = prefs.quantumProtectionEnabled,
-                    pqClientPublicKey = pqKey,
-                    integrityToken = null,
-                    dnsFiltering = shieldInEffect(),
-                    rebuildOf = oldKey,
-                )
+                rebuildRequest(hold) {
+                    repository.connectVpn(
+                        serverNodeId = serverId,
+                        deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                        stealthMode = false,
+                        fallbackReason = null,
+                        quantumProtection = prefs.quantumProtectionEnabled,
+                        pqClientPublicKey = pqKey,
+                        integrityToken = null,
+                        dnsFiltering = shieldInEffect(),
+                        rebuildOf = oldKey,
+                    )
+                }
             }
             val config = (result as? ApiResult.Success)?.data
             result to when {
                 superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
                 pqRefusal != null -> pqRefusal
+                // The old tunnel died under the request: no answer is coming
+                // through it. Today's path, now.
+                hold.cutShort && config == null -> LiveRebuildPolicy.Event.REQUEST_UNANSWERED
                 config == null -> (result as? ApiResult.Error)
                     ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
                     ?: LiveRebuildPolicy.Event.REQUEST_FAILED
@@ -1595,7 +1626,10 @@ class VpnManager @Inject constructor(
                     LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
                 config.privateKey == null || config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
-                else -> swapInService(config, gen, oldKey)
+                else -> {
+                    hold.swapping = true
+                    swapInService(config, gen, oldKey)
+                }
             }
         } catch (t: Throwable) {
             abandonRebuildHold(hold)
@@ -1632,27 +1666,30 @@ class VpnManager @Inject constructor(
         val hold = holdFailuresForRebuild()
         val (result, event) = try {
             val (pqKey, pqRefusal) = rebuildPqKey()
-            val result = if (pqRefusal != null) {
+            val result = if (pqRefusal != null || hold.cutShort) {
                 null
             } else {
-                repository.connectMultiHop(
-                    entryNodeId = entryNodeId,
-                    exitNodeId = exitNodeId,
-                    deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-                    stealthMode = false,
-                    fallbackReason = null,
-                    quantumProtection = prefs.quantumProtectionEnabled,
-                    pqClientPublicKey = pqKey,
-                    integrityToken = null,
-                    dnsFiltering = shieldInEffect(),
-                    rebuildOf = oldKey,
-                )
+                rebuildRequest(hold) {
+                    repository.connectMultiHop(
+                        entryNodeId = entryNodeId,
+                        exitNodeId = exitNodeId,
+                        deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                        stealthMode = false,
+                        fallbackReason = null,
+                        quantumProtection = prefs.quantumProtectionEnabled,
+                        pqClientPublicKey = pqKey,
+                        integrityToken = null,
+                        dnsFiltering = shieldInEffect(),
+                        rebuildOf = oldKey,
+                    )
+                }
             }
             val config = (result as? ApiResult.Success)?.data
             val mh = config?.multiHop
             result to when {
                 superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
                 pqRefusal != null -> pqRefusal
+                hold.cutShort && config == null -> LiveRebuildPolicy.Event.REQUEST_UNANSWERED
                 config == null -> (result as? ApiResult.Error)
                     ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
                     ?: LiveRebuildPolicy.Event.REQUEST_FAILED
@@ -1665,7 +1702,10 @@ class VpnManager @Inject constructor(
                     LiveRebuildPolicy.Event.ROUTE_NOT_CONFIRMED
                 config.privateKey == null || config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
-                else -> swapInService(config.toConnectResponse(), gen, oldKey)
+                else -> {
+                    hold.swapping = true
+                    swapInService(config.toConnectResponse(), gen, oldKey)
+                }
             }
         } catch (t: Throwable) {
             abandonRebuildHold(hold)
@@ -2031,6 +2071,12 @@ class VpnManager @Inject constructor(
                 if (hold != null) {
                     // The rebuild that owns the hold decides (settleHeldFailure).
                     hold.held = vpnState
+                    // Before the swap is sent, its /connect rides the tunnel
+                    // that just died: stop waiting for it (rebuildRequest).
+                    if (!hold.swapping) {
+                        hold.cutShort = true
+                        hold.request?.cancel()
+                    }
                     return
                 }
                 connectWatchdogJob?.cancel()
