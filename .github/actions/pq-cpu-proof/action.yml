@@ -12,13 +12,16 @@ runs:
       shell: bash
       run: |
         # Bounded. On 2026-10-07 an Ubuntu archive mirror stalled mid-download
-        # on two runs in a row (Mobile #469, run 37668495327), and an unbounded
-        # `apt-get update` sat silent until the 20-minute job timeout ate the
-        # whole proof. apt's Timeout covers a stalled transfer as well as the
-        # connect; Retries rides out one flaky mirror; `timeout` is the hard
-        # ceiling, so a dead mirror fails in minutes and says what it was.
-        apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-        sudo timeout 300 apt-get "${apt_opts[@]}" update || {
+        # on two runs in a row (Mobile #469, run 37668495327), and `apt-get
+        # update` sat silent until the 20-minute job timeout ate the whole
+        # proof. apt's own settings could not stop it: the runner image already
+        # sets Acquire::Retries 1 / Timeout 15 (/etc/apt/apt.conf.d/zz-retries)
+        # for fast failover between its mirrors, and that Timeout is an IDLE
+        # timer -- the run hung 20 min with it in force. Leave those settings
+        # alone (overriding them only slows the failover) and put a hard
+        # ceiling on the whole command, so a dead mirror fails in minutes and
+        # says what it was. -k: SIGKILL if SIGTERM is not enough.
+        sudo timeout -k 30 300 apt-get update || {
           echo "::error::apt-get update failed or ran past 5 min: an Ubuntu mirror problem, not this change. Re-run the job."
           exit 1
         }
@@ -27,7 +30,7 @@ runs:
         # link dies on "cannot find Scrt1.o". It is also what provides the
         # sysroot that `qemu-aarch64 -L /usr/aarch64-linux-gnu` needs in order
         # to find the dynamic loader.
-        sudo timeout 600 apt-get "${apt_opts[@]}" install -y --no-install-recommends \
+        sudo timeout -k 30 600 apt-get install -y --no-install-recommends \
           qemu-user binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu \
           libc6-dev-arm64-cross || {
           echo "::error::apt-get install failed or ran past 10 min: an Ubuntu mirror problem, not this change. Re-run the job."
