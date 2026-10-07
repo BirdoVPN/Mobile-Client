@@ -255,6 +255,7 @@ class BirdoRepositoryTest {
      * replayed the used token: the server's theft detection, an account-wide
      * revoke.
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `a refresh in flight when its caller is cancelled still stores the rotated tokens`() = runTest {
         coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
