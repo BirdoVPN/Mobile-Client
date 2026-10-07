@@ -2090,6 +2090,34 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a failure held by a rebuild that throws still reaches the supervisor`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Error("timeout")
+        // The settings rebuild's PQ key read fails — after the old tunnel died.
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(BirdoPqManager)
+        val keyRead = CompletableDeferred<Unit>()
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } coAnswers {
+            keyRead.await()
+            throw IllegalStateException("keystore")
+        }
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(1_500)
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        keyRead.complete(Unit)
+        runCurrent()
+
+        // The throw skipped the settle and the held Error was never seen: the
+        // session sat dead in Error. Now the supervisor schedules its re-dial.
+        assertTrue(vpnManager.state.value is VpnState.Reconnecting)
+        quiesce()
+    }
+
+    @Test
     fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(rebuiltConfig()))

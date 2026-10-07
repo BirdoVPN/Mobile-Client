@@ -1502,6 +1502,18 @@ class VpnManager @Inject constructor(
     }
 
     /**
+     * The rebuild threw or was cancelled before it could decide (final review
+     * of #463, #3): what it held still reaches the supervisor, if it is still
+     * the state. It used to be skipped, and the failure was never recovered.
+     */
+    private fun abandonRebuildHold(hold: RebuildHold) {
+        releaseRebuildHold(hold)
+        val held = hold.held ?: return
+        hold.held = null
+        if (_state.value == held) onStateChanged(held)
+    }
+
+    /**
      * After a live rebuild decided: today's path is the one recovery for a
      * held failure (it dials now); otherwise the supervisor takes the failure
      * after all, if it is still the state — a kept session that had died, a
@@ -1585,9 +1597,11 @@ class VpnManager @Inject constructor(
                     config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
                 else -> swapInService(config, gen, oldKey)
             }
-        } finally {
-            releaseRebuildHold(hold)
+        } catch (t: Throwable) {
+            abandonRebuildHold(hold)
+            throw t
         }
+        releaseRebuildHold(hold)
         val config = (result as? ApiResult.Success)?.data
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
         val terminal = settleHeldFailure(hold, directive)
@@ -1653,9 +1667,11 @@ class VpnManager @Inject constructor(
                     config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
                 else -> swapInService(config.toConnectResponse(), gen, oldKey)
             }
-        } finally {
-            releaseRebuildHold(hold)
+        } catch (t: Throwable) {
+            abandonRebuildHold(hold)
+            throw t
         }
+        releaseRebuildHold(hold)
         val config = (result as? ApiResult.Success)?.data
         val mh = config?.multiHop
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
