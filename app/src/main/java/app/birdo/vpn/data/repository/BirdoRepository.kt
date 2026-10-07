@@ -361,9 +361,26 @@ class BirdoRepository @Inject constructor(
                 // in-flight refresh completing after this point then sees the new
                 // generation and drops its rotated tokens instead of resurrecting
                 // a dead session.
-                sessionGeneration.incrementAndGet()
-                tokenManager.clearAll()
-                RefreshOutcome.UNAUTHORIZED
+                //
+                // FENCED like the success branch (round 7): a refresh outlives the
+                // caller that started it, so by the time this 401 arrives the user
+                // may have signed out and straight back in. The token it rejects
+                // is then the OLD account's, already gone, and clearing would wipe
+                // the NEW account's pair. Discard only while the session is still
+                // the one this refresh started in and the stored token is still
+                // the one presented; otherwise there is nothing of ours to clear,
+                // and TRANSIENT neither signs the new session out nor touches it.
+                synchronized(sessionLock) {
+                    if (sessionGeneration.get() == genAtStart &&
+                        tokenManager.getRefreshToken() == presented
+                    ) {
+                        sessionGeneration.incrementAndGet()
+                        tokenManager.clearAll()
+                        RefreshOutcome.UNAUTHORIZED
+                    } else {
+                        RefreshOutcome.TRANSIENT
+                    }
+                }
             } else if (response.code() == 403) {
                 // Also non-retryable, but deliberately does NOT destroy the tokens.
                 // A 403 on this path is not always the token's fault: an

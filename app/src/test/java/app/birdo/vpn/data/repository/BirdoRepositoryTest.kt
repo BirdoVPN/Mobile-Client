@@ -393,6 +393,44 @@ class BirdoRepositoryTest {
         assertEquals(RefreshOutcome.UNAUTHORIZED, result)
     }
 
+    /**
+     * Round 7, item 2: the 401 branch is fenced like the success branch. A
+     * refresh outlives its cancelled caller; the user signs out and straight
+     * back in; THEN the old refresh is rejected. The token it presented is the
+     * old account's and already gone — clearing on that 401 wiped the new
+     * account's pair and signed the user out of the session they just opened.
+     */
+    @Test
+    fun `a 401 for a refresh that outlived a sign-out and sign-in leaves the new account's tokens alone`() = runTest {
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.logout() } returns Response.success(Unit)
+        coEvery { api.login(any()) } returns Response.success(
+            LoginResponse(ok = true, tokens = TokenPair("new_account_access", "new_account_refresh")),
+        )
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        }
+
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        caller.cancel()
+        repository.logout()
+        repository.login("next@test.com", "pass123")
+        answer.complete(Unit)
+        runCurrent()
+
+        assertEquals("new_account_access", access)
+        assertEquals("new_account_refresh", refresh)
+        verify(exactly = 1) { tokenManager.clearAll() } // logout's own, nothing more
+    }
+
     @Test
     fun `refreshToken 5xx is transient (keeps the session)`() = runTest {
         coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
