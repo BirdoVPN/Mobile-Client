@@ -541,6 +541,12 @@ class VpnViewModel @Inject constructor(
         return servers.firstOrNull { it.id == last && it.accessible && it.isOnline }
     }
 
+    /** The server a single-hop recovery re-dials (VpnManager.redial: prefs.lastServerId), if listed. */
+    private fun redialledServer(): VpnServer? {
+        val last = prefs.lastServerId ?: return null
+        return _uiState.value.servers.firstOrNull { it.id == last }
+    }
+
     /**
      * S-4 (ported from the desktop Dashboard's prune effect): drop persisted
      * Multi-Hop selections whose node no longer exists in the fetched list.
@@ -775,10 +781,20 @@ class VpnViewModel @Inject constructor(
                 // except a live switch that did not happen (A1-034): that one
                 // kept the previous session, so say so and put the selection back.
                 val result = vpnManager.connect(server.id)
-                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED &&
-                    vpnManager.state.value is VpnState.Connected
-                ) {
-                    _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED) {
+                    when (vpnManager.state.value) {
+                        is VpnState.Connected ->
+                            _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                        // Round 7: a switch the network cut short hands the session
+                        // it was moving back to the supervisor, which waits for the
+                        // network and re-dials prefs.lastServerId — not the server
+                        // tapped. The selection follows the re-dial. No banner: the
+                        // state already says it is waiting, and a connectError would
+                        // outlive the reconnect it describes.
+                        is VpnState.Reconnecting ->
+                            _uiState.value = _uiState.value.copy(selectedServer = redialledServer() ?: prev)
+                        else -> Unit
+                    }
                 }
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t

@@ -1561,6 +1561,13 @@ class VpnManager @Inject constructor(
      * up, so the supervisor takes the failure as that session's: it waits for
      * the network and re-dials when it returns.
      *
+     * That re-dial is the OLD session's (prefs.lastServerId, set only on a
+     * successful dial), so the switch is over here (round 7): [switching]
+     * drops, as when KEEP_OLD_SESSION keeps it, or the wait and the re-dial
+     * showed "Switching server…" with a Cancel. The caller gets the held
+     * failure as its error, which is what puts the screen's selection back
+     * on the server being re-dialled.
+     *
      * @return the failure that stops today's path, or null.
      */
     private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive): VpnState.Error? {
@@ -1569,7 +1576,10 @@ class VpnManager @Inject constructor(
         val legacy = directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN
         val offline = legacy && hold.cutShort && !online
         if (legacy && !held.kind.terminal && !offline) return null
-        if (offline) session = session.connected()
+        if (offline) {
+            session = session.connected()
+            _switching.value = false
+        }
         if (_state.value == held) onStateChanged(held)
         return held.takeIf { legacy }
     }

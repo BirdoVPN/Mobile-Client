@@ -287,6 +287,36 @@ class VpnViewModelTest {
         assertEquals("ca-1", vm.uiState.value.selectedServer?.id)
     }
 
+    // ── Round 7, item 4: a switch the network cut short ───────────────────
+
+    /**
+     * VpnManager's offline branch hands the session the switch was moving back
+     * to the supervisor: it waits for the network and re-dials
+     * prefs.lastServerId. The selection stayed on the tapped server. It must
+     * follow the re-dial — here deliberately not the previous LABEL, which a
+     * tap while disconnected had moved off the session's server.
+     */
+    @Test
+    fun `a switch cut short while offline puts the selection on the server being re-dialled`() = runTest {
+        every { prefs.lastServerId } returns "br-1"
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("br-1", "Brazil", load = 60), server("ca-1", "Canada", load = 5), server("de-1", "Germany", load = 30)),
+        )
+        val vm = viewModel()
+        vm.loadServers()
+        vm.selectServer(vm.uiState.value.servers.first { it.id == "de-1" }) // a relabel: nothing connected
+        state.value = VpnState.Connected // e.g. an Always-on boot dialled br-1
+        coEvery { vpnManager.connect("ca-1", any()) } coAnswers {
+            state.value = VpnState.Reconnecting(attempt = 1, waitingForNetwork = true)
+            ApiResult.Error("Connection lost. Reconnecting…")
+        }
+
+        vm.selectServer(vm.uiState.value.servers.first { it.id == "ca-1" })
+
+        assertEquals("br-1", vm.uiState.value.selectedServer?.id)
+        assertNull("waiting for the network is not a switch error", vm.uiState.value.connectError)
+    }
+
     @Test
     fun `sign-out forgets the account's last server and plan`() {
         viewModel().resetForSignOut()

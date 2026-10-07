@@ -2182,6 +2182,42 @@ class VpnManagerTest {
         quiesce()
     }
 
+    /**
+     * Round 7, item 4. When the offline branch skips today's dial, the switch
+     * is over: what follows is the OLD session's wait and re-dial. [switching]
+     * stayed true, so Home said "Switching server…" with a Cancel over it.
+     * The caller gets an error (what puts the screen's selection back), and
+     * the server it tapped never became the last server, which is what the
+     * re-dial uses.
+     */
+    @Test
+    fun `a switch cut short while offline stops showing as a switch`() = runTest {
+        connectAndEstablish()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { awaitCancellation() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Error("Couldn't reach BirdoVPN.", 0)
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        assertTrue("the switch shows as one while it runs", vpnManager.switching.value)
+        onlineFlow.value = false
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        advanceTimeBy(6_000)
+        val result = switch.await()
+
+        assertTrue((vpnManager.state.value as VpnState.Reconnecting).waitingForNetwork)
+        assertFalse("the re-dial is the old session's, not a switch", vpnManager.switching.value)
+        assertTrue(result is ApiResult.Error)
+        verify(exactly = 0) { prefs.lastServerId = "srv-2" }
+        quiesce()
+    }
+
     @Test
     fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
         connectAndEstablish()
