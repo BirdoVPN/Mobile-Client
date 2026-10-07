@@ -73,8 +73,18 @@ jobs:
           # The apt package (2.2.1) ships an old androguard that cannot parse
           # modern AAPT2 resource tables ("res1 must be zero!"), so install the
           # current fdroidserver from pip into a venv instead.
-          sudo apt-get update
-          sudo apt-get install -y libmagic1 python3-venv
+          # Bounded for the same reason as .github/actions/pq-cpu-proof: a
+          # stalled Ubuntu mirror must fail in minutes, not eat the job timeout.
+          # The image's own apt Retries/Timeout are left alone (they drive its
+          # mirror failover); `timeout` is the ceiling they cannot provide.
+          sudo timeout -k 30 300 apt-get update || {
+            echo "::error::apt-get update failed or ran past 5 min: an Ubuntu mirror problem, not this change. Re-run the job."
+            exit 1
+          }
+          sudo timeout -k 30 600 apt-get install -y libmagic1 python3-venv || {
+            echo "::error::apt-get install failed or ran past 10 min: an Ubuntu mirror problem, not this change. Re-run the job."
+            exit 1
+          }
           python3 -m venv "$HOME/fdroid-venv"
           "$HOME/fdroid-venv/bin/pip" install --quiet --upgrade pip wheel
           # Pinned for reproducibility — bump deliberately after a workflow_dispatch
