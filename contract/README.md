@@ -4,7 +4,8 @@
 `birdo-web/backend/contract/vpn-protocol.schema.json` (BirdoVPN/birdo-web,
 PR #459; refreshed for the BirdoShield `dnsFiltering` flag in PR #465, and for
 the Free allowance's `quotaExceeded` refusal and `quota_check_unavailable` 503
-in #590). It is
+in #590, and for the heartbeat `reason` field made optional in #599 —
+birdo-web 43176281, blob 8954cfac0e9f9d9e8b8c61a17893d315ed9f7feb). It is
 GENERATED there (`cd backend && npm run contract:generate`)
 from the code that enforces the wire contract — class-validator on
 `ConnectDto` for `POST /vpn/connect`, the `.strict()` zod schema for
