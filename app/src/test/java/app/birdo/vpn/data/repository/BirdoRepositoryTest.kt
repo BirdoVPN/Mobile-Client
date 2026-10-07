@@ -9,21 +9,32 @@ import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import app.birdo.vpn.testing.StringsXml
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.currentTime
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import retrofit2.Response
 import java.io.IOException
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class BirdoRepositoryTest {
 
     private lateinit var api: BirdoApi
@@ -43,6 +54,18 @@ class BirdoRepositoryTest {
             appVersion = "1.0.0",
         )
         repository = BirdoRepository(api, tokenManager, deviceInfoProvider, ApiErrorMapper(StringsXml))
+        // The refresh runs in the repository's own scope (round 7). Put that
+        // scope on runTest's scheduler — runTest adopts a test Main's — or the
+        // virtual clock races a real IO thread: a withTimeout would fire
+        // before the refresh ever got a turn.
+        val scheduler = TestCoroutineScheduler()
+        Dispatchers.setMain(StandardTestDispatcher(scheduler))
+        repository.refreshScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     // ── Login ────────────────────────────────────────────────────
@@ -246,6 +269,110 @@ class BirdoRepositoryTest {
         verify { tokenManager.setAccessToken("new_access") }
     }
 
+    /**
+     * Round 6 P3-3, then round 7. The server has consumed the presented
+     * refresh token by the time it answers. A caller cancelled mid-flight (a
+     * live rebuild's /connect cut short) used to drop the rotated pair, and
+     * the next refresh replayed the used token: the server's theft detection,
+     * an account-wide revoke. Round 6 kept the rotation by running it
+     * NonCancellable in the caller, which made the caller wait it out: its
+     * withTimeout or cancel() stopped nothing until OkHttp's callTimeout.
+     * Both halves: the caller is gone the moment it is cancelled, and the
+     * rotation still lands.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a caller cancelled mid-refresh stops waiting at once and the rotated tokens are still stored`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        caller.cancel()
+        runCurrent()
+        val stoppedWaiting = caller.isCompleted
+        // Answered before asserting: a caller that waits the refresh out would
+        // otherwise hang the test instead of failing it.
+        answer.complete(Unit)
+        runCurrent()
+
+        assertTrue("a cancelled caller must stop waiting for the refresh", stoppedWaiting)
+        verify(exactly = 1) { tokenManager.setTokens("new_access", "new_refresh") }
+    }
+
+    /**
+     * Round 7. A caller that gives up while still queued behind another
+     * refresh has put nothing on the wire, so nothing needs finishing: it must
+     * not spend a rotation of its own once the lock frees.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a caller cancelled while queued behind a refresh sends no refresh of its own`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "old_refresh"
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+
+        launch { repository.refreshToken() }
+        val queued = launch { repository.refreshToken() }
+        runCurrent()
+        queued.cancel()
+        answer.complete(Unit)
+        runCurrent()
+
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+    }
+
+    /**
+     * Round 7, the case the finding named: logout()'s 15 s budget used to
+     * stretch to the refresh's own callTimeout when its 401 → refresh step
+     * stalled. Logout must return at its budget, and the refresh that outlives
+     * it must not write its rotated pair back over the sign-out.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `logout returns at its budget while its refresh is stalled and the late rotation does not resurrect the session`() = runTest {
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.logout() } returns
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+        // Bounds the old behaviour: without this a caller that waits the
+        // refresh out would hang the test instead of failing it.
+        backgroundScope.launch {
+            delay(60_000)
+            answer.complete(Unit)
+        }
+
+        val startedAt = currentTime
+        repository.logout()
+
+        assertEquals(
+            "logout must stop waiting for a stalled refresh at its own budget",
+            BirdoRepository.LOGOUT_SERVER_CALL_TIMEOUT_MS,
+            currentTime - startedAt,
+        )
+        answer.complete(Unit)
+        runCurrent()
+        assertNull("the late rotation must not write a signed-out session back", refresh)
+        verify(exactly = 0) { tokenManager.setTokens(any(), any()) }
+    }
+
     @Test
     fun `refreshToken with no refresh token is unauthorized`() = runTest {
         coEvery { tokenManager.getRefreshToken() } returns null
@@ -264,6 +391,44 @@ class BirdoRepositoryTest {
         val result = repository.refreshToken()
 
         assertEquals(RefreshOutcome.UNAUTHORIZED, result)
+    }
+
+    /**
+     * Round 7, item 2: the 401 branch is fenced like the success branch. A
+     * refresh outlives its cancelled caller; the user signs out and straight
+     * back in; THEN the old refresh is rejected. The token it presented is the
+     * old account's and already gone — clearing on that 401 wiped the new
+     * account's pair and signed the user out of the session they just opened.
+     */
+    @Test
+    fun `a 401 for a refresh that outlived a sign-out and sign-in leaves the new account's tokens alone`() = runTest {
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        coEvery { api.logout() } returns Response.success(Unit)
+        coEvery { api.login(any()) } returns Response.success(
+            LoginResponse(ok = true, tokens = TokenPair("new_account_access", "new_account_refresh")),
+        )
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            answer.await()
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+        }
+
+        val caller = launch { repository.refreshToken() }
+        runCurrent()
+        caller.cancel()
+        repository.logout()
+        repository.login("next@test.com", "pass123")
+        answer.complete(Unit)
+        runCurrent()
+
+        assertEquals("new_account_access", access)
+        assertEquals("new_account_refresh", refresh)
+        verify(exactly = 1) { tokenManager.clearAll() } // logout's own, nothing more
     }
 
     @Test

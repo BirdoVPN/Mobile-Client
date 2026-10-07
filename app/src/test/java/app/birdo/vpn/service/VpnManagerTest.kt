@@ -1953,6 +1953,292 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a rebuild the service finds no session for takes today's path and gives both keys back`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // The server minted key-456 and held key-123 back; the device has no
+        // live session left to move.
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        switch.await()
+
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        coVerify(exactly = 1) { repository.disconnectVpn("key-456") }
+        // The teardown releases the session key, put back to the old one: as
+        // CANNOT_REBUILD_HERE it released key-456 a second time and left
+        // key-123 out until the stale sweep (second-pass review, NEW-2).
+        coVerify(exactly = 1) { repository.disconnectVpn("key-123") }
+        quiesce()
+    }
+
+    // ── NEW-1: one recovery when the old tunnel dies under a live rebuild ──
+
+    @Test
+    fun `a switch whose old tunnel dies during the rebuild recovers once, and stays wanted`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // The dead-tunnel handler's Error lands while the swap is with the
+        // service, which then finds no session to move.
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        switch.await()
+        advanceTimeBy(30_000)
+
+        // The supervisor used to take the Error first: a user switch had not
+        // connected yet, so it gave up as NEVER_CONNECTED and cleared the
+        // intent; the legacy dial then ran on a session nobody wanted.
+        verify(exactly = 0) { prefs.sessionShouldBeUp = false }
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a settings rebuild whose old tunnel dies does not race a second recovery dial`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(1_500)
+        assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        advanceTimeBy(30_000)
+
+        // The first dial and today's path — not a supervisor re-dial ~2 s
+        // later racing it (two STARTs, two peers).
+        coVerify(exactly = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `overlapping rebuilds keep the hold with the newer one`() = runTest {
+        connectAndEstablish()
+        val firstRequest = CompletableDeferred<ApiResult<ConnectResponse>>()
+        val secondRequest = CompletableDeferred<ApiResult<ConnectResponse>>()
+        var requests = 0
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { if (requests++ == 0) firstRequest.await() else secondRequest.await() }
+        coEvery { repository.connectVpn("srv-3", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        // Tap A, then B while A's /connect is still out.
+        val a = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        val b = async { vpnManager.connect("srv-3") }
+        runCurrent()
+        // A comes back (superseded by B) and finishes first.
+        firstRequest.complete(ApiResult.Success(rebuiltConfig()))
+        runCurrent()
+        a.await()
+        // The old tunnel dies in B's window, and B's swap finds no session.
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        secondRequest.complete(ApiResult.Success(rebuiltConfig().copy(keyId = "key-789")))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        b.await()
+
+        // A's finally used to clear the shared flag: B's Error reached the
+        // supervisor (NEVER_CONNECTED, the intent cleared), and B's legacy
+        // dial then ran on a session nobody wanted (final review, #1).
+        verify(exactly = 0) { prefs.sessionShouldBeUp = false }
+        coVerify(exactly = 1) { repository.connectVpn("srv-3", any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a takeover held during a rebuild goes to the supervisor, and today's path does not run`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // Another VPN app takes over while the swap is with the service,
+        // which then finds no session to move.
+        serviceEmits(VpnState.Error(SessionCopy.VPN_TAKEN_OVER, FailureKind.VPN_TAKEN_OVER))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        switch.await()
+
+        // No re-dial fixes a takeover. Today's path ran anyway and replaced
+        // the takeover's message with a not-armed alert (final review, #2).
+        coVerify(exactly = 0) { repository.connectVpn("srv-2", any()) }
+        assertEquals(SessionCopy.VPN_TAKEN_OVER, (vpnManager.state.value as VpnState.Error).message)
+        // The supervisor took it: a terminal give-up, the session no longer wanted.
+        verify { prefs.sessionShouldBeUp = false }
+    }
+
+    @Test
+    fun `a failure held by a rebuild that throws still reaches the supervisor`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Error("timeout")
+        // The settings rebuild's PQ key read fails — after the old tunnel died.
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(BirdoPqManager)
+        val keyRead = CompletableDeferred<Unit>()
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } coAnswers {
+            keyRead.await()
+            throw IllegalStateException("keystore")
+        }
+
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(1_500)
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        keyRead.complete(Unit)
+        runCurrent()
+
+        // The throw skipped the settle and the held Error was never seen: the
+        // session sat dead in Error. Now the supervisor schedules its re-dial.
+        assertTrue(vpnManager.state.value is VpnState.Reconnecting)
+        quiesce()
+    }
+
+    @Test
+    fun `a rebuild whose old tunnel dies during its connect takes today's path at once`() = runTest {
+        connectAndEstablish()
+        // The rebuild's /connect rides the tunnel that is about to die: no
+        // answer is ever coming (the API's 45 s callTimeout in production).
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { awaitCancellation() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        // Today's teardown waits up to 5 s for the service's Disconnected
+        // (nothing emits it here); far inside the 45 s the request would hold.
+        advanceTimeBy(6_000)
+
+        // No waiting out the timeout: the request is cut short and today's
+        // path recovers now (final review, #4).
+        assertTrue(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        coVerify(exactly = 1) { repository.connectVpn("srv-2", any()) }
+        switch.await()
+        quiesce()
+    }
+
+    @Test
+    fun `a rebuild cut short while offline waits for the network, then re-dials`() = runTest {
+        connectAndEstablish()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { awaitCancellation() }
+        // Offline, today's dial fails at once.
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Error("Couldn't reach BirdoVPN.", 0)
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // The network drops under the switch; the old tunnel dies with it.
+        onlineFlow.value = false
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        advanceTimeBy(6_000)
+        switch.await()
+
+        // Today's dial ran as a fresh user dial that "never connected": the
+        // supervisor gave up and cleared the intent (round 6, P3-1). Now it
+        // waits for the network instead.
+        verify(exactly = 0) { prefs.sessionShouldBeUp = false }
+        val waiting = vpnManager.state.value as VpnState.Reconnecting
+        assertTrue(waiting.waitingForNetwork)
+
+        // …and re-dials the session when the network returns.
+        onlineFlow.value = true
+        advanceTimeBy(6_000)
+        coVerify(atLeast = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
+    /**
+     * Round 7, item 4. When the offline branch skips today's dial, the switch
+     * is over: what follows is the OLD session's wait and re-dial. [switching]
+     * stayed true, so Home said "Switching server…" with a Cancel over it.
+     * The caller gets an error (what puts the screen's selection back), and
+     * the server it tapped never became the last server, which is what the
+     * re-dial uses.
+     */
+    @Test
+    fun `a switch cut short while offline stops showing as a switch`() = runTest {
+        connectAndEstablish()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { awaitCancellation() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Error("Couldn't reach BirdoVPN.", 0)
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        assertTrue("the switch shows as one while it runs", vpnManager.switching.value)
+        onlineFlow.value = false
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        advanceTimeBy(6_000)
+        val result = switch.await()
+
+        assertTrue((vpnManager.state.value as VpnState.Reconnecting).waitingForNetwork)
+        assertFalse("the re-dial is the old session's, not a switch", vpnManager.switching.value)
+        assertTrue(result is ApiResult.Error)
+        verify(exactly = 0) { prefs.lastServerId = "srv-2" }
+        quiesce()
+    }
+
+    @Test
+    fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-1", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP)
+        runCurrent()
+        switch.await()
+        advanceTimeBy(30_000)
+
+        // Kept, but dead: the supervisor re-dials it.
+        coVerify(atLeast = 2) { repository.connectVpn("srv-1", any()) }
+        quiesce()
+    }
+
+    @Test
     fun `a server that cannot defer the live key takes today's teardown path`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(makeConnectResponse(success = false).copy(rebuildRefused = "unknown-current-key")))
@@ -2150,5 +2436,143 @@ class VpnManagerTest {
         gate.complete(ApiResult.Success(Unit))
         runCurrent()
         assertTrue(signOut.isCompleted)
+    }
+
+    // ── P2-2: the not-armed warning ends with the user's Disconnect ──────
+
+    @Test
+    fun `a user Disconnect clears the kill-switch warning at once`() = runTest {
+        val field = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val notArmed = field.get(null) as MutableStateFlow<String?>
+        notArmed.value = SessionCopy.KILL_SWITCH_NOT_ARMED
+        try {
+            vpnManager.disconnect()
+
+            // Not only when the service's stop lands: Home must not keep
+            // saying it over the user's own Disconnect.
+            assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            notArmed.value = null
+        }
+    }
+
+    // ── Stealth on a plan without it (review of #463, P1 on main) ────────
+
+    /** The boolean extras of every Intent VpnManager builds. */
+    private fun recordBooleanExtras(): MutableMap<String, Boolean> {
+        val extras = mutableMapOf<String, Boolean>()
+        every { anyConstructed<Intent>().putExtra(any<String>(), any<Boolean>()) } answers {
+            extras[firstArg()] = secondArg()
+            self as Intent
+        }
+        return extras
+    }
+
+    @Test
+    fun `the stored Stealth setting is asked for, whatever a stale plan says`() = runTest {
+        // Re-upgraded on the web while the app slept: lastKnownPlan still says
+        // RECON. The server is the one fresh authority on the plan.
+        every { prefs.stealthModeEnabled } returns true
+        every { prefs.lastKnownPlan } returns "RECON"
+        val extras = recordBooleanExtras()
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse().copy(stealthEnabled = true, xrayEndpoint = "203.0.113.7:443"))
+
+        vpnManager.connect("srv-1")
+
+        // A plan gate here dialled direct, with no notice, a user who had
+        // just paid for Stealth (second review of #463, N4).
+        coVerify { repository.connectVpn(serverNodeId = "srv-1", deviceName = any(), stealthMode = true, fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(), dnsFiltering = any(), rebuildOf = any()) }
+        assertEquals(true, extras[BirdoVpnService.EXTRA_STEALTH_REQUESTED])
+        assertNull(vpnManager.stealthNotice.value)
+    }
+
+    @Test
+    fun `a Stealth request the server turns down for the plan connects, and Home is told`() = runTest {
+        // A downgraded user: the stored setting is still on (nothing clears
+        // it), the dial asks, and the backend connects it WITHOUT Stealth
+        // (birdo-web vpn.service.ts).
+        every { prefs.stealthModeEnabled } returns true
+        every { prefs.lastKnownPlan } returns "RECON"
+        val extras = recordBooleanExtras()
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse().copy(stealthEnabled = false, stealthUnavailableReason = "entitlement"))
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Success)
+        assertEquals(true, extras[BirdoVpnService.EXTRA_STEALTH_REQUESTED])
+        assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
+
+        vpnManager.disconnect()
+        assertNull(vpnManager.stealthNotice.value)
+    }
+
+    @Test
+    fun `a Multi-Hop dial carries the server's Stealth downgrade to the service and to Home`() = runTest {
+        every { prefs.stealthModeEnabled } returns true
+        coEvery { repository.connectMultiHop(any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeMultiHopResponse().copy(stealthEnabled = false, stealthUnavailableReason = "entitlement"))
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        // toConnectResponse() dropped the reason: the service then read the
+        // downgrade as "not granted" and refused (second review of #463, N8).
+        verify { BirdoVpnService.setConfig(match { it.stealthUnavailableReason == "entitlement" }) }
+        assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
+    }
+
+    // ── NEW-5: a downgraded user's way out ───────────────────────────────
+
+    /** Connected on a dial the server answered "Stealth is not in your plan". */
+    private suspend fun TestScope.connectDowngraded() {
+        every { prefs.stealthModeEnabled } returns true
+        every { prefs.lastServerId } returns "srv-1"
+        coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            ApiResult.Success(makeConnectResponse().copy(stealthEnabled = false, stealthUnavailableReason = "entitlement"))
+        vpnManager.connect("srv-1")
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals(SessionCopy.STEALTH_NOT_IN_PLAN, vpnManager.stealthNotice.value)
+    }
+
+    @Test
+    fun `a downgraded session's switch still rides the live rebuild`() = runTest {
+        connectDowngraded()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+
+        // Its stored Stealth setting made it "Stealth-wanted", so every switch
+        // went through the legacy teardown: a blackout each time.
+        assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        assertFalse(BirdoVpnService.ACTION_SWITCH_TEARDOWN in dispatchedActions)
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+        runCurrent()
+        switch.await()
+        quiesce()
+    }
+
+    @Test
+    fun `a change of the stored Stealth setting ends the notice and its hold on rebuilds`() = runTest {
+        connectDowngraded()
+
+        // The user turns Stealth back on in Settings (re-upgraded, say).
+        every { prefs.stealthModeEnabled } returns true
+        vpnManager.onStealthSettingChanged()
+
+        // The notice described the old request; kept, it decided rebuild
+        // eligibility for the rest of the session (final review, #5).
+        assertNull(vpnManager.stealthNotice.value)
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.connect("srv-2")
+        // Stealth wanted again: today's path, as for any Stealth session.
+        assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        quiesce()
     }
 }

@@ -89,6 +89,10 @@ fun HomeScreen(
     onUpdateApp: () -> Unit = {},
     onDismissUpdate: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    /** The VPN Settings screen (the Stealth toggle), for a Stealth refusal's banner. */
+    onOpenVpnSettings: () -> Unit = {},
+    /** Turns the stored Stealth setting off, from the "not in your plan" notice. */
+    onTurnOffStealth: () -> Unit = {},
     /** The upgrade flow: the device-limit refusal and locked servers route here. */
     onViewPlans: () -> Unit = {},
     onDismissMessage: () -> Unit = {},
@@ -399,14 +403,32 @@ fun HomeScreen(
                         )
                     }
 
+                    // The inverse: Stealth was asked for and the plan does not
+                    // include it, so the server connected without it. Told,
+                    // not refused (StealthPolicy) — the same rule the backend
+                    // follows: never let a user be wrong about what is
+                    // carrying their traffic.
+                    val stealthNotice = state.stealthNotice
+                    AnimatedVisibility(visible = isConnected && stealthNotice != null && !state.stealthActive) {
+                        HomeBanner(
+                            icon = Icons.Default.VisibilityOff,
+                            message = stealthNotice.orEmpty(),
+                            tone = BannerTone.Info,
+                            // The way out for a downgraded user: without it the
+                            // notice came back on every connect.
+                            action = BannerAction(stringResource(R.string.banner_action_turn_off_stealth)) {
+                                onTurnOffStealth()
+                            },
+                        )
+                    }
+
                     // ONE message banner (A2-011): a message of the Connect
                     // screen's own (dismissible), else the session's Error with
                     // the action that fixes it (P1-parity-040). The two used to
                     // render side by side, often with the same text.
                     val message = homeMessage(state)
                     if (message != null) {
-                        val sessionError = state.vpnState as? VpnState.Error
-                        val remedy = if (state.connectError == null) sessionError?.kind?.let { remedyFor(it) } else null
+                        val remedy = homeRemedy(state)
                         HomeBanner(
                             icon = Icons.Default.ErrorOutline,
                             message = message,
@@ -414,6 +436,7 @@ fun HomeScreen(
                                 BannerAction(stringResource(r.label)) {
                                     when (r) {
                                         Remedy.OPEN_SETTINGS -> onOpenSettings()
+                                        Remedy.OPEN_VPN_SETTINGS -> onOpenVpnSettings()
                                         Remedy.VIEW_PLANS -> onViewPlans()
                                         Remedy.UPDATE -> onUpdateApp()
                                         Remedy.CHOOSE_SERVER ->

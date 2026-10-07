@@ -247,7 +247,22 @@ class SettingsViewModel @Inject constructor(
     fun setStealthMode(enabled: Boolean) {
         prefs.stealthModeEnabled = enabled
         _uiState.value = _uiState.value.copy(stealthModeEnabled = enabled)
+        vpnManager.onStealthSettingChanged()
         vpnManager.requestSettingsReapply()
+    }
+
+    /**
+     * Home's "Stealth isn't in your plan" notice: turn the stored setting
+     * off. Through here, not VpnManager alone, so this screen's state follows
+     * (it reads prefs only at init and was left showing Stealth on — final
+     * review of #463, #6). A foreground write the user asked for, so the
+     * setter's HMAC re-sign is right. No reapply: the session the notice is
+     * about already runs without Stealth.
+     */
+    fun turnOffStealthNotInPlan() {
+        prefs.stealthModeEnabled = false
+        _uiState.value = _uiState.value.copy(stealthModeEnabled = false)
+        vpnManager.onStealthSettingChanged()
     }
 
     fun setQuantumProtection(enabled: Boolean) {

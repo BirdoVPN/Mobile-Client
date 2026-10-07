@@ -503,6 +503,22 @@ class SessionPolicyTest {
     }
 
     @Test
+    fun `a kill switch that could not be armed never denies Android's own block (REVIEW-AND-005)`() {
+        val lockdown = SessionCopy.killSwitchNotArmed(lockdown = true)
+        // Under "Block connections without VPN" the OS still blocks, so
+        // "traffic is NOT protected" would be false.
+        assertFalse(lockdown.contains("NOT protected"))
+        assertTrue(lockdown.contains(SessionCopy.LOCKDOWN_STILL_BLOCKING))
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, SessionCopy.killSwitchNotArmed(lockdown = false))
+        listOf(lockdown, SessionCopy.KILL_SWITCH_NOT_ARMED).forEach {
+            assertTrue(SessionCopy.isKillSwitchNotArmed(it))
+            // Nothing may append "the kill switch is blocking traffic" to it.
+            assertTrue(SessionCopy.speaksForTraffic(it))
+        }
+        assertFalse(SessionCopy.isKillSwitchNotArmed(SessionCopy.NO_TUNNEL))
+    }
+
+    @Test
     fun `a one-tap connect never guesses at a Multi-Hop entitlement`() {
         val armed = MultiHopPolicy.NewConnection.MultiHop("de-1", "nl-1")
         assertEquals(QuickToggle.ConnectPlan.MultiHop("de-1", "nl-1"), QuickToggle.connectPlan(armed, "SOVEREIGN"))
@@ -515,5 +531,49 @@ class SessionPolicyTest {
             QuickToggle.ConnectPlan.Preferred(multiHopEntitled = false),
             QuickToggle.connectPlan(MultiHopPolicy.NewConnection.SingleHop, null),
         )
+    }
+
+    // ── Stealth: requested vs granted (review of #463, P1 on main) ───────
+
+    @Test
+    fun `the Stealth toggle is offered while the plan is loading`() {
+        // OFF-and-locked before the plan loaded told every paying user, on
+        // every cold start, that they had lost Stealth (second review, N6).
+        assertTrue(StealthPolicy.toggleUnlocked(null))
+        assertTrue(StealthPolicy.toggleUnlocked(" "))
+        assertTrue(StealthPolicy.toggleUnlocked("operative"))
+        assertTrue(StealthPolicy.toggleUnlocked("SOVEREIGN"))
+        assertFalse(StealthPolicy.toggleUnlocked("RECON"))
+    }
+
+    @Test
+    fun `the Stealth row locks only the ON direction`() {
+        // A downgrade's stored ON is drawn ON and can be turned off; it used
+        // to be drawn OFF and locked, so it could never be cleared (NEW-5).
+        assertEquals(StealthPolicy.ToggleRow(checked = true, locked = false), StealthPolicy.toggleRow(stored = true, unlocked = false))
+        assertEquals(StealthPolicy.ToggleRow(checked = false, locked = true), StealthPolicy.toggleRow(stored = false, unlocked = false))
+        assertEquals(StealthPolicy.ToggleRow(checked = true, locked = false), StealthPolicy.toggleRow(stored = true, unlocked = true))
+        assertEquals(StealthPolicy.ToggleRow(checked = false, locked = false), StealthPolicy.toggleRow(stored = false, unlocked = true))
+    }
+
+    @Test
+    fun `the service judges the reply against what the dial asked for`() {
+        fun t(requested: Boolean, granted: Boolean, endpoint: String?, reason: String?) =
+            StealthPolicy.transport(requested, granted, endpoint, reason)
+        val ep = "203.0.113.7:443"
+        assertEquals(StealthPolicy.Transport.STEALTH, t(true, true, ep, null))
+        // A fallback grant the dial did not ask for runs too.
+        assertEquals(StealthPolicy.Transport.STEALTH, t(false, true, ep, null))
+        // Not asked for: direct, whatever the reply says.
+        assertEquals(StealthPolicy.Transport.DIRECT, t(false, false, null, null))
+        assertEquals(StealthPolicy.Transport.DIRECT, t(false, true, null, null))
+        // Asked for and refused for the plan: direct, and said so — never a
+        // terminal refusal the user cannot fix from a locked toggle.
+        assertEquals(StealthPolicy.Transport.DIRECT_NOT_IN_PLAN, t(true, false, null, "entitlement"))
+        // Asked for and not granted otherwise, or granted with nowhere to run
+        // it: fail-closed.
+        assertEquals(StealthPolicy.Transport.REFUSE_NOT_GRANTED, t(true, false, null, "unconfigured"))
+        assertEquals(StealthPolicy.Transport.REFUSE_NOT_GRANTED, t(true, false, null, null))
+        assertEquals(StealthPolicy.Transport.REFUSE_NO_ENDPOINT, t(true, true, null, null))
     }
 }

@@ -10,6 +10,8 @@ import io.mockk.unmockkAll
 import io.mockk.verify
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -87,10 +89,11 @@ class KillSwitchOrderingTest {
         field.set(service, value)
     }
 
-    private fun invokeActivateKillSwitch() {
+    /** What the arm achieved. A Unit return (the old signature) fails the cast, by design. */
+    private fun invokeActivateKillSwitch(): BlockArm {
         val m = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch")
         m.isAccessible = true
-        m.invoke(service)
+        return m.invoke(service) as BlockArm
     }
 
     @Test
@@ -100,7 +103,7 @@ class KillSwitchOrderingTest {
             mockk<ParcelFileDescriptor>(relaxed = true)
         }
 
-        invokeActivateKillSwitch()
+        assertEquals("an armed block must say so", BlockArm.ARMED, invokeActivateKillSwitch())
 
         // The blocking interface must be up (superseding the live tun) before
         // the live tunnel's fd is closed — never the reverse.
@@ -115,11 +118,16 @@ class KillSwitchOrderingTest {
             null
         }
 
-        invokeActivateKillSwitch()
+        // P1-dk-killswitch-establish-failure-silent: the failure is the
+        // RESULT now, not a report nobody downstream could see.
+        assertEquals("a refused block must not read as armed", BlockArm.FAILED, invokeActivateKillSwitch())
 
         // Even when the block cannot be established (e.g. consent revoked) the
-        // data plane must still be torn down — and still only after the attempt.
-        assertEquals(listOf("establish", "turnOff"), callOrder)
+        // data plane must still be torn down — and still only after the
+        // attempts (the first and its one retry), with the live tun still up
+        // in between.
+        assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
+        assertFalse(BirdoVpnService.killSwitchActive)
     }
 
     @Test
@@ -129,9 +137,90 @@ class KillSwitchOrderingTest {
             throw IllegalStateException("VPN not prepared")
         }
 
-        invokeActivateKillSwitch()
+        assertEquals("a block that threw must not read as armed", BlockArm.FAILED, invokeActivateKillSwitch())
 
         // The catch path preserves the always-tear-down contract.
+        assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
+    }
+
+    @Test
+    fun `a block refused once is armed by the one retry, before wg-go comes down`() {
+        var attempts = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            attempts++
+            if (attempts == 1) null else mockk<ParcelFileDescriptor>(relaxed = true)
+        }
+
+        assertEquals(BlockArm.ARMED, invokeActivateKillSwitch())
+
+        assertEquals(listOf("establish", "establish", "turnOff"), callOrder)
+        assertTrue(BirdoVpnService.killSwitchActive)
+    }
+
+    @Test
+    fun `the retry is bounded - one, not a loop`() {
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            null
+        }
+
+        invokeActivateKillSwitch()
+        invokeActivateKillSwitch()
+
+        // Two calls, two attempts each: a refusal that will not change (a
+        // revoked consent) costs one short retry per arm, never a spin.
+        assertEquals(4, callOrder.count { it == "establish" })
+    }
+
+    // ── P2-1: the retry and onDestroy (A1-012) ───────────────────────────
+
+    @Test
+    fun `onDestroy beginning during the retry's wait stops the second establish`() {
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            // onDestroy lands on the main thread while the retry sleeps.
+            Thread {
+                Thread.sleep(80)
+                setInstanceField("destroyed", true)
+            }.start()
+            null
+        }
+
+        // A teardown, not a failure: nothing to tell the user about.
+        assertEquals(BlockArm.ABANDONED, invokeActivateKillSwitch())
+
+        // The check used to run only BEFORE the 250 ms sleep, so the retry
+        // called establish() on a service onDestroy had already reached.
         assertEquals(listOf("establish", "turnOff"), callOrder)
+    }
+
+    @Test
+    fun `an interrupt during the retry stops it, and is restored only after the teardown`() {
+        var interruptedAtTeardown: Boolean? = null
+        every { WgNative.turnOff(any()) } answers {
+            callOrder += "turnOff"
+            interruptedAtTeardown = Thread.currentThread().isInterrupted
+        }
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            callOrder += "establish"
+            Thread.currentThread().interrupt()
+            null
+        }
+
+        try {
+            // Given up, not refused (N7). Whether that is silent is the
+            // caller's call: only for a teardown or a superseded transition;
+            // on a live, current one it is a failure to arm (NEW-3, pinned in
+            // BirdoVpnServiceLifecycleTest).
+            assertEquals(BlockArm.ABANDONED, invokeActivateKillSwitch())
+            assertEquals(listOf("establish", "turnOff"), callOrder)
+            // Set during the teardown, the flag made its bounded probe join
+            // throw at once instead of waiting for the probe to exit.
+            assertEquals(false, interruptedAtTeardown)
+            assertTrue("the interrupt must not be swallowed", Thread.currentThread().isInterrupted)
+        } finally {
+            Thread.interrupted()
+        }
     }
 }

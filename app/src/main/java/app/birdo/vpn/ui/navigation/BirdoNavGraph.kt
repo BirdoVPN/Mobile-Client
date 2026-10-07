@@ -32,6 +32,7 @@ import android.provider.Settings
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.data.network.NetworkMonitor
+import app.birdo.vpn.service.StealthPolicy
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -597,6 +598,12 @@ fun BirdoNavGraph(
                                 restoreState = true
                             }
                         },
+                        // A Stealth refusal's "Open settings" lands on the toggle itself.
+                        onOpenVpnSettings = {
+                            // Single top: a second tap must not stack another copy.
+                            navController.navigate(Screen.VpnSettings.route) { launchSingleTop = true }
+                        },
+                        onTurnOffStealth = { settingsViewModel.turnOffStealthNotInPlan() },
                         onDismissMessage = { vpnViewModel.dismissConnectError() },
                         updateInfo = updateState.info,
                         showUpdateBanner = updateState.showBanner,
@@ -814,12 +821,11 @@ fun BirdoNavGraph(
                     // `.task { await settingsVM.refreshClientConfig() }`.
                     LaunchedEffect(Unit) { vpnViewModel.fetchClientConfig() }
                     // Plan gating mirrors the Multi-Hop pattern on the Connect
-                    // screen. Stealth + Split tunnel are OPERATIVE-and-above,
-                    // keyed on the plan string only — an anonymous account on
-                    // RECON is gated exactly like an email/SSO account on RECON.
-                    // A locked toggle routes to the upgrade flow instead of toggling.
-                    val plan = vpnState.subscription?.plan?.uppercase()
-                    val isOperativeOrAbove = plan == "OPERATIVE" || plan == "SOVEREIGN"
+                    // screen. Stealth is OPERATIVE-and-above, keyed on the plan
+                    // string only — an anonymous account on RECON is gated
+                    // exactly like an email/SSO account on RECON. A locked
+                    // toggle routes to the upgrade flow instead of toggling.
+                    val plan = vpnState.subscription?.plan
                     VpnSettingsScreen(
                         state = settingsState,
                         onLocalNetworkSharingChange = { settingsViewModel.setLocalNetworkSharing(it) },
@@ -827,7 +833,8 @@ fun BirdoNavGraph(
                         onStealthModeChange = { settingsViewModel.setStealthMode(it) },
                         onDnsFilteringChange = { settingsViewModel.setDnsFiltering(it) },
                         onBack = { navController.popBackStack() },
-                        stealthUnlocked = isOperativeOrAbove,
+                        // Unlocked while the plan is still loading, not OFF-and-locked.
+                        stealthUnlocked = StealthPolicy.toggleUnlocked(plan),
                         // BirdoShield fleet gate (see VpnUiState). Same shape as
                         // the plan gate above — server-side state, resolved
                         // here, passed down. `null` = not known yet = available.

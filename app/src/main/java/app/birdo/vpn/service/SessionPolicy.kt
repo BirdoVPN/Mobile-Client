@@ -338,6 +338,87 @@ internal object AttestationPolicy {
 }
 
 /**
+ * Stealth: what a dial ASKS for, and what the service does with the answer.
+ *
+ * Pre-existing on main since 2026-07-28 (review of #463, P1): a user whose
+ * plan lost Stealth kept the stored setting (nothing clears it), so every
+ * dial asked for it; the backend connects such a request WITHOUT Stealth
+ * (stealthEnabled = false, stealthUnavailableReason = "entitlement") rather
+ * than refusing; and the service's requested-vs-granted guard, reading the
+ * raw setting, then refused EVERY connect with a terminal STEALTH_FAILED —
+ * while Settings showed the toggle OFF and locked, so there was nothing to
+ * turn off.
+ *
+ * What a dial asks for is the stored setting, as it always was; what
+ * changed is that the SERVER decides entitlement and the client acts on its
+ * answer. A plan-gated request (the first fix) was dropped on review: the
+ * client's view of the plan (lastKnownPlan, written only when the app loads
+ * the subscription) can be stale, and stale in the upgrade direction it
+ * withheld a feature the user had just paid for — direct, with no notice —
+ * while an unknown plan name could only be guessed at. The server is the one
+ * fresh authority, and its "entitlement" answer is no longer fatal here
+ * ([Transport.DIRECT_NOT_IN_PLAN]: connect direct, say so on Home), so
+ * asking costs a downgraded user nothing but the notice. Clearing the setting
+ * on a downgrade was rejected too: the choice would not come back on a
+ * re-upgrade, and it needs an HMAC-signed write from a background dial.
+ */
+internal object StealthPolicy {
+    /** The backend's stealthUnavailableReason for a plan without Stealth. */
+    const val UNAVAILABLE_ENTITLEMENT = "entitlement"
+
+    /**
+     * Whether the Settings toggle is offered (OPERATIVE and above). While the
+     * plan is not loaded it is: showing OFF-and-locked then told every paying
+     * user, on every cold start, that they had lost Stealth. A toggle a plan
+     * does not cover costs nothing to show now — the server answers a request
+     * it does not cover with a direct connection and a notice.
+     */
+    fun toggleUnlocked(plan: String?): Boolean {
+        val known = plan?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return true
+        return known == "OPERATIVE" || known == "SOVEREIGN"
+    }
+
+    /** How the Settings row draws: what it shows, and whether a tap goes to the upgrade flow instead. */
+    data class ToggleRow(val checked: Boolean, val locked: Boolean)
+
+    /**
+     * Lock only the ON direction. A downgrade leaves the stored setting on,
+     * and the row used to draw it OFF and locked: the setting could not be
+     * cleared, so Home's "not in your plan" notice came back on every connect
+     * and every switch took the legacy teardown. Shown as it is stored, the
+     * user can turn it off; only turning it on needs the plan.
+     */
+    fun toggleRow(stored: Boolean, unlocked: Boolean): ToggleRow = when {
+        unlocked -> ToggleRow(checked = stored, locked = false)
+        stored -> ToggleRow(checked = true, locked = false)
+        else -> ToggleRow(checked = false, locked = true)
+    }
+
+    enum class Transport {
+        /** Granted with an endpoint: run Xray. */
+        STEALTH,
+        /** Not asked for (a fallback grant without an endpoint included): plain WireGuard. */
+        DIRECT,
+        /** Asked for, refused for the plan: plain WireGuard, and the user is told. */
+        DIRECT_NOT_IN_PLAN,
+        /** Asked for and not granted for any other reason: refuse, fail-closed. */
+        REFUSE_NOT_GRANTED,
+        /** Granted with nowhere to run it: refuse, fail-closed. */
+        REFUSE_NO_ENDPOINT,
+    }
+
+    /** The service's verdict, against what THIS dial [requested] — never the raw setting. */
+    fun transport(requested: Boolean, granted: Boolean, xrayEndpoint: String?, unavailableReason: String?): Transport =
+        when {
+            granted && xrayEndpoint != null -> Transport.STEALTH
+            !requested -> Transport.DIRECT
+            !granted && unavailableReason == UNAVAILABLE_ENTITLEMENT -> Transport.DIRECT_NOT_IN_PLAN
+            !granted -> Transport.REFUSE_NOT_GRANTED
+            else -> Transport.REFUSE_NO_ENDPOINT
+        }
+}
+
+/**
  * A1-031: what proves "Stealth works on this network": a session that reached
  * Connected over the stealth transport — not a /connect reply that granted it.
  */
@@ -595,10 +676,18 @@ internal object SessionCopy {
     const val QUANTUM_FAILED =
         "Quantum-protected handshake failed. Not connecting, because continuing would fall back to " +
             "weaker encryption. Try again, or turn off Quantum Protection in Settings to connect without it."
+    /**
+     * Fail-closed, so it has to name the way out, as [QUANTUM_FAILED] does: a
+     * node that cannot run Stealth refuses every connect until the user
+     * changes location or turns the feature off.
+     */
     const val STEALTH_FAILED =
         "Stealth Mode couldn't start. Not connecting, so your traffic isn't sent unprotected. " +
-            "Try again, or choose another location."
+            "Try again, choose another location, or turn off Stealth Mode in Settings to connect without it."
     const val VPN_PERMISSION = "BirdoVPN needs VPN permission to connect."
+
+    /** Asked for Stealth, connected without it because the plan does not include it (StealthPolicy). */
+    const val STEALTH_NOT_IN_PLAN = "Stealth Mode isn't included in your plan, so this connection isn't disguised."
     const val SETUP_REQUIRED = "Open BirdoVPN to finish setting up before it can connect."
     const val VPN_TAKEN_OVER =
         "Android turned BirdoVPN off: another VPN app took over, or VPN permission was removed."
@@ -606,15 +695,39 @@ internal object SessionCopy {
         "Multi-Hop is on but no entry/exit pair is selected. Choose both, or turn Multi-Hop off."
     const val STILL_BLOCKED = "The kill switch is blocking traffic until you reconnect or disconnect."
 
+    /**
+     * The kill switch is on and its block could not be armed
+     * (P1-dk-killswitch-establish-failure-silent). Published in place of the
+     * failure path's own Error, which would otherwise claim the usual story.
+     * Use [killSwitchNotArmed], which picks this or the lockdown variant.
+     */
+    const val KILL_SWITCH_NOT_ARMED = "Kill switch could not be armed — traffic is NOT protected"
+
     /** What a give-up says about the traffic: the app's own block is released... */
     const val TRAFFIC_RELEASED = "Traffic is no longer being blocked."
 
     /** ...but Android's lockdown, when it is on, still blocks (the app cannot release it). */
     const val LOCKDOWN_STILL_BLOCKING = "Android's Block connections without VPN setting is still blocking traffic."
 
+    /**
+     * The same failure under Android's "Block connections without VPN": the
+     * OS is still blocking, so "traffic is NOT protected" would be false
+     * (REVIEW-AND-005's rule, as for the give-up copy).
+     */
+    const val KILL_SWITCH_NOT_ARMED_LOCKDOWN = "Kill switch could not be armed. $LOCKDOWN_STILL_BLOCKING"
+
+    /** What to say when the block could not be armed, [lockdown] being Android's own block. */
+    fun killSwitchNotArmed(lockdown: Boolean): String =
+        if (lockdown) KILL_SWITCH_NOT_ARMED_LOCKDOWN else KILL_SWITCH_NOT_ARMED
+
+    /** Whether [message] is the not-armed sentence, either variant. */
+    fun isKillSwitchNotArmed(message: String): Boolean =
+        message == KILL_SWITCH_NOT_ARMED || message == KILL_SWITCH_NOT_ARMED_LOCKDOWN
+
     /** Whether [message] already says whether traffic is blocked, so nothing may append a second claim. */
     fun speaksForTraffic(message: String): Boolean =
-        message.contains(TRAFFIC_RELEASED) || message.contains(LOCKDOWN_STILL_BLOCKING)
+        message.contains(TRAFFIC_RELEASED) || message.contains(LOCKDOWN_STILL_BLOCKING) ||
+            message.contains(KILL_SWITCH_NOT_ARMED)
     const val STOPPED_UNEXPECTEDLY = "BirdoVPN could not restart its connection. Open BirdoVPN to reconnect."
 
     /**

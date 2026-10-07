@@ -2,6 +2,7 @@ package app.birdo.vpn.ui.screen
 
 import app.birdo.vpn.R
 import app.birdo.vpn.service.FailureKind
+import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.components.BadgeTone
 import app.birdo.vpn.ui.viewmodel.VpnUiState
@@ -97,7 +98,10 @@ class HomeConnectionModelTest {
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.QUOTA_EXCEEDED))
         assertEquals(Remedy.UPDATE, remedyFor(FailureKind.UPDATE_REQUIRED))
         assertEquals(Remedy.CHOOSE_SERVER, remedyFor(FailureKind.NEVER_ESTABLISHED))
-        assertNull(remedyFor(FailureKind.STEALTH_FAILED))
+        // Fail-closed like Quantum, so the same way out (review of #463, P3-7).
+        // …on the VPN Settings screen, where the toggle is (second review, N6).
+        assertEquals(Remedy.OPEN_VPN_SETTINGS, remedyFor(FailureKind.STEALTH_FAILED))
+        assertTrue(SessionCopy.STEALTH_FAILED.contains("turn off Stealth Mode in Settings"))
     }
 
     /**
@@ -113,5 +117,45 @@ class HomeConnectionModelTest {
         assertTrue(home.contains("NotificationManagerCompat.from(context).areNotificationsEnabled()"))
         assertTrue(home.contains("R.string.home_notifications_off"))
         assertTrue(home.contains("Settings.ACTION_APP_NOTIFICATION_SETTINGS"))
+    }
+
+    // ── P2-2 / P3-4: a kill switch that could not be armed ───────────────
+
+    @Test
+    fun `a kill switch that could not be armed is said over Reconnecting and the re-dial`() {
+        val notArmed = SessionCopy.KILL_SWITCH_NOT_ARMED
+        // The supervisor answers a retryable failure with Reconnecting at once,
+        // and the alert is held back while the app is on screen: Home was the
+        // only place left to say it, and it said nothing.
+        listOf(VpnState.Reconnecting(1), VpnState.Connecting, VpnState.Disconnected).forEach { s ->
+            assertEquals(s.toString(), notArmed, homeMessage(VpnUiState(vpnState = s, killSwitchNotArmed = notArmed)))
+        }
+        // Connected ends it; an Error says its own thing; the screen's own
+        // message still comes first.
+        assertNull(homeMessage(VpnUiState(vpnState = VpnState.Connected, killSwitchNotArmed = notArmed)))
+        assertEquals(
+            "plan refused",
+            homeMessage(VpnUiState(vpnState = VpnState.Error("plan refused"), killSwitchNotArmed = notArmed)),
+        )
+        assertEquals(
+            "from the screen",
+            homeMessage(VpnUiState(vpnState = VpnState.Reconnecting(1), killSwitchNotArmed = notArmed, connectError = "from the screen")),
+        )
+    }
+
+    @Test
+    fun `the not-armed banner offers no remedy, not Choose server`() {
+        listOf(SessionCopy.KILL_SWITCH_NOT_ARMED, SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN).forEach { message ->
+            // NEVER_ESTABLISHED's remedy is "Choose server"; no server fixes a
+            // block Android refused.
+            assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error(message, FailureKind.NEVER_ESTABLISHED))))
+        }
+        assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Reconnecting(1), killSwitchNotArmed = SessionCopy.KILL_SWITCH_NOT_ARMED)))
+        // Every other failure keeps its remedy.
+        assertEquals(
+            Remedy.CHOOSE_SERVER,
+            homeRemedy(VpnUiState(vpnState = VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))),
+        )
+        assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error("x", FailureKind.PLAN_REQUIRED), connectError = "screen")))
     }
 }

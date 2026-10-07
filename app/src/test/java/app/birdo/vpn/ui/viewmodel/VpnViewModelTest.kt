@@ -60,6 +60,7 @@ class VpnViewModelTest {
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
         every { vpnManager.connectedServerId } returns MutableStateFlow(null)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
+        every { vpnManager.stealthNotice } returns MutableStateFlow(null)
         every { vpnManager.connectedSince } returns MutableStateFlow(0L)
         every { vpnManager.activeMultiHopRoute } returns null
         every { vpnManager.isVpnPermissionGranted() } returns true
@@ -76,6 +77,14 @@ class VpnViewModelTest {
         Dispatchers.resetMain()
         unmockkAll()
         setKillSwitchFlow(false)
+        setNotArmedFlow(null)
+    }
+
+    private fun setNotArmedFlow(value: String?) {
+        val field = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (field.get(null) as MutableStateFlow<String?>).value = value
     }
 
     private fun setKillSwitchFlow(value: Boolean) {
@@ -278,6 +287,36 @@ class VpnViewModelTest {
         assertEquals("ca-1", vm.uiState.value.selectedServer?.id)
     }
 
+    // ── Round 7, item 4: a switch the network cut short ───────────────────
+
+    /**
+     * VpnManager's offline branch hands the session the switch was moving back
+     * to the supervisor: it waits for the network and re-dials
+     * prefs.lastServerId. The selection stayed on the tapped server. It must
+     * follow the re-dial — here deliberately not the previous LABEL, which a
+     * tap while disconnected had moved off the session's server.
+     */
+    @Test
+    fun `a switch cut short while offline puts the selection on the server being re-dialled`() = runTest {
+        every { prefs.lastServerId } returns "br-1"
+        coEvery { repository.getServers(any()) } returns ApiResult.Success(
+            listOf(server("br-1", "Brazil", load = 60), server("ca-1", "Canada", load = 5), server("de-1", "Germany", load = 30)),
+        )
+        val vm = viewModel()
+        vm.loadServers()
+        vm.selectServer(vm.uiState.value.servers.first { it.id == "de-1" }) // a relabel: nothing connected
+        state.value = VpnState.Connected // e.g. an Always-on boot dialled br-1
+        coEvery { vpnManager.connect("ca-1", any()) } coAnswers {
+            state.value = VpnState.Reconnecting(attempt = 1, waitingForNetwork = true)
+            ApiResult.Error("Connection lost. Reconnecting…")
+        }
+
+        vm.selectServer(vm.uiState.value.servers.first { it.id == "ca-1" })
+
+        assertEquals("br-1", vm.uiState.value.selectedServer?.id)
+        assertNull("waiting for the network is not a switch error", vm.uiState.value.connectError)
+    }
+
     @Test
     fun `sign-out forgets the account's last server and plan`() {
         viewModel().resetForSignOut()
@@ -299,5 +338,23 @@ class VpnViewModelTest {
 
         released.complete(Unit)
         assertTrue(signedOut)
+    }
+
+    // ── P2-2: a kill switch that could not be armed stays on Home ────────
+
+    @Test
+    fun `Home keeps saying the kill switch could not be armed while the supervisor reconnects`() = runTest {
+        val vm = viewModel()
+        state.value = VpnState.Error(SessionCopy.KILL_SWITCH_NOT_ARMED, app.birdo.vpn.service.FailureKind.DIED_AFTER_HANDSHAKE)
+        setNotArmedFlow(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        // VpnManager answers the retryable failure at once.
+        state.value = VpnState.Reconnecting(1)
+
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, vm.uiState.value.killSwitchNotArmed)
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, app.birdo.vpn.ui.screen.homeMessage(vm.uiState.value))
+
+        // A block that comes up (or a Connected, or a stop) clears it.
+        setNotArmedFlow(null)
+        assertNull(app.birdo.vpn.ui.screen.homeMessage(vm.uiState.value))
     }
 }

@@ -58,6 +58,12 @@ data class VpnUiState(
     val portForwardError: String? = null,
     val needsVpnPermission: Boolean = false,
     val killSwitchActive: Boolean = false,
+    /**
+     * The kill switch could not be armed, as the sentence to show, or null
+     * (BirdoVpnService.killSwitchNotArmedFlow). Sticky across Reconnecting
+     * and the re-dial, which have no message of their own (P2-2).
+     */
+    val killSwitchNotArmed: String? = null,
     /** The node the session was dialled to (VpnManager.connectedServerId), for the Servers list's marker. */
     val connectedServerId: String? = null,
     /** A1-025: Android's strict Private DNS overrides BirdoShield / Custom DNS on this connection. */
@@ -67,6 +73,8 @@ data class VpnUiState(
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
+    /** Asked for Stealth, connected without it for the plan (VpnManager.stealthNotice). */
+    val stealthNotice: String? = null,
     /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
     val quantumActive: Boolean = false,
     /**
@@ -387,7 +395,8 @@ class VpnViewModel @Inject constructor(
                 BirdoVpnService.killSwitchActiveFlow,
                 vpnManager.switching,
                 vpnManager.sessionExpired,
-            ) { state, blocking, switching, expired -> SyncInput(state, blocking, switching, expired) }
+                BirdoVpnService.killSwitchNotArmedFlow,
+            ) { state, blocking, switching, expired, notArmed -> SyncInput(state, blocking, switching, expired, notArmed) }
                 .collect { input ->
                     val route = vpnManager.activeMultiHopRoute
                     val routeIsLive = input.state is VpnState.Connected || input.state.isConnectingPhase
@@ -397,6 +406,7 @@ class VpnViewModel @Inject constructor(
                         connectedServerId = vpnManager.connectedServerId.value,
                         connectedSince = vpnManager.connectedSince.value,
                         killSwitchActive = input.killSwitchActive,
+                        killSwitchNotArmed = input.killSwitchNotArmed,
                         switching = input.switching,
                         sessionExpired = input.sessionExpired,
                         liveMultiHopEntryId = if (routeIsLive) route?.first else null,
@@ -415,6 +425,11 @@ class VpnViewModel @Inject constructor(
         viewModelScope.launch {
             vpnManager.quotaGrace.collect { grace ->
                 _uiState.value = _uiState.value.copy(quotaGrace = grace)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.stealthNotice.collect { notice ->
+                _uiState.value = _uiState.value.copy(stealthNotice = notice)
             }
         }
     }
@@ -439,6 +454,7 @@ class VpnViewModel @Inject constructor(
         val killSwitchActive: Boolean,
         val switching: Boolean,
         val sessionExpired: Boolean,
+        val killSwitchNotArmed: String?,
     )
 
     /**
@@ -523,6 +539,12 @@ class VpnViewModel @Inject constructor(
     private fun lastUsableServer(servers: List<VpnServer>): VpnServer? {
         val last = prefs.lastServerId ?: return null
         return servers.firstOrNull { it.id == last && it.accessible && it.isOnline }
+    }
+
+    /** The server a single-hop recovery re-dials (VpnManager.redial: prefs.lastServerId), if listed. */
+    private fun redialledServer(): VpnServer? {
+        val last = prefs.lastServerId ?: return null
+        return _uiState.value.servers.firstOrNull { it.id == last }
     }
 
     /**
@@ -759,10 +781,20 @@ class VpnViewModel @Inject constructor(
                 // except a live switch that did not happen (A1-034): that one
                 // kept the previous session, so say so and put the selection back.
                 val result = vpnManager.connect(server.id)
-                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED &&
-                    vpnManager.state.value is VpnState.Connected
-                ) {
-                    _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED) {
+                    when (vpnManager.state.value) {
+                        is VpnState.Connected ->
+                            _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                        // Round 7: a switch the network cut short hands the session
+                        // it was moving back to the supervisor, which waits for the
+                        // network and re-dials prefs.lastServerId — not the server
+                        // tapped. The selection follows the re-dial. No banner: the
+                        // state already says it is waiting, and a connectError would
+                        // outlive the reconnect it describes.
+                        is VpnState.Reconnecting ->
+                            _uiState.value = _uiState.value.copy(selectedServer = redialledServer() ?: prev)
+                        else -> Unit
+                    }
                 }
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException) throw t

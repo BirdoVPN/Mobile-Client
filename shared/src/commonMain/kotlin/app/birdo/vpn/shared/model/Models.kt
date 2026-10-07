@@ -577,6 +577,13 @@ data class ConnectResponse(
     val serverNode: ServerNodeInfo? = null,
     // Stealth Mode (Xray Reality)
     val stealthEnabled: Boolean = false,
+    /**
+     * Set only when the client ASKED for Stealth and was connected without
+     * it: "entitlement" (the plan does not include it) or "unconfigured" (the
+     * node cannot run it) — birdo-web vpn.service.ts, the contract's
+     * ConnectResponse. A String, so a new reason can never fail the decode.
+     */
+    val stealthUnavailableReason: String? = null,
     val xrayEndpoint: String? = null,
     val xrayUuid: String? = null,
     val xrayPublicKey: String? = null,
@@ -723,6 +730,8 @@ data class MultiHopConnectResponse(
     val persistentKeepalive: Int? = null,
     val multiHop: MultiHopInfo? = null,
     val stealthEnabled: Boolean = false,
+    /** As [ConnectResponse.stealthUnavailableReason]; carried into the service's config. */
+    val stealthUnavailableReason: String? = null,
     val xrayEndpoint: String? = null,
     val xrayUuid: String? = null,
     val xrayPublicKey: String? = null,

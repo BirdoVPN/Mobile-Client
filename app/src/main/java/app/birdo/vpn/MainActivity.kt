@@ -71,7 +71,6 @@ import app.birdo.vpn.ui.theme.BirdoTheme
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.RootDetector
-import app.birdo.vpn.utils.SettingsHmac
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -518,11 +517,11 @@ class MainActivity : FragmentActivity() {
      */
     private fun verifySettingsIntegrity() {
         try {
-            // FIX: Must use same prefs file as AppPreferences ("birdo_vpn_prefs")
-            // Using wrong file name means HMAC is checked against an empty file —
-            // tampered settings in the real file are never detected.
-            val prefs = getSharedPreferences("birdo_vpn_prefs", MODE_PRIVATE)
-            if (!SettingsHmac.verify(prefs)) {
+            // Through the injected AppPreferences, which owns the store. This
+            // used to re-open the settings file by its literal name — once
+            // with the WRONG name, so the HMAC was checked against an empty
+            // file and tampering was never detected. One owner, one name.
+            if (!appPreferences.verifyIntegrity()) {
                 // Log.w, not report: verify() reports the CAUSE at its root
                 // (settings_hmac_missing / _mismatch / _verify_threw) and
                 // returning false is exactly what makes the reset run, so a
@@ -531,7 +530,7 @@ class MainActivity : FragmentActivity() {
                 // Reset EVERY protected key, not just the four booleans: a tampered
                 // custom_dns_* (DNS hijack) or split_tunnel_apps (VPN bypass) would
                 // otherwise survive and be re-signed with a valid HMAC.
-                SettingsHmac.resetToSafeDefaults(prefs)
+                appPreferences.resetProtectedSettingsToSafeDefaults()
                 // And say so, once, on Settings (A2-047): a reset caused by a
                 // Keystore hiccup is indistinguishable from tampering, and done
                 // silently it reads as the app forgetting the user's settings.

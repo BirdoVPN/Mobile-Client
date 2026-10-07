@@ -289,6 +289,42 @@ class ConnectContractTest {
         assertEquals(setOf("entryNodeId", "exitNodeId"), required)
     }
 
+    /**
+     * The RESPONSE side, which nothing validated: kotlinx ignores an unknown
+     * key and defaults a missing one, so a model field spelt differently from
+     * the server's (`stealthUnavailableReson`) would decode as null on every
+     * reply — and a plan downgrade would read as "Stealth not granted" and
+     * refuse the connect. Every ConnectResponse field must carry the schema's
+     * name, and the one the Stealth verdict turns on must decode.
+     */
+    @Test
+    fun `every ConnectResponse field is named as the server names it, and the Stealth reason decodes`() {
+        val fields = serializer<ConnectResponse>().descriptor.elementNames.toSet()
+        val schema = schemaProperties("ConnectResponse")
+        assertTrue("ConnectResponse fields the server never sends: ${fields - schema}", fields.all { it in schema })
+        assertTrue("stealthUnavailableReason" in fields && "stealthUnavailableReason" in schema)
+
+        val reply = NetworkModule.json.decodeFromString(
+            serializer<ConnectResponse>(),
+            """{"success":true,"stealthEnabled":false,"stealthUnavailableReason":"entitlement"}""",
+        )
+        assertEquals("entitlement", reply.stealthUnavailableReason)
+    }
+
+    /**
+     * The contract has no Multi-Hop response of its own: the route's reply is
+     * the connect reply plus the confirmed route block. So every other field
+     * the client decodes from it must carry ConnectResponse's wire name, or
+     * it decodes as null on every Multi-Hop reply.
+     */
+    @Test
+    fun `every MultiHopConnectResponse field but its route block is named as the server names it`() {
+        val fields = serializer<MultiHopConnectResponse>().descriptor.elementNames.toSet() - "multiHop"
+        val schema = schemaProperties("ConnectResponse")
+        assertTrue("MultiHopConnectResponse fields the server never sends: ${fields - schema}", fields.all { it in schema })
+        assertTrue("stealthUnavailableReason" in fields)
+    }
+
     // ── BirdoShield (D18): dnsFiltering on both routes ──────────────────
 
     @Test

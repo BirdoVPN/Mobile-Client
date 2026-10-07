@@ -1,6 +1,7 @@
 package app.birdo.vpn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -163,5 +164,33 @@ class ReleaseLogGuardTest {
                 "DebugLog.swift must then be listed explicitly or every debugLog( call fails to link",
             Regex("""^\s*-\s*path:\s*iosApp\s*$""", RegexOption.MULTILINE).containsMatchIn(projectYml),
         )
+    }
+
+    /**
+     * The Android twin, in the PQ native library. Gradle's buildRustLibs always
+     * builds the crate `release`, so the one `.so` in every APK set its logger
+     * to Info and wrote to logcat on users' devices, while the Kotlin side has
+     * every android.util.Log level stripped from release by R8. The level is
+     * now a function of the cargo profile: Info only under debug_assertions.
+     */
+    @Test
+    fun `the PQ native library does not log in a release build`() {
+        val path = "native/rosenpass-jni/src/lib.rs"
+        val text = source(path)
+        assertFalse(
+            "$path sets a fixed logger level again; a fixed Info logs on every user's device",
+            Regex("""with_max_level\(\s*LevelFilter::""").containsMatchIn(text),
+        )
+        assertTrue(
+            "$path no longer takes its logger level from max_log_level()",
+            text.contains(".with_max_level(max_log_level())"),
+        )
+        val fn = text.substringAfter("fn max_log_level() -> LevelFilter {", "").substringBefore("\n}")
+        assertTrue("$path: max_log_level() is gone", fn.isNotEmpty())
+        val debug = fn.substringAfter("if cfg!(debug_assertions) {", "").substringBefore("} else {")
+        val release = fn.substringAfter("} else {", "").substringBefore("}")
+        assertTrue("$path: max_log_level() must branch on cfg!(debug_assertions)", debug.isNotEmpty())
+        assertEquals("$path: the debug-build level", "LevelFilter::Info", debug.trim())
+        assertEquals("$path: the release level", "LevelFilter::Off", release.trim())
     }
 }

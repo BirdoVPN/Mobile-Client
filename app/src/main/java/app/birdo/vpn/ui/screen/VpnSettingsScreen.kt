@@ -25,6 +25,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.birdo.vpn.R
+import app.birdo.vpn.service.StealthPolicy
 import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.components.BirdoSectionHeader
 import app.birdo.vpn.ui.components.BirdoTextField
@@ -129,10 +130,11 @@ fun VpnSettingsScreen(
             item { BirdoSectionHeader(stringResource(R.string.vpn_settings_section_security)) }
 
             item {
-                // Stealth mode is OPERATIVE+. `&& stealthUnlocked` on `checked`
-                // means a persisted-on state can't resurface after a downgrade;
-                // the lock affordance routes to the upgrade flow (matches the
-                // Quantum / Custom-DNS / Port-forward gating on the Settings page).
+                val stealthRow = StealthPolicy.toggleRow(state.stealthModeEnabled, stealthUnlocked)
+                // Stealth mode is OPERATIVE+. Turning it ON while locked routes
+                // to the upgrade flow (matches the Quantum / Custom-DNS /
+                // Port-forward gating on the Settings page); a downgrade's stored
+                // ON is shown as it is, so the user can turn it off.
                 // The title no longer says "· Premium" (P1-032): a paying user
                 // saw an upsell word on a setting they own, and the lock icon
                 // already marks it for everyone else.
@@ -141,9 +143,11 @@ fun VpnSettingsScreen(
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_stealth_title),
                     description = stringResource(R.string.vpn_settings_stealth_desc),
-                    checked = state.stealthModeEnabled && stealthUnlocked,
+                    // Locked only in the ON direction (StealthPolicy.toggleRow):
+                    // a downgrade's stored ON can still be turned off.
+                    checked = stealthRow.checked,
                     onCheckedChange = onStealthModeChange,
-                    locked = !stealthUnlocked,
+                    locked = stealthRow.locked,
                     onLockedTap = onUpgradeRequired,
                 )
             }

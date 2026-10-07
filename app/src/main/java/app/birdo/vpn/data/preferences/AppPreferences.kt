@@ -338,8 +338,21 @@ class AppPreferences @Inject constructor(
 
     fun isFavorite(serverId: String): Boolean = favoriteServers.contains(serverId)
 
-    /** Verify settings HMAC integrity. Returns false if tampering detected. */
+    /**
+     * Verify settings HMAC integrity. Returns false if tampering detected.
+     *
+     * The one way in: MainActivity used to re-open this file by its literal
+     * name and call SettingsHmac itself, a second owner of the store that
+     * this class could not see (P1-dk-dead-lastserver-verifyintegrity).
+     */
     fun verifyIntegrity(): Boolean = SettingsHmac.verify(prefs)
+
+    /**
+     * The tamper response: every HMAC-protected setting back to its safe
+     * default, re-signed ([SettingsHmac.resetToSafeDefaults]). Run when
+     * [verifyIntegrity] says false.
+     */
+    fun resetProtectedSettingsToSafeDefaults() = SettingsHmac.resetToSafeDefaults(prefs)
 
     /** Re-sign settings HMAC after a protected setting changes. */
     private fun signSettings() = SettingsHmac.sign(prefs)

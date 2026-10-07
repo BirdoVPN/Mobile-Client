@@ -85,11 +85,26 @@ const PSK_LEN_BYTES: usize = 32;
 
 static INIT_LOGGER: Once = Once::new();
 
+/// What reaches logcat: Info in a DEBUG cargo build (`native/build.sh debug`),
+/// nothing in a release one. Release is every `.so` Gradle packages, debug APKs
+/// included -- `buildRustLibs` always builds `release` -- so this was logging
+/// at Info on every user's device. The Kotlin side is held to the same rule:
+/// app/proguard-rules.pro strips every `android.util.Log` level from release
+/// builds, and a failure reaches the operator through `FaultReporter`
+/// (`BirdoPqManager` reports each refusal this library returns), not logcat.
+const fn max_log_level() -> LevelFilter {
+    if cfg!(debug_assertions) {
+        LevelFilter::Info
+    } else {
+        LevelFilter::Off
+    }
+}
+
 fn init_logger_once() {
     INIT_LOGGER.call_once(|| {
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(LevelFilter::Info)
+                .with_max_level(max_log_level())
                 .with_tag(TAG),
         );
         log::info!(

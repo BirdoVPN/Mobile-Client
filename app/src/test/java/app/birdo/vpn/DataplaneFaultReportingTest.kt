@@ -606,6 +606,41 @@ class DataplaneFaultReportingTest {
         }
     }
 
+    /**
+     * P1-dk-killswitch-establish-failure-silent. activateKillSwitch() used to
+     * return Unit, and all but two of its callers went on to publish their
+     * usual Error ("Connection lost. Reconnecting…", the setup's own reason)
+     * whether or not the block came up — reported to the operator, invisible
+     * to the user. It returns whether the block is up now, and a call whose
+     * result is dropped is exactly how that comes back: a statement
+     * `activateKillSwitch()`, or `if (isKillSwitchEnabled) activateKillSwitch()`.
+     * Every call must USE the result (`!`, `=`, a condition, an operand). It
+     * is a [app.birdo.vpn.service.BlockArm] now, so a teardown (onDestroy
+     * reached the arm) is told apart from a failure of the control.
+     */
+    @Test
+    fun `no caller ignores whether the kill switch armed`() {
+        val path = "app/src/main/java/app/birdo/vpn/service/BirdoVpnService.kt"
+        val text = strippedSource(path)
+        val calls = Regex("""\bactivateKillSwitch\(\)""").findAll(text)
+            .map { it.range.first }
+            .filterNot { text.substring(0, it).trimEnd().endsWith("fun") }
+            .toList()
+        assertTrue("found only ${calls.size} activateKillSwitch() calls — the scan is vacuous", calls.size >= 4)
+        val ignored = calls.filterNot { at ->
+            val before = text.substring(0, at).trimEnd()
+            before.endsWith("return") || before.lastOrNull() in setOf('!', '=', '(', '&', '|')
+        }.map { at -> text.substring(text.lastIndexOf('\n', at) + 1, text.indexOf('\n', at)).trim() }
+        assertEquals(
+            "$path calls activateKillSwitch() and drops its result. A block that did not come up " +
+                "is then reported to the operator and to nobody else: the caller publishes its own " +
+                "Error as if traffic were blocked. Go through blockThenPublish, or check the result: " +
+                "$ignored",
+            emptyList<String>(),
+            ignored,
+        )
+    }
+
     // ── The connect path ──────────────────────────────────────────────────
 
     /**
@@ -628,6 +663,8 @@ class DataplaneFaultReportingTest {
                 "connect_refused_stealth_not_granted",
                 "connect_refused_stealth_unavailable",
                 "connect_refused_stealth_start_failed",
+                // Granted, but with no Xray endpoint: never dialled direct for a Stealth user.
+                "connect_refused_stealth_no_endpoint",
                 "connect_refused_pq_payload_missing",
                 "connect_refused_pq_exchange_failed",
                 "connect_refused_integrity",

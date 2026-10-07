@@ -21,6 +21,7 @@ import io.mockk.verify
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -93,6 +94,8 @@ class BirdoVpnServiceLifecycleTest {
         service.entryPointProvider = { entryPoint }
         // The spy copied the original's lazy, which would ask the original's provider.
         setLazy("entryPoint", entryPoint)
+        // No main looper here: alert writes run where they are handed over.
+        service.onMain = { block -> block() }
     }
 
     @After
@@ -114,6 +117,7 @@ class BirdoVpnServiceLifecycleTest {
             "_txBytesFlow" to 0L,
             "_stealthActiveFlow" to false,
             "_quantumActiveFlow" to false,
+            "_killSwitchNotArmedFlow" to null,
         ).forEach { (name, initial) ->
             val flowField = BirdoVpnService::class.java.getDeclaredField(name)
             flowField.isAccessible = true
@@ -517,6 +521,83 @@ class BirdoVpnServiceLifecycleTest {
         handle.invoke(service, intent, gen)
     }
 
+    // ── N1: a live rebuild must not silence a handler mid-arm ────────────
+
+    @Test
+    fun `a live rebuild arriving while the dead-tunnel handler arms neither silences it nor keeps the dead session`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        BirdoVpnService.uiForeground = false
+        startTunnel()
+        waitFor("Connected") { BirdoVpnService.currentState == VpnState.Connected }
+        val monitor = field("tunnelMonitor") as TunnelMonitor
+        val exit = TunnelMonitor::class.java.getDeclaredField("onUnexpectedExit")
+            .apply { isAccessible = true }.get(monitor)
+        @Suppress("UNCHECKED_CAST")
+        val onUnexpectedExit = exit as (Boolean) -> Unit
+        val outcome = BirdoVpnService.expectLiveRebuild(77L)
+        BirdoVpnService.setRebuildConfig(
+            ConnectResponse(
+                success = true,
+                keyId = "key-777",
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "198.51.100.9:51820",
+                assignedIp = "10.100.0.9",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+            ),
+        )
+        val rebuild = mockk<Intent>(relaxed = true) {
+            every { action } returns BirdoVpnService.ACTION_LIVE_REBUILD
+            every { getLongExtra(BirdoVpnService.EXTRA_REBUILD_ID, any()) } returns 77L
+        }
+        var arms = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            // The user's server switch lands while the block is being armed,
+            // and the block is refused.
+            if (arms++ == 0) service.onStartCommand(rebuild, 0, 1)
+            null
+        }
+
+        onUnexpectedExit(false)
+
+        // The handler's verdict stands. It used to be swallowed (the rebuild
+        // bumped the generation on arrival), leaving Connected over a device
+        // with no tunnel and no block: a silent fail-open.
+        waitFor("the handler's verdict") { BirdoVpnService.currentState is VpnState.Error }
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, (BirdoVpnService.currentState as VpnState.Error).message)
+        // …and the rebuild, finding no session to move, sends VpnManager down
+        // today's path rather than keeping (and re-marking connected) a dead one.
+        waitFor("the rebuild's answer") { outcome.isCompleted }
+        assertEquals(LiveRebuildPolicy.Event.NO_LIVE_SESSION, kotlinx.coroutines.runBlocking { outcome.await() })
+    }
+
+    @Test
+    fun `a transition that lands between the rebuild's check and its claim still supersedes it`() {
+        val order = mutableListOf<String>()
+        val gen = arrangeLiveSession(order)
+        val generation = field("transitionGen") as AtomicLong
+        var checks = 0
+        // A STOP arrives on the main thread just after the rebuild's
+        // "still current?" check passed.
+        every { service["isCurrent"](any<Long>()) } answers {
+            if (checks++ == 0) {
+                generation.incrementAndGet()
+                true
+            } else {
+                callOriginal()
+            }
+        }
+        val outcome = BirdoVpnService.expectLiveRebuild(43L)
+
+        liveRebuild(gen, 43L)
+
+        // incrementAndGet claimed the tunnel over it and swapped anyway
+        // (second-pass review, NEW-4); the claim is a compare-and-set now.
+        assertTrue(outcome.isCompleted)
+        assertEquals(LiveRebuildPolicy.Event.SUPERSEDED, kotlinx.coroutines.runBlocking { outcome.await() })
+        assertFalse(order.any { it == "turnOn" || it.startsWith("turnOff") })
+    }
+
     @Test
     fun `a rebuild establish() refuses keeps the old session untouched`() {
         val order = mutableListOf<String>()
@@ -567,5 +648,612 @@ class BirdoVpnServiceLifecycleTest {
         // The block went up (kill switch on) and wg-go came down after it.
         assertTrue(BirdoVpnService.killSwitchActive)
         verify { WgNative.turnOff(7) }
+    }
+
+    // ── P1-dk-killswitch-establish-failure-silent ────────────────────────
+
+    /** The probe's verdict for wg-go handle 7, as the current transition. */
+    private fun probeVerdict(verdict: TransportProbe.Result, onStealthTransport: Boolean) {
+        val m = BirdoVpnService::class.java.getDeclaredMethod(
+            "onProbeVerdict",
+            TransportProbe.Result::class.java,
+            Int::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+        )
+        m.isAccessible = true
+        m.invoke(service, verdict, 7, (field("transitionGen") as AtomicLong).get(), onStealthTransport)
+    }
+
+    @Test
+    fun `a Disconnect that lands while the block is retried leaves no stale failure`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        BirdoVpnService.uiForeground = false
+        val generation = field("transitionGen") as AtomicLong
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            when (establishes) {
+                1 -> mockk<ParcelFileDescriptor>(relaxed = true)
+                // The block is refused, and the user's Disconnect arrives (on
+                // the main thread, bumping the generation) during the retry.
+                2 -> { generation.incrementAndGet(); null }
+                else -> null
+            }
+        }
+
+        startTunnel()
+
+        // The queued stop owns the state now. The failure used to be published
+        // anyway, and its alert outlived the Disconnect.
+        assertFalse(
+            "a superseded setup published its failure",
+            BirdoVpnService.currentState is VpnState.Error,
+        )
+        verify(exactly = 0) { notifications.postAlert(any()) }
+    }
+
+    @Test
+    fun `a user stop withdraws the alert`() {
+        val stop = BirdoVpnService::class.java.getDeclaredMethod(
+            "stopTunnel",
+            VpnState.Error::class.java,
+            Boolean::class.javaPrimitiveType,
+        )
+        stop.isAccessible = true
+
+        stop.invoke(service, null, true)
+
+        verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
+    fun `the kill-switch alert and its key go out before the state the collector renders`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        BirdoVpnService.uiForeground = false
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+        var stateWhenAlerted: VpnState? = null
+        every { notifications.postAlert(any()) } answers { stateWhenAlerted = BirdoVpnService.currentState }
+
+        startTunnel()
+
+        // The main-thread collector reacts to the state; a key set after it
+        // was a race that could post the same alert twice.
+        assertTrue(BirdoVpnService.currentState is VpnState.Error)
+        assertFalse("the state was published before the alert", stateWhenAlerted is VpnState.Error)
+    }
+
+    @Test
+    fun `a setup failure whose block cannot be armed says traffic is NOT protected, not its own reason`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        BirdoVpnService.uiForeground = false
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            // The tunnel's own interface comes up; the block after it is refused.
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+
+        startTunnel()
+
+        // It used to publish ENGINE_FAILED here, whose story is "try again" —
+        // over a device whose kill switch had just failed to block anything.
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+        // The failure's own kind, so the supervisor recovers exactly as before.
+        assertEquals(FailureKind.TRANSIENT, error.kind)
+        assertFalse(BirdoVpnService.killSwitchActive)
+        assertEquals("the tunnel, then the block and its one retry", 3, establishes)
+        // Alerted by the service itself, not only through VpnManager's state.
+        verify(exactly = 1) {
+            notifications.postAlert(match { it.body == SessionCopy.KILL_SWITCH_NOT_ARMED })
+        }
+    }
+
+    @Test
+    fun `the not-armed warning stays until a block comes up, and a stop ends it`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+
+        startTunnel()
+
+        // Sticky: the Error that said it is replaced by Reconnecting at once.
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, BirdoVpnService.killSwitchNotArmedFlow.value)
+
+        // The re-dial's block comes up.
+        every { anyConstructed<VpnService.Builder>().establish() } returns mockk(relaxed = true)
+        val activate = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch")
+        activate.isAccessible = true
+        activate.invoke(service)
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+
+        // …and a stop ends a warning that is still up.
+        val notArmed = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        notArmed.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (notArmed.get(null) as kotlinx.coroutines.flow.MutableStateFlow<String?>).value = SessionCopy.KILL_SWITCH_NOT_ARMED
+        val stop = BirdoVpnService::class.java.getDeclaredMethod("stopTunnel", VpnState.Error::class.java, Boolean::class.javaPrimitiveType)
+        stop.isAccessible = true
+        stop.invoke(service, null, true)
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+    }
+
+    private fun setNotArmed(value: String?) {
+        val f = BirdoVpnService::class.java.getDeclaredField("_killSwitchNotArmedFlow")
+        f.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (f.get(null) as kotlinx.coroutines.flow.MutableStateFlow<String?>).value = value
+    }
+
+    @Test
+    fun `the not-armed warning ends when the re-dial's tunnel takes the traffic`() {
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+
+        // The tunnel is up and the probe is still waiting for its handshake.
+        startTunnelWithPollingProbe()
+        try {
+            assertEquals(VpnState.Connecting, BirdoVpnService.currentState)
+            // It used to clear only at Connected: up to the whole probe window
+            // of "traffic is NOT protected" over a tunnel carrying it.
+            assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            BirdoVpnService::class.java.getDeclaredMethod("cleanupTunnel").apply { isAccessible = true }.invoke(service)
+        }
+    }
+
+    @Test
+    fun `turning the kill switch off ends the not-armed warning, unless Android's lockdown is on`() {
+        val update = BirdoVpnService::class.java.getDeclaredMethod("handleUpdateSettings", Intent::class.java)
+        update.isAccessible = true
+        val off = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns false
+        }
+        val lockdown = BirdoVpnService::class.java.getDeclaredField("lockdownActive").apply { isAccessible = true }
+
+        lockdown.setBoolean(null, true)
+        try {
+            setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN)
+            update.invoke(service, off)
+            // The OS is still blocking; the warning about it stands.
+            assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN, BirdoVpnService.killSwitchNotArmedFlow.value)
+        } finally {
+            lockdown.setBoolean(null, false)
+        }
+
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        update.invoke(service, off)
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+    }
+
+    @Test
+    fun `turning the kill switch off also withdraws the could-not-be-armed alert`() {
+        val update = BirdoVpnService::class.java.getDeclaredMethod("handleUpdateSettings", Intent::class.java)
+        update.isAccessible = true
+        val off = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns false
+        }
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        setField("postedAlertKey", "DIED_AFTER_HANDSHAKE:${SessionCopy.KILL_SWITCH_NOT_ARMED}:false")
+
+        update.invoke(service, off)
+
+        // The warning went (N5); its alert stayed in the shade.
+        verify(exactly = 1) { notifications.cancelAlert() }
+        assertNull(field("postedAlertKey"))
+    }
+
+    @Test
+    fun `a block that comes up withdraws the could-not-be-armed alert with the warning`() {
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        setField("postedAlertKey", "DIED_AFTER_HANDSHAKE:${SessionCopy.KILL_SWITCH_NOT_ARMED}:false")
+        val activate = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch").apply { isAccessible = true }
+
+        activate.invoke(service)
+
+        // The arm cleared the warning and left its alert in the shade (#7).
+        assertNull(BirdoVpnService.killSwitchNotArmedFlow.value)
+        verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
+    fun `turning the kill switch off withdraws a not-armed alert even when the warning is already gone`() {
+        val update = BirdoVpnService::class.java.getDeclaredMethod("handleUpdateSettings", Intent::class.java)
+        update.isAccessible = true
+        val off = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns false
+        }
+        setNotArmed(null)
+        setField("postedAlertKey", "DIED_AFTER_HANDSHAKE:${SessionCopy.KILL_SWITCH_NOT_ARMED}:false")
+
+        update.invoke(service, off)
+
+        // Keyed on the alert, not on the warning (#7).
+        verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
+    fun `the not-armed withdraw runs on the main thread, and spares an alert posted before it runs`() {
+        val main = mutableListOf<() -> Unit>()
+        service.onMain = { block -> main += block }
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        setField("postedAlertKey", "DIED_AFTER_HANDSHAKE:${SessionCopy.KILL_SWITCH_NOT_ARMED}:false")
+        val activate = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch").apply { isAccessible = true }
+
+        // The block comes up on the executor: the warning ends there.
+        activate.invoke(service)
+
+        // The alert is not touched from the executor (round 6, P3-4).
+        verify(exactly = 0) { notifications.cancelAlert() }
+        assertEquals(1, main.size)
+        // The render collector posts a newer alert before the withdraw runs.
+        setField("postedAlertKey", "TRANSIENT:Couldn't reach BirdoVPN.:false")
+        main.forEach { it() }
+
+        // A stale key read on the executor used to remove that newer alert.
+        verify(exactly = 0) { notifications.cancelAlert() }
+        assertEquals("TRANSIENT:Couldn't reach BirdoVPN.:false", field("postedAlertKey"))
+    }
+
+    @Test
+    fun `the alert is not withdrawn over a stale Connected while the kill switch could not be armed`() {
+        val inputClass = Class.forName("app.birdo.vpn.service.BirdoVpnService\$RenderInput")
+        val ctor = inputClass.declaredConstructors.single().apply { isAccessible = true }
+        val render = BirdoVpnService::class.java.getDeclaredMethod("renderAlert", inputClass).apply { isAccessible = true }
+        BirdoVpnService.uiForeground = false
+        setField("postedAlertKey", "posted")
+
+        // The warning is up; VpnManager has not seen the Error yet and still
+        // says Connected. Withdrawing here, and re-posting for the Error a
+        // moment later, fired the alert twice.
+        render.invoke(service, ctor.newInstance(VpnState.Connected, false, false, false, SessionCopy.KILL_SWITCH_NOT_ARMED))
+        verify(exactly = 0) { notifications.cancelAlert() }
+
+        // A real Connected comes with the warning cleared: withdrawn then.
+        render.invoke(service, ctor.newInstance(VpnState.Connected, false, false, false, null))
+        verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
+    fun `under Android's lockdown the failure does not claim traffic is unprotected`() {
+        arrangeTunnelStart(protectSucceeds = false)
+        var establishes = 0
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            establishes++
+            if (establishes == 1) mockk<ParcelFileDescriptor>(relaxed = true) else null
+        }
+        val lockdown = BirdoVpnService::class.java.getDeclaredField("lockdownActive")
+        lockdown.isAccessible = true
+        lockdown.setBoolean(null, true)
+        try {
+            startTunnel()
+        } finally {
+            lockdown.setBoolean(null, false)
+        }
+
+        // REVIEW-AND-005: the OS is still blocking.
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN, error.message)
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN, BirdoVpnService.killSwitchNotArmedFlow.value)
+    }
+
+    @Test
+    fun `a dead stealth tunnel whose block cannot be armed says so instead of the tunnel error`() {
+        setKillSwitchEnabled(true)
+        every { anyConstructed<VpnService.Builder>().establish() } returns null
+        setField("tunnelHandle", 7)
+        // No handshake over the last transport there is: the path that used
+        // to arm the block and publish NO_TUNNEL whatever the arm did.
+        probeVerdict(TransportProbe.Result.BLOCKED, onStealthTransport = true)
+
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+        assertEquals(FailureKind.NEVER_ESTABLISHED, error.kind)
+        // Still torn down: the tunnel that never handshook is gone either way.
+        verify { WgNative.turnOff(7) }
+    }
+
+    // ── NEW-3: an interrupted arm on a live transition is not silent ─────
+
+    @Test
+    fun `an interrupted arm on a live, current transition is a failure to arm, said out loud`() {
+        setKillSwitchEnabled(true)
+        BirdoVpnService.uiForeground = false
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            Thread.currentThread().interrupt()
+            null
+        }
+        setField("tunnelHandle", 7)
+        try {
+            probeVerdict(TransportProbe.Result.BLOCKED, onStealthTransport = true)
+
+            // ABANDONED used to publish nothing here: the handler's tunnel was
+            // gone, no block, and the state stayed what it was.
+            val error = BirdoVpnService.currentState as VpnState.Error
+            assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    @Test
+    fun `an interrupted re-arm for an invalidated session says the block is not up`() {
+        BirdoVpnService.uiForeground = false
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            Thread.currentThread().interrupt()
+            null
+        }
+        val block = BirdoVpnService::class.java.getDeclaredMethod("handleKillSwitchBlock").apply { isAccessible = true }
+        try {
+            block.invoke(service)
+
+            val error = BirdoVpnService.currentState as VpnState.Error
+            assertEquals(SessionCopy.KILL_SWITCH_NOT_ARMED, error.message)
+            assertEquals(FailureKind.VPN_PERMISSION_REQUIRED, error.kind)
+        } finally {
+            Thread.interrupted()
+        }
+    }
+
+    // ── P2-1: a teardown is not a failure of the control ─────────────────
+
+    @Test
+    fun `a service destroyed while it arms publishes no kill-switch failure`() {
+        setKillSwitchEnabled(true)
+        BirdoVpnService.uiForeground = false
+        every { anyConstructed<VpnService.Builder>().establish() } answers {
+            // onDestroy lands while the retry waits.
+            Thread {
+                Thread.sleep(80)
+                setField("destroyed", true)
+            }.start()
+            null
+        }
+        setField("tunnelHandle", 7)
+
+        probeVerdict(TransportProbe.Result.BLOCKED, onStealthTransport = true)
+
+        // "Traffic is NOT protected" over a teardown was an alarm about nothing.
+        assertFalse(
+            "a teardown published the kill-switch failure",
+            (BirdoVpnService.currentState as? VpnState.Error)?.message?.startsWith("Kill switch could not be armed") == true,
+        )
+        verify(exactly = 0) { notifications.postAlert(any()) }
+    }
+
+    @Test
+    fun `the block flag is cleared when onDestroy closes a held block`() {
+        setField("vpnInterface", mockk<ParcelFileDescriptor>(relaxed = true))
+        val flag = BirdoVpnService::class.java.getDeclaredField("_killSwitchActiveFlow")
+        flag.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (flag.get(null) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>).value = true
+
+        service.onDestroy()
+
+        // Process-wide, it outlived the instance: VpnManager went on believing
+        // in a block that onDestroy's cleanup had closed.
+        assertFalse(BirdoVpnService.killSwitchActive)
+    }
+
+    // ── P1-dk-orphan-daemon-threads ──────────────────────────────────────
+
+    private fun probeThreads(): Set<Thread> =
+        Thread.getAllStackTraces().keys.filter { it.name == "birdo-transport-probe" && it.isAlive }.toSet()
+
+    /** A tunnel up on handle 7 whose probe is mid-window: wg-go readable, no handshake yet. */
+    private fun startTunnelWithPollingProbe(): Thread {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.canReadConfig() } returns true
+        every { WgNative.getConfig(7) } returns "last_handshake_time_sec=0\n"
+        val before = probeThreads()
+        startTunnel()
+        return (probeThreads() - before).single()
+    }
+
+    @Test
+    fun `tearing the data plane down stops the transport probe instead of leaving it to run out`() {
+        val probe = startTunnelWithPollingProbe()
+
+        val cleanup = BirdoVpnService::class.java.getDeclaredMethod("cleanupTunnel")
+        cleanup.isAccessible = true
+        cleanup.invoke(service)
+
+        // Interrupted and joined before cleanup returned. Untracked, it slept
+        // on to its next poll (and up to the whole window), holding the service.
+        assertFalse("the transport probe outlived the data plane it was probing", probe.isAlive)
+    }
+
+    @Test
+    fun `a wedged wg-go read holds a teardown for a tenth of a second, not half of one`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.canReadConfig() } returns true
+        val inRead = java.util.concurrent.CountDownLatch(1)
+        val released = java.util.concurrent.atomic.AtomicBoolean(false)
+        every { WgNative.getConfig(7) } answers {
+            inRead.countDown()
+            // A JNI read that does not answer an interrupt.
+            val giveUpAt = System.currentTimeMillis() + 3_000
+            while (!released.get() && System.currentTimeMillis() < giveUpAt) {
+                try { Thread.sleep(5) } catch (_: InterruptedException) { /* wedged: ignores it */ }
+            }
+            "last_handshake_time_sec=0\n"
+        }
+        startTunnel()
+        assertTrue("the probe never reached wg-go", inRead.await(2, java.util.concurrent.TimeUnit.SECONDS))
+
+        val cleanup = BirdoVpnService::class.java.getDeclaredMethod("cleanupTunnel")
+        cleanup.isAccessible = true
+        val started = System.nanoTime()
+        try {
+            cleanup.invoke(service)
+        } finally {
+            released.set(true)
+        }
+        val waitedMs = (System.nanoTime() - started) / 1_000_000
+
+        // The join runs on the tunnel executor or the main thread; every
+        // transition waited out its 500 ms cap behind a wedged read.
+        assertTrue("the teardown waited $waitedMs ms on a wedged probe", waitedMs < 350)
+    }
+
+    @Test
+    fun `onDestroy leaves no transport probe running`() {
+        val probe = startTunnelWithPollingProbe()
+
+        service.onDestroy()
+
+        assertFalse("the transport probe outlived the service", probe.isAlive)
+    }
+
+    // ── P1-dk-probe-skip-on-unstarted-stealth ────────────────────────────
+
+    private fun stealthGrantWithoutEndpoint() = ConnectResponse(
+        success = true,
+        privateKey = PRIVATE_KEY,
+        serverPublicKey = SERVER_KEY,
+        endpoint = "203.0.113.7:51820",
+        assignedIp = "10.100.0.2",
+        allowedIps = listOf("0.0.0.0/0", "::/0"),
+        stealthEnabled = true,
+        xrayEndpoint = null,
+    )
+
+    @Test
+    fun `a Stealth grant with no endpoint is refused, never dialled as plain WireGuard`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        setField("stealthRequested", true)
+        mockkObject(XrayManager)
+        every { XrayManager.stop() } just Runs
+        BirdoVpnService.setConfig(stealthGrantWithoutEndpoint())
+
+        startTunnel()
+
+        val error = BirdoVpnService.currentState as VpnState.Error
+        assertEquals(SessionCopy.STEALTH_FAILED, error.message)
+        assertEquals(FailureKind.STEALTH_FAILED, error.kind)
+        // Nothing went out unwrapped: no Xray, no wg-go, and the block is up.
+        io.mockk.coVerify(exactly = 0) { XrayManager.start(any(), any(), any(), any()) }
+        verify(exactly = 0) { WgNative.turnOn(any(), any(), any()) }
+        assertTrue(BirdoVpnService.killSwitchActive)
+        assertFalse(BirdoVpnService.stealthActive)
+    }
+
+    // ── Stealth on a plan without it (review of #463, P1 on main) ────────
+
+    @Test
+    fun `a START's Stealth request is what the service judges by`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        // The stored setting is OFF; the dial asked for Stealth anyway (it was
+        // on when VpnManager dialled), and the server did not grant it.
+        every { prefs.stealthModeEnabled } returns false
+        BirdoVpnService.setConfig(
+            ConnectResponse(
+                success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
+                assignedIp = "10.100.0.2",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+                stealthEnabled = false,
+            ),
+        )
+        val start = mockk<Intent>(relaxed = true) {
+            every { getBooleanExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, any()) } returns true
+            every { getBooleanExtra(BirdoVpnService.EXTRA_KILL_SWITCH, any()) } returns true
+            every { getStringArrayExtra(any()) } returns null
+        }
+        val handleStart = BirdoVpnService::class.java.getDeclaredMethod("handleStart", Intent::class.java, Long::class.javaPrimitiveType)
+        handleStart.isAccessible = true
+
+        handleStart.invoke(service, start, (field("transitionGen") as AtomicLong).get())
+
+        // Read from the intent, not the setting: refused, never dialled direct.
+        assertTrue(order.isEmpty())
+        assertEquals(FailureKind.STEALTH_FAILED, (BirdoVpnService.currentState as VpnState.Error).kind)
+    }
+
+    @Test
+    fun `a stored Stealth setting this dial did not ask for is no refusal`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        // The downgraded user's stored setting; VpnManager did not ask for it.
+        every { prefs.stealthModeEnabled } returns true
+        setField("stealthRequested", false)
+
+        startTunnel()
+
+        // The service used to re-read the setting and refuse every connect
+        // with a terminal STEALTH_FAILED the user could not turn off.
+        assertEquals("turnOn", order.first())
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    @Test
+    fun `a Stealth request refused for the plan connects direct instead of failing`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        setField("stealthRequested", true)
+        BirdoVpnService.setConfig(
+            ConnectResponse(
+                success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
+                assignedIp = "10.100.0.2",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+                stealthEnabled = false,
+                stealthUnavailableReason = "entitlement",
+            ),
+        )
+
+        startTunnel()
+
+        assertEquals("turnOn", order.first())
+        assertFalse(BirdoVpnService.stealthActive)
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    @Test
+    fun `a Stealth request not granted for any other reason still fails closed`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        setField("stealthRequested", true)
+        BirdoVpnService.setConfig(
+            ConnectResponse(
+                success = true,
+                privateKey = PRIVATE_KEY,
+                serverPublicKey = SERVER_KEY,
+                endpoint = "203.0.113.7:51820",
+                assignedIp = "10.100.0.2",
+                allowedIps = listOf("0.0.0.0/0", "::/0"),
+                stealthEnabled = false,
+                stealthUnavailableReason = "unconfigured",
+            ),
+        )
+
+        startTunnel()
+
+        assertTrue(order.isEmpty())
+        assertEquals(FailureKind.STEALTH_FAILED, (BirdoVpnService.currentState as VpnState.Error).kind)
+    }
+
+    @Test
+    fun `a stealth grant the user did not ask for still dials direct, and is probed as direct`() {
+        val order = arrangeTunnelStart(protectSucceeds = true)
+        BirdoVpnService.setConfig(stealthGrantWithoutEndpoint())
+
+        startTunnel()
+
+        // An Adaptive Transport fallback, say: nothing on screen claims
+        // Stealth, and the probe's verdict decides (this build cannot read
+        // wg-go's config, so it reports HANDSHAKE_OK).
+        assertEquals("turnOn", order.first())
+        assertFalse(BirdoVpnService.stealthActive)
+        waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
     }
 }

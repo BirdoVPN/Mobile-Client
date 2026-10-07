@@ -210,4 +210,23 @@ class SessionSurfaceModelsTest {
         assertEquals(R.string.widget_tap_to_disconnect, BirdoWidget.widgetModel(VpnState.Connected, false).hint)
         assertEquals(BirdoWidget.Look.IDLE, BirdoWidget.widgetModel(VpnState.Disconnected, false).look)
     }
+
+    // ── P2-2: the not-armed warning on the ongoing notification ──────────
+
+    @Test
+    fun `the ongoing notification says the kill switch could not be armed over Reconnecting`() {
+        val notArmed = SessionCopy.KILL_SWITCH_NOT_ARMED
+        fun body(state: VpnState, notArmed: String?) =
+            VpnNotificationManager.ongoingBody(state, connectedText = "via London", setupDetail = "Starting stealth tunnel…", killSwitchNotArmed = notArmed)
+
+        // Over the attempt count and the re-dial's progress text.
+        assertEquals(notArmed, body(VpnState.Reconnecting(2), notArmed))
+        assertEquals(notArmed, body(VpnState.Connecting, notArmed))
+        assertEquals(notArmed, body(VpnState.Disconnected, notArmed))
+        // Without it, exactly as before.
+        assertNull(body(VpnState.Reconnecting(2), null))
+        assertEquals("Starting stealth tunnel…", body(VpnState.StealthConnecting, null))
+        assertEquals("via London", body(VpnState.Connected, notArmed))
+        assertEquals("x", body(VpnState.Error("x"), notArmed))
+    }
 }

@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -156,6 +157,40 @@ class VpnManager @Inject constructor(
      */
     private val _quotaGrace = MutableStateFlow<QuotaGrace?>(null)
     val quotaGrace: StateFlow<QuotaGrace?> = _quotaGrace.asStateFlow()
+
+    /**
+     * The dial asked for Stealth and the server connected it without, for the
+     * plan ([StealthPolicy.Transport.DIRECT_NOT_IN_PLAN]): Home says so while
+     * the session is up, so nobody believes their traffic is disguised when
+     * it is not. Set by each dial, cleared by a Disconnect.
+     */
+    private val _stealthNotice = MutableStateFlow<String?>(null)
+    val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
+
+    /**
+     * What a dial asks for: the stored setting. The server decides entitlement
+     * and the service acts on its answer (StealthPolicy) — no client-side plan
+     * gate, which a stale lastKnownPlan turned against a re-upgraded user.
+     */
+    private fun stealthRequested(): Boolean = prefs.stealthModeEnabled
+
+    /**
+     * The stored Stealth setting changed (SettingsViewModel, every writer).
+     * The notice describes the request a dial made with the OLD setting, and
+     * it also decides rebuild eligibility (liveRebuildEligible): kept past a
+     * change, it held that verdict for the whole session (final review of
+     * #463, #5).
+     */
+    fun onStealthSettingChanged() {
+        _stealthNotice.value = null
+    }
+
+    /** The Home notice for a dial that asked for Stealth and got [config]. */
+    private fun stealthNoticeFor(requested: Boolean, config: ConnectResponse): String? =
+        SessionCopy.STEALTH_NOT_IN_PLAN.takeIf {
+            StealthPolicy.transport(requested, config.stealthEnabled, config.xrayEndpoint, config.stealthUnavailableReason) ==
+                StealthPolicy.Transport.DIRECT_NOT_IN_PLAN
+        }
 
     /**
      * The wait the last failed dial's server asked for (a 503
@@ -921,10 +956,12 @@ class VpnManager @Inject constructor(
             ?: TransportFallbackReason.TRANSPORT_BLOCKED.takeIf { prefs.shouldStartOnStealth }
 
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
+        // Asked once, and the same answer goes to the service with the config.
+        val askedForStealth = stealthRequested()
         val result = repository.connectVpn(
             serverNodeId = serverId,
             deviceName = deviceName,
-            stealthMode = prefs.stealthModeEnabled,
+            stealthMode = askedForStealth,
             fallbackReason = effectiveFallbackReason,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
@@ -955,9 +992,10 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(SUPERSEDED)
                 }
 
-                if (!startServiceFor(config, gen)) {
+                if (!startServiceFor(config, gen, askedForStealth)) {
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
+                _stealthNotice.value = stealthNoticeFor(askedForStealth, config)
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.
                 _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
@@ -1024,11 +1062,12 @@ class VpnManager @Inject constructor(
 
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+        val askedForStealth = stealthRequested()
         val result = repository.connectMultiHop(
             entryNodeId = entryNodeId,
             exitNodeId = exitNodeId,
             deviceName = deviceName,
-            stealthMode = prefs.stealthModeEnabled,
+            stealthMode = askedForStealth,
             fallbackReason = effectiveFallbackReason,
             quantumProtection = prefs.quantumProtectionEnabled,
             pqClientPublicKey = pqClientPublicKey,
@@ -1114,9 +1153,10 @@ class VpnManager @Inject constructor(
                 // FAILED cold-start multi-hop connect can't arm a futile
                 // auto-reconnect storm.
                 activeMultiHop = entryNodeId to exitNodeId
-                if (!startServiceFor(config.toConnectResponse(), gen)) {
+                if (!startServiceFor(config.toConnectResponse(), gen, askedForStealth)) {
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
+                _stealthNotice.value = stealthNoticeFor(askedForStealth, config.toConnectResponse())
                 _connectedServer.value = "${mh.entryNode.name} → ${mh.exitNode.name}"
                 _connectedServerId.value = entryNodeId
                 return result
@@ -1166,6 +1206,9 @@ class VpnManager @Inject constructor(
             ServerNodeInfo(id = it.entryNode.id, name = "${it.entryNode.name} → ${it.exitNode.name}")
         },
         stealthEnabled = stealthEnabled,
+        // Dropped here, the service read a plan downgrade on a Multi-Hop dial
+        // as "not granted" and refused it.
+        stealthUnavailableReason = stealthUnavailableReason,
         xrayEndpoint = xrayEndpoint,
         xrayUuid = xrayUuid,
         xrayPublicKey = xrayPublicKey,
@@ -1184,11 +1227,12 @@ class VpnManager @Inject constructor(
      * is (re)started rapidly during a server switch: a recoverable error
      * instead of a crash.
      */
-    private fun startServiceFor(config: ConnectResponse, gen: Long): Boolean {
+    private fun startServiceFor(config: ConnectResponse, gen: Long, askedForStealth: Boolean): Boolean {
         BirdoVpnService.setConfig(config)
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_START
             putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
+            putExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, askedForStealth)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_ENABLED, prefs.splitTunnelingEnabled)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_APPS, prefs.splitTunnelApps.toTypedArray())
         }
@@ -1424,11 +1468,130 @@ class VpnManager @Inject constructor(
     /** Matches a service outcome to the rebuild that asked for it. */
     private var liveRebuildCounter = 0L
 
+    /**
+     * A live rebuild is deciding (its /connect through the live tunnel, then
+     * the swap). An Error that lands meanwhile — the old tunnel died under it
+     * — is HELD (a [RebuildHold]), not fed to the supervisor, because the
+     * rebuild's outcome may itself be the recovery (second-pass review of
+     * #463, NEW-1). The supervisor acting in parallel either gave a user's
+     * switch up as a dial that "never connected" (clearing the session intent,
+     * so the legacy dial that followed was never re-dialled after a drop and
+     * nothing resumed it after process death), or scheduled a re-dial racing
+     * the legacy one: two STARTs, two peers. Confined to [scope]'s thread,
+     * like the rest of the supervisor's state.
+     */
+    private class RebuildHold {
+        /** The Error that landed while this rebuild owned the hold. */
+        var held: VpnState.Error? = null
+        /** The swap is with the service, which will answer it. */
+        var swapping = false
+        /** The old tunnel died before the swap was sent: the /connect is cut short. */
+        var cutShort = false
+        /** The rebuild's /connect while it is out ([rebuildRequest]). */
+        var request: Job? = null
+    }
+
+    /**
+     * The rebuild that owns the hold: the NEWEST one. Two rebuilds overlap
+     * when the user taps a second server while the first one's /connect is
+     * out; a shared flag let the first one's finally clear it in the middle
+     * of the second one's window, and the second one's Error reached the
+     * supervisor after all (final review of #463, #1). Each rebuild releases
+     * the hold only if it still owns it, and settles only what it held.
+     */
+    private var rebuildHold: RebuildHold? = null
+
+    /**
+     * The rebuild's /connect, cut short when the old tunnel dies under it
+     * (final review of #463, #4). The request rides that tunnel, so it would
+     * only time out — the API's 45 s callTimeout — while the device waited
+     * dead. Null when cut short; the rebuild then takes today's path at once.
+     */
+    private suspend fun <T> rebuildRequest(hold: RebuildHold, call: suspend () -> ApiResult<T>): ApiResult<T>? =
+        coroutineScope {
+            val request = async { call() }
+            hold.request = request
+            try {
+                request.await()
+            } catch (e: CancellationException) {
+                if (hold.cutShort && isActive) null else throw e
+            } finally {
+                hold.request = null
+            }
+        }
+
+    /** Take the hold for a rebuild that is starting. */
+    private fun holdFailuresForRebuild(): RebuildHold = RebuildHold().also { rebuildHold = it }
+
+    /** Give the hold back — only if [hold] still owns it (a newer rebuild may). */
+    private fun releaseRebuildHold(hold: RebuildHold) {
+        if (rebuildHold === hold) rebuildHold = null
+    }
+
+    /**
+     * The rebuild threw or was cancelled before it could decide (final review
+     * of #463, #3): what it held still reaches the supervisor, if it is still
+     * the state. It used to be skipped, and the failure was never recovered.
+     */
+    private fun abandonRebuildHold(hold: RebuildHold) {
+        releaseRebuildHold(hold)
+        val held = hold.held ?: return
+        hold.held = null
+        if (_state.value == held) onStateChanged(held)
+    }
+
+    /**
+     * After a live rebuild decided: today's path is the one recovery for a
+     * held failure (it dials now); otherwise the supervisor takes the failure
+     * after all, if it is still the state — a kept session that had died, a
+     * swap that failed closed, an abandoned rebuild. A committed new session
+     * published Connected over it, so there is nothing to recover.
+     *
+     * A TERMINAL held failure is never swallowed by today's path (final
+     * review of #463, #2): a re-dial cannot fix a takeover by another VPN, a
+     * revoke or a sign-in, and running one replaced the takeover's own message
+     * with a misleading kill-switch alert. It goes to the supervisor, and it
+     * is returned so the caller skips the legacy dial.
+     *
+     * Nor is a request that was cut short while the device is OFFLINE
+     * (round 6, P3-1): today's dial would fail at once, and as a fresh user
+     * dial it "never connected", so the supervisor gave the session up
+     * (NEVER_CONNECTED, the intent cleared) where the same drop outside a
+     * rebuild waits for the network. The session the rebuild was moving WAS
+     * up, so the supervisor takes the failure as that session's: it waits for
+     * the network and re-dials when it returns.
+     *
+     * That re-dial is the OLD session's (prefs.lastServerId, set only on a
+     * successful dial), so the switch is over here (round 7): [switching]
+     * drops, as when KEEP_OLD_SESSION keeps it, or the wait and the re-dial
+     * showed "Switching server…" with a Cancel. The caller gets the held
+     * failure as its error, which is what puts the screen's selection back
+     * on the server being re-dialled.
+     *
+     * @return the failure that stops today's path, or null.
+     */
+    private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive): VpnState.Error? {
+        val held = hold.held ?: return null
+        hold.held = null
+        val legacy = directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN
+        val offline = legacy && hold.cutShort && !online
+        if (legacy && !held.kind.terminal && !offline) return null
+        if (offline) {
+            session = session.connected()
+            _switching.value = false
+        }
+        if (_state.value == held) onStateChanged(held)
+        return held.takeIf { legacy }
+    }
+
     private fun liveRebuildEligible(prior: VpnState): Boolean = LiveRebuildPolicy.eligible(
         sessionConnected = prior is VpnState.Connected,
         currentKeyId = sessionKeyId,
         stealthActive = BirdoVpnService.stealthActive,
-        stealthWanted = prefs.stealthModeEnabled || prefs.shouldStartOnStealth,
+        // A dial the server already answered "not in your plan" runs direct:
+        // counting it as Stealth-wanted sent every switch and settings change
+        // of a downgraded user through the legacy teardown, a blackout each.
+        stealthWanted = (stealthRequested() && _stealthNotice.value == null) || prefs.shouldStartOnStealth,
         blockActive = isKillSwitchActive,
     )
 
@@ -1446,42 +1609,60 @@ class VpnManager @Inject constructor(
 
     private suspend fun liveRebuildSingle(serverId: String, gen: Long, prior: VpnState): ApiResult<ConnectResponse> {
         val oldKey = sessionKeyId ?: return dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
-        val (pqKey, pqRefusal) = rebuildPqKey()
-        // Through the live tunnel (ApiRoutePolicy: still Connected), naming the
-        // key it rides. No attestation: the session is live, and attestation is
-        // a property of the install, not of each switch (A1-033).
-        val result = if (pqRefusal != null) {
-            null
-        } else {
-            repository.connectVpn(
-                serverNodeId = serverId,
-                deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-                stealthMode = false,
-                fallbackReason = null,
-                quantumProtection = prefs.quantumProtectionEnabled,
-                pqClientPublicKey = pqKey,
-                integrityToken = null,
-                dnsFiltering = shieldInEffect(),
-                rebuildOf = oldKey,
-            )
+        val hold = holdFailuresForRebuild()
+        val (result, event) = try {
+            val (pqKey, pqRefusal) = rebuildPqKey()
+            // Through the live tunnel (ApiRoutePolicy: still Connected), naming the
+            // key it rides. No attestation: the session is live, and attestation is
+            // a property of the install, not of each switch (A1-033).
+            val result = if (pqRefusal != null || hold.cutShort) {
+                null
+            } else {
+                rebuildRequest(hold) {
+                    repository.connectVpn(
+                        serverNodeId = serverId,
+                        deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                        stealthMode = false,
+                        fallbackReason = null,
+                        quantumProtection = prefs.quantumProtectionEnabled,
+                        pqClientPublicKey = pqKey,
+                        integrityToken = null,
+                        dnsFiltering = shieldInEffect(),
+                        rebuildOf = oldKey,
+                    )
+                }
+            }
+            val config = (result as? ApiResult.Success)?.data
+            result to when {
+                superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
+                pqRefusal != null -> pqRefusal
+                // The old tunnel died under the request: no answer is coming
+                // through it. Today's path, now.
+                hold.cutShort && config == null -> LiveRebuildPolicy.Event.REQUEST_UNANSWERED
+                config == null -> (result as? ApiResult.Error)
+                    ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
+                    ?: LiveRebuildPolicy.Event.REQUEST_FAILED
+                !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
+                !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
+                    LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
+                config.privateKey == null || config.serverPublicKey == null || config.endpoint == null ||
+                    config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
+                else -> {
+                    hold.swapping = true
+                    swapInService(config, gen, oldKey)
+                }
+            }
+        } catch (t: Throwable) {
+            abandonRebuildHold(hold)
+            throw t
         }
+        releaseRebuildHold(hold)
         val config = (result as? ApiResult.Success)?.data
-        val event = when {
-            superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
-            pqRefusal != null -> pqRefusal
-            config == null -> (result as? ApiResult.Error)
-                ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
-                ?: LiveRebuildPolicy.Event.REQUEST_FAILED
-            !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
-            !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
-                LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
-            config.privateKey == null || config.serverPublicKey == null || config.endpoint == null ||
-                config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
-            else -> swapInService(config, gen, oldKey)
-        }
-        return when (finishLiveRebuild(event, oldKey, config?.keyId)) {
+        val directive = finishLiveRebuild(event, oldKey, config?.keyId)
+        val terminal = settleHeldFailure(hold, directive)
+        return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
+                if (terminal != null) ApiResult.Error(terminal.message) else dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
             LiveRebuildPolicy.Directive.KEEP_OLD_SESSION ->
                 ApiResult.Error(keptSessionCopy(event, config?.message, result as? ApiResult.Error))
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
@@ -1503,45 +1684,66 @@ class VpnManager @Inject constructor(
     ): ApiResult<MultiHopConnectResponse> {
         val oldKey = sessionKeyId
             ?: return dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
-        val (pqKey, pqRefusal) = rebuildPqKey()
-        val result = if (pqRefusal != null) {
-            null
-        } else {
-            repository.connectMultiHop(
-                entryNodeId = entryNodeId,
-                exitNodeId = exitNodeId,
-                deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
-                stealthMode = false,
-                fallbackReason = null,
-                quantumProtection = prefs.quantumProtectionEnabled,
-                pqClientPublicKey = pqKey,
-                integrityToken = null,
-                dnsFiltering = shieldInEffect(),
-                rebuildOf = oldKey,
-            )
+        val hold = holdFailuresForRebuild()
+        val (result, event) = try {
+            val (pqKey, pqRefusal) = rebuildPqKey()
+            val result = if (pqRefusal != null || hold.cutShort) {
+                null
+            } else {
+                rebuildRequest(hold) {
+                    repository.connectMultiHop(
+                        entryNodeId = entryNodeId,
+                        exitNodeId = exitNodeId,
+                        deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                        stealthMode = false,
+                        fallbackReason = null,
+                        quantumProtection = prefs.quantumProtectionEnabled,
+                        pqClientPublicKey = pqKey,
+                        integrityToken = null,
+                        dnsFiltering = shieldInEffect(),
+                        rebuildOf = oldKey,
+                    )
+                }
+            }
+            val config = (result as? ApiResult.Success)?.data
+            val mh = config?.multiHop
+            result to when {
+                superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
+                pqRefusal != null -> pqRefusal
+                hold.cutShort && config == null -> LiveRebuildPolicy.Event.REQUEST_UNANSWERED
+                config == null -> (result as? ApiResult.Error)
+                    ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
+                    ?: LiveRebuildPolicy.Event.REQUEST_FAILED
+                !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
+                !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
+                    LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
+                // The same rule as a fresh Multi-Hop dial: never ride a route the
+                // server did not confirm.
+                mh == null || mh.entryNode.id != entryNodeId || mh.exitNode.id != exitNodeId ->
+                    LiveRebuildPolicy.Event.ROUTE_NOT_CONFIRMED
+                config.privateKey == null || config.serverPublicKey == null || config.endpoint == null ||
+                    config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
+                else -> {
+                    hold.swapping = true
+                    swapInService(config.toConnectResponse(), gen, oldKey)
+                }
+            }
+        } catch (t: Throwable) {
+            abandonRebuildHold(hold)
+            throw t
         }
+        releaseRebuildHold(hold)
         val config = (result as? ApiResult.Success)?.data
         val mh = config?.multiHop
-        val event = when {
-            superseded(gen) -> LiveRebuildPolicy.Event.SUPERSEDED
-            pqRefusal != null -> pqRefusal
-            config == null -> (result as? ApiResult.Error)
-                ?.let { LiveRebuildPolicy.forRequestFailure(it.code, it.reason) }
-                ?: LiveRebuildPolicy.Event.REQUEST_FAILED
-            !config.success -> LiveRebuildPolicy.forRefusal(config.rebuildRefused)
-            !LiveRebuildPolicy.deferralHonoured(oldKey, config.deferredKeyId) ->
-                LiveRebuildPolicy.Event.DEFERRAL_NOT_HONOURED
-            // The same rule as a fresh Multi-Hop dial: never ride a route the
-            // server did not confirm.
-            mh == null || mh.entryNode.id != entryNodeId || mh.exitNode.id != exitNodeId ->
-                LiveRebuildPolicy.Event.ROUTE_NOT_CONFIRMED
-            config.privateKey == null || config.serverPublicKey == null || config.endpoint == null ||
-                config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
-            else -> swapInService(config.toConnectResponse(), gen, oldKey)
-        }
-        return when (finishLiveRebuild(event, oldKey, config?.keyId)) {
+        val directive = finishLiveRebuild(event, oldKey, config?.keyId)
+        val terminal = settleHeldFailure(hold, directive)
+        return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
+                if (terminal != null) {
+                    ApiResult.Error(terminal.message)
+                } else {
+                    dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
+                }
             LiveRebuildPolicy.Directive.KEEP_OLD_SESSION ->
                 ApiResult.Error(keptSessionCopy(event, config?.message, result as? ApiResult.Error))
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
@@ -1570,6 +1772,9 @@ class VpnManager @Inject constructor(
             action = BirdoVpnService.ACTION_LIVE_REBUILD
             putExtra(BirdoVpnService.EXTRA_REBUILD_ID, id)
             putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
+            // A live rebuild never asks for Stealth (its /connect sends
+            // stealthMode = false; Stealth is not rebuilt in place).
+            putExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, false)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_ENABLED, prefs.splitTunnelingEnabled)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_APPS, prefs.splitTunnelApps.toTypedArray())
         }
@@ -1628,7 +1833,11 @@ class VpnManager @Inject constructor(
                 _switching.value = false
             }
             LiveRebuildPolicy.Directive.FAILED_CLOSED -> sessionKeyId = null
-            LiveRebuildPolicy.Directive.LEGACY_TEARDOWN,
+            // Today's path releases the session key in its teardown. That must
+            // be the OLD key, the one still held back for us: swapInService
+            // had already moved the session to the new one, which the line
+            // above gave back, and the old one stayed out until the stale sweep.
+            LiveRebuildPolicy.Directive.LEGACY_TEARDOWN -> sessionKeyId = oldKey
             LiveRebuildPolicy.Directive.COMMIT_NEW,
             LiveRebuildPolicy.Directive.ABANDON -> Unit
         }
@@ -1706,6 +1915,11 @@ class VpnManager @Inject constructor(
         connectWatchdogJob?.cancel()
         _switching.value = false
         prefs.sessionShouldBeUp = false
+        _stealthNotice.value = null
+        // The not-armed warning describes the session the user just ended.
+        // Cleared here, not only when the service's stop lands: Home must not
+        // keep saying it over the user's own Disconnect.
+        BirdoVpnService.clearKillSwitchNotArmed()
         tearDownTunnel(userInitiated = true)
     }
 
@@ -1874,6 +2088,18 @@ class VpnManager @Inject constructor(
             is VpnState.Error -> {
                 stopHeartbeat()
                 if (vpnState === verdictError) return
+                val hold = rebuildHold
+                if (hold != null) {
+                    // The rebuild that owns the hold decides (settleHeldFailure).
+                    hold.held = vpnState
+                    // Before the swap is sent, its /connect rides the tunnel
+                    // that just died: stop waiting for it (rebuildRequest).
+                    if (!hold.swapping) {
+                        hold.cutShort = true
+                        hold.request?.cancel()
+                    }
+                    return
+                }
                 connectWatchdogJob?.cancel()
                 // The service's dead-tunnel check (or a dead Xray) ended a
                 // session that was up: its key goes to the first re-dial's

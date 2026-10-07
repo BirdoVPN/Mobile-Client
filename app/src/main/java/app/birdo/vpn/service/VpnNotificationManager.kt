@@ -200,6 +200,26 @@ internal class VpnNotificationManager(private val context: Context) {
             return host.takeIf { ipv4.matches(it) || (endpoint.startsWith("[") && it.contains(':')) }
         }
 
+        /**
+         * The ongoing notification's body line. Connected: the connection
+         * text. An Error: its message. Otherwise a kill switch that could not
+         * be armed says so (P2-2) — over Reconnecting's attempt count and the
+         * re-dial's progress text, which would read as if all were well — and
+         * only then the setup's progress text.
+         */
+        fun ongoingBody(
+            state: VpnState,
+            connectedText: String?,
+            setupDetail: String?,
+            killSwitchNotArmed: String?,
+        ): String? = when {
+            state is VpnState.Connected -> connectedText
+            state is VpnState.Error -> state.message
+            killSwitchNotArmed != null -> killSwitchNotArmed
+            state.isConnectingPhase -> setupDetail
+            else -> null
+        }
+
         /** Posted when a system start could not bring the service back at all. */
         fun stoppedUnexpectedlyAlert(): AlertModel =
             AlertModel("stopped", R.string.notif_alert_stopped, SessionCopy.STOPPED_UNEXPECTEDLY, reconnect = false)
