@@ -14,10 +14,14 @@ import app.birdo.vpn.data.model.*
 import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import retrofit2.Response
 import java.util.concurrent.atomic.AtomicLong
@@ -68,6 +72,34 @@ class BirdoRepository @Inject constructor(
      * other's tokens. The single-flight rule on top of it lives in [refreshToken].
      */
     private val refreshMutex = Mutex()
+
+    /**
+     * Where every refresh round trip runs (round 7). The server CONSUMES the
+     * presented refresh token as it answers, so the rotation must finish and be
+     * saved whoever stops waiting for it — but the waiting itself must stay the
+     * caller's to stop. Running the round trip in the caller under
+     * NonCancellable (round 6) stretched every caller time limit to OkHttp's
+     * callTimeout: logout()'s 15 s, the sign-out disconnect's 10 s and a live
+     * rebuild's cut-short all waited out a stalled refresh. Here the refresh
+     * lives in the repository's own scope and the caller only awaits it, so a
+     * cancelled caller returns at once and the rotation still lands.
+     *
+     * SupervisorJob: one failed refresh must not cancel the scope for the
+     * next. Replaced by tests to run on the test scheduler.
+     */
+    internal var refreshScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Makes a refresh's fence check and the write it guards one step against a
+     * sign-out's clear (round 7). A refresh now outlives the caller that
+     * started it, so logout()'s clear can land while its fence is being read —
+     * between "the stored refresh token is still the one presented" and
+     * setTokens. Both run under this lock, so the clear comes wholly before
+     * the check (which then fails) or wholly after the write (which it then
+     * wipes). A plain monitor, not a Mutex: nothing inside suspends, and
+     * logout's clear must not gain a cancellable suspension point.
+     */
+    private val sessionLock = Any()
 
     /**
      * Monotonic session generation. Bumped on logout()/deleteAccount() so an
@@ -251,7 +283,15 @@ class BirdoRepository @Inject constructor(
      * (APIClient.swift, RefreshCoordinator). Null (no token was sent) keeps
      * the old always-refresh behaviour.
      */
-    internal suspend fun refreshToken(staleAccessToken: String? = null): RefreshOutcome = refreshMutex.withLock {
+    internal suspend fun refreshToken(staleAccessToken: String? = null): RefreshOutcome {
+        // The coroutine that wants the answer. The refresh runs in [refreshScope],
+        // not in it, so cancelling it stops the WAITING at once while a round
+        // trip already on the wire still finishes and is saved (round 7).
+        val caller = currentCoroutineContext()[Job]
+        return refreshScope.async { lockedRefresh(staleAccessToken, caller) }.await()
+    }
+
+    private suspend fun lockedRefresh(staleAccessToken: String?, caller: Job?): RefreshOutcome = refreshMutex.withLock {
         if (staleAccessToken != null) {
             val current = tokenManager.getAccessToken()
             if (current != null && current != staleAccessToken) return@withLock RefreshOutcome.SUCCESS
@@ -260,23 +300,26 @@ class BirdoRepository @Inject constructor(
         // Captured BEFORE the network round-trip; compared after, so a sign-out
         // that lands mid-flight is detected.
         val genAtStart = sessionGeneration.get()
-        // NonCancellable: by the time the server answers, it has already
-        // CONSUMED the presented refresh token. A caller cancelled mid-flight
-        // (a live rebuild's /connect cut short, round 6 P3-3) used to drop the
-        // rotated pair here, and the next refresh replayed the used token —
-        // which the server reads as theft and answers with an account-wide
-        // revoke. The rotation is finished and saved whoever stopped waiting.
-        return@withLock withContext(NonCancellable) {
-            try {
-                val response = api.refreshToken(RefreshRequest(presented))
-                if (response.isSuccessful && response.body() != null) {
-                    val body = response.body()!!
-                    // Logout fence + CAS: if a logout/delete bumped the generation,
-                    // or the stored refresh token no longer matches the one we
-                    // presented, a sign-out (or a competing refresh) landed while we
-                    // were in flight — drop the rotated pair rather than re-persist
-                    // a signed-out session. Treated as TRANSIENT so it neither forces
-                    // a second logout nor resurrects the session.
+        // By the time the server answers it has already CONSUMED the presented
+        // refresh token, so a round trip once sent is finished and saved whoever
+        // stopped waiting (round 6 P3-3: dropping it made the next refresh replay
+        // the used token, which the server reads as theft — an account-wide
+        // revoke). A caller that gave up while still QUEUED here sent nothing,
+        // though, and spending a rotation nobody will read only churns the pair;
+        // before round 7 its own cancellation stopped it at the lock.
+        if (caller?.isActive == false) return@withLock RefreshOutcome.TRANSIENT
+        try {
+            val response = api.refreshToken(RefreshRequest(presented))
+            if (response.isSuccessful && response.body() != null) {
+                val body = response.body()!!
+                // Logout fence + CAS: if a logout/delete bumped the generation,
+                // or the stored refresh token no longer matches the one we
+                // presented, a sign-out (or a competing refresh) landed while we
+                // were in flight — drop the rotated pair rather than re-persist
+                // a signed-out session. Treated as TRANSIENT so it neither forces
+                // a second logout nor resurrects the session. Under [sessionLock]
+                // so logout()'s clear cannot land between the check and the write.
+                synchronized(sessionLock) {
                     if (sessionGeneration.get() != genAtStart ||
                         tokenManager.getRefreshToken() != presented
                     ) {
@@ -297,47 +340,47 @@ class BirdoRepository @Inject constructor(
                         }
                         RefreshOutcome.SUCCESS
                     }
-                } else if (response.code() == 401) {
-                    // Definitive: the server rejected this refresh token — so DISCARD it.
-                    //
-                    // Not clearing it is what turned one dead token into a storm. The
-                    // VPN heartbeat runs every 30s and, on 401, called refreshToken()
-                    // with the SAME stored token, forever: nothing here cleared it and
-                    // the loop only logs the failure. Server-side, every replay of a
-                    // consumed jti re-ran reuse detection and revoked the account's
-                    // sessions AND every WireGuard peer — four revocations in one
-                    // minute in production on 2026-07-28, for one anonymous session,
-                    // while the user sat behind a tunnel whose peer was already gone.
-                    //
-                    // The server is now idempotent about this, but the client must not
-                    // replay either: already-shipped app versions cannot be fixed by a
-                    // release, so both halves need to hold on their own.
-                    //
-                    // Bump BEFORE clearing, matching logout()/deleteAccount(): an
-                    // in-flight refresh completing after this point then sees the new
-                    // generation and drops its rotated tokens instead of resurrecting
-                    // a dead session.
-                    sessionGeneration.incrementAndGet()
-                    tokenManager.clearAll()
-                    RefreshOutcome.UNAUTHORIZED
-                } else if (response.code() == 403) {
-                    // Also non-retryable, but deliberately does NOT destroy the tokens.
-                    // A 403 on this path is not always the token's fault: an
-                    // infrastructure-level block returns it too — the Caddy client-ip
-                    // regression put every user into one rate-limit bucket and the API
-                    // answered 403 across the board. Wiping credentials on that would
-                    // have irrecoverably signed out the entire userbase during an
-                    // outage that had nothing to do with their tokens. Sign out, but
-                    // leave the tokens alone so recovery is possible.
-                    RefreshOutcome.UNAUTHORIZED
-                } else {
-                    // 5xx / unexpected status — the credentials may still be valid.
-                    RefreshOutcome.TRANSIENT
                 }
-            } catch (_: Exception) {
-                // Network error / timeout — transient, keep the session.
+            } else if (response.code() == 401) {
+                // Definitive: the server rejected this refresh token — so DISCARD it.
+                //
+                // Not clearing it is what turned one dead token into a storm. The
+                // VPN heartbeat runs every 30s and, on 401, called refreshToken()
+                // with the SAME stored token, forever: nothing here cleared it and
+                // the loop only logs the failure. Server-side, every replay of a
+                // consumed jti re-ran reuse detection and revoked the account's
+                // sessions AND every WireGuard peer — four revocations in one
+                // minute in production on 2026-07-28, for one anonymous session,
+                // while the user sat behind a tunnel whose peer was already gone.
+                //
+                // The server is now idempotent about this, but the client must not
+                // replay either: already-shipped app versions cannot be fixed by a
+                // release, so both halves need to hold on their own.
+                //
+                // Bump BEFORE clearing, matching logout()/deleteAccount(): an
+                // in-flight refresh completing after this point then sees the new
+                // generation and drops its rotated tokens instead of resurrecting
+                // a dead session.
+                sessionGeneration.incrementAndGet()
+                tokenManager.clearAll()
+                RefreshOutcome.UNAUTHORIZED
+            } else if (response.code() == 403) {
+                // Also non-retryable, but deliberately does NOT destroy the tokens.
+                // A 403 on this path is not always the token's fault: an
+                // infrastructure-level block returns it too — the Caddy client-ip
+                // regression put every user into one rate-limit bucket and the API
+                // answered 403 across the board. Wiping credentials on that would
+                // have irrecoverably signed out the entire userbase during an
+                // outage that had nothing to do with their tokens. Sign out, but
+                // leave the tokens alone so recovery is possible.
+                RefreshOutcome.UNAUTHORIZED
+            } else {
+                // 5xx / unexpected status — the credentials may still be valid.
                 RefreshOutcome.TRANSIENT
             }
+        } catch (_: Exception) {
+            // Network error / timeout — transient, keep the session.
+            RefreshOutcome.TRANSIENT
         }
     }
 
@@ -427,7 +470,9 @@ class BirdoRepository @Inject constructor(
                 withAutoRefreshNoBody(R.string.error_unexpected) { api.logout() }
             }
         } catch (_: Exception) { /* best effort — local sign-out proceeds regardless */ }
-        tokenManager.clearAll()
+        // Under [sessionLock]: a refresh that outlived the timeout above may be
+        // committing its rotated pair right now (round 7).
+        synchronized(sessionLock) { tokenManager.clearAll() }
         invalidateServerCache()
         invalidateSubscriptionCache()
         // PRIVACY: the per-install ML-KEM public key would otherwise be sent
@@ -460,8 +505,10 @@ class BirdoRepository @Inject constructor(
             // and invalidate BOTH caches so the next account on this device can
             // never briefly read the deleted account's plan (finding #15) — the
             // server cache was already cleared, the subscription cache was not.
-            sessionGeneration.incrementAndGet()
-            tokenManager.clearAll()
+            synchronized(sessionLock) {
+                sessionGeneration.incrementAndGet()
+                tokenManager.clearAll()
+            }
             invalidateServerCache()
             invalidateSubscriptionCache()
             // PRIVACY: the deviceId would otherwise survive the deletion and
