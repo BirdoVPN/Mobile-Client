@@ -1469,16 +1469,37 @@ class VpnManager @Inject constructor(
     /**
      * A live rebuild is deciding (its /connect through the live tunnel, then
      * the swap). An Error that lands meanwhile — the old tunnel died under it
-     * — is HELD in [heldFailure], not fed to the supervisor, because the
+     * — is HELD (a [RebuildHold]), not fed to the supervisor, because the
      * rebuild's outcome may itself be the recovery (second-pass review of
      * #463, NEW-1). The supervisor acting in parallel either gave a user's
      * switch up as a dial that "never connected" (clearing the session intent,
      * so the legacy dial that followed was never re-dialled after a drop and
      * nothing resumed it after process death), or scheduled a re-dial racing
-     * the legacy one: two STARTs, two peers. Confined to [scope]'s thread.
+     * the legacy one: two STARTs, two peers. Confined to [scope]'s thread,
+     * like the rest of the supervisor's state.
      */
-    private var liveRebuildInFlight = false
-    private var heldFailure: VpnState.Error? = null
+    private class RebuildHold {
+        /** The Error that landed while this rebuild owned the hold. */
+        var held: VpnState.Error? = null
+    }
+
+    /**
+     * The rebuild that owns the hold: the NEWEST one. Two rebuilds overlap
+     * when the user taps a second server while the first one's /connect is
+     * out; a shared flag let the first one's finally clear it in the middle
+     * of the second one's window, and the second one's Error reached the
+     * supervisor after all (final review of #463, #1). Each rebuild releases
+     * the hold only if it still owns it, and settles only what it held.
+     */
+    private var rebuildHold: RebuildHold? = null
+
+    /** Take the hold for a rebuild that is starting. */
+    private fun holdFailuresForRebuild(): RebuildHold = RebuildHold().also { rebuildHold = it }
+
+    /** Give the hold back — only if [hold] still owns it (a newer rebuild may). */
+    private fun releaseRebuildHold(hold: RebuildHold) {
+        if (rebuildHold === hold) rebuildHold = null
+    }
 
     /**
      * After a live rebuild decided: today's path is the one recovery for a
@@ -1487,9 +1508,9 @@ class VpnManager @Inject constructor(
      * swap that failed closed, an abandoned rebuild. A committed new session
      * published Connected over it, so there is nothing to recover.
      */
-    private fun settleHeldFailure(directive: LiveRebuildPolicy.Directive) {
-        val held = heldFailure ?: return
-        heldFailure = null
+    private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive) {
+        val held = hold.held ?: return
+        hold.held = null
         if (directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN) return
         if (_state.value == held) onStateChanged(held)
     }
@@ -1519,7 +1540,7 @@ class VpnManager @Inject constructor(
 
     private suspend fun liveRebuildSingle(serverId: String, gen: Long, prior: VpnState): ApiResult<ConnectResponse> {
         val oldKey = sessionKeyId ?: return dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
-        liveRebuildInFlight = true
+        val hold = holdFailuresForRebuild()
         val (result, event) = try {
             val (pqKey, pqRefusal) = rebuildPqKey()
             // Through the live tunnel (ApiRoutePolicy: still Connected), naming the
@@ -1555,11 +1576,11 @@ class VpnManager @Inject constructor(
                 else -> swapInService(config, gen, oldKey)
             }
         } finally {
-            liveRebuildInFlight = false
+            releaseRebuildHold(hold)
         }
         val config = (result as? ApiResult.Success)?.data
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
-        settleHeldFailure(directive)
+        settleHeldFailure(hold, directive)
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
                 dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
@@ -1584,7 +1605,7 @@ class VpnManager @Inject constructor(
     ): ApiResult<MultiHopConnectResponse> {
         val oldKey = sessionKeyId
             ?: return dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
-        liveRebuildInFlight = true
+        val hold = holdFailuresForRebuild()
         val (result, event) = try {
             val (pqKey, pqRefusal) = rebuildPqKey()
             val result = if (pqRefusal != null) {
@@ -1623,12 +1644,12 @@ class VpnManager @Inject constructor(
                 else -> swapInService(config.toConnectResponse(), gen, oldKey)
             }
         } finally {
-            liveRebuildInFlight = false
+            releaseRebuildHold(hold)
         }
         val config = (result as? ApiResult.Success)?.data
         val mh = config?.multiHop
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
-        settleHeldFailure(directive)
+        settleHeldFailure(hold, directive)
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
                 dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
@@ -1976,9 +1997,10 @@ class VpnManager @Inject constructor(
             is VpnState.Error -> {
                 stopHeartbeat()
                 if (vpnState === verdictError) return
-                if (liveRebuildInFlight) {
-                    // The rebuild's outcome decides (settleHeldFailure).
-                    heldFailure = vpnState
+                val hold = rebuildHold
+                if (hold != null) {
+                    // The rebuild that owns the hold decides (settleHeldFailure).
+                    hold.held = vpnState
                     return
                 }
                 connectWatchdogJob?.cancel()

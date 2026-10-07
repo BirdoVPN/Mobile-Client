@@ -2025,6 +2025,47 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `overlapping rebuilds keep the hold with the newer one`() = runTest {
+        connectAndEstablish()
+        val firstRequest = CompletableDeferred<ApiResult<ConnectResponse>>()
+        val secondRequest = CompletableDeferred<ApiResult<ConnectResponse>>()
+        var requests = 0
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { if (requests++ == 0) firstRequest.await() else secondRequest.await() }
+        coEvery { repository.connectVpn("srv-3", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        // Tap A, then B while A's /connect is still out.
+        val a = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        val b = async { vpnManager.connect("srv-3") }
+        runCurrent()
+        // A comes back (superseded by B) and finishes first.
+        firstRequest.complete(ApiResult.Success(rebuiltConfig()))
+        runCurrent()
+        a.await()
+        // The old tunnel dies in B's window, and B's swap finds no session.
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        secondRequest.complete(ApiResult.Success(rebuiltConfig().copy(keyId = "key-789")))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        b.await()
+
+        // A's finally used to clear the shared flag: B's Error reached the
+        // supervisor (NEVER_CONNECTED, the intent cleared), and B's legacy
+        // dial then ran on a session nobody wanted (final review, #1).
+        verify(exactly = 0) { prefs.sessionShouldBeUp = false }
+        coVerify(exactly = 1) { repository.connectVpn("srv-3", any()) }
+        quiesce()
+    }
+
+    @Test
     fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(rebuiltConfig()))
