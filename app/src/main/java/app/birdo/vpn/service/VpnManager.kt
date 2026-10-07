@@ -1507,12 +1507,22 @@ class VpnManager @Inject constructor(
      * after all, if it is still the state — a kept session that had died, a
      * swap that failed closed, an abandoned rebuild. A committed new session
      * published Connected over it, so there is nothing to recover.
+     *
+     * A TERMINAL held failure is never swallowed by today's path (final
+     * review of #463, #2): a re-dial cannot fix a takeover by another VPN, a
+     * revoke or a sign-in, and running one replaced the takeover's own message
+     * with a misleading kill-switch alert. It goes to the supervisor, and it
+     * is returned so the caller skips the legacy dial.
+     *
+     * @return the terminal failure that stops today's path, or null.
      */
-    private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive) {
-        val held = hold.held ?: return
+    private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive): VpnState.Error? {
+        val held = hold.held ?: return null
         hold.held = null
-        if (directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN) return
+        val legacy = directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN
+        if (legacy && !held.kind.terminal) return null
         if (_state.value == held) onStateChanged(held)
+        return held.takeIf { legacy }
     }
 
     private fun liveRebuildEligible(prior: VpnState): Boolean = LiveRebuildPolicy.eligible(
@@ -1580,10 +1590,10 @@ class VpnManager @Inject constructor(
         }
         val config = (result as? ApiResult.Success)?.data
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
-        settleHeldFailure(hold, directive)
+        val terminal = settleHeldFailure(hold, directive)
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
+                if (terminal != null) ApiResult.Error(terminal.message) else dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
             LiveRebuildPolicy.Directive.KEEP_OLD_SESSION ->
                 ApiResult.Error(keptSessionCopy(event, config?.message, result as? ApiResult.Error))
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
@@ -1649,10 +1659,14 @@ class VpnManager @Inject constructor(
         val config = (result as? ApiResult.Success)?.data
         val mh = config?.multiHop
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
-        settleHeldFailure(hold, directive)
+        val terminal = settleHeldFailure(hold, directive)
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
+                if (terminal != null) {
+                    ApiResult.Error(terminal.message)
+                } else {
+                    dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
+                }
             LiveRebuildPolicy.Directive.KEEP_OLD_SESSION ->
                 ApiResult.Error(keptSessionCopy(event, config?.message, result as? ApiResult.Error))
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {

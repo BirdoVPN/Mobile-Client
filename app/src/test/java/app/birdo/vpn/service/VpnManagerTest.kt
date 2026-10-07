@@ -2066,6 +2066,30 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a takeover held during a rebuild goes to the supervisor, and today's path does not run`() = runTest {
+        connectAndEstablish()
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        // Another VPN app takes over while the swap is with the service,
+        // which then finds no session to move.
+        serviceEmits(VpnState.Error(SessionCopy.VPN_TAKEN_OVER, FailureKind.VPN_TAKEN_OVER))
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NO_LIVE_SESSION)
+        runCurrent()
+        switch.await()
+
+        // No re-dial fixes a takeover. Today's path ran anyway and replaced
+        // the takeover's message with a not-armed alert (final review, #2).
+        coVerify(exactly = 0) { repository.connectVpn("srv-2", any()) }
+        assertEquals(SessionCopy.VPN_TAKEN_OVER, (vpnManager.state.value as VpnState.Error).message)
+        // The supervisor took it: a terminal give-up, the session no longer wanted.
+        verify { prefs.sessionShouldBeUp = false }
+    }
+
+    @Test
     fun `a failure held during a rebuild that keeps the session is recovered after all`() = runTest {
         connectAndEstablish()
         rebuildAnswers(ApiResult.Success(rebuiltConfig()))
