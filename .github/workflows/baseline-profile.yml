@@ -93,6 +93,11 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          # `trigger` returns before the rule is applied, so testing at once
+          # raced it (run 37656376797 failed here; 37114613874 on a similar
+          # runner passed). Wait for udev to finish, then allow a short grace.
+          sudo udevadm settle --timeout=15 || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do test -w /dev/kvm && break; sleep 1; done
           test -w /dev/kvm || { echo "::error::/dev/kvm is not writable — this runner cannot host an emulator, so no profile can be recorded on it."; exit 1; }
           echo "/dev/kvm OK"
 
