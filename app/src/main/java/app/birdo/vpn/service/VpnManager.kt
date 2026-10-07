@@ -175,13 +175,24 @@ class VpnManager @Inject constructor(
     private fun stealthRequested(): Boolean = prefs.stealthModeEnabled
 
     /**
+     * The stored Stealth setting changed (SettingsViewModel, every writer).
+     * The notice describes the request a dial made with the OLD setting, and
+     * it also decides rebuild eligibility (liveRebuildEligible): kept past a
+     * change, it held that verdict for the whole session (final review of
+     * #463, #5).
+     */
+    fun onStealthSettingChanged() {
+        _stealthNotice.value = null
+    }
+
+    /**
      * The notice's way out: the user turns the stored setting off from Home.
      * A foreground write the user asked for, so the setter's HMAC re-sign is
      * right; nothing is rebuilt — the session already runs without Stealth.
      */
     fun turnOffStealthNotInPlan() {
         prefs.stealthModeEnabled = false
-        _stealthNotice.value = null
+        onStealthSettingChanged()
     }
 
     /** The Home notice for a dial that asked for Stealth and got [config]. */

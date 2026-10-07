@@ -247,8 +247,10 @@ class SettingsViewModel @Inject constructor(
     fun setStealthMode(enabled: Boolean) {
         prefs.stealthModeEnabled = enabled
         _uiState.value = _uiState.value.copy(stealthModeEnabled = enabled)
+        vpnManager.onStealthSettingChanged()
         vpnManager.requestSettingsReapply()
     }
+
 
     fun setQuantumProtection(enabled: Boolean) {
         prefs.quantumProtectionEnabled = enabled

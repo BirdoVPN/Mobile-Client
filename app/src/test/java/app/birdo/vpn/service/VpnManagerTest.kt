@@ -2486,6 +2486,25 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a change of the stored Stealth setting ends the notice and its hold on rebuilds`() = runTest {
+        connectDowngraded()
+
+        // The user turns Stealth back on in Settings (re-upgraded, say).
+        every { prefs.stealthModeEnabled } returns true
+        vpnManager.onStealthSettingChanged()
+
+        // The notice described the old request; kept, it decided rebuild
+        // eligibility for the rest of the session (final review, #5).
+        assertNull(vpnManager.stealthNotice.value)
+        rebuildAnswers(ApiResult.Success(rebuiltConfig()))
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.connect("srv-2")
+        // Stealth wanted again: today's path, as for any Stealth session.
+        assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        quiesce()
+    }
+
+    @Test
     fun `the notice's action turns Stealth off and ends the notice`() = runTest {
         connectDowngraded()
 
