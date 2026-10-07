@@ -1111,7 +1111,7 @@ class BirdoVpnService : VpnService() {
         if (currentState is VpnState.Connected || currentState.isConnectingPhase) return
         // The supervisor let the block go on purpose; its Error says what
         // that means for the traffic.
-        _killSwitchNotArmedFlow.value = null
+        clearKillSwitchWarning()
         deactivateKillSwitch()
         cleanupTunnel()
         cleanupStealthAndQuantum()
@@ -1196,13 +1196,7 @@ class BirdoVpnService : VpnService() {
         // which would otherwise stay in the shade (only Connected withdraws
         // one). Kept under Android's lockdown, whose variant is about the OS's
         // own block.
-        if (!isKillSwitchEnabled && !lockdownActive && _killSwitchNotArmedFlow.value != null) {
-            _killSwitchNotArmedFlow.value = null
-            if (postedAlertKey?.contains(SessionCopy.KILL_SWITCH_NOT_ARMED) == true) {
-                notifManager.cancelAlert()
-                postedAlertKey = null
-            }
-        }
+        if (!isKillSwitchEnabled && !lockdownActive) clearKillSwitchWarning()
 
         // Kill switch turned OFF while it's actively blocking a DEAD tunnel:
         // honour fail-open by releasing the block. This runs on the tunnel
@@ -1533,7 +1527,7 @@ class BirdoVpnService : VpnService() {
                 try { stale.close() } catch (_: Exception) {}
             }
             _killSwitchActiveFlow.value = true
-            _killSwitchNotArmedFlow.value = null
+            clearKillSwitchWarning()
             updateState(VpnState.KillSwitchActive)
             Log.i(TAG, "Kill switch active — all traffic blocked")
             mainHandler.post { updateNotification() }
@@ -1664,6 +1658,22 @@ class BirdoVpnService : VpnService() {
         postKillSwitchAlert(message, kind)
         updateState(VpnState.Error(message, kind))
         mainHandler.post { updateNotification() }
+    }
+
+    /**
+     * The not-armed warning is over: clear it, and withdraw its alert if that
+     * is the alert in the shade. Keyed on [postedAlertKey], not on the
+     * warning: a later arm cleared the warning and left the alert, and the
+     * kill-switch-off withdraw then found no warning and kept it (final
+     * review of #463, #7).
+     */
+    private fun clearKillSwitchWarning() {
+        _killSwitchNotArmedFlow.value = null
+        val key = postedAlertKey ?: return
+        if (key.contains(SessionCopy.KILL_SWITCH_NOT_ARMED) || key.contains(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN)) {
+            notifManager.cancelAlert()
+            postedAlertKey = null
+        }
     }
 
     /** The alert half of [publishKillSwitchFailure], posted at most once per key. */
@@ -2072,7 +2082,7 @@ class BirdoVpnService : VpnService() {
             // …and the not-armed warning with it: the tunnel interface now
             // captures the traffic, so "traffic is NOT protected" is no longer
             // true, even while the probe waits for the handshake.
-            _killSwitchNotArmedFlow.value = null
+            clearKillSwitchWarning()
 
             _connectedServerFlow.value = config.serverNode?.name ?: "Unknown"
             _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
@@ -2841,7 +2851,7 @@ class BirdoVpnService : VpnService() {
     private fun publishConnected(handle: Int) {
         // A switch/reconnect may have superseded this tunnel while we probed.
         if (tunnelHandle != handle) return
-        _killSwitchNotArmedFlow.value = null
+        clearKillSwitchWarning()
         _connectedSinceFlow.value = System.currentTimeMillis()
         updateState(VpnState.Connected)
         updateWidgetState(true, connectedServer)
@@ -2885,7 +2895,7 @@ class BirdoVpnService : VpnService() {
         updateWidgetState(false, null)
         // No session is left for a not-armed warning to describe; the stop's
         // own reason, if any, is what is shown now.
-        _killSwitchNotArmedFlow.value = null
+        clearKillSwitchWarning()
         if (userInitiated) {
             // The user acted: an alert about the session they just ended
             // ("Kill switch could not be armed", "Can't connect") is stale
