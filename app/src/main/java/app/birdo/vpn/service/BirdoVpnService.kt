@@ -604,6 +604,18 @@ class BirdoVpnService : VpnService() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
+     * Runs a block on the main thread. Every alert write goes through it —
+     * [postedAlertKey] and the one alert notification — so the render
+     * collector (main) and the tunnel executor never interleave a
+     * check-then-clear: an executor-side withdraw read a stale not-armed key,
+     * the collector posted a newer alert, and the withdraw removed THAT one
+     * (round 6, P3-4). Blocks run in the order they were handed over, which
+     * the callers rely on. A seam: a unit test has no main looper, so it runs
+     * or queues the block itself.
+     */
+    internal var onMain: (() -> Unit) -> Unit = { block -> mainHandler.post { block() } }
+
+    /**
      * Bumped on the MAIN thread by every START / STOP / SWITCH_TEARDOWN /
      * KILL_SWITCH_BLOCK the moment it arrives, before it is queued. An
      * in-flight startTunnel captured the value it was started with; a mismatch
@@ -630,7 +642,8 @@ class BirdoVpnService : VpnService() {
 
     /**
      * The alert currently posted, so an unchanged state does not re-alert.
-     * Written by the render collector (main) and by stopTunnel (executor).
+     * Read and written on the main thread only: the render collector runs
+     * there, and every other alert write goes through [onMain].
      */
     @Volatile private var postedAlertKey: String? = null
 
@@ -1669,6 +1682,11 @@ class BirdoVpnService : VpnService() {
      */
     private fun clearKillSwitchWarning() {
         _killSwitchNotArmedFlow.value = null
+        onMain { withdrawKillSwitchAlert() }
+    }
+
+    /** Main thread only ([onMain]): withdraw the alert if it is STILL a not-armed one when this runs. */
+    private fun withdrawKillSwitchAlert() {
         val key = postedAlertKey ?: return
         if (key.contains(SessionCopy.KILL_SWITCH_NOT_ARMED) || key.contains(SessionCopy.KILL_SWITCH_NOT_ARMED_LOCKDOWN)) {
             notifManager.cancelAlert()
@@ -1685,9 +1703,14 @@ class BirdoVpnService : VpnService() {
             sessionExpired = false,
             uiForeground = uiForeground,
         ) ?: return
-        if (alert.key == postedAlertKey) return
-        notifManager.postAlert(alert)
-        postedAlertKey = alert.key
+        // Handed to the main thread before the caller publishes the state,
+        // so the key is set before the collector renders it (2e0c9a5).
+        onMain {
+            if (alert.key != postedAlertKey) {
+                notifManager.postAlert(alert)
+                postedAlertKey = alert.key
+            }
+        }
     }
 
     private fun deactivateKillSwitch() {
@@ -2887,32 +2910,38 @@ class BirdoVpnService : VpnService() {
         cleanupStealthAndQuantum()
         // Clear sensitive config from memory (private keys, etc.)
         activeConfig = null
+        // The alerts, on the main thread ([onMain]) and handed over BEFORE the
+        // final state: the render collector renders that state on the main
+        // thread after these run, so it finds the key and does not post the
+        // same alert again (REVIEW-AND-014).
+        //
+        // No session is left for a not-armed warning to describe; the stop's
+        // own reason, if any, is what is shown now.
+        clearKillSwitchWarning()
+        val stopAlert = reason?.let {
+            VpnNotificationManager.alertFor(it, killSwitchActive = false, sessionExpired = false, uiForeground = uiForeground)
+        }
+        onMain {
+            if (userInitiated) {
+                // The user acted: an alert about the session they just ended
+                // ("Kill switch could not be armed", "Can't connect") is stale
+                // the moment they did. The render collector only withdraws one
+                // on Connected, so a Disconnect left it in the shade.
+                notifManager.cancelAlert()
+                postedAlertKey = null
+            }
+            if (stopAlert != null) {
+                notifManager.postAlert(stopAlert)
+                postedAlertKey = stopAlert.key
+            }
+        }
         updateState(reason ?: VpnState.Disconnected)
         _connectedServerFlow.value = null
         _connectedSinceFlow.value = 0L
         _rxBytesFlow.value = 0L; _txBytesFlow.value = 0L; _publicIpFlow.value = null
         _stealthActiveFlow.value = false; _quantumActiveFlow.value = false
         updateWidgetState(false, null)
-        // No session is left for a not-armed warning to describe; the stop's
-        // own reason, if any, is what is shown now.
-        clearKillSwitchWarning()
-        if (userInitiated) {
-            // The user acted: an alert about the session they just ended
-            // ("Kill switch could not be armed", "Can't connect") is stale
-            // the moment they did. The render collector only withdraws one on
-            // Connected, so a Disconnect left it in the shade.
-            notifManager.cancelAlert()
-            postedAlertKey = null
-        }
-        if (reason != null) {
-            val alert = VpnNotificationManager.alertFor(reason, killSwitchActive = false, sessionExpired = false, uiForeground = uiForeground)
-            if (alert != null) {
-                notifManager.postAlert(alert)
-                // The render collector sees the same Error a moment later;
-                // the shared key keeps it from posting it again (REVIEW-AND-014).
-                postedAlertKey = alert.key
-            }
-        } else if (shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
+        if (reason == null && shouldPostDisconnectedNotice(userInitiated, appPrefs.notificationsEnabled)) {
             notifManager.postDisconnectedNotification()
         }
         stopForeground(STOP_FOREGROUND_REMOVE)

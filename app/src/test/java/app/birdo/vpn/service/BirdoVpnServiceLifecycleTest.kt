@@ -94,6 +94,8 @@ class BirdoVpnServiceLifecycleTest {
         service.entryPointProvider = { entryPoint }
         // The spy copied the original's lazy, which would ask the original's provider.
         setLazy("entryPoint", entryPoint)
+        // No main looper here: alert writes run where they are handed over.
+        service.onMain = { block -> block() }
     }
 
     @After
@@ -875,6 +877,29 @@ class BirdoVpnServiceLifecycleTest {
 
         // Keyed on the alert, not on the warning (#7).
         verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    @Test
+    fun `the not-armed withdraw runs on the main thread, and spares an alert posted before it runs`() {
+        val main = mutableListOf<() -> Unit>()
+        service.onMain = { block -> main += block }
+        setNotArmed(SessionCopy.KILL_SWITCH_NOT_ARMED)
+        setField("postedAlertKey", "DIED_AFTER_HANDSHAKE:${SessionCopy.KILL_SWITCH_NOT_ARMED}:false")
+        val activate = BirdoVpnService::class.java.getDeclaredMethod("activateKillSwitch").apply { isAccessible = true }
+
+        // The block comes up on the executor: the warning ends there.
+        activate.invoke(service)
+
+        // The alert is not touched from the executor (round 6, P3-4).
+        verify(exactly = 0) { notifications.cancelAlert() }
+        assertEquals(1, main.size)
+        // The render collector posts a newer alert before the withdraw runs.
+        setField("postedAlertKey", "TRANSIENT:Couldn't reach BirdoVPN.:false")
+        main.forEach { it() }
+
+        // A stale key read on the executor used to remove that newer alert.
+        verify(exactly = 0) { notifications.cancelAlert() }
+        assertEquals("TRANSIENT:Couldn't reach BirdoVPN.:false", field("postedAlertKey"))
     }
 
     @Test
