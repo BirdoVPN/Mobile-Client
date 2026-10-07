@@ -185,16 +185,6 @@ class VpnManager @Inject constructor(
         _stealthNotice.value = null
     }
 
-    /**
-     * The notice's way out: the user turns the stored setting off from Home.
-     * A foreground write the user asked for, so the setter's HMAC re-sign is
-     * right; nothing is rebuilt — the session already runs without Stealth.
-     */
-    fun turnOffStealthNotInPlan() {
-        prefs.stealthModeEnabled = false
-        onStealthSettingChanged()
-    }
-
     /** The Home notice for a dial that asked for Stealth and got [config]. */
     private fun stealthNoticeFor(requested: Boolean, config: ConnectResponse): String? =
         SessionCopy.STEALTH_NOT_IN_PLAN.takeIf {

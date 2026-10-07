@@ -603,7 +603,7 @@ fun BirdoNavGraph(
                             // Single top: a second tap must not stack another copy.
                             navController.navigate(Screen.VpnSettings.route) { launchSingleTop = true }
                         },
-                        onTurnOffStealth = { vpnViewModel.turnOffStealthNotInPlan() },
+                        onTurnOffStealth = { settingsViewModel.turnOffStealthNotInPlan() },
                         onDismissMessage = { vpnViewModel.dismissConnectError() },
                         updateInfo = updateState.info,
                         showUpdateBanner = updateState.showBanner,

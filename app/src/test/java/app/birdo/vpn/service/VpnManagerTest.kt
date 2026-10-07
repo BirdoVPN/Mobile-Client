@@ -2503,15 +2503,4 @@ class VpnManagerTest {
         assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
         quiesce()
     }
-
-    @Test
-    fun `the notice's action turns Stealth off and ends the notice`() = runTest {
-        connectDowngraded()
-
-        vpnManager.turnOffStealthNotInPlan()
-
-        verify { prefs.stealthModeEnabled = false }
-        assertNull(vpnManager.stealthNotice.value)
-        quiesce()
-    }
 }

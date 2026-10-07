@@ -13,6 +13,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 
@@ -52,5 +53,19 @@ class SettingsViewModelStealthTest {
         // The notice kept deciding rebuild eligibility past the change (#5).
         verify(exactly = 1) { vpnManager.onStealthSettingChanged() }
         verify(exactly = 1) { vpnManager.requestSettingsReapply() }
+    }
+
+    @Test
+    fun `turning Stealth off from Home updates this screen too, without a rebuild`() {
+        val vm = viewModel()
+
+        vm.turnOffStealthNotInPlan()
+
+        verify { prefs.stealthModeEnabled = false }
+        // The screen read prefs only at init and still showed Stealth on (#6).
+        assertFalse(vm.uiState.value.stealthModeEnabled)
+        verify(exactly = 1) { vpnManager.onStealthSettingChanged() }
+        // The session the notice is about already runs without Stealth.
+        verify(exactly = 0) { vpnManager.requestSettingsReapply() }
     }
 }
