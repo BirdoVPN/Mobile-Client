@@ -15,6 +15,13 @@
 #   scripts/generate-baseline-profile.sh                # Gradle Managed Device (default)
 #   scripts/generate-baseline-profile.sh --connected    # a physical phone over adb
 #
+#   BIRDO_PROFILE_ACCOUNT_NUMBER=<24 digits> scripts/generate-baseline-profile.sh
+#       also records the SIGNED-IN cold start (Connect tab, globe, sign-in path).
+#       Use a throwaway anonymous TEST account: the number is passed to the
+#       instrumentation run and never written to the repo. Without it only the
+#       fresh-install start is recorded, which leaves every later launch's first
+#       screen out of the profile (A2-020).
+#
 # WHICH ONE TO USE
 #   Managed device is the default and is what CI runs
 #   (.github/workflows/baseline-profile.yml). It boots a Pixel 6 / API 34 /
@@ -49,6 +56,14 @@ done
 GRADLE=./gradlew
 [ -x "$GRADLE" ] || chmod +x "$GRADLE"
 
+ACCOUNT_ARG=()
+if [ -n "${BIRDO_PROFILE_ACCOUNT_NUMBER:-}" ]; then
+  ACCOUNT_ARG=("-Pandroid.testInstrumentationRunnerArguments.birdoAccountNumber=${BIRDO_PROFILE_ACCOUNT_NUMBER}")
+  echo "Recording the signed-in start too (account number supplied)."
+else
+  echo "BIRDO_PROFILE_ACCOUNT_NUMBER unset: recording the fresh-install start only."
+fi
+
 if [ "$CONNECTED" = "1" ]; then
   command -v adb >/dev/null 2>&1 || {
     echo "adb is not on PATH; --connected cannot work." >&2; exit 1; }
@@ -77,11 +92,12 @@ if [ "$CONNECTED" = "1" ]; then
 
   "$GRADLE" :app:generateReleaseBaselineProfile \
     -Pandroidx.baselineprofile.useconnecteddevices=true \
-    -Pandroidx.baselineprofile.skipgeneration=false
+    -Pandroidx.baselineprofile.skipgeneration=false \
+    ${ACCOUNT_ARG[@]+"${ACCOUNT_ARG[@]}"}
 else
   echo "Recording on the Gradle Managed Device 'profileGenDevice' (Pixel 6, API 34, google_apis, x86_64)."
   echo "First run downloads the system image; expect it to take a while."
-  "$GRADLE" :app:generateReleaseBaselineProfile
+  "$GRADLE" :app:generateReleaseBaselineProfile ${ACCOUNT_ARG[@]+"${ACCOUNT_ARG[@]}"}
 fi
 
 profile=app/src/release/generated/baselineProfiles/baseline-prof.txt

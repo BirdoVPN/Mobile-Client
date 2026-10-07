@@ -36,6 +36,15 @@ if (versionPropsFile.exists()) {
 val vMajor = versionProps.getProperty("VERSION_MAJOR", "1").toInt()
 val vMinor = versionProps.getProperty("VERSION_MINOR", "0").toInt()
 val vPatch = versionProps.getProperty("VERSION_PATCH", "0").toInt()
+// The scheme only holds while MINOR and PATCH stay two digits: 1.4.100 would
+// compute 10500, the same versionCode as 1.5.0, and Play rejects a duplicate
+// or LOWER code at upload (A2-045). iOS derives its build number the same way
+// (.github/workflows/ios.yml), so widening it here alone would split the two;
+// bump MINOR (or MAJOR) before PATCH reaches 100.
+require(vMinor in 0..99 && vPatch in 0..99) {
+    "version.properties: VERSION_MINOR ($vMinor) and VERSION_PATCH ($vPatch) must each be 0..99 " +
+        "(versionCode = major*10000 + minor*100 + patch)"
+}
 val computedVersionCode = vMajor * 10000 + vMinor * 100 + vPatch
 val computedVersionName = "$vMajor.$vMinor.$vPatch"
 val signingCertFingerprint = (project.findProperty("birdoSigningCertFingerprint") as String?)
@@ -1134,6 +1143,9 @@ dependencies {
     // security/LegacySecurityCrypto.kt (see its header for the removal plan).
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.biometric:biometric:1.1.0")
+    // Custom Tabs for the SSO broker (SsoLauncher): sign-in stays in this task
+    // and the redirect closes the tab, instead of leaving a stray browser tab.
+    implementation("androidx.browser:browser:1.9.0")
     // Crash Reporting
     implementation("io.sentry:sentry-android:8.58.0")
 

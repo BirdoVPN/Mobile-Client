@@ -1,14 +1,17 @@
 package app.birdo.vpn.ui.viewmodel
 
 import android.content.Context
-import android.content.Intent
 import android.net.Uri
 import androidx.core.net.toUri
+import app.birdo.vpn.data.auth.openSsoBroker
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.BuildConfig
+import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.OAuthStateStore
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.data.repository.FailureReason
 import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.StoreSubscriptionStillBilling
 import app.birdo.vpn.data.model.UserProfile
@@ -17,6 +20,7 @@ import app.birdo.vpn.utils.PkceGenerator
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.data.repository.StringLookup
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -26,6 +30,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
+
+/** The field of the deletion dialog an error is about (REVIEW-AND2-008). */
+enum class DeleteAccountField { PASSWORD, CODE }
 
 data class AuthUiState(
     val isLoading: Boolean = false,
@@ -38,6 +45,24 @@ data class AuthUiState(
     /** Account deletion state */
     val isDeletingAccount: Boolean = false,
     val deleteAccountError: String? = null,
+    /**
+     * The field [deleteAccountError] is about, so the dialog outlines that one:
+     * the server checks the password before the code, so after the 2FA prompt
+     * a wrong password used to be drawn on the code field — and so were a rate
+     * limit and an offline error, which are about neither (null).
+     */
+    val deleteErrorField: DeleteAccountField? = null,
+    /**
+     * The server asked for this account's 2FA code before it deletes it
+     * (403 `two_factor_required`, ACCOUNT-API-2026-10-01 item 85). The dialog
+     * stays open and asks for it; cleared when the dialog closes.
+     */
+    val deleteRequiresTwoFactor: Boolean = false,
+    /**
+     * A deletion just succeeded. The graph confirms it once on the Login
+     * screen (A2-029): an irreversible erasure that ends in a silent jump to
+     * Login reads as a sign-out or a crash.
+     */
     val accountDeleted: Boolean = false,
     /**
      * App Store / Google Play subscriptions the server reports as still billing
@@ -61,13 +86,43 @@ data class AuthUiState(
      * [AuthViewModel.registerAnonymous].
      */
     val pendingAnonymousId: String? = null,
-)
+    /**
+     * The session ENDED on its own — a 401 the refresh could not fix — as
+     * opposed to the user signing out. The nav graph hands it to the VPN
+     * (A2-004: the Login screen used to appear with the tunnel still up and
+     * nothing on it to say so or to stop it), and [error] carries the
+     * sentence Login shows.
+     */
+    val sessionExpired: Boolean = false,
+) {
+    /**
+     * Leaves out [pendingAnonymousId] (an account's only credential) and
+     * [challengeToken] (a live 2FA challenge), and every message, which can
+     * quote what the user typed; [user] redacts itself. Nothing prints this
+     * state today, and a log line or a crash breadcrumb added later must not
+     * be what changes that (REVIEW-AND2-010).
+     */
+    override fun toString(): String = listOf(
+        "isLoading=$isLoading",
+        "isLoggedIn=$isLoggedIn",
+        "user=$user",
+        "requiresTwoFactor=$requiresTwoFactor",
+        "isDeletingAccount=$isDeletingAccount",
+        "deleteRequiresTwoFactor=$deleteRequiresTwoFactor",
+        "accountDeleted=$accountDeleted",
+        "pendingAnonymousId=${if (pendingAnonymousId != null) "[REDACTED]" else "null"}",
+        "sessionExpired=$sessionExpired",
+    ).joinToString(separator = ", ", prefix = "AuthUiState(", postfix = ")")
+}
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
     private val repository: BirdoRepository,
     private val tokenManager: TokenManager,
     private val oauthStore: OAuthStateStore,
+    private val prefs: AppPreferences,
+    /** Every sentence this class shows comes from strings.xml through here. */
+    private val strings: StringLookup,
 ) : ViewModel() {
 
     companion object {
@@ -85,6 +140,14 @@ class AuthViewModel @Inject constructor(
          *  way back. Internal, but not private — [AuthViewModelSsoProviderTest]
          *  asserts the contents. */
         internal val SSO_PROVIDERS = setOf("google", "github", "apple")
+
+        /** The failures that count toward the client-side sign-in throttle. */
+        private val CREDENTIAL_REJECTIONS = setOf(
+            FailureReason.INVALID_CREDENTIALS,
+            FailureReason.INVALID_CODE,
+            FailureReason.ACCOUNT_LOCKED,
+            FailureReason.ACCOUNT_BLOCKED,
+        )
     }
 
     /** Sliding window of recent failed login attempt timestamps.
@@ -107,7 +170,9 @@ class AuthViewModel @Inject constructor(
         if (loginAttempts.size >= MAX_LOGIN_ATTEMPTS) {
             val oldestInWindow = loginAttempts.first()
             val waitSecs = LOGIN_WINDOW_SECS - java.time.Duration.between(oldestInWindow, now).seconds
-            _uiState.value = _uiState.value.copy(error = "Too many login attempts. Please wait ${waitSecs}s.")
+            _uiState.value = _uiState.value.copy(
+                error = strings.plural(R.plurals.auth_sign_in_throttled, waitSecs.toInt(), waitSecs),
+            )
             return true
         }
         return false
@@ -156,8 +221,15 @@ class AuthViewModel @Inject constructor(
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
     init {
-        checkSession()
+        // Not before the CURRENT consent is accepted (audit D-12, A2-028): GET
+        // auth/me is a request from this device's IP, and the consent screen
+        // is where the user is told what the app sends. The graph calls
+        // onConsentAccepted() the moment it is given.
+        if (prefs.hasAcceptedCurrentConsent) checkSession()
     }
+
+    /** The consent screen was just accepted: run what init held back. */
+    fun onConsentAccepted() = checkSession()
 
     private fun checkSession() {
         // Don't even hit the network if we have no token — UI is already on Login.
@@ -177,12 +249,7 @@ class AuthViewModel @Inject constructor(
                 is ApiResult.Error -> {
                     // 401 (or 401 after refresh failed) → token is dead, force re-login.
                     // Any other failure (network, 5xx, timeout) is transient — stay logged in.
-                    if (result.code == 401) {
-                        _uiState.value = _uiState.value.copy(
-                            isLoggedIn = false,
-                            user = null,
-                        )
-                    }
+                    if (result.code == 401) onSessionExpired()
                 }
             }
         }
@@ -191,11 +258,11 @@ class AuthViewModel @Inject constructor(
     fun login(email: String, password: String) {
         val trimmedEmail = email.trim()
         if (!InputValidator.isValidEmail(trimmedEmail)) {
-            _uiState.value = _uiState.value.copy(error = "Please enter a valid email address")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_invalid_email))
             return
         }
         if (!InputValidator.isValidPassword(password)) {
-            _uiState.value = _uiState.value.copy(error = "Password must be 6-256 characters")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_password_length))
             return
         }
 
@@ -222,14 +289,23 @@ class AuthViewModel @Inject constructor(
                     }
                 }
                 is ApiResult.Error -> {
-                    loginAttempts.add(Instant.now())
+                    recordFailedAttempt(result)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = parseLoginError(result.message),
+                        error = result.message,
                     )
                 }
             }
         }
+    }
+
+    /**
+     * Only a DEFINITIVE rejection of the credential counts toward the client
+     * throttle. Counting a timeout or an offline attempt locked people out of
+     * a correct password they had simply retried on a bad connection (A2-008).
+     */
+    private fun recordFailedAttempt(error: ApiResult.Error) {
+        if (error.reason in CREDENTIAL_REJECTIONS) loginAttempts.add(Instant.now())
     }
 
     // ── Native SSO (Google / GitHub / Apple) ─────────────────────────────────
@@ -248,7 +324,7 @@ class AuthViewModel @Inject constructor(
         // Apple is a broker provider on ANDROID only — iOS uses the native
         // ASAuthorization flow and never calls startSso.
         if (provider !in SSO_PROVIDERS) {
-            _uiState.value = _uiState.value.copy(error = "Unsupported sign-in provider")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_unsupported))
             return
         }
         val pkce = PkceGenerator.generate()
@@ -264,15 +340,11 @@ class AuthViewModel @Inject constructor(
             "&redirect_uri=${Uri.encode("birdo://auth")}" +
             "&state=$state"
         try {
-            // System browser (ACTION_VIEW), NOT a WebView — the redirect returns
-            // via the birdo://auth intent-filter to MainActivity.
-            val intent = Intent(Intent.ACTION_VIEW, url.toUri())
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
+            openSsoBroker(context, url.toUri())
             _uiState.value = _uiState.value.copy(error = null)
         } catch (e: Exception) {
             oauthStore.clear()
-            _uiState.value = _uiState.value.copy(error = "Could not open the browser to sign in.")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_browser))
         }
     }
 
@@ -283,13 +355,13 @@ class AuthViewModel @Inject constructor(
     fun completeSso(code: String, state: String) {
         val pending = oauthStore.load()
         if (pending == null) {
-            _uiState.value = _uiState.value.copy(error = "Sign-in session expired. Please try again.")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_expired))
             return
         }
         val (verifier, savedState) = pending
         if (state != savedState) {
             oauthStore.clear()
-            _uiState.value = _uiState.value.copy(error = "Sign-in could not be verified. Please try again.")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_sso_unverified))
             return
         }
 
@@ -309,7 +381,7 @@ class AuthViewModel @Inject constructor(
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = parseLoginError(result.message),
+                        error = result.message,
                     )
                 }
             }
@@ -321,7 +393,7 @@ class AuthViewModel @Inject constructor(
     fun verifyTwoFactor(code: String) {
         val token = _uiState.value.challengeToken ?: return
         if (!is2faCodeComplete(code)) {
-            _uiState.value = _uiState.value.copy(error = "Enter a 6-digit code or a backup code")
+            _uiState.value = _uiState.value.copy(error = strings.get(R.string.auth_error_2fa_format))
             return
         }
         // Same throttle as the other credential paths, and single-flight so a
@@ -336,11 +408,21 @@ class AuthViewModel @Inject constructor(
                     fetchProfileAfterLogin()
                 }
                 is ApiResult.Error -> {
-                    loginAttempts.add(Instant.now())
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        error = "Invalid verification code. Please try again.",
-                    )
+                    recordFailedAttempt(result)
+                    _uiState.value = if (result.reason == FailureReason.CHALLENGE_EXPIRED) {
+                        // The challenge from the password step is gone and no
+                        // code can pass it now. Say so and go back to the start,
+                        // instead of calling a correct code wrong until the
+                        // throttle locks the user out (A2-008).
+                        _uiState.value.copy(
+                            isLoading = false,
+                            requiresTwoFactor = false,
+                            challengeToken = null,
+                            error = result.message,
+                        )
+                    } else {
+                        _uiState.value.copy(isLoading = false, error = result.message)
+                    }
                 }
             }
         }
@@ -360,6 +442,21 @@ class AuthViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * The session is dead: from [checkSession], or from the VPN heartbeat's
+     * 401 (the graph forwards VpnManager.sessionExpired). Back to Login, with
+     * the reason on it. The tokens are left as BirdoRepository left them.
+     */
+    fun onSessionExpired() {
+        if (!_uiState.value.isLoggedIn) return
+        _uiState.value = _uiState.value.copy(
+            isLoggedIn = false,
+            user = null,
+            sessionExpired = true,
+            error = strings.get(R.string.error_session_expired),
+        )
     }
 
     fun logout() {
@@ -386,7 +483,7 @@ class AuthViewModel @Inject constructor(
             if (cleanId.length != 24) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    error = "Anonymous ID must be 24 digits",
+                    error = strings.get(R.string.auth_error_account_number_length),
                 )
                 return@launch
             }
@@ -405,15 +502,15 @@ class AuthViewModel @Inject constructor(
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
-                            error = "Anonymous login failed",
+                            error = strings.get(R.string.error_sign_in_failed),
                         )
                     }
                 }
                 is ApiResult.Error -> {
-                    loginAttempts.add(Instant.now())
+                    recordFailedAttempt(result)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = parseLoginError(result.message),
+                        error = result.message,
                     )
                 }
             }
@@ -468,14 +565,14 @@ class AuthViewModel @Inject constructor(
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isLoading = false,
-                            error = "Could not create an anonymous account. Please try again.",
+                            error = strings.get(R.string.error_anon_register_failed),
                         )
                     }
                 }
                 is ApiResult.Error -> {
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
-                        error = parseAnonymousRegisterError(result.message),
+                        error = result.message,
                     )
                 }
             }
@@ -508,10 +605,23 @@ class AuthViewModel @Inject constructor(
      * rejected the blank value). Gate on `hasPassword`, matching the UI
      * (ProfileScreen `requiresPassword = user?.hasPassword ?: true`) and iOS.
      */
-    fun deleteAccount(password: String) {
+    fun deleteAccount(password: String, twoFactorCode: String? = null) {
         val requiresPassword = _uiState.value.user?.hasPassword ?: true
         if (requiresPassword && !InputValidator.isValidPassword(password)) {
-            _uiState.value = _uiState.value.copy(deleteAccountError = "Please enter your password")
+            _uiState.value = _uiState.value.copy(
+                deleteAccountError = strings.get(R.string.auth_error_password_required),
+                deleteErrorField = DeleteAccountField.PASSWORD,
+            )
+            return
+        }
+        // Once the server has asked for the code, a request without a whole one
+        // can only be refused again.
+        val code = twoFactorCode?.trim()?.takeIf { it.isNotEmpty() }
+        if (_uiState.value.deleteRequiresTwoFactor && (code == null || !is2faCodeComplete(code))) {
+            _uiState.value = _uiState.value.copy(
+                deleteAccountError = strings.get(R.string.auth_error_2fa_format),
+                deleteErrorField = DeleteAccountField.CODE,
+            )
             return
         }
         // Send null for password-less accounts so the backend takes the
@@ -519,8 +629,8 @@ class AuthViewModel @Inject constructor(
         val submitted: String? = if (requiresPassword) password else password.ifBlank { null }
 
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null)
-            when (val result = repository.deleteAccount(submitted)) {
+            _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null, deleteErrorField = null)
+            when (val result = repository.deleteAccount(submitted, code)) {
                 is ApiResult.Success -> {
                     _uiState.value = AuthUiState(
                         isLoggedIn = false,
@@ -530,9 +640,22 @@ class AuthViewModel @Inject constructor(
                     )
                 }
                 is ApiResult.Error -> {
+                    // Item 85. The first answer from an account with 2FA is a
+                    // request for the code, not a failure: the dialog asks for
+                    // it with no error line. A wrong code keeps the field up
+                    // with the canonical wrong-code sentence; nothing is torn
+                    // down until the server confirms (accountDeleted above).
+                    val asksForCode = result.reason == FailureReason.TWO_FACTOR_REQUIRED
                     _uiState.value = _uiState.value.copy(
                         isDeletingAccount = false,
-                        deleteAccountError = parseDeleteError(result.message, result.code),
+                        deleteRequiresTwoFactor = _uiState.value.deleteRequiresTwoFactor || asksForCode ||
+                            result.reason == FailureReason.INVALID_CODE,
+                        deleteAccountError = if (asksForCode) null else result.message,
+                        deleteErrorField = when (result.reason) {
+                            FailureReason.INVALID_CREDENTIALS -> DeleteAccountField.PASSWORD
+                            FailureReason.INVALID_CODE -> DeleteAccountField.CODE
+                            else -> null
+                        },
                     )
                 }
             }
@@ -558,13 +681,25 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    /** The deletion dialog closed: its error and any 2FA prompt go with it. */
     fun clearDeleteAccountError() {
-        _uiState.value = _uiState.value.copy(deleteAccountError = null)
+        _uiState.value = _uiState.value.copy(
+            deleteAccountError = null,
+            deleteErrorField = null,
+            deleteRequiresTwoFactor = false,
+        )
     }
 
-    /** The user has read the "your store subscription is still billing" notice. */
-    fun dismissStoreBillingNotice() {
-        _uiState.value = _uiState.value.copy(storeSubscriptionsStillBilling = emptyList())
+    /**
+     * The user has read the post-deletion notice: the plain confirmation, or
+     * the "your store subscription is still billing" one, which also says the
+     * account was deleted. Either way it is shown once.
+     */
+    fun dismissAccountDeletedNotice() {
+        _uiState.value = _uiState.value.copy(
+            accountDeleted = false,
+            storeSubscriptionsStillBilling = emptyList(),
+        )
     }
 
     fun clearError() {
@@ -578,121 +713,5 @@ class AuthViewModel @Inject constructor(
             challengeToken = null,
             error = null,
         )
-    }
-
-    private fun parseDeleteError(raw: String, code: Int): String {
-        return when {
-            code == 401 || "Incorrect password" in raw || "password" in raw.lowercase() -> "Incorrect password"
-            code == 429 -> "Too many attempts. Please wait a moment."
-            "Network" in raw || "timeout" in raw.lowercase() -> "Unable to reach server. Check your connection."
-            else -> "Account deletion failed. Please try again."
-        }
-    }
-
-    /**
-     * Turn a sign-in failure into something the user can act on.
-     *
-     * `raw` is the SERVER'S ERROR BODY, not a bare status line: the repository
-     * passes `InputValidator.sanitizeErrorMessage(response.errorBody())`
-     * through, and Nest's body is `{"message":"…","statusCode":401}`. So the
-     * substring "401" is present on EVERY 401, whatever it actually says.
-     *
-     * That is what broke this: the first arm used to be
-     * `"Invalid credentials" in raw || "401" in raw -> "Invalid email or
-     * password"`, and the backend answers 401 for three completely different
-     * situations — wrong password ("Invalid credentials"), account lockout
-     * ("Too many failed login attempts" / "Account locked due to multiple
-     * failed login attempts") and a banned or suspended account ("Unable to
-     * sign in. Please contact support."). All three were reported as a wrong
-     * password. The locked-out user was handed the one instruction guaranteed
-     * to make things worse — retype your password — and every retry on a locked
-     * account extends nothing but their own frustration, while a banned user
-     * hunted for a password problem that does not exist.
-     *
-     * The specific sentences are therefore matched BEFORE the generic 401, and
-     * the generic 401 stays only as the last resort for a body we do not
-     * recognise. Matching is on `lower` so a wording change in case cannot
-     * silently drop an arm back into the catch-all.
-     */
-    /**
-     * Errors from `POST /auth/register/anonymous`. Distinct from [parseLoginError]
-     * because that endpoint has TWO rate limits behind one 429, with different
-     * remedies, and the backend's body says which fired:
-     *
-     *  - `rl:anon-register:ip:*`  — 3 per IP per hour; body says "from this
-     *    network". Another network, or an hour, clears it.
-     *  - `rl:anon-register:dev:*` — 5 per DEVICE per 24h, keyed on the stable
-     *    device id that survives sign-out and reinstall; body says "from this
-     *    device". Nothing the user does clears it — only the 24 hours passing.
-     *
-     * Routing this through [parseLoginError] rendered "Too many attempts.
-     * Please wait a moment." for both — wrong about whose limit it is and
-     * wrong about the wait by either an hour or a day. The iOS client had the
-     * same split (GuestAccess.swift); keep the two in step.
-     */
-    private fun parseAnonymousRegisterError(raw: String): String {
-        val lower = raw.lowercase()
-        val suffix = "You can keep using the app without an account, or sign in with an existing one."
-        return when {
-            "from this device" in lower ->
-                "This device has created too many anonymous accounts in the past 24 hours, " +
-                    "so this one was refused. Switching networks will not help — the limit is " +
-                    "per device and clears on its own after 24 hours. $suffix"
-            "from this network" in lower || "429" in raw ->
-                "Too many anonymous accounts have been created from this network in the past " +
-                    "hour, so this one was refused. Try again in about an hour. $suffix"
-            else -> parseLoginError(raw)
-        }
-    }
-
-    private fun parseLoginError(raw: String): String {
-        val lower = raw.lowercase()
-        return when {
-            // Banned / suspended. The backend deliberately returns ONE uniform
-            // sentence for both (telling a prober which would be an account
-            // oracle), so the honest thing for the app to do is repeat it —
-            // there is no self-service step, only support.
-            "unable to sign in" in lower -> "Unable to sign in. Please contact support."
-
-            // Locked out after repeated failed attempts. Three server wordings
-            // reach here: the lockout reason "Too many failed login attempts",
-            // the controller's "Account locked due to multiple failed login
-            // attempts", and validateUser's "Account locked. Try again in N
-            // minutes." / "Account is locked".
-            //
-            // NOTE the "failed" in the first matcher: the 429 rate-limit body
-            // says "Too many login attempts, please try later" — a different
-            // condition (the IP bucket, not the account) with a different
-            // remedy, and it must keep falling through to the 429 arm below.
-            "account locked" in lower ||
-                "account is locked" in lower ||
-                "too many failed login attempts" in lower ->
-                "Account locked after too many failed sign-in attempts. " +
-                    "Wait a few minutes before trying again, or reset your password."
-
-            // The password really was wrong.
-            "invalid credentials" in lower -> "Invalid email or password"
-
-            "429" in raw -> "Too many attempts. Please wait a moment."
-            "Certificate" in raw || "SSL" in raw || "pinning" in lower ->
-                "Secure connection failed. Please update the app."
-            // DNS resolution failures: system DNS gives "Unable to resolve host",
-            // DoH (DnsOverHttps) throws UnknownHostException whose message is
-            // just the bare hostname (e.g. "api.birdo.app").
-            "unable to resolve host" in lower ||
-                "unknownhost" in lower ||
-                Regex("^[a-z0-9.-]+\\.[a-z]{2,}$").matches(raw.trim()) ->
-                "No internet connection."
-            "Network" in raw || "timeout" in lower || "failed to connect" in lower ->
-                "Unable to reach server. Check your connection."
-
-            // Last resort for an UNRECOGNISED 401 body. Kept because a login
-            // form that cannot explain itself should still point at the most
-            // likely cause — but it is now genuinely last, so it can no longer
-            // hide a lockout, a ban or a suspension.
-            "401" in raw -> "Invalid email or password"
-
-            else -> "Login failed: $raw"
-        }
     }
 }

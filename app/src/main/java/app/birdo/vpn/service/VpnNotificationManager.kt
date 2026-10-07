@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
 import app.birdo.vpn.MainActivity
@@ -16,25 +18,213 @@ import app.birdo.vpn.utils.FormatUtils
 /**
  * Single-responsibility manager for all VPN notification construction.
  *
- * Owns the notification channel, foreground notification, and the
- * post-disconnect "not protected" notification. Keeps [BirdoVpnService]
+ * Owns the two channels (the ongoing status notification and the
+ * high-importance security alerts), the foreground notification, the alerts,
+ * and the post-disconnect "Not connected" notice. Keeps [BirdoVpnService]
  * focused on tunnel lifecycle.
+ *
+ * What each surface SAYS is decided by the pure functions in the companion
+ * ([statusModel], [alertFor], [connectedBody]) so it can be unit-tested;
+ * this class only turns those models into Android notifications. The words
+ * follow the canonical vocabulary of the 2026-09-30 parity audit
+ * (P1-parity-028): sentence case, no glyph prefixes, "via {location} · {IP}".
  */
 internal class VpnNotificationManager(private val context: Context) {
 
+    /** The tone of the ongoing notification, which picks its icon and accent. */
+    enum class Tone { PROTECTED, BUSY, ERROR, IDLE }
+
+    /** An action button on the ongoing notification. */
+    enum class Action { DISCONNECT, STOP_BLOCKING, RECONNECT, CONNECT }
+
+    data class StatusModel(
+        @param:StringRes val title: Int,
+        val tone: Tone,
+        val actions: List<Action>,
+    )
+
+    /**
+     * A high-importance alert: something stopped and the user may need to act.
+     * [key] de-duplicates, so an unchanged state never re-alerts.
+     */
+    data class AlertModel(
+        val key: String,
+        @param:StringRes val title: Int,
+        val body: String,
+        /** Offer "Reconnect" (VpnManager.connectPreferred) as well as opening the app. */
+        val reconnect: Boolean,
+    )
+
     companion object {
         const val CHANNEL_ID = "birdo_vpn_channel"
+        /**
+         * Security alerts: the kill switch could not be armed, a session
+         * stopped and needs the user, the VPN was turned off. IMPORTANCE_HIGH,
+         * because these used to be written into the silent LOW-importance
+         * status notification, where nobody would notice them (A1-027).
+         */
+        const val ALERT_CHANNEL_ID = "birdo_vpn_alerts"
         const val NOTIFICATION_ID = 1
         const val DISCONNECTED_NOTIFICATION_ID = 2
+        const val ALERT_NOTIFICATION_ID = 3
         private const val TAG = "VpnNotif"
+
+        /**
+         * Title, tone and actions of the ongoing notification.
+         *
+         * "Kill Switch — all traffic blocked" wins over "Connection error"
+         * and "Not connected" whenever the block is up, because it is the one
+         * fact the user must not miss; the reason, if any, is the body.
+         */
+        fun statusModel(
+            state: VpnState,
+            killSwitchActive: Boolean,
+            switching: Boolean,
+            multiHop: Boolean,
+        ): StatusModel {
+            val busy = state.isConnectingPhase || state is VpnState.Reconnecting
+            val blocked = killSwitchActive && state !is VpnState.Connected && !busy &&
+                state !is VpnState.Disconnecting
+            return when {
+                state is VpnState.Connected -> StatusModel(
+                    if (multiHop) R.string.notif_title_protected_multihop else R.string.notif_title_protected,
+                    Tone.PROTECTED,
+                    listOf(Action.DISCONNECT),
+                )
+                switching && (busy || state is VpnState.Disconnecting) ->
+                    StatusModel(R.string.status_switching, Tone.BUSY, listOf(Action.DISCONNECT))
+                state is VpnState.Reconnecting ->
+                    StatusModel(R.string.status_reconnecting, Tone.BUSY, listOf(Action.DISCONNECT))
+                state.isConnectingPhase ->
+                    StatusModel(R.string.connecting, Tone.BUSY, listOf(Action.DISCONNECT))
+                state is VpnState.Disconnecting ->
+                    StatusModel(R.string.disconnecting, Tone.BUSY, emptyList())
+                blocked -> StatusModel(
+                    R.string.kill_switch_blocking,
+                    Tone.ERROR,
+                    if (state is VpnState.Error && offersReconnect(state.kind)) {
+                        listOf(Action.RECONNECT, Action.STOP_BLOCKING)
+                    } else {
+                        listOf(Action.STOP_BLOCKING)
+                    },
+                )
+                state is VpnState.Error -> StatusModel(
+                    R.string.status_error,
+                    Tone.ERROR,
+                    if (offersReconnect(state.kind)) listOf(Action.RECONNECT) else emptyList(),
+                )
+                else -> StatusModel(R.string.status_not_connected, Tone.IDLE, listOf(Action.CONNECT))
+            }
+        }
+
+        /**
+         * Whether "Reconnect" can plausibly work without the user doing
+         * something in the app first. A spent retry budget or a revoke: yes.
+         * Signing in, updating, a plan, a permission prompt or a setting: no —
+         * those need the app, which the notification's tap opens.
+         */
+        private fun offersReconnect(kind: FailureKind): Boolean =
+            !kind.terminal || kind == FailureKind.REVOKED || kind == FailureKind.EVICTED
+
+        /** The body line while connected: "via {location}[ · {IP}]" (P1-parity-028). */
+        fun connectedBody(location: String?, ip: String?): String? {
+            val place = location?.takeIf { it.isNotBlank() }
+            val address = ip?.takeIf { it.isNotBlank() }
+            return when {
+                place != null && address != null -> "via $place · $address"
+                place != null -> "via $place"
+                else -> address
+            }
+        }
+
+        /**
+         * The alert for [state], or null when there is nothing to raise.
+         *
+         * Alerts are for when the app is NOT on screen — in the app the same
+         * words are already on Home, and a heads-up on top of them is noise.
+         */
+        fun alertFor(
+            state: VpnState,
+            killSwitchActive: Boolean,
+            sessionExpired: Boolean,
+            uiForeground: Boolean,
+        ): AlertModel? {
+            if (uiForeground) return null
+            if (state is VpnState.Connected && sessionExpired) {
+                return AlertModel("expired", R.string.notif_alert_sign_in, SessionCopy.SESSION_EXPIRED, reconnect = false)
+            }
+            if (state !is VpnState.Error) return null
+            val title = when (state.kind) {
+                FailureKind.SIGN_IN_REQUIRED -> R.string.notif_alert_sign_in
+                FailureKind.UPDATE_REQUIRED -> R.string.notif_alert_update
+                FailureKind.REVOKED, FailureKind.EVICTED -> R.string.notif_alert_revoked
+                FailureKind.QUOTA_EXCEEDED -> R.string.notif_alert_quota
+                FailureKind.VPN_TAKEN_OVER -> R.string.notif_alert_turned_off
+                FailureKind.SETUP_REQUIRED, FailureKind.VPN_PERMISSION_REQUIRED -> R.string.notif_alert_open_app
+                else -> R.string.notif_alert_cant_connect
+            }
+            // A give-up already says what happened to the traffic; its release
+            // is queued behind it, so the block is still up for the first
+            // render and appending "is blocking" contradicted the sentence
+            // before it (REVIEW-AND-014).
+            val body = if (killSwitchActive && !SessionCopy.speaksForTraffic(state.message)) {
+                state.message + " " + SessionCopy.STILL_BLOCKED
+            } else {
+                state.message
+            }
+            return AlertModel(
+                key = state.kind.name + ":" + state.message + ":" + killSwitchActive,
+                title = title,
+                body = body,
+                reconnect = offersReconnect(state.kind),
+            )
+        }
+
+        /**
+         * The address shown for the session's server (A1-020): the endpoint's IP
+         * literal for a single hop — the node the user picked — and NOTHING for
+         * Multi-Hop, where the endpoint is the ENTRY node: showing it as the
+         * user's address told a Multi-Hop customer they came out in the
+         * entry's country, the opposite of what they bought. The backend sends
+         * `ip:port` (vpn.service.ts), so the hostname branch that used to
+         * resolve names here was dead and is gone.
+         */
+        fun serverAddressForDisplay(endpoint: String?, multiHop: Boolean): String? {
+            if (multiHop || endpoint.isNullOrBlank()) return null
+            val host = if (endpoint.startsWith("[")) {
+                endpoint.substringAfter("[").substringBefore("]")
+            } else {
+                endpoint.substringBeforeLast(":", "")
+            }
+            val ipv4 = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+            return host.takeIf { ipv4.matches(it) || (endpoint.startsWith("[") && it.contains(':')) }
+        }
+
+        /** Posted when a system start could not bring the service back at all. */
+        fun stoppedUnexpectedlyAlert(): AlertModel =
+            AlertModel("stopped", R.string.notif_alert_stopped, SessionCopy.STOPPED_UNEXPECTEDLY, reconnect = false)
+
+        @DrawableRes
+        private fun iconFor(tone: Tone): Int = when (tone) {
+            Tone.PROTECTED -> R.drawable.ic_notif_connected
+            Tone.BUSY -> R.drawable.ic_notif_connecting
+            Tone.ERROR -> R.drawable.ic_notif_error
+            Tone.IDLE -> R.drawable.ic_notif_disconnected
+        }
+
+        private fun accentFor(tone: Tone): Int = when (tone) {
+            Tone.PROTECTED -> 0xFF34D399.toInt() // emerald-400 — protected
+            Tone.ERROR -> 0xFFEF4444.toInt()     // red
+            Tone.BUSY, Tone.IDLE -> 0xFF6B7280.toInt()
+        }
     }
 
     private val notificationManager: NotificationManager =
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-    // ── Channel ──────────────────────────────────────────────────
+    // ── Channels ─────────────────────────────────────────────────
 
-    fun createChannel() {
+    fun createChannels() {
         val channel = NotificationChannel(
             CHANNEL_ID, "VPN Status", NotificationManager.IMPORTANCE_LOW,
         ).apply {
@@ -48,7 +238,84 @@ internal class VpnNotificationManager(private val context: Context) {
             // channel level; the per-notification visibility below still applies.
             lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
+        val alerts = NotificationChannel(
+            ALERT_CHANNEL_ID, "Security alerts", NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "When the VPN stops protecting you and needs your attention"
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+        }
         notificationManager.createNotificationChannel(channel)
+        notificationManager.createNotificationChannel(alerts)
+    }
+
+    // ── Pending intents ──────────────────────────────────────────
+
+    private fun openAppIntent(): PendingIntent {
+        val openIntent = Intent()
+            .setClassName(context.packageName, MainActivity::class.java.name)
+            .setPackage(context.packageName)
+            .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(
+            context, 0, openIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
+    private fun connectInAppIntent(): PendingIntent {
+        val connectIntent = Intent(Intent.ACTION_VIEW, "birdo://connect".toUri())
+            .setClassName(context.packageName, MainActivity::class.java.name)
+            .setPackage(context.packageName)
+            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        return PendingIntent.getActivity(
+            context, 2, connectIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
+    private fun serviceIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            context, requestCode,
+            Intent(action)
+                .setClassName(context.packageName, BirdoVpnService::class.java.name)
+                .setPackage(context.packageName),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    private fun NotificationCompat.Builder.addActions(actions: List<Action>): NotificationCompat.Builder {
+        for (action in actions) {
+            // The destructive actions (drop the tunnel / release the
+            // fail-closed block) require device unlock before firing (API 31+;
+            // a no-op on older releases): anyone briefly holding a locked
+            // handset must not be able to strip its VPN protection from the
+            // lock screen. Both go through VpnManager (A1-009), never straight
+            // to ACTION_STOP.
+            val built = when (action) {
+                Action.DISCONNECT -> NotificationCompat.Action.Builder(
+                    R.drawable.ic_notif_disconnected,
+                    context.getString(R.string.disconnect),
+                    serviceIntent(BirdoVpnService.ACTION_USER_DISCONNECT, 1),
+                ).setAuthenticationRequired(true).build()
+                // A1-030: this used to read "Disable Kill Switch" and only
+                // disconnected, leaving the kill switch on. It says what it does.
+                Action.STOP_BLOCKING -> NotificationCompat.Action.Builder(
+                    R.drawable.ic_notif_disconnected,
+                    context.getString(R.string.notif_action_stop_blocking),
+                    serviceIntent(BirdoVpnService.ACTION_USER_DISCONNECT, 1),
+                ).setAuthenticationRequired(true).build()
+                Action.RECONNECT -> NotificationCompat.Action.Builder(
+                    R.drawable.ic_notif_connected,
+                    context.getString(R.string.notif_action_reconnect),
+                    serviceIntent(BirdoVpnService.ACTION_USER_RECONNECT, 3),
+                ).build()
+                Action.CONNECT -> NotificationCompat.Action.Builder(
+                    R.drawable.ic_notif_connected,
+                    context.getString(R.string.connect),
+                    connectInAppIntent(),
+                ).build()
+            }
+            addAction(built)
+        }
+        return this
     }
 
     // ── Foreground notification ──────────────────────────────────
@@ -56,79 +323,37 @@ internal class VpnNotificationManager(private val context: Context) {
     /**
      * Build the foreground service notification.
      *
-     * @param status  One-line status text (body of the notification).
-     * @param state   Current [VpnState] — drives icon, title, accent colour, actions.
-     * @param extras  Optional extra details for `BigTextStyle` expansion.
+     * @param state the session state to render — VpnManager's, which owns it.
+     * @param body the one-line body (the reason for an Error, "via …" while connected).
+     * @param details extra lines for the expanded view while connected.
      */
     fun buildForegroundNotification(
-        status: String,
-        state: VpnState = VpnState.Disconnected,
-        connectedSince: Long = 0L,
+        state: VpnState,
+        body: String? = null,
         killSwitchActive: Boolean = false,
-        killSwitchEnabled: Boolean = false,
-        splitTunnelingEnabled: Boolean = false,
-        splitTunnelAppCount: Int = 0,
-        rxBytes: Long = 0L,
-        txBytes: Long = 0L,
+        switching: Boolean = false,
+        multiHop: Boolean = false,
+        connectedSince: Long = 0L,
+        details: List<String> = emptyList(),
     ): Notification {
-        val openIntent = Intent()
-            .setClassName(context.packageName, MainActivity::class.java.name)
-            .setPackage(context.packageName)
-            .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        val pendingOpen = PendingIntent.getActivity(
-            context, 0, openIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val stopPendingIntent = PendingIntent.getService(
-            context, 1,
-            Intent(BirdoVpnService.ACTION_STOP)
-                .setClassName(context.packageName, BirdoVpnService::class.java.name)
-                .setPackage(context.packageName),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val connectIntent = Intent(Intent.ACTION_VIEW, "birdo://connect".toUri())
-            .setClassName(context.packageName, MainActivity::class.java.name)
-            .setPackage(context.packageName)
-            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val connectPendingIntent = PendingIntent.getActivity(
-            context, 2, connectIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-
-        // Subjectless `when` + [isConnectingPhase], not an inline
-        // `is VpnState.Connecting`. The inline form missed
-        // [VpnState.StealthConnecting], which BirdoVpnService publishes for the
-        // WHOLE stealth setup (Xray start, Rosenpass exchange, WgNative turnOn,
-        // establish) — and updateNotification passes currentState straight in.
-        // So for those seconds the ongoing notification showed the disconnected
-        // icon and "Not Protected" over a connect that was very much in flight.
-        // Same stale-enumeration shape isConnectingPhase was introduced to end;
-        // this file was the call site it missed. See its kdoc.
-        val iconRes = when {
-            state is VpnState.Connected -> R.drawable.ic_notif_connected
-            state.isConnectingPhase -> R.drawable.ic_notif_connecting
-            state is VpnState.Error -> R.drawable.ic_notif_error
-            else -> R.drawable.ic_notif_disconnected
-        }
-
-        val title = when {
-            state is VpnState.Connected -> "● BirdoVPN — Protected"
-            state.isConnectingPhase -> "◌ BirdoVPN — Connecting…"
-            state is VpnState.Disconnecting -> "◌ BirdoVPN — Disconnecting…"
-            state is VpnState.Error -> "✕ BirdoVPN — Connection Error"
-            else -> if (killSwitchActive) "● BirdoVPN — Kill Switch Active"
-                    else "○ BirdoVPN — Not Protected"
-        }
-
-        val accentColor = when (state) {
-            is VpnState.Connected -> 0xFF34D399.toInt()  // emerald-400 — protected
-            is VpnState.Error     -> 0xFFEF4444.toInt()  // Red
-            else                  -> 0xFF6B7280.toInt()  // Gray
+        val model = statusModel(state, killSwitchActive, switching, multiHop)
+        val title = context.getString(model.title)
+        val iconRes = iconFor(model.tone)
+        val accentColor = accentFor(model.tone)
+        val pendingOpen = openAppIntent()
+        val text = body ?: (state as? VpnState.Reconnecting)?.let {
+            if (it.waitingForNetwork && it.captivePortal) {
+                context.getString(R.string.notif_body_captive_portal)
+            } else if (it.waitingForNetwork) {
+                context.getString(R.string.notif_body_waiting_network)
+            } else {
+                context.getString(R.string.notif_body_attempt, it.attempt)
+            }
         }
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(status)
+            .setContentText(text)
             .setSmallIcon(iconRes)
             .setContentIntent(pendingOpen)
             .setOngoing(true)
@@ -136,8 +361,7 @@ internal class VpnNotificationManager(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             // PRIVATE + a bland public version: on the lock screen the OS shows
             // only the title-level state, never the server name / IP / duration
-            // that the status line can carry. Full detail stays in the
-            // post-unlock shade.
+            // that the body can carry. Full detail stays in the post-unlock shade.
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(
                 NotificationCompat.Builder(context, CHANNEL_ID)
@@ -155,95 +379,141 @@ internal class VpnNotificationManager(private val context: Context) {
             .setOnlyAlertOnce(true)
             .setColor(accentColor)
             .setColorized(true)
+            .addActions(model.actions)
 
-        // Chronometer for connected state
+        // Chronometer for connected state: the duration is rendered natively,
+        // so the body does not need to carry it.
         if (state is VpnState.Connected && connectedSince > 0) {
             builder.setUsesChronometer(true)
             builder.setWhen(connectedSince)
             builder.setShowWhen(true)
         }
 
-        // Expanded view — multi-line info
-        if (state is VpnState.Connected) {
-            val bigText = buildString {
-                append(status)
-                if (rxBytes > 0 || txBytes > 0) {
-                    append("\n↓ ${formatBytes(rxBytes)}  ↑ ${formatBytes(txBytes)}")
-                }
-                if (killSwitchEnabled) append("\nKill Switch enabled")
-                if (splitTunnelingEnabled && splitTunnelAppCount > 0) {
-                    append("\n$splitTunnelAppCount apps bypassing VPN")
-                }
-            }
+        if (state is VpnState.Connected && details.isNotEmpty()) {
+            val bigText = (listOfNotNull(text) + details).joinToString("\n")
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
-        }
-        if (state is VpnState.Error) {
-            builder.setStyle(NotificationCompat.BigTextStyle().bigText(status))
-        }
-
-        // Action buttons. The two destructive actions (drop the tunnel /
-        // clear the fail-closed kill switch) require device unlock before
-        // firing (API 31+; a no-op on older releases): anyone briefly holding
-        // a locked handset must not be able to strip its VPN protection from
-        // the lock screen.
-        val disconnectAction = NotificationCompat.Action.Builder(
-            R.drawable.ic_notif_disconnected, "Disconnect", stopPendingIntent,
-        ).setAuthenticationRequired(true).build()
-        val disableKillSwitchAction = NotificationCompat.Action.Builder(
-            R.drawable.ic_notif_disconnected, "Disable Kill Switch", stopPendingIntent,
-        ).setAuthenticationRequired(true).build()
-        when {
-            state is VpnState.Connected || state.isConnectingPhase -> {
-                builder.addAction(disconnectAction)
-            }
-            killSwitchActive -> {
-                builder.addAction(disableKillSwitchAction)
-            }
-            state is VpnState.Disconnected || state is VpnState.Error -> {
-                builder.addAction(R.drawable.ic_notif_connected, "Connect", connectPendingIntent)
-            }
+        } else if (state is VpnState.Error && text != null) {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(text))
         }
 
         return builder.build()
     }
 
+    /** Expanded-view lines while connected, in plain words (no arrows or glyphs). */
+    fun connectedDetails(
+        rxBytes: Long,
+        txBytes: Long,
+        stealthActive: Boolean,
+        quantumActive: Boolean,
+        killSwitchEnabled: Boolean,
+        splitTunnelAppCount: Int,
+    ): List<String> = buildList {
+        if (rxBytes > 0 || txBytes > 0) {
+            add(
+                context.getString(
+                    R.string.notif_detail_traffic,
+                    FormatUtils.formatBytes(rxBytes),
+                    FormatUtils.formatBytes(txBytes),
+                ),
+            )
+        }
+        if (stealthActive) add(context.getString(R.string.notif_detail_stealth))
+        if (quantumActive) add(context.getString(R.string.notif_detail_quantum))
+        if (killSwitchEnabled) add(context.getString(R.string.notif_detail_kill_switch))
+        if (splitTunnelAppCount > 0) {
+            add(
+                context.resources.getQuantityString(
+                    R.plurals.settings_apps_bypassing, splitTunnelAppCount, splitTunnelAppCount,
+                ),
+            )
+        }
+    }
+
+    // ── Alerts ───────────────────────────────────────────────────
+
+    fun postAlert(alert: AlertModel) {
+        try {
+            val title = context.getString(alert.title)
+            val builder = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notif_error)
+                .setContentTitle(title)
+                .setContentText(alert.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(alert.body))
+                .setContentIntent(openAppIntent())
+                .setAutoCancel(true)
+                // A re-post of the same alert (the block flag flipped, the
+                // service re-rendered) updates it silently instead of
+                // sounding a second time (REVIEW-AND-014).
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ERROR)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(
+                    NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
+                        .setSmallIcon(R.drawable.ic_notif_error)
+                        .setContentTitle(title)
+                        .build()
+                )
+                .setColor(0xFFEF4444.toInt())
+            if (alert.reconnect) builder.addActions(listOf(Action.RECONNECT))
+            notificationManager.notify(ALERT_NOTIFICATION_ID, builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to post alert", e)
+        }
+    }
+
+    fun cancelAlert() {
+        notificationManager.cancel(ALERT_NOTIFICATION_ID)
+    }
+
+    /**
+     * A new process found no service, yet a dead one's ongoing notification
+     * can still be on screen saying "Protected" (seen live on API 35 after a
+     * crash with START_STICKY). Replace its content with the truth first —
+     * an update is allowed even while the system still counts it as a
+     * foreground-service notification, which an app cannot cancel — then
+     * cancel it, which succeeds once nothing owns it.
+     */
+    fun retractStaleStatus() {
+        try {
+            val honest = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notif_disconnected)
+                .setContentTitle(context.getString(R.string.status_not_connected))
+                .setContentText(SessionCopy.STOPPED_UNEXPECTEDLY)
+                .setContentIntent(openAppIntent())
+                .setSilent(true)
+                .setAutoCancel(true)
+                .setCategory(NotificationCompat.CATEGORY_STATUS)
+                .build()
+            notificationManager.notify(NOTIFICATION_ID, honest)
+            notificationManager.cancel(NOTIFICATION_ID)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not retract the stale status notification", e)
+        }
+    }
+
     // ── Post-disconnect notification ─────────────────────────────
 
     /**
-     * Post a standalone "Not Protected" notification that persists after the
-     * foreground service is torn down, with a quick "Connect" action.
+     * Post a standalone "Not connected" notice that persists after the
+     * foreground service is torn down, with a quick "Connect" action. Only
+     * for a stop the user did not ask for, and only while the Notifications
+     * setting is on (the caller decides both).
      */
     fun postDisconnectedNotification() {
         try {
-            val openIntent = Intent()
-                .setClassName(context.packageName, MainActivity::class.java.name)
-                .setPackage(context.packageName)
-                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            val pendingOpen = PendingIntent.getActivity(
-                context, 0, openIntent,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-            val connectIntent = Intent(Intent.ACTION_VIEW, "birdo://connect".toUri())
-                .setClassName(context.packageName, MainActivity::class.java.name)
-                .setPackage(context.packageName)
-                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            val connectPending = PendingIntent.getActivity(
-                context, 2, connectIntent,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-
             val notif = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notif_disconnected)
-                .setContentTitle("○ BirdoVPN — Not Protected")
-                .setContentText("Tap Connect to protect your connection")
-                .setContentIntent(pendingOpen)
+                .setContentTitle(context.getString(R.string.status_not_connected))
+                .setContentText(context.getString(R.string.notif_disconnected_body))
+                .setContentIntent(openAppIntent())
                 .setSilent(true)
                 .setAutoCancel(true)
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setColor(0xFF6B7280.toInt())
                 .setColorized(true)
-                .addAction(R.drawable.ic_notif_connected, "Connect", connectPending)
+                .addActions(listOf(Action.CONNECT))
                 .build()
 
             notificationManager.notify(DISCONNECTED_NOTIFICATION_ID, notif)
@@ -261,7 +531,4 @@ internal class VpnNotificationManager(private val context: Context) {
     fun cancelDisconnected() {
         notificationManager.cancel(DISCONNECTED_NOTIFICATION_ID)
     }
-
-    /** Format bytes into human-readable string. Delegates to shared [FormatUtils]. */
-    fun formatBytes(bytes: Long): String = FormatUtils.formatBytes(bytes)
 }

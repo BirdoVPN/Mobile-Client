@@ -59,6 +59,9 @@ class PublicClaimsGuardTest {
         "never included in backups", "never in backups", "not in any backup",
         // Second-pass #7: FaultReporter sends error events, not only crashes.
         "crash details only", "device model only",
+        // LIVE-PORT53: the relays accept WireGuard on 51820 only; the port is
+        // not a setting any more.
+        "custom WireGuard port",
     )
 
     /** Every publishable text surface in this repo, as (label, text). */

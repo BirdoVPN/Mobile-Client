@@ -149,7 +149,7 @@ sealed interface StoreLinkOutcome {
 
     /**
      * The server did not accept it. [message] is the server's own words when it
-     * wrote any, otherwise [StoreLinkRefusal.fallbackMessage].
+     * wrote any, otherwise [StoreLinkRefusal.fallbackMessageRes].
      */
     data class Refused(val refusal: StoreLinkRefusal, val message: String) : StoreLinkOutcome
 }

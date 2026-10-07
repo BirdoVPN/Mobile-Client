@@ -2,6 +2,7 @@ package app.birdo.vpn.data.network
 
 import app.birdo.vpn.BuildConfig
 import okhttp3.CertificatePinner
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
@@ -69,8 +70,15 @@ object DohResolver {
 
     // Bootstrap client is used for the first DoH connection (before DoH is ready).
     // Cert-pin the DoH provider to prevent MITM during bootstrap.
+    //
+    // D-6: DoH serves only the API's BYPASS client — the paths where the app's
+    // traffic must not ride a tunnel (before one exists, behind the kill-switch
+    // block, on the reconnect path, during Stealth). Its sockets are protected
+    // the same way, so a lookup made while a dead tunnel is still up goes
+    // around it with the request it resolves for.
     private val bootstrapClient: OkHttpClient = run {
         val builder = OkHttpClient.Builder()
+            .socketFactory(ProtectingSocketFactory())
             // Short and explicit, not OkHttp's 10s defaults. Every second spent
             // here is spent inside a Dns.lookup that the API client's phase
             // timeouts do not bound, before the resolver can degrade to the
@@ -122,6 +130,13 @@ object DohResolver {
         }
         builder.build()
     }
+
+    /**
+     * The pool of the connections DoH keeps open to its provider, outside any
+     * tunnel. The API's call factory drops its idle ones when the app's
+     * traffic moves into the tunnel (RoutingCallFactory, F3).
+     */
+    val connectionPool: ConnectionPool get() = bootstrapClient.connectionPool
 
     private val cloudflare: DnsOverHttps = DnsOverHttps.Builder()
         .client(bootstrapClient)

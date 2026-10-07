@@ -1,10 +1,17 @@
 package app.birdo.vpn
 
 import android.app.Application
+import android.content.Intent
+import androidx.core.content.ContextCompat
 import app.birdo.vpn.billing.PlayBillingManager
+import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.service.BirdoVpnService
+import app.birdo.vpn.service.SystemStartPolicy
+import app.birdo.vpn.service.VpnNotificationManager
 import app.birdo.vpn.utils.CpuFeatures
 import app.birdo.vpn.utils.CrashReporting
+import app.birdo.vpn.utils.FaultReporter
 import dagger.hilt.android.HiltAndroidApp
 import io.sentry.Sentry
 import io.sentry.android.core.SentryAndroid
@@ -37,6 +44,9 @@ class BirdoApp : Application() {
     /** Holds the user's crash-report choice. See [applyCrashReportingConsent]. */
     @Inject lateinit var appPreferences: AppPreferences
 
+    /** Opened in the startup warm-up below, off the main thread. */
+    @Inject lateinit var tokenManager: dagger.Lazy<TokenManager>
+
     override fun onCreate() {
         super.onCreate()
         // Crash reporting is OPT-IN. Nothing is initialised here unless the
@@ -45,19 +55,88 @@ class BirdoApp : Application() {
         // unconditionally, starts with the SDK off and its unsent queue
         // discarded. See CrashReporting for the whole rule.
         applyCrashReportingConsent()
-        // dagger.Lazy, and the flag checked HERE rather than only inside
-        // start(): in a non-Play build (debug, sideload APK, F-Droid) the rail
-        // can never work — Play Billing does not sell to an app the Play Store
-        // did not install — so nothing about it should be built during
-        // Application.onCreate, which is on the cold-start critical path.
-        // Constructing the manager here would also pull in the Retrofit/OkHttp
-        // graph, which otherwise waits until the first screen composes.
-        if (BuildConfig.IS_PLAY_BUILD) {
+        resumeSessionAfterProcessDeath()
+        // STARTUP WARM-UP, OFF THE MAIN THREAD (A2-021). Opening the token
+        // store is Keystore work (key generation on a first run, a seal/open
+        // probe, the legacy migration, and a delete-and-regenerate recovery
+        // when the Keystore misbehaves), and the Play rail's construction
+        // builds the whole Retrofit/OkHttp/TokenManager graph. Both used to
+        // run right here, on the cold-start critical path of the store build.
+        // Started now, they are usually finished by the time the first screen
+        // asks for the TokenManager; if not, that caller waits on Hilt's
+        // singleton lock, which is no worse than doing the work itself.
+        //
+        // dagger.Lazy for the rail, and the flag checked HERE rather than only
+        // inside start(): in a non-Play build (debug, sideload APK, F-Droid)
+        // the rail can never work — Play Billing does not sell to an app the
+        // Play Store did not install — so nothing about it is built at all.
+        Thread({
             try {
-                playBilling.get().start()
+                tokenManager.get()
             } catch (e: Exception) {
-                // A wedged Play Store must never take down the whole app.
-                android.util.Log.e("BirdoApp", "Play Billing init failed", e)
+                android.util.Log.w("BirdoApp", "Token store warm-up failed", e)
+            }
+            // Nothing reaches the backend before the CURRENT consent (audit
+            // D-12, A2-028's residual): the rail's start reconciles Play
+            // purchases with the server. MainActivity starts it the moment
+            // consent is given.
+            if (BuildConfig.IS_PLAY_BUILD && appPreferences.hasAcceptedCurrentConsent) {
+                try {
+                    playBilling.get().start()
+                } catch (e: Exception) {
+                    // A wedged Play Store must never take down the whole app.
+                    android.util.Log.e("BirdoApp", "Play Billing init failed", e)
+                }
+            }
+        }, "birdo-startup").start()
+    }
+
+    /**
+     * A session the user wanted, and no service in this new process to hold
+     * it: the previous process died (a crash, a low-memory kill) and Android
+     * did not restart the service. Live on API 35 (2026-09-30) it never did,
+     * and reopening the app showed "Not connected" with the user's intent
+     * forgotten, while a lockdown user stayed offline. Every process start —
+     * the user opening the app, the widget, the tile — now asks the service to
+     * resume through the same system-start path as Always-on: the block first
+     * when the kill switch or lockdown asks for it, then a headless connect,
+     * "Reconnecting…" from the first frame.
+     *
+     * Not only after a crash (REVIEW-AND2-005): the intent survives a reboot
+     * and a Force stop, and nothing here can tell those apart from a crash on
+     * every supported API level, so the first process start after either —
+     * a launcher's widget refresh at boot, the user reopening the app —
+     * restores the connection too. Kept, and documented in README.md, rather
+     * than gated: a wrong "this was not a crash" verdict would bring back the
+     * live P1 (a device left unprotected with its intent forgotten), and a
+     * connection the user left on and did not turn off coming back is the
+     * honest reading of that intent. A tap that started the process joins this
+     * resume (VpnManager.claimTapForResume).
+     *
+     * When Android refuses the start (a background start it does not exempt:
+     * a widget refresh is a broadcast, not a user interaction; whether a
+     * consented VPN app is exempt varies by version), the dead service's
+     * notification is retracted and the user is told, instead of a stale
+     * "Protected".
+     */
+    private fun resumeSessionAfterProcessDeath() {
+        if (!SystemStartPolicy.resumeOnProcessStart(appPreferences.sessionShouldBeUp, BirdoVpnService.running)) return
+        try {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, BirdoVpnService::class.java).setAction(BirdoVpnService.ACTION_RESUME_SESSION),
+            )
+        } catch (e: Exception) {
+            FaultReporter.report(
+                FaultReporter.PATH_CONNECT,
+                "process_start_resume_refused",
+                "A new process found the session down and could not restart the VPN service",
+                e,
+            )
+            VpnNotificationManager(this).apply {
+                createChannels()
+                retractStaleStatus()
+                postAlert(VpnNotificationManager.stoppedUnexpectedlyAlert())
             }
         }
     }
@@ -227,38 +306,11 @@ class BirdoApp : Application() {
             options.beforeSendTransaction =
                 io.sentry.SentryOptions.BeforeSendTransactionCallback { _, _ -> null }
 
-            // SEC: Scrub sensitive values from error events before they are sent.
-            // Covers the event message, every exception value AND breadcrumb
-            // message/data — an uncaught crash (the normal path) has a null
-            // event.message but its exception string can embed exactly what a
-            // VPN client must not export: the endpoint host or IP
-            // ("failed to connect to /144.x.x.x (port 51820)",
-            // "UnknownHostException: de-fra-1.birdo.app" — no scheme, so a
-            // URL-only pattern misses both), account emails, and 44-char base64
-            // WireGuard key material. Pattern set mirrors the desktop's
-            // sanitize_error (redact.rs: IPv4 + email + bare hostname) plus the
-            // key/UUID/URL patterns already here, so the two clients agree.
-            // Order matters: URL before host/IP (so scheme'd hosts collapse to
-            // [URL]), email before hostname (so the domain half can't be
-            // half-matched), IPv6 before IPv4 (mapped forms).
-            val scrub: (String?) -> String? = { s ->
-                s
-                    ?.replace(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE), "[UUID]")
-                    ?.replace(Regex("[0-9a-fA-F]{64}"), "[KEY]")
-                    // WireGuard/ML-KEM keys are 32 bytes → 43 base64 chars + '='.
-                    ?.replace(Regex("[A-Za-z0-9+/]{43}="), "[KEY]")
-                    ?.replace(Regex("https?://[\\w.:-]+"), "[URL]")
-                    // IPv6: uncompressed (≥3 hex groups), then "::"-compressed.
-                    // The compressed pattern REQUIRES hex after the "::" so a
-                    // bare "::" in code symbols (Kotlin/C++ "Class::member")
-                    // never matches.
-                    ?.replace(Regex("\\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\\b"), "[IP]")
-                    ?.replace(Regex("(?:\\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?::[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*\\b"), "[IP]")
-                    ?.replace(Regex("\\b\\d{1,3}(?:\\.\\d{1,3}){3}\\b"), "[IP]")
-                    ?.replace(Regex("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"), "[EMAIL]")
-                    // Bare hostnames (≥3 labels, like our node names) — desktop HOST_RE.
-                    ?.replace(Regex("\\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+\\.[a-zA-Z]{2,}\\b"), "[HOST]")
-            }
+            // SEC: Scrub sensitive values from error events before they are sent:
+            // the event message, every exception value AND breadcrumb
+            // message/data. The patterns live in CrashReporting.scrub, where
+            // they are unit tested.
+            val scrub: (String?) -> String? = CrashReporting::scrub
             // Scrub breadcrumbs at CAPTURE time, not only on the way out.
             // beforeSend (below) sees only the crumbs attached to an event it
             // is given; a crumb recorded now can also be attached by a code

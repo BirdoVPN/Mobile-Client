@@ -4,9 +4,12 @@ import app.birdo.vpn.data.model.TokenPair
 import app.birdo.vpn.data.model.TwoFactorVerifyResponse
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.shared.model.LoginResult as SharedLoginResult
+import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
+import app.birdo.vpn.data.repository.FailureReason
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.testing.StringsXml
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -25,6 +28,7 @@ class AuthViewModelTest {
     private lateinit var repository: BirdoRepository
     private lateinit var tokenManager: TokenManager
     private lateinit var oauthStore: app.birdo.vpn.data.auth.OAuthStateStore
+    private lateinit var prefs: AppPreferences
     private lateinit var viewModel: AuthViewModel
     private val testDispatcher = UnconfinedTestDispatcher()
 
@@ -47,6 +51,10 @@ class AuthViewModelTest {
         repository = mockk(relaxed = true)
         tokenManager = mockk(relaxed = true)
         oauthStore = mockk(relaxed = true)
+        prefs = mockk(relaxed = true)
+        // Default: the current consent is accepted, so init runs its session
+        // check as it always did. The consent gate has its own tests below.
+        io.mockk.every { prefs.hasAcceptedCurrentConsent } returns true
         io.mockk.every { tokenManager.isLoggedIn() } returns true
         // Default: no anonymous ID awaiting acknowledgement. Stubbed explicitly
         // because a non-null value here deliberately holds sign-in back, which
@@ -61,7 +69,7 @@ class AuthViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager, oauthStore)
+    private fun createViewModel(): AuthViewModel = AuthViewModel(repository, tokenManager, oauthStore, prefs, StringsXml)
 
     /**
      * Helper: create a ViewModel that is already past the init checkSession,
@@ -69,7 +77,10 @@ class AuthViewModelTest {
      */
     private fun createLoggedOutViewModel(): AuthViewModel {
         coEvery { repository.getProfile() } returns ApiResult.Error("Unauthorized", 401)
-        return createViewModel()
+        // A stored session whose profile check 401s now puts "Your session has
+        // expired" on Login (A2-004; see `init without valid session sets logged
+        // out`). These tests start from a clean Login screen.
+        return createViewModel().also { it.clearError() }
     }
 
     /**
@@ -122,7 +133,11 @@ class AuthViewModelTest {
         assertFalse(state.isLoggedIn)
         assertFalse(state.isLoading)
         assertNull(state.user)
-        assertNull(state.error)
+        // A2-004: the stored session died, which is not the same as never
+        // having one. Login says so, and the nav graph hands the flag to the
+        // VPN so a tunnel from that session is not left up unexplained.
+        assertTrue(state.sessionExpired)
+        assertEquals("Your session has expired. Sign in again.", state.error)
     }
 
     @Test
@@ -207,7 +222,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "12345")
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -216,7 +231,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "a")
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -225,7 +240,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "")
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -234,7 +249,7 @@ class AuthViewModelTest {
 
         viewModel.login("user@birdo.app", "a".repeat(257))
 
-        assertEquals("Password must be 6-256 characters", viewModel.uiState.value.error)
+        assertEquals("Password must be 6–256 characters", viewModel.uiState.value.error)
     }
 
     @Test
@@ -394,10 +409,23 @@ class AuthViewModelTest {
     //  4. FAILED LOGIN — error mapping
     // ═════════════════════════════════════════════════════════════
 
+    // The repository's error mapper decides the words (ApiErrorMapperTest holds
+    // every body-to-sentence rule that used to live here as parseLoginError).
+    // What the ViewModel owns is showing that text as-is and deciding what a
+    // failure DOES: which ones count toward the client throttle, and which
+    // 2FA failure sends the user back to the start.
+
+    private val wrongPassword =
+        ApiResult.Error("Invalid email or password", 401, FailureReason.INVALID_CREDENTIALS)
+    private val invalidCode =
+        ApiResult.Error("Invalid verification code. Please try again.", 401, FailureReason.INVALID_CODE)
+    private val unreachable =
+        ApiResult.Error("Unable to reach BirdoVPN. Check your connection and try again.", 0, FailureReason.UNREACHABLE)
+
     @Test
-    fun `login 401 invalid credentials shows user-friendly error`() = runTest {
+    fun `a sign-in failure shows the mapped message verbatim`() = runTest {
         viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Invalid credentials", 401)
+        coEvery { repository.login(any(), any()) } returns wrongPassword
 
         viewModel.login("user@birdo.app", "wrongpass")
 
@@ -407,196 +435,43 @@ class AuthViewModelTest {
         assertEquals("Invalid email or password", state.error)
     }
 
+    /** The whole point of A2-001: nothing reaches this screen prefixed "Login failed:". */
     @Test
-    fun `login error containing 401 code string shows credentials error`() = runTest {
+    fun `a sign-in failure is never decorated with the raw text`() = runTest {
         viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Error 401 unauthorized")
-
-        viewModel.login("user@birdo.app", "wrongpass")
-
-        assertEquals("Invalid email or password", viewModel.uiState.value.error)
-    }
-
-    // ── 401 is not one situation ─────────────────────────────────
-    // The backend answers 401 with three different meanings, and the error
-    // BODY is what distinguishes them: Nest sends {"message":"…",
-    // "statusCode":401}, so the substring "401" is present on all of them.
-    // parseLoginError used to match "401" first and report every one of them as
-    // a wrong password, which told a locked-out user to keep retyping — the
-    // single worst instruction available — and sent a banned user hunting for a
-    // password problem that does not exist. These cases pin the real wording
-    // the server sends (auth.controller validateLoginAttempt / lockout.service).
-    //
-    // They assert the EXACT rendered sentence, not just "contains 'locked'".
-    // A contains-check would still pass if the arm degraded to something
-    // useless like "Login failed: {"message":"Account locked...","statusCode":401}"
-    // — which is precisely the raw-JSON leak the 403 case below exists to
-    // forbid — so the weaker assertion would let the fix rot into a regression
-    // while staying green.
-    private val lockedMessage =
-        "Account locked after too many failed sign-in attempts. " +
-            "Wait a few minutes before trying again, or reset your password."
-
-    @Test
-    fun `login on a locked account says locked, not wrong password`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Too many failed login attempts","error":"Unauthorized","statusCode":401}""",
-            401,
-        )
+        coEvery { repository.login(any(), any()) } returns unreachable
 
         viewModel.login("user@birdo.app", "password")
 
-        val error = viewModel.uiState.value.error
-        assertNotEquals("Invalid email or password", error)
-        assertEquals(lockedMessage, error)
+        assertEquals(unreachable.message, viewModel.uiState.value.error)
+    }
+
+    /**
+     * Only a DEFINITIVE rejection counts toward the five-per-minute client
+     * throttle. Counting offline retries locked people out of a correct
+     * password they had merely retried on a bad connection (A2-008).
+     */
+    @Test
+    fun `network failures do not count toward the sign-in throttle`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns unreachable
+
+        repeat(6) { viewModel.login("user@birdo.app", "password") }
+
+        coVerify(exactly = 6) { repository.login(any(), any()) }
     }
 
     @Test
-    fun `login on a freshly locked account says locked, not wrong password`() = runTest {
+    fun `five wrong passwords trip the client throttle`() = runTest {
         viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Account locked due to multiple failed login attempts","statusCode":401}""",
-            401,
-        )
+        coEvery { repository.login(any(), any()) } returns wrongPassword
 
-        viewModel.login("user@birdo.app", "password")
+        repeat(6) { viewModel.login("user@birdo.app", "password") }
 
-        val error = viewModel.uiState.value.error
-        assertNotEquals("Invalid email or password", error)
-        assertEquals(lockedMessage, error)
-    }
-
-    /** validateUser's timed variant, which arrives as a 403 and used to fall all
-     *  the way through to "Login failed: {raw json}". */
-    @Test
-    fun `login on a timed lockout does not leak the raw error body`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Account locked. Try again in 12 minutes.","statusCode":403}""",
-            403,
-        )
-
-        viewModel.login("user@birdo.app", "password")
-
-        val error = viewModel.uiState.value.error
-        assertFalse("raw JSON must never reach the user: $error", error!!.contains("statusCode"))
-        assertEquals(lockedMessage, error)
-    }
-
-    /** lockout.service's untimed fallback, thrown by validateUser as
-     *  'Account is locked' — a different sentence from every other lockout
-     *  wording, and the one most likely to be missed by a matcher tuned only to
-     *  "account locked". */
-    @Test
-    fun `login on an untimed lockout says locked, not wrong password`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Account is locked","error":"Forbidden","statusCode":403}""",
-            403,
-        )
-
-        viewModel.login("user@birdo.app", "password")
-
-        val error = viewModel.uiState.value.error
-        assertNotEquals("Invalid email or password", error)
-        assertEquals(lockedMessage, error)
-    }
-
-    @Test
-    fun `login on a banned or suspended account points at support, not the password`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Unable to sign in. Please contact support.","error":"Unauthorized","statusCode":401}""",
-            401,
-        )
-
-        viewModel.login("user@birdo.app", "password")
-
-        val error = viewModel.uiState.value.error
-        assertNotEquals("Invalid email or password", error)
-        assertEquals("Unable to sign in. Please contact support.", error)
-    }
-
-    /** The wrong-password case must keep working through the real body shape,
-     *  not just the bare string the older test uses. */
-    @Test
-    fun `login with a wrong password still says invalid email or password`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Invalid credentials","error":"Unauthorized","statusCode":401}""",
-            401,
-        )
-
-        viewModel.login("user@birdo.app", "wrongpass")
-
-        assertEquals("Invalid email or password", viewModel.uiState.value.error)
-    }
-
-    /** The IP rate limiter ("Too many login attempts, please try later") is a
-     *  DIFFERENT condition from the account lockout ("Too many FAILED login
-     *  attempts") with a different remedy. One must not be reported as the other. */
-    @Test
-    fun `login rate limited by IP is not reported as an account lockout`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error(
-            """{"message":"Too many login attempts, please try later","statusCode":429}""",
-            429,
-        )
-
-        viewModel.login("user@birdo.app", "password")
-
-        assertEquals("Too many attempts. Please wait a moment.", viewModel.uiState.value.error)
-    }
-
-    @Test
-    fun `login network timeout shows connection error`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Network timeout")
-
-        viewModel.login("user@birdo.app", "password")
-
-        assertEquals("Unable to reach server. Check your connection.", viewModel.uiState.value.error)
-    }
-
-    @Test
-    fun `login network error shows connection error`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Network error")
-
-        viewModel.login("user@birdo.app", "password")
-
-        assertEquals("Unable to reach server. Check your connection.", viewModel.uiState.value.error)
-    }
-
-    @Test
-    fun `login TIMEOUT case insensitive shows connection error`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Connection TIMEOUT reached")
-
-        viewModel.login("user@birdo.app", "password")
-
-        assertEquals("Unable to reach server. Check your connection.", viewModel.uiState.value.error)
-    }
-
-    @Test
-    fun `login 429 rate limit shows rate limit error`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("429 Too Many Requests")
-
-        viewModel.login("user@birdo.app", "password")
-
-        assertEquals("Too many attempts. Please wait a moment.", viewModel.uiState.value.error)
-    }
-
-    @Test
-    fun `login unknown error shows generic message`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Something unexpected")
-
-        viewModel.login("user@birdo.app", "password")
-
-        assertEquals("Login failed: Something unexpected", viewModel.uiState.value.error)
+        coVerify(exactly = 5) { repository.login(any(), any()) }
+        // Canonical vocabulary: "sign-in", never "login"; the wait is a plural.
+        val error = viewModel.uiState.value.error!!
+        assertTrue(error, Regex("""Too many sign-in attempts\. Please wait \d+ seconds?\.""").matches(error))
     }
 
     @Test
@@ -768,8 +643,7 @@ class AuthViewModelTest {
         coEvery { repository.login(any(), any()) } returns ApiResult.Success(twoFactorChallenge)
         viewModel.login("user@birdo.app", "password")
 
-        coEvery { repository.verifyTwoFactor(any(), any()) } returns
-            ApiResult.Error("Invalid code", 401)
+        coEvery { repository.verifyTwoFactor(any(), any()) } returns invalidCode
 
         viewModel.verifyTwoFactor("999999")
 
@@ -976,7 +850,7 @@ class AuthViewModelTest {
         viewModel = createLoggedOutViewModel()
 
         // First attempt: fail
-        coEvery { repository.login(any(), any()) } returns ApiResult.Error("Invalid credentials", 401)
+        coEvery { repository.login(any(), any()) } returns wrongPassword
         viewModel.login("user@birdo.app", "wrongpass")
         assertEquals("Invalid email or password", viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.isLoggedIn)
@@ -1034,8 +908,7 @@ class AuthViewModelTest {
         viewModel.login("user@birdo.app", "password")
 
         // First 2FA attempt: wrong code
-        coEvery { repository.verifyTwoFactor(any(), eq("000000")) } returns
-            ApiResult.Error("Invalid code")
+        coEvery { repository.verifyTwoFactor(any(), eq("000000")) } returns invalidCode
         viewModel.verifyTwoFactor("000000")
         assertEquals("Invalid verification code. Please try again.", viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.isLoggedIn)
@@ -1139,45 +1012,20 @@ class AuthViewModelTest {
             app.birdo.vpn.data.model.AnonymousLoginResponse(ok = true, anonymousId = id, tokens = tokens)
         )
 
-    /** `POST /auth/register/anonymous` has TWO rate limits behind one 429 — 3 per
-     *  IP per hour, and 5 per DEVICE per 24h keyed on a device id that survives
-     *  sign-out and reinstall. The old path ran the body through parseLoginError,
-     *  which said "Too many attempts. Please wait a moment." for both: wrong about
-     *  whose limit, wrong about the wait, and for the device cap it implies a
-     *  remedy (try again shortly / elsewhere) that cannot work. */
     @Test
-    fun `registerAnonymous 429 from the DEVICE cap names the device and says networks will not help`() = runTest {
+    fun `registerAnonymous shows the mapped refusal verbatim`() = runTest {
         viewModel = createLoggedOutViewModel()
-        coEvery { repository.registerAnonymous() } returns ApiResult.Error(
-            """{"message":"Too many accounts created from this device, please try later","statusCode":429}""",
+        val deviceCap = ApiResult.Error(
+            "This device has created too many anonymous accounts in the past 24 hours, so this one was refused.",
             429,
+            FailureReason.RATE_LIMITED,
         )
+        coEvery { repository.registerAnonymous() } returns deviceCap
 
         viewModel.registerAnonymous()
 
-        val error = viewModel.uiState.value.error.orEmpty()
-        assertTrue(error, "device" in error.lowercase())
-        assertTrue(error, "24 hours" in error)
-        assertTrue(error, "will not help" in error.lowercase())
-        assertFalse(error, "this network" in error.lowercase())
-        assertFalse(error, "moment" in error.lowercase())
+        assertEquals(deviceCap.message, viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.isLoading)
-    }
-
-    @Test
-    fun `registerAnonymous 429 from the IP cap names the network and the hour`() = runTest {
-        viewModel = createLoggedOutViewModel()
-        coEvery { repository.registerAnonymous() } returns ApiResult.Error(
-            """{"message":"Too many accounts created from this network, please try later","statusCode":429}""",
-            429,
-        )
-
-        viewModel.registerAnonymous()
-
-        val error = viewModel.uiState.value.error.orEmpty()
-        assertTrue(error, "network" in error.lowercase())
-        assertTrue(error, "hour" in error.lowercase())
-        assertFalse(error, "moment" in error.lowercase())
     }
 
     @Test
@@ -1295,14 +1143,14 @@ class AuthViewModelTest {
     @Test
     fun `registerAnonymous failure surfaces an error and leaves nothing pending`() = runTest {
         viewModel = createLoggedOutViewModel()
-        coEvery { repository.registerAnonymous() } returns ApiResult.Error("Network error")
+        coEvery { repository.registerAnonymous() } returns unreachable
 
         viewModel.registerAnonymous()
 
         val state = viewModel.uiState.value
         assertNull(state.pendingAnonymousId)
         assertFalse(state.isLoggedIn)
-        assertEquals("Unable to reach server. Check your connection.", state.error)
+        assertEquals(unreachable.message, state.error)
         io.mockk.verify(exactly = 0) { tokenManager.setPendingAnonymousId(any()) }
     }
 
@@ -1319,6 +1167,31 @@ class AuthViewModelTest {
         assertNull(state.pendingAnonymousId)
         assertFalse(state.isLoggedIn)
         assertEquals("Could not create an anonymous account. Please try again.", state.error)
+    }
+
+    // ── Canonical account vocabulary (A2-031) ───────────────────
+
+    @Test
+    fun `a short account number is called an account number, not an Anonymous ID`() = runTest {
+        viewModel = createLoggedOutViewModel()
+
+        viewModel.loginAnonymous("1234 5678")
+
+        assertEquals("Account number must be 24 digits", viewModel.uiState.value.error)
+        coVerify(exactly = 0) { repository.loginAnonymous(any(), any()) }
+    }
+
+    @Test
+    fun `an anonymous sign-in the server declines says sign-in, not login`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.loginAnonymous(any(), any()) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.AnonymousLoginResponse(ok = false)
+        )
+
+        viewModel.loginAnonymous("1".repeat(24))
+
+        assertEquals(StringsXml.text("error_sign_in_failed"), viewModel.uiState.value.error)
+        assertFalse(viewModel.uiState.value.isLoggedIn)
     }
 
     // ── Deletion preflight (second-pass #9) ─────────────────────
@@ -1369,5 +1242,231 @@ class AuthViewModelTest {
 
         pending.complete(ApiResult.Error("Network error"))
         assertNull(viewModel.uiState.value.deletionPreflight)
+    }
+
+    // ── 2FA outcomes (A2-008) ───────────────────────────────────
+
+    @Test
+    fun `an expired 2FA challenge sends the user back to the start with the reason`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Success(twoFactorChallenge)
+        viewModel.login("user@birdo.app", "password")
+        coEvery { repository.verifyTwoFactor(any(), any()) } returns ApiResult.Error(
+            "Your sign-in timed out. Start again.", 401, FailureReason.CHALLENGE_EXPIRED,
+        )
+
+        viewModel.verifyTwoFactor("123456")
+
+        val state = viewModel.uiState.value
+        assertFalse(state.requiresTwoFactor)
+        assertNull(state.challengeToken)
+        assertEquals("Your sign-in timed out. Start again.", state.error)
+    }
+
+    @Test
+    fun `an offline 2FA attempt keeps the challenge and does not count as a wrong code`() = runTest {
+        viewModel = createLoggedOutViewModel()
+        coEvery { repository.login(any(), any()) } returns ApiResult.Success(twoFactorChallenge)
+        viewModel.login("user@birdo.app", "password")
+        coEvery { repository.verifyTwoFactor(any(), any()) } returns unreachable
+
+        repeat(6) { viewModel.verifyTwoFactor("123456") }
+
+        assertTrue(viewModel.uiState.value.requiresTwoFactor)
+        assertEquals(unreachable.message, viewModel.uiState.value.error)
+        coVerify(exactly = 6) { repository.verifyTwoFactor(any(), any()) }
+    }
+
+    // ── Consent gate (A2-028) ───────────────────────────────────
+
+    @Test
+    fun `no session check is sent before the current consent is accepted`() = runTest {
+        io.mockk.every { prefs.hasAcceptedCurrentConsent } returns false
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+
+        viewModel = createViewModel()
+
+        coVerify(exactly = 0) { repository.getProfile() }
+
+        viewModel.onConsentAccepted()
+
+        coVerify(exactly = 1) { repository.getProfile() }
+        assertEquals("user@birdo.app", viewModel.uiState.value.user?.email)
+    }
+
+    // ── Deletion confirmation (A2-029) ──────────────────────────
+
+    @Test
+    fun `a deletion is confirmed once, then the notice clears`() = runTest {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile.copy(hasPassword = false))
+        viewModel = createViewModel()
+        coEvery { repository.deleteAccount(any()) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.DeleteAccountResponse(success = true),
+        )
+
+        viewModel.deleteAccount("")
+
+        assertTrue(viewModel.uiState.value.accountDeleted)
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+
+        viewModel.dismissAccountDeletedNotice()
+
+        assertFalse(viewModel.uiState.value.accountDeleted)
+    }
+
+    /**
+     * REVIEW-AND2-002: a deletion's success reply now arrives while connected
+     * (it goes around the tunnel the server revokes). What it carries must
+     * reach the screen: the store subscription that keeps billing, and the
+     * signed-out state the graph tears the VPN down on (onAccountDeleted).
+     */
+    @Test
+    fun `a deletion's success signs out and carries the store subscription that keeps billing`() = runTest {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        viewModel = createViewModel()
+        val stillBilling = app.birdo.vpn.data.model.StoreSubscriptionStillBilling(
+            store = "GOOGLE_PLAY",
+            productId = "birdo_operative",
+        )
+        coEvery { repository.deleteAccount("password1", null) } returns ApiResult.Success(
+            app.birdo.vpn.data.model.DeleteAccountResponse(success = true, storeSubscriptionsStillBilling = listOf(stillBilling)),
+        )
+
+        viewModel.deleteAccount("password1")
+
+        val state = viewModel.uiState.value
+        assertTrue(state.accountDeleted)
+        assertFalse(state.isLoggedIn)
+        assertEquals(listOf(stillBilling), state.storeSubscriptionsStillBilling)
+        assertNull(state.deleteAccountError)
+    }
+
+    @Test
+    fun `a wrong deletion password shows the mapped message and keeps the account`() = runTest {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        viewModel = createViewModel()
+        coEvery { repository.deleteAccount(any()) } returns
+            ApiResult.Error("Incorrect password", 401, FailureReason.INVALID_CREDENTIALS)
+
+        viewModel.deleteAccount("wrong-password")
+
+        assertEquals("Incorrect password", viewModel.uiState.value.deleteAccountError)
+        assertFalse(viewModel.uiState.value.accountDeleted)
+        assertTrue(viewModel.uiState.value.isLoggedIn)
+    }
+
+    // ── Deletion with 2FA (ACCOUNT-API-2026-10-01, item 85) ─────
+
+    private val twoFactorRequired = ApiResult.Error(
+        StringsXml.text("delete_dialog_2fa_required"), 403, FailureReason.TWO_FACTOR_REQUIRED,
+    )
+
+    /** Signed in with a password account whose server answers the first delete with "code, please". */
+    private fun viewModelAskedForDeletionCode(): AuthViewModel {
+        coEvery { repository.getProfile() } returns ApiResult.Success(profile)
+        val vm = createViewModel()
+        coEvery { repository.deleteAccount("password1", null) } returns twoFactorRequired
+        vm.deleteAccount("password1")
+        return vm
+    }
+
+    @Test
+    fun `a deletion the server wants a 2FA code for keeps the account and asks for the code`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.deleteRequiresTwoFactor)
+        assertNull("asking for the code is not an error", state.deleteAccountError)
+        assertFalse(state.isDeletingAccount)
+        assertFalse("nothing is torn down before the server confirms", state.accountDeleted)
+        assertTrue(state.isLoggedIn)
+    }
+
+    @Test
+    fun `once asked, an incomplete code is refused here and never sent`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+
+        viewModel.deleteAccount("password1", "123")
+        viewModel.deleteAccount("password1", null)
+
+        assertEquals(StringsXml.text("auth_error_2fa_format"), viewModel.uiState.value.deleteAccountError)
+        coVerify(exactly = 0) { repository.deleteAccount(any(), "123") }
+        coVerify(exactly = 1) { repository.deleteAccount(any(), null) }
+    }
+
+    @Test
+    fun `a wrong deletion code says so and allows a retry, the right one deletes`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+        coEvery { repository.deleteAccount("password1", "111111") } returns
+            ApiResult.Error(StringsXml.text("error_invalid_code"), 403, FailureReason.INVALID_CODE)
+        coEvery { repository.deleteAccount("password1", "abcd-ef01-2345-6789") } returns
+            ApiResult.Success(app.birdo.vpn.data.model.DeleteAccountResponse(success = true))
+
+        viewModel.deleteAccount("password1", "111111")
+
+        assertEquals("Invalid verification code. Please try again.", viewModel.uiState.value.deleteAccountError)
+        assertTrue(viewModel.uiState.value.deleteRequiresTwoFactor)
+        assertFalse(viewModel.uiState.value.accountDeleted)
+
+        // A backup code is accepted as well as a TOTP, as at sign-in.
+        viewModel.deleteAccount("password1", "abcd-ef01-2345-6789")
+
+        assertTrue(viewModel.uiState.value.accountDeleted)
+        assertFalse(viewModel.uiState.value.isLoggedIn)
+    }
+
+    @Test
+    fun `a rate-limited deletion attempt shows the rate-limit copy and keeps the code field`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+        coEvery { repository.deleteAccount("password1", "123456") } returns
+            ApiResult.Error(StringsXml.text("error_rate_limited"), 429, FailureReason.RATE_LIMITED)
+
+        viewModel.deleteAccount("password1", "123456")
+
+        assertEquals(StringsXml.text("error_rate_limited"), viewModel.uiState.value.deleteAccountError)
+        assertTrue(viewModel.uiState.value.deleteRequiresTwoFactor)
+        assertFalse(viewModel.uiState.value.accountDeleted)
+    }
+
+    @Test
+    fun `closing the deletion dialog forgets the 2FA prompt`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+
+        viewModel.clearDeleteAccountError()
+
+        assertFalse(viewModel.uiState.value.deleteRequiresTwoFactor)
+        assertNull(viewModel.uiState.value.deleteAccountError)
+    }
+
+    /**
+     * REVIEW-AND2-008: the server checks the password before the code, so
+     * after the 2FA prompt a wrong password is still the password's error; a
+     * rate limit or an offline error is neither field's.
+     */
+    @Test
+    fun `a deletion error names the field it is about`() = runTest {
+        viewModel = viewModelAskedForDeletionCode()
+        coEvery { repository.deleteAccount("wrong-password", "123456") } returns
+            ApiResult.Error(StringsXml.text("error_incorrect_password"), 401, FailureReason.INVALID_CREDENTIALS)
+        coEvery { repository.deleteAccount("password1", "111111") } returns
+            ApiResult.Error(StringsXml.text("error_invalid_code"), 403, FailureReason.INVALID_CODE)
+        coEvery { repository.deleteAccount("password1", "123456") } returns
+            ApiResult.Error(StringsXml.text("error_rate_limited"), 429, FailureReason.RATE_LIMITED)
+
+        viewModel.deleteAccount("wrong-password", "123456")
+        assertEquals(DeleteAccountField.PASSWORD, viewModel.uiState.value.deleteErrorField)
+
+        viewModel.deleteAccount("password1", "111111")
+        assertEquals(DeleteAccountField.CODE, viewModel.uiState.value.deleteErrorField)
+
+        viewModel.deleteAccount("password1", "123456")
+        assertNull(viewModel.uiState.value.deleteErrorField)
+
+        // Refused here, before any request: the field that is incomplete.
+        viewModel.deleteAccount("password1", "12")
+        assertEquals(DeleteAccountField.CODE, viewModel.uiState.value.deleteErrorField)
+
+        viewModel.clearDeleteAccountError()
+        assertNull(viewModel.uiState.value.deleteErrorField)
     }
 }

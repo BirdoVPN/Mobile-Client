@@ -17,6 +17,10 @@ object BirdoBrand {
 
     val HairlineSoft = Color(0x14FFFFFF) // 8% white — subtle divider
 
+    /** The idle Connect CTA's two stops (emerald-700 → emerald-900); see [PrimaryGradient]. */
+    val PrimaryStart = Color(0xFF047857)
+    val PrimaryEnd = Color(0xFF064E3B)
+
     // ── Brushes ───────────────────────────────────────────────────────
 
     /**
@@ -30,9 +34,7 @@ object BirdoBrand {
      * protected" look alike, which on a VPN is a privacy bug, not a style one.
      */
     val PrimaryGradient: Brush
-        get() = Brush.linearGradient(
-            colors = listOf(Color(0xFF047857), Color(0xFF064E3B)),
-        )
+        get() = Brush.linearGradient(colors = listOf(PrimaryStart, PrimaryEnd))
 
     /** Disconnected ambient (subtle emerald bloom). */
     val IdleGradient: Brush

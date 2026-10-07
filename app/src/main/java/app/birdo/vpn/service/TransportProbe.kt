@@ -58,6 +58,8 @@ import app.birdo.vpn.utils.FaultReporter
 class TransportProbe(
     private val handle: Int,
     private val isAlive: () -> Boolean,
+    /** How long to wait for the first handshake: [WINDOW_MS], or a live rebuild's longer window (A1-034). */
+    private val windowMs: Long = WINDOW_MS,
     private val canReadConfig: () -> Boolean = { WgNative.canReadConfig() },
     private val readConfig: (Int) -> String? = { WgNative.getConfig(it) },
     private val sleep: (Long) -> Unit = { Thread.sleep(it) },
@@ -105,7 +107,7 @@ class TransportProbe(
      * away. Runs on the caller's thread — call it from a background context.
      */
     fun await(): Result {
-        val deadline = System.currentTimeMillis() + WINDOW_MS
+        val deadline = System.currentTimeMillis() + windowMs
 
         // A build without config-read support cannot be probed. Report
         // HANDSHAKE_OK rather than BLOCKED: with no evidence of failure we must

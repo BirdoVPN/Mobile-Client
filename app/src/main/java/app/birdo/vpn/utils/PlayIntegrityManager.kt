@@ -8,6 +8,7 @@ import app.birdo.vpn.BuildConfig
 import com.google.android.play.core.integrity.IntegrityManagerFactory
 import com.google.android.play.core.integrity.IntegrityTokenRequest
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /**
@@ -70,6 +71,14 @@ object PlayIntegrityManager {
     internal const val FAILURE_BACKOFF_MS = 24L * 60 * 60 * 1000
 
     /**
+     * A1-033: the most a connect waits for Play. The Task has no timeout of its
+     * own, and a token is a nice-to-have (the server owns the decision), so a
+     * slow Play services must cost a connect seconds, not its whole watchdog.
+     */
+    @VisibleForTesting
+    internal const val TOKEN_TIMEOUT_MS = 5_000L
+
+    /**
      * Whether an attestation is due, so callers can skip the nonce round trip
      * entirely when it is not. Non-Play builds are never due — they cannot
      * produce a valid token at all.
@@ -98,15 +107,17 @@ object PlayIntegrityManager {
         val token: String? = try {
             val manager = IntegrityManagerFactory.create(context.applicationContext)
             val request = IntegrityTokenRequest.builder().setNonce(nonce).build()
-            suspendCancellableCoroutine<String?> { cont ->
-                manager.requestIntegrityToken(request)
-                    .addOnSuccessListener { resp ->
-                        if (cont.isActive) cont.resume(resp.token())
-                    }
-                    .addOnFailureListener { e ->
-                        Log.w(TAG, "Integrity token request failed: ${e.message}")
-                        if (cont.isActive) cont.resume(null)
-                    }
+            withTimeoutOrNull(TOKEN_TIMEOUT_MS) {
+                suspendCancellableCoroutine<String?> { cont ->
+                    manager.requestIntegrityToken(request)
+                        .addOnSuccessListener { resp ->
+                            if (cont.isActive) cont.resume(resp.token())
+                        }
+                        .addOnFailureListener { e ->
+                            Log.w(TAG, "Integrity token request failed: ${e.message}")
+                            if (cont.isActive) cont.resume(null)
+                        }
+                }
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Integrity unavailable: ${e.message}")

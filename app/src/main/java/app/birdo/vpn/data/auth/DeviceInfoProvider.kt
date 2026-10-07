@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Build
 import androidx.core.content.edit
 import app.birdo.vpn.BuildConfig
-import app.birdo.vpn.service.RosenpassManager
+import app.birdo.vpn.service.BirdoPqManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
@@ -128,7 +128,7 @@ class DeviceInfoProvider @Inject constructor(
      * the same (AuthViewModel.completeLocalLogout).
      */
     fun forgetPostQuantumKeypair() {
-        RosenpassManager.resetPersistedKeypair(context)
+        BirdoPqManager.resetPersistedKeypair(context)
     }
 
     /** Mint and persist a fresh random device id. `commit`, not `apply`: the

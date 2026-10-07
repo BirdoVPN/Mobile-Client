@@ -113,6 +113,14 @@ object MultiHopPolicy {
      * session, so exempting "tapped the highlighted row" let a second tap wipe
      * the refusal the first one raised.
      */
+    /**
+     * The ONE entitlement rule for a dial (REVIEW-AND-007): Multi-Hop is a
+     * Sovereign feature. True or false from a known [plan]; null when the plan
+     * is not known, so a caller with no UI refuses to guess rather than
+     * silently downgrade a paying user or dead-end a lapsed one.
+     */
+    fun entitledByPlan(plan: String?): Boolean? = plan?.equals("SOVEREIGN", ignoreCase = true)
+
     fun forRouteChange(onTunnel: Boolean, activeRoute: Pair<String, String>?): RouteChange =
         if (onTunnel && activeRoute != null) {
             RouteChange.RefuseWouldDowngrade(DOWNGRADE_REFUSAL)

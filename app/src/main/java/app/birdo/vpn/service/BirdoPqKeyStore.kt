@@ -13,7 +13,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * On-device persistence for the long-lived Rosenpass static keypair.
+ * On-device persistence for the long-lived BirdoPQ static keypair.
  *
  * BirdoPQ v1 uses **ML-KEM-1024** (FIPS 203, formerly Kyber-1024). Key sizes
  * are 1568 B for the public key and 3168 B for the secret key. We generate
@@ -40,7 +40,7 @@ import java.nio.file.StandardCopyOption
  * written together exactly once per install; a separate sealed file keeps the
  * encrypted write path minimal and independent of the token store's key.
  */
-internal class RosenpassKeyStore @VisibleForTesting internal constructor(
+internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
     context: Context,
     private val sealer: AesGcmSealer,
     legacySource: LegacyBlobSource?,
@@ -75,7 +75,7 @@ internal class RosenpassKeyStore @VisibleForTesting internal constructor(
         val pkFile = publicKeyFile
         val skFile = secretKeyFile
         if (!pkFile.exists() || !skFile.exists()) {
-            Log.d(TAG, "no persisted Rosenpass keypair on disk")
+            Log.d(TAG, "no persisted BirdoPQ keypair on disk")
             return null
         }
 
@@ -100,7 +100,7 @@ internal class RosenpassKeyStore @VisibleForTesting internal constructor(
         // handshake.
         return try {
             val skBytes = sealer.open(skFile.readBytes(), SK_AAD)
-            Log.i(TAG, "loaded persisted Rosenpass keypair (pk=${pkBytes.size}B, sk=${skBytes.size}B)")
+            Log.i(TAG, "loaded persisted BirdoPQ keypair (pk=${pkBytes.size}B, sk=${skBytes.size}B)")
             RosenpassNative.StaticKeypair(publicKey = pkBytes, secretKey = skBytes)
         } catch (e: Exception) {
             Log.w(TAG, "failed to open persisted secret key — deleting partial state", e)
@@ -134,9 +134,9 @@ internal class RosenpassKeyStore @VisibleForTesting internal constructor(
                 "re-sealed secret key did not read back"
             }
             legacy.destroy()
-            Log.i(TAG, "migrated Rosenpass secret key to v2 sealing (${skBytes.size}B)")
+            Log.i(TAG, "migrated BirdoPQ secret key to v2 sealing (${skBytes.size}B)")
         } catch (e: Exception) {
-            Log.w(TAG, "legacy Rosenpass secret key could not be migrated — regenerating keypair", e)
+            Log.w(TAG, "legacy BirdoPQ secret key could not be migrated — regenerating keypair", e)
             runCatching { secretKeyFile.delete() }
             runCatching { publicKeyFile.delete() }
             legacy.destroy()
@@ -160,7 +160,7 @@ internal class RosenpassKeyStore @VisibleForTesting internal constructor(
         // A fresh pair supersedes any legacy file still lying around.
         if (legacySecretKeyFile.exists()) legacy.destroy()
 
-        Log.i(TAG, "persisted Rosenpass keypair (pk=${keypair.publicKey.size}B, sk sealed=${secretKeyFile.length()}B)")
+        Log.i(TAG, "persisted BirdoPQ keypair (pk=${keypair.publicKey.size}B, sk sealed=${secretKeyFile.length()}B)")
     }
 
     @Throws(IOException::class)
@@ -186,14 +186,14 @@ internal class RosenpassKeyStore @VisibleForTesting internal constructor(
         runCatching { publicKeyFile.delete() }
         runCatching { secretKeyFile.delete() }
         if (legacySecretKeyFile.exists()) legacy.destroy()
-        Log.i(TAG, "cleared persisted Rosenpass keypair")
+        Log.i(TAG, "cleared persisted BirdoPQ keypair")
     }
 
     fun hasPersistedKeypair(): Boolean =
         publicKeyFile.exists() && (secretKeyFile.exists() || legacySecretKeyFile.exists())
 
     companion object {
-        private const val TAG = "RosenpassKeyStore"
+        private const val TAG = "BirdoPqKeyStore"
         private const val DIR_NAME = "rosenpass"
         private const val PUBLIC_KEY_FILENAME = "static.pk"
         private const val SECRET_KEY_FILENAME = "static.sk.v2"

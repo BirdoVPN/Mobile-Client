@@ -1,80 +1,49 @@
 package app.birdo.vpn.ui.components
 
-import androidx.appcompat.content.res.AppCompatResources
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toBitmap
 import app.birdo.vpn.R
 
 /**
- * Renders the actual Birdo launcher icon. Used wherever the app needs to
- * represent itself — login, top bars, profile avatar. Replaces the previous
- * bright purple→pink gradient shield with the real brand mark.
+ * The Birdo brand mark as the app shows it — login, top bars, Settings > About.
  *
- * NOTE: We deliberately load `ic_launcher_round` through `AppCompatResources`
- * + `Drawable.toBitmap()` rather than `painterResource()`, because on API 26+
- * the launcher resource resolves to `mipmap-anydpi-v26/ic_launcher_round.xml`
- * (an adaptive-icon XML) which Compose's `painterResource()` cannot inflate
- * — it throws `IllegalArgumentException: Only VectorDrawables and rasterized
- * asset types are supported`.
- *
- * CRASH FIX: loading the launcher icon must NEVER throw. It previously crashed
- * the whole app with `Resources$NotFoundException` on real devices, because the
- * old adaptive-icon foreground was an 832-command potrace VectorDrawable that
- * Android refused to inflate as an icon. The adaptive vector has been removed
- * (the icon now resolves to the raster mipmap PNGs), and this load is wrapped in
- * runCatching so any future resource failure degrades to "no mark" instead of
- * taking down every screen that shows the brand.
+ * It draws its OWN raster drawables (`app_mark`, `app_mark_round`), never the
+ * launcher icon. The launcher icon is an adaptive icon now (A2-025), and an
+ * adaptive-icon XML is not something `painterResource` can draw; tying the
+ * in-app mark to it is also how the old 832-command vector foreground (issue
+ * #150) took down every screen that showed the brand. Two PNGs cannot fail to
+ * inflate, and the launcher icon can change without touching any screen.
  */
 @Composable
 fun AppIconMark(
     modifier: Modifier = Modifier,
     size: Dp = 40.dp,
     cornerRadius: Dp = 12.dp,
-    // When true, load the SQUARE launcher (`ic_launcher`) and show it whole
-    // (Fit, no crop) instead of the round-masked variant whose square artwork
-    // gets its corners clipped. Used by the login header.
+    // When true, the SQUARE (squircle) mark shown whole (Fit, no crop) instead
+    // of the circular one. Used by the login header and Settings > About.
     square: Boolean = false,
 ) {
-    val context = LocalContext.current
-    val density = LocalDensity.current
-    val sizePx = with(density) { size.roundToPx() }.coerceAtLeast(1)
-
-    val bitmap = remember(sizePx, square) {
-        runCatching {
-            val primary = if (square) R.mipmap.ic_launcher else R.mipmap.ic_launcher_round
-            val drawable = AppCompatResources.getDrawable(context, primary)
-                ?: AppCompatResources.getDrawable(context, R.mipmap.ic_launcher)
-            drawable?.toBitmap(width = sizePx, height = sizePx)?.asImageBitmap()
-        }.getOrNull()
-    }
-
     Box(
         modifier = modifier
             .size(size)
             .clip(RoundedCornerShape(cornerRadius)),
         contentAlignment = Alignment.Center,
     ) {
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
-                contentDescription = null,
-                modifier = Modifier.size(size),
-                contentScale = if (square) ContentScale.Fit else ContentScale.Crop,
-            )
-        }
+        Image(
+            painter = painterResource(if (square) R.drawable.app_mark else R.drawable.app_mark_round),
+            contentDescription = null,
+            modifier = Modifier.size(size),
+            contentScale = if (square) ContentScale.Fit else ContentScale.Crop,
+        )
     }
 }

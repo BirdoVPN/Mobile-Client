@@ -9,7 +9,7 @@ import org.junit.Test
  * now shares.
  *
  * THE BUG THIS CLOSES. [VpnState.StealthConnecting] is published for the whole
- * stealth setup (Xray start, Rosenpass exchange, WgNative init/turnOn,
+ * stealth setup (Xray start, the BirdoPQ derivation, WgNative init/turnOn,
  * establish()), and EVERY consumer that enumerated transitional states inline
  * listed only `Connecting` and missed it: the 30s connect watchdog, VpnManager's
  * 45s stuck-connect net, both fail-closed switchTeardown gates, the reapply
@@ -40,7 +40,6 @@ class ConnectingPhaseGateTest {
     private val allStates: List<VpnState> = listOf(
         VpnState.Disconnected,
         VpnState.Connecting,
-        VpnState.Authenticating,
         VpnState.StealthConnecting,
         VpnState.Connected,
         VpnState.Disconnecting,
@@ -88,14 +87,6 @@ class ConnectingPhaseGateTest {
         // Folding it in here would silently change that behaviour.
         assertFalse(VpnState.Reconnecting(0).isConnectingPhase)
         assertFalse(VpnState.Reconnecting(3).isConnectingPhase)
-    }
-
-    @Test
-    fun `Authenticating is excluded because nothing ever publishes it`() {
-        // Dead state as of 2026-08-27: no updateState(Authenticating) call exists.
-        // If that changes, this assertion is the tripwire — flip it and add the
-        // state to isConnectingPhase in the same commit.
-        assertFalse(VpnState.Authenticating.isConnectingPhase)
     }
 
     @Test

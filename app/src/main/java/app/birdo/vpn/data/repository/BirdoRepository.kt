@@ -1,5 +1,7 @@
 package app.birdo.vpn.data.repository
 
+import androidx.annotation.StringRes
+import app.birdo.vpn.R
 import app.birdo.vpn.billing.GooglePlayLinkRequest
 import app.birdo.vpn.billing.GooglePurchaseIntentResponse
 import app.birdo.vpn.billing.StoreErrorEnvelope
@@ -9,8 +11,9 @@ import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
+import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
-import app.birdo.vpn.utils.InputValidator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -23,7 +26,20 @@ import javax.inject.Singleton
 
 sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
-    data class Error(val message: String, val code: Int = 0) : ApiResult<Nothing>()
+
+    /**
+     * [message] is USER-FACING copy. Every error this repository returns has
+     * been through [ApiErrorMapper], so it is safe to render as-is: never a raw
+     * body, never exception text. Branch on [reason] or [code], never on the
+     * wording.
+     */
+    data class Error(
+        val message: String,
+        val code: Int = 0,
+        val reason: FailureReason = FailureReason.UNEXPECTED,
+        /** How long the server asked to wait before trying again, when it said ([RetryAfter]). */
+        val retryAfterMs: Long? = null,
+    ) : ApiResult<Nothing>()
 }
 
 /**
@@ -42,10 +58,12 @@ class BirdoRepository @Inject constructor(
     private val api: BirdoApi,
     private val tokenManager: TokenManager,
     private val deviceInfoProvider: DeviceInfoProvider,
+    /** Turns every failure below into copy a user can be shown. */
+    private val errors: ApiErrorMapper,
 ) {
     /**
-     * Mutex prevents concurrent token refresh races — multiple 401s triggering
-     * parallel refreshes that would invalidate each other's tokens.
+     * Serialises refreshes: two rotations racing would each invalidate the
+     * other's tokens. The single-flight rule on top of it lives in [refreshToken].
      */
     private val refreshMutex = Mutex()
 
@@ -82,20 +100,34 @@ class BirdoRepository @Inject constructor(
         /**
          * Whole budget for logout's best-effort server-side revocation.
          *
-         * The call now runs through withAutoRefresh, which on an expired access
-         * token costs three round trips (401 → refresh → retry). NetworkModule
-         * sets connect/read/write to 30 s each and sets NO `callTimeout`, so
-         * OkHttp does not bound a whole call at all — one round trip that
-         * connects slowly and then stalls mid-body can burn 60 s on its own,
-         * and three of them are minutes of spinner on a button whose local half
-         * has already succeeded. That is why the bound lives here, at the
-         * coroutine level, rather than being left to the HTTP client.
+         * The call runs through the auto-refresh path, which on an expired
+         * access token costs three round trips (401 → refresh → retry).
+         * NetworkModule's `callTimeout` bounds each of those at 45 s, so the
+         * three together can still be over two minutes of spinner on a button
+         * whose local half has already succeeded. That is why the bound for the
+         * WHOLE sign-out lives here, at the coroutine level, rather than being
+         * left to the per-call HTTP limit.
          *
          * `internal` so the regression test can assert against the real budget
          * instead of restating 15_000 and quietly drifting from it.
          */
         internal const val LOGOUT_SERVER_CALL_TIMEOUT_MS = 15_000L
+
+        /**
+         * [sendHeartbeat] with no key id to beat for. Distinct from a transport
+         * failure (code 0): VpnManager treats it as the invariant failure it
+         * is — a Connected session the backend is about to reap — rather than
+         * looping on it silently (A1-005).
+         */
+        const val CODE_NO_ACTIVE_KEY = -1
     }
+
+    /**
+     * Guards the stored WireGuard key id. A connect writes it and a disconnect
+     * clears it, from different coroutines; without the lock a Disconnect's
+     * late DELETE cleared the id the NEXT session had just stored (A1-005).
+     */
+    private val keyIdLock = Any()
 
     fun invalidateServerCache() {
         cachedServers = null
@@ -121,8 +153,8 @@ class BirdoRepository @Inject constructor(
      * (with tokens) or a TwoFactorRequired (with a challenge token).
      * Tokens are only stored on Success.
      */
-    suspend fun login(email: String, password: String): ApiResult<LoginResult> {
-        return try {
+    suspend fun login(email: String, password: String): ApiResult<LoginResult> =
+        guarded {
             val device = deviceInfoProvider.current()
             val response = api.login(LoginRequest(
                 email = email,
@@ -140,32 +172,22 @@ class BirdoRepository @Inject constructor(
                 // Only store tokens when login is fully complete (no 2FA pending)
                 if (result is LoginResult.Success) {
                     val tokens = result.tokens
-                    if (tokens.accessToken.isBlank()) {
-                        return ApiResult.Error("Unexpected server response (no tokens)", 0)
-                    }
+                    if (tokens.accessToken.isBlank()) return errors.unexpected()
                     tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(result)
             } else {
-                ApiResult.Error(
-                    InputValidator.sanitizeErrorMessage(
-                        response.errorBody()?.string(), "Login failed"
-                    ),
-                    response.code(),
-                )
+                errorFrom(response, ErrorContext.SIGN_IN, R.string.error_sign_in_failed)
             }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
         }
-    }
 
     /**
      * Native SSO: exchange the web broker's handoff code (+ our PKCE verifier)
      * for tokens. Mirrors [login] — tokens stored only on a complete Success
      * (no 2FA pending). The response is the same shape as password login.
      */
-    suspend fun exchangeNativeOAuth(code: String, codeVerifier: String): ApiResult<LoginResult> {
-        return try {
+    suspend fun exchangeNativeOAuth(code: String, codeVerifier: String): ApiResult<LoginResult> =
+        guarded {
             val device = deviceInfoProvider.current()
             val response = api.exchangeNativeOAuth(NativeOAuthExchangeRequest(
                 code = code,
@@ -181,28 +203,23 @@ class BirdoRepository @Inject constructor(
                 val result = response.body()!!.toLoginResult()
                 if (result is LoginResult.Success) {
                     val tokens = result.tokens
-                    if (tokens.accessToken.isBlank()) {
-                        return ApiResult.Error("Unexpected server response (no tokens)", 0)
-                    }
+                    if (tokens.accessToken.isBlank()) return errors.unexpected()
                     tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(result)
             } else {
-                ApiResult.Error(
-                    InputValidator.sanitizeErrorMessage(
-                        response.errorBody()?.string(), "Sign-in failed"
-                    ),
-                    response.code(),
-                )
+                errorFrom(response, ErrorContext.SIGN_IN, R.string.error_sign_in_failed)
             }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
         }
-    }
 
-    /** FIX C-2: Verify 2FA code after receiving a challenge token from login */
-    suspend fun verifyTwoFactor(challengeToken: String, code: String): ApiResult<TwoFactorVerifyResponse> {
-        return try {
+    /**
+     * FIX C-2: Verify 2FA code after receiving a challenge token from login.
+     * Failures carry [FailureReason.INVALID_CODE] or
+     * [FailureReason.CHALLENGE_EXPIRED] so the caller can tell a mistyped code
+     * from a sign-in that has to start over (A2-008).
+     */
+    suspend fun verifyTwoFactor(challengeToken: String, code: String): ApiResult<TwoFactorVerifyResponse> =
+        guarded {
             val response = api.verifyTwoFactor(TwoFactorVerifyRequest(challengeToken, code))
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
@@ -212,19 +229,31 @@ class BirdoRepository @Inject constructor(
                 }
                 ApiResult.Success(body)
             } else {
-                ApiResult.Error("2FA verification failed", response.code())
+                errorFrom(response, ErrorContext.TWO_FACTOR, R.string.error_two_factor_failed)
             }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
         }
-    }
 
     /**
      * FIX C-1: Persist rotated refresh token from refresh response.
      * Fences against a concurrent logout/delete (finding #6) and separates a
      * definitive 401/403 from a transient failure (finding #7).
+     *
+     * SINGLE-FLIGHT (A2-007). [staleAccessToken] is the access token the failed
+     * request carried. Every caller that got a 401 queues on [refreshMutex]; the
+     * first one through rotates the pair, and each later one finds the stored
+     * access token already replaced, so its 401 has been answered and it retries
+     * on the new token without spending another rotation. Before this, the four
+     * requests a cold start fires after the one-hour access-token lifetime
+     * (profile, plan, servers, update check) performed four back-to-back
+     * rotations. iOS gets the same effect from one shared in-flight task
+     * (APIClient.swift, RefreshCoordinator). Null (no token was sent) keeps
+     * the old always-refresh behaviour.
      */
-    internal suspend fun refreshToken(): RefreshOutcome = refreshMutex.withLock {
+    internal suspend fun refreshToken(staleAccessToken: String? = null): RefreshOutcome = refreshMutex.withLock {
+        if (staleAccessToken != null) {
+            val current = tokenManager.getAccessToken()
+            if (current != null && current != staleAccessToken) return@withLock RefreshOutcome.SUCCESS
+        }
         val presented = tokenManager.getRefreshToken() ?: return@withLock RefreshOutcome.UNAUTHORIZED
         // Captured BEFORE the network round-trip; compared after, so a sign-out
         // that lands mid-flight is detected.
@@ -302,8 +331,8 @@ class BirdoRepository @Inject constructor(
         }
     }
 
-    suspend fun loginAnonymous(anonymousId: String, password: String? = null): ApiResult<AnonymousLoginResponse> {
-        return try {
+    suspend fun loginAnonymous(anonymousId: String, password: String? = null): ApiResult<AnonymousLoginResponse> =
+        guarded {
             val device = deviceInfoProvider.current()
             val response = api.loginAnonymous(AnonymousLoginRequest(
                 anonymousId = anonymousId,
@@ -323,23 +352,15 @@ class BirdoRepository @Inject constructor(
                 }
                 ApiResult.Success(body)
             } else {
-                ApiResult.Error(
-                    InputValidator.sanitizeErrorMessage(
-                        response.errorBody()?.string(), "Anonymous login failed"
-                    ),
-                    response.code(),
-                )
+                errorFrom(response, ErrorContext.ANONYMOUS_SIGN_IN, R.string.error_sign_in_failed)
             }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
         }
-    }
 
     /** Create a NEW anonymous account in-app and store its tokens. Same response
      *  shape as loginAnonymous; the 24-digit ID is returned so the UI can tell
      *  the user to save it. */
-    suspend fun registerAnonymous(): ApiResult<AnonymousLoginResponse> {
-        return try {
+    suspend fun registerAnonymous(): ApiResult<AnonymousLoginResponse> =
+        guarded {
             val device = deviceInfoProvider.current()
             val response = api.registerAnonymous(DeviceInfoRequest(
                 deviceId = device.deviceId,
@@ -357,17 +378,9 @@ class BirdoRepository @Inject constructor(
                 }
                 ApiResult.Success(body)
             } else {
-                ApiResult.Error(
-                    InputValidator.sanitizeErrorMessage(
-                        response.errorBody()?.string(), "Could not create anonymous account"
-                    ),
-                    response.code(),
-                )
+                errorFrom(response, ErrorContext.ANONYMOUS_REGISTER, R.string.error_anon_register_failed)
             }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
         }
-    }
 
     /**
      * Sign out: kill the session SERVER-side, then clear local state.
@@ -401,7 +414,7 @@ class BirdoRepository @Inject constructor(
         sessionGeneration.incrementAndGet()
         try {
             withTimeout(LOGOUT_SERVER_CALL_TIMEOUT_MS) {
-                withAutoRefresh("Logout failed") { api.logout() }
+                withAutoRefreshNoBody(R.string.error_unexpected) { api.logout() }
             }
         } catch (_: Exception) { /* best effort — local sign-out proceeds regardless */ }
         tokenManager.clearAll()
@@ -417,10 +430,19 @@ class BirdoRepository @Inject constructor(
      * GDPR Art. 17: Delete the user's account and all associated data.
      * Requires password re-confirmation to prevent deletion via stolen JWT.
      * On success, clears all local tokens and cached data.
+     *
+     * Sent around the tunnel even while Connected (REVIEW-AND2-002). The
+     * server revokes every peer of the account before it answers, and since
+     * D-6 the request rode this device's own peer: the success reply was
+     * dropped at the node, the dialog said deletion failed, and nothing below
+     * ran — no Play "still billing" notice, no device-id or ML-KEM rotation,
+     * no sign-out — while the dead tunnel left the device blocked behind a
+     * sign-in prompt for an account that no longer existed. The VPN is still
+     * torn down only after this succeeds (A2-005).
      */
-    suspend fun deleteAccount(password: String?): ApiResult<DeleteAccountResponse> {
-        val result = withAutoRefresh("Account deletion failed") {
-            api.deleteAccount(DeleteAccountRequest(password))
+    suspend fun deleteAccount(password: String?, twoFactorCode: String? = null): ApiResult<DeleteAccountResponse> {
+        val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
+            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode), AroundTunnel)
         }
         if (result is ApiResult.Success) {
             // Clear local state — account no longer exists on the server.
@@ -452,7 +474,7 @@ class BirdoRepository @Inject constructor(
      * error as "unknown" and fall back to the dialog's static store warning.
      */
     suspend fun deletionPreflight(): ApiResult<DeletionPreflightResponse> =
-        withAutoRefresh("Could not check subscriptions") { api.deletionPreflight() }
+        withAutoRefresh(R.string.error_unexpected) { api.deletionPreflight() }
 
     /** Never lets a keystore/file error turn a sign-out or deletion into a failure. */
     private fun forgetPostQuantumKeypair() {
@@ -465,62 +487,103 @@ class BirdoRepository @Inject constructor(
 
     // ── Generic auto-refresh wrapper ────────────────────────────
 
+    /** What [send] ended with: the final HTTP response (body unread), or a failure it already mapped. */
+    private sealed interface Sent<out T> {
+        data class Answered<T>(val response: Response<T>) : Sent<T>
+        data class Failed(val error: ApiResult.Error) : Sent<Nothing>
+    }
+
     /**
-     * Execute an API call with automatic 401 token refresh and retry.
+     * Run [call]; on a 401, refresh once and retry.
      *
-     * Eliminates the duplicated "call → check 401 → refreshToken → retry"
-     * pattern that was copy-pasted across getProfile, getServers, connectVpn.
+     * The ONE copy of the refresh policy. deletePortForward and the voucher
+     * route used to hand-roll their own, and the copies drifted: one reported
+     * a failed retry after a SUCCESSFUL refresh as "Session expired" (A2-038),
+     * the other skipped the refresh altogether (A2-027).
+     */
+    private suspend fun <T> send(call: suspend () -> Response<T>): Sent<T> = try {
+        // The token THIS request carries, so a refresh can tell whether another
+        // caller already answered our 401 (see refreshToken's single-flight).
+        val presented = tokenManager.getAccessToken()
+        val response = call()
+        if (response.code() != 401) {
+            Sent.Answered(response)
+        } else {
+            when (refreshToken(presented)) {
+                // The session is demonstrably valid now, so whatever the retry
+                // answers is reported with ITS status. Hard-coding a 401 here
+                // made checkSession() sign users out of a good session over a
+                // transient 5xx on the retry.
+                RefreshOutcome.SUCCESS -> Sent.Answered(call())
+                // Definitive: the refresh token is dead, so force re-login.
+                RefreshOutcome.UNAUTHORIZED -> Sent.Failed(errors.sessionExpired())
+                // Transient (5xx/timeout/network) or a logout landed mid-flight:
+                // keep the session. A non-401 code means checkSession() will
+                // NOT sign the user out (finding #7).
+                RefreshOutcome.TRANSIENT -> Sent.Failed(errors.temporarilyUnavailable())
+            }
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Sent.Failed(errors.fromException(e))
+    }
+
+    /**
+     * Execute an API call with automatic 401 token refresh and retry. A 2xx
+     * without a body is a failure here; routes that answer 204 use
+     * [withAutoRefreshNoBody].
      */
     private suspend fun <T> withAutoRefresh(
-        errorFallback: String,
+        @StringRes fallback: Int,
+        context: ErrorContext = ErrorContext.GENERAL,
         call: suspend () -> Response<T>,
-    ): ApiResult<T> {
-        return try {
-            val response = call()
-            if (response.isSuccessful && response.body() != null) {
-                ApiResult.Success(response.body()!!)
-            } else if (response.code() == 401) {
-                when (refreshToken()) {
-                    RefreshOutcome.SUCCESS -> {
-                        val retry = call()
-                        if (retry.isSuccessful && retry.body() != null) {
-                            ApiResult.Success(retry.body()!!)
-                        } else {
-                            // Do NOT hard-code 401 here. The refresh SUCCEEDED, so
-                            // the session is demonstrably valid — the retry failed
-                            // for some other reason. Reporting 401 made
-                            // checkSession() sign the user out of a perfectly good
-                            // session over a transient 5xx or a timeout on the
-                            // retry, which is the same false-logout class the
-                            // TRANSIENT outcome below exists to prevent.
-                            // Propagate the retry's real status instead.
-                            ApiResult.Error(
-                                InputValidator.sanitizeErrorMessage(
-                                    retry.errorBody()?.string(), errorFallback
-                                ),
-                                retry.code(),
-                            )
-                        }
-                    }
-                    // Definitive: the refresh token is dead → force re-login.
-                    RefreshOutcome.UNAUTHORIZED -> ApiResult.Error("Session expired", 401)
-                    // Transient (5xx/timeout/network) or a logout landed mid-flight:
-                    // keep the session. A non-401 code means checkSession() will
-                    // NOT sign the user out (finding #7).
-                    RefreshOutcome.TRANSIENT ->
-                        ApiResult.Error("Service temporarily unavailable", 503)
-                }
+    ): ApiResult<T> = when (val sent = send(call)) {
+        is Sent.Failed -> sent.error
+        is Sent.Answered -> {
+            val response = sent.response
+            if (response.isSuccessful) {
+                response.body()?.let { ApiResult.Success(it) } ?: errors.unexpected()
             } else {
-                ApiResult.Error(
-                    InputValidator.sanitizeErrorMessage(
-                        response.errorBody()?.string(), errorFallback
-                    ),
-                    response.code(),
-                )
+                errorFrom(response, context, fallback)
             }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
         }
+    }
+
+    /**
+     * [withAutoRefresh] for `Response<Unit>` routes, where a 204 is the success
+     * and the old wrapper counted its null body as an error (A2-038).
+     */
+    private suspend fun withAutoRefreshNoBody(
+        @StringRes fallback: Int,
+        call: suspend () -> Response<Unit>,
+    ): ApiResult<Unit> = when (val sent = send(call)) {
+        is Sent.Failed -> sent.error
+        is Sent.Answered ->
+            if (sent.response.isSuccessful) ApiResult.Success(Unit)
+            else errorFrom(sent.response, ErrorContext.GENERAL, fallback)
+    }
+
+    /** Map a non-2xx response. `errorBody()` is one-shot, so it is read here and only here. */
+    private fun errorFrom(response: Response<*>, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error {
+        val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+        val error = errors.fromResponse(response.code(), raw, context, fallback)
+        val retryAfter = RetryAfter.fromBody(raw)
+            ?: RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull())
+        return if (retryAfter != null) error.copy(retryAfterMs = retryAfter) else error
+    }
+
+    /**
+     * For the calls that read their own response: whatever they throw becomes a
+     * mapped transport error instead of `e.message` on screen. Cancellation is
+     * rethrown, never reported as a failure.
+     */
+    private inline fun <T> guarded(block: () -> ApiResult<T>): ApiResult<T> = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        errors.fromException(e)
     }
 
     // ── App updates ──────────────────────────────────────────────
@@ -531,7 +594,7 @@ class BirdoRepository @Inject constructor(
      * info" — an unreachable update check must never produce UI noise.
      */
     suspend fun checkAppUpdate(): ApiResult<AppUpdateInfo> =
-        withAutoRefresh("Update check failed") {
+        withAutoRefresh(R.string.error_unexpected) {
             api.checkAppUpdate(app.birdo.vpn.BuildConfig.APP_VERSION)
         }
 
@@ -547,30 +610,27 @@ class BirdoRepository @Inject constructor(
      * `dnsFilteringAvailable = false` on a network blip here would hide a
      * working feature on every offline client.
      */
-    suspend fun getClientConfig(): ApiResult<ClientConfigResponse> = try {
+    suspend fun getClientConfig(): ApiResult<ClientConfigResponse> = guarded {
         val response = api.getClientConfig(
             app.birdo.vpn.BuildConfig.WEB_BASE_URL + CLIENT_CONFIG_PATH,
         )
         if (response.isSuccessful) {
-            response.body()?.let { ApiResult.Success(it) }
-                ?: ApiResult.Error("Empty client config", response.code())
+            response.body()?.let { ApiResult.Success(it) } ?: errors.unexpected()
         } else {
-            ApiResult.Error("Failed to get client config", response.code())
+            errorFrom(response, ErrorContext.GENERAL, R.string.error_unexpected)
         }
-    } catch (e: Exception) {
-        ApiResult.Error(e.message ?: "Network error")
     }
 
     // ── User ─────────────────────────────────────────────────────
 
     suspend fun getProfile(): ApiResult<UserProfile> =
-        withAutoRefresh("Failed to get profile") { api.getProfile() }
+        withAutoRefresh(R.string.error_unexpected) { api.getProfile() }
 
     suspend fun getSubscription(forceRefresh: Boolean = false): ApiResult<SubscriptionStatus> {
         if (!forceRefresh) {
             cachedSubscriptionOrNull()?.let { return ApiResult.Success(it) }
         }
-        val result = withAutoRefresh("Failed to get subscription") { api.getSubscription() }
+        val result = withAutoRefresh(R.string.error_load_subscription) { api.getSubscription() }
         if (result is ApiResult.Success) {
             cachedSubscription = result.data
             subscriptionCacheTimestamp = System.currentTimeMillis()
@@ -581,33 +641,36 @@ class BirdoRepository @Inject constructor(
     /**
      * Redeem a voucher code. Returns the parsed RedeemVoucherResponse on
      * 2xx; on 4xx the body is parsed as RedeemVoucherResponse so the
-     * `error` slug can drive the UI error string. Any non-JSON error
-     * (network, 5xx) is returned as ApiResult.Error with a generic message.
+     * `error` slug can drive the UI error string. Anything else (a dead
+     * session, a rate limit, a 5xx, no network) is a mapped ApiResult.Error.
+     *
+     * Through [send], so an access token that expired while the app sat open
+     * is refreshed first (A2-027). This used to call the API directly: the
+     * 401 had no slug, and a user holding a paid voucher was told "Network
+     * error" on every retry until some other screen happened to refresh.
      */
-    suspend fun redeemVoucher(code: String): ApiResult<RedeemVoucherResponse> = try {
-        val response = api.redeemVoucher(RedeemVoucherRequest(code = code))
-        if (response.isSuccessful) {
-            val body = response.body()
-            if (body != null) ApiResult.Success(body)
-            else ApiResult.Error("Empty response", response.code())
-        } else {
-            // Try to parse the JSON error body so callers can show a
-            // specific user-facing message based on `error`.
-            val raw = response.errorBody()?.string()
-            val parsed = raw?.let {
-                runCatching {
-                    storeErrorJson.decodeFromString(RedeemVoucherResponse.serializer(), it)
-                }.getOrNull()
-            }
-            if (parsed?.error != null) {
-                ApiResult.Success(parsed.copy(ok = false))
-            } else {
-                ApiResult.Error("Voucher redemption failed", response.code())
+    suspend fun redeemVoucher(code: String): ApiResult<RedeemVoucherResponse> =
+        when (val sent = send { api.redeemVoucher(RedeemVoucherRequest(code = code)) }) {
+            is Sent.Failed -> sent.error
+            is Sent.Answered -> {
+                val response = sent.response
+                if (response.isSuccessful) {
+                    response.body()?.let { ApiResult.Success(it) } ?: errors.unexpected()
+                } else {
+                    val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+                    val parsed = raw?.let {
+                        runCatching {
+                            storeErrorJson.decodeFromString(RedeemVoucherResponse.serializer(), it)
+                        }.getOrNull()
+                    }
+                    if (parsed?.error != null) {
+                        ApiResult.Success(parsed.copy(ok = false))
+                    } else {
+                        errors.fromResponse(response.code(), raw, ErrorContext.GENERAL, R.string.error_voucher_failed)
+                    }
+                }
             }
         }
-    } catch (e: Exception) {
-        ApiResult.Error(e.message ?: "Network error")
-    }
 
     // ── VPN ──────────────────────────────────────────────────────
 
@@ -626,7 +689,7 @@ class BirdoRepository @Inject constructor(
             }
         }
 
-        val result = withAutoRefresh("Failed to get servers") { api.getServers() }
+        val result = withAutoRefresh(R.string.error_load_servers) { api.getServers() }
         if (result is ApiResult.Success) {
             cachedServers = result.data
             serverCacheTimestamp = System.currentTimeMillis()
@@ -663,6 +726,12 @@ class BirdoRepository @Inject constructor(
         integrityToken: String? = null,
         /** BirdoShield (D18): per-device DNS-filtering opt-in — see ConnectRequest.dnsFiltering. */
         dnsFiltering: Boolean = false,
+        /**
+         * A1-034: the key id of the live session this connect rebuilds in
+         * place (ConnectRequest.rebuild/currentKeyId), or null for an ordinary
+         * connect.
+         */
+        rebuildOf: String? = null,
     ): ApiResult<ConnectResponse> {
         // FIX-1-1: Generate X25519 keypair locally — private key never leaves the device.
         // Uses wireguard-android's crypto module which wraps Curve25519.
@@ -681,7 +750,7 @@ class BirdoRepository @Inject constructor(
         // Zero the Key object's internal byte[] via the raw bytes
         val privateKeyBytes = keyPair.privateKey.bytes
         try {
-            val result = withAutoRefresh("Connection failed") {
+            val result = withAutoRefresh(R.string.error_connect_failed) {
                 api.connect(ConnectRequest(
                     serverNodeId = serverNodeId,
                     deviceName = deviceName,
@@ -691,7 +760,7 @@ class BirdoRepository @Inject constructor(
                     fallbackReason = fallbackReason,
                     quantumProtection = quantumProtection,
                     pqClientPublicKey = pqClientPublicKey,
-                    // A non-null key proves RosenpassManager loaded the native
+                    // A non-null key proves BirdoPqManager loaded the native
                     // engine and minted the ML-KEM keypair, so this client WILL
                     // decapsulate — tell the server to withhold the PSK from
                     // the response (the HNDL-safe path). BirdoVpnService fails
@@ -700,15 +769,26 @@ class BirdoRepository @Inject constructor(
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                     dnsFiltering = dnsFiltering,
+                    rebuild = rebuildOf != null,
+                    currentKeyId = rebuildOf,
                 ))
             }
             if (result is ApiResult.Success) {
                 val body = result.data
-                body.keyId?.let { tokenManager.setLastKeyId(it) }
-                // FIX-1-1: Store locally generated private key instead of server-provided one.
+                // A REFUSED connect is a 200 `{success: false, message}` (that is
+                // how a full device cap arrives), so it never passes through the
+                // error mapper; VpnManager publishes body.message verbatim.
+                if (!body.success) {
+                    return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
+                }
+                // FIX-1-1: the locally generated private key, never the server's.
                 // The server no longer returns privateKey when clientPublicKey was sent.
                 val localPrivateKey = String(privateKeyChars)
-                tokenManager.setWireGuardPrivateKey(localPrivateKey)
+                // The private key is NOT persisted (A1-041): it lives in the
+                // returned config for this session only.
+                synchronized(keyIdLock) {
+                    body.keyId?.let { tokenManager.setLastKeyId(it) }
+                }
                 // Inject the locally-generated private key into the response so
                 // VpnManager and BirdoVpnService can build the WireGuard config.
                 // The server intentionally omits privateKey when clientPublicKey was sent.
@@ -722,64 +802,63 @@ class BirdoRepository @Inject constructor(
         }
     }
 
-    suspend fun disconnectVpn(): ApiResult<Unit> {
-        val keyId = tokenManager.getLastKeyId()
+    /**
+     * Release a WireGuard peer server-side.
+     *
+     * @param keyId the session to release. VpnManager names the key of the
+     *   session it started; null falls back to the stored id (a session from a
+     *   previous process).
+     */
+    suspend fun disconnectVpn(keyId: String? = null): ApiResult<Unit> {
+        val target = keyId ?: tokenManager.getLastKeyId()
         var serverResult: ApiResult<Unit> = ApiResult.Success(Unit)
-        if (keyId != null) {
+        if (target != null) {
             // Through withAutoRefresh, NOT a bare api.disconnect(): access tokens
             // live one hour, so the ordinary end-of-session disconnect presented
             // an expired token, got a silent 401, and left the WireGuard peer
             // provisioned server-side — consuming a plan connection slot while
             // the UI reported a clean disconnect. Same class as the logout() fix.
-            serverResult = withAutoRefresh("Disconnect failed") { api.disconnect(keyId) }
+            serverResult = withAutoRefreshNoBody(R.string.error_unexpected) { api.disconnect(target) }
         }
-        // Local teardown is authoritative: clear the key id unconditionally so
-        // heartbeats stop carrying a stale keyId even if the server call failed
-        // (the server reaps orphaned peers on missed heartbeats).
-        tokenManager.clearLastKeyId()
-        // FIX-1-8: Clear WG private key from storage after disconnect.
-        // Fresh keys are generated on each new connection.
-        tokenManager.clearWireGuardPrivateKey()
+        // Local teardown is authoritative, but only for THIS key: clear the
+        // stored id whether or not the server call succeeded (the server reaps
+        // orphaned peers on missed heartbeats) — unless a newer connect stored
+        // its own id while the DELETE was in flight. Clearing that one stopped
+        // the new session's heartbeats and got its live peer reaped (A1-005).
+        synchronized(keyIdLock) {
+            if (target == null || tokenManager.getLastKeyId() == target) {
+                tokenManager.clearLastKeyId()
+            }
+        }
         return serverResult
+    }
+
+    /**
+     * A1-034: a live rebuild that kept the old session puts its key id back,
+     * so a later process's teardown names the peer that is actually up.
+     */
+    fun rememberKeyId(keyId: String) {
+        synchronized(keyIdLock) { tokenManager.setLastKeyId(keyId) }
     }
 
     /**
      * FIX-2-10: Send heartbeat to backend to report connection health.
      * P1-9: Returns HeartbeatResponse so callers can act on valid/serverOnline.
+     *
+     * @param aroundTunnel send it around the tunnel whatever the session's
+     *   state ([AroundTunnel]): the dead-tunnel probe (REVIEW-AND2-001).
      */
-    suspend fun sendHeartbeat(): ApiResult<HeartbeatResponse> {
-        val keyId = tokenManager.getLastKeyId() ?: return ApiResult.Error("No active key ID")
-        return withAutoRefresh("Heartbeat failed") {
-            api.heartbeat(keyId)
+    suspend fun sendHeartbeat(keyId: String? = null, aroundTunnel: Boolean = false): ApiResult<HeartbeatResponse> {
+        val target = keyId ?: tokenManager.getLastKeyId()
+            // A user-facing sentence like every other error here (REVIEW-AND-021);
+            // callers branch on the code.
+            ?: return errors.unexpected().copy(code = CODE_NO_ACTIVE_KEY)
+        return withAutoRefresh(R.string.error_unexpected) {
+            api.heartbeat(target, AroundTunnel.takeIf { aroundTunnel })
         }
     }
 
-    /**
-     * P1-13: Whether in-session WireGuard key rotation is available.
-     *
-     * FIX-MOBILE-COMPAT: Backend currently exposes no `POST vpn/connections/{keyId}/rotate`
-     * endpoint (route is planned as P3-25). Callers should check this before
-     * invoking [rotateKey] and degrade gracefully (keep the existing key) rather
-     * than firing a request that can only ever return 501. No UI surfaces this
-     * action, so there is nothing promising a feature that does not exist yet.
-     */
-    val keyRotationSupported: Boolean = false
-
-    /**
-     * P1-13: Rotate WireGuard key during a long-running session.
-     *
-     * Returns a graceful "not available" error while [keyRotationSupported] is
-     * false so any caller that reaches this anyway keeps the existing key
-     * instead of crashing or spamming the network.
-     */
-    suspend fun rotateKey(): ApiResult<KeyRotationResponse> {
-        return ApiResult.Error("Key rotation not yet supported by backend", 501)
-    }
-
     // ── Multi-Hop (Double VPN) ───────────────────────────────────
-
-    suspend fun getMultiHopRoutes(): ApiResult<List<MultiHopRoute>> =
-        withAutoRefresh("Failed to get multi-hop routes") { api.getMultiHopRoutes() }
 
     suspend fun connectMultiHop(
         entryNodeId: String,
@@ -799,6 +878,8 @@ class BirdoRepository @Inject constructor(
         integrityToken: String? = null,
         /** BirdoShield (D18) — the twin of [connectVpn]'s dnsFiltering; both dial paths carry it. */
         dnsFiltering: Boolean = false,
+        /** A1-034 — the twin of [connectVpn]'s rebuildOf. */
+        rebuildOf: String? = null,
     ): ApiResult<MultiHopConnectResponse> {
         val keyPair = com.wireguard.crypto.KeyPair()
         val clientPublicKey = keyPair.publicKey.toBase64()
@@ -808,7 +889,7 @@ class BirdoRepository @Inject constructor(
         val privateKeyChars = keyPair.privateKey.toBase64().toCharArray()
         val privateKeyBytes = keyPair.privateKey.bytes
         try {
-            val result = withAutoRefresh("Multi-hop connection failed") {
+            val result = withAutoRefresh(R.string.error_connect_failed) {
                 api.connectMultiHop(MultiHopConnectRequest(
                     entryNodeId = entryNodeId,
                     exitNodeId = exitNodeId,
@@ -824,13 +905,22 @@ class BirdoRepository @Inject constructor(
                     pqClientCanDecapsulate = pqClientPublicKey != null,
                     integrityToken = integrityToken,
                     dnsFiltering = dnsFiltering,
+                    rebuild = rebuildOf != null,
+                    currentKeyId = rebuildOf,
                 ))
             }
             if (result is ApiResult.Success) {
                 val body = result.data
-                body.keyId?.let { tokenManager.setLastKeyId(it) }
+                // Same 200-refusal shape as connectVpn.
+                if (!body.success) {
+                    return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
+                }
                 val localPrivateKey = String(privateKeyChars)
-                tokenManager.setWireGuardPrivateKey(localPrivateKey)
+                // The private key is NOT persisted (A1-041): it lives in the
+                // returned config for this session only.
+                synchronized(keyIdLock) {
+                    body.keyId?.let { tokenManager.setLastKeyId(it) }
+                }
                 return ApiResult.Success(body.copy(privateKey = localPrivateKey))
             }
             return result
@@ -843,36 +933,15 @@ class BirdoRepository @Inject constructor(
     // ── Port Forwarding ──────────────────────────────────────────
 
     suspend fun getPortForwards(): ApiResult<List<PortForward>> =
-        withAutoRefresh("Failed to get port forwards") { api.getPortForwards() }
+        withAutoRefresh(R.string.error_load_port_forwards) { api.getPortForwards() }
 
     suspend fun createPortForward(internalPort: Int, protocol: String = "tcp"): ApiResult<CreatePortForwardResponse> =
-        withAutoRefresh("Failed to create port forward") {
+        withAutoRefresh(R.string.error_create_port_forward) {
             api.createPortForward(CreatePortForwardRequest(internalPort, protocol))
         }
 
-    suspend fun deletePortForward(id: String): ApiResult<Unit> {
-        return try {
-            val response = api.deletePortForward(id)
-            if (response.isSuccessful) {
-                ApiResult.Success(Unit)
-            } else if (response.code() == 401) {
-                when (refreshToken()) {
-                    RefreshOutcome.SUCCESS -> {
-                        val retry = api.deletePortForward(id)
-                        if (retry.isSuccessful) ApiResult.Success(Unit)
-                        else ApiResult.Error("Session expired", 401)
-                    }
-                    RefreshOutcome.UNAUTHORIZED -> ApiResult.Error("Session expired", 401)
-                    RefreshOutcome.TRANSIENT ->
-                        ApiResult.Error("Service temporarily unavailable", 503)
-                }
-            } else {
-                ApiResult.Error("Failed to delete port forward", response.code())
-            }
-        } catch (e: Exception) {
-            ApiResult.Error(e.message ?: "Network error")
-        }
-    }
+    suspend fun deletePortForward(id: String): ApiResult<Unit> =
+        withAutoRefreshNoBody(R.string.error_delete_port_forward) { api.deletePortForward(id) }
 
     // ── Google Play store rail ───────────────────────────────────
     //
@@ -887,7 +956,7 @@ class BirdoRepository @Inject constructor(
      * so the ordinary auto-refresh wrapper is correct.
      */
     suspend fun mintGooglePurchaseIntent(): ApiResult<GooglePurchaseIntentResponse> =
-        withAutoRefresh("Could not start the purchase") { api.mintGooglePurchaseIntent() }
+        withAutoRefresh(R.string.error_unexpected) { api.mintGooglePurchaseIntent() }
 
     /**
      * Present a Play purchase token for server-side verification.
@@ -910,6 +979,7 @@ class BirdoRepository @Inject constructor(
     suspend fun linkGooglePurchase(purchaseToken: String): StoreLinkOutcome {
         val body = GooglePlayLinkRequest(purchaseToken = purchaseToken)
         return try {
+            val presented = tokenManager.getAccessToken()
             val first = api.linkGooglePurchase(body)
             if (first.isSuccessful) {
                 first.body()?.let { return StoreLinkOutcome.Accepted(it) }
@@ -919,7 +989,7 @@ class BirdoRepository @Inject constructor(
             val parsed = parseStoreError(first)
             // ONLY an UNCODED 401 is a session problem. See the doc comment.
             if (first.code() == 401 && parsed.code == null) {
-                return when (refreshToken()) {
+                return when (refreshToken(presented)) {
                     RefreshOutcome.SUCCESS -> {
                         val retry = api.linkGooglePurchase(body)
                         if (retry.isSuccessful) {
@@ -952,8 +1022,7 @@ class BirdoRepository @Inject constructor(
      * when it did not, or when the body is not something we would show a user.
      */
     private fun refusal(kind: StoreLinkRefusal, serverMessage: String?): StoreLinkOutcome.Refused {
-        val text = InputValidator.sanitizeErrorMessage(serverMessage, kind.fallbackMessage)
-        return StoreLinkOutcome.Refused(kind, text)
+        return StoreLinkOutcome.Refused(kind, errors.storeRefusal(kind, serverMessage))
     }
 
     /**

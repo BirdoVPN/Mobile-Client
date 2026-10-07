@@ -52,7 +52,6 @@ typealias ConnectResponse = app.birdo.vpn.shared.model.ConnectResponse
 typealias AttestationNonceResponse = app.birdo.vpn.shared.model.AttestationNonceResponse
 
 // ─── Multi-Hop ───────────────────────────────────────────────────────────────
-typealias MultiHopRoute = app.birdo.vpn.shared.model.MultiHopRoute
 typealias MultiHopConnectRequest = app.birdo.vpn.shared.model.MultiHopConnectRequest
 typealias MultiHopNodeInfo = app.birdo.vpn.shared.model.MultiHopNodeInfo
 typealias MultiHopInfo = app.birdo.vpn.shared.model.MultiHopInfo
@@ -62,13 +61,6 @@ typealias MultiHopConnectResponse = app.birdo.vpn.shared.model.MultiHopConnectRe
 typealias PortForward = app.birdo.vpn.shared.model.PortForward
 typealias CreatePortForwardRequest = app.birdo.vpn.shared.model.CreatePortForwardRequest
 typealias CreatePortForwardResponse = app.birdo.vpn.shared.model.CreatePortForwardResponse
-
-// ─── Google Play Billing ─────────────────────────────────────────────────────
-// Removed: Android distributed as APK from GitHub Releases; no Play Billing.
-
-// ─── Key Rotation ────────────────────────────────────────────────────────────
-typealias KeyRotationRequest = app.birdo.vpn.shared.model.KeyRotationRequest
-typealias KeyRotationResponse = app.birdo.vpn.shared.model.KeyRotationResponse
 
 // Protocol Error Codes: retired 2026-09-20, see the shared module.
 

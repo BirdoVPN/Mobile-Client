@@ -236,10 +236,34 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_CUSTOM_DNS_SECONDARY, "") ?: ""
         set(value) { prefs.edit(commit = true) { putString(KEY_CUSTOM_DNS_SECONDARY, value) }; signSettings() }
 
-    /** "auto", "51820", "53", or a custom port number as string */
+    /**
+     * "auto". Older builds also stored "51820", "53" or a custom port, which
+     * the relays never accepted (LIVE-PORT53); [retireWireGuardPortChoice]
+     * rewrites those, and the config builder ignores anything but 51820.
+     * The key stays in SettingsHmac.PROTECTED_KEYS: dropping it would change
+     * every installed signature and wipe the protected settings once.
+     */
     var wireGuardPort: String
         get() = prefs.getString(KEY_WG_PORT, "auto") ?: "auto"
         set(value) { prefs.edit(commit = true) { putString(KEY_WG_PORT, value) }; signSettings() }
+
+    /**
+     * LIVE-PORT53: the relays accept WireGuard on 51820 only, so the port is
+     * no longer a setting. A saved "53" or custom port (or the old "51820"
+     * preset, the same as automatic) becomes "auto", once: the next call finds
+     * nothing to do. MTU and every other setting are left as they are.
+     *
+     * Re-signs the protected settings, so it must run only once they have
+     * been verified (MainActivity.verifySettingsIntegrity): earlier it would
+     * sign a tampered set as genuine.
+     *
+     * @return true when it rewrote the stored value.
+     */
+    fun retireWireGuardPortChoice(): Boolean {
+        if (wireGuardPort == "auto") return false
+        wireGuardPort = "auto"
+        return true
+    }
 
     /** 0 = automatic (use server default) */
     var wireGuardMtu: Int
@@ -325,6 +349,72 @@ class AppPreferences @Inject constructor(
         get() = prefs.getString(KEY_LAST_SERVER, null)
         set(value) = prefs.edit { putString(KEY_LAST_SERVER, value) }
 
+    /**
+     * The plan this account last had, as the server reported it (the
+     * subscription fetch writes it, sign-out clears it). What a dial with no
+     * UI in front of it — Always-on, a restart, the tile, the widget — reads
+     * to decide whether an armed Multi-Hop pref is still a Multi-Hop session:
+     * the pref is never cleared when a plan lapses (REVIEW-AND-007/-020), and
+     * the in-memory subscription cache lives 30 s. Not HMAC-protected: a
+     * forged value can only make the client ASK for Multi-Hop, which the
+     * backend refuses without the plan.
+     */
+    var lastKnownPlan: String?
+        get() = prefs.getString(KEY_LAST_KNOWN_PLAN, null)
+        set(value) = prefs.edit { putString(KEY_LAST_KNOWN_PLAN, value) }
+
+    // ── Session intent (Always-on / restart / update) ────────────
+    /**
+     * The user wants the VPN up: set when a session is asked for, cleared by
+     * a Disconnect, a sign-out or a failure that re-dialling cannot fix. A
+     * system start (a sticky restart after the process was killed, an app
+     * update) reconnects headlessly only while this is true, so a stale
+     * intent can never re-dial a session the user ended (iOS lesson #284).
+     * commit() so the intent is durable before the process can die with it.
+     * Not HMAC-protected: a forged value can only make BirdoVPN reconnect the
+     * user's own route after a restart.
+     */
+    var sessionShouldBeUp: Boolean
+        get() = prefs.getBoolean(KEY_SESSION_SHOULD_BE_UP, false)
+        set(value) = prefs.edit(commit = true) { putBoolean(KEY_SESSION_SHOULD_BE_UP, value) }
+
+    // ── One-shot notices ─────────────────────────────────────────
+
+    /**
+     * [hasAcceptedCurrentConsent] as a flow, so UI that must wait for consent
+     * (the root warning) appears the moment it is given, not at the next launch.
+     */
+    val hasAcceptedCurrentConsentFlow: Flow<Boolean> =
+        callbackFlow {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_CONSENT_VERSION) trySend(hasAcceptedCurrentConsent)
+            }
+            trySend(hasAcceptedCurrentConsent)
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        }
+
+    /**
+     * The settings-integrity check reset the protected settings (kill switch,
+     * custom DNS, split tunnel) to safe defaults. Settings says so once; the
+     * reset used to be silent, which reads as the app forgetting settings
+     * (A2-047). Deliberately NOT a protected key: it describes the reset and
+     * must survive the re-sign that follows it.
+     */
+    var settingsResetNoticePending: Boolean
+        get() = prefs.getBoolean(KEY_SETTINGS_RESET_NOTICE, false)
+        set(value) = prefs.edit { putBoolean(KEY_SETTINGS_RESET_NOTICE, value) }
+
+    /**
+     * Whether the notifications explainer has been shown on this install. It
+     * is shown once, at the first connect, instead of a bare system prompt
+     * over the consent screen at first launch (A2-026). After a "Not now" or a
+     * denial the app does not ask again; Settings links to the system page.
+     */
+    var notificationPermissionExplained: Boolean
+        get() = prefs.getBoolean(KEY_NOTIFICATION_PERMISSION_EXPLAINED, false)
+        set(value) = prefs.edit { putBoolean(KEY_NOTIFICATION_PERMISSION_EXPLAINED, value) }
+
     companion object {
         private const val KEY_KILL_SWITCH = "kill_switch_enabled"
         private const val KEY_AUTO_CONNECT = "auto_connect"
@@ -335,6 +425,8 @@ class AppPreferences @Inject constructor(
         private const val KEY_SPLIT_TUNNEL_APPS = "split_tunnel_apps"
         private const val KEY_FAVORITES = "favorite_servers"
         private const val KEY_LAST_SERVER = "last_server_id"
+        private const val KEY_SESSION_SHOULD_BE_UP = "session_should_be_up"
+        private const val KEY_LAST_KNOWN_PLAN = "last_known_plan"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_policy_accepted"
         private const val KEY_PRIVACY_TIMESTAMP = "privacy_consent_timestamp"
         private const val KEY_CONSENT_VERSION = "privacy_consent_version"
@@ -375,5 +467,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_MULTI_HOP_ENTRY = "multi_hop_entry_node"
         private const val KEY_MULTI_HOP_EXIT = "multi_hop_exit_node"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_SETTINGS_RESET_NOTICE = "settings_reset_notice_pending"
+        private const val KEY_NOTIFICATION_PERMISSION_EXPLAINED = "notification_permission_explained"
     }
 }

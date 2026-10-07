@@ -9,6 +9,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -85,11 +87,13 @@ fun BirdoSectionHeader(
         Spacer(Modifier.width(8.dp))
         Text(
             text = title.uppercase(),
+            // A heading to TalkBack, so its heading navigation jumps section to
+            // section (A2-032).
+            modifier = Modifier.weight(1f).semantics { heading() },
             color = palette.onSurfaceMuted,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 1.5.sp,
-            modifier = Modifier.weight(1f),
         )
         if (actionLabel != null && onActionClick != null) {
             Text(

@@ -19,12 +19,12 @@ import java.io.File
 import java.nio.file.Files
 
 /**
- * RosenpassKeyStore against a real temp `filesDir`, a JCE key in place of the
+ * BirdoPqKeyStore against a real temp `filesDir`, a JCE key in place of the
  * Keystore, and a scripted legacy EncryptedFile source: the v2 layout, atomic
  * writes, corruption handling and the one-shot migration of the pre-v2
  * `static.sk.enc`.
  */
-class RosenpassKeyStoreTest {
+class BirdoPqKeyStoreTest {
 
     /** What the old EncryptedFile would decrypt to, or throw. */
     private inner class FakeLegacy(private val bytes: ByteArray?, private val throws: Boolean = false) : LegacyBlobSource {
@@ -68,7 +68,7 @@ class RosenpassKeyStoreTest {
         filesDir.deleteRecursively()
     }
 
-    private fun store(legacy: LegacyBlobSource = FakeLegacy(null)) = RosenpassKeyStore(context, sealer, legacy)
+    private fun store(legacy: LegacyBlobSource = FakeLegacy(null)) = BirdoPqKeyStore(context, sealer, legacy)
 
     // ── v2 layout ────────────────────────────────────────────────
 

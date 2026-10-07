@@ -350,6 +350,9 @@
             "key-reuse",
             "same-entry-exit-change"
           ]
+        },
+        "quotaExceeded": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -363,7 +366,8 @@
       "description": "Machine-readable `error` values the connect routes emit. Other failures carry free-text `message` only.",
       "enum": [
         "update_required",
-        "client_attestation_required"
+        "client_attestation_required",
+        "quota_check_unavailable"
       ]
     },
     "RebuildRefusal": {
@@ -459,6 +463,54 @@
         "statusCode",
         "message",
         "error"
+      ]
+    },
+    "quota_check_unavailable": {
+      "type": "object",
+      "description": "HTTP 503. A FREE (RECON) account was refused because its data allowance could not be read — the free-tier cap fails closed. Retryable: nothing is wrong with the account; retry after details.retryAfterSeconds. Paid plans never receive it.",
+      "properties": {
+        "statusCode": {
+          "const": 503
+        },
+        "message": {
+          "type": "string"
+        },
+        "error": {
+          "const": "quota_check_unavailable"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "correlationId": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterSeconds": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "retryable",
+            "retryAfterSeconds"
+          ]
+        }
+      },
+      "required": [
+        "statusCode",
+        "message",
+        "error",
+        "details"
       ]
     }
   }

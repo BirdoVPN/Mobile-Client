@@ -115,6 +115,20 @@ class InputValidatorTest {
         assertFalse(InputValidator.isValidDnsAddress("::1")) // IPv6 loopback
     }
 
+    /**
+     * A2-002: the Settings field validates as the user types. InetAddress
+     * takes "8.8" as 8.0.0.8 and hands "1.1.1." to the RESOLVER, so a
+     * half-typed address was either wrongly valid or a DNS lookup.
+     */
+    @Test
+    fun `partial and short-form IPv4 addresses are rejected without a lookup`() {
+        assertFalse(InputValidator.isValidDnsAddress("8.8"))
+        assertFalse(InputValidator.isValidDnsAddress("8.8.8"))
+        assertFalse(InputValidator.isValidDnsAddress("1.1.1."))
+        assertFalse(InputValidator.isValidDnsAddress("1."))
+        assertFalse(InputValidator.isValidDnsAddress("134744072")) // 8.8.8.8 as one number
+    }
+
     @Test
     fun `wildcard address rejected for DNS`() {
         assertFalse(InputValidator.isValidDnsAddress("0.0.0.0"))
@@ -194,41 +208,6 @@ class InputValidatorTest {
     @Test
     fun `IPv4 with whitespace is trimmed`() {
         assertTrue(InputValidator.isValidIpv4(" 10.0.0.1 "))
-    }
-
-    // ── Port ─────────────────────────────────────────────────────
-
-    @Test
-    fun `valid numeric ports`() {
-        assertTrue(InputValidator.isValidPort(1))
-        assertTrue(InputValidator.isValidPort(80))
-        assertTrue(InputValidator.isValidPort(443))
-        assertTrue(InputValidator.isValidPort(51820)) // WireGuard default
-        assertTrue(InputValidator.isValidPort(65535))
-    }
-
-    @Test
-    fun `invalid numeric ports`() {
-        assertFalse(InputValidator.isValidPort(0))
-        assertFalse(InputValidator.isValidPort(-1))
-        assertFalse(InputValidator.isValidPort(65536))
-        assertFalse(InputValidator.isValidPort(100000))
-    }
-
-    @Test
-    fun `valid string ports`() {
-        assertTrue(InputValidator.isValidPort("auto"))
-        assertTrue(InputValidator.isValidPort("51820"))
-        assertTrue(InputValidator.isValidPort("443"))
-    }
-
-    @Test
-    fun `invalid string ports`() {
-        assertFalse(InputValidator.isValidPort(""))
-        assertFalse(InputValidator.isValidPort("abc"))
-        assertFalse(InputValidator.isValidPort("-1"))
-        assertFalse(InputValidator.isValidPort("0"))
-        assertFalse(InputValidator.isValidPort("65536"))
     }
 
     // ── MTU ──────────────────────────────────────────────────────

@@ -51,16 +51,6 @@ object InputValidator {
     fun looksLikeIpLiteral(address: String): Boolean =
         address.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' || it == '%' }
 
-    // ── Port ─────────────────────────────────────────────────────
-
-    fun isValidPort(port: Int): Boolean = port in 1..65535
-
-    fun isValidPort(port: String): Boolean {
-        if (port == "auto") return true
-        val num = port.toIntOrNull() ?: return false
-        return isValidPort(num)
-    }
-
     // ── MTU ──────────────────────────────────────────────────────
 
     private const val MTU_MIN = 1280
