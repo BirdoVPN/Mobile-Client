@@ -21,6 +21,7 @@ import android.service.quicksettings.TileService
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import androidx.core.os.HandlerCompat
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.data.network.BypassSockets
@@ -604,16 +605,30 @@ class BirdoVpnService : VpnService() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /**
+     * The main looper's ASYNCHRONOUS lane, the one Dispatchers.Main posts to
+     * (kotlinx-coroutines-android builds its handler async). [onMain] must
+     * post there too (round 7): a message from a plain Handler is synchronous,
+     * and the looper holds synchronous messages behind a sync barrier — the
+     * one Choreographer raises for every frame — while asynchronous ones go
+     * past it. A block posted plainly before a state change could therefore
+     * run AFTER the render collector's reaction to that change. Between two
+     * asynchronous messages the queue is first in, first out.
+     */
+    private val asyncMainHandler = HandlerCompat.createAsync(Looper.getMainLooper())
+
+    /**
      * Runs a block on the main thread. Every alert write goes through it —
      * [postedAlertKey] and the one alert notification — so the render
      * collector (main) and the tunnel executor never interleave a
      * check-then-clear: an executor-side withdraw read a stale not-armed key,
      * the collector posted a newer alert, and the withdraw removed THAT one
-     * (round 6, P3-4). Blocks run in the order they were handed over, which
-     * the callers rely on. A seam: a unit test has no main looper, so it runs
-     * or queues the block itself.
+     * (round 6, P3-4). Blocks run in the order they were handed over, and —
+     * through [asyncMainHandler], the render collector's own lane — before
+     * any collector work dispatched after them, which stopTunnel relies on.
+     * A seam: a unit test has no main looper, so it runs or queues the block
+     * itself.
      */
-    internal var onMain: (() -> Unit) -> Unit = { block -> mainHandler.post { block() } }
+    internal var onMain: (() -> Unit) -> Unit = { block -> asyncMainHandler.post { block() } }
 
     /**
      * Bumped on the MAIN thread by every START / STOP / SWITCH_TEARDOWN /
@@ -2911,9 +2926,13 @@ class BirdoVpnService : VpnService() {
         // Clear sensitive config from memory (private keys, etc.)
         activeConfig = null
         // The alerts, on the main thread ([onMain]) and handed over BEFORE the
-        // final state: the render collector renders that state on the main
-        // thread after these run, so it finds the key and does not post the
-        // same alert again (REVIEW-AND-014).
+        // final state. The render collector (Dispatchers.Main.immediate; this
+        // runs on the tunnel executor, so it dispatches) reacts to that state
+        // through the main looper's asynchronous lane, and onMain posts to the
+        // same lane, so these run first and the collector finds the key and
+        // does not post the same alert again (REVIEW-AND-014). A plain Handler
+        // would not promise that: its synchronous message can sit behind a
+        // frame's sync barrier while the collector's asynchronous one passes.
         //
         // No session is left for a not-armed warning to describe; the stop's
         // own reason, if any, is what is shown now.
