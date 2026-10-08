@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -371,6 +372,89 @@ class BirdoRepositoryTest {
         runCurrent()
         assertNull("the late rotation must not write a signed-out session back", refresh)
         verify(exactly = 0) { tokenManager.setTokens(any(), any()) }
+    }
+
+    /**
+     * Review of #463. Sign-out runs disconnectForSignOut, bounded at 10 s, and
+     * then logout(). The disconnect's DELETE got a 401, and its refresh is
+     * still on the wire when the bound gives up on it: the server has already
+     * consumed the refresh token it presented. logout() used to bump the
+     * session generation before its own server call, so that refresh's fence
+     * dropped the rotated pair, the consumed token stayed on disk, and
+     * logout's own 401 → refresh presented it AGAIN (a reuse: a soft 401 in
+     * the server's rotation grace, an account-wide revoke past it).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `logout after a sign-out disconnect timed out mid-refresh never replays the consumed refresh token`() = runTest {
+        var access: String? = "old_access"
+        var refresh: String? = "old_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.getLastKeyId() } returns "key-1"
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        val unauthorized = "Unauthorized".toResponseBody("text/plain".toMediaType())
+        // The server 401s anything carrying the expired access token.
+        coEvery { api.disconnect(any()) } coAnswers {
+            if (access == "old_access") Response.error(401, unauthorized) else Response.success(Unit)
+        }
+        coEvery { api.logout() } coAnswers {
+            if (access == "old_access") Response.error(401, unauthorized) else Response.success(Unit)
+        }
+        val presented = mutableListOf<String>()
+        val answer = CompletableDeferred<Unit>()
+        coEvery { api.refreshToken(any()) } coAnswers {
+            presented += firstArg<RefreshRequest>().refreshToken
+            answer.await()
+            Response.success(RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600))
+        }
+
+        // VpnManager.disconnectForSignOut's bound gives up on the DELETE while
+        // its refresh is on the wire.
+        val signOutDisconnect = launch { kotlinx.coroutines.withTimeoutOrNull(10_000) { repository.disconnectVpn("key-1") } }
+        runCurrent()
+        assertEquals(listOf("old_refresh"), presented)
+        advanceTimeBy(10_001)
+        assertTrue(signOutDisconnect.isCompleted)
+
+        // The orphaned refresh is answered while logout is under way.
+        backgroundScope.launch {
+            delay(2_000)
+            answer.complete(Unit)
+        }
+        repository.logout()
+
+        assertEquals("the consumed refresh token must not be presented twice", listOf("old_refresh"), presented)
+        // …and the logout reached the server on the rotated pair.
+        coVerify(exactly = 2) { api.logout() }
+        assertNull(refresh)
+    }
+
+    /** Review of #463: every sign-in writes its pair under the refresh fence's lock. */
+    @Test
+    fun `every sign-in stores its tokens under the session lock`() = runTest {
+        val lockField = BirdoRepository::class.java.getDeclaredField("sessionLock").apply { isAccessible = true }
+        val sessionLock = lockField.get(repository)
+        val heldWhileWriting = mutableListOf<Boolean>()
+        every { tokenManager.setTokens(any(), any()) } answers { heldWhileWriting += Thread.holdsLock(sessionLock) }
+        val pair = TokenPair("access_tok", "refresh_tok")
+        coEvery { api.login(any()) } returns Response.success(LoginResponse(ok = true, tokens = pair))
+        coEvery { api.exchangeNativeOAuth(any()) } returns Response.success(LoginResponse(ok = true, tokens = pair))
+        coEvery { api.verifyTwoFactor(any()) } returns
+            Response.success(TwoFactorVerifyResponse(ok = true, tokens = pair))
+        coEvery { api.loginAnonymous(any()) } returns
+            Response.success(AnonymousLoginResponse(ok = true, tokens = pair))
+        coEvery { api.registerAnonymous(any()) } returns
+            Response.success(AnonymousLoginResponse(ok = true, tokens = pair))
+
+        repository.login("user@test.com", "pass123")
+        repository.exchangeNativeOAuth("code", "verifier")
+        repository.verifyTwoFactor("challenge", "123456")
+        repository.loginAnonymous("123456789012345678901234")
+        repository.registerAnonymous()
+
+        assertEquals(listOf(true, true, true, true, true), heldWhileWriting)
     }
 
     @Test
