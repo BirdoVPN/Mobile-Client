@@ -812,14 +812,15 @@ data class HeartbeatResponse(
     val message: String? = null,
     /**
      * WHY the key is in this state, from a backend with birdo-web's heartbeat
-     * reasons (WEB-HB): "ok", "server_offline", "revoked", "evicted", "reaped"
-     * or "not_found". Absent from an older backend, and a value this build
-     * does not know means the same: today's handling. A plain String, never an
-     * enum, so a new reason can never fail the decode of a whole heartbeat.
+     * reasons (WEB-HB): "ok", "server_offline", "revoked", "evicted", "reaped",
+     * "quota_exceeded" or "not_found". Absent from an older backend, and a
+     * value this build does not know means the same: today's handling. A plain
+     * String, never an enum, so a new reason can never fail the decode of a
+     * whole heartbeat.
      *
-     * Not in the vendored contract yet: WEB-HB adds it to
-     * backend/contract/vpn-protocol.schema.json, and the copy in contract/ is
-     * re-vendored once that is on birdo-web's main.
+     * In the vendored contract as `$defs.HeartbeatReason`
+     * (contract/vpn-protocol.schema.json), which is where the list above and
+     * each reason's meaning come from.
      */
     val reason: String? = null,
     /**

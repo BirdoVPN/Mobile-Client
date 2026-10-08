@@ -1568,21 +1568,57 @@ class VpnManager @Inject constructor(
      * failure as its error, which is what puts the screen's selection back
      * on the server being re-dialled.
      *
-     * @return the failure that stops today's path, or null.
+     * The same holds when nothing was held: a /connect that got no answer
+     * because there is no network ([unanswered], REQUEST_UNANSWERED while
+     * offline) over a tunnel that still shows Connected. Today's dial failed
+     * at once there too and gave the session up as NEVER_CONNECTED, the block
+     * kept and nothing re-dialling (review of #463). The supervisor takes it
+     * as a transient failure of the session that was up, which waits for the
+     * network; the old tunnel stays up meanwhile (nothing leaves the device
+     * while it is offline), and the re-dial on the online edge replaces it.
+     * No Error is published for it: the wait itself is the state.
+     *
+     * @param unanswered the rebuild's request failure when its event was
+     *   REQUEST_UNANSWERED, else null.
+     * @return the message of the failure that stops today's path, or null.
      */
-    private fun settleHeldFailure(hold: RebuildHold, directive: LiveRebuildPolicy.Directive): VpnState.Error? {
-        val held = hold.held ?: return null
-        hold.held = null
+    private fun settleHeldFailure(
+        hold: RebuildHold,
+        directive: LiveRebuildPolicy.Directive,
+        unanswered: ApiResult.Error? = null,
+    ): String? {
         val legacy = directive == LiveRebuildPolicy.Directive.LEGACY_TEARDOWN
+        val held = hold.held
+        if (held == null) {
+            if (!legacy || unanswered == null || online) return null
+            FaultReporter.trail(FaultReporter.PATH_CONNECT, "live rebuild unanswered while offline: waiting for the network")
+            endSwitchAsOldSession()
+            stopHeartbeat()
+            onFailure(FailureKind.TRANSIENT)
+            return apiErrorCopy(unanswered.code, unanswered.message)
+        }
+        hold.held = null
         val offline = legacy && hold.cutShort && !online
         if (legacy && !held.kind.terminal && !offline) return null
-        if (offline) {
-            session = session.connected()
-            _switching.value = false
-        }
+        if (offline) endSwitchAsOldSession()
         if (_state.value == held) onStateChanged(held)
-        return held.takeIf { legacy }
+        return held.message.takeIf { legacy }
     }
+
+    /**
+     * The session a rebuild was moving WAS up: its failure is that session's
+     * (healed under the established budget, waiting out an offline spell), and
+     * the switch is over — the re-dial is the old session's
+     * (prefs.lastServerId), not "Switching server…" with a Cancel.
+     */
+    private fun endSwitchAsOldSession() {
+        session = session.connected()
+        _switching.value = false
+    }
+
+    /** The rebuild's failed request when it got no HTTP answer at all ([settleHeldFailure]). */
+    private fun unansweredRequest(event: LiveRebuildPolicy.Event, result: ApiResult<*>?): ApiResult.Error? =
+        (result as? ApiResult.Error)?.takeIf { event == LiveRebuildPolicy.Event.REQUEST_UNANSWERED }
 
     private fun liveRebuildEligible(prior: VpnState): Boolean = LiveRebuildPolicy.eligible(
         sessionConnected = prior is VpnState.Connected,
@@ -1659,10 +1695,10 @@ class VpnManager @Inject constructor(
         releaseRebuildHold(hold)
         val config = (result as? ApiResult.Success)?.data
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
-        val terminal = settleHeldFailure(hold, directive)
+        val stopped = settleHeldFailure(hold, directive, unansweredRequest(event, result))
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                if (terminal != null) ApiResult.Error(terminal.message) else dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
+                if (stopped != null) ApiResult.Error(stopped) else dialSingle(serverId, null, gen, prior, allowLiveRebuild = false)
             LiveRebuildPolicy.Directive.KEEP_OLD_SESSION ->
                 ApiResult.Error(keptSessionCopy(event, config?.message, result as? ApiResult.Error))
             LiveRebuildPolicy.Directive.COMMIT_NEW -> {
@@ -1736,11 +1772,11 @@ class VpnManager @Inject constructor(
         val config = (result as? ApiResult.Success)?.data
         val mh = config?.multiHop
         val directive = finishLiveRebuild(event, oldKey, config?.keyId)
-        val terminal = settleHeldFailure(hold, directive)
+        val stopped = settleHeldFailure(hold, directive, unansweredRequest(event, result))
         return when (directive) {
             LiveRebuildPolicy.Directive.LEGACY_TEARDOWN ->
-                if (terminal != null) {
-                    ApiResult.Error(terminal.message)
+                if (stopped != null) {
+                    ApiResult.Error(stopped)
                 } else {
                     dialMultiHop(entryNodeId, exitNodeId, null, gen, prior, allowLiveRebuild = false)
                 }
@@ -2108,7 +2144,7 @@ class VpnManager @Inject constructor(
                 if (vpnState.kind == FailureKind.DIED_AFTER_HANDSHAKE && session.established) {
                     deadSessionKey = sessionKeyId
                 }
-                onFailure(vpnState)
+                onFailure(vpnState.kind)
             }
             is VpnState.Connected -> {
                 session = session.connected()
@@ -2123,12 +2159,13 @@ class VpnManager @Inject constructor(
         }
     }
 
-    private fun onFailure(error: VpnState.Error) {
+    /** The supervisor's verdict on a failure of [failedKind] (the Error that is, or would be, the state). */
+    private fun onFailure(failedKind: FailureKind) {
         // After a heartbeat 401 nothing can re-dial: every attempt would need
         // credentials we no longer hold, and a retry loop would bury the one
         // message the user needs under generic connect failures.
-        val expired = _sessionExpired.value && !error.kind.terminal
-        val kind = if (expired) FailureKind.SIGN_IN_REQUIRED else error.kind
+        val expired = _sessionExpired.value && !failedKind.terminal
+        val kind = if (expired) FailureKind.SIGN_IN_REQUIRED else failedKind
         // Monotonic time that includes deep sleep: a wall-clock change must
         // not split or merge a failure streak.
         val outcome = ReconnectPolicy.onFailure(session, kind, online, elapsedRealtime(), jitter())
@@ -2439,10 +2476,50 @@ class VpnManager @Inject constructor(
      * Request an apply-on-change rebuild of the live tunnel. Debounced
      * ([SETTINGS_REAPPLY_DEBOUNCE_MS]) so a burst of edits produces ONE
      * reconnect; a no-op unless currently Connected (a connect that begins
-     * later reads the latest preferences anyway).
+     * later reads the latest preferences anyway). One that lands while a dial
+     * is in flight waits for that dial ([deferReapply]).
      */
     fun requestSettingsReapply() {
         reapplyRequests.tryEmit(Unit)
+    }
+
+    /** The reapply waiting for the dial in flight ([deferReapply]); at most one. */
+    private var deferredReapply: Job? = null
+
+    /**
+     * A dial owns the session: a user's switch, a re-dial, a fallback, or a
+     * live rebuild inside one ([rebuildHold]). A switch riding the live tunnel
+     * still shows Connected while its /connect is out.
+     */
+    private fun dialInFlight(): Boolean = dialJob?.isActive == true || rebuildHold != null
+
+    /**
+     * Re-queue a reapply that found a dial in flight, instead of rebuilding
+     * beside it. REAPPLY does not bump [intentGeneration], so a reapply during
+     * a user's live-rebuild switch started a SECOND rebuild under the switch's
+     * own generation: neither superseded the other, the newer one took the
+     * [RebuildHold] from the first, and both rode the same old key with
+     * `rebuild: true` — of the OLD server, since the switch had not committed
+     * (review of #463). Bumping the generation instead would have abandoned the
+     * user's switch. Once the dial is over (and its service setup, which a
+     * fresh dial leaves in Connecting), the request goes back through the
+     * debounce and applies to whatever session the dial left; a session that
+     * ended makes it the usual no-op.
+     */
+    private fun deferReapply() {
+        if (deferredReapply?.isActive == true) return
+        deferredReapply = scope.launch {
+            while (true) {
+                val dial = dialJob
+                when {
+                    dial?.isActive == true -> dial.join()
+                    rebuildHold != null -> delay(150)
+                    else -> break
+                }
+            }
+            waitUntil(CONNECT_SERVICE_TIMEOUT_MS) { !_state.value.isConnectingPhase }
+            requestSettingsReapply()
+        }
     }
 
     /** True while [reapplySettingsNow] owns the tunnel; makes the dial's
@@ -2471,6 +2548,7 @@ class VpnManager @Inject constructor(
      *    doesn't reach Connected, we release the block (their choice for drops).
      */
     private suspend fun reapplySettingsNow() {
+        if (dialInFlight()) return deferReapply()
         if (_state.value !is VpnState.Connected) return
         val startGen = reapplyAbortGeneration
         reapplyInProgress = true

@@ -96,8 +96,9 @@ class BirdoRepository @Inject constructor(
      * between "the stored refresh token is still the one presented" and
      * setTokens. Both run under this lock, so the clear comes wholly before
      * the check (which then fails) or wholly after the write (which it then
-     * wipes). A plain monitor, not a Mutex: nothing inside suspends, and
-     * logout's clear must not gain a cancellable suspension point.
+     * wipes). A sign-in's write takes it too ([storeSignInTokens]). A plain
+     * monitor, not a Mutex: nothing inside suspends, and logout's clear must
+     * not gain a cancellable suspension point.
      */
     private val sessionLock = Any()
 
@@ -106,8 +107,23 @@ class BirdoRepository @Inject constructor(
      * in-flight refreshToken() that started before the sign-out can detect it
      * completed too late and drop its rotated tokens instead of resurrecting a
      * signed-out session on disk (parity with iOS APIClient's SessionGeneration).
+     * Bumped together with the clear, under [sessionLock], never ahead of a
+     * server call (see logout()).
      */
     private val sessionGeneration = AtomicLong(0)
+
+    /**
+     * Store the pair a sign-in returned, under [sessionLock] like every other
+     * token write and clear. A refresh's fence is "check the generation and the
+     * stored refresh token, then write" inside that lock; a sign-in writing
+     * outside it could land between the check and the write, and a refresh of
+     * the previous session then wrote its rotated pair over the one just
+     * signed in (review of #463). BirdoRepositoryTest pins that each sign-in path holds
+     * the lock while it writes.
+     */
+    private fun storeSignInTokens(accessToken: String, refreshToken: String) {
+        synchronized(sessionLock) { tokenManager.setTokens(accessToken, refreshToken) }
+    }
 
     // ── Server cache ─────────────────────────────────────────────
 
@@ -207,7 +223,7 @@ class BirdoRepository @Inject constructor(
                 if (result is LoginResult.Success) {
                     val tokens = result.tokens
                     if (tokens.accessToken.isBlank()) return errors.unexpected()
-                    tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
+                    storeSignInTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(result)
             } else {
@@ -238,7 +254,7 @@ class BirdoRepository @Inject constructor(
                 if (result is LoginResult.Success) {
                     val tokens = result.tokens
                     if (tokens.accessToken.isBlank()) return errors.unexpected()
-                    tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
+                    storeSignInTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(result)
             } else {
@@ -259,7 +275,7 @@ class BirdoRepository @Inject constructor(
                 val body = response.body()!!
                 val tokens = body.tokens
                 if (body.ok && tokens != null) {
-                    tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
+                    storeSignInTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(body)
             } else {
@@ -418,7 +434,7 @@ class BirdoRepository @Inject constructor(
                 val body = response.body()!!
                 val tokens = body.tokens
                 if (body.ok && tokens != null) {
-                    tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
+                    storeSignInTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(body)
             } else {
@@ -444,7 +460,7 @@ class BirdoRepository @Inject constructor(
                 val body = response.body()!!
                 val tokens = body.tokens
                 if (body.ok && tokens != null) {
-                    tokenManager.setTokens(tokens.accessToken, tokens.refreshToken)
+                    storeSignInTokens(tokens.accessToken, tokens.refreshToken)
                 }
                 ApiResult.Success(body)
             } else {
@@ -476,20 +492,29 @@ class BirdoRepository @Inject constructor(
      * local work is already done. On timeout the local clear still runs.
      */
     suspend fun logout() {
-        // Bump BEFORE clearing so an in-flight refresh that completes after this
-        // point sees the new generation and drops its rotated tokens (finding #6).
-        // Safe to bump before the refresh below: refreshToken() captures the
-        // generation when IT starts, so its fence sees a stable value and the
-        // logout's own refresh is not mistaken for a raced one.
-        sessionGeneration.incrementAndGet()
+        // The session generation is bumped AFTER the server call, with the clear
+        // (as deleteAccount does), never before it. A refresh still in flight
+        // when the user signs out — one the sign-out disconnect's 10 s bound gave
+        // up on, say — has already had its presented refresh token CONSUMED by
+        // the server. Bumped first, its fence dropped the rotated pair, the
+        // consumed token stayed on disk, and logout's own 401 → refresh replayed
+        // it: a soft 401 inside the server's 30 s rotation grace, an account-wide
+        // reuse revoke past it (review of #463). Bumped here, that refresh lands
+        // its pair, logout's refresh finds the access token already replaced
+        // (single-flight) and the logout retries on it.
         try {
             withTimeout(LOGOUT_SERVER_CALL_TIMEOUT_MS) {
                 withAutoRefreshNoBody(R.string.error_unexpected) { api.logout() }
             }
         } catch (_: Exception) { /* best effort — local sign-out proceeds regardless */ }
-        // Under [sessionLock]: a refresh that outlived the timeout above may be
-        // committing its rotated pair right now (round 7).
-        synchronized(sessionLock) { tokenManager.clearAll() }
+        // Bump and clear as ONE step under [sessionLock] (finding #6, round 7): a
+        // refresh committing its rotated pair right now — logout's own, past the
+        // timeout above, or anyone's — either lands wholly before (and is wiped
+        // here) or sees the new generation and the cleared token, and drops it.
+        synchronized(sessionLock) {
+            sessionGeneration.incrementAndGet()
+            tokenManager.clearAll()
+        }
         invalidateServerCache()
         invalidateSubscriptionCache()
         // PRIVACY: the per-install ML-KEM public key would otherwise be sent
