@@ -26,6 +26,24 @@ internal object AppCoverPolicy {
      */
     fun coverOnStop(enabled: Boolean, authenticating: Boolean, changingConfigurations: Boolean): Boolean =
         enabled && !authenticating && !changingConfigurations
+
+    /** What a hardware key does while the cover is up. */
+    enum class CoverKey { PASS, UNLOCK, DROP }
+
+    /**
+     * A hardware key while covered (MR-937). The cover is drawn in the app's
+     * own window now, not a Dialog window of its own that took the keyboard,
+     * so the app underneath would still get Tab, the arrows and Enter: focus
+     * moved onto a control nobody can see, and Enter pressed it. Every key is
+     * dropped except the system ones (Back, which the cover turns into "leave
+     * the app"; volume; media), and Enter, Space or the D-pad centre, released,
+     * asks to unlock like the cover's button.
+     */
+    fun keyWhileCovered(covered: Boolean, systemKey: Boolean, confirmReleased: Boolean): CoverKey = when {
+        !covered || systemKey -> CoverKey.PASS
+        confirmReleased -> CoverKey.UNLOCK
+        else -> CoverKey.DROP
+    }
 }
 
 /**

@@ -18,6 +18,7 @@ import io.mockk.Runs
 import io.mockk.spyk
 import io.mockk.unmockkAll
 import io.mockk.verify
+import io.mockk.verifyOrder
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -919,6 +920,29 @@ class BirdoVpnServiceLifecycleTest {
         // A real Connected comes with the warning cleared: withdrawn then.
         render.invoke(service, ctor.newInstance(VpnState.Connected, false, false, false, null))
         verify(exactly = 1) { notifications.cancelAlert() }
+    }
+
+    /**
+     * MR-938 follow-up: a refused widget tap's alert offers Reconnect, which
+     * starts this service. Its render loop posting the same failure as well
+     * was two heads-ups for one fault; it replaces the widget's instead.
+     */
+    @Test
+    fun `the service's alert replaces a refused widget tap's, never sounding beside it`() {
+        val inputClass = Class.forName("app.birdo.vpn.service.BirdoVpnService\$RenderInput")
+        val ctor = inputClass.declaredConstructors.single().apply { isAccessible = true }
+        val render = BirdoVpnService::class.java.getDeclaredMethod("renderAlert", inputClass).apply { isAccessible = true }
+        BirdoVpnService.uiForeground = false
+
+        render.invoke(
+            service,
+            ctor.newInstance(VpnState.Error(SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT), false, false, false, null),
+        )
+
+        verifyOrder {
+            notifications.cancelAlert(VpnNotificationManager.TAP_REFUSED_NOTIFICATION_ID)
+            notifications.postAlert(any())
+        }
     }
 
     @Test

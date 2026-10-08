@@ -37,7 +37,6 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Policy
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -86,6 +85,7 @@ import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
+import app.birdo.vpn.ui.components.BirdoAlertDialog
 import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.theme.BirdoBrand
 import app.birdo.vpn.ui.theme.BirdoColors
@@ -756,7 +756,7 @@ private fun DeleteAccountDialog(
     var twoFactorCode by remember { mutableStateOf("") }
     val codeFocus = remember { FocusRequester() }
 
-    AlertDialog(
+    BirdoAlertDialog(
         onDismissRequest = { if (!isDeletingAccount) onDismiss() },
         containerColor = BirdoSurface,
         titleContentColor = BirdoRed,
@@ -858,6 +858,10 @@ private fun DeleteAccountDialog(
                     // Focused as it appears (in the same composition as the
                     // field, so the requester is attached), it scrolls into
                     // view and raises the keyboard; the prompt is announced.
+                    // Never under the Hide App Contents cover: this is the
+                    // dialog's content, which BirdoAlertDialog does not compose
+                    // while covered (MR-937), so a 2FA demand that lands then
+                    // focuses the field, and raises the keyboard, after unlock.
                     LaunchedEffect(Unit) { codeFocus.requestFocus() }
                     // The login 2FA field's rules: a TOTP or a backup code.
                     Spacer(Modifier.height(16.dp))
@@ -967,7 +971,7 @@ private fun VoucherRedeemDialog(
         ),
     )
 
-    AlertDialog(
+    BirdoAlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
         containerColor = BirdoSurface,
         titleContentColor = BirdoWhite80,
