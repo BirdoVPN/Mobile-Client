@@ -64,6 +64,8 @@
          WireGuard handshake is, but they do need to know why their connection
          is slower than usual, or it just reads as a bad VPN. -->
     <string name="stealth_fallback_active">This network blocks standard VPN traffic — using Stealth Mode</string>
+    <!-- Stealth that the user turned on: nothing was detected, so say so. -->
+    <string name="stealth_chosen_active">Using Stealth Mode, as set in VPN settings. It can be slower than a standard connection.</string>
     <string name="select_server">Choose a server</string>
     <string name="cd_select_server">Choose a server</string>
     <!-- Connection states: the canonical vocabulary of the 2026-09-30 parity
@@ -92,8 +94,9 @@
     <string name="home_notifications_turn_on">Turn on</string>
 
     <!-- Ongoing notification, alerts, tile (P1-parity-028: no glyph prefixes). -->
-    <string name="notif_title_protected">BirdoVPN — Protected</string>
-    <string name="notif_title_protected_multihop">BirdoVPN — Protected · Multi-Hop</string>
+    <!-- No "BirdoVPN — " prefix (owner decision 2026-10-07, MR-1514): the shade already shows the app name. -->
+    <string name="notif_title_protected">Protected</string>
+    <string name="notif_title_protected_multihop">Protected · Multi-Hop</string>
     <string name="notif_body_waiting_network">Waiting for a network connection…</string>
     <string name="notif_body_attempt">Attempt %1$d</string>
     <string name="notif_action_stop_blocking">Stop blocking</string>

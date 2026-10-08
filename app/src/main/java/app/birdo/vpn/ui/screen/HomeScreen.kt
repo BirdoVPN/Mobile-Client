@@ -395,10 +395,13 @@ fun HomeScreen(
                     //
                     // Info tone, never the red error style: this is a healthy,
                     // protected connection (P1-parity-004).
+                    // Only an AUTOMATIC fallback may say the network blocks
+                    // VPN traffic: Stealth the user turned on was not caused
+                    // by anything the app detected.
                     AnimatedVisibility(visible = isConnected && state.stealthActive) {
                         HomeBanner(
                             icon = Icons.Default.VisibilityOff,
-                            message = stringResource(R.string.stealth_fallback_active),
+                            message = stringResource(stealthBannerText(state.stealthChosen)),
                             tone = BannerTone.Info,
                         )
                     }
@@ -606,6 +609,13 @@ fun HomeScreen(
         )
     }
 }
+
+/**
+ * The Stealth banner's text: the "network blocks VPN traffic" line only for an
+ * automatic fallback, never for Stealth the user turned on in settings.
+ */
+internal fun stealthBannerText(stealthChosen: Boolean): Int =
+    if (stealthChosen) R.string.stealth_chosen_active else R.string.stealth_fallback_active
 
 /** The connect haptic fires on the way INTO Connected, never on a return to it (A2-033). */
 internal fun connectHapticDue(wasConnected: Boolean, isConnected: Boolean): Boolean =
