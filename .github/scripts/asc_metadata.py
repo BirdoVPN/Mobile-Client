@@ -82,8 +82,8 @@ The account system processes:
     device name, tunnel IP, connect time, last check-in). It is deleted when
     the user disconnects, or within 15 minutes of the last check-in, and is
     left out of our nightly backups. Our daily encrypted copy of the database
-    files (kept 7 days, used for point-in-time recovery) can contain it as it
-    stood at that moment
+    files (kept 4 days, used for point-in-time recovery) does not contain it
+    either
   - data-usage totals per billing period, to enforce the free plan's 10 GB
     allowance and fair use
   - App Store transactions, to grant the subscription that was bought

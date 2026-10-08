@@ -1,11 +1,11 @@
-Privacy update.
+More reliable connections.
 
-The first screen now says exactly what our servers and our account system
-keep, links the Terms of Service and the Privacy Policy, and asks you to
-confirm you are 18 or over. You will see it once after updating.
+The app now recovers by itself after a network outage, notices a dead connection in about half a minute, and switches servers without dropping you first.
 
-Crash reports are now off unless you turn them on, there or in
-Settings > Privacy.
+Always-on VPN and "Block connections without VPN" are now supported.
 
-Deleting your account from the app now works, and reminds you that a Google
-Play subscription must be cancelled in the Play Store.
+While you are connected, the app's own requests to our servers now go through the VPN.
+
+If the kill switch cannot block traffic, the app now tells you.
+
+Stealth Mode connects again, and stops rather than falling back silently.

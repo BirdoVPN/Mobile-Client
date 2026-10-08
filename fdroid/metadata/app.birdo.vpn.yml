@@ -47,8 +47,8 @@ Description: |-
   queries or your traffic. While you're connected, our account system keeps a
   live record of your session (server, device, connect time). It is deleted
   when you disconnect and is left out of our nightly backups. Our daily
-  encrypted copy of the database files (kept 7 days, used for point-in-time
-  recovery) can contain it as it stood at that moment. We also count your
+  encrypted copy of the database files (kept 4 days, used for point-in-time
+  recovery) does not contain it either. We also count your
   data use per billing period.
 
   Post-quantum key exchange: each connection adds a WireGuard pre-shared key
@@ -61,7 +61,8 @@ Description: |-
 
   * Kill switch: if the tunnel drops unexpectedly, the app blocks traffic
     until it reconnects. Protection applies while BirdoVPN's VPN service is
-    running
+    running. To stay blocked even if the app is closed, turn on Android's
+    Always-on VPN and Block connections without VPN for BirdoVPN
   * Split tunnelling: choose which apps use the VPN
   * Your DNS requests go through the encrypted tunnel
   * An optional stealth transport for networks that block VPN traffic
