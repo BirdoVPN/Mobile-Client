@@ -858,6 +858,10 @@ private fun DeleteAccountDialog(
                     // Focused as it appears (in the same composition as the
                     // field, so the requester is attached), it scrolls into
                     // view and raises the keyboard; the prompt is announced.
+                    // Never under the Hide App Contents cover: this is the
+                    // dialog's content, which BirdoAlertDialog does not compose
+                    // while covered (MR-937), so a 2FA demand that lands then
+                    // focuses the field, and raises the keyboard, after unlock.
                     LaunchedEffect(Unit) { codeFocus.requestFocus() }
                     // The login 2FA field's rules: a TOTP or a backup code.
                     Spacer(Modifier.height(16.dp))

@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -311,9 +312,6 @@ class VpnManager @Inject constructor(
     internal var withdrawTapRefusedAlert: () -> Unit = {
         VpnNotificationManager(context).cancelAlert(VpnNotificationManager.TAP_REFUSED_NOTIFICATION_ID)
     }
-
-    /** A [postTapRefusedAlert] is up; withdrawn by the next Connected. */
-    @Volatile private var tapRefusedAlertUp = false
 
     // ── Heartbeat keepalive ─────────────────────────────────────────
     private var heartbeatJob: Job? = null
@@ -626,13 +624,15 @@ class VpnManager @Inject constructor(
         }
 
         // MR-938: a refused widget tap's alert is true until a session is up.
+        // Withdrawn on EVERY arrival at Connected, posted or not: it outlives
+        // the process that posted it, and a memory of having posted it does
+        // not. Cancelling a notification that is not there costs nothing.
         scope.launch {
-            _state.collect { state ->
-                if (state is VpnState.Connected && tapRefusedAlertUp) {
-                    tapRefusedAlertUp = false
-                    withdrawTapRefusedAlert()
-                }
-            }
+            _state
+                .map { it is VpnState.Connected }
+                .distinctUntilChanged()
+                .filter { it }
+                .collect { withdrawTapRefusedAlert() }
         }
     }
 
@@ -742,7 +742,6 @@ class VpnManager @Inject constructor(
             uiForeground = BirdoVpnService.uiForeground,
         ) ?: return
         postTapRefusedAlert(alert)
-        tapRefusedAlertUp = true
     }
 
     /**
@@ -1309,6 +1308,7 @@ class VpnManager @Inject constructor(
             publishError(SessionCopy.ENGINE_FAILED, FailureKind.TRANSIENT)
             return false
         }
+        sessionsBuilt++
         sessionKeyId = config.keyId
         // The service owns the setup from here, with its own watchdog; ours
         // stays as the backstop.
@@ -1893,6 +1893,9 @@ class VpnManager @Inject constructor(
             BirdoVpnService.forgetLiveRebuild(id)
             return LiveRebuildPolicy.Event.FAILED_AFTER_SWAP
         }
+        // The new peer carries traffic: a session built from the settings its
+        // /connect read, whoever owns it now ([deferReapply]).
+        if (event == LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED) sessionsBuilt++
         return if (superseded(gen) && event != LiveRebuildPolicy.Event.FAILED_AFTER_SWAP) {
             LiveRebuildPolicy.Event.SUPERSEDED
         } else {
@@ -2566,14 +2569,24 @@ class VpnManager @Inject constructor(
      * debounce and applies to whatever session the dial left; a session that
      * ended makes it the usual no-op.
      *
-     * A newer user or system intent during the wait (a Disconnect, a
-     * reconnect, another switch) drops it: that dial reads the current
-     * settings itself, so applying them again would rebuild a session that
-     * already has them (review of #472).
+     * It is dropped only when a newer user or system intent superseded it
+     * AND a session was built since (review of #472): that session's dial
+     * read the current settings, so applying them again would rebuild one
+     * that already has them. A newer intent that built nothing does not drop
+     * it: a switch the server refused keeps the OLD session
+     * (LiveRebuildPolicy.Directive.KEEP_OLD_SESSION), which still lacks the
+     * change, and Quantum protection shown ON over a session without it is
+     * the lie this re-queue exists to prevent. A Disconnect builds nothing
+     * either, and the re-queued request is then the usual no-op.
+     *
+     * Every request refreshes what it is measured against, so a change that
+     * lands while one already waits is not dropped by a session built before
+     * it.
      */
     private fun deferReapply() {
+        deferredReapplyGen = intentGeneration
+        deferredReapplyBuilt = sessionsBuilt
         if (deferredReapply?.isActive == true) return
-        val gen = intentGeneration
         deferredReapply = scope.launch {
             while (true) {
                 val dial = dialJob
@@ -2583,12 +2596,26 @@ class VpnManager @Inject constructor(
                     else -> break
                 }
             }
-            if (superseded(gen)) return@launch
+            if (deferredReapplyRedundant()) return@launch
             waitUntil(CONNECT_SERVICE_TIMEOUT_MS) { !_state.value.isConnectingPhase }
-            if (superseded(gen)) return@launch
+            if (deferredReapplyRedundant()) return@launch
             requestSettingsReapply()
         }
     }
+
+    /**
+     * Sessions built from the settings as they were when their dial ran: a
+     * START handed to the service, or a live rebuild's new peer carrying
+     * traffic. Main-confined, like [session].
+     */
+    private var sessionsBuilt = 0L
+
+    /** [intentGeneration] and [sessionsBuilt] at the latest [deferReapply]. */
+    private var deferredReapplyGen = 0L
+    private var deferredReapplyBuilt = 0L
+
+    private fun deferredReapplyRedundant(): Boolean =
+        superseded(deferredReapplyGen) && sessionsBuilt != deferredReapplyBuilt
 
     /** True while [reapplySettingsNow] owns the tunnel; makes the dial's
      *  teardown force the fail-closed block regardless of the kill-switch pref. */

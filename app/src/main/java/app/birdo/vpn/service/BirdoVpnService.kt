@@ -847,6 +847,10 @@ class BirdoVpnService : VpnService() {
             return
         }
         if (alert.key == postedAlertKey) return
+        // A refused widget tap's alert (VpnManager, MR-938) offers Reconnect,
+        // which starts this service; the same failure posted here as well
+        // would be a second heads-up for one fault. This one replaces it.
+        notifManager.cancelAlert(VpnNotificationManager.TAP_REFUSED_NOTIFICATION_ID)
         notifManager.postAlert(alert)
         postedAlertKey = alert.key
     }

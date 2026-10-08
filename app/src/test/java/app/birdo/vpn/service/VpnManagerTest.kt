@@ -1105,6 +1105,27 @@ class VpnManagerTest {
         quiesce()
     }
 
+    /**
+     * The alert outlives the process that posted it (a crash, a force-stop,
+     * the system reclaiming memory). A new process has no memory of posting
+     * it, and its first session must still take it down.
+     */
+    @Test
+    fun `a session that comes up withdraws a refused tap's alert this process never posted`() = runTest {
+        assertTrue(tapRefusedAlerts.isEmpty())
+
+        connectAndEstablish()
+        assertEquals(1, tapRefusedWithdrawals)
+
+        // And on every later arrival at Connected, not only the first.
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        runCurrent()
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals(2, tapRefusedWithdrawals)
+        quiesce()
+    }
+
     // ── REVIEW-AND-023 (iOS #354): a switch that cannot be undone fails closed ──
 
     @Test
@@ -2457,6 +2478,106 @@ class VpnManagerTest {
                 dnsFiltering = any(), rebuildOf = any(),
             )
         }
+        quiesce()
+    }
+
+    /**
+     * Second review of #474: a newer intent is not enough to drop the
+     * deferred reapply. A switch the server refuses keeps the OLD session
+     * (KEEP_OLD_SESSION), built before the change: dropping the reapply left
+     * Quantum protection, or split tunnelling, shown ON over a tunnel
+     * without it.
+     */
+    @Test
+    fun `a deferred reapply survives a newer switch that kept the old session`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        val firstSwitch = CompletableDeferred<ApiResult<ConnectResponse>>()
+        var reapplyRebuilds = 0
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers {
+            when (firstArg<String>()) {
+                "srv-2" -> firstSwitch.await()
+                // Refused through the live tunnel: the old session is kept.
+                "srv-3" -> ApiResult.Error("Couldn't reach BirdoVPN.", 0)
+                // The settings reapply rebuilding the kept session.
+                else -> {
+                    reapplyRebuilds++
+                    ApiResult.Error("The server is busy.", 502)
+                }
+            }
+        }
+
+        // A switch rides the live tunnel, and a settings change lands: it waits.
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(5_000)
+
+        // A newer switch supersedes it, and is refused: the srv-1 session stays.
+        val newer = vpnManager.connect("srv-3")
+        assertTrue(newer is ApiResult.Error)
+        firstSwitch.complete(ApiResult.Error("Couldn't reach BirdoVPN.", 0))
+        switch.await()
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+        assertEquals(0, reapplyRebuilds)
+
+        advanceTimeBy(10_000)
+        // Re-queued, not dropped: the kept session is rebuilt with the change.
+        assertEquals(1, reapplyRebuilds)
+        quiesce()
+    }
+
+    /** The other side: a newer switch whose live rebuild commits built a session with the change. */
+    @Test
+    fun `a deferred reapply is dropped when a newer switch commits a live rebuild`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        connectAndEstablish()
+        val firstSwitch = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-123",
+            )
+        } coAnswers { if (firstArg<String>() == "srv-2") firstSwitch.await() else ApiResult.Success(rebuiltConfig()) }
+        var rebuildsOfNewSession = 0
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = "key-456",
+            )
+        } coAnswers {
+            rebuildsOfNewSession++
+            ApiResult.Error("The server is busy.", 502)
+        }
+
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(5_000)
+
+        // A newer switch rides the live tunnel and its new peer answers.
+        val newer = async { vpnManager.connect("srv-3") }
+        runCurrent()
+        BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+        runCurrent()
+        assertTrue(newer.await() is ApiResult.Success)
+        every { prefs.lastServerId } returns "srv-3"
+        firstSwitch.complete(ApiResult.Error("Couldn't reach BirdoVPN.", 0))
+        switch.await()
+
+        advanceTimeBy(10_000)
+        // The committed session was built with the change: no second rebuild.
+        assertEquals(0, rebuildsOfNewSession)
         quiesce()
     }
 
