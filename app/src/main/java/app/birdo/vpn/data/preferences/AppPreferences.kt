@@ -112,12 +112,15 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_NOTIFICATIONS, true)
         set(value) = prefs.edit { putBoolean(KEY_NOTIFICATIONS, value) }
 
+    // Owner decision 2026-10-07 (MR-1603): IP and location are OFF in
+    // notifications by default, on every client. The notification and the
+    // Quick Settings tile can show on the lock screen and in screenshots.
     var showIpInNotification: Boolean
-        get() = prefs.getBoolean(KEY_NOTIF_SHOW_IP, true)
+        get() = prefs.getBoolean(KEY_NOTIF_SHOW_IP, false)
         set(value) = prefs.edit { putBoolean(KEY_NOTIF_SHOW_IP, value) }
 
     var showLocationInNotification: Boolean
-        get() = prefs.getBoolean(KEY_NOTIF_SHOW_LOCATION, true)
+        get() = prefs.getBoolean(KEY_NOTIF_SHOW_LOCATION, false)
         set(value) = prefs.edit { putBoolean(KEY_NOTIF_SHOW_LOCATION, value) }
 
     // ── VPN Protocol Settings ────────────────────────────────────
