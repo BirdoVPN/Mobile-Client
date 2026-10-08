@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -354,33 +353,6 @@ class MainActivity : FragmentActivity() {
             )
         ) {
             isLocked.value = true
-        }
-    }
-
-    /**
-     * Hardware keys while the cover is up (MR-937): the cover is drawn in this
-     * window, so without this Tab and the arrows would move focus onto the
-     * hidden screen and Enter would press what they landed on. See
-     * [AppCoverPolicy.keyWhileCovered].
-     */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val confirm = event.keyCode == KeyEvent.KEYCODE_ENTER ||
-            event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
-            event.keyCode == KeyEvent.KEYCODE_SPACE ||
-            event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER
-        return when (
-            AppCoverPolicy.keyWhileCovered(
-                covered = isLocked.value,
-                systemKey = event.isSystem,
-                confirmReleased = confirm && event.action == KeyEvent.ACTION_UP,
-            )
-        ) {
-            AppCoverPolicy.CoverKey.PASS -> super.dispatchKeyEvent(event)
-            AppCoverPolicy.CoverKey.UNLOCK -> {
-                if (!isAuthenticating) promptBiometric()
-                true
-            }
-            AppCoverPolicy.CoverKey.DROP -> true
         }
     }
 

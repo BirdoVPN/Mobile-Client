@@ -1,5 +1,6 @@
 package app.birdo.vpn.ui.components
 
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -47,6 +50,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import app.birdo.vpn.R
+import app.birdo.vpn.ui.AppCoverPolicy
 
 /*
  * The Hide App Contents cover, and the only door to a dialog or sheet window
@@ -84,6 +88,12 @@ const val APP_COVER_TAG = "app_cover"
  * hidden from accessibility services, and told it cannot be seen
  * ([LocalAppObscured]): animations stop, and dialogs and sheets are not shown.
  *
+ * Hardware keys are this window's too, now that the cover has no window of its
+ * own to take them: without a filter, Tab and the arrows moved focus onto a
+ * control nobody can see and Enter pressed it. While covered every key is
+ * dropped here, before any of the app sees it, except the system keys and
+ * Enter to unlock ([AppCoverPolicy.keyWhileCovered]).
+ *
  * @param onBackWhileCovered Back while covered. It never reaches the content
  *   underneath, which would pop a screen nobody can see.
  */
@@ -94,7 +104,13 @@ fun AppCoverHost(
     onBackWhileCovered: () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // The parent of the content and the cover alike, so it sees every
+            // key whichever of them holds focus.
+            .onPreviewKeyEvent { covered && consumeKeyWhileCovered(it, onUnlock) },
+    ) {
         CompositionLocalProvider(LocalAppObscured provides covered) {
             Box(
                 modifier = Modifier
@@ -111,6 +127,29 @@ fun AppCoverHost(
     }
 }
 
+/** True when a key pressed while covered is consumed: everything but Back, volume and media. */
+private fun consumeKeyWhileCovered(event: KeyEvent, onUnlock: () -> Unit): Boolean {
+    val key = event.nativeKeyEvent
+    val confirm = key.keyCode == AndroidKeyEvent.KEYCODE_ENTER ||
+        key.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ENTER ||
+        key.keyCode == AndroidKeyEvent.KEYCODE_SPACE ||
+        key.keyCode == AndroidKeyEvent.KEYCODE_DPAD_CENTER
+    return when (
+        AppCoverPolicy.keyWhileCovered(
+            covered = true,
+            systemKey = key.isSystem,
+            confirmReleased = confirm && key.action == AndroidKeyEvent.ACTION_UP,
+        )
+    ) {
+        AppCoverPolicy.CoverKey.PASS -> false
+        AppCoverPolicy.CoverKey.UNLOCK -> {
+            onUnlock()
+            true
+        }
+        AppCoverPolicy.CoverKey.DROP -> true
+    }
+}
+
 /**
  * The cover: full-screen and opaque, so nothing of the app shows or takes
  * input behind the system prompt (a Surface consumes the touches that land on
@@ -118,9 +157,8 @@ fun AppCoverHost(
  * hides the screen and nothing else, and says so (P1-011): the VPN keeps
  * running behind it.
  *
- * Hardware keys never reach the content underneath: MainActivity drops them
- * while the cover is up (AppCoverPolicy.keyWhileCovered). The soft keyboard
- * does not send key events, so it is closed here instead.
+ * Hardware keys are filtered by [AppCoverHost]. The soft keyboard sends no
+ * key events, so it is closed here instead.
  */
 @Composable
 private fun AppCoverScreen(onUnlock: () -> Unit) {
