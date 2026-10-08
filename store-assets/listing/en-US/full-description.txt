@@ -2,13 +2,13 @@ BirdoVPN is a private VPN built on WireGuard®, with a post-quantum key exchange
 
 PRIVATE BY DESIGN
 • No activity logs: our VPN servers don't record the sites you visit, your DNS queries or your traffic.
-• While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. Our daily encrypted copy of the database files (kept 7 days, used for point-in-time recovery) can contain it as it stood at that moment. We also count your data use per billing period.
+• While you're connected, our account system keeps a live record of your session (server, device, connect time). It is deleted when you disconnect and is left out of our nightly backups. Our daily encrypted copy of the database files (kept 4 days, used for point-in-time recovery) does not contain it either. We also count your data use per billing period.
 • Anonymous accounts: sign in with a 24-digit account number instead of an email if you prefer.
 • Delete your account from inside the app at any time.
 • No advertising or analytics SDKs. Optional crash reporting (off unless you turn it on).
 
 PROTECTION
-• Kill switch: if the tunnel drops unexpectedly, the app blocks traffic until it reconnects. Protection applies while BirdoVPN's VPN service is running.
+• Kill switch: if the tunnel drops unexpectedly, the app blocks traffic until it reconnects. Protection applies while BirdoVPN's VPN service is running. To stay blocked even if the app is closed, turn on Android's Always-on VPN and Block connections without VPN for BirdoVPN.
 • Post-quantum key exchange: each connection adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) between your app and our API. The key is then delivered to the VPN server over TLS that is not yet post-quantum, so protection against "record now, decrypt later" is only as strong as that link today.
 • Your DNS requests go through the encrypted tunnel.
 • Stealth mode (Operative and Sovereign) for networks that block or throttle VPN traffic.

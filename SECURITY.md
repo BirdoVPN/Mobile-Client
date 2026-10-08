@@ -27,8 +27,8 @@ Please include:
 
 | Stage                | Target time            |
 | -------------------- | ---------------------- |
-| Acknowledgement      | Within 48 hours        |
-| Initial assessment   | Within 7 days          |
+| Acknowledgement      | Within 7 days          |
+| Initial assessment   | Within 14 days         |
 | Patch development    | Severity-dependent     |
 | Public disclosure    | After patch is shipped |
 
