@@ -79,6 +79,10 @@ class VpnManagerTest {
     private var widgetRefreshes = 0
     private val stringExtras = mutableMapOf<String, String?>()
 
+    /** Alerts for a refused widget tap VpnManager posted, and withdrew (MR-938). */
+    private val tapRefusedAlerts = mutableListOf<VpnNotificationManager.AlertModel>()
+    private var tapRefusedWithdrawals = 0
+
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
@@ -138,6 +142,8 @@ class VpnManagerTest {
         vpnManager = VpnManager(context, repository, prefs, networkMonitor)
         vpnManager.jitter = { 0.0 }
         vpnManager.refreshWidget = { widgetRefreshes++ }
+        vpnManager.postTapRefusedAlert = { tapRefusedAlerts += it }
+        vpnManager.withdrawTapRefusedAlert = { tapRefusedWithdrawals++ }
     }
 
     @After
@@ -1021,6 +1027,82 @@ class VpnManagerTest {
         // At least the Error's model reached the widget (Connecting may be
         // conflated away under the test scheduler).
         assertTrue("refreshes=$widgetRefreshes", widgetRefreshes >= 1)
+    }
+
+    // ── MR-938 (REVIEW-AND-012): a refused widget tap is alerted ─────────
+
+    /** A widget tap from idle: nothing runs, and the app is not on screen. */
+    private fun widgetTapFromIdle() {
+        every { BirdoVpnService.running } returns false
+        every { BirdoVpnService.uiForeground } returns false
+        every { prefs.lastServerId } returns "srv-1"
+    }
+
+    @Test
+    fun `a widget tap refused before any service runs posts the alert`() = runTest {
+        widgetTapFromIdle()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Please update BirdoVPN.", 426)
+
+        vpnManager.requestConnectPreferred(alertIfRefused = true)
+        runCurrent()
+
+        assertFalse(BirdoVpnService.ACTION_START in dispatchedActions)
+        val alert = tapRefusedAlerts.single()
+        assertEquals(R.string.notif_alert_update, alert.title)
+        assertEquals((vpnManager.state.value as VpnState.Error).message, alert.body)
+    }
+
+    @Test
+    fun `a widget tap whose foreground-service start Android refuses posts the alert`() = runTest {
+        widgetTapFromIdle()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+        // ForegroundServiceStartNotAllowedException is an IllegalStateException.
+        every { context.startForegroundService(any()) } throws IllegalStateException("startForegroundService() not allowed")
+
+        vpnManager.requestConnectPreferred(alertIfRefused = true)
+        runCurrent()
+
+        assertEquals(SessionCopy.ENGINE_FAILED, tapRefusedAlerts.single().body)
+        quiesce()
+    }
+
+    @Test
+    fun `a refused tap leaves the alert to a running service, and to Home while the app is on screen`() = runTest {
+        widgetTapFromIdle()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Please update BirdoVPN.", 426)
+
+        // The service's render loop alerts for itself: two would sound twice.
+        every { BirdoVpnService.running } returns true
+        vpnManager.requestConnectPreferred(alertIfRefused = true)
+        runCurrent()
+        // In the app the same words are already on Home.
+        every { BirdoVpnService.running } returns false
+        every { BirdoVpnService.uiForeground } returns true
+        vpnManager.requestConnectPreferred(alertIfRefused = true)
+        runCurrent()
+        // Every other caller, the notification's Reconnect among them, has a
+        // service running that alerts.
+        every { BirdoVpnService.uiForeground } returns false
+        vpnManager.requestConnectPreferred()
+        runCurrent()
+
+        assertTrue(vpnManager.state.value is VpnState.Error)
+        assertTrue("alerts=$tapRefusedAlerts", tapRefusedAlerts.isEmpty())
+    }
+
+    @Test
+    fun `a refused tap's alert is withdrawn once a session is up`() = runTest {
+        widgetTapFromIdle()
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Error("Please update BirdoVPN.", 426)
+        vpnManager.requestConnectPreferred(alertIfRefused = true)
+        runCurrent()
+        assertEquals(1, tapRefusedAlerts.size)
+        assertEquals(0, tapRefusedWithdrawals)
+
+        connectAndEstablish()
+
+        assertEquals(1, tapRefusedWithdrawals)
+        quiesce()
     }
 
     // ── REVIEW-AND-023 (iOS #354): a switch that cannot be undone fails closed ──
@@ -2320,6 +2402,59 @@ class VpnManagerTest {
                 serverNodeId = "srv-2", deviceName = any(), stealthMode = any(), fallbackReason = any(),
                 quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
                 dnsFiltering = any(), rebuildOf = "key-456",
+            )
+        }
+        quiesce()
+    }
+
+    /**
+     * Review of #472: the deferred reapply re-queued itself after whatever
+     * dial was in flight when its wait ended. A newer switch during the wait
+     * reads the new settings itself, and was rebuilt a second time once it
+     * landed.
+     */
+    @Test
+    fun `a deferred reapply is dropped when a newer switch supersedes the dial it waited for`() = runTest {
+        mockkStatic(android.widget.Toast::class)
+        every { android.widget.Toast.makeText(any(), any<CharSequence>(), any()) } returns mockk(relaxed = true)
+        // Any dial past the two below (a live rebuild or a fresh re-dial).
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        } returns ApiResult.Error("The server is busy.", 502)
+        val firstRequest = CompletableDeferred<ApiResult<ConnectResponse>>()
+        coEvery { repository.connectVpn("srv-1", any()) } coAnswers { firstRequest.await() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse())
+        every { prefs.lastServerId } returns "srv-1"
+
+        // A connect is out, and a settings change lands: it waits for the dial.
+        val first = async { vpnManager.connect("srv-1") }
+        runCurrent()
+        vpnManager.requestSettingsReapply()
+        advanceTimeBy(5_000)
+
+        // The user taps another server: a newer intent, dialled with the new settings.
+        every { prefs.lastServerId } returns "srv-2"
+        val switch = async { vpnManager.connect("srv-2") }
+        runCurrent()
+        firstRequest.complete(ApiResult.Success(makeConnectResponse()))
+        first.await()
+        // The switch first tears the half-built session down (a bounded wait), then dials.
+        assertTrue(switch.await() is ApiResult.Success)
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+
+        advanceTimeBy(10_000)
+        // srv-2 was dialled once: no rebuild of the session the switch left.
+        coVerify(exactly = 1) {
+            repository.connectVpn(
+                serverNodeId = "srv-2", deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
             )
         }
         quiesce()

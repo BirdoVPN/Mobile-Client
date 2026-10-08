@@ -87,10 +87,16 @@ class OverhaulSourceGuardTest {
                 "NavController and drop the user on Connect",
             Regex("""if \(isLocked\.value\)\s*\{[^}]*\}\s*else\s*\{[\s\S]{0,400}BirdoNavGraph""").containsMatchIn(activity),
         )
+        // The graph is AppCoverHost's content (MR-937), which composes it
+        // first and draws the cover over it.
+        val host = activity.indexOf("AppCoverHost(")
         val graphCall = activity.indexOf("BirdoNavGraph(")
-        val cover = activity.indexOf("AppCoverScreen(onUnlock")
-        assertTrue(graphCall in 0 until cover)
-        assertTrue(activity.contains("LocalAppObscured provides covered"))
+        assertTrue(host in 0 until graphCall)
+        val coverFile = source("$main/ui/components/AppCover.kt")
+        val content = coverFile.indexOf("content()")
+        val cover = coverFile.indexOf("AppCoverScreen(onUnlock")
+        assertTrue(content in 0 until cover)
+        assertTrue(coverFile.contains("LocalAppObscured provides covered"))
     }
 
     // ── A2-019 ───────────────────────────────────────────────────────────

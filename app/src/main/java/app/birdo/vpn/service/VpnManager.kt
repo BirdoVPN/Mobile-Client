@@ -295,6 +295,26 @@ class VpnManager @Inject constructor(
         }
     }
 
+    /**
+     * MR-938 (REVIEW-AND-012): post and withdraw the alert for a widget tap
+     * whose start was refused while no service ran. Its own notification id,
+     * so it never replaces or withdraws an alert the service posted. Seams,
+     * so unit tests never build a notification.
+     */
+    internal var postTapRefusedAlert: (VpnNotificationManager.AlertModel) -> Unit = { alert ->
+        VpnNotificationManager(context).apply {
+            // No service may ever have run in this process to create them.
+            createChannels()
+            postAlert(alert, VpnNotificationManager.TAP_REFUSED_NOTIFICATION_ID)
+        }
+    }
+    internal var withdrawTapRefusedAlert: () -> Unit = {
+        VpnNotificationManager(context).cancelAlert(VpnNotificationManager.TAP_REFUSED_NOTIFICATION_ID)
+    }
+
+    /** A [postTapRefusedAlert] is up; withdrawn by the next Connected. */
+    @Volatile private var tapRefusedAlertUp = false
+
     // ── Heartbeat keepalive ─────────────────────────────────────────
     private var heartbeatJob: Job? = null
     private val heartbeatMutex = Mutex()
@@ -604,6 +624,16 @@ class VpnManager @Inject constructor(
                 .drop(1)
                 .collect { refreshWidget() }
         }
+
+        // MR-938: a refused widget tap's alert is true until a session is up.
+        scope.launch {
+            _state.collect { state ->
+                if (state is VpnState.Connected && tapRefusedAlertUp) {
+                    tapRefusedAlertUp = false
+                    withdrawTapRefusedAlert()
+                }
+            }
+        }
     }
 
     fun isVpnPermissionGranted(): Boolean = VpnService.prepare(context) == null
@@ -680,9 +710,39 @@ class VpnManager @Inject constructor(
      * Fire-and-forget [connectPreferred] for callers with no coroutine of
      * their own: the notification's Reconnect action and the widget, whose
      * broadcast must not wait out an API call.
+     *
+     * @param alertIfRefused the widget's tap (MR-938, REVIEW-AND-012): a
+     *   start refused while no service runs posts the alert the service's
+     *   render loop would have posted, had there been one. A tap from idle is
+     *   refused before any service exists (a 426, a 401, the device limit, or
+     *   a foreground-service start Android would not allow), so it used to
+     *   change the widget's text and tell nobody looking at anything else.
      */
-    fun requestConnectPreferred(multiHopEntitled: Boolean? = null) {
-        scope.launch { connectPreferred(multiHopEntitled) }
+    fun requestConnectPreferred(multiHopEntitled: Boolean? = null, alertIfRefused: Boolean = false) {
+        scope.launch {
+            val result = connectPreferred(multiHopEntitled)
+            if (alertIfRefused && result is ApiResult.Error && result.message != SUPERSEDED) {
+                alertTapRefused()
+            }
+        }
+    }
+
+    /**
+     * The alert for the Error a refused tap left, as the service would word
+     * it ([VpnNotificationManager.alertFor]: none while the app is on screen,
+     * where Home already says it). Only while no service runs: a running one
+     * alerts from its own render loop, and two alerts would sound twice.
+     */
+    private fun alertTapRefused() {
+        if (BirdoVpnService.running) return
+        val alert = VpnNotificationManager.alertFor(
+            state = _state.value,
+            killSwitchActive = BirdoVpnService.killSwitchActive,
+            sessionExpired = _sessionExpired.value,
+            uiForeground = BirdoVpnService.uiForeground,
+        ) ?: return
+        postTapRefusedAlert(alert)
+        tapRefusedAlertUp = true
     }
 
     /**
@@ -2505,9 +2565,15 @@ class VpnManager @Inject constructor(
      * fresh dial leaves in Connecting), the request goes back through the
      * debounce and applies to whatever session the dial left; a session that
      * ended makes it the usual no-op.
+     *
+     * A newer user or system intent during the wait (a Disconnect, a
+     * reconnect, another switch) drops it: that dial reads the current
+     * settings itself, so applying them again would rebuild a session that
+     * already has them (review of #472).
      */
     private fun deferReapply() {
         if (deferredReapply?.isActive == true) return
+        val gen = intentGeneration
         deferredReapply = scope.launch {
             while (true) {
                 val dial = dialJob
@@ -2517,7 +2583,9 @@ class VpnManager @Inject constructor(
                     else -> break
                 }
             }
+            if (superseded(gen)) return@launch
             waitUntil(CONNECT_SERVICE_TIMEOUT_MS) { !_state.value.isConnectingPhase }
+            if (superseded(gen)) return@launch
             requestSettingsReapply()
         }
     }

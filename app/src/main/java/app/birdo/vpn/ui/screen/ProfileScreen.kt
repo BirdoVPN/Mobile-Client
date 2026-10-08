@@ -37,7 +37,6 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Policy
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Star
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -86,6 +85,7 @@ import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
+import app.birdo.vpn.ui.components.BirdoAlertDialog
 import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.theme.BirdoBrand
 import app.birdo.vpn.ui.theme.BirdoColors
@@ -756,7 +756,7 @@ private fun DeleteAccountDialog(
     var twoFactorCode by remember { mutableStateOf("") }
     val codeFocus = remember { FocusRequester() }
 
-    AlertDialog(
+    BirdoAlertDialog(
         onDismissRequest = { if (!isDeletingAccount) onDismiss() },
         containerColor = BirdoSurface,
         titleContentColor = BirdoRed,
@@ -967,7 +967,7 @@ private fun VoucherRedeemDialog(
         ),
     )
 
-    AlertDialog(
+    BirdoAlertDialog(
         onDismissRequest = { if (!submitting) onDismiss() },
         containerColor = BirdoSurface,
         titleContentColor = BirdoWhite80,

@@ -23,6 +23,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.PortForward
+import app.birdo.vpn.ui.components.BirdoAlertDialog
 import app.birdo.vpn.ui.components.BirdoButton
 import app.birdo.vpn.ui.components.BirdoButtonVariant
 import app.birdo.vpn.ui.components.BirdoCard
@@ -285,7 +286,7 @@ fun PortForwardScreen(
     }
 
     pendingDelete?.let { pf ->
-        AlertDialog(
+        BirdoAlertDialog(
             onDismissRequest = { pendingDelete = null },
             containerColor = palette.surfaceElevated,
             titleContentColor = BirdoRed,

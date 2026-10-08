@@ -11,7 +11,6 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,7 +70,7 @@ fun BirdoBillingChoiceSheet(
 ) {
     val palette = BirdoColors.current
 
-    ModalBottomSheet(
+    BirdoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = palette.surface,

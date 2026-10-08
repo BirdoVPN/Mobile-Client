@@ -1866,8 +1866,10 @@ class BirdoVpnService : VpnService() {
                 return
             }
             // The plan does not include Stealth: the server connected this
-            // dial without it, which is what Settings shows (the toggle is off
-            // and locked). VpnManager tells the user on Home.
+            // dial without it. The saved setting is still ON, and Settings
+            // shows it ON and unlocked (StealthPolicy.toggleRow locks only
+            // the ON direction), so the user can turn it off; turning it back
+            // on needs the plan. VpnManager tells the user on Home.
             StealthPolicy.Transport.DIRECT_NOT_IN_PLAN ->
                 FaultReporter.trail(FaultReporter.PATH_STEALTH, "stealth not in the plan — dialling direct")
             // A grant the dial did not ask for (an Adaptive Transport

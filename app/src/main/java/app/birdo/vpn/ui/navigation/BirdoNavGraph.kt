@@ -43,6 +43,7 @@ import app.birdo.vpn.billing.StorePurchaseGate
 import app.birdo.vpn.billing.PurchasableOffer
 import app.birdo.vpn.billing.StorefrontState
 import app.birdo.vpn.ui.components.BillingChoice
+import app.birdo.vpn.ui.components.BirdoAlertDialog
 import app.birdo.vpn.ui.components.BirdoBillingChoiceSheet
 import app.birdo.vpn.ui.viewmodel.BillingViewModel
 import app.birdo.vpn.ui.components.PixelCanvas
@@ -1090,7 +1091,7 @@ fun BirdoNavGraph(
             if (authState.accountDeleted && stillBilling.isEmpty()) {
                 // The plain confirmation (A2-029). With a store subscription
                 // still billing, the dialog below says the account is deleted.
-                AlertDialog(
+                BirdoAlertDialog(
                     onDismissRequest = { authViewModel.dismissAccountDeletedNotice() },
                     title = { Text(stringResource(R.string.account_deleted_title), fontWeight = FontWeight.Bold) },
                     text = { Text(stringResource(R.string.account_deleted_body)) },
@@ -1110,7 +1111,7 @@ fun BirdoNavGraph(
                         else -> stringResource(R.string.store_still_billing_unknown_store)
                     }
                 }.distinct().joinToString("; ")
-                AlertDialog(
+                BirdoAlertDialog(
                     onDismissRequest = { authViewModel.dismissAccountDeletedNotice() },
                     title = { Text(stringResource(R.string.store_still_billing_title), fontWeight = FontWeight.Bold) },
                     text = { Text(stringResource(R.string.store_still_billing_body, stores)) },
