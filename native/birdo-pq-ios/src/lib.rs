@@ -54,6 +54,10 @@ pub const BIRDO_PQ_PUBLIC_KEY_LEN: usize = 1568;
 pub const BIRDO_PQ_SECRET_KEY_LEN: usize = 3168;
 pub const BIRDO_PQ_CIPHERTEXT_LEN: usize = 1568;
 pub const BIRDO_PQ_PSK_LEN: usize = 32;
+/// Upper bound for the server-minted per-connect nonce (the HKDF `info`), the
+/// same as Android's `BirdoPqManager.MAX_NONCE_BYTES` and desktop's
+/// `MAX_NONCE_BYTES` (MR-745). The server mints 32 bytes.
+pub const BIRDO_PQ_MAX_NONCE_LEN: usize = 64;
 
 const HKDF_SALT: &[u8] = b"BirdoPQ-v1-PSK";
 
@@ -68,6 +72,8 @@ pub enum BirdoPqStatus {
     BadSecretKey = -3,
     /// ML-KEM rejected the ciphertext as malformed (wrong length, etc.).
     BadCiphertext = -4,
+    /// The per-connect nonce is empty or longer than `BIRDO_PQ_MAX_NONCE_LEN`.
+    BadNonce = -5,
     /// Internal error (HKDF expand failed, etc.). Should not happen.
     Internal = -99,
 }
@@ -182,20 +188,21 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
     if out_psk_len < BIRDO_PQ_PSK_LEN {
         return BirdoPqStatus::BufferSizeMismatch as i32;
     }
-    // nonce may legitimately be empty; nonce.is_null() with nonce_len == 0
-    // is OK, but a null pointer with non-zero len is an API misuse.
+    // A null pointer with a non-zero length is an API misuse.
     if nonce.is_null() && nonce_len != 0 {
         return BirdoPqStatus::NullPointer as i32;
+    }
+    // MR-745: the nonce is server-minted (32 bytes) and is bounded to
+    // 1..=BIRDO_PQ_MAX_NONCE_LEN, as on Android and desktop. An empty one used
+    // to be accepted, which derived the PSK with no per-connect separation.
+    if nonce_len == 0 || nonce_len > BIRDO_PQ_MAX_NONCE_LEN {
+        return BirdoPqStatus::BadNonce as i32;
     }
 
     // SAFETY: caller asserted lengths and validity above.
     let sk_slice = unsafe { std::slice::from_raw_parts(sk, sk_len) };
     let ct_slice = unsafe { std::slice::from_raw_parts(ct, ct_len) };
-    let nonce_slice: &[u8] = if nonce_len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(nonce, nonce_len) }
-    };
+    let nonce_slice = unsafe { std::slice::from_raw_parts(nonce, nonce_len) };
 
     // ml-kem enforces FIPS 203 §7.3 here (the expanded key embeds H(ek), which
     // is recomputed and compared) where pqcrypto's from_bytes was a length
@@ -689,6 +696,48 @@ mod tests {
             )
         };
         assert_eq!(r, BirdoPqStatus::BadCiphertext as i32);
+    }
+
+    /// MR-745: the server-minted nonce is bounded to 1..=64 bytes, as on
+    /// Android and desktop. Before, an empty nonce derived a PSK and any
+    /// length reached HKDF as-is.
+    #[test]
+    fn nonce_outside_one_to_sixty_four_bytes_is_rejected() {
+        let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
+        let mut sk = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
+        let r = unsafe {
+            birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len())
+        };
+        assert_eq!(r, 0);
+        let ct = vec![0u8; BIRDO_PQ_CIPHERTEXT_LEN];
+
+        let empty = unsafe {
+            let mut psk = vec![0u8; BIRDO_PQ_PSK_LEN];
+            birdo_pq_derive_psk(
+                sk.as_ptr(),
+                sk.len(),
+                ct.as_ptr(),
+                ct.len(),
+                std::ptr::null(),
+                0,
+                psk.as_mut_ptr(),
+                psk.len(),
+            )
+        };
+        assert_eq!(empty, BirdoPqStatus::BadNonce as i32, "an empty nonce");
+
+        let long = vec![7u8; BIRDO_PQ_MAX_NONCE_LEN + 1];
+        assert_eq!(
+            psk_via_c_abi(&sk, &ct, &long),
+            Err(BirdoPqStatus::BadNonce as i32),
+            "a 65-byte nonce"
+        );
+
+        // Both ends of the bound still derive (implicit rejection: a zero
+        // ciphertext yields a PSK, just not the server's).
+        assert!(psk_via_c_abi(&sk, &ct, &[1u8]).is_ok(), "a 1-byte nonce");
+        let max = vec![7u8; BIRDO_PQ_MAX_NONCE_LEN];
+        assert!(psk_via_c_abi(&sk, &ct, &max).is_ok(), "a 64-byte nonce");
     }
 
     #[test]

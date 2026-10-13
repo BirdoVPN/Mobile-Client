@@ -779,6 +779,7 @@ fun BirdoNavGraph(
                         onBiometricLockChange = { settingsViewModel.setBiometricLock(it) },
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
                         onCrashReportsChange = { settingsViewModel.setCrashReports(it) },
+                        onOpenLicenses = { navController.navigate(Screen.Licenses.route) },
                         portForwardUnlocked = settingsIsSovereign,
                         quantumUnlocked = true,
                         onUpgradeRequired = {
@@ -866,6 +867,19 @@ fun BirdoNavGraph(
                         onBack = { navController.popBackStack() },
                         onRefresh = { vpnViewModel.loadPortForwards() },
                     )
+                }
+            }
+
+            // ── Open-source licences (MR-1686) ──────────────────────
+            composable(
+                Screen.Licenses.route,
+                enterTransition = pushEnter,
+                exitTransition = underExit,
+                popEnterTransition = underPopEnter,
+                popExitTransition = pushPopExit,
+            ) {
+                AdaptiveContainer {
+                    LicensesScreen(onBack = { navController.popBackStack() })
                 }
             }
 

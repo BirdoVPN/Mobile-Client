@@ -48,10 +48,18 @@
                 <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
             </array>
         </dict>
-        <!-- Other user account data (subscription status / account identifier). -->
+        <!-- User ID (MR-1689): the account's identifiers. Every signed-in call
+             carries the account's tokens, which name its account id, and an
+             anonymous account signs in with its 24-digit account number
+             (POST /auth/login/anonymous). The server stores both (privacy
+             policy section 3.1). Linked to the account, not used for tracking.
+             This replaces an Other User Content entry that filed the account
+             identifier there: the app sends no user-generated content (its
+             request bodies are sign-in, device, connect, port-forward,
+             purchase and deletion fields only). -->
         <dict>
             <key>NSPrivacyCollectedDataType</key>
-            <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+            <string>NSPrivacyCollectedDataTypeUserID</string>
             <key>NSPrivacyCollectedDataTypeLinked</key>
             <true/>
             <key>NSPrivacyCollectedDataTypeTracking</key>

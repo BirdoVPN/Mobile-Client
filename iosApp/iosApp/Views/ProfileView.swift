@@ -234,6 +234,7 @@ struct ProfileView: View {
                         .foregroundStyle(BirdoTheme.onBackground)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .accountNumberSnapshotCover()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "doc.on.doc")

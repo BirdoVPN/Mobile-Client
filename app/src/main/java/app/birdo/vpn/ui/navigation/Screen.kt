@@ -13,4 +13,6 @@ sealed class Screen(val route: String) {
     data object VpnSettings : Screen("vpn_settings")
     data object PortForward : Screen("port_forward")
     data object Subscription : Screen("subscription")
+    /** Open-source licences, from Settings > About (MR-1686). */
+    data object Licenses : Screen("licenses")
 }

@@ -26,6 +26,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -481,6 +483,35 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 1) { service.protect(42) }
         // Let the probe's verdict land before tearDown resets the companion.
         waitFor("the probe verdict") { BirdoVpnService.currentState == VpnState.Connected }
+    }
+
+    // ── MR-975: Protected only once a handshake is observed ──────────────
+
+    @Test
+    fun `Protected is published only after the transport probe sees a WireGuard handshake`() {
+        arrangeTunnelStart(protectSucceeds = true)
+        every { WgNative.canReadConfig() } returns true
+        val handshook = AtomicBoolean(false)
+        val reads = AtomicInteger(0)
+        every { WgNative.getConfig(7) } answers {
+            reads.incrementAndGet()
+            if (handshook.get()) "last_handshake_time_sec=1760000000\n" else "last_handshake_time_sec=0\n"
+        }
+
+        startTunnel()
+
+        // The interface is up and wg-go holds the config, but nothing has
+        // proved a packet can flow: the honest state is still Connecting.
+        assertEquals(VpnState.Connecting, BirdoVpnService.currentState)
+        assertEquals("no connected-since before a handshake", 0L, BirdoVpnService.connectedSince)
+        // Through two probe reads of a zero handshake time it stays there.
+        waitFor("two probe reads with no handshake") { reads.get() >= 2 }
+        assertEquals(VpnState.Connecting, BirdoVpnService.currentState)
+
+        // The first handshake is what publishes Protected.
+        handshook.set(true)
+        waitFor("Protected after the handshake") { BirdoVpnService.currentState == VpnState.Connected }
+        assertTrue(BirdoVpnService.connectedSince > 0L)
     }
 
     // ── A1-034: the live rebuild, on the running service ─────────────────

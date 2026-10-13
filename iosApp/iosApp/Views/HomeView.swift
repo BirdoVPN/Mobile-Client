@@ -109,11 +109,11 @@ struct HomeView: View {
         }
         .birdoConfirmDialog(
             isPresented: $showLogoutConfirm,
-            title: "Log Out?",
+            title: "Sign out?",
             message: vpnVM.isConnected
-                ? "You are still connected. Logging out will disconnect."
-                : "Are you sure you want to log out?",
-            confirmLabel: "Log Out",
+                ? "You are still connected. Signing out will disconnect."
+                : "Are you sure you want to sign out?",
+            confirmLabel: "Sign out",
             onConfirm: {
                 Task { @MainActor in
                     // Order is load-bearing: disconnectForSignOut() tears the
@@ -156,6 +156,8 @@ struct HomeView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: 120, alignment: .trailing)
+                        // An anonymous account's identity IS its account number.
+                        .accountNumberSnapshotCover()
                 }
 
                 if isGuest {
@@ -191,7 +193,7 @@ struct HomeView: View {
                     .buttonStyle(PressScaleButtonStyle())
                     .frame(minWidth: BirdoTheme.Spacing.minTouch,
                            minHeight: BirdoTheme.Spacing.minTouch)
-                    .accessibilityLabel("Logout")
+                    .accessibilityLabel("Sign out")
                 }
             }
             .padding(.horizontal, 16)
@@ -563,48 +565,63 @@ struct HomeView: View {
     /// banners on purpose: the connect succeeded and traffic is flowing, so
     /// this must never compete with a message about something that failed.
     ///
-    /// Deliberately not an `ErrorBanner` and not red. Nothing is wrong — the
-    /// user is protected right now — and dressing advice as a failure trains
-    /// people to ignore the banner that does mean failure.
+    /// Deliberately not an `ErrorBanner` and not red for ADVICE. Nothing is
+    /// wrong — the user is protected right now — and dressing advice as a
+    /// failure trains people to ignore the banner that does mean failure.
+    ///
+    /// MR-1661: a REQUIRED advisory (the 426 floor) is the exception, as on
+    /// Android: red, titled "Update required", and with no Dismiss, because
+    /// every connect is refused until the app is updated.
     private func updateAdvisoryBanner(_ advisory: ClientUpdateAdvisory) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        let tint = advisory.required ? BirdoTheme.red : BirdoTheme.accentSoft
+        return HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.up.circle")
                 .font(.system(size: 18))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
-                // The server's own words, verbatim — same rule the error
-                // banners follow. The backend owns this copy so it can change
-                // without an App Store release.
+                if advisory.required {
+                    Text("Update required")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                // Advice: the server's own words, verbatim — same rule the
+                // error banners follow. A refusal: client copy built from the
+                // server's versions (UpdateRequiredRefusal).
                 Text(advisory.message)
                     .font(.system(size: 13))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 16) {
                     // The App Store is the ONLY place an iOS user can update
-                    // from. `advisory.updateUrl` is birdo.app/clients, which is
-                    // right for desktop and a dead end here, so it is not used.
-                    if let url = ClientUpdateAdvisory.appStoreURL {
+                    // from: `storeURL` uses the server's `updateUrl` only when
+                    // it is an App Store link (it has been birdo.app/clients,
+                    // right for desktop and a dead end here).
+                    if let url = advisory.storeURL {
                         Link("Update", destination: url)
                             .font(.system(size: 13, weight: .semibold))
                     }
-                    Button("Dismiss") { vpnVM.dismissUpdateAdvisory() }
-                        .font(.system(size: 13))
-                        .foregroundStyle(BirdoTheme.white60)
+                    if !advisory.required {
+                        Button("Dismiss") { vpnVM.dismissUpdateAdvisory() }
+                            .font(.system(size: 13))
+                            .foregroundStyle(BirdoTheme.white60)
+                    }
                 }
             }
         }
-        .foregroundStyle(BirdoTheme.accentSoft)
+        .foregroundStyle(tint)
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
-                .fill(BirdoTheme.accentBg)
+                .fill(advisory.required ? BirdoTheme.redBg : BirdoTheme.accentBg)
         )
         .overlay(
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
-                .strokeBorder(BirdoTheme.accentA(0.3), lineWidth: 1)
+                .strokeBorder(advisory.required ? BirdoTheme.red.opacity(0.3) : BirdoTheme.accentA(0.3),
+                              lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("App update available. \(advisory.message)")
+        .accessibilityLabel(advisory.required
+                            ? "App update required. \(advisory.message)"
+                            : "App update available. \(advisory.message)")
     }
 
     // MARK: - Settings-Blip Banner

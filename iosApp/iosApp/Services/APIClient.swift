@@ -498,8 +498,14 @@ final class APIClient: @unchecked Sendable {
             // MR-1948: the retryable 503s (`psk_delivery_unavailable`,
             // `quota_check_unavailable`) are told apart by their CODE and carry
             // `details.retryAfterSeconds`, both of which the generic mapping
-            // would throw away with the body.
-            refusal: { status, errorBody in RetryableConnectRefusal.classify(status: status, body: errorBody) }
+            // would throw away with the body. MR-1661: so does the 426's
+            // `details` (the versions and the update link).
+            refusal: { status, errorBody in
+                if let retryable = RetryableConnectRefusal.classify(status: status, body: errorBody) {
+                    return retryable
+                }
+                return UpdateRequiredRefusal.classify(status: status, body: errorBody)
+            }
         )
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
@@ -550,8 +556,14 @@ final class APIClient: @unchecked Sendable {
             authenticated: true,
             // MR-1948: birdo-web throws the retryable 503
             // `psk_delivery_unavailable` from this route too. Same hook as
-            // getConnectConfig, so both retryable codes are read on both routes.
-            refusal: { status, errorBody in RetryableConnectRefusal.classify(status: status, body: errorBody) }
+            // getConnectConfig, so both retryable codes, and the 426 version
+            // floor (MR-1661), are read on both routes.
+            refusal: { status, errorBody in
+                if let retryable = RetryableConnectRefusal.classify(status: status, body: errorBody) {
+                    return retryable
+                }
+                return UpdateRequiredRefusal.classify(status: status, body: errorBody)
+            }
         )
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
@@ -1078,6 +1090,8 @@ final class APIClient: @unchecked Sendable {
     private static func error(status: Int, body: Data, structured: Bool = false) -> APIError {
         // 426 Upgrade Required = the backend's minimum-supported-version floor.
         // Surface a fixed, actionable string rather than the raw body (Review #219).
+        // The two connect routes never get here with a 426: their `refusal:`
+        // hook keeps its `details` (`UpdateRequiredRefusal`, MR-1661).
         if status == 426 {
             return .serverMessage("This app version is no longer supported. Update BirdoVPN to reconnect.",
                                   status: status)
@@ -1308,6 +1322,11 @@ private final class PinningDelegate: NSObject, URLSessionDelegate {
 }
 
 // MARK: - API Models
+//
+// MR-1949: the credential-bearing models (the token pair, LoginResult,
+// UserProfile, every sign-in / refresh / store-link body and response) live in
+// AuthWire.swift, and VPNConnectionConfig in ConnectWire.swift, so the test
+// bundle can check their redacting descriptions (CredentialRedaction.swift).
 
 enum APIError: Error, LocalizedError {
     case invalidURL
@@ -1372,88 +1391,6 @@ enum APIError: Error, LocalizedError {
         case .unknownRequestField(_, let message, _):
             return message
         }
-    }
-}
-
-/// Complete token pair from a successful authentication.
-struct TokenPairData: Sendable {
-    let accessToken: String
-    let refreshToken: String
-}
-
-/// Outcome of a credential/SSO login round: either a full token pair, or a
-/// pending 2FA challenge. The challenge token belongs in ViewModel state
-/// (never the keychain) and is consumed server-side only on a SUCCESSFUL
-/// verify — a wrong code leaves it valid for retries.
-enum LoginResult: Sendable {
-    case success(TokenPairData)
-    case twoFactorRequired(challengeToken: String)
-}
-
-/// Result of `POST /auth/register/anonymous`. The minted 24-digit ID is
-/// returned ONCE and is the account's sole recovery credential — persist it
-/// and surface it to the user before proceeding.
-struct AnonymousRegistration: Sendable {
-    let anonymousId: String?
-    let tokens: TokenPairData
-}
-
-/// Identity model from `GET /auth/me`. Unknown wire keys are ignored and
-/// every field is defaulted so a new backend field can never break decoding.
-struct UserProfile: Sendable, Equatable {
-    let id: String
-    let email: String?
-    let name: String?
-    let emailVerified: Bool
-    /// Drives the delete-account dialog (password confirmation). DEFAULTS
-    /// TRUE when absent — fail-safe: ask for a password rather than let a
-    /// password account delete without one.
-    let hasPassword: Bool
-    let isSSO: Bool
-    /// Owner item 86: "anonymous" | "standard", when the backend sends it.
-    let accountType: String?
-    /// Owner item 86: the backend's own answer, when it sends one.
-    let isAnonymousField: Bool?
-    /// Owner item 86: the 24-digit account number, when the backend sends it.
-    let accountNumber: String?
-
-    /// Anonymous account? The explicit `/auth/me` fields win; an older
-    /// backend is read from the synthetic email `anon_<24digits>@anonymous.local`
-    /// (`AccountIdentity`). Never render that email — it "reads as a bug";
-    /// show `Anonymous account` + the account-number card instead.
-    var isAnonymous: Bool { identity.isAnonymous }
-
-    /// The 24-digit account number; nil for non-anonymous accounts.
-    var anonymousAccountNumber: String? { identity.accountNumber }
-
-    private var identity: AccountIdentity.Resolved {
-        AccountIdentity.resolve(accountType: accountType,
-                                isAnonymous: isAnonymousField,
-                                accountNumber: accountNumber,
-                                email: email)
-    }
-}
-
-extension UserProfile: Decodable {
-    private enum CodingKeys: String, CodingKey {
-        case id, email, name, emailVerified, hasPassword, isSSO
-        case accountType, isAnonymous, accountNumber
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
-        email = try c.decodeIfPresent(String.self, forKey: .email)
-        name = try c.decodeIfPresent(String.self, forKey: .name)
-        emailVerified = try c.decodeIfPresent(Bool.self, forKey: .emailVerified) ?? false
-        hasPassword = try c.decodeIfPresent(Bool.self, forKey: .hasPassword) ?? true
-        isSSO = try c.decodeIfPresent(Bool.self, forKey: .isSSO) ?? false
-        // `try?`: new, optional fields. A shape this build does not expect
-        // falls back to the email parsing instead of failing the whole
-        // identity (which would leave `user == nil` on every launch).
-        accountType = (try? c.decodeIfPresent(String.self, forKey: .accountType)) ?? nil
-        isAnonymousField = (try? c.decodeIfPresent(Bool.self, forKey: .isAnonymous)) ?? nil
-        accountNumber = (try? c.decodeIfPresent(String.self, forKey: .accountNumber)) ?? nil
     }
 }
 
@@ -1640,24 +1577,6 @@ private struct APIErrorBody: Decodable {
     let details: Details?
 }
 
-/// Device class and platform sent in every auth body below.
-///
-/// Audit 2026-09-29, D-18: this one target builds both the iOS app and the Mac
-/// App Store app, and every Mac registered itself as an iPhone ("MOBILE" /
-/// "IOS"), so the device list, support and any per-platform view of devices
-/// were wrong for macOS. The backend already accepts DESKTOP and MACOS in the
-/// same enums (auth.controller.ts DeviceInfoSchema; Prisma DeviceType /
-/// Platform) and uses them for display only. The User-Agent and
-/// `X-Desktop-Client` header followed on 2026-10-01 (owner item 96) — see
-/// `ClientIdentity`.
-#if os(macOS)
-private let kDeviceTypeWire = "DESKTOP"
-private let kPlatformWire = "MACOS"
-#else
-private let kDeviceTypeWire = "MOBILE"
-private let kPlatformWire = "IOS"
-#endif
-
 /// Resolved device identity attached to every auth call. The full six-field
 /// payload (deviceId/deviceName/deviceType/platform/platformVersion/appVersion)
 /// is flattened into each request body below.
@@ -1665,87 +1584,6 @@ private struct DeviceIdentity: Sendable {
     let id: String
     let name: String
     let osVersion: String
-}
-
-private struct LoginBody: Encodable {
-    let email: String
-    let password: String
-    /// Device attribution — also lets a trusted device skip the 2FA challenge.
-    let deviceId: String
-    let deviceName: String
-    let deviceType = kDeviceTypeWire
-    let platform = kPlatformWire
-    let platformVersion: String
-    let appVersion: String
-}
-
-/// Body for `POST /auth/login/anonymous` — the 24-digit account ID plus
-/// optional password. A nil password is OMITTED from the JSON (synthesized
-/// Encodable uses encodeIfPresent): the backend deliberately answers 401
-/// "Invalid credentials" when a password is supplied to a password-less
-/// account, so an empty string must never be sent.
-private struct AnonymousLoginBody: Encodable {
-    let anonymousId: String
-    let password: String?
-    let deviceId: String
-    let deviceName: String
-    let deviceType = kDeviceTypeWire
-    let platform = kPlatformWire
-    let platformVersion: String
-    let appVersion: String
-}
-
-/// Body for `POST /auth/register/anonymous` — device context only; the server
-/// mints the 24-digit anonymous ID.
-private struct DeviceInfoBody: Encodable {
-    let deviceId: String
-    let deviceName: String
-    let deviceType = kDeviceTypeWire
-    let platform = kPlatformWire
-    let platformVersion: String
-    let appVersion: String
-}
-
-private struct TwoFactorBody: Encodable {
-    let challengeToken: String
-    let token: String
-}
-
-/// Body for `POST /auth/native/exchange`. Wire casing is EXACT:
-/// `code_verifier` is snake_case (RFC 7636 vocabulary), device fields camelCase.
-/// Body for `POST /auth/apple/native`. Mirrors `SsoExchangeBody`'s device
-/// fields so both native sign-in paths register a session identically.
-private struct AppleNativeBody: Encodable {
-    let identityToken: String
-    let nonce: String
-    let deviceId: String
-    let deviceName: String
-    let deviceType = kDeviceTypeWire
-    let platform = kPlatformWire
-    let platformVersion: String
-    let appVersion: String
-
-    private enum CodingKeys: String, CodingKey {
-        case identityToken, nonce, deviceId, deviceName, deviceType, platform
-        case platformVersion, appVersion
-    }
-}
-
-private struct SsoExchangeBody: Encodable {
-    let code: String
-    let codeVerifier: String
-    let deviceId: String
-    let deviceName: String
-    let deviceType = kDeviceTypeWire
-    let platform = kPlatformWire
-    let platformVersion: String
-    let appVersion: String
-
-    private enum CodingKeys: String, CodingKey {
-        case code
-        case codeVerifier = "code_verifier"
-        case deviceId, deviceName, deviceType, platform, platformVersion, appVersion
-    }
 }
 
 // DeleteAccountBody lives in AccountDeletion.swift (owner items 85 / 97) so
@@ -1798,49 +1636,6 @@ private struct PortForwardBody: Encodable {
     }
 }
 
-private struct RefreshBody: Encodable {
-    // swiftlint:disable:next identifier_name — snake_case is the wire contract.
-    let refresh_token: String
-}
-
-/// Token pair as the backend emits it (`AuthService.login` → snake_case).
-private struct TokenPairDTO: Decodable {
-    let accessToken: String
-    let refreshToken: String
-
-    private enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case refreshToken = "refresh_token"
-    }
-}
-
-/// Shared response shape of `/auth/login/desktop`, `/auth/login/anonymous`,
-/// `/auth/register/anonymous`, `/auth/native/exchange` and `/auth/2fa/verify`:
-/// tokens on success, or a 2FA challenge.
-private struct AuthTokensResponse: Decodable {
-    let ok: Bool?
-    let tokens: TokenPairDTO?
-    let requiresTwoFactor: Bool?
-    let challengeToken: String?
-    /// Returned by `/auth/register/anonymous` (minted) and echoed by
-    /// `/auth/login/anonymous`. For a fresh registration it is surfaced only
-    /// once and is the sole credential for the account — `/auth/me` never
-    /// replays it directly (only via the synthetic email) — so dropping it
-    /// would make the account unrecoverable after a logout or reinstall.
-    let anonymousId: String?
-}
-
-/// `/auth/refresh` returns the rotated pair at the top level, not nested.
-private struct RefreshTokensResponse: Decodable {
-    let accessToken: String
-    let refreshToken: String?
-
-    private enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case refreshToken = "refresh_token"
-    }
-}
-
 /// The `{ success, message }` envelope both connect routes use for
 /// user-actionable refusals returned with a 2xx status — plus, for a refused
 /// `rebuild: true` connect, the reason (`LiveRebuildWire.rebuildRefusedField`).
@@ -1868,223 +1663,7 @@ struct RebuildRefusedError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
-/// VPN connection configuration returned by server.
-///
-/// AUDIT-M-DRIFT: the backend does NOT emit these field names. `/vpn/connect`
-/// and `/vpn/multi-hop/connect` return (see `VpnService.connect`'s
-/// `ConnectionResult`): `endpoint` as a single "host:port" string, `assignedIp`
-/// as a bare IPv4 with no prefix, the optional `clientIpv6` likewise bare,
-/// `serverPublicKey` for the PEER key (`publicKey` is the CLIENT's own key —
-/// using it as the peer key would have made every handshake fail), and
-/// `allowedIps` with a lowercase "ps". The decoder below translates the wire
-/// shape into the property names the rest of the app already uses.
-struct VPNConnectionConfig: Decodable {
-    let serverAddress: String
-    let serverPort: Int
-    /// The WireGuard tunnel private key. `var` because it is now GENERATED
-    /// ON-DEVICE and injected by `getConnectConfig`/`getMultiHopConfig` after
-    /// decoding — the backend omits it from the response once we send a
-    /// `clientPublicKey`. Decoded optionally only to tolerate a transitional
-    /// backend that still echoes one; the injected local key always wins.
-    var privateKey: String
-    let publicKey: String
-    let presharedKey: String?
-    let addresses: [String]
-    let dns: [String]
-    let allowedIPs: [String]
-    let mtu: Int?
-
-    /// Server-side handle for this connection. Required to release the peer via
-    /// `DELETE /vpn/connections/{keyId}` on disconnect.
-    let keyId: String?
-
-    /// REBUILD (Mobile-Client #159): echo of the request's `currentKeyId` when
-    /// the server deferred that key's eviction (it stays on its node until this
-    /// new peer handshakes). Absent on a plain connect, and on a backend that
-    /// accepted the flag but did not defer — the client treats both as
-    /// "not honoured" (`RebuildDeferral`).
-    let deferredKeyId: String?
-
-    /// AUDIT-C1 (BirdoPQ v1, optional): set when the server received a
-    /// `pqClientPublicKey` and produced a per-connect ML-KEM ciphertext for
-    /// the client to decapsulate. The Swift `BirdoPQManager` derives a
-    /// 32-byte WireGuard PSK from these fields client-side.
-    let quantumEnabled: Bool?
-    let rosenpassPublicKey: String?
-    let rosenpassEndpoint: String?
-
-    /// The warn-only version floor advisory, when this build is below it.
-    /// See [ClientUpdateAdvisory] — OPEN-WORK H3.
-    let clientUpdate: ClientUpdateAdvisory?
-
-    /// `/vpn/multi-hop/connect` only: the route the backend says it ACTUALLY
-    /// installed. `VpnViewModel.connectMultiHop` refuses to bring the tunnel
-    /// up unless this names the requested pair (`MultiHopRouteCheck`) — see
-    /// MultiHopRoute.swift. Absent on single-hop responses.
-    let multiHop: MultiHopRouteInfo?
-
-    private enum CodingKeys: String, CodingKey {
-        case endpoint, privateKey, serverPublicKey, presharedKey
-        case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId, deferredKeyId
-        case quantumEnabled, rosenpassPublicKey, rosenpassEndpoint
-        case multiHop, clientUpdate
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-
-        // "1.2.3.4:51820" — split on the LAST colon so a future IPv6 literal
-        // endpoint doesn't get shredded.
-        let endpoint = try c.decode(String.self, forKey: .endpoint)
-        guard let separator = endpoint.lastIndex(of: ":"),
-              let port = Int(endpoint[endpoint.index(after: separator)...]) else {
-            throw VPNConfigValidationError.invalidServerAddress
-        }
-        serverAddress = String(endpoint[..<separator])
-        serverPort = port
-
-        // Optional: the backend omits privateKey when we send a clientPublicKey.
-        // The on-device key is injected by the API layer after decode; this "" is
-        // a placeholder that is always overwritten before validate()/connect().
-        privateKey = try c.decodeIfPresent(String.self, forKey: .privateKey) ?? ""
-        publicKey = try c.decode(String.self, forKey: .serverPublicKey)
-        presharedKey = try c.decodeIfPresent(String.self, forKey: .presharedKey)
-
-        // The tunnel addresses arrive as bare IPs; WireGuard needs prefixes.
-        // Host-scoped, matching the .conf the backend writes (`/32`, `/128`).
-        let assignedIp = try c.decode(String.self, forKey: .assignedIp)
-        var tunnelAddresses = [assignedIp + "/32"]
-        if let v6 = try c.decodeIfPresent(String.self, forKey: .clientIpv6), !v6.isEmpty {
-            tunnelAddresses.append(v6 + "/128")
-        }
-        addresses = tunnelAddresses
-
-        dns = try c.decodeIfPresent([String].self, forKey: .dns) ?? []
-        allowedIPs = try c.decodeIfPresent([String].self, forKey: .allowedIps) ?? []
-        mtu = try c.decodeIfPresent(Int.self, forKey: .mtu)
-        keyId = try c.decodeIfPresent(String.self, forKey: .keyId)
-        deferredKeyId = try c.decodeIfPresent(String.self, forKey: .deferredKeyId)
-
-        quantumEnabled = try c.decodeIfPresent(Bool.self, forKey: .quantumEnabled)
-        rosenpassPublicKey = try c.decodeIfPresent(String.self, forKey: .rosenpassPublicKey)
-        rosenpassEndpoint = try c.decodeIfPresent(String.self, forKey: .rosenpassEndpoint)
-
-        multiHop = try c.decodeIfPresent(MultiHopRouteInfo.self, forKey: .multiHop)
-
-        // Advice, never a reason to reject a good tunnel config: a malformed
-        // advisory decodes to nil and the connect proceeds untouched.
-        clientUpdate = try? c.decodeIfPresent(ClientUpdateAdvisory.self, forKey: .clientUpdate)
-    }
-
-    /// Hardening: every field is treated as untrusted server input.
-    /// Reject malformed configs *before* they touch the system VPN.
-    /// Throws `VPNConfigValidationError` describing the first failure.
-    func validate() throws {
-        guard !serverAddress.isEmpty,
-              serverAddress.count <= 255,
-              !serverAddress.contains(where: { $0.isNewline || $0.isWhitespace })
-        else { throw VPNConfigValidationError.invalidServerAddress }
-
-        guard (1...65535).contains(serverPort) else {
-            throw VPNConfigValidationError.invalidPort
-        }
-        guard Self.isValidWireGuardKey(privateKey) else {
-            throw VPNConfigValidationError.invalidPrivateKey
-        }
-        guard Self.isValidWireGuardKey(publicKey) else {
-            throw VPNConfigValidationError.invalidPublicKey
-        }
-        if let psk = presharedKey, !psk.isEmpty {
-            guard Self.isValidWireGuardKey(psk) else {
-                throw VPNConfigValidationError.invalidPresharedKey
-            }
-        }
-        guard !addresses.isEmpty, addresses.count <= 16 else {
-            throw VPNConfigValidationError.invalidAddresses
-        }
-        for cidr in addresses where !Self.isValidCIDR(cidr) {
-            throw VPNConfigValidationError.invalidAddresses
-        }
-        guard allowedIPs.count <= 32 else {
-            throw VPNConfigValidationError.invalidAllowedIPs
-        }
-        for cidr in allowedIPs where !Self.isValidCIDR(cidr) {
-            throw VPNConfigValidationError.invalidAllowedIPs
-        }
-        if let mtu, !(1280...1500).contains(mtu) {
-            throw VPNConfigValidationError.invalidMTU
-        }
-        // DNS list may legitimately be empty; if present, validate each entry.
-        for d in dns where !Self.isValidIP(d) {
-            throw VPNConfigValidationError.invalidDNS
-        }
-    }
-
-    private static func isValidWireGuardKey(_ b64: String) -> Bool {
-        guard let data = Data(base64Encoded: b64) else { return false }
-        return data.count == 32
-    }
-
-    private static func isValidCIDR(_ cidr: String) -> Bool {
-        let parts = cidr.split(separator: "/", maxSplits: 1)
-        guard parts.count == 2,
-              let prefix = Int(parts[1])
-        else { return false }
-        let host = String(parts[0])
-        guard isValidIP(host) else { return false }
-        let maxPrefix = host.contains(":") ? 128 : 32
-        return (0...maxPrefix).contains(prefix)
-    }
-
-    private static func isValidIP(_ s: String) -> Bool {
-        var v4 = in_addr(); var v6 = in6_addr()
-        if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 { return true }
-        if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 { return true }
-        return false
-    }
-}
-
-enum VPNConfigValidationError: LocalizedError {
-    case invalidServerAddress
-    case invalidPort
-    case invalidPrivateKey
-    case invalidPublicKey
-    case invalidPresharedKey
-    case invalidAddresses
-    case invalidAllowedIPs
-    case invalidMTU
-    case invalidDNS
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidServerAddress: return "Server returned an invalid endpoint host."
-        case .invalidPort:          return "Server returned an invalid port."
-        case .invalidPrivateKey:    return "Server returned an invalid private key."
-        case .invalidPublicKey:     return "Server returned an invalid peer public key."
-        case .invalidPresharedKey:  return "Server returned an invalid pre-shared key."
-        case .invalidAddresses:     return "Server returned invalid tunnel addresses."
-        case .invalidAllowedIPs:    return "Server returned invalid AllowedIPs."
-        case .invalidMTU:           return "Server returned an out-of-range MTU."
-        case .invalidDNS:           return "Server returned an invalid DNS address."
-        }
-    }
-}
-
 // MARK: - Apple in-app-purchase wire models
-
-/// `POST /payments/store/apple/purchase-token` response.
-private struct ApplePurchaseTokenResponse: Decodable {
-    let appAccountToken: String
-}
-
-/// `POST /payments/store/apple/link` request.
-///
-/// One field, on purpose. The server derives the plan, the price and the
-/// expiry from Apple's own signature — anything the client asserted about what
-/// it bought would be an input the buyer controls.
-private struct AppleLinkBody: Encodable {
-    let signedTransaction: String
-}
 
 /// The account is paying for the same service on two rails at once. Returned
 /// by /link rather than emailed, because an anonymous account has no email —
