@@ -1101,7 +1101,7 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     // Custom Tabs for the SSO broker (SsoLauncher): sign-in stays in this task
     // and the redirect closes the tab, instead of leaving a stray browser tab.
-    implementation("androidx.browser:browser:1.9.0")
+    implementation("androidx.browser:browser:1.10.0")
     // Crash Reporting
     implementation("io.sentry:sentry-android:8.58.0")
 
