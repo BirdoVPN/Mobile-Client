@@ -329,6 +329,10 @@ targets:
       # fresh-install / upgrade / later-launch decision with an in-memory store.
       # It reads ConsentRecord (GuestAccess.swift, listed above).
       - path: iosApp/Services/InstallIdentity.swift
+      # MR-1980: the free plan's allowance on the paywall, from server data
+      # (fallback 50 GB only when there is none). Foundation-only by design,
+      # pinned by FreePlanCapTests; SubscriptionView cannot be compiled here.
+      - path: iosApp/Services/FreePlanCap.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.

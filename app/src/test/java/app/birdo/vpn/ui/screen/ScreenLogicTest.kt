@@ -1,6 +1,7 @@
 package app.birdo.vpn.ui.screen
 
 import app.birdo.vpn.data.model.RedeemVoucherResponse
+import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.ui.viewmodel.VoucherResult
 import org.junit.Assert.assertEquals
@@ -11,6 +12,31 @@ import org.junit.Test
 
 /** The pure decisions the screens make, pinned without a device. */
 class ScreenLogicTest {
+
+    // ── MR-1980: the paywall's free cap follows the server ──────────────
+
+    @Test
+    fun `a Recon account's own limit is the free cap the paywall states`() {
+        assertEquals(50L, freePlanCapGb(SubscriptionStatus(plan = "RECON", bandwidthLimitGb = 50)))
+        // Whatever the server says, not the build: a later change needs no release.
+        assertEquals(75L, freePlanCapGb(SubscriptionStatus(plan = "recon", bandwidthLimitGb = 75)))
+    }
+
+    @Test
+    fun `a server-wide free cap wins, and a paid account's limit is never used`() {
+        assertEquals(60L, freePlanCapGb(SubscriptionStatus(plan = "RECON", bandwidthLimitGb = 50), configCapGb = 60))
+        assertEquals(60L, freePlanCapGb(null, configCapGb = 60))
+        // 0 = unlimited on a paid plan, and a paid plan's number is not Recon's.
+        assertEquals(50L, freePlanCapGb(SubscriptionStatus(plan = "OPERATIVE", bandwidthLimitGb = 0)))
+        assertEquals(50L, freePlanCapGb(SubscriptionStatus(plan = "SOVEREIGN", bandwidthLimitGb = 500)))
+    }
+
+    @Test
+    fun `with no server value the fallback is the owner's 50 GB, not the old 10`() {
+        assertEquals(50L, FREE_PLAN_CAP_FALLBACK_GB)
+        assertEquals(50L, freePlanCapGb(null))
+        assertEquals(50L, freePlanCapGb(SubscriptionStatus(plan = "RECON", bandwidthLimitGb = 0), configCapGb = 0))
+    }
 
     // ── A2-033 ───────────────────────────────────────────────────────────
 

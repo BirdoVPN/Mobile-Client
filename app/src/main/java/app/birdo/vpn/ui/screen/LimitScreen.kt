@@ -67,12 +67,13 @@ import kotlin.math.sin
 
 /**
  * "Limit" section, shown for every user type: the current plan and its data
- * allowance. Free (RECON) plans get a speed-dial gauge of the 10 GB/mo cap;
- * paid plans get the unlimited state. Reads /vpn/stats (bandwidthUsedGb /
- * bandwidthLimitGb / bandwidthPeriodEnd / bandwidthIsFresh) — real per-user
- * usage of BOTH directions (uploads + downloads), synced from the nodes about
- * every minute and flushed on disconnect. Honest about staleness: never
- * presents a frozen number as live.
+ * allowance. Free (RECON) plans get a speed-dial gauge of their monthly cap as
+ * /vpn/stats reports it (never a number in the build; 50 GB since the owner's
+ * 2026-10-13 decision, MR-1980); paid plans get the unlimited state. Reads
+ * /vpn/stats (bandwidthUsedGb / bandwidthLimitGb / bandwidthPeriodEnd /
+ * bandwidthIsFresh) — real per-user usage of BOTH directions (uploads +
+ * downloads), synced from the nodes about every minute and flushed on
+ * disconnect. Honest about staleness: never presents a frozen number as live.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

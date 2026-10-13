@@ -83,6 +83,26 @@ class PaywallFeatureListTest {
         assertFalse(ios.any { it.contains("Save 20%") })
     }
 
+    /**
+     * MR-1980: both Recon cards said "10 GB monthly bandwidth" from a number in
+     * the build; the owner raised the free cap to 50 GB. The cards now state the
+     * server's value (FreePlanCap / freePlanCapGb), so no paywall may carry a
+     * literal GB figure for the free plan again.
+     */
+    @Test
+    fun `no paywall hard-codes the free plan's data allowance`() {
+        val ios = literals(source("iosApp/iosApp/Views/SubscriptionView.swift"))
+        val gbLine = Regex("""\b\d+(\.\d+)?\s*GB monthly""", RegexOption.IGNORE_CASE)
+        assertEquals("a GB figure is back on the iOS paywall", emptyList<String>(), ios.filter { gbLine.containsMatchIn(it) })
+        assertTrue(source("iosApp/iosApp/Views/SubscriptionView.swift").contains("FreePlanCap.featureLine(gb: freeCapGb)"))
+        val android = source("app/src/main/java/app/birdo/vpn/ui/screen/SubscriptionScreen.kt")
+        assertFalse(
+            "the Android Recon card counts a literal number of GB again",
+            Regex("""subscription_feature_monthly_data,\s*\d""").containsMatchIn(android),
+        )
+        assertTrue(android.contains("PlanFeature.FreeMonthlyData,"))
+    }
+
     @Test
     fun `the StoreKit test catalogue describes no stealth mode`() {
         val storekit = source("iosApp/BirdoVPN.storekit")
