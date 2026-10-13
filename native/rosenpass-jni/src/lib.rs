@@ -12,8 +12,8 @@
 //! Instead we ship a minimal Mullvad-style KEM-only protocol that we control
 //! end-to-end. The PSK is still derived from a NIST-standardised post-quantum
 //! KEM (ML-KEM-1024, FIPS 203), so "post-quantum `WireGuard` PSK" is an
-//! accurate description. It is NOT a complete answer to harvest-now-decrypt-
-//! later: see "What this does not protect" below.
+//! accurate description. It is NOT a complete answer to
+//! harvest-now-decrypt-later: see "What this does not protect" below.
 //!
 //! ## Protocol — `BirdoPQ` v1
 //!
