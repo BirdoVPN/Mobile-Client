@@ -4,7 +4,7 @@ import BirdoPQNative
 /// BirdoPQ v1 — ML-KEM-1024 PSK derivation for iOS.
 ///
 /// Wire-format twin of:
-///   - Android `RosenpassManager` (`rosenpass-jni/src/handshake.rs`)
+///   - Android `BirdoPqManager` (`native/rosenpass-jni/src/handshake.rs`)
 ///   - Desktop `birdo_pq.rs`
 ///   - Server `birdo-pq.service.ts`
 ///
@@ -15,12 +15,29 @@ import BirdoPQNative
 /// psk = HKDF-SHA-256(IKM = ss, salt = "BirdoPQ-v1-PSK", info = nonce)[..32]
 /// ```
 ///
-/// ## Threat model for the persisted client secret key
+/// ## Threat model: what BirdoPQ v1 protects, and what it does not
 ///
-/// The ML-KEM secret key is the LONG-LIVED client identity for BirdoPQ.
-/// Whoever holds it can decrypt any *future* server-encapsulated PSK they
-/// observe but CANNOT derive PSKs from sessions that happened before the
-/// theft (the server uses fresh randomness in every encapsulation).
+/// Each connect derives a fresh PSK from a fresh server encapsulation, and
+/// the server withholds that PSK from the connect response. So one session's
+/// PSK says nothing about another's, and a recording of this app's API
+/// traffic and WireGuard handshakes stays confidential against an adversary
+/// who later breaks Curve25519 but does not hold this device's secret key.
+///
+/// It is NOT a complete "harvest now, decrypt later" defence:
+///
+/// - The ML-KEM secret key is LONG-LIVED: one keypair per install, kept
+///   until it is replaced. Decapsulation is deterministic in (sk, ct), so
+///   whoever obtains the key and has recorded the ciphertexts recovers every
+///   PSK derived for it, past AND future. One keypair per connect (O0e) is
+///   not built.
+/// - The server sends the PSK on to the VPN server over TLS that is not yet
+///   post-quantum (MR-1444), so a recording of that link plus a quantum
+///   computer recovers it without touching ML-KEM.
+/// - Multi-hop's entry-to-exit leg carries no PQ PSK at all.
+///
+/// Full analysis: birdo-web `docs/PQ-THREAT-MODEL.md` §4 and §6.2.
+///
+/// ## Where the secret key lives
 ///
 /// On iOS we store it in the **app-only Keychain** with
 /// `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and
@@ -38,13 +55,14 @@ final class BirdoPQManager: @unchecked Sendable {
         case disabled
         /// Server-provided classical PSK (TLS-delivered random; not HNDL-safe).
         case serverProvided
-        /// True bilateral ML-KEM-1024 — HNDL-safe.
+        /// Bilateral ML-KEM-1024: post-quantum on the app-to-API leg only, not a
+        /// complete HNDL defence (see the threat model above).
         case bilateral
     }
 
     // PFA-M5: the legacy constant `defaultNonceBytes` fallback was removed —
     // `tryDecapsulate` now refuses to derive a PSK against a missing/malformed
-    // per-connect nonce (parity with Android RosenpassManager).
+    // per-connect nonce (parity with Android BirdoPqManager).
 
     /// Keychain account name used to persist the keypair blob (pk||sk).
     private static let keypairAccount = "birdo_pq_v1_keypair"
@@ -104,7 +122,7 @@ final class BirdoPQManager: @unchecked Sendable {
             debugLog("BirdoPQ: malformed/missing ciphertext")
             return nil
         }
-        // PFA-M5 parity with Android RosenpassManager: refuse to derive a PSK
+        // PFA-M5 parity with Android BirdoPqManager: refuse to derive a PSK
         // against a missing/malformed per-connect nonce instead of falling back
         // to a constant. ML-KEM gives a fresh shared secret per encapsulation so
         // the old constant caused no cryptographic nonce reuse, but it dropped
@@ -188,7 +206,7 @@ final class BirdoPQManager: @unchecked Sendable {
             // quantumHandshakeFailed. Discard and re-key instead; the server
             // re-pins the new public key on the next handshake, so the only
             // cost is one extra keygen. Parity with Android
-            // RosenpassManager.loadOrGenerateKeypair.
+            // BirdoPqManager.loadOrGenerateKeypair.
             let stored = readStoredBlob()
             let decision = StoredPQKeyTriage.decide(
                 blob: stored,
