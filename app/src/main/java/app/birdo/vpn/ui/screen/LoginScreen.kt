@@ -61,6 +61,7 @@ import androidx.compose.ui.semantics.contentType
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import app.birdo.vpn.ui.components.BirdoAlertDialog
 
 /** Which authentication method the standard login form shows. */
 private enum class AuthTab { Email, Anonymous, Sso }
@@ -959,7 +960,7 @@ private fun AnonymousIdSavedDialog(
     val clipLabel = stringResource(R.string.account_number_clip_label)
     val grouped = formatAnonymousId(anonymousId)
 
-    AlertDialog(
+    BirdoAlertDialog(
         // Empty: dismissing by tapping outside or pressing back would lose the
         // ID with the account already created. Acknowledge is the only exit.
         onDismissRequest = {},

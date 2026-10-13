@@ -67,6 +67,12 @@ internal class VpnNotificationManager(private val context: Context) {
         const val NOTIFICATION_ID = 1
         const val DISCONNECTED_NOTIFICATION_ID = 2
         const val ALERT_NOTIFICATION_ID = 3
+        /**
+         * A widget tap refused while no service ran (MR-938): VpnManager
+         * posts it, and withdraws it once a session is up. Its own id, so it
+         * never replaces or withdraws one of the service's alerts.
+         */
+        const val TAP_REFUSED_NOTIFICATION_ID = 4
         private const val TAG = "VpnNotif"
 
         /**
@@ -451,7 +457,7 @@ internal class VpnNotificationManager(private val context: Context) {
 
     // ── Alerts ───────────────────────────────────────────────────
 
-    fun postAlert(alert: AlertModel) {
+    fun postAlert(alert: AlertModel, id: Int = ALERT_NOTIFICATION_ID) {
         try {
             val title = context.getString(alert.title)
             val builder = NotificationCompat.Builder(context, ALERT_CHANNEL_ID)
@@ -476,14 +482,14 @@ internal class VpnNotificationManager(private val context: Context) {
                 )
                 .setColor(0xFFEF4444.toInt())
             if (alert.reconnect) builder.addActions(listOf(Action.RECONNECT))
-            notificationManager.notify(ALERT_NOTIFICATION_ID, builder.build())
+            notificationManager.notify(id, builder.build())
         } catch (e: Exception) {
             Log.w(TAG, "Failed to post alert", e)
         }
     }
 
-    fun cancelAlert() {
-        notificationManager.cancel(ALERT_NOTIFICATION_ID)
+    fun cancelAlert(id: Int = ALERT_NOTIFICATION_ID) {
+        notificationManager.cancel(id)
     }
 
     /**

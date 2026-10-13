@@ -73,6 +73,12 @@ data class VpnUiState(
     val publicIp: String? = null,
     /** Whether the current connection uses Xray Reality stealth tunnel */
     val stealthActive: Boolean = false,
+    /**
+     * The user turned Stealth on in settings. Separates a chosen Stealth
+     * connection from an automatic fallback, so Home does not claim the
+     * network blocked anything when it was the user's own choice.
+     */
+    val stealthChosen: Boolean = false,
     /** Asked for Stealth, connected without it for the plan (VpnManager.stealthNotice). */
     val stealthNotice: String? = null,
     /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
@@ -411,6 +417,7 @@ class VpnViewModel @Inject constructor(
                         sessionExpired = input.sessionExpired,
                         liveMultiHopEntryId = if (routeIsLive) route?.first else null,
                         stealthActive = BirdoVpnService.stealthActive,
+                        stealthChosen = prefs.stealthModeEnabled,
                         quantumActive = BirdoVpnService.quantumActive,
                         pqMode = BirdoPqManager.modeFlow.value.name,
                         publicIp = BirdoVpnService.publicIp,

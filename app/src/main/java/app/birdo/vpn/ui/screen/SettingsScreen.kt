@@ -3,6 +3,7 @@ package app.birdo.vpn.ui.screen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import app.birdo.vpn.ui.components.BirdoAlertDialog
 import app.birdo.vpn.ui.components.BirdoCard
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.toggleable
@@ -384,7 +385,7 @@ fun SettingsScreen(
 
         if (showKillSwitchDisableDialog) {
             val palette = BirdoColors.current
-            AlertDialog(
+            BirdoAlertDialog(
                 onDismissRequest = { showKillSwitchDisableDialog = false },
                 containerColor = palette.surfaceElevated,
                 titleContentColor = palette.onSurface,

@@ -344,6 +344,9 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
     testOptions {
         unitTests {
             isReturnDefaultValues = true
+            // Robolectric (AppCoverHostTest) needs the merged manifest, for
+            // the ComponentActivity a Compose test hosts, and the resources.
+            isIncludeAndroidResources = true
         }
     }
 
@@ -1166,6 +1169,13 @@ dependencies {
     // (Draft 2020-12, vendored byte-for-byte from birdo-web). Test-only; the
     // app never validates JSON Schema at runtime.
     testImplementation("com.networknt:json-schema-validator:3.0.7")
+    // MR-937: the Hide App Contents cover is proved against real windows, on
+    // the JVM so PR CI runs it (androidTest does not run there): a Compose
+    // dialog opened under the cover must not exist while it is up. Test-only.
+    // Its tests pin @Config(sdk = 34): newer SDK jars need Java 21, and CI runs 17.
+    testImplementation("org.robolectric:robolectric:4.17")
+    testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))

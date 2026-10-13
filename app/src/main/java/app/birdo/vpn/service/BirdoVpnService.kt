@@ -847,6 +847,10 @@ class BirdoVpnService : VpnService() {
             return
         }
         if (alert.key == postedAlertKey) return
+        // A refused widget tap's alert (VpnManager, MR-938) offers Reconnect,
+        // which starts this service; the same failure posted here as well
+        // would be a second heads-up for one fault. This one replaces it.
+        notifManager.cancelAlert(VpnNotificationManager.TAP_REFUSED_NOTIFICATION_ID)
         notifManager.postAlert(alert)
         postedAlertKey = alert.key
     }
@@ -1866,8 +1870,10 @@ class BirdoVpnService : VpnService() {
                 return
             }
             // The plan does not include Stealth: the server connected this
-            // dial without it, which is what Settings shows (the toggle is off
-            // and locked). VpnManager tells the user on Home.
+            // dial without it. The saved setting is still ON, and Settings
+            // shows it ON and unlocked (StealthPolicy.toggleRow locks only
+            // the ON direction), so the user can turn it off; turning it back
+            // on needs the plan. VpnManager tells the user on Home.
             StealthPolicy.Transport.DIRECT_NOT_IN_PLAN ->
                 FaultReporter.trail(FaultReporter.PATH_STEALTH, "stealth not in the plan — dialling direct")
             // A grant the dial did not ask for (an Adaptive Transport

@@ -1,5 +1,6 @@
 package app.birdo.vpn.ui
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,6 +29,30 @@ class LaunchPolicyTest {
         assertFalse(AppCoverPolicy.coverOnStop(enabled = true, authenticating = true, changingConfigurations = false))
         assertFalse(AppCoverPolicy.coverOnStop(enabled = true, authenticating = false, changingConfigurations = true))
         assertFalse(AppCoverPolicy.coverOnStop(enabled = false, authenticating = false, changingConfigurations = false))
+    }
+
+    /** MR-937: the cover is in the app's own window, which still gets the keyboard. */
+    @Test
+    fun `a hardware key never reaches the app under the cover, but Back and volume still work`() {
+        // Tab, an arrow or a letter: dropped, so focus cannot move onto a hidden control.
+        assertEquals(
+            AppCoverPolicy.CoverKey.DROP,
+            AppCoverPolicy.keyWhileCovered(covered = true, systemKey = false, confirmReleased = false),
+        )
+        // Enter released asks to unlock, as the cover's button does.
+        assertEquals(
+            AppCoverPolicy.CoverKey.UNLOCK,
+            AppCoverPolicy.keyWhileCovered(covered = true, systemKey = false, confirmReleased = true),
+        )
+        // Back (the cover turns it into "leave the app"), volume, media.
+        assertEquals(
+            AppCoverPolicy.CoverKey.PASS,
+            AppCoverPolicy.keyWhileCovered(covered = true, systemKey = true, confirmReleased = false),
+        )
+        assertEquals(
+            AppCoverPolicy.CoverKey.PASS,
+            AppCoverPolicy.keyWhileCovered(covered = false, systemKey = false, confirmReleased = true),
+        )
     }
 
     // ── Notification permission in context (A2-026) ────────────────────

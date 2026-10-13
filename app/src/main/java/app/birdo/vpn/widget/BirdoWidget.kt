@@ -142,8 +142,12 @@ class WidgetToggleAction : ActionCallback {
                         // connectPreferred dials the armed pair through the
                         // same MultiHopPolicy decision, so the entitled
                         // multi-hop case and the single hop are one call.
-                        is QuickToggle.ConnectPlan.MultiHop -> manager.requestConnectPreferred(multiHopEntitled = true)
-                        is QuickToggle.ConnectPlan.Preferred -> manager.requestConnectPreferred(plan.multiHopEntitled)
+                        // A refusal with no service running is alerted
+                        // (MR-938): the widget has no other way to say why.
+                        is QuickToggle.ConnectPlan.MultiHop ->
+                            manager.requestConnectPreferred(multiHopEntitled = true, alertIfRefused = true)
+                        is QuickToggle.ConnectPlan.Preferred ->
+                            manager.requestConnectPreferred(plan.multiHopEntitled, alertIfRefused = true)
                     }
                 }
             }
