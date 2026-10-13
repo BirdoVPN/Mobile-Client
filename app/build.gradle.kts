@@ -314,10 +314,13 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
 
     packaging {
         resources {
-            // Licence texts that more than one dependency can ship at the same
-            // path: keep one copy rather than fail the merge on the duplicate.
-            // They used to be EXCLUDED, which removed the licence texts from
-            // the APK altogether (MR-1687).
+            // Two licence texts that more than one dependency can ship at the
+            // same path: keep the first copy of each rather than fail the merge
+            // on the duplicate. Until MR-1687 these two paths were EXCLUDED,
+            // which dropped any copy of those two files and nothing else: the
+            // other licence and notice files under META-INF (androidx's
+            // LICENSE.txt files, NOTICE.md, Sentry's third-party notices) were
+            // packaged either way (MR-1871).
             pickFirsts += listOf("/META-INF/AL2.0", "/META-INF/LGPL2.1")
         }
         jniLibs {

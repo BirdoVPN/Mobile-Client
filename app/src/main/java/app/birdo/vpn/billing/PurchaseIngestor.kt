@@ -23,6 +23,11 @@ data class IngestablePurchase(
 ) {
     /** Mirror of `Purchase.PurchaseState`, so the tests need no Play types. */
     enum class State { PURCHASED, PENDING, UNSPECIFIED }
+
+    /** Never prints [purchaseToken], like [GooglePlayLinkRequest] (MR-1870). */
+    override fun toString(): String =
+        "IngestablePurchase(purchaseToken=[REDACTED], state=$state, isAcknowledged=$isAcknowledged, " +
+            "productIds=$productIds)"
 }
 
 /** What one trip through [PurchaseIngestor.ingest] concluded. */
