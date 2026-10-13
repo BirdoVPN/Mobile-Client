@@ -103,6 +103,23 @@ class PaywallFeatureListTest {
         assertTrue(android.contains("PlanFeature.FreeMonthlyData,"))
     }
 
+    /**
+     * MR-1981 (repo half): the store texts the owner pastes into Play Console
+     * and App Store Connect state the 50 GB free cap, not the old 10 GB.
+     * Nothing publishes them automatically (play-listing.yml and
+     * asc-metadata.yml are workflow_dispatch only).
+     */
+    @Test
+    fun `the store texts state the 50 GB free cap`() {
+        val listing = source("store-assets/listing/en-US/full-description.txt")
+        assertTrue(listing.contains("• Recon (free): 1 device, 50 GB of data a month"))
+        val asc = source(".github/scripts/asc_metadata.py")
+        assertTrue(asc.contains("to enforce the free plan's 50 GB"))
+        val tenGb = Regex("""\b10\s?GB\b""")
+        assertFalse(tenGb.containsMatchIn(listing))
+        assertFalse(tenGb.containsMatchIn(asc))
+    }
+
     @Test
     fun `the StoreKit test catalogue describes no stealth mode`() {
         val storekit = source("iosApp/BirdoVPN.storekit")
