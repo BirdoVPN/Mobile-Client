@@ -279,10 +279,22 @@ targets:
       # Owner item 96: the User-Agent / X-Desktop-Client strings, pinned by
       # ClientIdentityTests (the backend's UA parser keys on the exact token).
       - path: iosApp/Services/ClientIdentity.swift
+      # MR-1949: the credential-bearing wire models (moved out of APIClient.swift
+      # verbatim) and their redacting descriptions, so CredentialDescriptionTests
+      # can print the REAL structs. Foundation-only by design; VPNConnectionConfig
+      # is in ConnectWire.swift and DeleteAccountBody in AccountDeletion.swift,
+      # both already listed.
+      - path: iosApp/Services/AuthWire.swift
+      - path: iosApp/Services/CredentialRedaction.swift
+      # MR-745: the BirdoPQ per-connect nonce bound (1...64 bytes, as on
+      # Android). Foundation-only by design, pinned by PQNonceTests;
+      # BirdoPQManager.swift (its only caller) imports BirdoPQNative and cannot
+      # be compiled into this bundle.
+      - path: iosApp/Services/PQNonce.swift
       # Owner item 86: anonymous-or-not and the account number from /auth/me —
       # explicit fields first, the synthetic-email parse as the old-backend
-      # fallback. Pinned by AccountIdentityTests; UserProfile (APIClient.swift)
-      # cannot be compiled into this bundle.
+      # fallback. Pinned by AccountIdentityTests; UserProfile, its caller, moved
+      # from APIClient.swift into AuthWire.swift (MR-1949) and needs it here.
       - path: iosApp/Services/AccountIdentity.swift
       # Owner items 43 / 85 / 97: account deletion's pure decisions — which
       # failures leave the outcome unknown (a deletion's answer dies in the

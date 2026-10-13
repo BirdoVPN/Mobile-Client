@@ -21,6 +21,8 @@ extern "C" {
 #define BIRDO_PQ_SECRET_KEY_LEN  3168
 #define BIRDO_PQ_CIPHERTEXT_LEN  1568
 #define BIRDO_PQ_PSK_LEN         32
+// Bound on the server-minted per-connect nonce (1..64 bytes, as on Android).
+#define BIRDO_PQ_MAX_NONCE_LEN   64
 
 // Status codes — keep in sync with `BirdoPqStatus` in src/lib.rs.
 #define BIRDO_PQ_OK                  0
@@ -28,6 +30,8 @@ extern "C" {
 #define BIRDO_PQ_ERR_BUF_SIZE       -2
 #define BIRDO_PQ_ERR_BAD_SECRET_KEY -3
 #define BIRDO_PQ_ERR_BAD_CIPHERTEXT -4
+// The per-connect nonce is empty or longer than BIRDO_PQ_MAX_NONCE_LEN (MR-745).
+#define BIRDO_PQ_ERR_BAD_NONCE      -5
 #define BIRDO_PQ_ERR_INTERNAL       -99
 
 size_t birdo_pq_public_key_len(void);
@@ -42,7 +46,8 @@ int32_t birdo_pq_generate_keypair(
 
 // Decapsulate the server-supplied ciphertext with the persistent client
 // secret key, then HKDF-SHA-256 the shared secret through `nonce` into a
-// 32-byte WireGuard PSK.
+// 32-byte WireGuard PSK. `nonce` must be 1..BIRDO_PQ_MAX_NONCE_LEN bytes, or
+// the call returns BIRDO_PQ_ERR_BAD_NONCE.
 int32_t birdo_pq_derive_psk(
     const uint8_t* sk, size_t sk_len,
     const uint8_t* ct, size_t ct_len,
