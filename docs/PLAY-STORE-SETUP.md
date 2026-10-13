@@ -8,7 +8,9 @@ purchase path and steers nowhere else, per Play's Payments policy. The
 Store will not sell to an app it did not install), so those keep the birdo.app
 web-billing links, which is allowed because they are not distributed through
 Play. `app/build.gradle.kts` (the `isPlayBuild` note) is the authoritative
-description; external LINK-OUT steering is a separate flag (`playExternalOffers`).
+description. There is no external LINK-OUT path: the dormant
+`playExternalOffers` flag and its choice sheet were deleted on 2026-10-07
+(MR-924), so a Play build cannot be made to steer by a build property.
 
 The CI (`.github/workflows/android.yml`) already builds a **signed AAB** on
 `android-v*` tags. The `play-upload` job publishes that AAB to Google Play — but

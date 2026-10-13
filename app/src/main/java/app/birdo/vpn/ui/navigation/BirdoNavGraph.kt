@@ -9,7 +9,6 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -42,9 +41,7 @@ import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.billing.StorePurchaseGate
 import app.birdo.vpn.billing.PurchasableOffer
 import app.birdo.vpn.billing.StorefrontState
-import app.birdo.vpn.ui.components.BillingChoice
 import app.birdo.vpn.ui.components.BirdoAlertDialog
-import app.birdo.vpn.ui.components.BirdoBillingChoiceSheet
 import app.birdo.vpn.ui.viewmodel.BillingViewModel
 import app.birdo.vpn.ui.components.PixelCanvas
 import app.birdo.vpn.ui.screen.*
@@ -912,27 +909,22 @@ fun BirdoNavGraph(
                 popExitTransition = pushPopExit,
             ) {
                 AdaptiveContainer {
-                    // Purchase routing has THREE distinct cases, and conflating
-                    // them is how an app gets pulled from the store:
+                    // Purchase routing has TWO cases, and conflating them is how
+                    // an app gets pulled from the store:
                     //
                     //  1. Not a Play build (direct APK / F-Droid) — always free to
-                    //     open the web checkout. Unchanged behaviour.
-                    //  2. Play build, NOT enrolled in external offers — Google Play
-                    //     Billing is the only purchase route, and there is no
-                    //     steering anywhere else.
-                    //  3. Play build, ENROLLED — may offer a side-by-side choice
-                    //     between Play Billing and the web checkout.
+                    //     open the web checkout.
+                    //  2. Play build — Google Play Billing is the only purchase
+                    //     route, and there is no steering anywhere else.
                     //
-                    // Case 3 requires BOTH flags. Being a Play build is deliberately
-                    // not sufficient on its own: unenrolled steering is a policy
-                    // violation and the package name does not survive a removal.
-                    val externalOffersAllowed =
-                        BuildConfig.IS_PLAY_BUILD && BuildConfig.PLAY_EXTERNAL_OFFERS
+                    // There is no third, "external offers" case any more: the
+                    // dormant Play link-out path was deleted on 2026-10-07 by
+                    // owner decision (MR-924). Steering from a Play build without
+                    // Google's enrolment and External Offers APIs gets the app
+                    // removed, and the package name does not survive a removal.
                     val openWebCheckout = {
                         settingsViewModel.openUrl("https://dashboard.birdo.app/dashboard/billing")
                     }
-                    var showBillingChoice by rememberSaveable { mutableStateOf(false) }
-                    val billingSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
                     // launchBillingFlow needs a real Activity. LocalActivity
                     // would be tidier but arrived in activity-compose 1.10 and
@@ -943,10 +935,6 @@ fun BirdoNavGraph(
                     // not started here — it lives in BirdoApp so that a deferred
                     // approval landing minutes later is still linked.
                     LaunchedEffect(Unit) { billingViewModel.refresh() }
-
-                    // Which period the sheet is offering, so a Play-Billing pick
-                    // knows what the user actually chose.
-                    var pendingPurchase by remember { mutableStateOf<Pair<String, String>?>(null) }
 
                     // Resolve a plan card + period toggle to a REAL offer, read
                     // from the collected state so the UI recomposes when the
@@ -998,34 +986,21 @@ fun BirdoNavGraph(
                         currentSubscription = vpnState.subscription,
                         onNavigateBack = { navController.popBackStack() },
                         onSelectPlan = { planId, period ->
-                            when {
-                                externalOffersAllowed -> {
-                                    pendingPurchase = planId to period
-                                    showBillingChoice = true
-                                }
-                                BuildConfig.IS_PLAY_BUILD -> startPlayPurchase(planId, period)
-                                else -> openWebCheckout()
+                            if (BuildConfig.IS_PLAY_BUILD) {
+                                startPlayPurchase(planId, period)
+                            } else {
+                                openWebCheckout()
                             }
                         },
                         // "Manage on web" is an account action, not a
-                        // purchase, so it goes straight to the billing page
-                        // rather than through the choice sheet — routing it
-                        // through the sheet left a GooglePlay branch with no
-                        // plan selected, which silently did nothing.
+                        // purchase. The Play build never shows it, and this
+                        // guard keeps it inert there even if it were drawn.
                         onManageOnWeb = {
-                            if (!BuildConfig.IS_PLAY_BUILD || externalOffersAllowed) {
+                            if (!BuildConfig.IS_PLAY_BUILD) {
                                 openWebCheckout()
                             }
                         },
                         isPlayBuild = BuildConfig.IS_PLAY_BUILD,
-                        // An ENROLLED build must keep a route to the web
-                        // checkout even when Play has nothing to sell —
-                        // otherwise an empty storefront leaves an enrolled user
-                        // with no purchase route at all. An UNENROLLED Play
-                        // build must never show it: that is the steering that
-                        // gets an app removed.
-                        showWebManageAction =
-                            !BuildConfig.IS_PLAY_BUILD || externalOffersAllowed,
                         // NULL when that plan+period is not purchasable, which is
                         // what suppresses the CTA. See SubscriptionScreen.
                         // Play returns a bare localised amount ("£3.99"); the
@@ -1055,27 +1030,6 @@ fun BirdoNavGraph(
                         purchaseManagedElsewhere = purchaseManagedElsewhere,
                         onOpenUrl = { settingsViewModel.openUrl(it) },
                     )
-
-                    if (showBillingChoice) {
-                        BirdoBillingChoiceSheet(
-                            sheetState = billingSheetState,
-                            onChoose = { choice ->
-                                showBillingChoice = false
-                                val target = pendingPurchase
-                                pendingPurchase = null
-                                when (choice) {
-                                    BillingChoice.Web -> openWebCheckout()
-                                    // Google Play Billing is now implemented. This
-                                    // branch is only ever reachable in an enrolled
-                                    // external-offers build, where the user is being
-                                    // given a genuine choice between the two.
-                                    BillingChoice.GooglePlay ->
-                                        target?.let { startPlayPurchase(it.first, it.second) }
-                                }
-                            },
-                            onDismiss = { showBillingChoice = false },
-                        )
-                    }
                 }
             }
 

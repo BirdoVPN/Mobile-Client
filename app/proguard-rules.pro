@@ -95,7 +95,20 @@
 -keep class app.birdo.vpn.BuildConfig { *; }
 
 # ── Strip all Log.* calls from release builds ─────────────────────
-# This removes ALL logging in production — no sensitive data in logcat.
+# This removes every android.util.Log call the app's own Kotlin/Java makes in
+# production — no sensitive data in logcat from that code.
+#
+# It does NOT reach native code (MR-1660). R8 rewrites DEX, not .so files:
+#   * libwg-go.so (wireguard-go, from the upstream com.wireguard.android:tunnel
+#     AAR) still writes to logcat in release builds. It calls liblog's
+#     __android_log_write directly, under the tag "WireGuard/GoBackend/<iface>",
+#     at DEBUG for its verbose log and ERROR for its error log (checked in
+#     tunnel 1.0.20260102: the arm64 .so imports __android_log_write and
+#     carries that tag). We cannot change that without building the Go engine
+#     ourselves; any app holding READ_LOGS (adb, a rooted device) can read it.
+#   * librosenpass_jni.so is held to this rule separately: its logger is Off
+#     in every release cargo build (native/rosenpass-jni/src/lib.rs,
+#     max_log_level).
 #
 # SCOPE IS LOAD-BEARING: this rule names android.util.Log and NOTHING else, and
 # it must stay that way. Log.e/Log.wtf being stripped is precisely why a failure

@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import app.birdo.vpn.R
 
 /**
- * The Birdo brand mark as the app shows it — login, top bars, Settings > About.
+ * The Birdo brand mark as the app shows it — top bars, Settings > About.
  *
  * It draws its OWN raster drawables (`app_mark`, `app_mark_round`), never the
  * launcher icon. The launcher icon is an adaptive icon now (A2-025), and an
@@ -30,7 +30,7 @@ fun AppIconMark(
     size: Dp = 40.dp,
     cornerRadius: Dp = 12.dp,
     // When true, the SQUARE (squircle) mark shown whole (Fit, no crop) instead
-    // of the circular one. Used by the login header and Settings > About.
+    // of the circular one. Used by Settings > About.
     square: Boolean = false,
 ) {
     Box(

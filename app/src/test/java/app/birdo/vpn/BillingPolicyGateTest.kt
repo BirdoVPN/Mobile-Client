@@ -1,31 +1,24 @@
 package app.birdo.vpn
 
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 /**
- * Guards the Play policy gate.
+ * Guards the Play payments policy: the Play build sells through Google Play
+ * Billing and links to no other checkout.
  *
- * Google permits linking out to an external checkout only for developers
- * ENROLLED in the billing-choice / external-offers programme. Steering while
- * unenrolled is a policy violation: the app is removed, and per our own release
- * history the package name does not come back — `app.birdo.vpn` would be burned
- * permanently.
+ * Linking out from a Play build is allowed only for developers ENROLLED in
+ * Google's billing-choice / external-offers programme, and only with its
+ * External Offers APIs and 24-hour transaction reporting in place. Steering
+ * without them gets the app removed, and the package name does not come back.
  *
- * The protection is that external offers require TWO independent flags, and the
- * second one defaults to false. This test exists so that nobody can quietly
- * flip that default (or collapse the two flags into one) without a red build.
- *
- * When enrolment IS confirmed in the Play Console, the correct way to turn this
- * on is at the build invocation — `-PplayExternalOffers=true` — not by editing
- * the default here. See birdo-web/docs/PLAY-LINK-OUT-BILLING.md.
- *
- * Today enrolment is not enough: the link-out path is unfinished (audit A-32),
- * so :app:validatePlayExternalOffers refuses a Play RELEASE with the flag on.
- * The last test pins that gate's presence and wiring; the gate itself runs in
- * Gradle, which a unit test cannot drive.
+ * This app used to carry a dormant link-out path behind a second build flag,
+ * a choice sheet and a release gate that refused to ship it. The owner deleted
+ * it on 2026-10-07 (MR-924). These tests pin that it stays deleted, so
+ * bringing link-out back is a design change with its own review, not a build
+ * property someone can pass.
  */
 class BillingPolicyGateTest {
 
@@ -39,65 +32,49 @@ class BillingPolicyGateTest {
     }
 
     @Test
-    fun `external offers are OFF by default`() {
-        assertFalse(
-            "PLAY_EXTERNAL_OFFERS must default to false. Linking out to an external " +
-                "checkout without being enrolled in Google's billing-choice programme " +
-                "gets the app removed from Play, and the package name is not recoverable. " +
-                "Enable it per-build with -PplayExternalOffers=true, only after enrolment.",
-            BuildConfig.PLAY_EXTERNAL_OFFERS,
+    fun `BuildConfig carries no external-offers or link-out switch`() {
+        val switches = BuildConfig::class.java.declaredFields
+            .map { it.name }
+            .filter { "EXTERNAL" in it || "LINK_OUT" in it || "LINKOUT" in it }
+        assertEquals(
+            "A link-out switch is back in BuildConfig. The Play build must not be able to " +
+                "steer to an external checkout by a flag (MR-924).",
+            emptyList<String>(),
+            switches,
         )
     }
 
     @Test
-    fun `a Play build alone must never be enough to steer`() {
-        // The app may only show the external-purchase choice when it is BOTH a
-        // Play build AND enrolled. If someone ever reduces this to a single
-        // condition, the unit-test default build (IS_PLAY_BUILD=false,
-        // PLAY_EXTERNAL_OFFERS=false) would still pass a naive check — so assert
-        // the conjunction explicitly.
-        val mayShowExternalChoice =
-            BuildConfig.IS_PLAY_BUILD && BuildConfig.PLAY_EXTERNAL_OFFERS
-        assertFalse(
-            "The default build must not be permitted to steer to an external checkout.",
-            mayShowExternalChoice,
-        )
-    }
-
-    @Test
-    fun `a Play release with external offers on is refused at build time`() {
-        // RM9 / A-32. The default above protects the build nobody configured;
-        // this protects against the one somebody did. Pins that the gate exists,
-        // fires on exactly the Play-AND-flag combination, and hangs off
-        // preReleaseBuild (so debug builds are untouched by construction).
+    fun `playBuild is the only Play property the build script reads`() {
         val gradle = File(repoRoot, "app/build.gradle.kts").readText()
-        val start = gradle.indexOf("tasks.register(\"validatePlayExternalOffers\")")
-        assertTrue(
-            "A-32 regression: the validatePlayExternalOffers release gate is gone from " +
-                "app/build.gradle.kts, so -PplayBuild=true -PplayExternalOffers=true " +
-                "would build a Play release that steers to an unfinished link-out path",
-            start >= 0,
+        val playProperties = Regex("""findProperty\("(play[A-Za-z]*)"\)""")
+            .findAll(gradle)
+            .map { it.groupValues[1] }
+            .toSet()
+        assertEquals(
+            "app/build.gradle.kts reads a Play property other than playBuild. The old " +
+                "-PplayExternalOffers switch is what this pins out (MR-924).",
+            setOf("playBuild"),
+            playProperties,
         )
-        // The task block ends at the first column-0 closing brace after it.
-        val end = Regex("""(?m)^}""").find(gradle, start)?.range?.first ?: gradle.length
-        val body = gradle.substring(start, end)
-        assertTrue(
-            "validatePlayExternalOffers must throw when BOTH isPlayBuild and " +
-                "playExternalOffers are set (and only then)",
-            Regex("""if \(isPlayBuild && playExternalOffers\)\s*\{\s*throw GradleException""")
-                .containsMatchIn(body),
-        )
-        assertTrue(
-            "validatePlayExternalOffers is no longer wired into preReleaseBuild, so it " +
-                "would never run on bundleRelease",
-            Regex("""preRelease\.dependsOn\([^)]*validatePlayExternalOffers""")
-                .containsMatchIn(gradle),
-        )
-        assertTrue(
-            "the gate and BuildConfig.PLAY_EXTERNAL_OFFERS must read the SAME top-level " +
-                "value; a second, local resolution of the property could drift from it",
-            Regex("""(?m)^val playExternalOffers = """).containsMatchIn(gradle) &&
-                Regex("""(?m)^\s+val playExternalOffers = """).find(gradle) == null,
+    }
+
+    @Test
+    fun `the Play build opens the web checkout from nowhere`() {
+        val graph = File(
+            repoRoot,
+            "app/src/main/java/app/birdo/vpn/ui/navigation/BirdoNavGraph.kt",
+        ).readText()
+        val calls = Regex("""openWebCheckout\(\)""").findAll(graph).count()
+        val guarded = Regex(
+            """if \(!BuildConfig\.IS_PLAY_BUILD\) \{\s*openWebCheckout\(\)|""" +
+                """if \(BuildConfig\.IS_PLAY_BUILD\) \{\s*startPlayPurchase\(planId, period\)\s*\}\s*else\s*\{\s*openWebCheckout\(\)""",
+        ).findAll(graph).count()
+        assertTrue("found no openWebCheckout() call: the scan is looking at the wrong file", calls > 0)
+        assertEquals(
+            "every openWebCheckout() call in BirdoNavGraph must sit behind !IS_PLAY_BUILD",
+            calls,
+            guarded,
         )
     }
 }

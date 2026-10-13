@@ -209,7 +209,11 @@ fun HomeScreen(
                 // node, as on iOS — not the last single-hop selection (P1-parity-003).
                 selectedServerId = state.liveMultiHopEntryId ?: state.selectedServer?.id,
                 isConnected = isConnected,
-                autoRotate = true,
+                // Still while connected, as on Windows (owner decision
+                // 2026-10-07, MR-1519): connected is the state a VPN sits in
+                // for hours, and a decoration nobody watches should not keep
+                // the display busy.
+                autoRotate = !isConnected,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {

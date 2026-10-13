@@ -169,7 +169,7 @@ object RosenpassNative {
      * The ML-KEM implementation compiled into this library: the literal
      * `"mlkem1024-rustcrypto"` (RustCrypto's pure-Rust `ml-kem`, exact-pinned
      * -- see the decision record in `native/rosenpass-jni/Cargo.toml`). It was
-     * `"mlkem1024-clean"` (PQClean's portable CLEAN C) up to 1.4.29, which is
+     * `"mlkem1024-clean"` (PQClean's portable CLEAN C) up to 1.4.28, which is
      * how a native crash report is attributed to one implementation or the
      * other. Tagged on Sentry as `birdo.pq.impl`. A build-time fact, not a
      * probe.

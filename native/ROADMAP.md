@@ -19,12 +19,26 @@ v1** — a Mullvad-style ML-KEM-1024 KEM-only construction. End-to-end status:
 
 ### Threat model
 
-BirdoPQ v1 defeats the **Harvest-Now-Decrypt-Later** threat: an adversary
-who records today's network traffic and breaks Curve25519 in N years still
-cannot recover any prior session's payload, because each session's PSK was
-derived from a fresh ML-KEM-1024 encapsulation, which a CRQC must break
-*independently for every session* — there is no shared long-term secret to
-break once and decrypt the entire archive.
+BirdoPQ v1 protects the **app-to-API leg** against **Harvest-Now-Decrypt-Later**:
+an adversary who records this app's API traffic and WireGuard handshakes
+today and breaks Curve25519 in N years cannot recover the PSK from those
+recordings without also breaking ML-KEM-1024, because the server withholds
+the PSK from the response and each session's PSK comes from a fresh
+encapsulation.
+
+It is NOT a complete HNDL defence (MR-743, MR-1364; full analysis in
+birdo-web `docs/PQ-THREAT-MODEL.md` §4 and §6.2):
+
+- **There IS a long-term secret.** The client's ML-KEM keypair is generated
+  once per install and kept, and decapsulation is deterministic in
+  `(sk, ct)`. Whoever obtains that secret key, or recovers it from the
+  static public key, and has recorded the ciphertexts recovers every PSK
+  derived for that key, past and future, until it is replaced. A
+  one-keypair-per-connect design (O0e) is not built.
+- **The relay leg is classical.** The server sends the PSK on to the VPN
+  server over TLS that is not yet post-quantum, so a recording of that link
+  plus a CRQC recovers it without touching ML-KEM (MR-1444).
+- **Multi-hop's entry-to-exit leg** carries no PQ PSK at all.
 
 Out of scope: this does NOT defeat an active CRQC-armed attacker who
 intercepts and replaces the ML-KEM ciphertext in real time during the API
@@ -69,9 +83,10 @@ future migration.
 
 **Not implemented** — `wireguard-android` doesn't expose `wgSetConfig` via
 JNI, so we cannot hot-swap the PSK on a live tunnel. Each `/connect`
-already derives a fresh per-session PQ-PSK, which provides the same HNDL
-guarantee the upstream Rosenpass rekey loop targets — an attacker can't
-recover prior-session traffic by breaking *any* single session's KEM.
+already derives a fresh per-session PQ-PSK, so breaking one session's KEM
+output gives an attacker nothing about another session. It does not give the
+forward secrecy a rekey loop with ephemeral keys would: the client keypair is
+static (see Threat model above).
 
 If wireguard-android exposes a live PSK setter in future, add a periodic
 rekey loop to `RosenpassManager` (the JNI surface and HKDF helpers are
