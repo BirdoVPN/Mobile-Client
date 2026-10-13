@@ -344,6 +344,12 @@
     <string name="settings_version">Version %s</string>
     <string name="cd_open">Open</string>
 
+    <!-- Open-source licences (MR-1686) -->
+    <string name="settings_licenses">Open-source licences</string>
+    <string name="settings_licenses_desc">Third-party software in this app and its licences</string>
+    <string name="licenses_title">Open-source licences</string>
+    <string name="licenses_load_failed">The licences could not be loaded.</string>
+
     <!-- Split Tunnel Screen -->
     <string name="split_tunnel_title">Split Tunneling</string>
     <string name="cd_back">Back</string>

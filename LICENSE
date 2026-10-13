@@ -37,6 +37,13 @@ Notices:
     licensing, sublicensing, hosting as a paid service, or bundling into a paid
     product. Personal use, academic research, security review, and non-revenue
     community contributions are NOT considered commercial purposes.
+  - Third-party code in this repository is NOT covered by this licence and
+    stays under its own licence. That includes everything under iosApp/Vendor/
+    (WireGuardKit and wireguard-go, MIT; see
+    iosApp/Vendor/wireguard-apple/COPYING). The apps list every third-party
+    component they ship, with its licence, in
+    app/src/main/assets/third_party_notices.txt (Android) and
+    iosApp/iosApp/Acknowledgements.txt (iOS and macOS).
 
 For commercial licensing enquiries: licensing@birdo.app
 

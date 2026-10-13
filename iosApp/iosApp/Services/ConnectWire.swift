@@ -98,3 +98,212 @@ struct MultiHopBody: Encodable {
     /// boolean, so a double-hop user gets the filtering resolver too.
     let dnsFiltering: Bool?
 }
+
+// MARK: - Response
+
+// MR-1949: `VPNConnectionConfig` (it carries the tunnel's private key and
+// pre-shared key) moved here from APIClient.swift VERBATIM, with its
+// validation error, so CredentialDescriptionTests can check the real struct's
+// printed form. The response half of the same connect contract.
+
+/// VPN connection configuration returned by server.
+///
+/// AUDIT-M-DRIFT: the backend does NOT emit these field names. `/vpn/connect`
+/// and `/vpn/multi-hop/connect` return (see `VpnService.connect`'s
+/// `ConnectionResult`): `endpoint` as a single "host:port" string, `assignedIp`
+/// as a bare IPv4 with no prefix, the optional `clientIpv6` likewise bare,
+/// `serverPublicKey` for the PEER key (`publicKey` is the CLIENT's own key —
+/// using it as the peer key would have made every handshake fail), and
+/// `allowedIps` with a lowercase "ps". The decoder below translates the wire
+/// shape into the property names the rest of the app already uses.
+struct VPNConnectionConfig: Decodable {
+    let serverAddress: String
+    let serverPort: Int
+    /// The WireGuard tunnel private key. `var` because it is now GENERATED
+    /// ON-DEVICE and injected by `getConnectConfig`/`getMultiHopConfig` after
+    /// decoding — the backend omits it from the response once we send a
+    /// `clientPublicKey`. Decoded optionally only to tolerate a transitional
+    /// backend that still echoes one; the injected local key always wins.
+    var privateKey: String
+    let publicKey: String
+    let presharedKey: String?
+    let addresses: [String]
+    let dns: [String]
+    let allowedIPs: [String]
+    let mtu: Int?
+
+    /// Server-side handle for this connection. Required to release the peer via
+    /// `DELETE /vpn/connections/{keyId}` on disconnect.
+    let keyId: String?
+
+    /// REBUILD (Mobile-Client #159): echo of the request's `currentKeyId` when
+    /// the server deferred that key's eviction (it stays on its node until this
+    /// new peer handshakes). Absent on a plain connect, and on a backend that
+    /// accepted the flag but did not defer — the client treats both as
+    /// "not honoured" (`RebuildDeferral`).
+    let deferredKeyId: String?
+
+    /// AUDIT-C1 (BirdoPQ v1, optional): set when the server received a
+    /// `pqClientPublicKey` and produced a per-connect ML-KEM ciphertext for
+    /// the client to decapsulate. The Swift `BirdoPQManager` derives a
+    /// 32-byte WireGuard PSK from these fields client-side.
+    let quantumEnabled: Bool?
+    let rosenpassPublicKey: String?
+    let rosenpassEndpoint: String?
+
+    /// The warn-only version floor advisory, when this build is below it.
+    /// See [ClientUpdateAdvisory] — OPEN-WORK H3.
+    let clientUpdate: ClientUpdateAdvisory?
+
+    /// `/vpn/multi-hop/connect` only: the route the backend says it ACTUALLY
+    /// installed. `VpnViewModel.connectMultiHop` refuses to bring the tunnel
+    /// up unless this names the requested pair (`MultiHopRouteCheck`) — see
+    /// MultiHopRoute.swift. Absent on single-hop responses.
+    let multiHop: MultiHopRouteInfo?
+
+    private enum CodingKeys: String, CodingKey {
+        case endpoint, privateKey, serverPublicKey, presharedKey
+        case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId, deferredKeyId
+        case quantumEnabled, rosenpassPublicKey, rosenpassEndpoint
+        case multiHop, clientUpdate
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+
+        // "1.2.3.4:51820" — split on the LAST colon so a future IPv6 literal
+        // endpoint doesn't get shredded.
+        let endpoint = try c.decode(String.self, forKey: .endpoint)
+        guard let separator = endpoint.lastIndex(of: ":"),
+              let port = Int(endpoint[endpoint.index(after: separator)...]) else {
+            throw VPNConfigValidationError.invalidServerAddress
+        }
+        serverAddress = String(endpoint[..<separator])
+        serverPort = port
+
+        // Optional: the backend omits privateKey when we send a clientPublicKey.
+        // The on-device key is injected by the API layer after decode; this "" is
+        // a placeholder that is always overwritten before validate()/connect().
+        privateKey = try c.decodeIfPresent(String.self, forKey: .privateKey) ?? ""
+        publicKey = try c.decode(String.self, forKey: .serverPublicKey)
+        presharedKey = try c.decodeIfPresent(String.self, forKey: .presharedKey)
+
+        // The tunnel addresses arrive as bare IPs; WireGuard needs prefixes.
+        // Host-scoped, matching the .conf the backend writes (`/32`, `/128`).
+        let assignedIp = try c.decode(String.self, forKey: .assignedIp)
+        var tunnelAddresses = [assignedIp + "/32"]
+        if let v6 = try c.decodeIfPresent(String.self, forKey: .clientIpv6), !v6.isEmpty {
+            tunnelAddresses.append(v6 + "/128")
+        }
+        addresses = tunnelAddresses
+
+        dns = try c.decodeIfPresent([String].self, forKey: .dns) ?? []
+        allowedIPs = try c.decodeIfPresent([String].self, forKey: .allowedIps) ?? []
+        mtu = try c.decodeIfPresent(Int.self, forKey: .mtu)
+        keyId = try c.decodeIfPresent(String.self, forKey: .keyId)
+        deferredKeyId = try c.decodeIfPresent(String.self, forKey: .deferredKeyId)
+
+        quantumEnabled = try c.decodeIfPresent(Bool.self, forKey: .quantumEnabled)
+        rosenpassPublicKey = try c.decodeIfPresent(String.self, forKey: .rosenpassPublicKey)
+        rosenpassEndpoint = try c.decodeIfPresent(String.self, forKey: .rosenpassEndpoint)
+
+        multiHop = try c.decodeIfPresent(MultiHopRouteInfo.self, forKey: .multiHop)
+
+        // Advice, never a reason to reject a good tunnel config: a malformed
+        // advisory decodes to nil and the connect proceeds untouched.
+        clientUpdate = try? c.decodeIfPresent(ClientUpdateAdvisory.self, forKey: .clientUpdate)
+    }
+
+    /// Hardening: every field is treated as untrusted server input.
+    /// Reject malformed configs *before* they touch the system VPN.
+    /// Throws `VPNConfigValidationError` describing the first failure.
+    func validate() throws {
+        guard !serverAddress.isEmpty,
+              serverAddress.count <= 255,
+              !serverAddress.contains(where: { $0.isNewline || $0.isWhitespace })
+        else { throw VPNConfigValidationError.invalidServerAddress }
+
+        guard (1...65535).contains(serverPort) else {
+            throw VPNConfigValidationError.invalidPort
+        }
+        guard Self.isValidWireGuardKey(privateKey) else {
+            throw VPNConfigValidationError.invalidPrivateKey
+        }
+        guard Self.isValidWireGuardKey(publicKey) else {
+            throw VPNConfigValidationError.invalidPublicKey
+        }
+        if let psk = presharedKey, !psk.isEmpty {
+            guard Self.isValidWireGuardKey(psk) else {
+                throw VPNConfigValidationError.invalidPresharedKey
+            }
+        }
+        guard !addresses.isEmpty, addresses.count <= 16 else {
+            throw VPNConfigValidationError.invalidAddresses
+        }
+        for cidr in addresses where !Self.isValidCIDR(cidr) {
+            throw VPNConfigValidationError.invalidAddresses
+        }
+        guard allowedIPs.count <= 32 else {
+            throw VPNConfigValidationError.invalidAllowedIPs
+        }
+        for cidr in allowedIPs where !Self.isValidCIDR(cidr) {
+            throw VPNConfigValidationError.invalidAllowedIPs
+        }
+        if let mtu, !(1280...1500).contains(mtu) {
+            throw VPNConfigValidationError.invalidMTU
+        }
+        // DNS list may legitimately be empty; if present, validate each entry.
+        for d in dns where !Self.isValidIP(d) {
+            throw VPNConfigValidationError.invalidDNS
+        }
+    }
+
+    private static func isValidWireGuardKey(_ b64: String) -> Bool {
+        guard let data = Data(base64Encoded: b64) else { return false }
+        return data.count == 32
+    }
+
+    private static func isValidCIDR(_ cidr: String) -> Bool {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = Int(parts[1])
+        else { return false }
+        let host = String(parts[0])
+        guard isValidIP(host) else { return false }
+        let maxPrefix = host.contains(":") ? 128 : 32
+        return (0...maxPrefix).contains(prefix)
+    }
+
+    private static func isValidIP(_ s: String) -> Bool {
+        var v4 = in_addr(); var v6 = in6_addr()
+        if s.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 { return true }
+        if s.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 { return true }
+        return false
+    }
+}
+
+enum VPNConfigValidationError: LocalizedError {
+    case invalidServerAddress
+    case invalidPort
+    case invalidPrivateKey
+    case invalidPublicKey
+    case invalidPresharedKey
+    case invalidAddresses
+    case invalidAllowedIPs
+    case invalidMTU
+    case invalidDNS
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidServerAddress: return "Server returned an invalid endpoint host."
+        case .invalidPort:          return "Server returned an invalid port."
+        case .invalidPrivateKey:    return "Server returned an invalid private key."
+        case .invalidPublicKey:     return "Server returned an invalid peer public key."
+        case .invalidPresharedKey:  return "Server returned an invalid pre-shared key."
+        case .invalidAddresses:     return "Server returned invalid tunnel addresses."
+        case .invalidAllowedIPs:    return "Server returned invalid AllowedIPs."
+        case .invalidMTU:           return "Server returned an out-of-range MTU."
+        case .invalidDNS:           return "Server returned an invalid DNS address."
+        }
+    }
+}

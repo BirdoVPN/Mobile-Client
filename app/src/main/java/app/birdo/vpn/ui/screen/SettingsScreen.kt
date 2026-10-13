@@ -73,6 +73,8 @@ fun SettingsScreen(
     onBiometricLockChange: (Boolean) -> Unit = {},
     onThemeModeChange: (String) -> Unit = {},
     onCrashReportsChange: (Boolean) -> Unit = {},
+    /** Settings > About > Open-source licences (MR-1686). */
+    onOpenLicenses: () -> Unit = {},
     /** The user has read the settings-reset notice (A2-047). */
     onDismissSettingsResetNotice: () -> Unit = {},
     // ── Plan gating ──────────────────────────────────────────────
@@ -378,6 +380,19 @@ fun SettingsScreen(
                         Icon(Icons.Default.Verified, null, tint = palette.accent, modifier = Modifier.size(20.dp))
                     }
                 }
+            }
+
+            // MR-1686: the notices of every third-party component the app
+            // ships (Xray-core, WireGuard, the Rust crates, the libraries),
+            // which their licences require to travel with it.
+            item {
+                SettingsLink(
+                    icon = Icons.Default.Description,
+                    iconColor = BirdoWhite60,
+                    title = stringResource(R.string.settings_licenses),
+                    description = stringResource(R.string.settings_licenses_desc),
+                    onClick = onOpenLicenses,
+                )
             }
 
             item { Spacer(Modifier.height(32.dp)) }

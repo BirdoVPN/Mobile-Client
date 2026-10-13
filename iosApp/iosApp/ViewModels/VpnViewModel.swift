@@ -92,6 +92,10 @@ final class VpnViewModel: ObservableObject {
     /// removes the banner on the user's next connect with no app release.
     /// Dismissal is per-version (see `dismissUpdateAdvisory`): dismissing it
     /// once must not silence a LATER, higher floor.
+    ///
+    /// MR-1661: also set by a connect REFUSED below the floor (426), as a
+    /// `required` advisory carrying the server's versions — that one cannot be
+    /// dismissed, because every connect is refused until the app is updated.
     @Published private(set) var updateAdvisory: ClientUpdateAdvisory?
 
     /// Floors the user has already dismissed. Keyed by `minVersion`, not by a
@@ -114,6 +118,9 @@ final class VpnViewModel: ObservableObject {
     /// Dismiss the CURRENT floor only. A later, higher floor is new information
     /// and must be allowed to show itself again.
     func dismissUpdateAdvisory() {
+        // A required update mirrors the server refusing connects (Android
+        // UpdateViewModel.dismiss: the one banner that cannot be dismissed).
+        if updateAdvisory?.required == true { return }
         guard let floor = updateAdvisory?.minVersion, !floor.isEmpty else {
             updateAdvisory = nil
             return
@@ -125,6 +132,15 @@ final class VpnViewModel: ObservableObject {
         // client is now above can never be re-advised anyway.
         dismissedFloorsRaw = floors.sorted().suffix(20).joined(separator: ",")
         updateAdvisory = nil
+    }
+
+    /// MR-1661: a connect refused below the floor (426) raises the required
+    /// banner from the server's `details`, with the App Store button. Every
+    /// other error leaves the banner alone. Not filtered by `dismissedFloors`:
+    /// advice can be dismissed, a refusal cannot.
+    private func showUpdateRequired(after error: Error) {
+        guard let refusal = error as? UpdateRequiredRefusal else { return }
+        updateAdvisory = refusal.advisory
     }
 
     private var dismissedFloors: Set<String> {
@@ -495,6 +511,7 @@ final class VpnViewModel: ObservableObject {
                 // the error the user is reading). Only the launch auto-connect
                 // is held off for the server's wait.
                 holdAutomaticDials(after: error)
+                showUpdateRequired(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -658,6 +675,7 @@ final class VpnViewModel: ObservableObject {
         } catch {
             // MR-1948: shown, not auto-retried — see connect().
             holdAutomaticDials(after: error)
+            showUpdateRequired(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -1342,6 +1360,7 @@ final class VpnViewModel: ObservableObject {
             // other failed request (Android: LiveRebuildPolicy REQUEST_FAILED),
             // and nothing is re-requested without it.
             holdAutomaticDials(after: error)
+            showUpdateRequired(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)

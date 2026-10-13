@@ -329,8 +329,8 @@ struct LoginView: View {
                 .accessibilityIdentifier("login_password_field")
                 .loginEntrance(entered, delay: 0.28)
 
-            PrimaryButton("Initialize Uplink",
-                          loadingTitle: "Connecting…",
+            PrimaryButton("Sign in",
+                          loadingTitle: "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: isEmailFormValid,
                           action: submitEmailLogin)
@@ -689,6 +689,7 @@ struct LoginView: View {
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .accountNumberSnapshotCover()
                     Image(systemName: copiedId ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 16))
                         .foregroundStyle(copiedId ? BirdoTheme.green : BirdoTheme.white60)

@@ -41,6 +41,8 @@ class IosVersionFloorWiringTest {
     }
 
     private val apiClient by lazy { source("iosApp/iosApp/Services/APIClient.swift") }
+    /** VPNConnectionConfig moved here from APIClient.swift (MR-1949). */
+    private val connectConfig by lazy { source("iosApp/iosApp/Services/ConnectWire.swift") }
     private val viewModel by lazy { source("iosApp/iosApp/ViewModels/VpnViewModel.swift") }
 
     @Test
@@ -48,11 +50,11 @@ class IosVersionFloorWiringTest {
         assertTrue(
             "VPNConnectionConfig does not declare clientUpdate — the backend sends it on every " +
                 "below-floor iOS connect and it would be dropped on the floor, which IS the H3 defect",
-            apiClient.contains("let clientUpdate: ClientUpdateAdvisory?"),
+            connectConfig.contains("let clientUpdate: ClientUpdateAdvisory?"),
         )
         assertTrue(
             "clientUpdate is declared but never decoded in init(from:)",
-            Regex("""clientUpdate\s*=\s*try\??\s*c\.decodeIfPresent""").containsMatchIn(apiClient),
+            Regex("""clientUpdate\s*=\s*try\??\s*c\.decodeIfPresent""").containsMatchIn(connectConfig),
         )
     }
 
@@ -63,7 +65,7 @@ class IosVersionFloorWiringTest {
         // than the silence H3 fixes.
         assertTrue(
             "clientUpdate must be decoded with `try?` so advice can never reject a good tunnel config",
-            apiClient.contains("clientUpdate = try? c.decodeIfPresent"),
+            connectConfig.contains("clientUpdate = try? c.decodeIfPresent"),
         )
     }
 
@@ -104,6 +106,51 @@ class IosVersionFloorWiringTest {
         assertTrue(
             "the dismissed set must be persisted, or the banner returns on every launch",
             viewModel.contains("@AppStorage(\"dismissedUpdateFloors\")"),
+        )
+    }
+
+    // ── MR-1661: the hard floor's 426 ───────────────────────────────────────
+
+    @Test
+    fun `both connect routes keep the 426 details instead of a fixed sentence`() {
+        // The generic mapping turns every 426 into one sentence and drops
+        // `details`; only the refusal hook sees the body first. Same shape as
+        // IosConnectRefusalWiringTest: once in each route's request.
+        for (route in listOf("/vpn/connect", "/vpn/multi-hop/connect")) {
+            val pathAt = apiClient.indexOf("path: \"$route\",")
+            assertTrue("no request carries $route", pathAt >= 0)
+            val window = apiClient.substring(pathAt, apiClient.indexOf("decodeConnectResult(", pathAt))
+            assertEquals(
+                "the $route refusal hook must decode the 426 into UpdateRequiredRefusal",
+                1,
+                Regex("""UpdateRequiredRefusal\.classify\(""").findAll(window).count(),
+            )
+        }
+    }
+
+    @Test
+    fun `every failed connect path raises the required-update banner`() {
+        // The same twin-drift shape as the advisory: three failure paths
+        // (single-hop, multi-hop, live rebuild), each must look for the 426.
+        val failurePaths = Regex("""holdAutomaticDials\(after: error\)""").findAll(viewModel).count()
+        val raised = Regex("""showUpdateRequired\(after: error\)""").findAll(viewModel).count()
+        assertTrue("found no connect failure paths; the marker changed", failurePaths >= 3)
+        assertEquals("every connect failure path must raise the required-update banner", failurePaths, raised)
+    }
+
+    @Test
+    fun `a required update cannot be dismissed and links to the App Store`() {
+        assertTrue(
+            "dismissUpdateAdvisory must refuse a required advisory, as Android's UpdateViewModel does",
+            "if updateAdvisory?.required == true { return }" in viewModel,
+        )
+        val home = source("iosApp/iosApp/Views/HomeView.swift")
+        assertTrue("the banner hides Dismiss for a required update", "if !advisory.required {" in home)
+        assertTrue("the Update button uses the App Store link the advisory resolves", "advisory.storeURL" in home)
+        val advisory = source("iosApp/iosApp/Services/ClientUpdateAdvisory.swift")
+        assertTrue(
+            "storeURL may only open an https apps.apple.com link",
+            "host == \"apps.apple.com\"" in advisory && "url.scheme?.lowercased() == \"https\"" in advisory,
         )
     }
 

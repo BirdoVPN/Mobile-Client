@@ -5,20 +5,17 @@ import UIKit
 
 /// Settings tab root — Android SettingsScreen parity (spec-secondary-screens
 /// §1). iOS-specific notes:
-///   - Appearance/Theme: the shipped design system is dark-only (BirdoTheme
-///     carries no light palette yet), but the spec'd segmented control is
-///     present and its choice is PERSISTED (`app_theme` AppStorage) so the
-///     preference survives the eventual light-palette work — until then only
-///     "Dark" has a visible effect (owner decision, spec §1.2).
-///   - Display: the master connection-notifications toggle lives here and is
-///     persisted (`notifications_enabled` AppStorage). The section's other two
-///     spec'd members — Show IP Address and Show Server Location — do NOT
-///     exist on iOS: they are per-notification detail switches and there is no
-///     in-app notification delivery code to detail. They stay deferred with
-///     that code (reported as a gap) rather than shipped as dead switches.
-///   - "Notification Settings" keeps its own group: it deep-links to the OS
-///     notification page for the app, which is a destination, not a display
-///     preference.
+///   - No Appearance/Theme control (MR-1616). The iOS design system is
+///     dark-only (BirdoTheme: "dark-only"; both window roots pin
+///     `.preferredColorScheme(.dark)`), so its Light and System options
+///     changed nothing. They are removed rather than kept as dead choices; a
+///     theme control returns with a light palette, if one is ever built.
+///   - No Notifications toggle (MR-1615). The iOS app posts no notifications
+///     at all (it never imports UserNotifications), so the toggle switched
+///     nothing. Show IP Address and Show Server Location are absent for the
+///     same reason: they detail notifications that do not exist.
+///   - "Notification Settings" deep-links to the app's page in the system
+///     Settings app, which is a destination, not a display preference.
 ///   - Split Tunneling: per-app VPN is MDM-only on iOS, so the section is
 ///     OMITTED entirely (platform-constraints §1.4) — not shown locked.
 ///
@@ -41,31 +38,8 @@ struct SettingsView: View {
     /// Backstop for the reapply commit — see the .onChange below.
     @Environment(\.scenePhase) private var scenePhase
 
-    /// Theme preference (spec §1.2). "dark" | "light" | "system", default
-    /// "system". Persisted view-local so it survives without ViewModel churn;
-    /// re-theming the running UI is deferred until the light palette ships.
-    @AppStorage("app_theme") private var appTheme = "system"
-
-    /// Master connection-notifications preference (spec §1.7), default ON.
-    @AppStorage("notifications_enabled") private var notificationsEnabled = true
-
     /// Upgrade destination for the two locked VPN rows (§0.5).
     @State private var showSubscription = false
-
-    private let themeOptions = ["dark", "light", "system"]
-
-    private var themeIndexBinding: Binding<Int> {
-        Binding(
-            get: { themeOptions.firstIndex(of: appTheme) ?? 2 },
-            set: { newIndex in
-                let value = themeOptions.indices.contains(newIndex) ? themeOptions[newIndex] : "system"
-                if value != appTheme {
-                    Haptics.selectionChanged()
-                    appTheme = value
-                }
-            }
-        )
-    }
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -77,9 +51,6 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionHeader("Appearance")
-                    themeCard
-
                     privacySection
 
                     SectionHeader("Connection")
@@ -93,10 +64,6 @@ struct SettingsView: View {
                     // whose names overlapped, which reads worse than either the
                     // layout before or the one intended.
                     SectionHeader("Display")
-                    SettingsToggleRow(icon: "bell", iconColor: BirdoTheme.yellow,
-                                      title: "Notifications",
-                                      description: "Show connection notifications",
-                                      isOn: $notificationsEnabled)
                     SettingsLinkButton(icon: "bell.badge", iconColor: BirdoTheme.white60,
                                        title: "Notification Settings",
                                        description: "Open system notification settings",
@@ -123,6 +90,17 @@ struct SettingsView: View {
                                        trailing: "arrow.up.forward.square") {
                         if let url = URL(string: "https://birdo.app/terms") { openURL(url) }
                     }
+                    // MR-1688: the notices of the open-source code the app
+                    // ships (WireGuardKit, wireguard-go, ...), which their
+                    // licences require to travel with it.
+                    NavigationLink {
+                        AcknowledgementsView()
+                    } label: {
+                        SettingsLinkRow(icon: "doc.plaintext", iconColor: BirdoTheme.white60,
+                                        title: "Acknowledgements",
+                                        description: "Open-source software in this app")
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
                     aboutCard
 
                     Spacer().frame(height: 32)
@@ -348,28 +326,6 @@ struct SettingsView: View {
                 .frame(height: 1)
         }
         .background(BirdoTheme.glassStrong.ignoresSafeArea(edges: .top))
-    }
-
-    // MARK: - Theme (spec §1.2)
-
-    /// Theme row + segmented control. The segmented choice is persisted; only
-    /// "Dark" currently re-themes (light palette deferred, owner decision).
-    private var themeCard: some View {
-        BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    SettingsIconChip(icon: "paintpalette", color: BirdoTheme.accent)
-                    SettingsRowText(title: "Theme",
-                                    description: "Dark, light, or follow system")
-                    Spacer(minLength: 8)
-                }
-                SegmentedTabs(
-                    items: ["Dark", "Light", "System"],
-                    selection: themeIndexBinding,
-                    style: .accent
-                )
-            }
-        }
     }
 
     // MARK: - About (not tappable)

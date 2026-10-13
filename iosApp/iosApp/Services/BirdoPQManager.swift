@@ -129,9 +129,10 @@ final class BirdoPQManager: @unchecked Sendable {
         // per-connect domain separation and let a misconfigured/tampered server
         // silently weaken PQ. Returning nil fails closed — VPNManager.connect
         // throws quantumHandshakeFailed when quantum protection is enabled.
-        guard let nonceB64 = rosenpassEndpointBase64, !nonceB64.isEmpty,
-              let nonce = Data(base64Encoded: nonceB64) else {
-            debugLog("BirdoPQ: server omitted/malformed per-connect nonce — bilateral PQ aborted (PFA-M5)")
+        // MR-745: and bounded to 1...64 bytes like Android, so the server can
+        // never hand the native HKDF an empty or unbounded `info`.
+        guard let nonce = BirdoPQNonce.decode(rosenpassEndpointBase64) else {
+            debugLog("BirdoPQ: server omitted/malformed/out-of-bounds per-connect nonce — bilateral PQ aborted (PFA-M5)")
             return nil
         }
         guard let kp = loadOrGenerateKeypair() else {
