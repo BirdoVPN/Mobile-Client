@@ -1,6 +1,7 @@
 package app.birdo.vpn.service
 
 import app.birdo.vpn.data.model.HeartbeatResponse
+import app.birdo.vpn.data.repository.ConnectErrorCode
 
 /**
  * The session supervisor's decisions, as pure functions.
@@ -120,6 +121,16 @@ enum class FailureKind(val terminal: Boolean) {
             in 400..499 -> REFUSED
             else -> TRANSIENT
         }
+
+        /**
+         * Classify a failed connect: a code the contract marks retryable (the
+         * 503s quota_check_unavailable and psk_delivery_unavailable) is
+         * [TRANSIENT] whatever status it rode in on, so the supervisor re-dials
+         * after the server's wait instead of stopping on a refusal. Anything
+         * else, including a code this build does not know, by [status].
+         */
+        fun forApiError(status: Int, serverCode: ConnectErrorCode): FailureKind =
+            if (serverCode.retryable) TRANSIENT else fromHttpStatus(status)
     }
 }
 

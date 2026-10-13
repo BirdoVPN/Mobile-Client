@@ -1220,6 +1220,85 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a psk_delivery_unavailable re-dial waits the server's 30 s and never asks without Quantum Protection`() = runTest {
+        // MR-1639: the server would not hand this session's pre-shared key to
+        // the relay over SSH, so it rolled the peer back. The supervisor
+        // retries after the server's wait, and every retry asks for exactly
+        // what the first dial did: Quantum Protection on, the ML-KEM key
+        // attached. A classical connect here would be the very downgrade the
+        // server refused to make.
+        every { prefs.quantumProtectionEnabled } returns true
+        mockkObject(BirdoPqManager)
+        coEvery { BirdoPqManager.getClientPublicKeyB64(context) } returns "pq-public-key"
+        every { prefs.lastServerId } returns "srv-1"
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        } returns ApiResult.Success(makeConnectResponse())
+        vpnManager.connect("srv-1")
+        serviceEmits(VpnState.Connected)
+        runCurrent()
+        assertEquals(VpnState.Connected, vpnManager.state.value)
+
+        // What BirdoRepository returns for the 503 (ConnectErrorContractTest pins the mapping).
+        val refusal = ApiResult.Error(
+            app.birdo.vpn.testing.StringsXml.text("error_secure_setup_unavailable"),
+            503,
+            app.birdo.vpn.data.repository.FailureReason.SERVER_UNAVAILABLE,
+            retryAfterMs = 30_000L,
+            serverCode = app.birdo.vpn.data.repository.ConnectErrorCode.PSK_DELIVERY_UNAVAILABLE,
+        )
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        } returns refusal
+
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        // First re-dial ~2 s + the 5 s teardown wait; its 503 asks for 30 s.
+        advanceTimeBy(20_000)
+        coVerify(exactly = 2) {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        }
+        val reconnecting = vpnManager.state.value
+        assertTrue("TRANSIENT, not a refusal: still recovering, $reconnecting", reconnecting is VpnState.Reconnecting)
+
+        advanceTimeBy(25_000)
+        // All three dials, the two refused re-dials included, asked for PQ with the key; none without.
+        coVerify(exactly = 3) {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = true, pqClientPublicKey = "pq-public-key", integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = false, pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = isNull(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        }
+        quiesce()
+    }
+
+    @Test
     fun `heartbeat valid=false after an idle gap past the reap window re-dials once behind the block`() = runTest {
         var now = 0L
         vpnManager.elapsedRealtime = { now }

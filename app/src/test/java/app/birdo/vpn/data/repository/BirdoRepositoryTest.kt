@@ -887,6 +887,37 @@ class BirdoRepositoryTest {
         assertEquals(false, request.captured.pqClientCanDecapsulate)
     }
 
+    @Test
+    fun `both connect routes turn a 503 psk_delivery_unavailable into a retryable error with the server's wait`() = runTest {
+        // MR-1639: vpn.controller.ts rethrowPskDeliveryRefusal, on /vpn/connect
+        // and /vpn/multi-hop/connect alike. No Retry-After header: the wait is
+        // only in details.
+        fun <T> refusal(): Response<T> = Response.error(
+            503,
+            ("""{"statusCode":503,"message":"We could not set up a secure connection to this server just now. """ +
+                """Please try again in a moment.","error":"psk_delivery_unavailable","timestamp":"2026-10-13T09:00:00.000Z",""" +
+                """"path":"/vpn/connect","details":{"retryable":true,"retryAfterSeconds":30}}""")
+                .toResponseBody("application/json".toMediaType()),
+        )
+        coEvery { api.connect(any()) } returns refusal()
+        coEvery { api.connectMultiHop(any()) } returns refusal()
+
+        val single = repository.connectVpn(serverNodeId = "server_1", quantumProtection = true, pqClientPublicKey = "pq")
+            as ApiResult.Error
+        val multi = repository.connectMultiHop("de-1", "nl-1", quantumProtection = true, pqClientPublicKey = "pq")
+            as ApiResult.Error
+
+        for (error in listOf(single, multi)) {
+            assertEquals(503, error.code)
+            assertEquals(ConnectErrorCode.PSK_DELIVERY_UNAVAILABLE, error.serverCode)
+            assertEquals(FailureReason.SERVER_UNAVAILABLE, error.reason)
+            assertEquals(30_000L, error.retryAfterMs)
+            assertEquals(StringsXml.text("error_secure_setup_unavailable"), error.message)
+        }
+        // A refusal mints nothing: no key id is recorded for a peer the server rolled back.
+        verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
+    }
+
     // ── Disconnect VPN ──────────────────────────────────────────
 
     @Test
