@@ -79,4 +79,37 @@ class IosParityRowsGuardTest {
         // One unit-test bundle: the old branch added its own, this repo has one.
         assertFalse(Regex("""(?m)^  BirdoVPNUnitTests:""").containsMatchIn(projectYml))
     }
+
+    // ── MR-1726: the Apple device identity is per install ────────────────────
+
+    @Test
+    fun `the first-run check runs before anything reads the keychain`() {
+        val auth = source("$ios/ViewModels/AuthViewModel.swift")
+        val check = auth.indexOf("InstallIdentity.checkOnLaunch(")
+        val firstTokenRead = auth.indexOf("keychain.accessToken")
+        assertTrue("AuthViewModel no longer runs the first-run identity check", check >= 0)
+        assertTrue("the check runs after the session is read from the keychain", check < firstTokenRead)
+        assertTrue(
+            source("$ios/Services/KeychainService.swift")
+                .contains("extension KeychainService: InstallIdentityStore {}"),
+        )
+        assertTrue(unitTestTarget.contains("- path: iosApp/Services/InstallIdentity.swift"))
+    }
+
+    @Test
+    fun `the keychain no longer promises an identity that survives a reinstall`() {
+        val keychain = source("$ios/Services/KeychainService.swift")
+        assertFalse(keychain.contains("stable across\n    /// logins AND reinstalls"))
+        assertFalse(source("$ios/Services/APIClient.swift").contains("so it survives reinstall"))
+    }
+
+    @Test
+    fun `signing out keeps the device id, as on Android`() {
+        // Android: BirdoRepository.logout clears tokens and the PQ keypair and
+        // keeps DeviceInfoProvider's id; only deletion rotates it.
+        val auth = source("$ios/ViewModels/AuthViewModel.swift")
+        val logout = auth.substringAfter("private func completeLocalLogout() {").substringBefore("\n    }\n")
+        assertFalse("sign-out rotates the device id", logout.contains("resetDeviceIdentity"))
+        assertFalse("sign-out runs the fresh-install reset", logout.contains("InstallIdentity"))
+    }
 }

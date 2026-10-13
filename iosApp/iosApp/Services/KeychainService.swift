@@ -38,20 +38,24 @@ final class KeychainService: @unchecked Sendable {
     var refreshToken: String? { read(key: "refresh_token") }
     var userEmail: String? { read(key: "user_email") }
     /// SSOT device identity ("ios_" + a random v4 UUID, minted by APIClient).
-    /// Deliberately survives `clear()`: it keys the server-side trusted-device
-    /// 2FA skip and connection-slot reclamation, so it must be stable across
-    /// logins AND reinstalls (keychain items outlive the app bundle).
+    /// PER INSTALL (MR-1726, Android parity): it survives `clear()`, so
+    /// signing out and back in keeps it — it keys the server-side
+    /// trusted-device 2FA skip and connection-slot reclamation — but it does
+    /// NOT survive a reinstall. Keychain items outlive the app bundle, so
+    /// `InstallIdentity.checkOnLaunch` replaces a value a previous install left
+    /// behind on the first launch of a fresh install.
     ///
     /// It was a hash of the IDFV until that was found to be recomputable by
     /// anyone holding the IDFV, and impossible to rotate away from. Erasure now
     /// rotates it (`APIClient.resetDeviceIdentity`); a value already stored by
-    /// an older install is read back unchanged so nobody burns a device slot on
-    /// upgrade.
+    /// an older build of THIS install is read back unchanged so nobody burns a
+    /// device slot on upgrade.
     var deviceId: String? { read(key: "device_id") }
     /// The 24-digit anonymous account ID — the SOLE recovery credential for an
-    /// anonymous account. Deliberately survives `clear()` (logout) so a user
-    /// who never wrote it down can still sign back in; wiped only by
-    /// `clearAnonymousId()` (account deletion / switching to an email account).
+    /// anonymous account. Survives `clear()` (logout); wiped by
+    /// `clearAnonymousId()` (account deletion / switching to an email account)
+    /// and, like `deviceId`, on the first launch of a fresh install
+    /// (`InstallIdentity`, MR-1726).
     var anonymousId: String? { read(key: "anonymous_id") }
     /// Owner item 97: this device's CURRENT session was signed in with Sign in
     /// with Apple. `/auth/me` does not say whether an account is Apple-linked,
@@ -118,8 +122,9 @@ final class KeychainService: @unchecked Sendable {
         }
     }
 
-    /// Wipe the session. `device_id` and `anonymous_id` intentionally survive —
-    /// see their accessor docs.
+    /// Wipe the session. `device_id` and `anonymous_id` intentionally survive a
+    /// sign-out — see their accessor docs (a reinstall is handled separately,
+    /// by `InstallIdentity`).
     func clear() {
         delete(key: "access_token")
         delete(key: "refresh_token")
@@ -309,3 +314,6 @@ final class KeychainService: @unchecked Sendable {
         return group
     }
 }
+
+/// MR-1726: the store `InstallIdentity.checkOnLaunch` reads and replaces.
+extension KeychainService: InstallIdentityStore {}

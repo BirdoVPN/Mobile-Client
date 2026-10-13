@@ -833,12 +833,14 @@ final class APIClient: @unchecked Sendable {
 
     // MARK: - Device Identity
 
-    /// SSOT device identity, PERSISTED IN THE KEYCHAIN so it survives reinstall
-    /// (bare `identifierForVendor` does not — it resets when the last vendor app
-    /// is removed). The stored value is load-bearing: it keys the server-side
-    /// trusted-device 2FA skip and connection-slot reclamation (unstable IDs
-    /// read as "device limit reached" after every reinstall). Cached after the
-    /// first resolution.
+    /// SSOT device identity, PERSISTED IN THE KEYCHAIN so it is stable for the
+    /// life of this install, across sign-outs and app updates. The stored value
+    /// is load-bearing: it keys the server-side trusted-device 2FA skip and
+    /// connection-slot reclamation. It is PER INSTALL (MR-1726, as on Android):
+    /// keychain items outlive the app, so `InstallIdentity.checkOnLaunch`
+    /// replaces a previous install's value on a fresh install's first launch,
+    /// and a reinstall registers as a new device. Cached after the first
+    /// resolution.
     ///
     /// The id is RANDOM, not derived. It used to be
     /// `"ios_" + first32hex(SHA-256(IDFV + "|birdo-vpn-device-ssot-v1"))`, whose
@@ -894,12 +896,10 @@ final class APIClient: @unchecked Sendable {
         return context
     }
 
-    /// Mint a fresh random device id. `UUID()` is backed by the system CSPRNG,
-    /// so the value is a v4 UUID rather than a hash of anything and carries no
-    /// information about the handset or the user. Mirrors Android's
-    /// `DeviceInfoProvider.mintDeviceId`.
+    /// Mint a fresh random device id — one format, shared with the fresh-install
+    /// reset (`InstallIdentity.mintDeviceId`, MR-1726).
     private static func mintDeviceId() -> String {
-        "ios_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        InstallIdentity.mintDeviceId()
     }
 
     /// PRIVACY: throw this install's device identity away and mint a new one.

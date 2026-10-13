@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Auth-method tabs on the Login screen. Labels (exact): `Email` |
 /// `Anonymous` | `SSO`. Hidden while the 2FA step is active.
@@ -291,6 +294,16 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
+        // MR-1726: a fresh install discards the device identity a previous
+        // install left in the keychain, BEFORE anything reads it. This is the
+        // first keychain reader, and the scene creates it after launch — never
+        // during iOS prewarming, which stops short of UIApplicationMain and is
+        // when neither UserDefaults nor the keychain may read back yet.
+        InstallIdentity.checkOnLaunch(defaults: .standard,
+                                      store: keychain,
+                                      protectedDataAvailable: Self.protectedDataAvailable,
+                                      mintDeviceId: InstallIdentity.mintDeviceId)
+
         // Owner item 38: consent is VERSIONED. An acceptance of an older
         // disclosure does not count, so its user sees the current one once.
         let defaults = UserDefaults.standard
@@ -327,6 +340,18 @@ final class AuthViewModel: ObservableObject {
                 keychain.clear()
             }
         }
+    }
+
+    /// False before the first unlock after a boot (iOS only). The host app has
+    /// no background modes, so a user launch always sees true; the check is
+    /// there so an absent sentinel is never read as "fresh install" when the
+    /// data simply could not be read.
+    private static var protectedDataAvailable: Bool {
+        #if os(iOS)
+        UIApplication.shared.isProtectedDataAvailable
+        #else
+        true
+        #endif
     }
 
     // MARK: - Consent

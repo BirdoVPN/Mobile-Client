@@ -323,6 +323,12 @@ targets:
       # into this bundle.
       - path: iosApp/Views/Components/GlobeRoute.swift
       - path: iosApp/Views/Components/CountryCoords.swift
+      # MR-1726: the first-run sentinel that makes the device identity per
+      # install. Foundation-only by design — the keychain is behind the
+      # InstallIdentityStore protocol — so InstallIdentityTests pins the
+      # fresh-install / upgrade / later-launch decision with an in-memory store.
+      # It reads ConsentRecord (GuestAccess.swift, listed above).
+      - path: iosApp/Services/InstallIdentity.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
