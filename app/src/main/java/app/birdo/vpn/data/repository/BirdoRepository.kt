@@ -43,8 +43,13 @@ sealed class ApiResult<out T> {
         val message: String,
         val code: Int = 0,
         val reason: FailureReason = FailureReason.UNEXPECTED,
-        /** How long the server asked to wait before trying again, when it said ([RetryAfter]). */
+        /**
+         * How long to wait before trying again: what the server asked for, or
+         * the default for a [serverCode] the contract marks retryable ([RetryAfter]).
+         */
         val retryAfterMs: Long? = null,
+        /** The envelope's machine-readable `error` code; [ConnectErrorCode.UNKNOWN] for none or a newer one. */
+        val serverCode: ConnectErrorCode = ConnectErrorCode.UNKNOWN,
     ) : ApiResult<Nothing>()
 }
 
@@ -667,8 +672,11 @@ class BirdoRepository @Inject constructor(
     private fun errorFrom(response: Response<*>, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error {
         val raw = runCatching { response.errorBody()?.string() }.getOrNull()
         val error = errors.fromResponse(response.code(), raw, context, fallback)
-        val retryAfter = RetryAfter.fromBody(raw)
-            ?: RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull())
+        val retryAfter = RetryAfter.forFailure(
+            raw,
+            runCatching { response.headers()["Retry-After"] }.getOrNull(),
+            error.serverCode,
+        )
         return if (retryAfter != null) error.copy(retryAfterMs = retryAfter) else error
     }
 
