@@ -237,6 +237,16 @@ final class VpnViewModel: ObservableObject {
     /// itself is `HandshakeArm.noHandshakeOutcome`.
     private var revertRestoredPeerAwaitingConnected = false
 
+    /// MR-1948: the earliest the launch auto-connect may ask `/connect` again,
+    /// after the server refused a dial with a RETRYABLE 503
+    /// (`RetryableConnectRefusal`: `psk_delivery_unavailable` or
+    /// `quota_check_unavailable`, `details.retryAfterSeconds` clamped to
+    /// [1 s, 10 min], 30 s when absent). Set by `holdAutomaticDials(after:)` on
+    /// every dial path that hears it, read only by `autoConnectIfEnabled()` —
+    /// the one connect-route dial this client makes without a tap (see
+    /// `AutoDialHold`). A user tap is never held. Cleared on `.connected`.
+    private var autoDialNotBefore: Date?
+
     private static let heartbeatInterval: TimeInterval = 30
 
     init(api: APIClient = .shared,
@@ -479,6 +489,12 @@ final class VpnViewModel: ObservableObject {
                 // the stats timer are owned by handleStatusChange(.connected) so
                 // the UI never shows "Protected" before the tunnel actually is.
             } catch {
+                // MR-1948: a retryable 503 is SHOWN, never auto-retried here —
+                // the same as every other failure of this path, and Android's
+                // A1-003 rule (a dial that never connected does not loop over
+                // the error the user is reading). Only the launch auto-connect
+                // is held off for the server's wait.
+                holdAutomaticDials(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -487,6 +503,18 @@ final class VpnViewModel: ObservableObject {
                 isSwitching = false
             }
         }
+    }
+
+    /// MR-1948: record the server's "not before" when a dial was refused with a
+    /// retryable 503, so `autoConnectIfEnabled()` waits it out. Every other
+    /// error leaves the hold alone. No identifiers in the log line: the code
+    /// and the wait only.
+    private func holdAutomaticDials(after error: Error) {
+        guard let refusal = error as? RetryableConnectRefusal else { return }
+        autoDialNotBefore = AutoDialHold.notBefore(after: refusal, now: Date())
+        let code: String = refusal.code.wire ?? "unknown"
+        debugLog("[VpnViewModel] connect refused as retryable (%@) — automatic dials held for %.0f s",
+                 code, refusal.retryAfter)
     }
 
     func disconnect() {
@@ -628,6 +656,8 @@ final class VpnViewModel: ObservableObject {
             // Connected-state ownership: see connect().
             return true
         } catch {
+            // MR-1948: shown, not auto-retried — see connect().
+            holdAutomaticDials(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -859,8 +889,17 @@ final class VpnViewModel: ObservableObject {
             debugLog("[VpnViewModel] auto-connect suppressed: circuit breaker is tripped")
             return
         }
+        // MR-1948: a recent dial was refused with a retryable 503 and the
+        // server said when to come back. Wait at least that long — never less
+        // than the usual 1.5 s settle — rather than dial straight into the same
+        // refusal. The hold is at most 10 minutes (`ConnectRetryAfter.maximum`).
+        let scheduledHold = autoDialNotBefore
+        let delay = AutoDialHold.delay(now: Date(), notBefore: scheduledHold, floor: 1.5)
+        if delay > 1.5 {
+            debugLog("[VpnViewModel] auto-connect deferred %.0f s: the server asked to wait", delay)
+        }
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(delay))
             guard let self else { return }
             guard !self.isConnected else { return }
             // Re-checked after the sleep against the same gate: 1.5 s is long
@@ -869,6 +908,16 @@ final class VpnViewModel: ObservableObject {
                                               isRebuildingLive: self.isRebuildingLive,
                                               isTearingDownForRedial: self.isTearingDownForRedial) else { return }
             guard self.breakerTrip == nil else { return }
+            // MR-1948: the sleep may have lasted the server's whole wait (up to
+            // 10 minutes), so re-read what the user may have changed meanwhile:
+            // the Auto-Connect setting, and whether there is still a session to
+            // dial with (a sign-out would otherwise surface "Sign in to connect.").
+            guard UserDefaults.standard.bool(forKey: "auto_connect"), self.hasSession else { return }
+            // Anything that moved the hold while this slept — a newer refusal,
+            // or a tunnel that came up and cleared it (and may since have been
+            // disconnected by the user) — means a later dial already answered
+            // for this one, so it stands down.
+            if self.autoDialNotBefore != scheduledHold { return }
             if self.selectedServer == nil {
                 // Same rule as loadServers() — the twin site (K10).
                 self.selectedServer = QuickSelect.bestServer(in: self.servers)
@@ -1021,6 +1070,8 @@ final class VpnViewModel: ObservableObject {
             isConnected = true
             isConnecting = false
             isReapplyingSettings = false
+            // MR-1948: a tunnel is up, so the server's earlier "not yet" is spent.
+            autoDialNotBefore = nil
             // The connected session is owned here rather than at request time so
             // it also covers tunnels the system brings up on its own (on-demand
             // rules, or a reassert after a network change). Previously those
@@ -1286,7 +1337,11 @@ final class VpnViewModel: ObservableObject {
             flagsOwnedElsewhere = await finishRebuild(event, ctx)
             return
         } catch {
-            // Old tunnel untouched, still protected.
+            // Old tunnel untouched, still protected. MR-1948: a retryable 503
+            // lands here too — the live PQ session is kept, exactly as for any
+            // other failed request (Android: LiveRebuildPolicy REQUEST_FAILED),
+            // and nothing is re-requested without it.
+            holdAutomaticDials(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)

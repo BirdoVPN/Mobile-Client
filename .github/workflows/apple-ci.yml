@@ -195,7 +195,7 @@ jobs:
       - name: Assert the test bundle actually ran
         run: |
           set -euo pipefail
-          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
+          for suite in ConnectContractTests ConnectErrorCodeTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
             if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
               echo "::error::$suite never reported — the test bundle did not run"
               exit 1
