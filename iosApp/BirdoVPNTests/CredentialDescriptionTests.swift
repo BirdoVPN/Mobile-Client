@@ -30,7 +30,7 @@ final class CredentialDescriptionTests: XCTestCase {
         "apple-signed-transaction-vwx",
         "app-account-token-yz0",
         "apple-authorization-code-123",
-        "wg-private-key-456",
+        "wg-private-key-aaa",
         "wg-preshared-key-789",
         "pq-ciphertext-abc",
     ]
@@ -177,7 +177,7 @@ final class CredentialDescriptionTests: XCTestCase {
          "keyId": "key-1", "quantumEnabled": true, "rosenpassPublicKey": "pq-ciphertext-abc"}
         """)
         // Injected on-device after decode, exactly as APIClient does.
-        config.privateKey = "wg-private-key-456"
+        config.privateKey = "wg-private-key-aaa"
         assertNoSecret(config)
         XCTAssertTrue(config.description.contains("serverAddress: 203.0.113.7"),
                       "VPNConnectionConfig lost its endpoint")
