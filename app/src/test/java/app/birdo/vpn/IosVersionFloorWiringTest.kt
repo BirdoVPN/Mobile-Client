@@ -152,6 +152,10 @@ class IosVersionFloorWiringTest {
             "storeURL may only open an https apps.apple.com link",
             "host == \"apps.apple.com\"" in advisory && "url.scheme?.lowercased() == \"https\"" in advisory,
         )
+        assertTrue(
+            "storeURL may only open THIS app's App Store page (id6670361940)",
+            "Self.isOwnAppStorePage(url)" in advisory && "static let appStoreId = \"6670361940\"" in advisory,
+        )
     }
 
     @Test

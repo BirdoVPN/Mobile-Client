@@ -52,18 +52,49 @@ struct ClientUpdateAdvisory: Decodable, Equatable {
     /// The App Store is the only place an iOS user can update from, whatever
     /// the server sends — `updateUrl` has pointed at birdo.app/clients, which
     /// is correct for desktop and useless here.
-    static let appStoreURL = URL(string: "https://apps.apple.com/app/id6670361940")
+    static let appStoreURL = URL(string: "https://apps.apple.com/app/id\(appStoreId)")
+
+    /// This app's App Store id (one record for iOS and macOS).
+    static let appStoreId = "6670361940"
 
     /// Where the Update button goes: the server's `updateUrl` when it is an
-    /// https App Store link, otherwise `appStoreURL`. A server-supplied link
-    /// is never opened anywhere else, so a website or a typo cannot become
-    /// the update path.
+    /// https link to THIS app's App Store page, otherwise `appStoreURL`. A
+    /// server-supplied link is never opened anywhere else, so a website, a
+    /// typo or another app's App Store page cannot become the update path.
     var storeURL: URL? {
         if let url = URL(string: updateUrl), url.scheme?.lowercased() == "https",
-           let host = url.host?.lowercased(), host == "apps.apple.com" {
+           let host = url.host?.lowercased(), host == "apps.apple.com",
+           Self.isOwnAppStorePage(url) {
             return url
         }
         return Self.appStoreURL
+    }
+
+    /// The path names this app and nothing else: `[/<country>][/app[/<slug>]]/id<appStoreId>`,
+    /// e.g. `/app/id6670361940`, `/gb/app/birdovpn/id6670361940`. No user,
+    /// password or port; a query (`?mt=12`, `?l=en`) is allowed, it cannot
+    /// change which app the page shows.
+    static func isOwnAppStorePage(_ url: URL) -> Bool {
+        guard url.user == nil, url.password == nil, url.port == nil, url.fragment == nil,
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path
+                .split(separator: "/", omittingEmptySubsequences: false)
+                .dropFirst() // the empty component before the leading "/"
+        else { return false }
+        var rest = Array(parts)
+        guard rest.last == Substring("id\(appStoreId)") else { return false }
+        rest.removeLast()
+        // An optional two-letter storefront, then optionally "app" and a slug.
+        if let cc = rest.first, cc.count == 2, cc.allSatisfy({ $0.isASCII && $0.isLowercase }) {
+            rest.removeFirst()
+        }
+        if rest.first == "app" {
+            rest.removeFirst()
+            if let slug = rest.first, !slug.isEmpty,
+               slug.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }) {
+                rest.removeFirst()
+            }
+        }
+        return rest.isEmpty
     }
 }
 
