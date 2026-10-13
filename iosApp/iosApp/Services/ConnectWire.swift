@@ -55,7 +55,9 @@ struct ConnectBody: Encodable {
     let pqClientPublicKey: String?
     /// BirdoPQ v1 HNDL opt-in: we decapsulate the ciphertext and derive the
     /// PSK on-device (BirdoPQManager), so the server WITHHOLDS the PSK from
-    /// the response — it never crosses the wire under classical TLS. Only ever
+    /// the response: it never crosses the app-to-API link under classical TLS.
+    /// (The server still sends it on to the VPN server over TLS that is not
+    /// yet post-quantum, MR-1444; see BirdoPQManager's threat model.) Only ever
     /// true alongside `pqClientPublicKey`; VPNManager fails closed if
     /// decapsulation then fails, so this can never silently downgrade.
     let pqClientCanDecapsulate: Bool?

@@ -15,7 +15,7 @@ import Foundation
 /// **forever**: such an install could never connect with quantum protection
 /// on, on any attempt, until the user logged out.
 ///
-/// The Android twin (`RosenpassManager.loadOrGenerateKeypair` ->
+/// The Android twin (`BirdoPqManager.loadOrGenerateKeypair` ->
 /// `RosenpassNative.storedKeyUsable`) makes exactly this decision. Keeping the
 /// rule here — Foundation-only, pure, no Keychain and no native library — is
 /// what lets `StoredPQKeyTriageTests` pin it on CI. `BirdoPQManager.swift`
