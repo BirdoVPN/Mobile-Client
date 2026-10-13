@@ -490,7 +490,17 @@ final class APIClient: @unchecked Sendable {
                 dnsFiltering: dnsFilteringEnabled ? true : nil
             )
         )
-        let data = try await post(path: "/vpn/connect", body: body, authenticated: true)
+        let data = try await performRequest(
+            method: "POST",
+            path: "/vpn/connect",
+            body: body,
+            authenticated: true,
+            // MR-1948: the retryable 503s (`psk_delivery_unavailable`,
+            // `quota_check_unavailable`) are told apart by their CODE and carry
+            // `details.retryAfterSeconds`, both of which the generic mapping
+            // would throw away with the body.
+            refusal: { status, errorBody in RetryableConnectRefusal.classify(status: status, body: errorBody) }
+        )
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey
@@ -533,7 +543,16 @@ final class APIClient: @unchecked Sendable {
                 dnsFiltering: dnsFilteringEnabled ? true : nil
             )
         )
-        let data = try await post(path: "/vpn/multi-hop/connect", body: body, authenticated: true)
+        let data = try await performRequest(
+            method: "POST",
+            path: "/vpn/multi-hop/connect",
+            body: body,
+            authenticated: true,
+            // MR-1948: birdo-web throws the retryable 503
+            // `psk_delivery_unavailable` from this route too. Same hook as
+            // getConnectConfig, so both retryable codes are read on both routes.
+            refusal: { status, errorBody in RetryableConnectRefusal.classify(status: status, body: errorBody) }
+        )
         var config = try decodeConnectResult(data)
         // The private key never came from the server — use the on-device one.
         config.privateKey = wg.privateKey

@@ -295,6 +295,15 @@ targets:
       # WireGuardPortTests can pin them here. SettingsViewModel and the
       # PacketTunnel extension (their callers) cannot be compiled into this bundle.
       - path: iosApp/Services/WireGuardPort.swift
+      # MR-1948: the retryable 503s (`psk_delivery_unavailable`,
+      # `quota_check_unavailable`). Foundation-only by design: the `error` code
+      # decode, the `details.retryAfterSeconds` clamp to [1 s, 10 min] (30 s
+      # when absent), the user copy and the auto-connect hold are pure
+      # functions precisely so ConnectErrorCodeTests can pin them here, and can
+      # check the code list against the vendored contract's $defs.ErrorCode.
+      # APIClient.swift and VpnViewModel.swift (its callers) cannot be compiled
+      # into this bundle.
+      - path: iosApp/Services/ConnectErrorCode.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.
