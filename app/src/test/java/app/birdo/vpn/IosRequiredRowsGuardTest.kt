@@ -78,6 +78,15 @@ class IosRequiredRowsGuardTest {
         val home = source("$ios/Views/HomeView.swift")
         assertFalse("Initialize Uplink" in login)
         assertTrue("the email sign-in button reads Sign in", "PrimaryButton(\"Sign in\",\n                          loadingTitle: \"Signing in…\"" in login)
+        // The anonymous tab's button too (Android login_anonymous_submit /
+        // login_connecting): it said "Sign In" / "Connecting…".
+        val anonymousButton = login.substringBefore(".accessibilityIdentifier(\"login_anonymous_submit\")")
+            .substringAfterLast("PrimaryButton(")
+        assertTrue(
+            "the anonymous sign-in button reads Sign in / Signing in…",
+            anonymousButton.startsWith("\"Sign in\",\n                          loadingTitle: \"Signing in…\""),
+        )
+        assertFalse("PrimaryButton(\"Sign In\"" in login)
         listOf("Log Out", "log out?", "Logging out", "\"Logout\"").forEach {
             assertFalse("HomeView still says $it", it in home)
         }

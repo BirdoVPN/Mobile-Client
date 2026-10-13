@@ -432,8 +432,11 @@ struct LoginView: View {
                 .accessibilityIdentifier("login_anonymous_password_field")
                 .loginEntrance(entered, delay: 0.32)
 
-            PrimaryButton("Sign In",
-                          loadingTitle: "Connecting…",
+            // Android parity (MR-1617): `login_anonymous_submit` "Sign in" and
+            // `login_connecting` "Signing in…" — the same words as the email
+            // tab. PrimaryButton derives the VoiceOver label from these.
+            PrimaryButton("Sign in",
+                          loadingTitle: "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: anonymousId.count == 24,
                           action: submitAnonymousLogin)
