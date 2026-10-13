@@ -74,7 +74,10 @@ data class GooglePurchaseIntentResponse(
 @Serializable
 data class GooglePlayLinkRequest(
     @SerialName("purchaseToken") val purchaseToken: String,
-)
+) {
+    /** Never prints [purchaseToken], like the shared API models (MR-1870). */
+    override fun toString(): String = "GooglePlayLinkRequest(purchaseToken=[REDACTED])"
+}
 
 /**
  * The server is ALSO billing this account on another rail. Rendered because it

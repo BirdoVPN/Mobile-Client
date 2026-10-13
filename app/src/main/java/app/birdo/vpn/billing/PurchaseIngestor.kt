@@ -23,6 +23,18 @@ data class IngestablePurchase(
 ) {
     /** Mirror of `Purchase.PurchaseState`, so the tests need no Play types. */
     enum class State { PURCHASED, PENDING, UNSPECIFIED }
+
+    /**
+     * Never prints [purchaseToken], like [GooglePlayLinkRequest] (MR-1870).
+     * Built like AuthUiState's: one literal per field, so HardcodedCopyGuardTest
+     * does not read the field list as prose.
+     */
+    override fun toString(): String = listOf(
+        "purchaseToken=[REDACTED]",
+        "state=$state",
+        "isAcknowledged=$isAcknowledged",
+        "productIds=$productIds",
+    ).joinToString(separator = ", ", prefix = "IngestablePurchase(", postfix = ")")
 }
 
 /** What one trip through [PurchaseIngestor.ingest] concluded. */

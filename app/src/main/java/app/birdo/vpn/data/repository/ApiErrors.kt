@@ -116,7 +116,15 @@ internal data class ErrorEnvelope(val message: String?, val code: String?, val e
  */
 class ApiErrorMapper(private val strings: StringLookup) {
 
-    /** A non-2xx response. [rawBody] is the error body, read once by the caller. */
+    /**
+     * A non-2xx response. [rawBody] is the error body, read once by the caller.
+     *
+     * The envelope's `error` is decoded to a [ConnectErrorCode] first. A code
+     * the contract marks retryable is "come back shortly" on any route and at
+     * any status: never a wrong password, a plan or a dead session. Anything
+     * else, including a code this build does not know, falls through to the
+     * per-context rules below, which classify by status as they always have.
+     */
     fun fromResponse(
         status: Int,
         rawBody: String?,
@@ -124,16 +132,25 @@ class ApiErrorMapper(private val strings: StringLookup) {
         @StringRes fallback: Int,
     ): ApiResult.Error {
         val envelope = parseEnvelope(rawBody)
+        val serverCode = ConnectErrorCode.fromWire(envelope?.error)
         val server = envelope?.message?.takeIf(::isPresentable)
-        val (reason, message) = when (context) {
-            ErrorContext.SIGN_IN, ErrorContext.ANONYMOUS_SIGN_IN ->
-                signIn(status, server, anonymous = context == ErrorContext.ANONYMOUS_SIGN_IN)
-            ErrorContext.TWO_FACTOR -> twoFactor(status, server)
-            ErrorContext.ANONYMOUS_REGISTER -> anonymousRegister(status, server)
-            ErrorContext.DELETE_ACCOUNT -> deleteAccount(status, server, envelope?.error)
-            ErrorContext.GENERAL -> general(status, server, fallback)
+        val (reason, message) = when {
+            // The backend could not hand the session's pre-shared key to the
+            // relay safely just now. A temporary server-side condition that
+            // every location shares, so the copy says to wait, not to switch.
+            serverCode == ConnectErrorCode.PSK_DELIVERY_UNAVAILABLE ->
+                FailureReason.SERVER_UNAVAILABLE to strings.get(R.string.error_secure_setup_unavailable)
+            serverCode.retryable -> FailureReason.SERVER_UNAVAILABLE.withText()
+            else -> when (context) {
+                ErrorContext.SIGN_IN, ErrorContext.ANONYMOUS_SIGN_IN ->
+                    signIn(status, server, anonymous = context == ErrorContext.ANONYMOUS_SIGN_IN)
+                ErrorContext.TWO_FACTOR -> twoFactor(status, server)
+                ErrorContext.ANONYMOUS_REGISTER -> anonymousRegister(status, server)
+                ErrorContext.DELETE_ACCOUNT -> deleteAccount(status, server, envelope?.error)
+                ErrorContext.GENERAL -> general(status, server, fallback)
+            }
         }
-        return ApiResult.Error(message, status, reason)
+        return ApiResult.Error(message, status, reason, serverCode = serverCode)
     }
 
     /**

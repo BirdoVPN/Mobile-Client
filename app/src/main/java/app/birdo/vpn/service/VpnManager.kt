@@ -195,8 +195,9 @@ class VpnManager @Inject constructor(
 
     /**
      * The wait the last failed dial's server asked for (a 503
-     * quota_check_unavailable says 30 s). The next automatic re-dial waits at
-     * least this long; consumed by [onFailure].
+     * quota_check_unavailable or psk_delivery_unavailable says 30 s; see
+     * RetryAfter). The next automatic re-dial waits at least this long;
+     * consumed by [onFailure].
      */
     @Volatile private var retryAfterHintMs = 0L
 
@@ -1067,7 +1068,7 @@ class VpnManager @Inject constructor(
                     retryAfterHintMs = result.retryAfterMs ?: 0L
                     publishError(
                         apiErrorCopy(result.code, result.message),
-                        FailureKind.fromHttpStatus(result.code),
+                        FailureKind.forApiError(result.code, result.serverCode),
                     )
                 }
                 return result
@@ -1225,7 +1226,7 @@ class VpnManager @Inject constructor(
                     retryAfterHintMs = result.retryAfterMs ?: 0L
                     publishError(
                         apiErrorCopy(result.code, result.message),
-                        FailureKind.fromHttpStatus(result.code),
+                        FailureKind.forApiError(result.code, result.serverCode),
                     )
                 }
                 return result

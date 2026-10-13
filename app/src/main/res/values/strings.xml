@@ -419,6 +419,12 @@
     <string name="error_update_required">This version of BirdoVPN is no longer supported. Update to keep connecting.</string>
     <string name="error_device_limit">This account is already connected on the maximum number of devices for its plan. Disconnect another device or upgrade your plan.</string>
     <string name="error_server_unavailable">BirdoVPN is temporarily unavailable. Please try again in a moment.</string>
+    <!-- A 503 psk_delivery_unavailable: the backend could not reach the relays
+         over the node agent just now, and it never sends a pre-shared key any
+         other way, so it refused rather than connect with less protection.
+         A temporary server-side condition shared by every location, so this
+         says to wait, not to pick another one. Mirrors the server's own sentence. -->
+    <string name="error_secure_setup_unavailable">Couldn\'t set up a secure connection to this server just now. Please try again in a moment.</string>
     <string name="error_unexpected">Something went wrong. Please try again.</string>
     <string name="error_invalid_credentials">Invalid email or password</string>
     <string name="error_invalid_account_number">Invalid account number or password</string>
