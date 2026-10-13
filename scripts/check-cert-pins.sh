@@ -285,9 +285,13 @@ sni_for() { [ "$1" = "birdo.app" ] && echo "api.birdo.app" || echo "$1"; }
 #
 # The SSOT is shared, so it can carry hosts this app does not pin. Until
 # 2026-10-01 it carried four: this app enforces birdo.app and cloudflare-dns.com,
-# while dns.google (dropped by Android in P6-CLI-A-06) and dns.quad9.net (never
-# shipped here) rode along in the vendored copy purely so the file stayed
-# byte-identical to the SSOT for the vendor check. Both were then retired from
+# while dns.google and dns.quad9.net rode along in the vendored copy purely so
+# the file stayed byte-identical to the SSOT for the vendor check. Older Android
+# releases did pin and dial both, with hashes of their own rather than the
+# SSOT's: android-v1.4.20's DohResolver.kt pins dns.quad9.net to DigiCert TLS
+# RSA4096 Root G5 (fwza0LRM..., line 33) and resolves through it (lines 60-62),
+# and does the same for dns.google. P6-CLI-A-06 removed both (android-v1.4.24
+# is the first tag without them; the Android floor is 1.4.30). Both were then retired from
 # the SSOT (birdo-shared #20), so today every host in it is one this app pins;
 # the derivation below stays because the next shared-only host would bring the
 # same problem back.
