@@ -15,13 +15,30 @@ data class LoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
-)
+) {
+    /**
+     * Leaves out [password], [email], [deviceId] and [deviceName], like
+     * [AnonymousLoginRequest] (MR-944): the generated toString would print
+     * the password in clear if the request were ever logged or attached to a
+     * report.
+     */
+    override fun toString(): String =
+        "LoginRequest(platform=$platform, platformVersion=$platformVersion, appVersion=$appVersion)"
+}
 
 @Serializable
 data class TokenPair(
     @SerialName("access_token") val accessToken: String,
     @SerialName("refresh_token") val refreshToken: String,
-)
+) {
+    /**
+     * Never prints either token (MR-944). Every class that holds a TokenPair
+     * ([LoginResponse], [LoginResult.Success], [TwoFactorVerifyResponse]) prints
+     * it through this.
+     */
+    override fun toString(): String =
+        "TokenPair(accessToken=[REDACTED], refreshToken=[REDACTED])"
+}
 
 sealed class LoginResult {
     data class Success(val ok: Boolean, val tokens: TokenPair) : LoginResult()
@@ -494,10 +511,13 @@ data class ConnectRequest(
     /**
      * BirdoPQ v1 HNDL opt-in: true asserts this client will ML-KEM-decapsulate
      * the returned ciphertext and derive the WireGuard PSK ITSELF, so the
-     * server WITHHOLDS the PSK from the response — it never crosses the wire.
-     * That is the actual harvest-now-decrypt-later property the feature is
-     * sold on: without it the PSK travels under classical TLS and a recorded
-     * session plus a future CRQC recovers it. Only ever set true alongside a
+     * server WITHHOLDS the PSK from the response: it is never sent to this
+     * client. (Without it the PSK used to come back to the app under classical
+     * TLS, where a recorded session plus a future CRQC recovers it; since
+     * 2026-10-01 the backend refuses a quantum-protection connect without it.)
+     * Withholding it closes the app-to-API leg only: the server still sends
+     * the PSK on to the relay under classical TLS (MR-1444, MR-1761). Only
+     * ever set true alongside a
      * non-null [pqClientPublicKey] (BirdoPqManager produced the keypair, so
      * the native engine is present); if decapsulation still fails at tunnel
      * time the client fails closed rather than downgrading.
@@ -667,7 +687,7 @@ data class MultiHopConnectRequest(
      * Declared on BOTH request types (this pair is the classic duplicated
      * wire-model twin): the double-hop route is the MOST privacy-sensitive
      * path, and the backend forwards the flag there too so the PSK is
-     * withheld from the wire exactly as on single-hop.
+     * withheld from the response exactly as on single-hop.
      */
     val pqClientCanDecapsulate: Boolean = false,
     /**

@@ -29,7 +29,9 @@ import androidx.compose.ui.unit.sp
 import app.birdo.vpn.ui.theme.*
 
 enum class BirdoButtonVariant { Primary, Brand, Secondary, Ghost, Danger }
-enum class BirdoButtonSize { Small, Medium, Large }
+// No Small (40 dp): nothing used it, and it sat below the 48 dp touch target
+// (MR-943).
+enum class BirdoButtonSize { Medium, Large }
 
 /**
  * Unified Birdo button. Primary = solid white on dark. Brand = the deep
@@ -48,12 +50,10 @@ fun BirdoButton(
     enabled: Boolean = true,
 ) {
     val height = when (size) {
-        BirdoButtonSize.Small -> 40.dp
         BirdoButtonSize.Medium -> 48.dp
         BirdoButtonSize.Large -> 56.dp
     }
     val fontSize = when (size) {
-        BirdoButtonSize.Small -> 13.sp
         BirdoButtonSize.Medium -> 14.sp
         BirdoButtonSize.Large -> 16.sp
     }
@@ -101,7 +101,7 @@ fun BirdoButton(
                 role = Role.Button,
                 onClick = onClick,
             )
-            .padding(horizontal = if (size == BirdoButtonSize.Small) 14.dp else 18.dp),
+            .padding(horizontal = 18.dp),
         contentAlignment = Alignment.Center,
     ) {
         Row(

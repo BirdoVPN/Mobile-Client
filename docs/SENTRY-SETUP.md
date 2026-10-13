@@ -377,8 +377,9 @@ to 1.4.25 died with `SIGILL` in `keccakx2_squeezeblocks` on any arm64 device
 whose cores lack FEAT_SHA3 (Snapdragon 6xx/7xx/888, Helio G8x/G9x — most of the
 mid-range), because `pqcrypto-mlkem`'s default `neon` feature compiled a
 PQClean AArch64 path with 64 SHA3-extension opcodes and no runtime CPU check.
-Fixed in #353 (android-v1.4.27 to 1.4.29 shipped PQClean's portable CLEAN C).
-From 1.4.30 the KEM is RustCrypto `ml-kem`, built with
+Fixed in #353 (android-v1.4.27 and 1.4.28 shipped PQClean's portable CLEAN C).
+From 1.4.29 the KEM is RustCrypto `ml-kem` (the `android-v1.4.29` tag is the
+swap commit; 1.4.30 is the first of those builds that starts), built with
 `--cfg keccak_backend="soft"`, so the shipped library still disassembles to
 zero optional-extension opcodes — but for a different reason, and
 `birdo.pq.impl` is what distinguishes the two in a crash report.
@@ -396,8 +397,8 @@ If a `SIGILL` (or "illegal instruction", or a Play crash cluster in
    `cpu.atomics=false` (an ARMv8.0 core such as Kryo 260) points at an LSE
    atomic; `cpu.asimddp`/`cpu.fphp`/`cpu.sha512` likewise. If the tags are
    missing, `birdo.cpu.features` (the cpuinfo line) carries the same bits by
-   name. `birdo.pq.impl` must read `mlkem1024-rustcrypto` on 1.4.30+ and
-   `mlkem1024-clean` on 1.4.27–1.4.29; anything else means the
+   name. `birdo.pq.impl` must read `mlkem1024-rustcrypto` on 1.4.29+ and
+   `mlkem1024-clean` on 1.4.27–1.4.28; anything else means the
    build did not go through the feature guard.
 3. **Which opcode?** Take the arm64 `librosenpass_jni.so` out of the release
    APK (`unzip app-release.apk 'lib/*'`) and run the gate on it:

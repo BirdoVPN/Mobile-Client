@@ -15,7 +15,7 @@
 //
 //   PQCLEAN_* -- hex of every field of native/testdata/birdo-pq-pqclean-stored-key.json,
 //               a keypair produced by pqcrypto-mlkem 0.1.1 (PQClean MLKEM1024_CLEAN),
-//               the implementation that shipped up to 1.4.29. This is the
+//               the implementation that shipped up to 1.4.28. This is the
 //               INSTALL-BASE GUARD: the 3168-byte expanded decapsulation key here
 //               is exactly what sits sealed on existing devices.
 //

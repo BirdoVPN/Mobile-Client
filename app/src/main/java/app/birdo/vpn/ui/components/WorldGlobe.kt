@@ -138,15 +138,21 @@ fun WorldGlobe(
     // server sheet is open) cancels the driver outright, because it lives in a
     // LaunchedEffect.
     //
-    // It keeps turning while connected, as on iOS (P1-041): that is the look
-    // the owner signed off, and with the gates above plus the cadence cap below
-    // it costs nothing whenever it cannot be seen.
+    // [autoRotate] false holds the globe STILL, not just un-spun: the clock
+    // stops too, so the sun, the twinkle, the dot pulse and the arc shimmer
+    // freeze and one static frame is drawn. HomeScreen passes !isConnected
+    // (owner decision 2026-10-07, MR-1519, matching Windows), reversing P1-041's
+    // "keeps turning while connected, as on iOS". Stopping only the spin would
+    // change nothing a connected user sees: with a server selected the focus
+    // below already overrides the spin, and it is the sun's terminator crawl
+    // that made the globe look like it was turning. The zoom, focus and arc
+    // tweens are not driven by this clock, so they still finish on connect.
     //
     // The idle rotation is also intentionally slow (a 90s revolution), so
     // redrawing 21k land cells 120x/second buys nothing visible. We snap the
     // animation clock to ~30 fps (20 on the lite path), which is smooth for this
     // content and cuts globe frame work by 2-4x on a high-refresh display.
-    val animating = rememberDecorativeMotionAllowed()
+    val animating = rememberDecorativeMotionAllowed() && autoRotate
 
     // ONE animation clock. Every cyclic value below is a pure function of
     // elapsed time, so a single monotonic millisecond counter reproduces them
@@ -304,7 +310,10 @@ fun WorldGlobe(
         val sunLatDeg = 12f
 
         val focusNow = focusState.value
-        val idleLon = if (autoRotate) (idleSpin + userLon.toFloat() - 25f) else userLon.toFloat()
+        // No autoRotate branch here: autoRotate=false stops the clock, which
+        // freezes idleSpin where it is, so the globe stops in place instead of
+        // snapping to userLon on connect.
+        val idleLon = idleSpin + userLon.toFloat() - 25f
         val effectiveLat = focusLatTarget * focusNow
         val effectiveLon = lerpAngleDeg(idleLon, focusLonTarget, focusNow)
 

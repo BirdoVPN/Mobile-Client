@@ -211,10 +211,12 @@ class AppPreferences @Inject constructor(
     /** When enabled, adds post-quantum pre-shared key exchange via BirdoPQ v1
      *  (ML-KEM-1024, FIPS 203) layered on top of WireGuard's Curve25519
      *  Noise IK handshake. The shared secret is HKDF-SHA-256-derived and
-     *  installed as the WireGuard PSK so the resulting session is secure
-     *  against "harvest now, decrypt later" attacks by a CRQC adversary.
-     *  Default ON — BirdoPQ is deployed on every production VPN node and
-     *  the backend serves a per-node ML-KEM public key from the database. */
+     *  installed as the WireGuard PSK, which protects the app-to-API leg
+     *  against "harvest now, decrypt later"; it is not a complete HNDL
+     *  defence (static client keypair, classical hub-to-relay TLS: see
+     *  BirdoPqManager, MR-743/MR-1364). Default ON. The client uploads its
+     *  own ML-KEM public key on every connect and the backend encapsulates
+     *  against it; there is no per-node ML-KEM key. */
     var quantumProtectionEnabled: Boolean
         // Post-quantum protection (BirdoPQ / ML-KEM-1024) is ON by default for all
         // users — it's available on every plan and adds negligible overhead.

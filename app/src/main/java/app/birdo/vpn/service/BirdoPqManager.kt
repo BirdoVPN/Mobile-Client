@@ -46,12 +46,27 @@ import kotlinx.coroutines.withContext
  *
  * **No rekey loop.** wireguard-android doesn't expose `wg set ... preshared-key`
  * via JNI, so we cannot hot-swap the PSK on the live tunnel. Each `/connect`
- * derives a fresh per-session PQ-PSK, which provides identical HNDL
- * resistance — an attacker who later breaks the underlying classic
- * Curve25519 still doesn't recover any prior session's traffic, because each
- * session's PSK was independently derived from a fresh ML-KEM encapsulation.
- * If wireguard-android exposes live PSK swap in future, add a rekey loop
- * here without changing the protocol.
+ * derives a fresh per-session PQ-PSK from a fresh ML-KEM encapsulation, so
+ * one session's PSK says nothing about another's, and breaking Curve25519
+ * alone recovers neither. If wireguard-android exposes live PSK swap in
+ * future, add a rekey loop here without changing the protocol.
+ *
+ * ## What it does NOT protect (MR-743, MR-1364)
+ *
+ * The full analysis is birdo-web `docs/PQ-THREAT-MODEL.md` (§4, §6.2, §7).
+ *
+ * - **The keypair is static per install** ([BirdoPqKeyStore]), and ML-KEM
+ *   decapsulation is deterministic in (sk, ct). Whoever obtains this
+ *   device's secret key and has recorded the ciphertexts recovers every PSK
+ *   derived for that key: past sessions AND future ones, until the key is
+ *   replaced. A fresh encapsulation per session does not change that. Making
+ *   the keypair ephemeral (one per connect) is the threat model's O0e, not
+ *   built.
+ * - **The relay leg is classical.** The server withholds the PSK from this
+ *   app's response (`pqClientCanDecapsulate`), but it still sends the PSK to
+ *   the VPN server over TLS that is not yet post-quantum, so a recording of
+ *   that link plus a future CRQC recovers it (MR-1444).
+ * - **Multi-hop's middle leg** (entry relay to exit relay) carries no PQ PSK.
  */
 object BirdoPqManager {
 
@@ -305,7 +320,7 @@ object BirdoPqManager {
             // The KEM validates stored keys now. `ml-kem` enforces FIPS 203
             // 7.3 -- the 3168-byte expanded decapsulation key embeds H(ek),
             // recomputed on load and compared -- where the implementation that
-            // shipped up to 1.4.29 checked only the length. A key that fails
+            // shipped up to 1.4.28 checked only the length. A key that fails
             // that check is NOT recoverable, so retrying it would fail every
             // connect forever; discard it and re-key instead. The server
             // re-pins the new public key on the next handshake, so the only

@@ -9,11 +9,11 @@
 //! a static `[[peers]]` block per known peer, which doesn't work for a VPN
 //! with thousands of clients.
 //!
-//! Instead we ship the same cryptographic guarantee using a minimal
-//! Mullvad-style KEM-only protocol that we control end-to-end. The PSK is
-//! still derived from a NIST-standardised post-quantum KEM (ML-KEM-1024,
-//! FIPS 203), so "post-quantum `WireGuard` PSK" is an accurate description
-//! and the HNDL threat is genuinely defeated.
+//! Instead we ship a minimal Mullvad-style KEM-only protocol that we control
+//! end-to-end. The PSK is still derived from a NIST-standardised post-quantum
+//! KEM (ML-KEM-1024, FIPS 203), so "post-quantum `WireGuard` PSK" is an
+//! accurate description. It is NOT a complete answer to harvest-now-decrypt-
+//! later: see "What this does not protect" below.
 //!
 //! ## Protocol — `BirdoPQ` v1
 //!
@@ -40,7 +40,8 @@
 //!            quantumEnabled: true,
 //!            rosenpassPublicKey: ct  (base64),       // re-used field name
 //!            rosenpassEndpoint: nonce_s  (base64),   // re-used field name
-//!            presharedKey: <classic random PSK fallback>
+//!            // no presharedKey: this app sends pqClientCanDecapsulate=true,
+//!            // so the server withholds the PSK from the response
 //!        }
 //!
 //! ┌──────────────────────────────────────────────────────────┐
@@ -52,9 +53,23 @@
 //!
 //! Both sides now hold the SAME 32-byte PSK derived from a PQ-KEM. An attacker
 //! recording today's TLS API traffic and tomorrow's `WireGuard` handshake cannot
-//! recover the PSK without first breaking ML-KEM-1024 — which by definition
-//! requires a CRQC capable of solving Module-LWE, the lattice problem ML-KEM
-//! reduces to.
+//! recover the PSK from THOSE recordings without first breaking ML-KEM-1024 —
+//! which by definition requires a CRQC capable of solving Module-LWE, the
+//! lattice problem ML-KEM reduces to.
+//!
+//! ## What this does not protect (MR-743, MR-1364)
+//!
+//! birdo-web `docs/PQ-THREAT-MODEL.md` (§4, §6.2) has the full analysis:
+//!
+//! - `(pk_c, sk_c)` is generated once per install and kept. Decapsulation is
+//!   deterministic in `(sk_c, ct)`, so whoever obtains `sk_c` and has recorded
+//!   the ciphertexts recovers every PSK derived for that key, past AND future,
+//!   until the key is replaced. Fresh randomness in each encapsulation does
+//!   not prevent that. A one-keypair-per-connect design (O0e) is not built.
+//! - The server sends the PSK on to the VPN server over TLS that is not yet
+//!   post-quantum, so a recording of that link plus a CRQC recovers it
+//!   without touching ML-KEM (MR-1444).
+//! - A multi-hop route's entry-to-exit leg carries no PQ PSK.
 //!
 //! ## Reusing existing API field names
 //!

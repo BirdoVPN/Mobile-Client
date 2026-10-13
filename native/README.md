@@ -13,8 +13,9 @@ linked Classic McEliece for hybrid evaluation; that dependency has been
 removed (see `Cargo.toml` — only `ml-kem` remains). There is no
 battle-tested pure-JVM implementation of ML-KEM, so we ship RustCrypto's
 pure-Rust [`ml-kem`](https://github.com/RustCrypto/KEMs) as a JNI library
-compiled per Android ABI. Up to 1.4.29 this was PQClean's reference C through
-`pqcrypto-mlkem`; the swap is byte-for-byte compatible (the KAT in
+compiled per Android ABI. Up to 1.4.28 this was PQClean's reference C through
+`pqcrypto-mlkem`; 1.4.29 was the first build on `ml-kem` (the `android-v1.4.29`
+tag is the swap commit). The swap is byte-for-byte compatible (the KAT in
 `rosenpass-jni/src/handshake.rs` proves it against the server's own fixture)
 and the reasons are in the decision record on the `ml-kem` line of
 [`rosenpass-jni/Cargo.toml`](rosenpass-jni/Cargo.toml).
@@ -161,7 +162,7 @@ Seven controls keep it this way; every one fails the build, none is advisory:
 
 Attribution for the next incident: `nativeCpuFeatures()` returns
 `getauxval(AT_HWCAP/AT_HWCAP2)` and `nativeImplName()` returns
-`"mlkem1024-rustcrypto"` (it was `"mlkem1024-clean"` up to 1.4.29, which is how
+`"mlkem1024-rustcrypto"` (it was `"mlkem1024-clean"` up to 1.4.28, which is how
 a crash report is attributed to one implementation or the other — see
 `pq_impl_name_matches_linked_crate`). The iOS twin exports the same value as
 `birdo_pq_impl_name()`, which `BirdoPQManager.implementationName` reads and
