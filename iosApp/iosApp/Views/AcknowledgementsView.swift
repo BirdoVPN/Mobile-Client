@@ -11,7 +11,7 @@ import SwiftUI
 /// The text is `Acknowledgements.txt`, bundled as a resource (the target's
 /// `sources: - path: iosApp` copies it) and built from the vendored licence
 /// files — WireGuardKit's notice is `iosApp/Vendor/wireguard-apple/COPYING`
-/// verbatim. `IosAcknowledgementsTest` on the Android CI checks that it still
+/// verbatim. `IosRequiredRowsGuardTest` on the Android CI checks that it still
 /// is, and that this screen stays reachable from Settings.
 ///
 /// Pushed-screen contract, as VpnSettingsView: opaque base, own glass top bar
