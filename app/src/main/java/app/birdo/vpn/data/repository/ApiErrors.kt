@@ -135,8 +135,9 @@ class ApiErrorMapper(private val strings: StringLookup) {
         val serverCode = ConnectErrorCode.fromWire(envelope?.error)
         val server = envelope?.message?.takeIf(::isPresentable)
         val (reason, message) = when {
-            // This server could not be given the session's pre-shared key
-            // safely; another location, or the same one shortly, can be.
+            // The backend could not hand the session's pre-shared key to the
+            // relay safely just now. A temporary server-side condition that
+            // every location shares, so the copy says to wait, not to switch.
             serverCode == ConnectErrorCode.PSK_DELIVERY_UNAVAILABLE ->
                 FailureReason.SERVER_UNAVAILABLE to strings.get(R.string.error_secure_setup_unavailable)
             serverCode.retryable -> FailureReason.SERVER_UNAVAILABLE.withText()

@@ -32,10 +32,14 @@ enum class ConnectErrorCode(val wire: String?, val retryable: Boolean) {
     QUOTA_CHECK_UNAVAILABLE("quota_check_unavailable", retryable = true),
 
     /**
-     * 503: the relay was reachable only over the SSH fallback, which never
-     * carries a WireGuard pre-shared key, so the server rolled the new peer
-     * back instead of installing it without one (VpnController
-     * rethrowPskDeliveryRefusal, on /vpn/connect and /vpn/multi-hop/connect).
+     * 503: the backend had no node agent to add the peer with (its one throw
+     * site, wireguard.service.ts, runs only when getAgent() is null, a
+     * hub-wide setting), and the SSH fallback never carries a WireGuard
+     * pre-shared key, so the server rolled the new peer back instead of
+     * installing it without one (VpnController rethrowPskDeliveryRefusal, on
+     * /vpn/connect and /vpn/multi-hop/connect). A temporary server-side
+     * condition, not one relay's: every location answers the same until it
+     * clears, so the remedy is to wait, not to switch.
      * Nothing was downgraded server-side and nothing may be here: the re-dial
      * asks for exactly what this one did, because VpnManager reads Quantum
      * Protection afresh on every dial and no failure path turns it off.
