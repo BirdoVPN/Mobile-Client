@@ -316,6 +316,13 @@ targets:
       # APIClient.swift and VpnViewModel.swift (its callers) cannot be compiled
       # into this bundle.
       - path: iosApp/Services/ConnectErrorCode.swift
+      # MR-1100: the Home globe's route — one leg for a single hop, you ->
+      # entry -> exit for Multi-Hop — its camera framing and draw order.
+      # Foundation-only by design (CountryCoords too), pinned by
+      # GlobeRouteTests; WorldGlobeView (a SwiftUI Canvas) cannot be compiled
+      # into this bundle.
+      - path: iosApp/Views/Components/GlobeRoute.swift
+      - path: iosApp/Views/Components/CountryCoords.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.

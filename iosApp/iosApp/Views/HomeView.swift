@@ -46,14 +46,15 @@ struct HomeView: View {
             // a live background. It draws on a CLEAR canvas, so the app-root
             // PixelCanvas still twinkles behind it as the star field; only the
             // planet itself is opaque.
-            // During a Multi-Hop session the globe focuses the ENTRY node — the
-            // hop this device actually talks to — never the unrelated
-            // single-hop `selectedServer` (which drew a wrong single-hop arc
-            // for the whole session). The component takes one focus id, so the
-            // exit leg is rendered by the server card below, not the globe.
+            // During a Multi-Hop session the globe draws the SERVER-CONFIRMED
+            // pair — you -> entry (the hop this device actually talks to), then
+            // entry -> exit (MR-1100) — never the unrelated single-hop
+            // `selectedServer`, which drew a wrong single-hop arc for the whole
+            // session.
             WorldGlobeView(servers: vpnVM.servers,
                            selectedServerId: vpnVM.activeMultiHop?.entry.id
                                ?? vpnVM.selectedServer?.id,
+                           exitServerId: vpnVM.activeMultiHop?.exit.id,
                            isConnected: vpnVM.isConnected)
                 .ignoresSafeArea()
 
