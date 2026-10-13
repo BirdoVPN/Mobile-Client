@@ -2086,8 +2086,10 @@ class BirdoVpnService : VpnService() {
             // No PSK rekey loop in BirdoPQ v1: wireguard-android doesn't
             // expose wgSetConfig so live PSK swap isn't possible. Each
             // /connect already derives a fresh per-session PQ-PSK via
-            // ML-KEM-1024 decapsulation, which gives the same HNDL guarantee
-            // — see BirdoPqManager kdoc + native/ROADMAP.md.
+            // ML-KEM-1024 decapsulation, so breaking one session's KEM
+            // output gives nothing about another's. That is not a complete
+            // HNDL defence (the ML-KEM keypair is long-term and the relay
+            // leg is classical) — see BirdoPqManager kdoc + native/ROADMAP.md.
 
             // D-6: the app is inside its own tunnel now, so wg-go's UDP
             // sockets MUST go around it or every WireGuard packet loops back
