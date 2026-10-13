@@ -1,7 +1,7 @@
 package app.birdo.vpn.shared.model
 
 import kotlin.test.Test
-import kotlin.test.assertFalse
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -38,10 +38,14 @@ class CredentialToStringTest {
 
     private val tokens = TokenPair(accessToken = "access-secret-abc", refreshToken = "refresh-secret-def")
 
+    /**
+     * The message names the class and how many secrets leaked, never the
+     * secret or the printed text: failure messages are uploaded with the
+     * test results (MR-1870 review).
+     */
     private fun assertNoSecret(printed: String) {
-        for (secret in secrets) {
-            assertFalse(printed.contains(secret), "$secret printed in $printed")
-        }
+        val leaked = secrets.count { printed.contains(it) }
+        assertEquals(0, leaked, "${printed.substringBefore('(')}.toString printed $leaked secret(s)")
     }
 
     @Test
@@ -58,8 +62,8 @@ class CredentialToStringTest {
         val printed = request.toString()
         assertNoSecret(printed)
         // Still useful in a log: the non-identifying context survives.
-        assertTrue(printed.contains("platform=android"), printed)
-        assertTrue(printed.contains("appVersion=1.4.34"), printed)
+        assertTrue(printed.contains("platform=android"), "LoginRequest lost its platform")
+        assertTrue(printed.contains("appVersion=1.4.34"), "LoginRequest lost its app version")
     }
 
     @Test
@@ -80,7 +84,7 @@ class CredentialToStringTest {
         assertNoSecret(response.toString())
         assertNoSecret(response.toLoginResult().toString())
         assertNoSecret(LoginResult.TwoFactorRequired(true, "challenge-secret-ghi").toString())
-        assertTrue(response.toString().contains("requiresTwoFactor=true"), response.toString())
+        assertTrue(response.toString().contains("requiresTwoFactor=true"), "LoginResponse lost requiresTwoFactor")
     }
 
     @Test
@@ -97,7 +101,7 @@ class CredentialToStringTest {
             expiresIn = 900,
         )
         assertNoSecret(response.toString())
-        assertTrue(response.toString().contains("expiresIn=900"), response.toString())
+        assertTrue(response.toString().contains("expiresIn=900"), "RefreshResponse lost expiresIn")
     }
 
     @Test
@@ -112,7 +116,7 @@ class CredentialToStringTest {
         )
         val printed = request.toString()
         assertNoSecret(printed)
-        assertTrue(printed.contains("platform=android"), printed)
+        assertTrue(printed.contains("platform=android"), "NativeOAuthExchangeRequest lost its platform")
     }
 
     @Test
@@ -122,8 +126,8 @@ class CredentialToStringTest {
         // Which of the two was sent still shows.
         val codeOnly = DeleteAccountRequest(twoFactorCode = "otp-424242").toString()
         assertNoSecret(codeOnly)
-        assertTrue(codeOnly.contains("password=null"), codeOnly)
-        assertTrue(codeOnly.contains("twoFactorCode=[REDACTED]"), codeOnly)
+        assertTrue(codeOnly.contains("password=null"), "DeleteAccountRequest hides that no password was sent")
+        assertTrue(codeOnly.contains("twoFactorCode=[REDACTED]"), "DeleteAccountRequest hides that a code was sent")
     }
 
     @Test
@@ -140,7 +144,7 @@ class CredentialToStringTest {
             integrityToken = "integrity-token-stu",
         )
         assertNoSecret(single.toString())
-        assertTrue(single.toString().contains("serverNodeId=node-1"), single.toString())
+        assertTrue(single.toString().contains("serverNodeId=node-1"), "ConnectRequest lost serverNodeId")
         val multi = MultiHopConnectRequest(
             entryNodeId = "node-1",
             exitNodeId = "node-2",
@@ -149,7 +153,7 @@ class CredentialToStringTest {
             integrityToken = "integrity-token-stu",
         )
         assertNoSecret(multi.toString())
-        assertTrue(multi.toString().contains("exitNodeId=node-2"), multi.toString())
+        assertTrue(multi.toString().contains("exitNodeId=node-2"), "MultiHopConnectRequest lost exitNodeId")
     }
 
     @Test
@@ -166,7 +170,7 @@ class CredentialToStringTest {
             rosenpassPublicKey = "pq-ciphertext-789",
         )
         assertNoSecret(single.toString())
-        assertTrue(single.toString().contains("endpoint=203.0.113.7:51820"), single.toString())
+        assertTrue(single.toString().contains("endpoint=203.0.113.7:51820"), "ConnectResponse lost endpoint")
         val multi = MultiHopConnectResponse(
             success = true,
             config = "[Interface]\nPrivateKey = wg-private-key-vwx",
@@ -179,6 +183,6 @@ class CredentialToStringTest {
             rosenpassPublicKey = "pq-ciphertext-789",
         )
         assertNoSecret(multi.toString())
-        assertTrue(multi.toString().contains("keyId=key-1"), multi.toString())
+        assertTrue(multi.toString().contains("keyId=key-1"), "MultiHopConnectResponse lost keyId")
     }
 }

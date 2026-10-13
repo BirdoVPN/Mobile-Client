@@ -8,7 +8,7 @@ import org.junit.Test
  * MR-1870: the Play purchase token is the one value the link rail sends the
  * server, and neither class that carries it prints it. The shared API models
  * are pinned by the shared module's CredentialToStringTest; these two live in
- * the app.
+ * the app. Failure messages name the class and never quote what it printed.
  */
 class PurchaseTokenToStringTest {
 
@@ -17,7 +17,7 @@ class PurchaseTokenToStringTest {
     @Test
     fun `the link request prints no purchase token`() {
         val printed = GooglePlayLinkRequest(purchaseToken = token).toString()
-        assertFalse("$token printed in $printed", printed.contains(token))
+        assertFalse("GooglePlayLinkRequest printed the purchase token", printed.contains(token))
     }
 
     @Test
@@ -28,9 +28,9 @@ class PurchaseTokenToStringTest {
             isAcknowledged = false,
             productIds = listOf("birdo_operative_monthly"),
         ).toString()
-        assertFalse("$token printed in $printed", printed.contains(token))
+        assertFalse("IngestablePurchase printed the purchase token", printed.contains(token))
         // Still useful in a log: the purchase's state and products survive.
-        assertTrue(printed, printed.contains("state=PURCHASED"))
-        assertTrue(printed, printed.contains("birdo_operative_monthly"))
+        assertTrue("IngestablePurchase lost its state", printed.contains("state=PURCHASED"))
+        assertTrue("IngestablePurchase lost its product ids", printed.contains("birdo_operative_monthly"))
     }
 }
