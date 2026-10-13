@@ -140,9 +140,13 @@ class PublicClaimsGuardTest {
             "It is not onion routing",
             "TLS that is not yet post-quantum",
             "It is deleted when you disconnect and is left out of our nightly backups.",
-            "Our daily encrypted copy of the database files (kept 7 days, used for " +
-                "point-in-time recovery) can contain it as it stood at that moment.",
+            "Our daily encrypted copy of the database files (kept 4 days, used for " +
+                "point-in-time recovery) does not contain it either.",
+            // MR-855 / MR-1180: Always-on VPN is supported from 1.4.33.
+            "Always-on VPN",
         ).forEach { assertTrue("full description lost: $it", full.contains(it, ignoreCase = true)) }
+        // The retired PITR sentence (7 days, "can contain it") must not come back.
+        assertFalse("retired PITR sentence is back", full.contains("kept 7 days", ignoreCase = true))
     }
 
     /**
