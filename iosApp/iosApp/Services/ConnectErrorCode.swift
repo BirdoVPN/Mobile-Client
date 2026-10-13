@@ -248,9 +248,12 @@ enum AutoDialHold {
 
     /// How long an automatic dial scheduled at `now` sleeps before it dials:
     /// its own `floor` (the launch auto-connect's 1.5 s settle) or the rest of
-    /// the hold, whichever is longer.
+    /// the hold, whichever is longer. The rest of the hold is capped at
+    /// `ConnectRetryAfter.maximum`: `notBefore` is a wall-clock instant, and a
+    /// clock set back after it was recorded would otherwise stretch the wait
+    /// past the 10 minutes the server's value was clamped to.
     static func delay(now: Date, notBefore: Date?, floor: TimeInterval) -> TimeInterval {
         guard let notBefore else { return floor }
-        return max(floor, notBefore.timeIntervalSince(now))
+        return max(floor, min(notBefore.timeIntervalSince(now), ConnectRetryAfter.maximum))
     }
 }

@@ -908,13 +908,16 @@ final class VpnViewModel: ObservableObject {
                                               isRebuildingLive: self.isRebuildingLive,
                                               isTearingDownForRedial: self.isTearingDownForRedial) else { return }
             guard self.breakerTrip == nil else { return }
-            // MR-1948: a NEWER retryable refusal landed while this waited (the
-            // user's own tap): its message is on screen and its wait has not
-            // run, so this dial stands down rather than ask again inside it.
-            if self.autoDialNotBefore != scheduledHold,
-               AutoDialHold.isHeld(now: Date(), notBefore: self.autoDialNotBefore) {
-                return
-            }
+            // MR-1948: the sleep may have lasted the server's whole wait (up to
+            // 10 minutes), so re-read what the user may have changed meanwhile:
+            // the Auto-Connect setting, and whether there is still a session to
+            // dial with (a sign-out would otherwise surface "Sign in to connect.").
+            guard UserDefaults.standard.bool(forKey: "auto_connect"), self.hasSession else { return }
+            // Anything that moved the hold while this slept — a newer refusal,
+            // or a tunnel that came up and cleared it (and may since have been
+            // disconnected by the user) — means a later dial already answered
+            // for this one, so it stands down.
+            if self.autoDialNotBefore != scheduledHold { return }
             if self.selectedServer == nil {
                 // Same rule as loadServers() — the twin site (K10).
                 self.selectedServer = QuickSelect.bestServer(in: self.servers)

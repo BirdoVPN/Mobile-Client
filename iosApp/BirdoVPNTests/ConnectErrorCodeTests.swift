@@ -374,4 +374,14 @@ final class ConnectErrorCodeTests: XCTestCase {
         XCTAssertEqual(AutoDialHold.delay(now: now, notBefore: now.addingTimeInterval(600), floor: 1.5),
                        600, accuracy: 0.001)
     }
+
+    /// `notBefore` is a wall-clock instant. A clock set back after the hold was
+    /// recorded makes it look an hour away; the sleep must still never exceed
+    /// the 10 minutes the server's own value was clamped to.
+    func testAClockSetBackCannotStretchTheWaitPastTenMinutes() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(AutoDialHold.delay(now: now, notBefore: now.addingTimeInterval(3600), floor: 1.5), 600)
+        XCTAssertEqual(AutoDialHold.delay(now: now, notBefore: now.addingTimeInterval(600.5), floor: 1.5), 600)
+        XCTAssertEqual(AutoDialHold.delay(now: now, notBefore: Date.distantFuture, floor: 1.5), 600)
+    }
 }
