@@ -3,6 +3,13 @@ package app.birdo.vpn.shared.model
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
+/**
+ * What a redacting toString prints for a nullable secret: `[REDACTED]` when it
+ * is present, `null` when it is not, so a log still says which one it was
+ * (MR-1870).
+ */
+private fun redacted(secret: String?): String = if (secret == null) "null" else "[REDACTED]"
+
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
 @Serializable
@@ -45,7 +52,11 @@ sealed class LoginResult {
     data class TwoFactorRequired(
         val requiresTwoFactor: Boolean,
         val challengeToken: String,
-    ) : LoginResult()
+    ) : LoginResult() {
+        /** Never prints [challengeToken]: with the second factor it completes the sign-in (MR-1870). */
+        override fun toString(): String =
+            "TwoFactorRequired(requiresTwoFactor=$requiresTwoFactor, challengeToken=[REDACTED])"
+    }
 }
 
 @Serializable
@@ -67,6 +78,11 @@ data class LoginResponse(
             LoginResult.Success(false, TokenPair("", ""))
         }
     }
+
+    /** Never prints [challengeToken] (MR-1870); [tokens] prints through [TokenPair]'s own redaction. */
+    override fun toString(): String =
+        "LoginResponse(ok=$ok, tokens=$tokens, requiresTwoFactor=$requiresTwoFactor, " +
+            "challengeToken=${redacted(challengeToken)})"
 }
 
 /**
@@ -87,14 +103,26 @@ data class NativeOAuthExchangeRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
-)
+) {
+    /**
+     * Leaves out [code] and [codeVerifier] (together they redeem the handoff
+     * for a token pair), [deviceId] and [deviceName], like [LoginRequest]
+     * (MR-1870).
+     */
+    override fun toString(): String =
+        "NativeOAuthExchangeRequest(platform=$platform, platformVersion=$platformVersion, appVersion=$appVersion)"
+}
 
 @Serializable
 data class TwoFactorVerifyRequest(
     // FIX-MOBILE-COMPAT: Backend Zod schema VerifyCodeSchema expects camelCase.
     val challengeToken: String,
     val token: String,
-)
+) {
+    /** Never prints the challenge or the TOTP / backup code in [token] (MR-1870). */
+    override fun toString(): String =
+        "TwoFactorVerifyRequest(challengeToken=[REDACTED], token=[REDACTED])"
+}
 
 @Serializable
 data class TwoFactorVerifyResponse(
@@ -107,14 +135,21 @@ data class TwoFactorVerifyResponse(
 @Serializable
 data class RefreshRequest(
     @SerialName("refresh_token") val refreshToken: String,
-)
+) {
+    /** Never prints the refresh token, like [TokenPair] (MR-1870). */
+    override fun toString(): String = "RefreshRequest(refreshToken=[REDACTED])"
+}
 
 @Serializable
 data class RefreshResponse(
     @SerialName("access_token") val accessToken: String,
     @SerialName("refresh_token") val refreshToken: String? = null,
     @SerialName("expires_in") val expiresIn: Long = 3600,
-)
+) {
+    /** Never prints either token, like [TokenPair] (MR-1870). */
+    override fun toString(): String =
+        "RefreshResponse(accessToken=[REDACTED], refreshToken=${redacted(refreshToken)}, expiresIn=$expiresIn)"
+}
 
 // ─── User ────────────────────────────────────────────────────────────────────
 
@@ -258,7 +293,10 @@ data class AnonymousLoginResponse(
 @Serializable
 data class RedeemVoucherRequest(
     val code: String,
-)
+) {
+    /** Never prints [code]: an unredeemed voucher is worth its days to whoever reads it (MR-1870). */
+    override fun toString(): String = "RedeemVoucherRequest(code=[REDACTED])"
+}
 
 @Serializable
 data class RedeemVoucherResponse(
@@ -347,7 +385,11 @@ data class DeleteAccountRequest(
      * defaults), so a server older than that API never sees the key.
      */
     val twoFactorCode: String? = null,
-)
+) {
+    /** Never prints [password] or [twoFactorCode], only whether each was sent (MR-1870). */
+    override fun toString(): String =
+        "DeleteAccountRequest(password=${redacted(password)}, twoFactorCode=${redacted(twoFactorCode)})"
+}
 
 @Serializable
 data class DeleteAccountResponse(
@@ -552,7 +594,19 @@ data class ConnectRequest(
      */
     val rebuild: Boolean = false,
     val currentKeyId: String? = null,
-)
+) {
+    /**
+     * Never prints [integrityToken] (the Play Integrity verdict the backend
+     * takes as this app's attestation), and leaves out [deviceId] and
+     * [deviceName] like [LoginRequest] (MR-1870).
+     */
+    override fun toString(): String =
+        "ConnectRequest(serverNodeId=$serverNodeId, preferredRegion=$preferredRegion, " +
+            "clientPublicKey=$clientPublicKey, stealthMode=$stealthMode, fallbackReason=$fallbackReason, " +
+            "quantumProtection=$quantumProtection, pqClientPublicKey=$pqClientPublicKey, " +
+            "pqClientCanDecapsulate=$pqClientCanDecapsulate, integrityToken=${redacted(integrityToken)}, " +
+            "dnsFiltering=$dnsFiltering, rebuild=$rebuild, currentKeyId=$currentKeyId)"
+}
 
 @Serializable
 data class ServerNodeInfo(
@@ -652,7 +706,26 @@ data class ConnectResponse(
      * than as a generic refusal (REVIEW-AND2-001).
      */
     val quotaExceeded: Boolean = false,
-)
+) {
+    /**
+     * Never prints the key material (MR-1870): [config] (the wg-quick text,
+     * which carries the private key), [privateKey], [presharedKey], the
+     * BirdoPQ ciphertext in [rosenpassPublicKey] (see the key-material note
+     * above), and [xrayUuid] and [xrayShortId], the values this client
+     * presents to the relay's Stealth inbound.
+     */
+    override fun toString(): String =
+        "ConnectResponse(success=$success, message=$message, config=${redacted(config)}, keyId=$keyId, " +
+            "privateKey=${redacted(privateKey)}, publicKey=$publicKey, presharedKey=${redacted(presharedKey)}, " +
+            "assignedIp=$assignedIp, clientIpv6=$clientIpv6, serverPublicKey=$serverPublicKey, " +
+            "endpoint=$endpoint, dns=$dns, allowedIps=$allowedIps, mtu=$mtu, " +
+            "persistentKeepalive=$persistentKeepalive, serverNode=$serverNode, stealthEnabled=$stealthEnabled, " +
+            "stealthUnavailableReason=$stealthUnavailableReason, xrayEndpoint=$xrayEndpoint, " +
+            "xrayUuid=${redacted(xrayUuid)}, xrayPublicKey=$xrayPublicKey, xrayShortId=${redacted(xrayShortId)}, " +
+            "xraySni=$xraySni, xrayFlow=$xrayFlow, quantumEnabled=$quantumEnabled, " +
+            "rosenpassPublicKey=${redacted(rosenpassPublicKey)}, rosenpassEndpoint=$rosenpassEndpoint, " +
+            "deferredKeyId=$deferredKeyId, rebuildRefused=$rebuildRefused, quotaExceeded=$quotaExceeded)"
+}
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
 
@@ -709,7 +782,15 @@ data class MultiHopConnectRequest(
     /** A1-034 — see [ConnectRequest.rebuild]; the multi-hop twin. */
     val rebuild: Boolean = false,
     val currentKeyId: String? = null,
-)
+) {
+    /** Redacts what [ConnectRequest.toString] redacts (MR-1870). */
+    override fun toString(): String =
+        "MultiHopConnectRequest(entryNodeId=$entryNodeId, exitNodeId=$exitNodeId, " +
+            "clientPublicKey=$clientPublicKey, stealthMode=$stealthMode, fallbackReason=$fallbackReason, " +
+            "quantumProtection=$quantumProtection, pqClientPublicKey=$pqClientPublicKey, " +
+            "pqClientCanDecapsulate=$pqClientCanDecapsulate, integrityToken=${redacted(integrityToken)}, " +
+            "dnsFiltering=$dnsFiltering, rebuild=$rebuild, currentKeyId=$currentKeyId)"
+}
 
 @Serializable
 data class MultiHopNodeInfo(
@@ -767,7 +848,20 @@ data class MultiHopConnectResponse(
     val rebuildRefused: String? = null,
     /** See [ConnectResponse.quotaExceeded]: multi-hop passes the single-hop gate's refusal through. */
     val quotaExceeded: Boolean = false,
-)
+) {
+    /** Redacts what [ConnectResponse.toString] redacts (MR-1870). */
+    override fun toString(): String =
+        "MultiHopConnectResponse(success=$success, message=$message, config=${redacted(config)}, keyId=$keyId, " +
+            "privateKey=${redacted(privateKey)}, publicKey=$publicKey, presharedKey=${redacted(presharedKey)}, " +
+            "assignedIp=$assignedIp, clientIpv6=$clientIpv6, serverPublicKey=$serverPublicKey, " +
+            "endpoint=$endpoint, dns=$dns, allowedIps=$allowedIps, mtu=$mtu, " +
+            "persistentKeepalive=$persistentKeepalive, multiHop=$multiHop, stealthEnabled=$stealthEnabled, " +
+            "stealthUnavailableReason=$stealthUnavailableReason, xrayEndpoint=$xrayEndpoint, " +
+            "xrayUuid=${redacted(xrayUuid)}, xrayPublicKey=$xrayPublicKey, xrayShortId=${redacted(xrayShortId)}, " +
+            "xraySni=$xraySni, xrayFlow=$xrayFlow, quantumEnabled=$quantumEnabled, " +
+            "rosenpassPublicKey=${redacted(rosenpassPublicKey)}, rosenpassEndpoint=$rosenpassEndpoint, " +
+            "deferredKeyId=$deferredKeyId, rebuildRefused=$rebuildRefused, quotaExceeded=$quotaExceeded)"
+}
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────
 

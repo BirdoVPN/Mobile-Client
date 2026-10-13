@@ -14,7 +14,14 @@ import java.security.SecureRandom
 object PkceGenerator {
     private const val B64_FLAGS = Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
 
-    data class Pkce(val verifier: String, val challenge: String)
+    data class Pkce(val verifier: String, val challenge: String) {
+        /**
+         * Never prints [verifier]: with an intercepted handoff code it
+         * completes the sign-in. [challenge] is public, it goes out in the
+         * authorize URL (MR-1870).
+         */
+        override fun toString(): String = "Pkce(verifier=[REDACTED], challenge=$challenge)"
+    }
 
     /**
      * verifier = base64url(32 random bytes) (43 chars);

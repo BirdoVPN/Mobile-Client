@@ -54,7 +54,7 @@ recovery from a dead relay but is a route around the test (F7). With both rules
 4. the direct re-dial fails, the app falls back to Stealth, and it is
    "Protected" again at about 56 s with UDP still blocked.
 
-**After a run that fell back to Stealth,** the app starts later connects on
-Stealth for up to a day (`AppPreferences.stealthPreferredSince`). A dead-relay
+**After a run that fell back to Stealth,** the app starts every later connect
+on Stealth for up to a day (`AppPreferences.stealthPreferredSince`). A dead-relay
 test run in that window never touches port 51820; check that the session is a
 direct one before trusting a result.
