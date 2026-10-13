@@ -333,6 +333,11 @@ targets:
       # (fallback 50 GB only when there is none). Foundation-only by design,
       # pinned by FreePlanCapTests; SubscriptionView cannot be compiled here.
       - path: iosApp/Services/FreePlanCap.swift
+      # MR-975: the Home kill-switch chip from the configuration the system
+      # holds (on-demand Connect rule + includeAllNetworks), not the toggle.
+      # Foundation-only by design, pinned by KillSwitchChipTests; VPNManager
+      # (NetworkExtension) and HomeView cannot be compiled into this bundle.
+      - path: iosApp/Services/KillSwitchChip.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.

@@ -82,11 +82,45 @@ final class VPNManager: @unchecked Sendable {
     /// disconnect() disarms before stopping, and applyKillSwitchFlag() arms
     /// only while a session is live, so in the steady disconnected state
     /// nothing is blocked no matter what the Settings toggle reads.
-    /// VpnViewModel snapshots this on every status transition.
-    var killSwitchArmed: Bool {
-        guard let mgr = manager, mgr.isOnDemandEnabled else { return false }
+    /// VpnViewModel snapshots this on every status transition. The rule must
+    /// be a CONNECT rule (MR-975): an enabled on-demand set without one does
+    /// not dial the tunnel back.
+    var killSwitchArmed: Bool { killSwitchState?.isArmed ?? false }
+
+    /// MR-975: the kill-switch flags as the system profile holds them, for the
+    /// Home chip (`KillSwitchChip`). Nil when no VPN configuration is loaded.
+    var killSwitchState: KillSwitchSystemState? {
+        guard let mgr = manager else { return nil }
         let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol
-        return proto?.includeAllNetworks ?? false
+        return KillSwitchSystemState(
+            onDemandEnabled: mgr.isOnDemandEnabled,
+            hasConnectRule: mgr.onDemandRules?.contains { $0 is NEOnDemandRuleConnect } ?? false,
+            includeAllNetworks: proto?.includeAllNetworks ?? false
+        )
+    }
+
+    /// MR-975: called on the main queue once a kill-switch change has been
+    /// SAVED — or, when the save failed, once the profile has been reloaded
+    /// from what the system actually kept — with the state the system now
+    /// holds. A Settings toggle changes no tunnel status, so without this the
+    /// Home chip would show the pre-toggle state until the next transition.
+    var onKillSwitchStateChange: ((KillSwitchSystemState?) -> Void)?
+
+    /// Report the kill-switch state after `applyKillSwitchFlag`'s save. A
+    /// failed save leaves the IN-MEMORY profile edited but the system's copy
+    /// unchanged, so the profile is reloaded first: the report is what the
+    /// system holds, never what this process merely asked for.
+    private func reportKillSwitchState(afterFailedSave: Bool) {
+        guard afterFailedSave, let mgr = manager else {
+            let state = killSwitchState
+            DispatchQueue.main.async { [weak self] in self?.onKillSwitchStateChange?(state) }
+            return
+        }
+        mgr.loadFromPreferences { [weak self] _ in
+            guard let self else { return }
+            let state = self.killSwitchState
+            DispatchQueue.main.async { [weak self] in self?.onKillSwitchStateChange?(state) }
+        }
     }
 
     /// Why the tunnel last went down, straight from NetworkExtension.
@@ -641,11 +675,12 @@ final class VPNManager: @unchecked Sendable {
             mgr.isOnDemandEnabled = false
             TunnelBreakerStore.shared.setOnDemandArmed(false)
         }
-        mgr.saveToPreferences { error in
+        mgr.saveToPreferences { [weak self] error in
             if let error {
                 debugLog("[VPNManager] applyKillSwitchFlag saveToPreferences failed: %@",
                          error.localizedDescription)
             }
+            self?.reportKillSwitchState(afterFailedSave: error != nil)
         }
     }
 

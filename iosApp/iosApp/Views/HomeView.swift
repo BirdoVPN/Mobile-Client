@@ -365,26 +365,34 @@ struct HomeView: View {
                        value: statusText)
 
             // Feature chips (desktop §4.4 pattern — under the pill). The kill
-            // switch chip only claims "blocked" while the system is ACTUALLY
-            // blocking (killSwitchBlocking: on-demand rule armed +
-            // includeAllNetworks, tunnel down) — never merely because the
-            // preference is on. When the switch is enabled but the rule is not
-            // armed (the steady disconnected state: connect() saves disarmed,
-            // disconnect() disarms first), nothing is blocked, so say the
-            // honest thing instead. Quantum is the HONEST indicator — lit only
-            // when a bilateral ML-KEM PSK was derived.
-            if killSwitchBlocking || killSwitchPending || vpnVM.quantumActive {
+            // switch chip is decided by `KillSwitchChip.resolve` from the
+            // configuration the SYSTEM holds (MR-975): "blocked" only while the
+            // on-demand Connect rule and includeAllNetworks are really in force
+            // with the tunnel down, "on" only while they are in force with it
+            // up — never merely because the preference is on. The toggle only
+            // decides the "arms once connected" hint, which is about the NEXT
+            // session. Quantum is the HONEST indicator — lit only when a
+            // bilateral ML-KEM PSK was derived.
+            if killSwitchChip != .hidden || vpnVM.quantumActive {
                 HStack(spacing: 8) {
-                    if killSwitchBlocking {
+                    switch killSwitchChip {
+                    case .blocking:
                         StatusBadgePill("Kill Switch — All traffic blocked",
                                         tone: .danger,
                                         icon: "shield.slash.fill")
                             .accessibilityLabel("Kill switch — all traffic blocked")
-                    } else if killSwitchPending {
+                    case .active:
+                        StatusBadgePill("Kill switch on",
+                                        tone: .success,
+                                        icon: "shield.fill")
+                            .accessibilityLabel("Kill switch on")
+                    case .armsOnConnect:
                         StatusBadgePill("Kill switch arms once connected",
                                         tone: .neutral,
                                         icon: "shield")
                             .accessibilityLabel("Kill switch will arm once connected")
+                    case .hidden:
+                        EmptyView()
                     }
                     if vpnVM.quantumActive {
                         StatusBadgePill("Quantum",
@@ -399,25 +407,19 @@ struct HomeView: View {
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
                    value: vpnVM.quantumActive)
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
-                   value: killSwitchBlocking)
+                   value: killSwitchChip)
     }
 
-    /// The kill switch is BLOCKING only when the on-demand rule is really
-    /// armed in the system profile (vpnVM.killSwitchArmed — live state, not
-    /// the preference) and no tunnel is up: on-demand + includeAllNetworks
-    /// then blackholes every packet. While Protected, traffic flows normally,
-    /// so no "blocked" chip. ANDed with the preference so confirming the
-    /// Settings disable hides the chip instantly, without waiting for the
-    /// async profile save to round-trip.
-    private var killSwitchBlocking: Bool {
-        vpnVM.killSwitchArmed && settingsVM.killSwitchEnabled && !vpnVM.isConnected
-    }
-
-    /// Enabled but NOT armed while disconnected: nothing is blocked right now
-    /// (that is exactly the state the old chip lied about). Shown as an
-    /// honest, non-alarming hint that protection begins with the session.
-    private var killSwitchPending: Bool {
-        settingsVM.killSwitchEnabled && !vpnVM.killSwitchArmed && !vpnVM.isConnected
+    /// MR-975: the chip from the REAL kill-switch state (vpnVM.killSwitchSystem
+    /// — the profile as the system holds it, refreshed on every status change
+    /// and after every kill-switch save). It is no longer ANDed with the
+    /// preference: that hid a block still in force after the toggle went off
+    /// (until the save landed — or for good, when it failed). The confirmed
+    /// disable now clears the chip when the system has actually disarmed.
+    private var killSwitchChip: KillSwitchChip {
+        KillSwitchChip.resolve(system: vpnVM.killSwitchSystem,
+                               tunnelUp: vpnVM.isConnected,
+                               preferenceOn: settingsVM.killSwitchEnabled)
     }
 
     // MARK: - Bottom Action Panel (Android §3.4)

@@ -112,4 +112,27 @@ class IosParityRowsGuardTest {
         assertFalse("sign-out rotates the device id", logout.contains("resetDeviceIdentity"))
         assertFalse("sign-out runs the fresh-install reset", logout.contains("InstallIdentity"))
     }
+
+    // ── MR-975: the iOS kill-switch chip shows the real state ────────────────
+
+    @Test
+    fun `the Home kill-switch chip comes from the system state, not the toggle`() {
+        assertTrue(
+            home.contains(
+                "KillSwitchChip.resolve(system: vpnVM.killSwitchSystem,\n" +
+                    "                               tunnelUp: vpnVM.isConnected,",
+            ),
+        )
+        // The old chip ANDed the toggle into "blocked".
+        assertFalse(home.contains("vpnVM.killSwitchArmed && settingsVM.killSwitchEnabled"))
+        val manager = source("$ios/Services/VPNManager.swift")
+        assertTrue(
+            "the armed state no longer requires a Connect rule",
+            manager.contains("hasConnectRule: mgr.onDemandRules?.contains { \$0 is NEOnDemandRuleConnect } ?? false"),
+        )
+        // A Settings toggle changes no tunnel status: the save must report back.
+        assertTrue(manager.contains("self?.reportKillSwitchState(afterFailedSave: error != nil)"))
+        assertTrue(vpnVm.contains("vpnManager.onKillSwitchStateChange = { [weak self] state in"))
+        assertTrue(unitTestTarget.contains("- path: iosApp/Services/KillSwitchChip.swift"))
+    }
 }
