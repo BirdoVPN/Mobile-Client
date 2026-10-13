@@ -120,15 +120,12 @@ val allowMissingSentryDsn = ((project.findProperty("allowMissingSentryDsn") as S
 // This flag used to mean "hide all purchase steering and show premium tiers as
 // a read-only feature comparison". That was the pre-IAP compromise; the Play
 // build now has a real in-app purchase path, so the comparison-only mode is
-// gone. External LINK-OUT steering is a separate thing and still requires the
-// playExternalOffers flag below.
+// gone. There is no external LINK-OUT path either: the dormant Play
+// external-offers flag, its choice sheet and its release gate were deleted on
+// 2026-10-07 by owner decision (MR-924). Bringing link-out back is a design
+// change (Play's External Offers APIs, 24-hour transaction reporting,
+// enrolment), not a flag.
 val isPlayBuild = ((project.findProperty("playBuild") as String?) ?: System.getenv("BIRDO_PLAY_BUILD"))
-    ?.toBoolean() ?: false
-
-// Play external-offers (link-out) flag. Documented at its buildConfigField in
-// defaultConfig; resolved HERE, at the top level, because the release gate
-// validatePlayExternalOffers (below) has to read the same value.
-val playExternalOffers = (project.findProperty("playExternalOffers") as String?)
     ?.toBoolean() ?: false
 
 // Store-screenshot capture flag. When a DEBUG build is assembled with
@@ -253,23 +250,6 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
 
         // Frame-timing HUD flag (see perfOverlay above).
         buildConfigField("boolean", "PERF_OVERLAY", "$perfOverlay")
-
-        // ── Play external-offers (link-out billing) ────────────────────────
-        // From 30 Jun 2026 Google permits linking out to your own checkout in
-        // the UK/US/EEA — but ONLY for developers enrolled in the billing-choice
-        // / external-offers programme. Unenrolled steering is a policy violation
-        // and gets the app pulled; the package name does not come back.
-        //
-        // This is therefore a SEPARATE flag from IS_PLAY_BUILD and defaults to
-        // FALSE. It must be turned on deliberately (-PplayExternalOffers=true),
-        // and only AFTER enrolment is confirmed in the Play Console. Being a
-        // Play build must never by itself be enough to make the app steer.
-        // See birdo-web/docs/PLAY-LINK-OUT-BILLING.md.
-        //
-        // Enrolment is NOT enough either, today: a Play RELEASE with this flag
-        // on is refused by :app:validatePlayExternalOffers until the link-out
-        // path is finished (audit A-32).
-        buildConfigField("boolean", "PLAY_EXTERNAL_OFFERS", "$playExternalOffers")
     }
 
     signingConfigs {
@@ -334,10 +314,22 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
 
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Licence texts that more than one dependency can ship at the same
+            // path: keep one copy rather than fail the merge on the duplicate.
+            // They used to be EXCLUDED, which removed the licence texts from
+            // the APK altogether (MR-1687).
+            pickFirsts += listOf("/META-INF/AL2.0", "/META-INF/LGPL2.1")
         }
         jniLibs {
             useLegacyPackaging = true
+            // The wireguard-android tunnel AAR also packages the wireguard-tools
+            // `wg` and `wg-quick` programs as libwg.so / libwg-quick.so. They
+            // are GPL-2.0, and only WgQuickBackend (root) runs them; this app
+            // uses libwg-go.so alone (WgNative, through GoBackend's JNI
+            // methods). Excluded so the APK does not ship GPL binaries it
+            // never runs (MR-1687). scripts/verify_android_release_apk.py
+            // fails any APK or AAB that carries them again.
+            excludes += listOf("**/libwg.so", "**/libwg-quick.so")
         }
     }
 
@@ -583,43 +575,6 @@ val validateReleaseSecurityConfig = tasks.register("validateReleaseSecurityConfi
             throw GradleException(
                 "BIRDO_SIGNING_CERT_FINGERPRINT is required for release builds. " +
                     "Use a comma-separated allow-list for Play and sideload certificates."
-            )
-        }
-    }
-}
-
-// ── Release gate: no Play release may link out to an external checkout ──────
-//
-// Audit 2026-09-29 A-32 (RM9). PLAY_EXTERNAL_OFFERS switches on the Play
-// link-out path in BirdoNavGraph / BirdoBillingChoiceSheet, and that path is
-// INCOMPLETE: none of Play's External Offers APIs (isExternalOfferAvailable,
-// the information dialog, the reporting details) are called, and the backend
-// has no 24-hour external-transaction report. A Play build that steers without
-// them breaks the Payments policy even for an enrolled developer, and a
-// removed app does not get its package name back.
-//
-// Until now the only protection was the flag's default (BillingPolicyGateTest);
-// nothing stopped `bundleRelease -PplayBuild=true -PplayExternalOffers=true`.
-// So the combination is refused here, on preReleaseBuild, like the other
-// release gates. Scope, deliberately narrow:
-//   • Play RELEASE only (isPlayBuild AND a release variant). Debug builds never
-//     reach preReleaseBuild, and the sideload/F-Droid APK (isPlayBuild=false)
-//     links to the web checkout already and ignores the flag
-//     (externalOffersAllowed = IS_PLAY_BUILD && PLAY_EXTERNAL_OFFERS).
-//   • No override property. When the path is complete (client APIs + backend
-//     reporting + Play Console enrolment), delete this gate in the same PR.
-val validatePlayExternalOffers = tasks.register("validatePlayExternalOffers") {
-    group = "verification"
-    description = "Fails a Play release build that has the unfinished external-offers path switched on."
-
-    doLast {
-        if (isPlayBuild && playExternalOffers) {
-            throw GradleException(
-                "Refusing to build a Google Play RELEASE with -PplayExternalOffers=true.\n" +
-                    "The Play link-out path is incomplete (audit A-32): no External Offers " +
-                    "client APIs and no 24-hour external-transaction reporting. Shipping it " +
-                    "breaks Play's Payments policy. Build the Play AAB without " +
-                    "-PplayExternalOffers. See birdo-web/docs/PLAY-LINK-OUT-BILLING.md."
             )
         }
     }
@@ -1049,15 +1004,13 @@ afterEvaluate {
     // Fail instead, so a toolchain change surfaces as a build error.
     val preRelease = tasks.findByName("preReleaseBuild") ?: throw GradleException(
         "AGP no longer creates :app:preReleaseBuild, so the release gates " +
-            "(validateReleaseSecurityConfig, validateSentryDsn, validatePlayExternalOffers, " +
-            "buildRustLibs) are wired to nothing. Re-point them at the replacement task " +
-            "before shipping."
+            "(validateReleaseSecurityConfig, validateSentryDsn, buildRustLibs) are wired " +
+            "to nothing. Re-point them at the replacement task before shipping."
     )
     preRelease.dependsOn(
         validateReleaseSecurityConfig,
         buildRustLibs,
         validateSentryDsn,
-        validatePlayExternalOffers,
     )
 }
 

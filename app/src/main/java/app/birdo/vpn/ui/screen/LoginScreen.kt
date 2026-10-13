@@ -68,7 +68,6 @@ private enum class AuthTab { Email, Anonymous, Sso }
 
 /**
  * Sign-in screen:
- * - Centered app mark + "Secure Connection" badge
  * - "Welcome Back" in gradient text (white→40% white top-to-bottom)
  * - Subtitle: "Sign in to your Birdo account"
  * - Email · Anonymous · SSO tabs; glass input fields with subtle white borders
@@ -145,40 +144,9 @@ fun LoginScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-            // ── Status badge: small SQUARE app mark next to "Secure Connection",
-            //     centered. (Replaces the large top icon + the pinging dot.) ──
-            AnimatedVisibility(
-                visible = visible,
-                enter = fadeIn(animationSpec = tween(BirdoMotion.Slow, delayMillis = 80, easing = BirdoMotion.Decel)) +
-                    slideInVertically(initialOffsetY = { 20 }),
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = BirdoWhite05,
-                    border = null,
-                ) {
-                    Row(
-                        modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // Full square launcher image (not the round-cropped mark).
-                        app.birdo.vpn.ui.components.AppIconMark(
-                            size = 26.dp,
-                            cornerRadius = 6.dp,
-                            square = true,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            stringResource(R.string.login_status_badge),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = BirdoWhite80,
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(28.dp))
+            // No "Secure Connection" status badge above the title: nothing is
+            // connected on this screen, and the owner dropped it on 2026-10-07
+            // (MR-1520).
 
             // ── "Welcome Back" gradient text ──
             AnimatedVisibility(

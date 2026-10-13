@@ -39,6 +39,15 @@ SHIPPED_ABIS = ("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 # Engines without which the VPN cannot establish a tunnel on a given ABI.
 REQUIRED_ENGINES = ("libwg-go.so", "libxray.so", "librosenpass_jni.so")
 
+# Native libraries that must NOT ship, under any ABI (MR-1687). The
+# wireguard-android tunnel AAR packages the wireguard-tools `wg` and `wg-quick`
+# programs as these two "libraries". They are GPL-2.0 and only WgQuickBackend
+# (root) runs them; this app uses libwg-go.so alone. app/build.gradle.kts
+# excludes them in packaging.jniLibs, and this is the check that the exclude
+# still holds in the artifact -- an AGP or AAR change that renamed the path
+# would otherwise put them back silently.
+FORBIDDEN_NATIVE_LIBS = ("libwg.so", "libwg-quick.so")
+
 # ---------------------------------------------------------------------------
 # Native-integrity hash contract, checked against the DEX string pool.
 #
@@ -264,6 +273,19 @@ def main() -> None:
         missing_libs = [name for name in required_native_libs(lib_prefix) if name not in names]
         if missing_libs:
             fail("artifact is missing required native libraries: " + ", ".join(missing_libs))
+
+        forbidden_libs = sorted(
+            name
+            for name in names
+            if name.startswith(lib_prefix) and name.rsplit("/", 1)[-1] in FORBIDDEN_NATIVE_LIBS
+        )
+        if forbidden_libs:
+            fail(
+                "artifact packages native libraries the app never loads and must not "
+                "ship: " + ", ".join(forbidden_libs) + ". These are the GPL-2.0 "
+                "wireguard-tools programs from the wireguard-android AAR; the "
+                "packaging.jniLibs exclude in app/build.gradle.kts has stopped matching."
+            )
 
         # Reverse direction: an ABI we never provisioned engines for must not be
         # packaged. Such a build installs on devices whose VPN can never start.

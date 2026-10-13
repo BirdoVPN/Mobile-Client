@@ -183,15 +183,6 @@ fun SubscriptionScreen(
     // is no steering anywhere else. Non-Play builds (sideload APK, F-Droid)
     // keep the web-billing links, which Play policy does not reach.
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
-    /**
-     * Whether the "Manage on web" affordances may be shown. Deliberately a
-     * SEPARATE input from [isPlayBuild] rather than its inverse: an
-     * external-offers-ENROLLED Play build is both a Play build and permitted to
-     * link out, and collapsing the two would either hide the link from an
-     * enrolled build or show it from an unenrolled one. The second mistake is
-     * the one that gets `app.birdo.vpn` removed, permanently.
-     */
-    showWebManageAction: Boolean = !isPlayBuild,
     // -- Play rail ------------------------------------------------------
     // playPriceFor returns Google Play's own localised price for a plan+period,
     // or NULL when that combination is not purchasable on this device.
@@ -236,8 +227,8 @@ fun SubscriptionScreen(
                 title = stringResource(R.string.subscription_title),
                 onBack = onNavigateBack,
                 actions = {
-                    // No web-billing steering in an unenrolled Play build.
-                    if (showWebManageAction) {
+                    // No web-billing steering in the Play build.
+                    if (!isPlayBuild) {
                         BirdoIconAction(
                             icon = Icons.AutoMirrored.Filled.OpenInNew,
                             contentDescription = stringResource(R.string.subscription_manage_web),
@@ -325,7 +316,7 @@ fun SubscriptionScreen(
                     // THE GATE. In a Play build a CTA exists only when a real
                     // offer resolved; in a non-Play build the CTA is the
                     // web-billing link it has always been.
-                    showManageButton = showWebManageAction,
+                    showManageButton = !isPlayBuild,
                     showPurchaseButton = isPlayBuild && playPrice != null && !isCurrent &&
                         !purchaseManagedElsewhere,
                     isChangingPlan = currentSubscription?.plan?.equals("RECON", true) == false,

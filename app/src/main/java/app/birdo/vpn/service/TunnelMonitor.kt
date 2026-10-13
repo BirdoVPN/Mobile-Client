@@ -23,6 +23,8 @@ import app.birdo.vpn.utils.FaultReporter
  *     keepalives are NOT answered by WireGuard, so they never count. Since D-6
  *     the heartbeat itself rides the tunnel, so even an idle phone sends data
  *     at least once a minute and is judged within about a minute and a half.
+ *     To exercise this rule on a device, drop the relay's replies on INPUT for
+ *     IPv4 and IPv6, never on OUTPUT: docs/ANDROID-DEVICE-TESTING.md.
  *  2. NO_NETWORK — no physical network for [NO_NETWORK_DEAD_MS] (airplane
  *     mode, a dead zone). wg-go cannot even send then, so rule 1 never sees
  *     traffic; the network callbacks know at once.

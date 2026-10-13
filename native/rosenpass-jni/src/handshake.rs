@@ -377,7 +377,7 @@ mod tests {
     ///
     /// `PQCLEAN_DK_HEX` is a real 3168-byte expanded decapsulation key produced
     /// by `pqcrypto-mlkem` 0.1.1 (`PQClean` `MLKEM1024_CLEAN`) — bit-for-bit what
-    /// is sealed in `RosenpassKeyStore` on every device that installed 1.4.29
+    /// is sealed in `RosenpassKeyStore` on every device that installed 1.4.28
     /// or earlier. If a future KEM change stops reading this, every existing
     /// install loses its key silently. Never delete this test.
     #[test]
