@@ -14,12 +14,21 @@ class KotlinSource(private val src: String) {
     /** [src] with comments and string literals blanked, offsets kept, so brackets match in code alone. */
     val code: String
 
+    /**
+     * [src] with comments and the TEXT of string literals blanked but the
+     * expressions of their templates kept, offsets kept: `"a=${f(x)}"` reads
+     * `f(x)` and `"a=$x"` reads `x`. Every name a piece of code reads, inside
+     * templates too.
+     */
+    val expressions: String
+
     /** Every string literal outside comments, in source order. */
     val literals: List<Literal>
 
     init {
         val lexer = Lexer(src).also { it.run() }
         code = String(lexer.masked)
+        expressions = String(lexer.expressions)
         literals = lexer.literals
     }
 
@@ -46,13 +55,19 @@ class KotlinSource(private val src: String) {
 
     private class Lexer(private val src: String) {
         val masked = src.toCharArray()
+        val expressions = src.toCharArray()
         val literals = mutableListOf<Literal>()
         private var i = 0
 
         fun run() = code(untilTemplateEnd = false)
 
         private fun blank(from: Int, to: Int) {
-            for (k in from until minOf(to, src.length)) if (masked[k] != '\n') masked[k] = ' '
+            blank(masked, from, to)
+            blank(expressions, from, to)
+        }
+
+        private fun blank(chars: CharArray, from: Int, to: Int) {
+            for (k in from until minOf(to, src.length)) if (chars[k] != '\n') chars[k] = ' '
         }
 
         private fun code(untilTemplateEnd: Boolean) {
@@ -114,6 +129,8 @@ class KotlinSource(private val src: String) {
             i += quote.length
             val text = StringBuilder()
             var template = false
+            // The template expressions, which [expressions] keeps.
+            val kept = mutableListOf<IntRange>()
             while (i < src.length) {
                 if (src.startsWith(quote, i)) {
                     i += quote.length
@@ -134,14 +151,18 @@ class KotlinSource(private val src: String) {
                     c == '$' && src.getOrNull(i + 1) == '{' -> {
                         template = true
                         i += 2
+                        val from = i
                         code(untilTemplateEnd = true)
+                        kept += from until i
                         i++
                         text.append('#')
                     }
                     c == '$' && src.getOrNull(i + 1)?.let { it.isLetter() || it == '_' } == true -> {
                         template = true
                         i++
+                        val from = i
                         while (i < src.length && (src[i].isLetterOrDigit() || src[i] == '_')) i++
+                        kept += from until i
                         text.append('#')
                     }
                     else -> {
@@ -150,7 +171,13 @@ class KotlinSource(private val src: String) {
                     }
                 }
             }
-            blank(start, i)
+            blank(masked, start, i)
+            var k = start
+            for (expression in kept) {
+                blank(expressions, k, expression.first)
+                k = expression.last + 1
+            }
+            blank(expressions, k, i)
             literals += Literal(start, text.toString(), template)
         }
     }

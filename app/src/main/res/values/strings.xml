@@ -45,6 +45,9 @@
          bold tag here would silently render as nothing. -->
     <string name="anon_created_body">Your anonymous account is ready. This 24-digit account number is the only way to sign in again — there is no email or password on this account.</string>
     <string name="anon_created_warning">Write it down or store it in a password manager. We cannot recover or reset it — losing it means losing the account.</string>
+    <!-- MR-1707 (owner, 2026-10-14): the number can never be changed, so say
+         what to do if it leaks. Same words on iOS (LoginView createdIdStep). -->
+    <string name="anon_created_permanent">It can\'t be changed. If it leaks, turn on two-factor sign-in or delete your account.</string>
     <string name="anon_created_ack">I\'ve saved it — continue</string>
     <string name="anon_created_copy_cd">Copy account number</string>
     <string name="anon_created_copied">Account number copied</string>

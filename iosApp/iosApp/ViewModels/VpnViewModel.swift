@@ -188,17 +188,29 @@ final class VpnViewModel: ObservableObject {
     private let vpnManager: VPNManager
     private let keychain: KeychainService
 
+    /// AuthViewModel's signed-in state (`isLoggedIn`), wired by the app root
+    /// (ContentView) with the other hooks. Until it is wired: signed out, so
+    /// nothing account-scoped goes out early. The root's launch load runs from
+    /// a `.task`, after that wiring.
+    var isSignedIn: @MainActor () -> Bool = { false }
+
     /// Is there a session to authenticate WITH?
     ///
     /// Guest-shell guard (5.1.1(v)): with no account the app still shows Home,
     /// the location list and every setting, so these screens keep calling
     /// `loadServers()` / `refreshSubscription()` on appear. Firing those
     /// without a token would spend requests to earn a 401 and paint a "Session
-    /// expired" error over a user who never had a session. Read from the
-    /// keychain rather than a copy of `isLoggedIn` so there is exactly one
-    /// truth and no ordering bug between the two view models.
+    /// expired" error over a user who never had a session.
+    ///
+    /// AuthViewModel's signed-in state decides, not the keychain alone
+    /// (`AccountSession`, GuestAccess.swift): after a fresh install's clean-up
+    /// could not finish (`InstallIdentity.Outcome.cleanupIncomplete`) the
+    /// keychain still holds the PREVIOUS install's tokens while the app runs
+    /// signed out, and these loads sent them.
     var hasSession: Bool {
-        keychain.accessToken != nil || keychain.refreshToken != nil
+        AccountSession.allowsAccountCalls(
+            signedIn: isSignedIn(),
+            keychainHoldsToken: keychain.accessToken != nil || keychain.refreshToken != nil)
     }
 
     // How long to wait for the first inbound byte before declaring the tunnel
@@ -1278,7 +1290,7 @@ final class VpnViewModel: ObservableObject {
         /// The key the live tunnel is riding — the one the server defers.
         let oldKeyId: String
         /// The live profile + secrets, for the swap-back.
-        let snapshot: VPNManager.TunnelProfileSnapshot
+        let snapshot: TunnelProfileSnapshot
         /// The minted config, once /connect answered.
         var newConfig: VPNConnectionConfig?
         var confirmedRoute: String?
@@ -1312,7 +1324,7 @@ final class VpnViewModel: ObservableObject {
             legacyRebuild(target)
             return
         }
-        let snapshot: VPNManager.TunnelProfileSnapshot
+        let snapshot: TunnelProfileSnapshot
         do {
             snapshot = try vpnManager.snapshotRunningProfile()
         } catch {

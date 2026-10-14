@@ -319,20 +319,9 @@ final class VPNManager: @unchecked Sendable {
 
     // MARK: - Live rebuild (Mobile-Client #159)
 
-    /// Everything needed to put the RUNNING tunnel back the way it was: the
-    /// persisted provider configuration (all string-valued — the redacted
-    /// wg-quick config, the keychain refs, the heartbeat handle) plus the two
-    /// secrets the extension reads by those refs. Taken before a swap and
-    /// dropped the moment the swap commits or reverts, so the previous private
-    /// key is in app memory for seconds, not for the session. Read back from
-    /// the system profile and the shared keychain — not from memory — so a
-    /// rebuild after an app relaunch under a live tunnel can still revert.
-    struct TunnelProfileSnapshot: Sendable {
-        let providerConfiguration: [String: String]
-        let serverAddress: String
-        let privateKey: String
-        let presharedKey: String?
-    }
+    // `TunnelProfileSnapshot` (what `snapshotRunningProfile` captures and
+    // `restoreProfile` puts back) lives in TunnelProfileSnapshot.swift, so the
+    // unit tests can check that it never prints its keys.
 
     /// True when the persisted profile carries a PROTOCOL-level flag that no
     /// longer matches the user's setting. iOS applies `excludeLocalNetworks`

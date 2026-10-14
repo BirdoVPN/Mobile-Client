@@ -17,13 +17,16 @@ import java.io.File
  * a leak the moment it is logged, and nothing fails.
  *
  * This reads the source. Every `@Serializable data class` under the shared
- * models and the app's main sources is an API model. A constructor property
- * whose type can hold a secret (String, CharArray, ByteArray) and whose name
- * says it is one (token, password, code, verifier, secret, privateKey,
- * presharedKey, challenge) requires an `override fun toString` in the class
- * body, and that toString may not print the property as a plain template
- * (`$name` / `${name}`). A field that matches the names but is not a secret is
- * listed in [notSecret] with the reason.
+ * models and the app's main sources is an API model, whatever annotations or
+ * modifiers sit between the two. A constructor property whose type can hold a
+ * secret (String, CharArray, ByteArray) and whose name says it is one (token,
+ * password, code, verifier, secret, privateKey, presharedKey, psk, challenge,
+ * nonce, accountNumber, anonymousId) requires an `override fun toString` in
+ * the class body, and that toString may not read the property except to
+ * redact it or test it for null or empty: not as a template (`$name`,
+ * `${name}`, `${this.name}`), not concatenated, not passed to a call. A field
+ * that matches the names but is not a secret is listed in [notSecret] with the
+ * reason.
  */
 class CredentialFieldGuardTest {
 
@@ -127,6 +130,85 @@ class CredentialFieldGuardTest {
         assertEquals(listOf("password", "twoFactorCode"), fields.map { it.name })
         assertTrue(fields.all { it.problem == null })
     }
+
+    @Test
+    fun `the account number, the anonymous id, a nonce and a psk are credential names`() {
+        // The Swift guard (IosRequiredRowsGuardTest) already knew the first three.
+        listOf("accountNumber", "anonymousId", "pendingAnonymousId", "nonce", "attestationNonce", "psk", "wgPsk", "pskBase64")
+            .forEach { assertTrue("$it must read as a credential name", CredentialFields.isCredentialName(it)) }
+        // "psk" is a whole camelCase word, like "code": not any name that spells it.
+        listOf("encoded", "dropsKey", "accountType", "countryName")
+            .forEach { assertTrue("$it is not a credential name", !CredentialFields.isCredentialName(it)) }
+
+        val src = """
+            @Serializable
+            data class Wire(val accountNumber: String?, val anonymousId: String, val nonce: String, val psk: ByteArray)
+        """.trimIndent()
+        val fields = CredentialFields.scan(src)
+        assertEquals(listOf("accountNumber", "anonymousId", "nonce", "psk"), fields.map { it.name })
+        assertTrue(fields.all { it.problem == "has no redacting toString" })
+    }
+
+    @Test
+    fun `an annotation or a modifier between @Serializable and data class does not hide the class`() {
+        val src = """
+            @Serializable
+            @Immutable
+            data class Annotated(val apiToken: String)
+
+            @Serializable
+            internal data class Internal(val password: String)
+
+            @Serializable(with = OneLineSerializer::class) @SerialName("one_line")
+            public data class OneLine(@SerialName("refresh_token") val refreshToken: String)
+
+            @Serializable
+            @OptIn(ExperimentalSerializationApi::class)
+            @Deprecated("old", ReplaceWith("New"))
+            private data class Stacked(val secret: String)
+
+            @Immutable
+            internal data class NotAnApiModel(val password: String)
+        """.trimIndent()
+        val fields = CredentialFields.scan(src)
+        assertEquals(listOf("Annotated", "Internal", "OneLine", "Stacked"), fields.map { it.owner })
+        assertTrue(fields.all { it.problem == "has no redacting toString" })
+    }
+
+    @Test
+    fun `a toString that prints the field through this, concatenation or a call is caught`() {
+        val shapes = mapOf(
+            "this in a template" to "\"Req(password=${'$'}{this.password})\"",
+            "concatenation" to "\"Req(password=\" + password + \")\"",
+            "this in a concatenation" to "\"Req(\" + this.password + \")\"",
+            "plus" to "\"Req(password=\".plus(password)",
+            "a builder" to "buildString { append(\"Req(\"); append(password) }",
+            "a prefix of it" to "\"Req(password=${'$'}{password.take(4)}…)\"",
+            "a block body" to "{\n        val shown = password\n        return \"Req(${'$'}shown)\"\n    }",
+        )
+        shapes.forEach { (shape, body) ->
+            val separator = if (body.startsWith("{")) " " else " = "
+            val src = "@Serializable\ndata class Req(val password: String) {\n    override fun toString(): String$separator$body\n}"
+            assertEquals(shape, "prints it in toString", CredentialFields.scan(src).single().problem)
+        }
+    }
+
+    @Test
+    fun `a toString that only tests the field passes, and a member after it is not the toString`() {
+        val src = """
+            @Serializable
+            data class Req(val password: String?, val wgPsk: String, val nonce: String, val apiToken: String) {
+                override fun toString(): String =
+                    "Req(password=${'$'}{redacted(this.password)}, set=${'$'}{password != null}, " +
+                        "psk=${'$'}{if (wgPsk.isNotEmpty()) "[REDACTED]" else "none"}, nonce=[REDACTED])"
+
+                fun bearer(): String = "Bearer ${'$'}apiToken"
+            }
+        """.trimIndent()
+        val fields = CredentialFields.scan(src)
+        assertEquals(listOf("password", "wgPsk", "nonce", "apiToken"), fields.map { it.name })
+        assertEquals(listOf(null, null, null, null), fields.map { it.problem })
+    }
 }
 
 /** The source scan behind [CredentialFieldGuardTest]. */
@@ -135,20 +217,45 @@ internal object CredentialFields {
     class Field(val owner: String, val name: String, val problem: String?)
 
     /** Name fragments that mark a credential, matched case-insensitively. */
-    private val secretWords = listOf("token", "password", "verifier", "secret", "privatekey", "presharedkey", "challenge")
+    private val secretWords = listOf(
+        "token", "password", "verifier", "secret", "privatekey", "presharedkey", "challenge",
+        "nonce", "accountnumber", "anonymousid",
+    )
+
+    /** Short words that mark a credential only as a whole camelCase word: twoFactorCode, wgPsk; not "encoded", "dropsKey". */
+    private val secretWholeWords = setOf("code", "psk")
 
     /** Types that can hold a secret's text. */
     private val secretTypes = setOf("String", "CharArray", "ByteArray")
 
     private val dataClass = Regex("""\bdata\s+class\s+(\w+)\s*\(""")
     private val property = Regex("""\bva[lr]\s+(\w+)\s*:\s*([\w.]+)\??""")
-    private val serializable = Regex("""@Serializable(\s*\([^)]*\))?\s*$""")
+
+    /** An annotation's arguments, one level of nested parentheses deep. */
+    private const val ARGS = """(?:\s*\((?:[^()]|\([^()]*\))*\))"""
+
+    /**
+     * `@Serializable` at the end of the code before `data class`, followed by
+     * any other annotations and modifiers: `@Serializable @Immutable internal
+     * data class` is an API model as much as `@Serializable data class`.
+     */
+    private val serializable = Regex(
+        """@(?:kotlinx\.serialization\.)?Serializable\b$ARGS?""" +
+            """(?:\s*(?:@[\w.]+$ARGS?|\b(?:public|internal|protected|private|open|sealed|abstract|inner|expect|actual)\b))*\s*$""",
+    )
+
+    private val toStringDeclaration = Regex("""\boverride\s+fun\s+toString\s*\(\s*\)\s*(?::\s*String\s*)?""")
+
+    /** A line that starts the next member of a class body, ending an expression-bodied toString. */
+    private val nextMember = Regex(
+        """\n\s*(?:@\w|(?:override|public|internal|protected|private|open|abstract|suspend|inline|operator|const|lateinit)\s|""" +
+            """(?:fun|val|var|init|companion|object|class|interface|enum|data|sealed|inner)\b)""",
+    )
 
     fun isCredentialName(name: String): Boolean {
         val lower = name.lowercase()
-        // "code" only as a whole camelCase word: twoFactorCode, code; not "encoded".
         val words = name.split(Regex("(?<=[a-z0-9])(?=[A-Z])")).map { it.lowercase() }
-        return secretWords.any { it in lower } || "code" in words
+        return secretWords.any { it in lower } || words.any { it in secretWholeWords }
     }
 
     /** Every credential-named, secret-typed property of every `@Serializable` data class in [src]. */
@@ -161,20 +268,64 @@ internal object CredentialFields {
             val open = m.range.last
             val close = kt.closing(open)
             val params = kt.code.substring(open + 1, close)
-            val body = kt.trailingBlock(close)?.let { src.substring(it.first, it.last + 1) }.orEmpty()
-            val toString = body.substringAfter("override fun toString", "")
+            val toString = kt.trailingBlock(close)?.let { toStringRange(kt, it) }
+                ?.let { kt.expressions.substring(it.first, it.last + 1) }
             property.findAll(params)
                 .filter { p -> p.groupValues[2] in secretTypes && isCredentialName(p.groupValues[1]) }
                 .map { p ->
                     val name = p.groupValues[1]
-                    // `$name` or `${name}` prints the value; `${redacted(name)}` does not.
                     val problem = when {
-                        toString.isEmpty() -> "has no redacting toString"
-                        Regex("""\$$name\b|\$\{\s*$name\s*}""").containsMatchIn(toString) -> "prints it in toString"
+                        toString == null -> "has no redacting toString"
+                        reads(toString, name) -> "prints it in toString"
                         else -> null
                     }
                     Field(owner, name, problem)
                 }
         }.toList()
     }
+
+    /**
+     * The `override fun toString` in the class [body] (the `{ … }` range in
+     * [KotlinSource.code]), or null when it has none: a block body up to its
+     * closing brace, an expression body up to the next member or the end of
+     * the class. Not the rest of the class: a member after toString is not
+     * what toString prints.
+     */
+    private fun toStringRange(kt: KotlinSource, body: IntRange): IntRange? {
+        val code = kt.code
+        val declaration = toStringDeclaration.find(code.substring(0, body.last), body.first) ?: return null
+        var start = declaration.range.last + 1
+        while (start < body.last && code[start].isWhitespace()) start++
+        if (code[start] == '{') return start..kt.closing(start)
+        var depth = 0
+        var end = start
+        while (end < body.last) {
+            val c = code[end]
+            if (c in "([{") depth++
+            if (c in ")]}") depth--
+            if (depth == 0 && c == '\n' && nextMember.matchAt(code, end) != null) break
+            end++
+        }
+        return start until end
+    }
+
+    /**
+     * True when the toString text [region] (template expressions included)
+     * reads the property [name] other than to redact it (`redacted(name)`) or
+     * to test it (`name != null`, `name.isNotEmpty()`).
+     */
+    private fun reads(region: String, name: String): Boolean =
+        Regex("""\b$name\b""").findAll(region).any { m ->
+            var head = region.substring(0, m.range.first)
+            // `other.name` is someone else's property; `this.name` is this one.
+            val self = Regex("""\bthis\s*\.\s*$""").find(head)
+            if (self == null && Regex("""\.\s*$""").containsMatchIn(head)) return@any false
+            if (self != null) head = head.substring(0, self.range.first)
+            val tail = region.substring(m.range.last + 1)
+            val redacted = Regex("""\w*[Rr]edact\w*\s*\(\s*$""").containsMatchIn(head) && Regex("""^\s*\)""").containsMatchIn(tail)
+            val nullTest = Regex("""^\s*[!=]==?\s*null\b""").containsMatchIn(tail) || Regex("""\bnull\s*[!=]==?\s*$""").containsMatchIn(head)
+            val emptyTest = Regex("""^\s*\??\.\s*(?:isNullOrEmpty|isNullOrBlank|isEmpty|isNotEmpty|isBlank|isNotBlank)\s*\(\s*\)""")
+                .containsMatchIn(tail)
+            !(redacted || nullTest || emptyTest)
+        }
 }

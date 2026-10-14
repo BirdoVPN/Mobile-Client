@@ -52,6 +52,23 @@ final class GuestShellTests: XCTestCase {
         }
     }
 
+    // MARK: - Account calls (VpnViewModel.hasSession)
+
+    /// The #485 review case: a fresh install whose clean-up of the previous
+    /// install's session could not finish runs signed out with that session's
+    /// tokens still in the keychain. No account call may send them.
+    func testSignedOutMakesNoAccountCallWhateverTheKeychainHolds() {
+        XCTAssertFalse(AccountSession.allowsAccountCalls(signedIn: false, keychainHoldsToken: true))
+        XCTAssertFalse(AccountSession.allowsAccountCalls(signedIn: false, keychainHoldsToken: false))
+    }
+
+    /// Signed in, the calls go out as before; with no token there is nothing
+    /// to authenticate with, so they still do not.
+    func testSignedInCallsNeedATokenToSend() {
+        XCTAssertTrue(AccountSession.allowsAccountCalls(signedIn: true, keychainHoldsToken: true))
+        XCTAssertFalse(AccountSession.allowsAccountCalls(signedIn: true, keychainHoldsToken: false))
+    }
+
     // MARK: - Point-of-use sign-in prompts
 
     /// Every prompt has to say which action asked for an account, or it is a

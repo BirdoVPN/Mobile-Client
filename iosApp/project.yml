@@ -286,6 +286,10 @@ targets:
       # both already listed.
       - path: iosApp/Services/AuthWire.swift
       - path: iosApp/Services/CredentialRedaction.swift
+      # The live-rebuild snapshot holds the tunnel's private and pre-shared
+      # keys; moved out of VPNManager.swift (NetworkExtension) so
+      # CredentialDescriptionTests can print the real struct.
+      - path: iosApp/Services/TunnelProfileSnapshot.swift
       # MR-745: the BirdoPQ per-connect nonce bound (1...64 bytes, as on
       # Android). Foundation-only by design, pinned by PQNonceTests;
       # BirdoPQManager.swift (its only caller) imports BirdoPQNative and cannot

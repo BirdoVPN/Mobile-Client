@@ -154,6 +154,9 @@ struct ContentView: View {
                 vpnVM?.disconnect()
                 authVM?.logout()
             }
+            // VpnViewModel.hasSession: account calls only while signed in,
+            // never on tokens a failed fresh-install clean-up left behind.
+            vpnVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }
             // Review #490: clear cross-account cached plan/servers on sign-out so
             // the next user never inherits the previous account's state.
             authVM.onLogout = { [weak vpnVM] in
