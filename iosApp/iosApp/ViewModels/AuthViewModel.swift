@@ -80,7 +80,7 @@ final class AuthViewModel: ObservableObject {
     /// left it armed and the NEXT consent acceptance -- raised from Profile,
     /// from Settings, from anywhere -- minted an anonymous account nobody asked
     /// for, spent one of three mints per IP per hour, and locked the sheet onto
-    /// "save your recovery ID" instead of the login form that was requested.
+    /// "save your account number" instead of the login form that was requested.
     private var pendingProvisionReason: SignInReason?
     /// The in-flight anonymous mint, retained so backing out can CANCEL it.
     private var provisioningTask: Task<Void, Never>?
@@ -704,7 +704,7 @@ final class AuthViewModel: ObservableObject {
         guard !isLoading else { return }
         let digits = anonymousId.filter { $0.isASCII && $0.isNumber }
         guard digits.count == 24 else {
-            error = "Anonymous ID must be 24 digits"
+            error = "Account number must be 24 digits"
             return
         }
         let trimmed = password?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

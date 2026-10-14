@@ -152,6 +152,33 @@ class IosParityRowsGuardTest {
         )
     }
 
+    @Test
+    fun `the apps say account number, never account ID`() {
+        // Owner, 2026-10-14: "Use 'Account number' everywhere", as Android and
+        // the website do. Apple ID / Face ID / Touch ID are Apple's names.
+        val literal = Regex(""""((?:[^"\\]|\\.)*)"""")
+        val id = Regex("""(?<!Apple |Face |Touch )\bID\b""")
+        val hits = listOf("$ios", "iosApp/PacketTunnel").flatMap { dir ->
+            File(repoRoot, dir).walkTopDown().filter { it.isFile && it.extension == "swift" }.flatMap { file ->
+                file.readLines()
+                    .filterNot { it.trimStart().startsWith("//") }
+                    .flatMap { line -> literal.findAll(line).map { it.groupValues[1] } }
+                    .filter { it != "ID" && id.containsMatchIn(it) }
+                    .map { "${file.name}: $it" }
+            }.toList()
+        }
+        assertTrue("user-visible text still says ID: $hits", hits.isEmpty())
+        val login = source("$ios/Views/LoginView.swift")
+        listOf(
+            "BirdoTextField(\"Account number\",",
+            "\"Save your account number\"",
+            ".accessibilityLabel(\"Copy account number\")",
+            "Announcement(\"Account number copied\")",
+        ).forEach { assertTrue("LoginView lost: $it", login.contains(it)) }
+        // The UI-test identifier stays.
+        assertTrue(login.contains(".accessibilityIdentifier(\"login_anonymous_id_field\")"))
+    }
+
     // ── MR-975: the iOS kill-switch chip shows the real state ────────────────
 
     @Test
