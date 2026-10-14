@@ -79,6 +79,12 @@ XRAY_SOURCE_TREE="d64b24307450e1cbfadf8c7a2d0e7f840c83b5c6"
 XRAY_GO_VERSION="go1.25.14"
 # What XTLS built the two upstream release binaries with (their build info).
 XRAY_UPSTREAM_GO_VERSION="go1.25.7"
+# The Go standard library and runtime are linked into every engine, so each
+# toolchain's source distribution (https://go.dev/dl/<version>.src.tar.gz) is
+# mirrored in the source asset too, pinned to the SHA-256 go.dev publishes
+# (https://go.dev/dl/?mode=json&include=all). Bump with the versions above.
+XRAY_GO_VERSION_SOURCE_SHA256="9e83f44f5fc297378861b4e16cc6aa114be8add7993fb3ceb2c512380aa4d582"
+XRAY_UPSTREAM_GO_SOURCE_SHA256="178f2832820274b43e177d32f06a3ebb0129e427dd20a5e4c88df2c1763cf10a"
 
 ALL_ABIS=(arm64-v8a armeabi-v7a x86_64 x86)
 ABIS=("$@")

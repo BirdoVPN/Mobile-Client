@@ -18,9 +18,12 @@ Xray-core 26.2.6 (libxray.so, the Stealth Mode engine)
     and its SHA-256 is in SHA256SUMS.txt beside it. That file contains: the
     Xray-core source at the commit below (git archive of that commit); the
     source of every Go module linked into libxray.so, each at the exact
-    version shipped (the module's zip from proxy.golang.org); the script that
-    fetched and built the four engines; and a README naming the Go toolchain
-    and Android NDK each engine was built with and the exact build commands.
+    version shipped (the module's zip from proxy.golang.org); the Go source
+    distribution of each Go toolchain that built an engine (go1.25.7 and
+    go1.25.14, from go.dev), whose standard library and runtime every engine
+    links; the script that fetched and built the four engines; and a README
+    naming the Go toolchain and Android NDK each engine was built with and the
+    exact build commands.
   Upstream: https://github.com/XTLS/Xray-core/tree/v26.2.6 (commit
     12ee51e4bb1d02ece4ef4b7114efa2bcdc130995)
   BirdoVPN ships this program unmodified: the upstream release for arm64-v8a and
@@ -38,10 +41,10 @@ Xray-core 26.2.6 (libxray.so, the Stealth Mode engine)
     github.com/sagernet/sing-shadowsocks (GNU General Public License v3.0 or
     later; full text below). The source of every one of these modules is in
     the file named under Source. The program also contains the Go standard
-    library and runtime (BSD 3-Clause; text below), which are not in that
-    file: their source is the Go source distribution of the version that
-    built each engine, https://go.dev/dl/go1.25.7.src.tar.gz and
-    https://go.dev/dl/go1.25.14.src.tar.gz.
+    library and runtime (BSD 3-Clause; text below), whose source is in that
+    file too: the Go source distribution of the version that built each
+    engine (upstream: https://go.dev/dl/go1.25.7.src.tar.gz and
+    https://go.dev/dl/go1.25.14.src.tar.gz).
 
 WireGuard tunnel library for Android 1.0.20260102
   Maven: com.wireguard.android:tunnel

@@ -19,12 +19,15 @@ The asset, xray-core-<XRAY_VERSION>-corresponding-source.tar.gz, holds:
     IS, not on how GitHub happens to compress a tag), gzip'd deterministically;
   * go-modules/<module>@<version>.zip — EVERY Go module the shipped binaries
     link, byte for byte from proxy.golang.org;
+  * go-toolchain/<go version>.src.tar.gz — the Go source distribution of each
+    toolchain that built a shipped engine, byte for byte from go.dev: the Go
+    standard library and runtime are linked into every engine;
   * provision_xray_engines.sh — the script that fetches two ABIs and builds the
     other two from that source;
-  * README.txt — what each file is (SHA-256, Go checksum, licence), how each
-    shipped engine was made (upstream asset, or the Go toolchain, NDK revision
-    and exact `go build` command, from provision_xray_engines.sh's build
-    record), and where the Go toolchain's own source is (it is not included).
+  * README.txt — what each file is (SHA-256, Go checksum, licence) and how
+    each shipped engine was made (upstream asset, or the Go toolchain, NDK
+    revision and exact `go build` command, from provision_xray_engines.sh's
+    build record).
 
 Nothing is written unless all of this holds (exit 1 otherwise):
   * XRAY_COMMIT's tree is XRAY_SOURCE_TREE (both pinned in
@@ -39,7 +42,10 @@ Nothing is written unless all of this holds (exit 1 otherwise):
   * the build record covers exactly the binaries given; each upstream binary
     was built with XRAY_UPSTREAM_GO_VERSION and carries XRAY_COMMIT's stamp
     (Xray's release build writes the abbreviated commit into core.build); each
-    of ours was built with XRAY_GO_VERSION.
+    of ours was built with XRAY_GO_VERSION;
+  * the Go sources mirrored are exactly the toolchains in the binaries' build
+    info, each matching the SHA-256 go.dev publishes for it, as pinned in
+    XRAY_GO_VERSION_SOURCE_SHA256 / XRAY_UPSTREAM_GO_SOURCE_SHA256.
 
 The output is deterministic: fixed tar headers, sorted members, gzip headers
 with no name and no timestamp. The same pins, binaries and build record give
@@ -92,7 +98,8 @@ def pins() -> dict[str, str]:
     text = PROVISION.read_text(encoding="utf-8")
     found = dict(re.findall(r'(?m)^(XRAY_[A-Z0-9_]+)="([^"]*)"', text))
     for key in ("XRAY_VERSION", "XRAY_COMMIT", "XRAY_SOURCE_TREE", "XRAY_GO_VERSION",
-                "XRAY_UPSTREAM_GO_VERSION", *UPSTREAM_ASSETS.values()):
+                "XRAY_UPSTREAM_GO_VERSION", "XRAY_GO_VERSION_SOURCE_SHA256",
+                "XRAY_UPSTREAM_GO_SOURCE_SHA256", *UPSTREAM_ASSETS.values()):
         if not found.get(key):
             fail(f"{PROVISION.name} has no {key} pin")
     return found
@@ -331,8 +338,10 @@ def main() -> None:
     # 1. The binaries link exactly the table, and were made as the record says.
     linked_h1: dict[str, str] = {}
     abis: set[str] = set()
+    toolchains: set[str] = set()
     for binary in args.binaries:
         deps, toolchain = build_info(binary)
+        toolchains.add(toolchain)
         abi = binary.parent.name
         if abi in abis:
             fail(f"two binaries for {abi}")
@@ -402,12 +411,31 @@ def main() -> None:
         print(f"  {path}: {data.stat().st_size} bytes, {h1} ({licence})")
     print(f"  {len(rows)} modules, {total} bytes")
 
+    # 5. The Go source of every toolchain that built a shipped engine: its
+    # standard library and runtime are linked into the engine too.
+    go_source_pins = {
+        pin["XRAY_GO_VERSION"]: pin["XRAY_GO_VERSION_SOURCE_SHA256"],
+        pin["XRAY_UPSTREAM_GO_VERSION"]: pin["XRAY_UPSTREAM_GO_SOURCE_SHA256"],
+    }
+    if pin["XRAY_GO_VERSION"] == pin["XRAY_UPSTREAM_GO_VERSION"] and \
+            pin["XRAY_GO_VERSION_SOURCE_SHA256"] != pin["XRAY_UPSTREAM_GO_SOURCE_SHA256"]:
+        fail(f"{PROVISION.name} pins two different source SHA-256s for {pin['XRAY_GO_VERSION']}")
+    go_rows = []
+    for toolchain in sorted(toolchains):
+        want_sha = go_source_pins.get(toolchain)
+        if want_sha is None:
+            fail(f"an engine was built with {toolchain}, whose source no pin in {PROVISION.name} names")
+        data = fetch(f"https://go.dev/dl/{toolchain}.src.tar.gz", want_sha, downloads)
+        path = f"go-toolchain/{toolchain}.src.tar.gz"
+        members.append((path, data, 0o644))
+        go_rows.append((path, toolchain, want_sha))
+        print(f"  {path}: {data.stat().st_size} bytes, sha256 {want_sha}")
+
     script = PROVISION.read_bytes().replace(b"\r\n", b"\n")
     members.append((archive_name, archive, 0o644))
     members.append(("provision_xray_engines.sh", script, 0o755))
 
     copyleft = sorted(f"{m} ({lic})" for m, (_, lic, _) in modules.items() if COPYLEFT.search(lic))
-    toolchains = sorted({how[1] for how in record.values() if how[0] == "built"} | {pin["XRAY_UPSTREAM_GO_VERSION"]})
     made = []
     for abi in sorted(record):
         how = record[abi]
@@ -430,13 +458,14 @@ def main() -> None:
         "unmodified. It is MPL-2.0, and it links the Go modules below, among them",
         "GPL-3.0, LGPL-3.0 and MPL-2.0 ones:",
     ] + [f"  {line}" for line in copyleft] + [
-        "This archive is the source of the program and of EVERY Go module it links,",
-        "at exactly the versions the shipped engines link.",
+        "This archive is the source of the program, of EVERY Go module it links and",
+        "of the Go toolchains (standard library and runtime) that built it, at exactly",
+        "the versions the shipped engines link.",
         "",
         "How each shipped engine was made:",
     ] + made + [
         "",
-        "Contents (the module zips byte for byte as published upstream):",
+        "Contents (the module zips and Go sources byte for byte as published upstream):",
         f"  {archive_name}",
         f"    sha256 {sha256(archive)}",
         f"    `git archive --prefix=Xray-core-{version}/ {commit}`, gzip'd without a",
@@ -449,15 +478,17 @@ def main() -> None:
         f"    Go checksum {h1} (equal to Xray-core's go.sum and the engines' build info)",
         f"    {licence}; from https://proxy.golang.org",
     )] + [
+    ] + [line for path, toolchain, digest in go_rows for line in (
+        f"  {path}",
+        f"    sha256 {digest} (as go.dev publishes it)",
+        f"    https://go.dev/dl/{toolchain}.src.tar.gz; the Go standard library and",
+        f"    runtime the engines built with {toolchain} link, BSD-3-Clause",
+    )] + [
         "  provision_xray_engines.sh",
         "    the script that fetched and built the engines above, from",
         "    https://github.com/BirdoVPN/Mobile-Client",
         "",
-        "NOT in this archive: the Go toolchain. Its standard library and runtime",
-        "(BSD-3-Clause) are linked into every engine; their source is the Go source",
-        "distribution of the version each engine was built with:",
-    ] + [f"  https://go.dev/dl/{t}.src.tar.gz" for t in toolchains] + [
-        f"(Xray-core's go.mod asks for go {go_directive}.) The Android NDK supplies only the",
+        f"Xray-core's go.mod asks for go {go_directive}. The Android NDK supplies only the",
         "C toolchain and system libraries the 32-bit engines link against.",
         "",
         "To build: unpack the Xray-core archive and run the command above in it.",

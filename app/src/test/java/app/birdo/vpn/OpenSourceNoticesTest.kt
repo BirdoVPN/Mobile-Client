@@ -140,7 +140,19 @@ class OpenSourceNoticesTest {
             assertTrue("the Xray entry must point at the $go source ($key)", "https://go.dev/dl/$go.src.tar.gz" in entry)
             assertTrue("the Xray entry must name Go ${go.removePrefix("go")}", "Go ${go.removePrefix("go")}" in entry)
         }
-        assertTrue("the Xray entry must say the Go standard library is not in the file", "which are not in that\n    file" in entry)
+        // #487 re-check (owner: mirror, as Desktop #298): the Go sources are
+        // IN the asset, pinned to go.dev's published SHA-256.
+        assertTrue("the Xray entry must say the Go sources are in the file", "whose source is in that\n    file too" in entry)
+        assertFalse("the Xray entry still says the Go sources are missing", "not in that" in entry)
+        listOf("XRAY_GO_VERSION_SOURCE_SHA256", "XRAY_UPSTREAM_GO_SOURCE_SHA256").forEach { key ->
+            assertTrue("$key is not pinned", Regex("""(?m)^$key="[0-9a-f]{64}"$""").containsMatchIn(script))
+        }
+        val builder = text("scripts/xray_corresponding_source.py")
+        assertTrue(
+            "the builder must mirror each engine's Go source, checked against its pin",
+            "path = f\"go-toolchain/{toolchain}.src.tar.gz\"" in builder &&
+                "data = fetch(f\"https://go.dev/dl/{toolchain}.src.tar.gz\", want_sha, downloads)" in builder,
+        )
         assertTrue(
             "the script must write the asset under the name the notices give",
             "prefix = f\"xray-core-{version}-corresponding-source\"" in text("scripts/xray_corresponding_source.py"),
@@ -194,6 +206,17 @@ class OpenSourceNoticesTest {
         assertTrue("tag_name: xray-source-\${{ steps.tag.outputs.tag }}" in publicJob)
         assertTrue("the source release must never be a draft", "draft: false" in publicJob && "draft: true" !in publicJob)
         assertTrue("the source release must never be Latest", "make_latest: false" in publicJob)
+        assertTrue("the source release must be a prerelease", "prerelease: true" in publicJob)
+        // #487 re-check: only a REAL release publishes public source: a tag
+        // push, or a dispatch naming an android-v* tag (validated), never a
+        // dispatch-N test build.
+        assertTrue(
+            "the source release must run only for a real release",
+            "if: \${{ startsWith(github.ref, 'refs/tags/android-v') || " +
+                "(github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}" in publicJob,
+        )
+        assertTrue("the tag must be validated as android-v*", "grep -Eq '^android-v[A-Za-z0-9._-]{1,55}\$'" in publicJob)
+        assertFalse("a dispatch without a tag must not publish", "android-dispatch-" in publicJob)
         assertTrue("release-apk/xray-core-*-corresponding-source.tar.gz" in publicJob)
         assertTrue(
             "Play must wait for the public source",

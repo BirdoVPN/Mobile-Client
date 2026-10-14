@@ -264,9 +264,10 @@ jobs:
 
       # Owner decision L1 (2026-10-14, the Android twin of Desktop D8): every
       # release carries the complete corresponding source of libxray.so -- the
-      # Xray-core tag archive and EVERY Go module it links (GPL-3.0 section 1:
-      # the whole combined program, permissive modules included), at exactly
-      # the versions the four engines just provisioned link (~117 MB). The
+      # Xray-core source, EVERY Go module it links (GPL-3.0 section 1: the
+      # whole combined program, permissive modules included) and the source of
+      # each Go toolchain that built an engine, at exactly the versions the four
+      # engines just provisioned link (~181 MB). The
       # script refuses (and the release stops here, before signing) unless the
       # engines' build info, Xray's go.mod/go.sum at the pinned tag and every
       # pinned hash agree. The asset goes into SHA256SUMS.txt (Sigstore- and
@@ -708,11 +709,13 @@ jobs:
             - `go-modules/`: the proxy.golang.org zip of every Go module the four engines link, GPL-3.0,
               LGPL-3.0, MPL-2.0 and permissive alike, at the exact versions shipped (each SHA-256-pinned and
               checked against Xray-core's `go.sum` and the engines' build info);
+            - `go-toolchain/<go version>.src.tar.gz`: the Go source distribution (standard library and
+              runtime, which every engine links) of each toolchain that built a shipped engine, byte for byte
+              from go.dev and checked against the SHA-256 go.dev publishes: go1.25.7 for the two upstream
+              engines, go1.25.14 for the two BirdoVPN builds;
             - `provision_xray_engines.sh`, the script that fetched two engines and built the other two;
-            - `README.txt`: every file's SHA-256 and licence, how each engine was made (the upstream XTLS
-              asset, or the Go toolchain, Android NDK revision and exact `go build` command), and where the
-              Go toolchain's own source is. The Go standard library is not in the archive: its source is the
-              Go source distribution of the version named there, `https://go.dev/dl/<version>.src.tar.gz`.
+            - `README.txt`: every file's SHA-256 and licence, and how each engine was made (the upstream XTLS
+              asset, or the Go toolchain, Android NDK revision and exact `go build` command).
 
             The same file is published, never as a draft, at the release tagged
             `xray-source-${{ steps.tag.outputs.tag }}`; the app's licence notices link there. Its SHA-256 is in
@@ -745,12 +748,16 @@ jobs:
   #   - a re-run replaces its files in place;
   #   - the Play upload waits for it, so no build reaches Play before its
   #     source is public.
+  # Only for a REAL release: an android-v* tag push, or a dispatch that names
+  # an android-v* release_tag. A dispatch without one (a test build) publishes
+  # nothing here, and play-upload, which needs this job, is then skipped too --
+  # which is right: no Play build without its source public.
   xray-source-release:
     name: Publish the Xray corresponding source (public)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [release, lint, test, native, pq-cpu-proof]
-    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
     permissions:
       contents: write
     steps:
@@ -772,26 +779,22 @@ jobs:
 
       - name: Determine release tag
         id: tag
-        # Same derivation and allowlist as draft-release: user input reaches
-        # the shell only via env and is validated before any tool sees it.
+        # User input reaches the shell only via env and is validated before
+        # any tool sees it. Stricter than draft-release: the tag must be a
+        # release tag (android-v...), because this release is public at once.
         env:
-          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_TAG: ${{ inputs.release_tag }}
           EVENT_NAME: ${{ github.event_name }}
-          RUN_NUMBER: ${{ github.run_number }}
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ -n "$INPUT_TAG" ]; then
-              if ! printf '%s' "$INPUT_TAG" | grep -Eq '^[A-Za-z0-9._-]{1,64}$'; then
-                echo "::error::release_tag input failed validation: $INPUT_TAG"
-                echo "::error::Must match ^[A-Za-z0-9._-]{1,64}$"
-                exit 1
-              fi
-              TAG="$INPUT_TAG"
-            else
-              TAG="android-dispatch-${RUN_NUMBER}"
-            fi
+            TAG="$INPUT_TAG"
           else
-            TAG="${GITHUB_REF##*/}"
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if ! printf '%s' "$TAG" | grep -Eq '^android-v[A-Za-z0-9._-]{1,55}$'; then
+            # Not echoed back: the value is untrusted input.
+            echo "::error::release_tag is not a release tag; a public source release needs one matching ^android-v[A-Za-z0-9._-]{1,55}$"
+            exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Source release tag: xray-source-$TAG"
@@ -819,11 +822,13 @@ jobs:
             - `go-modules/`: the proxy.golang.org zip of every Go module the four engines link, GPL-3.0,
               LGPL-3.0, MPL-2.0 and permissive alike, at the exact versions shipped (each SHA-256-pinned and
               checked against Xray-core's `go.sum` and the engines' build info);
+            - `go-toolchain/<go version>.src.tar.gz`: the Go source distribution (standard library and
+              runtime, which every engine links) of each toolchain that built a shipped engine, byte for byte
+              from go.dev and checked against the SHA-256 go.dev publishes: go1.25.7 for the two upstream
+              engines, go1.25.14 for the two BirdoVPN builds;
             - `provision_xray_engines.sh`, the script that fetched two engines and built the other two;
-            - `README.txt`: every file's SHA-256 and licence, how each engine was made (the upstream XTLS
-              asset, or the Go toolchain, Android NDK revision and exact `go build` command), and where the
-              Go toolchain's own source is. The Go standard library is not in the archive: its source is the
-              Go source distribution of the version named there, `https://go.dev/dl/<version>.src.tar.gz`.
+            - `README.txt`: every file's SHA-256 and licence, and how each engine was made (the upstream XTLS
+              asset, or the Go toolchain, Android NDK revision and exact `go build` command).
 
             `SHA256SUMS.txt` is the app release's checksum file (signed with Sigstore, and GPG when
             configured); check this file with `sha256sum -c --ignore-missing SHA256SUMS.txt`.

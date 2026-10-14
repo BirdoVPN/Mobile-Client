@@ -507,14 +507,15 @@ jobs:
           key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
 
       # Owner decision L1 (2026-10-14): every release publishes the complete
-      # corresponding source of libxray.so -- the Xray tag archive and EVERY Go
-      # module it links -- built by this script (android.yml, release job). Run
+      # corresponding source of libxray.so -- the Xray source, EVERY Go module
+      # it links and each Go toolchain's source -- built by this script
+      # (android.yml, release job). Run
       # here on every PR, against the engines just provisioned, so a pin that
       # no longer holds -- an Xray bump without scripts/xray-go-modules.txt, a
       # moved tag, a changed module zip -- fails a PR, not a release. Built
       # twice from the same inputs (the second from the verified download
-      # cache): the bytes must reproduce. The asset is ~117 MB, so only its
-      # README is kept as an artifact.
+      # cache, so each file is downloaded once): the bytes must reproduce. The
+      # asset is ~181 MB, so only its README is kept as an artifact.
       - name: Xray corresponding source matches the shipped engines
         run: |
           for out in xray-source xray-source-again; do
