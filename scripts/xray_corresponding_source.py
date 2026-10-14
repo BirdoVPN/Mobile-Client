@@ -2,40 +2,47 @@
 """Build the Xray corresponding-source release asset, and refuse on any mismatch.
 
 Owner decision L1 (2026-10-14, the Android twin of Desktop D8): every Android
-release carries the exact source of the copyleft code it ships in libxray.so,
-as a release asset with a SHA-256. libxray.so is the Xray-core program
-(MPL-2.0), and it links github.com/sagernet/sing and sing-shadowsocks
-(GPL-3.0-or-later), github.com/juju/ratelimit (LGPL-3.0 with a linking
-exception) and github.com/xtls/reality (MPL-2.0). GPL-3.0 section 6 lets the
-object code be conveyed with the Corresponding Source offered "from a
-designated place"; this asset, attached to the release, is that place, and the
+release carries the complete corresponding source of libxray.so as a release
+asset with a SHA-256. libxray.so is the Xray-core program (MPL-2.0), and it
+links github.com/sagernet/sing and sing-shadowsocks (GPL-3.0-or-later),
+github.com/juju/ratelimit (LGPL-3.0 with a linking exception),
+github.com/xtls/reality (MPL-2.0) and some 28 permissively licensed modules.
+Under GPL-3.0 section 1 the Corresponding Source of the combined program is the
+source of ALL of it, so every linked module is mirrored, not only the copyleft
+ones. Section 6 lets the object code be conveyed with that source offered "from
+a designated place"; this asset, attached to the release, is that place, and the
 in-app notices (app/src/main/assets/third_party_notices.txt) point to it first.
 
 The asset, xray-core-<XRAY_VERSION>-corresponding-source.tar.gz, holds:
   * Xray-core-<XRAY_VERSION>.tar.gz — GitHub's archive of the pinned tag, byte
     for byte;
-  * go-modules/<module>@<version>.zip — every GPL, LGPL and MPL Go module the
-    binaries link, byte for byte from proxy.golang.org;
+  * go-modules/<module>@<version>.zip — EVERY Go module the shipped binaries
+    link, byte for byte from proxy.golang.org;
   * provision_xray_engines.sh — the script that fetches two ABIs and builds the
     other two from that source (the build instructions);
-  * README.txt — what each file is, its SHA-256, and which binaries it builds.
+  * README.txt — what each file is, its SHA-256 and Go checksum, which binaries
+    it builds, and the Go toolchain each shipped binary was built with.
 
 Nothing is written unless all of this holds (exit 1 otherwise):
-  * the tag archive matches XRAY_SOURCE_ARCHIVE_SHA256 and was made from XRAY_COMMIT
-    (both pinned in provision_xray_engines.sh);
+  * the tag archive matches XRAY_SOURCE_ARCHIVE_SHA256 and was made from
+    XRAY_COMMIT (both pinned in provision_xray_engines.sh);
   * every module in scripts/xray-go-modules.txt is at the version Xray-core's
     own go.mod requires at that tag;
-  * with --binaries: every binary's Go build info lists exactly the table's
-    modules at exactly its versions — so an Xray bump cannot ship until the
-    table, and with it the licences and the mirrored source, follow;
-  * each copyleft module zip matches its pinned SHA-256, and its Go checksum
-    (dirhash h1:) equals the line in the tag's go.sum (and in the binaries).
+  * every binary's Go build info lists exactly the table's modules at exactly
+    its versions — so an Xray bump cannot ship until the table, and with it the
+    licences and the mirrored source, follow;
+  * each module zip matches its pinned SHA-256, and its Go checksum (dirhash
+    h1:) equals the line in the tag's go.sum and in the binaries' build info.
 
 The output is deterministic: fixed tar headers, sorted members, a gzip header
-with no name and no timestamp. The same pins give the same bytes on every run.
+with no name and no timestamp. The same pins and the same binaries give the same
+bytes on every run (the README records the binaries' toolchains, so pass the
+same four engines to reproduce an asset).
 
 Usage:
-  python3 scripts/xray_corresponding_source.py --out DIR [--binaries libxray.so ...]
+  python3 scripts/xray_corresponding_source.py --out DIR --binaries libxray.so ... [--cache DIR]
+
+--cache keeps verified downloads, named by their SHA-256, for a second run.
 """
 
 from __future__ import annotations
@@ -76,44 +83,51 @@ def pins() -> dict[str, str]:
     return found
 
 
-def table() -> dict[str, tuple[str, str, str | None]]:
-    """module -> (version, licence, zip sha256 or None)."""
-    rows: dict[str, tuple[str, str, str | None]] = {}
+def table() -> dict[str, tuple[str, str, str]]:
+    """module -> (version, licence, zip sha256)."""
+    rows: dict[str, tuple[str, str, str]] = {}
     for n, line in enumerate(TABLE.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         cols = re.split(r"\s{2,}", line.strip())
-        if len(cols) not in (3, 4):
-            fail(f"{TABLE.name}:{n}: expected module, version, licence[, zip sha256]")
-        module, version, licence = cols[:3]
-        sha = cols[3] if len(cols) == 4 else None
+        if len(cols) != 4 or not re.fullmatch(r"[0-9a-f]{64}", cols[3]):
+            fail(f"{TABLE.name}:{n}: expected module, version, licence, zip sha256 — every linked module is mirrored")
+        module, version, licence, sha = cols
         if module in rows:
             fail(f"{TABLE.name}:{n}: {module} is listed twice")
-        if COPYLEFT.search(licence) and not (sha and re.fullmatch(r"[0-9a-f]{64}", sha)):
-            fail(f"{TABLE.name}:{n}: {module} is {licence} but has no zip SHA-256 — its source must be mirrored")
-        if sha and not COPYLEFT.search(licence):
-            fail(f"{TABLE.name}:{n}: {module} has a zip SHA-256 but a permissive licence; only copyleft source is mirrored")
         rows[module] = (version, licence, sha)
     if len(rows) < 10:
         fail(f"{TABLE.name} lists only {len(rows)} modules; the table scan is broken")
     return rows
 
 
-def fetch(url: str) -> bytes:
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def fetch(url: str, want_sha: str | None, cache: Path | None) -> bytes:
+    """Download url. With want_sha and a cache, reuse a verified earlier copy."""
+    cached = cache / want_sha if cache and want_sha else None
+    if cached and cached.is_file():
+        data = cached.read_bytes()
+        if sha256(data) == want_sha:
+            return data
     last: Exception | None = None
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310 (https only, fixed hosts)
-                return response.read()
+            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 (https only, fixed hosts)
+                data = response.read()
+            break
         except Exception as error:  # network blips: retry, then fail loudly
             last = error
             time.sleep(2 * (attempt + 1))
-    fail(f"could not download {url}: {last}")
-    raise AssertionError  # unreachable
-
-
-def sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    else:
+        fail(f"could not download {url}: {last}")
+        raise AssertionError  # unreachable
+    if cached and sha256(data) == want_sha:
+        cache.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(data)
+    return data
 
 
 def proxy_escape(path: str) -> str:
@@ -132,8 +146,10 @@ def dirhash_h1(zip_bytes: bytes) -> str:
     return "h1:" + base64.b64encode(summary.digest()).decode()
 
 
-def go_mod_requires(text: str) -> dict[str, str]:
+def go_mod(text: str) -> tuple[dict[str, str], str]:
+    """The require lines (module -> version) and the `go` directive."""
     requires: dict[str, str] = {}
+    go_version = ""
     block = False
     for raw in text.splitlines():
         line = raw.split("//", 1)[0].strip()
@@ -149,9 +165,11 @@ def go_mod_requires(text: str) -> dict[str, str]:
         elif line.startswith("require "):
             module, version = line.split()[1:3]
             requires[module] = version
+        elif line.startswith("go "):
+            go_version = line.split()[1]
         elif line.startswith("replace "):
             fail(f"Xray-core's go.mod replaces a module ({line}); review the mirrored source by hand")
-    return requires
+    return requires, go_version
 
 
 def go_sum(text: str) -> dict[tuple[str, str], str]:
@@ -181,14 +199,17 @@ def build_info(binary: Path) -> tuple[dict[str, tuple[str, str]], str]:
             deps[cols[2]] = (cols[3], cols[4] if len(cols) > 4 else "")
         elif len(cols) >= 2 and cols[1] == "=>":
             fail(f"{binary} was built with a replaced module ({line.strip()}); its source is not the proxy's")
-    if len(deps) < 10:
+    if len(deps) < 10 or not toolchain.startswith("go"):
         fail(f"{binary}: `go version -m` listed only {len(deps)} modules — not a Go binary with build info?")
     return deps, toolchain
 
 
-def deterministic_tar_gz(members: list[tuple[str, bytes, int]]) -> bytes:
-    raw = io.BytesIO()
-    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+def write_deterministic_tar_gz(target: Path, members: list[tuple[str, bytes, int]]) -> None:
+    """Streamed to disk (the modules are ~120 MB), then moved into place."""
+    part = target.with_name(target.name + ".part")
+    with open(part, "wb") as raw, \
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=6, mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         for name, data, mode in sorted(members):
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -197,17 +218,23 @@ def deterministic_tar_gz(members: list[tuple[str, bytes, int]]) -> bytes:
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             tar.addfile(info, io.BytesIO(data))
-    out = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", fileobj=out, compresslevel=9, mtime=0) as gz:
-        gz.write(raw.getvalue())
-    return out.getvalue()
+    os.replace(part, target)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--out", required=True, type=Path, help="directory to write the asset into")
-    parser.add_argument("--binaries", nargs="*", type=Path, default=[],
-                        help="the provisioned libxray.so files, checked against the table")
+    parser.add_argument("--binaries", required=True, nargs="+", type=Path,
+                        help="the provisioned engines, app/src/main/jniLibs/<abi>/libxray.so")
+    parser.add_argument("--cache", type=Path, help="keep verified downloads here, by SHA-256")
     args = parser.parse_args()
 
     pin = pins()
@@ -216,8 +243,13 @@ def main() -> None:
 
     # 1. The binaries link exactly the table.
     linked_h1: dict[str, str] = {}
+    toolchains: dict[str, str] = {}
     for binary in args.binaries:
         deps, toolchain = build_info(binary)
+        abi = binary.parent.name
+        if abi in toolchains:
+            fail(f"two binaries for {abi}")
+        toolchains[abi] = toolchain
         missing = sorted(set(deps) - set(modules))
         if missing:
             fail(f"{binary} links modules {TABLE.name} does not list (review their licences, add them): {missing}")
@@ -234,7 +266,8 @@ def main() -> None:
 
     # 2. The tag archive is the pinned tag at the pinned commit.
     archive_name = f"Xray-core-{version}.tar.gz"
-    archive = fetch(f"https://github.com/XTLS/Xray-core/archive/refs/tags/{version}.tar.gz")
+    archive = fetch(f"https://github.com/XTLS/Xray-core/archive/refs/tags/{version}.tar.gz",
+                    pin["XRAY_SOURCE_ARCHIVE_SHA256"], args.cache)
     if sha256(archive) != pin["XRAY_SOURCE_ARCHIVE_SHA256"]:
         fail(f"the {version} tag archive is {sha256(archive)}, XRAY_SOURCE_ARCHIVE_SHA256 pins {pin['XRAY_SOURCE_ARCHIVE_SHA256']}")
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
@@ -245,7 +278,7 @@ def main() -> None:
         go_sum_member = tar.extractfile(f"{top}/go.sum")
         if go_mod_member is None or go_sum_member is None:
             fail(f"the {version} tag archive has no go.mod / go.sum")
-        requires = go_mod_requires(go_mod_member.read().decode())
+        requires, go_directive = go_mod(go_mod_member.read().decode())
         sums = go_sum(go_sum_member.read().decode())
 
     # 3. The table is Xray's go.mod at that tag.
@@ -253,38 +286,41 @@ def main() -> None:
         if requires.get(module) != want:
             fail(f"{TABLE.name} pins {module} {want}, Xray-core {version}'s go.mod requires {requires.get(module)}")
 
-    # 4. The copyleft module zips, verified three ways.
+    # 4. Every module zip, verified three ways.
     members: list[tuple[str, bytes, int]] = []
     rows = []
+    total = 0
     for module, (mod_version, licence, want_sha) in sorted(modules.items()):
-        if want_sha is None:
-            continue
         url = f"https://proxy.golang.org/{proxy_escape(module)}/@v/{proxy_escape(mod_version)}.zip"
-        data = fetch(url)
+        data = fetch(url, want_sha, args.cache)
         if sha256(data) != want_sha:
             fail(f"{module}@{mod_version}.zip is {sha256(data)}, {TABLE.name} pins {want_sha}")
         h1 = dirhash_h1(data)
         if sums.get((module, mod_version)) != h1:
             fail(f"{module}@{mod_version}: zip checksum {h1}, Xray-core's go.sum says {sums.get((module, mod_version))}")
-        if module in linked_h1 and linked_h1[module] != h1:
-            fail(f"{module}@{mod_version}: zip checksum {h1}, the shipped binaries were built from {linked_h1[module]}")
+        if linked_h1.get(module) != h1:
+            fail(f"{module}@{mod_version}: zip checksum {h1}, the shipped binaries were built from {linked_h1.get(module)}")
         path = f"go-modules/{module}@{mod_version}.zip"
         members.append((path, data, 0o644))
         rows.append((path, want_sha, licence, h1))
-        print(f"  {path}: sha256 {want_sha} {h1} ({licence})")
+        total += len(data)
+        print(f"  {path}: {len(data)} bytes, {h1} ({licence})")
+    print(f"  {len(rows)} modules, {total} bytes")
 
     script = PROVISION.read_bytes().replace(b"\r\n", b"\n")
     members.append((archive_name, archive, 0o644))
     members.append(("provision_xray_engines.sh", script, 0o755))
 
-    permissive = [f"    {m} {v} ({lic})" for m, (v, lic, s) in sorted(modules.items()) if s is None]
+    copyleft = sorted(f"{m} ({lic})" for m, (_, lic, _) in modules.items() if COPYLEFT.search(lic))
     readme = "\n".join([
         "BirdoVPN for Android: complete corresponding source of libxray.so",
         "",
         f"libxray.so is the Xray-core program {version} (commit {commit}),",
-        "unmodified. It is MPL-2.0, and it links the GPL-3.0, LGPL-3.0 and MPL-2.0",
-        "Go modules below. This archive is their complete source, at exactly the",
-        "versions the shipped program links.",
+        "unmodified. It is MPL-2.0, and it links the Go modules below, among them",
+        "GPL-3.0, LGPL-3.0 and MPL-2.0 ones:",
+    ] + [f"  {line}" for line in copyleft] + [
+        "This archive is the source of the program and of EVERY module it links,",
+        "at exactly the versions the shipped binaries link.",
         "",
         "Which binary is which:",
         f"  arm64-v8a  the upstream release asset Xray-android-arm64-v8a.zip (sha256 {pin['XRAY_ANDROID_ARM64_SHA256']})",
@@ -292,6 +328,12 @@ def main() -> None:
         "  armeabi-v7a, x86",
         "             built from the source below by provision_xray_engines.sh (in this",
         "             archive; the `go build` command and flags are in build_from_source)",
+        "",
+        "Go toolchain (BSD-3-Clause; its standard library and runtime are linked into",
+        "every binary). Not in this archive; each version's source is",
+        "https://go.dev/dl/<version>.src.tar.gz.",
+        f"  Xray-core's go.mod: go {go_directive}",
+    ] + [f"  {abi}: built with {toolchains[abi]}" for abi in sorted(toolchains)] + [
         "",
         "Contents (every file byte for byte as published upstream):",
         f"  {archive_name}",
@@ -301,31 +343,25 @@ def main() -> None:
     ] + [line for path, digest, licence, h1 in rows for line in (
         f"  {path}",
         f"    sha256 {digest}",
-        f"    Go checksum {h1} (equal to Xray-core's go.sum)",
+        f"    Go checksum {h1} (equal to Xray-core's go.sum and the binaries' build info)",
         f"    {licence}; from https://proxy.golang.org",
     )] + [
         "  provision_xray_engines.sh",
         "    the build script, from https://github.com/BirdoVPN/Mobile-Client",
         "",
         "To build: unpack the Xray-core archive and run `go build ./main` in it.",
-        "Go downloads each module and verifies it against go.sum; for the modules",
-        "above, what it verifies is these zips (the same Go checksum).",
-        "",
-        "The other modules the program links are under permissive licences, and",
-        "their source is on proxy.golang.org at the versions in Xray-core's go.sum:",
-    ] + permissive + [
-        "",
-        "The Go toolchain (BSD-3-Clause) is not part of this archive: https://go.dev/dl/",
+        "Go downloads each module from proxy.golang.org and verifies it against",
+        "go.sum. These zips are exactly what it downloads (the same Go checksums),",
+        "kept here so the source stays available whatever happens upstream.",
         "",
     ])
     members.append(("README.txt", readme.encode(), 0o644))
 
     prefix = f"xray-core-{version}-corresponding-source"
-    asset = deterministic_tar_gz([(f"{prefix}/{name}", data, mode) for name, data, mode in members])
     args.out.mkdir(parents=True, exist_ok=True)
     target = args.out / f"{prefix}.tar.gz"
-    target.write_bytes(asset)
-    print(f"{target.name}  sha256 {sha256(asset)}  {len(asset)} bytes")
+    write_deterministic_tar_gz(target, [(f"{prefix}/{name}", data, mode) for name, data, mode in members])
+    print(f"{target.name}  sha256 {file_sha256(target)}  {target.stat().st_size} bytes")
 
 
 if __name__ == "__main__":

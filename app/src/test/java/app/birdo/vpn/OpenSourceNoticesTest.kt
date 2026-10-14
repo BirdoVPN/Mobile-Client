@@ -173,10 +173,34 @@ class OpenSourceNoticesTest {
             "release-apk/xray-core-*-corresponding-source.tar.gz" in release.substringAfter("draft-release:"),
         )
         val ci = text(".github/workflows/android-ci.yml")
+            .substringAfter("- name: Xray corresponding source matches the shipped engines", "")
+            .substringBefore("- name:")
+        assertTrue("pull-request CI no longer builds the source asset", ci.isNotEmpty())
         assertTrue(
             "pull-request CI must build the asset against the provisioned engines",
-            "python3 scripts/xray_corresponding_source.py --out \"\$RUNNER_TEMP/xray-source\" \\\n" +
-                "            --binaries app/src/main/jniLibs/*/libxray.so" in ci,
+            "python3 scripts/xray_corresponding_source.py" in ci && "--binaries app/src/main/jniLibs/*/libxray.so" in ci,
+        )
+        assertTrue("pull-request CI must check that the bytes reproduce", "cmp " in ci)
+    }
+
+    /**
+     * GPL-3.0 section 1: the Corresponding Source of the combined program is
+     * the source of everything linked into it, so the asset mirrors every
+     * module the engines link, permissive ones too — each with a pinned zip.
+     */
+    @Test
+    fun `every linked module is mirrored, not only the copyleft ones`() {
+        val rows = text("scripts/xray-go-modules.txt").lines()
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            .map { it.trim().split(Regex("""\s{2,}""")) }
+        assertTrue("found only ${rows.size} modules in the table", rows.size >= 20)
+        val unpinned = rows.filter { cols -> cols.size != 4 || !Regex("""[0-9a-f]{64}""").matches(cols[3]) }
+            .map { it[0] }
+        assertEquals("modules with no pinned proxy.golang.org zip", emptyList<String>(), unpinned)
+        assertTrue(
+            "the script must mirror every row, not only the copyleft ones",
+            "for module, (mod_version, licence, want_sha) in sorted(modules.items()):\n        url =" in
+                text("scripts/xray_corresponding_source.py"),
         )
     }
 

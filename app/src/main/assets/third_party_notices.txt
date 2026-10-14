@@ -16,8 +16,8 @@ Xray-core 26.2.6 (libxray.so, the Stealth Mode engine)
     https://github.com/BirdoVPN/Mobile-Client/releases (for the version in
     Settings: https://github.com/BirdoVPN/Mobile-Client/releases/download/android-v<version>/xray-core-v26.2.6-corresponding-source.tar.gz;
     its SHA-256 is in that release's SHA256SUMS.txt). It is the complete
-    corresponding source of this program and of the GPL, LGPL and MPL modules
-    named below, at exactly the versions BirdoVPN ships.
+    corresponding source of this program, including every Go module linked
+    into it, at exactly the versions BirdoVPN ships.
   Upstream: https://github.com/XTLS/Xray-core/tree/v26.2.6 (commit
     12ee51e4bb1d02ece4ef4b7114efa2bcdc130995)
   BirdoVPN ships this program unmodified: the upstream release for arm64-v8a and

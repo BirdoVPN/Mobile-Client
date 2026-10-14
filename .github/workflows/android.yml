@@ -263,9 +263,10 @@ jobs:
       - uses: ./.github/actions/android-native-libs
 
       # Owner decision L1 (2026-10-14, the Android twin of Desktop D8): every
-      # release carries the complete corresponding source of the GPL/LGPL code
-      # in libxray.so -- the Xray-core tag archive and the copyleft Go modules,
-      # at exactly the versions the four engines just provisioned link. The
+      # release carries the complete corresponding source of libxray.so -- the
+      # Xray-core tag archive and EVERY Go module it links (GPL-3.0 section 1:
+      # the whole combined program, permissive modules included), at exactly
+      # the versions the four engines just provisioned link (~117 MB). The
       # script refuses (and the release stops here, before signing) unless the
       # engines' build info, Xray's go.mod/go.sum at the pinned tag and every
       # pinned hash agree. The asset goes into SHA256SUMS.txt (Sigstore- and

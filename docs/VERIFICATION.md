@@ -61,25 +61,31 @@ Get-Content SHA256SUMS.txt | ForEach-Object {
 
 The Android app ships Xray-core as `libxray.so`. It is MPL-2.0 and links Go
 modules under the GPL-3.0 (sagernet/sing, sing-shadowsocks), the LGPL-3.0
-(juju/ratelimit) and the MPL-2.0 (xtls/reality). Every Android release carries
-their complete corresponding source as the asset
-`xray-core-<xray version>-corresponding-source.tar.gz`, listed in
-`SHA256SUMS.txt` (so covered by the signatures above). It holds GitHub's
-archive of the Xray-core tag, each copyleft module's zip from
-proxy.golang.org, the build script, and a `README.txt` with every file's
-SHA-256 and Go checksum.
+(juju/ratelimit) and the MPL-2.0 (xtls/reality), and some 28 permissively
+licensed ones. Every Android release carries the complete corresponding source
+of the program as the asset `xray-core-<xray version>-corresponding-source.tar.gz`
+(about 117 MB), listed in `SHA256SUMS.txt` and so covered by the signatures
+above. It holds GitHub's archive of the Xray-core tag, the proxy.golang.org zip
+of EVERY module the shipped engines link (GPL-3.0 section 1 covers the whole
+combined program, not only its copyleft parts), the build script, and a
+`README.txt` with every file's SHA-256 and Go checksum and the Go toolchain each
+engine was built with.
 
 It is built by `scripts/xray_corresponding_source.py`, which refuses unless the
 engines in the build link exactly the modules and versions in
 `scripts/xray-go-modules.txt`, those versions are what Xray-core's `go.mod`
-requires at the pinned tag, and every zip's Go checksum equals Xray-core's
-`go.sum`. The output is deterministic (fixed tar headers, no timestamps), so it
-can be rebuilt from a checkout of the release tag and compared; on a machine
-whose zlib compresses differently from the CI runner's, compare the unpacked
-files instead (each one's SHA-256 is in its `README.txt`):
+requires at the pinned tag, and every zip matches its pinned SHA-256 and its Go
+checksum equals Xray-core's `go.sum` and the engines' build info. The output is
+deterministic (fixed tar headers, no timestamps), so it can be rebuilt from a
+checkout of the release tag, given the four engines from the APK (the README
+records their toolchains), and compared. On a machine whose zlib compresses
+differently from the CI runner's, compare the unpacked files instead (each
+one's SHA-256 is in its `README.txt`):
 
 ```bash
-python3 scripts/xray_corresponding_source.py --out /tmp/xray-source
+unzip -q BirdoVPN-release.apk 'lib/*/libxray.so' -d /tmp/apk
+python3 scripts/xray_corresponding_source.py --out /tmp/xray-source \
+  --binaries /tmp/apk/lib/*/libxray.so
 sha256sum /tmp/xray-source/*.tar.gz   # the line in SHA256SUMS.txt (ubuntu-24.04)
 ```
 
