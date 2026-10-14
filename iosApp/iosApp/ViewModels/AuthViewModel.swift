@@ -294,15 +294,24 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
-        // MR-1726: a fresh install discards the device identity a previous
-        // install left in the keychain, BEFORE anything reads it. This is the
-        // first keychain reader, and the scene creates it after launch — never
-        // during iOS prewarming, which stops short of UIApplicationMain and is
-        // when neither UserDefaults nor the keychain may read back yet.
-        InstallIdentity.checkOnLaunch(defaults: .standard,
-                                      store: keychain,
-                                      protectedDataAvailable: Self.protectedDataAvailable,
-                                      mintDeviceId: InstallIdentity.mintDeviceId)
+        // MR-1726: a fresh install signs out the session a previous install
+        // left in the keychain and discards its device identity, BEFORE
+        // anything reads either — the token check below then finds no session.
+        // This is the first keychain reader, and the scene creates it after
+        // launch — never during iOS prewarming, which stops short of
+        // UIApplicationMain and is when neither UserDefaults nor the keychain
+        // may read back yet.
+        let install = InstallIdentity.checkOnLaunch(defaults: .standard,
+                                                    store: keychain,
+                                                    protectedDataAvailable: Self.protectedDataAvailable,
+                                                    mintDeviceId: InstallIdentity.mintDeviceId)
+        if install == .discardedPreviousInstall {
+            // The rest of a sign-out (completeLocalLogout): the previous
+            // install's BirdoPQ client key and any heartbeat credentials a
+            // surviving VPN profile still carries.
+            BirdoPQManager.shared.resetPersistedKeypair()
+            VPNManager.shared.scrubHeartbeatCredentials()
+        }
 
         // Owner item 38: consent is VERSIONED. An acceptance of an older
         // disclosure does not count, so its user sees the current one once.

@@ -1,24 +1,38 @@
 import XCTest
 
 /// MR-1726 — pins `InstallIdentity.checkOnLaunch`, the first-run sentinel that
-/// makes the Apple device identity per install (Android parity).
+/// makes the Apple session and device identity per install (Android parity).
 ///
 /// The keychain outlives the app, so before this a reinstall picked up the
-/// previous install's `device_id` and `anonymous_id`. The store here is an
-/// in-memory stand-in for `KeychainService` (which conforms in the app) and
-/// the defaults are a throwaway suite, so nothing touches a real keychain.
+/// previous install's session, `device_id` and `anonymous_id`. The store here
+/// is an in-memory stand-in for `KeychainService` (which conforms in the app)
+/// and the defaults are a throwaway suite, so nothing touches a real keychain.
 final class InstallIdentityTests: XCTestCase {
 
     private final class MemoryStore: InstallIdentityStore {
         var deviceId: String?
         var anonymousId: String?
+        var accessToken: String?
+        var refreshToken: String?
         var failWrites = false
         var ignoreClears = false
+        var ignoreSessionClears = false
         private(set) var writes = 0
 
-        init(deviceId: String? = nil, anonymousId: String? = nil) {
+        init(deviceId: String? = nil, anonymousId: String? = nil,
+             accessToken: String? = nil, refreshToken: String? = nil) {
             self.deviceId = deviceId
             self.anonymousId = anonymousId
+            self.accessToken = accessToken
+            self.refreshToken = refreshToken
+        }
+
+        var hasSession: Bool { accessToken != nil || refreshToken != nil }
+
+        func clearSession() {
+            guard !ignoreSessionClears else { return }
+            accessToken = nil
+            refreshToken = nil
         }
 
         func saveDeviceId(_ id: String) -> Bool {
@@ -51,6 +65,14 @@ final class InstallIdentityTests: XCTestCase {
     private let previousDevice = "ios_previous-install-marker"
     private let previousAnonymous = "000000000000000000000001"
     private let freshDevice = "ios_fresh-install-marker"
+    private let previousAccess = "access-aaaa"
+    private let previousRefresh = "refresh-aaaa"
+
+    /// A previous install that was signed in: session, device id, account number.
+    private func signedInLeftovers() -> MemoryStore {
+        MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous,
+                    accessToken: previousAccess, refreshToken: previousRefresh)
+    }
 
     private func check(_ store: MemoryStore, protectedData: Bool = true) -> InstallIdentity.Outcome {
         InstallIdentity.checkOnLaunch(defaults: defaults, store: store,
@@ -59,6 +81,38 @@ final class InstallIdentityTests: XCTestCase {
     }
 
     // MARK: - Fresh install (no sentinel, no record of an earlier launch)
+
+    func testAFreshInstallStartsSignedOutWithANewDeviceId() {
+        // Owner, 2026-10-14: "sign out on reinstall", as Android's does.
+        let store = signedInLeftovers()
+        XCTAssertEqual(check(store), .discardedPreviousInstall)
+        XCTAssertFalse(store.hasSession, "a reinstall inherited the previous install's session")
+        XCTAssertNil(store.accessToken)
+        XCTAssertNil(store.refreshToken)
+        XCTAssertEqual(store.deviceId, freshDevice)
+        XCTAssertNil(store.anonymousId)
+        XCTAssertTrue(defaults.bool(forKey: InstallIdentity.sentinelKey))
+    }
+
+    func testOnlyALeftoverSessionIsStillSignedOut() {
+        // A refresh token alone is a live session (AuthViewModel's cold start
+        // treats either token as one).
+        let store = MemoryStore(refreshToken: previousRefresh)
+        XCTAssertEqual(check(store), .discardedPreviousInstall)
+        XCTAssertFalse(store.hasSession)
+        XCTAssertEqual(store.writes, 0, "no device id was left, so none is minted here")
+    }
+
+    func testASessionThatWillNotClearChangesNothingElseAndRetries() {
+        // A live session must never be left running under a new device id.
+        let store = signedInLeftovers()
+        store.ignoreSessionClears = true
+        XCTAssertEqual(check(store), .retryNextLaunch)
+        XCTAssertEqual(store.deviceId, previousDevice)
+        XCTAssertEqual(store.anonymousId, previousAnonymous)
+        XCTAssertEqual(store.writes, 0)
+        XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey))
+    }
 
     func testAFreshInstallDiscardsAPreviousInstallsIdentity() {
         let store = MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous)
@@ -106,11 +160,13 @@ final class InstallIdentityTests: XCTestCase {
             guard let upgraded = UserDefaults(suiteName: suite) else { return XCTFail("no suite") }
             defer { upgraded.removePersistentDomain(forName: suite) }
             upgraded.set(key == ConsentRecord.versionKey ? 2 : true, forKey: key)
-            let store = MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous)
+            let store = signedInLeftovers()
             let outcome = InstallIdentity.checkOnLaunch(defaults: upgraded, store: store,
                                                         protectedDataAvailable: true,
                                                         mintDeviceId: { self.freshDevice })
             XCTAssertEqual(outcome, .upgradeKeptIdentity, key)
+            XCTAssertEqual(store.accessToken, previousAccess, "an upgrade signed the user out (\(key))")
+            XCTAssertEqual(store.refreshToken, previousRefresh, key)
             XCTAssertEqual(store.deviceId, previousDevice, "an upgrade rotated the device id (\(key))")
             XCTAssertEqual(store.anonymousId, previousAnonymous, key)
             XCTAssertTrue(upgraded.bool(forKey: InstallIdentity.sentinelKey), key)
@@ -131,8 +187,9 @@ final class InstallIdentityTests: XCTestCase {
     // MARK: - Nothing is decided when it cannot be done safely
 
     func testNothingHappensBeforeTheFirstUnlock() {
-        let store = MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous)
+        let store = signedInLeftovers()
         XCTAssertEqual(check(store, protectedData: false), .retryNextLaunch)
+        XCTAssertTrue(store.hasSession, "signed out before the first unlock, on data that could not be read")
         XCTAssertEqual(store.deviceId, previousDevice)
         XCTAssertEqual(store.anonymousId, previousAnonymous)
         XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey))

@@ -316,4 +316,10 @@ final class KeychainService: @unchecked Sendable {
 }
 
 /// MR-1726: the store `InstallIdentity.checkOnLaunch` reads and replaces.
-extension KeychainService: InstallIdentityStore {}
+extension KeychainService: InstallIdentityStore {
+    var hasSession: Bool { accessToken != nil || refreshToken != nil }
+
+    /// The session half of a sign-out: tokens, email, sign-in method and the
+    /// tunnel's shared secrets.
+    func clearSession() { clear() }
+}

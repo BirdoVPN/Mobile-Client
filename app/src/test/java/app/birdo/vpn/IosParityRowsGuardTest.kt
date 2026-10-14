@@ -91,7 +91,7 @@ class IosParityRowsGuardTest {
         assertTrue("the check runs after the session is read from the keychain", check < firstTokenRead)
         assertTrue(
             source("$ios/Services/KeychainService.swift")
-                .contains("extension KeychainService: InstallIdentityStore {}"),
+                .contains("extension KeychainService: InstallIdentityStore {"),
         )
         assertTrue(unitTestTarget.contains("- path: iosApp/Services/InstallIdentity.swift"))
     }
@@ -111,6 +111,26 @@ class IosParityRowsGuardTest {
         val logout = auth.substringAfter("private func completeLocalLogout() {").substringBefore("\n    }\n")
         assertFalse("sign-out rotates the device id", logout.contains("resetDeviceIdentity"))
         assertFalse("sign-out runs the fresh-install reset", logout.contains("InstallIdentity"))
+    }
+
+    // ── MR-1726 follow-ups (owner, 2026-10-14) ───────────────────────────────
+
+    @Test
+    fun `a fresh install starts signed out, before the session is read`() {
+        val identity = source("$ios/Services/InstallIdentity.swift")
+        val clear = identity.indexOf("store.clearSession()")
+        val rotate = identity.indexOf("store.saveDeviceId(mintDeviceId())")
+        assertTrue("the fresh-install path no longer signs out", clear >= 0)
+        assertTrue("the session must be cleared before the device id is replaced", clear < rotate)
+        assertTrue(
+            source("$ios/Services/KeychainService.swift").contains("func clearSession() { clear() }"),
+        )
+        val auth = source("$ios/ViewModels/AuthViewModel.swift")
+        assertTrue(auth.contains("if install == .discardedPreviousInstall {"))
+        // The rest of a sign-out, as completeLocalLogout does it.
+        val rest = auth.substringAfter("if install == .discardedPreviousInstall {").substringBefore("}")
+        assertTrue(rest.contains("BirdoPQManager.shared.resetPersistedKeypair()"))
+        assertTrue(rest.contains("VPNManager.shared.scrubHeartbeatCredentials()"))
     }
 
     // ── MR-975: the iOS kill-switch chip shows the real state ────────────────

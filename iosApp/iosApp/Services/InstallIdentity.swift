@@ -15,17 +15,19 @@ import Foundation
 ///
 /// UserDefaults, unlike the keychain, IS deleted with the app on iOS. So a
 /// sentinel kept there tells a launch of a fresh install from any later
-/// launch: when it is absent, whatever identity the keychain still holds was
-/// left by a previous install and is discarded — a new random device id is
-/// minted and the previous install's anonymous account number is dropped —
-/// and then the sentinel is set.
+/// launch: when it is absent, whatever the keychain still holds was left by a
+/// previous install and is discarded — the session is signed out (owner,
+/// 2026-10-14: "sign out on reinstall", as Android's reinstall does), a new
+/// random device id is minted and the previous install's anonymous account
+/// number is dropped — and then the sentinel is set.
 ///
 /// UPGRADES ARE NOT FRESH INSTALLS. The first build carrying this check also
-/// finds no sentinel on every existing install. Those must keep their id
-/// (Android's migration rule: nobody's device row changes on upgrade), so the
-/// consent record — which every build since the guest shell writes on the
-/// first screen a new install shows, and which an earlier launch of THIS
-/// install is the only possible author of — marks the install as already run.
+/// finds no sentinel on every existing install. Those must stay signed in and
+/// keep their id (Android's migration rule: nobody's device row changes on
+/// upgrade), so the consent record — which every build since the guest shell
+/// writes on the first screen a new install shows, and which an earlier launch
+/// of THIS install is the only possible author of — marks the install as
+/// already run.
 ///
 /// Sign-out does NOT go through here and does not change the device id, as on
 /// Android (`BirdoRepository.logout` keeps it; only account deletion rotates
@@ -37,9 +39,8 @@ import Foundation
 ///   "device limit reached" until then (Android's accepted cost, the same);
 /// - macOS does not delete an app's container when the app is dragged to the
 ///   Bin, so the sentinel usually survives there and a Mac reinstall keeps its
-///   identity; a fresh macOS user account or a removed container resets it;
-/// - the session tokens are not touched here: whether a reinstall should also
-///   sign the user out (Android's does) is a separate decision.
+///   identity (and session); a fresh macOS user account or a removed container
+///   resets it.
 ///
 /// Foundation-only on purpose: the BirdoVPNTests bundle compiles it with an
 /// in-memory store, so the fresh-install / upgrade / already-run decision is
@@ -61,12 +62,12 @@ enum InstallIdentity {
         /// The sentinel was already set: a later launch. Nothing changes.
         case alreadyChecked
         /// No sentinel, but this install has run before (an upgrade from a
-        /// build without the check): identity kept, sentinel set.
+        /// build without the check): session and identity kept, sentinel set.
         case upgradeKeptIdentity
         /// A fresh install with nothing left over: sentinel set.
         case freshInstall
-        /// A fresh install that found a previous install's identity in the
-        /// keychain and replaced it: sentinel set.
+        /// A fresh install that found a previous install's session or identity
+        /// in the keychain: signed out, identity replaced, sentinel set.
         case discardedPreviousInstall
         /// Nothing could be decided safely this launch (protected data not yet
         /// available, or a keychain write failed): sentinel NOT set, so the
@@ -74,7 +75,8 @@ enum InstallIdentity {
         case retryNextLaunch
     }
 
-    /// Run once per launch, before anything reads the device identity.
+    /// Run once per launch, before anything reads the session or the device
+    /// identity.
     ///
     /// - Parameters:
     ///   - protectedDataAvailable: false before the first unlock after a boot,
@@ -93,12 +95,20 @@ enum InstallIdentity {
             defaults.set(true, forKey: sentinelKey)
             return .upgradeKeptIdentity
         }
+        let leftoverSession = store.hasSession
         let leftoverDevice = store.deviceId != nil
         let leftoverAnonymous = store.anonymousId != nil
-        if !leftoverDevice && !leftoverAnonymous {
+        if !leftoverSession && !leftoverDevice && !leftoverAnonymous {
             // Nothing to discard; APIClient mints the id on first use.
             defaults.set(true, forKey: sentinelKey)
             return .freshInstall
+        }
+        if leftoverSession {
+            // FIRST, before the identity: if the sign-out cannot be completed,
+            // nothing else changes and the next launch tries again — a live
+            // session must never be left running under a new device id.
+            store.clearSession()
+            guard !store.hasSession else { return .retryNextLaunch }
         }
         if leftoverDevice {
             // Overwrite rather than delete: a failed write leaves the old id in
@@ -123,11 +133,15 @@ enum InstallIdentity {
     }
 }
 
-/// The two keychain items the check reads and replaces. `KeychainService`
-/// conforms; the tests use an in-memory store.
+/// The keychain items the check reads and replaces.
+/// `KeychainService` conforms; the tests use an in-memory store.
 protocol InstallIdentityStore: AnyObject {
     var deviceId: String? { get }
     var anonymousId: String? { get }
+    /// Either session token is stored.
+    var hasSession: Bool { get }
     @discardableResult func saveDeviceId(_ id: String) -> Bool
     func clearAnonymousId()
+    /// Drop the session: tokens and everything stored with them.
+    func clearSession()
 }
