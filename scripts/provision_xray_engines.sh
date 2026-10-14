@@ -46,8 +46,8 @@
 #
 # libxray.so links GPL-3.0 and LGPL-3.0 Go modules, so every release carries
 # their exact source as an asset: scripts/xray_corresponding_source.py builds
-# xray-core-<XRAY_VERSION>-corresponding-source.tar.gz from XRAY_SOURCE_SHA256
-# (GitHub's archive of the tag, made from XRAY_COMMIT) and the module table in
+# xray-core-<XRAY_VERSION>-corresponding-source.tar.gz from the tag archive
+# pinned by XRAY_SOURCE_ARCHIVE_SHA256 (made from XRAY_COMMIT) and the table in
 # scripts/xray-go-modules.txt, which must match what these binaries link. A
 # bump here therefore also needs: the new tag archive's SHA-256 below, and that
 # table re-reviewed (the script, run by PR CI and the release, says what moved).
@@ -64,7 +64,9 @@ XRAY_ANDROID_ARM64_SHA256="952ccbb2275eace52e644a349358de293278eefc32b139d795b06
 XRAY_ANDROID_AMD64_SHA256="f11f5bb71ebb2fe4127670404fbd0c21d93f62e453870fda65ad6effe7a6131e"
 # https://github.com/XTLS/Xray-core/archive/refs/tags/$XRAY_VERSION.tar.gz — not
 # used to build (the clone below is), only mirrored in the release asset.
-XRAY_SOURCE_SHA256="a41f170a03fa25d9d39f23f344540b02336a5c893d97b1b837b9477f4b35bc7f"
+# Keep these names long: gitleaks' jfrog-identity-token rule reads "xray", up
+# to 20 characters, "=" and 64 hex characters as a JFrog Xray token.
+XRAY_SOURCE_ARCHIVE_SHA256="a41f170a03fa25d9d39f23f344540b02336a5c893d97b1b837b9477f4b35bc7f"
 
 ALL_ABIS=(arm64-v8a armeabi-v7a x86_64 x86)
 ABIS=("$@")

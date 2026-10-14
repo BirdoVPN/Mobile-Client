@@ -21,7 +21,7 @@ The asset, xray-core-<XRAY_VERSION>-corresponding-source.tar.gz, holds:
   * README.txt — what each file is, its SHA-256, and which binaries it builds.
 
 Nothing is written unless all of this holds (exit 1 otherwise):
-  * the tag archive matches XRAY_SOURCE_SHA256 and was made from XRAY_COMMIT
+  * the tag archive matches XRAY_SOURCE_ARCHIVE_SHA256 and was made from XRAY_COMMIT
     (both pinned in provision_xray_engines.sh);
   * every module in scripts/xray-go-modules.txt is at the version Xray-core's
     own go.mod requires at that tag;
@@ -69,7 +69,7 @@ def fail(message: str) -> None:
 def pins() -> dict[str, str]:
     text = PROVISION.read_text(encoding="utf-8")
     found = dict(re.findall(r'(?m)^(XRAY_[A-Z0-9_]+)="([^"]*)"', text))
-    for key in ("XRAY_VERSION", "XRAY_COMMIT", "XRAY_SOURCE_SHA256",
+    for key in ("XRAY_VERSION", "XRAY_COMMIT", "XRAY_SOURCE_ARCHIVE_SHA256",
                 "XRAY_ANDROID_ARM64_SHA256", "XRAY_ANDROID_AMD64_SHA256"):
         if not found.get(key):
             fail(f"{PROVISION.name} has no {key} pin")
@@ -235,8 +235,8 @@ def main() -> None:
     # 2. The tag archive is the pinned tag at the pinned commit.
     archive_name = f"Xray-core-{version}.tar.gz"
     archive = fetch(f"https://github.com/XTLS/Xray-core/archive/refs/tags/{version}.tar.gz")
-    if sha256(archive) != pin["XRAY_SOURCE_SHA256"]:
-        fail(f"the {version} tag archive is {sha256(archive)}, XRAY_SOURCE_SHA256 pins {pin['XRAY_SOURCE_SHA256']}")
+    if sha256(archive) != pin["XRAY_SOURCE_ARCHIVE_SHA256"]:
+        fail(f"the {version} tag archive is {sha256(archive)}, XRAY_SOURCE_ARCHIVE_SHA256 pins {pin['XRAY_SOURCE_ARCHIVE_SHA256']}")
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         if tar.pax_headers.get("comment") != commit:
             fail(f"the {version} tag archive was made from {tar.pax_headers.get('comment')}, not {commit}")
@@ -295,7 +295,7 @@ def main() -> None:
         "",
         "Contents (every file byte for byte as published upstream):",
         f"  {archive_name}",
-        f"    sha256 {pin['XRAY_SOURCE_SHA256']}",
+        f"    sha256 {pin['XRAY_SOURCE_ARCHIVE_SHA256']}",
         f"    https://github.com/XTLS/Xray-core/archive/refs/tags/{version}.tar.gz",
         "    Xray-core, MPL-2.0. Its go.mod and go.sum name every module below.",
     ] + [line for path, digest, licence, h1 in rows for line in (

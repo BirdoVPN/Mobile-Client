@@ -74,6 +74,21 @@ paths = [
 #
 # Matched on the SECRET (gitleaks' default regexTarget), anchored, so it
 # exempts this exact string and nothing else -- not the file, not the rule.
+#
+# ── Another item name, and a public digest (Mobile-Client #487) ──────────
+#
+# `static let stalePurgeDoneKey = "stale_anonymous_id_purged_v1"` in
+# InstallIdentity.swift: the UserDefaults key of a one-time purge flag, the
+# same kind of item NAME as the one above.
+#
+# a41f170a...4b35bc7f: the SHA-256 of GitHub's public archive of the Xray-core
+# v26.2.6 tag, pinned in scripts/provision_xray_engines.sh. A digest of a
+# public file, not a credential. The jfrog-identity-token rule reads the word
+# "xray" near 64 hex characters as a JFrog Xray token. The pin's variable is now
+# named so that the rule does not match it; this entry covers the PR commit
+# that first added it under a shorter name.
 regexes = [
   '''^birdo_pq_v1_keypair$''',
+  '''^stale_anonymous_id_purged_v1$''',
+  '''^a41f170a03fa25d9d39f23f344540b02336a5c893d97b1b837b9477f4b35bc7f$''',
 ]

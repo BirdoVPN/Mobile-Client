@@ -154,7 +154,7 @@ class OpenSourceNoticesTest {
     @Test
     fun `every release builds, checks and publishes the source asset`() {
         val script = text("scripts/provision_xray_engines.sh")
-        assertTrue("the tag archive is not pinned", Regex("""(?m)^XRAY_SOURCE_SHA256="[0-9a-f]{64}"$""").containsMatchIn(script))
+        assertTrue("the tag archive is not pinned", Regex("""(?m)^XRAY_SOURCE_ARCHIVE_SHA256="[0-9a-f]{64}"$""").containsMatchIn(script))
         val release = text(".github/workflows/android.yml")
         val build = release.substringAfter("- name: Build the Xray corresponding-source asset", "")
         assertTrue("the release job no longer builds the source asset", build.isNotEmpty())
