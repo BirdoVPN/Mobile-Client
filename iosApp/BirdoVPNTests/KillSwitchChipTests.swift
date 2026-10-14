@@ -9,12 +9,12 @@ import XCTest
 /// actually does?) comes later; this pins the mapping.
 final class KillSwitchChipTests: XCTestCase {
 
-    private let armed = KillSwitchSystemState(onDemandEnabled: true, hasConnectRule: true,
-                                              includeAllNetworks: true)
+    private let armed = KillSwitchSystemState(configurationEnabled: true, onDemandEnabled: true,
+                                              hasConnectRule: true, includeAllNetworks: true)
     /// The steady disconnected state: connect() saves with on-demand off and
     /// disconnect() disarms first; includeAllNetworks stays as last built.
-    private let disarmed = KillSwitchSystemState(onDemandEnabled: false, hasConnectRule: false,
-                                                 includeAllNetworks: true)
+    private let disarmed = KillSwitchSystemState(configurationEnabled: true, onDemandEnabled: false,
+                                                 hasConnectRule: false, includeAllNetworks: true)
 
     private func chip(_ system: KillSwitchSystemState?, up: Bool, toggle: Bool) -> KillSwitchChip {
         KillSwitchChip.resolve(system: system, tunnelUp: up, preferenceOn: toggle)
@@ -42,9 +42,14 @@ final class KillSwitchChipTests: XCTestCase {
 
     func testEveryPartOfTheArmIsRequired() {
         let parts: [KillSwitchSystemState] = [
-            KillSwitchSystemState(onDemandEnabled: false, hasConnectRule: true, includeAllNetworks: true),
-            KillSwitchSystemState(onDemandEnabled: true, hasConnectRule: false, includeAllNetworks: true),
-            KillSwitchSystemState(onDemandEnabled: true, hasConnectRule: true, includeAllNetworks: false),
+            KillSwitchSystemState(configurationEnabled: false, onDemandEnabled: true,
+                                  hasConnectRule: true, includeAllNetworks: true),
+            KillSwitchSystemState(configurationEnabled: true, onDemandEnabled: false,
+                                  hasConnectRule: true, includeAllNetworks: true),
+            KillSwitchSystemState(configurationEnabled: true, onDemandEnabled: true,
+                                  hasConnectRule: false, includeAllNetworks: true),
+            KillSwitchSystemState(configurationEnabled: true, onDemandEnabled: true,
+                                  hasConnectRule: true, includeAllNetworks: false),
         ]
         for state in parts {
             XCTAssertFalse(state.isArmed, "\(state)")
@@ -52,6 +57,21 @@ final class KillSwitchChipTests: XCTestCase {
             XCTAssertNotEqual(chip(state, up: true, toggle: true), .active, "\(state)")
         }
         XCTAssertTrue(armed.isArmed)
+    }
+
+    /// vpn-d3 review: the VPN switched off in iOS Settings, or another app's
+    /// VPN chosen there, clears `isEnabled` while the rule and the flag stay
+    /// in the profile. Nothing is blocked or held then, so neither chip may
+    /// claim it.
+    func testAConfigurationTheSystemIsNotUsingIsNeverArmed() {
+        let switchedOff = KillSwitchSystemState(configurationEnabled: false, onDemandEnabled: true,
+                                                hasConnectRule: true, includeAllNetworks: true)
+        XCTAssertFalse(switchedOff.isArmed)
+        XCTAssertNotEqual(chip(switchedOff, up: false, toggle: true), .blocking)
+        XCTAssertNotEqual(chip(switchedOff, up: false, toggle: false), .blocking)
+        XCTAssertEqual(chip(switchedOff, up: true, toggle: true), .hidden)
+        // With the toggle on and the tunnel down it is only the next-session hint.
+        XCTAssertEqual(chip(switchedOff, up: false, toggle: true), .armsOnConnect)
     }
 
     func testDisconnectedAndDisarmedIsOnlyAHintAboutTheNextSession() {

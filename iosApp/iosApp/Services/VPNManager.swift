@@ -73,6 +73,8 @@ final class VPNManager: @unchecked Sendable {
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
+    /// MR-975 review: `.NEVPNConfigurationChange`, for the kill-switch chip.
+    private var configurationObserver: NSObjectProtocol?
 
     /// REAL kill-switch blocking state, read from the system profile — NOT the
     /// user preference. True only when the persisted on-demand rule is armed
@@ -90,35 +92,39 @@ final class VPNManager: @unchecked Sendable {
     /// MR-975: the kill-switch flags as the system profile holds them, for the
     /// Home chip (`KillSwitchChip`). Nil when no VPN configuration is loaded.
     var killSwitchState: KillSwitchSystemState? {
-        guard let mgr = manager else { return nil }
+        manager.map(Self.killSwitchState(of:))
+    }
+
+    private static func killSwitchState(of mgr: NETunnelProviderManager) -> KillSwitchSystemState {
         let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol
         return KillSwitchSystemState(
+            configurationEnabled: mgr.isEnabled,
             onDemandEnabled: mgr.isOnDemandEnabled,
             hasConnectRule: mgr.onDemandRules?.contains { $0 is NEOnDemandRuleConnect } ?? false,
             includeAllNetworks: proto?.includeAllNetworks ?? false
         )
     }
 
-    /// MR-975: called on the main queue once a kill-switch change has been
-    /// SAVED — or, when the save failed, once the profile has been reloaded
-    /// from what the system actually kept — with the state the system now
-    /// holds. A Settings toggle changes no tunnel status, so without this the
-    /// Home chip would show the pre-toggle state until the next transition.
+    /// MR-975: called on the main queue with the kill-switch state read FRESH
+    /// from the system (`refreshKillSwitchState`): after this app's own
+    /// kill-switch save, on every tunnel status change and on every
+    /// configuration change. A Settings toggle changes no tunnel status, so
+    /// without this the Home chip would show the pre-toggle state until the
+    /// next transition.
     var onKillSwitchStateChange: ((KillSwitchSystemState?) -> Void)?
 
-    /// Report the kill-switch state after `applyKillSwitchFlag`'s save. A
-    /// failed save leaves the IN-MEMORY profile edited but the system's copy
-    /// unchanged, so the profile is reloaded first: the report is what the
-    /// system holds, never what this process merely asked for.
-    private func reportKillSwitchState(afterFailedSave: Bool) {
-        guard afterFailedSave, let mgr = manager else {
-            let state = killSwitchState
-            DispatchQueue.main.async { [weak self] in self?.onKillSwitchStateChange?(state) }
-            return
-        }
-        mgr.loadFromPreferences { [weak self] _ in
+    /// Read the kill-switch state from a FRESH copy of the system's
+    /// configuration and report it (vpn-d3 review). The in-memory `manager`
+    /// only knows this app's own edits: turning the VPN off in iOS Settings
+    /// (which also turns On Demand off) or choosing another VPN there never
+    /// reaches it, and a failed save leaves it edited while the system kept the
+    /// old values. The fresh copy is read and dropped — never assigned to
+    /// `manager` — so a reload can never overwrite edits this app is about to
+    /// save. Nil when the configuration is gone or cannot be read.
+    func refreshKillSwitchState() {
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
             guard let self else { return }
-            let state = self.killSwitchState
+            let state = error == nil ? managers?.first.map(Self.killSwitchState(of:)) : nil
             DispatchQueue.main.async { [weak self] in self?.onKillSwitchStateChange?(state) }
         }
     }
@@ -134,10 +140,23 @@ final class VPNManager: @unchecked Sendable {
 
     init() {
         loadManager()
+        // MR-975 review: the user can turn this VPN off, turn On Demand off or
+        // choose another VPN in iOS Settings at any time; the system posts this
+        // for each, and only a fresh read sees it.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshKillSwitchState()
+        }
     }
 
     deinit {
         if let observer = statusObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = configurationObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -680,7 +699,8 @@ final class VPNManager: @unchecked Sendable {
                 debugLog("[VPNManager] applyKillSwitchFlag saveToPreferences failed: %@",
                          error.localizedDescription)
             }
-            self?.reportKillSwitchState(afterFailedSave: error != nil)
+            // The system's copy, saved or not — never the in-memory edit.
+            self?.refreshKillSwitchState()
         }
     }
 
@@ -936,6 +956,9 @@ final class VPNManager: @unchecked Sendable {
                 }
             }
             self?.onStatusChange?(connection.status)
+            // A status change can follow a configuration change made outside
+            // the app (the VPN switched off in Settings); re-read it.
+            self?.refreshKillSwitchState()
         }
     }
 

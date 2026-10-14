@@ -197,8 +197,31 @@ class IosParityRowsGuardTest {
             manager.contains("hasConnectRule: mgr.onDemandRules?.contains { \$0 is NEOnDemandRuleConnect } ?? false"),
         )
         // A Settings toggle changes no tunnel status: the save must report back.
-        assertTrue(manager.contains("self?.reportKillSwitchState(afterFailedSave: error != nil)"))
+        assertTrue(
+            manager.substringAfter("func applyKillSwitchFlag(").substringBefore("\n    }\n")
+                .contains("self?.refreshKillSwitchState()"),
+        )
         assertTrue(vpnVm.contains("vpnManager.onKillSwitchStateChange = { [weak self] state in"))
         assertTrue(unitTestTarget.contains("- path: iosApp/Services/KillSwitchChip.swift"))
+    }
+
+    @Test
+    fun `the kill-switch chip reads the system's configuration fresh, isEnabled included`() {
+        // vpn-d3 review: the VPN switched off in iOS Settings, or another VPN
+        // chosen there, never reached the in-memory manager.
+        assertTrue(
+            source("$ios/Services/KillSwitchChip.swift")
+                .contains("configurationEnabled && onDemandEnabled && hasConnectRule && includeAllNetworks"),
+        )
+        val manager = source("$ios/Services/VPNManager.swift")
+        assertTrue(manager.contains("configurationEnabled: mgr.isEnabled,"))
+        assertTrue(manager.contains("forName: .NEVPNConfigurationChange,"))
+        val statusHandler = manager.substringAfter("forName: .NEVPNStatusDidChange,").substringBefore("\n    }\n")
+        assertTrue("a status change no longer re-reads the configuration", statusHandler.contains("self?.refreshKillSwitchState()"))
+        val refresh = manager.substringAfter("func refreshKillSwitchState() {").substringBefore("\n    }\n")
+        assertTrue(refresh.contains("NETunnelProviderManager.loadAllFromPreferences"))
+        // The fresh copy is read and dropped: assigning it would let a reload
+        // overwrite edits this app is about to save.
+        assertFalse(refresh.contains("manager ="))
     }
 }
