@@ -80,6 +80,8 @@ class FreePlanCapConfigTest {
             """{"RECON": {"bandwidthLimitGb": -5}}""",
             """{"RECON": {"bandwidthLimitGb": 12.5}}""",
             """{"RECON": {"bandwidthLimitGb": 1e300}}""",
+            """{"RECON": {"bandwidthLimitGb": 100001}}""",
+            """{"RECON": {"bandwidthLimitGb": -1}}""",
             """{"RECON": {}}""",
         ).forEach { plans ->
             val cfg = config("""{"dnsFilteringAvailable":false,"plans":$plans}""")
@@ -90,6 +92,18 @@ class FreePlanCapConfigTest {
                 40L,
                 freePlanCapGb(SubscriptionStatus(plan = "RECON", bandwidthLimitGb = 40), cfg.freePlanCapGb),
             )
+        }
+    }
+
+    /** #487 review: the same bounds as iOS's `FreePlanCap.usable`, on both inputs. */
+    @Test
+    fun `only a whole number of GB from 1 to 100,000 is stated`() {
+        assertEquals(100_000L, ClientConfigResponse.MAX_FREE_PLAN_CAP_GB)
+        assertEquals(100_000L, config("""{"plans":{"RECON":{"bandwidthLimitGb":100000}}}""").freePlanCapGb)
+        assertEquals(1L, config("""{"plans":{"RECON":{"bandwidthLimitGb":1}}}""").freePlanCapGb)
+        listOf(0L, -1L, 100_001L, Long.MAX_VALUE).forEach { bad ->
+            assertEquals("config $bad", 40L, freePlanCapGb(SubscriptionStatus(plan = "RECON", bandwidthLimitGb = 40), bad))
+            assertEquals("stats $bad", 50L, freePlanCapGb(SubscriptionStatus(plan = "RECON", bandwidthLimitGb = bad)))
         }
     }
 

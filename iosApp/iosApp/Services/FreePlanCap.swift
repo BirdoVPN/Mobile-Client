@@ -17,16 +17,31 @@ import Foundation
 ///   3. otherwise `fallbackGb` (a paid account's limit is 0 = unlimited and
 ///      says nothing about the free plan; a guest has no stats at all).
 ///
+/// A server value counts only when it is `usable`: a whole number of GB from 1
+/// to `maxGb`, as on Android (`ClientConfigResponse.freePlanCapGb`,
+/// `freePlanCapGb`). Anything else — 12.5, 0, -1, NaN, 1e300 — falls through
+/// to the next source. 1e300 used to reach `String(Int(gb))`, which traps.
+///
 /// Foundation-only on purpose: compiled into the BirdoVPNTests bundle and
 /// pinned by FreePlanCapTests.
 enum FreePlanCap {
     /// The owner's 2026-10-13 cap. Shown only when no server value exists.
     static let fallbackGb: Double = 50
 
+    /// The largest cap the card will state. Android's twin is
+    /// `ClientConfigResponse.MAX_FREE_PLAN_CAP_GB`.
+    static let maxGb: Double = 100_000
+
+    /// `gb` when it is a whole number of GB in 1...`maxGb`, else nil.
+    static func usable(_ gb: Double?) -> Double? {
+        guard let gb, gb.isFinite, gb >= 1, gb <= maxGb, gb.rounded(.towardZero) == gb else { return nil }
+        return gb
+    }
+
     static func gb(configGb: Double? = nil, plan: String?, bandwidthLimitGb: Double?) -> Double {
-        if let configGb, configGb.isFinite, configGb > 0 { return configGb }
+        if let configGb = usable(configGb) { return configGb }
         if let plan, plan.caseInsensitiveCompare("RECON") == .orderedSame,
-           let limit = bandwidthLimitGb, limit.isFinite, limit > 0 {
+           let limit = usable(bandwidthLimitGb) {
             return limit
         }
         return fallbackGb
@@ -37,9 +52,11 @@ enum FreePlanCap {
         "\(format(gb)) GB monthly bandwidth"
     }
 
-    /// "50" for whole numbers, one decimal otherwise — never "50.0".
+    /// "50" for whole numbers, one decimal otherwise — never "50.0". Never
+    /// traps: `Int(_:)` is only reached for values it can hold.
     static func format(_ gb: Double) -> String {
-        gb.truncatingRemainder(dividingBy: 1) == 0
+        guard gb.isFinite, gb.magnitude < 1e15 else { return String(format: "%.0f", gb) }
+        return gb.truncatingRemainder(dividingBy: 1) == 0
             ? String(Int(gb))
             : String(format: "%.1f", gb)
     }

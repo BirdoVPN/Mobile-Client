@@ -384,8 +384,8 @@ data class ClientConfigResponse(
      * The free (Recon) plan's monthly allowance as the server publishes it:
      * `plans.RECON.bandwidthLimitGb`, or null when this server publishes none
      * (older than birdo-web#708) or the value is unusable — null (unlimited
-     * says nothing about a cap), not a JSON number, not a whole positive
-     * number of GB, or past what the paywall's `%d` can state.
+     * says nothing about a cap), not a JSON number, or not a whole number of
+     * GB from 1 to [MAX_FREE_PLAN_CAP_GB] (iOS: `FreePlanCap.usable`).
      */
     val freePlanCapGb: Long?
         get() {
@@ -394,9 +394,14 @@ data class ClientConfigResponse(
             val value = recon?.get("bandwidthLimitGb") as? JsonPrimitive ?: return null
             if (value.isString) return null
             val gb = value.doubleOrNull ?: return null
-            if (!gb.isFinite() || gb < 1.0 || gb > Int.MAX_VALUE.toDouble() || gb % 1.0 != 0.0) return null
+            if (!gb.isFinite() || gb < 1.0 || gb > MAX_FREE_PLAN_CAP_GB.toDouble() || gb % 1.0 != 0.0) return null
             return gb.toLong()
         }
+
+    companion object {
+        /** The largest free cap a paywall will state, on both platforms (#487 review). */
+        const val MAX_FREE_PLAN_CAP_GB: Long = 100_000
+    }
 }
 
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────

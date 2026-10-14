@@ -43,8 +43,9 @@ struct ClientConfigResponse: Decodable, Sendable {
     let customDnsForAllPlans: Bool?
     /// MR-1980 (birdo-web#708): the free plan's monthly cap, from
     /// `plans.RECON.bandwidthLimitGb`. `nil` when the server publishes none
-    /// (older than #708), or the value is not a finite positive number —
-    /// `null` there means unlimited, which says nothing about a free cap. Each
+    /// (older than #708), or the value is not `FreePlanCap.usable` (a whole
+    /// number of GB, 1...100,000) — `null` there means unlimited, which says
+    /// nothing about a free cap. Each
     /// `plans` entry also carries the web checkout's prices; those are never
     /// read, because the App Store sells at its own. See `FreePlanCap`.
     let freePlanCapGb: Double?
@@ -94,7 +95,7 @@ struct ClientConfigResponse: Decodable, Sendable {
         if let plans = try? c.nestedContainer(keyedBy: FeatureKey.self, forKey: .plans) {
             for key in plans.allKeys where key.stringValue.uppercased() == "RECON" {
                 if let recon = try? plans.decode(PlanLimits.self, forKey: key),
-                   let gb = recon.bandwidthLimitGb, gb.isFinite, gb > 0 {
+                   let gb = FreePlanCap.usable(recon.bandwidthLimitGb) {
                     freeCap = gb
                 }
             }

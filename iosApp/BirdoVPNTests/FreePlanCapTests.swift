@@ -91,6 +91,10 @@ final class FreePlanCapTests: XCTestCase {
             #"{"RECON": {"bandwidthLimitGb": {"value": 50}}}"#,
             #"{"RECON": {"bandwidthLimitGb": 0}}"#,
             #"{"RECON": {"bandwidthLimitGb": -5}}"#,
+            #"{"RECON": {"bandwidthLimitGb": -1}}"#,
+            #"{"RECON": {"bandwidthLimitGb": 12.5}}"#,
+            #"{"RECON": {"bandwidthLimitGb": 100001}}"#,
+            #"{"RECON": {"bandwidthLimitGb": 1e300}}"#,
             #"{"RECON": {}}"#,
         ]
         for plans in shapes {
@@ -101,5 +105,32 @@ final class FreePlanCapTests: XCTestCase {
             XCTAssertEqual(FreePlanCap.gb(configGb: cfg.freePlanCapGb, plan: "RECON", bandwidthLimitGb: 40), 40,
                            "plans = \(plans): the card falls back to the account's own limit")
         }
+    }
+
+    // MARK: - #487 review: only a whole number of GB in 1...100,000 is used
+
+    /// 1e300 used to reach `String(Int(gb))` in `format`, which traps (a crash
+    /// on opening the paywall). Android takes only whole numbers; so does iOS.
+    func testAnUnusableServerValueFallsBackAndNeverTraps() {
+        for bad in [1e300, 12.5, -1, 0, .nan, .infinity, 100_001] as [Double] {
+            XCTAssertNil(FreePlanCap.usable(bad), "\(bad) must not be usable")
+            // From client-config: falls through to the account's own limit.
+            XCTAssertEqual(FreePlanCap.gb(configGb: bad, plan: "RECON", bandwidthLimitGb: 40), 40, "\(bad)")
+            // From /vpn/stats: falls through to the fallback.
+            XCTAssertEqual(FreePlanCap.gb(plan: "RECON", bandwidthLimitGb: bad), FreePlanCap.fallbackGb, "\(bad)")
+            XCTAssertEqual(FreePlanCap.featureLine(gb: FreePlanCap.gb(configGb: bad, plan: "RECON", bandwidthLimitGb: bad)),
+                           "50 GB monthly bandwidth", "\(bad)")
+        }
+        XCTAssertEqual(FreePlanCap.usable(1), 1)
+        XCTAssertEqual(FreePlanCap.usable(100_000), 100_000)
+        XCTAssertEqual(FreePlanCap.maxGb, 100_000)
+    }
+
+    func testFormatNeverTrapsOnWhatItIsGiven() {
+        // Not reachable from `gb` any more; `format` must still not crash.
+        XCTAssertFalse(FreePlanCap.format(1e300).isEmpty)
+        XCTAssertFalse(FreePlanCap.format(.nan).isEmpty)
+        XCTAssertFalse(FreePlanCap.format(-.infinity).isEmpty)
+        XCTAssertEqual(FreePlanCap.format(100_000), "100000")
     }
 }

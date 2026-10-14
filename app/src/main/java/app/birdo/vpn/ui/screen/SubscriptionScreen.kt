@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import app.birdo.vpn.R
+import app.birdo.vpn.data.model.ClientConfigResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.components.BirdoIconAction
@@ -86,11 +87,14 @@ internal const val FREE_PLAN_CAP_FALLBACK_GB = 50L
  * nothing about the free plan.
  */
 internal fun freePlanCapGb(current: SubscriptionStatus?, configCapGb: Long? = null): Long = when {
-    configCapGb != null && configCapGb > 0 -> configCapGb
-    current != null && current.plan.equals("RECON", ignoreCase = true) && current.bandwidthLimitGb > 0 ->
-        current.bandwidthLimitGb
+    configCapGb != null && configCapGb in FREE_PLAN_CAP_USABLE_GB -> configCapGb
+    current != null && current.plan.equals("RECON", ignoreCase = true) &&
+        current.bandwidthLimitGb in FREE_PLAN_CAP_USABLE_GB -> current.bandwidthLimitGb
     else -> FREE_PLAN_CAP_FALLBACK_GB
 }
+
+/** A server cap the card will state: 1 GB up to the shared maximum (iOS: `FreePlanCap.usable`). */
+private val FREE_PLAN_CAP_USABLE_GB = 1L..ClientConfigResponse.MAX_FREE_PLAN_CAP_GB
 
 /**
  * What each plan includes ON ANDROID — the platform this paywall sells on.
