@@ -148,6 +148,27 @@ class IosRequiredRowsGuardTest {
         )
     }
 
+    // ── #485 review: account calls follow the signed-in state ───────────────
+
+    @Test
+    fun `account calls follow AuthViewModel's signed-in state, not the keychain alone`() {
+        // GuestShellTests pins AccountSession itself; this pins that it is
+        // what hasSession asks, and that the app root wires the signed-in
+        // state in. A keychain-only hasSession sent a previous install's
+        // tokens after a fresh install's clean-up could not finish.
+        val vpn = source("$ios/ViewModels/VpnViewModel.swift")
+        val hasSession = vpn.substringAfter("var hasSession: Bool {").substringBefore("\n    }")
+        assertTrue(
+            "hasSession must ask AccountSession with the signed-in state",
+            "AccountSession.allowsAccountCalls(" in hasSession && "signedIn: isSignedIn()" in hasSession,
+        )
+        assertTrue("isSignedIn must default to signed out", "var isSignedIn: @MainActor () -> Bool = { false }" in vpn)
+        assertTrue(
+            "the app root must wire hasSession to AuthViewModel.isLoggedIn",
+            "vpnVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }" in source("$ios/ContentView.swift"),
+        )
+    }
+
     // ── MR-745: the PQ nonce is bounded like Android's ───────────────────────
 
     @Test

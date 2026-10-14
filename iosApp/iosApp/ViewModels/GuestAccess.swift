@@ -47,6 +47,25 @@ enum RootRoute: Equatable, Sendable {
     }
 }
 
+// MARK: - Account calls
+
+/// May the app make an account call (`/vpn/servers`, `/vpn/stats`, port
+/// forwards, connect)? The rule behind `VpnViewModel.hasSession`.
+///
+/// Only when AuthViewModel says the user is signed in AND the keychain holds a
+/// token to send. It used to read the keychain alone. When a fresh install
+/// cannot finish signing out the session a previous install left behind
+/// (`InstallIdentity.Outcome.cleanupIncomplete`), AuthViewModel stays signed
+/// out but the tokens it could not delete are still there, so the guest
+/// shell's server-list and plan loads sent the PREVIOUS account's access token,
+/// and a 401 could refresh it with that account's refresh token. Signed out
+/// means no account call, whatever the keychain holds.
+enum AccountSession {
+    static func allowsAccountCalls(signedIn: Bool, keychainHoldsToken: Bool) -> Bool {
+        signedIn && keychainHoldsToken
+    }
+}
+
 // MARK: - Consent record (versioned)
 
 /// What the user agreed to on the privacy disclosure, as persisted in
