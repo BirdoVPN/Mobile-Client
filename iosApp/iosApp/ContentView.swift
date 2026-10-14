@@ -255,11 +255,13 @@ struct ContentView: View {
         // consent screen (accept, or "Not now"), and the guest list loads the
         // moment consent is accepted.
         .task(id: launchLoadKey) {
-            // #486 review: the load below calls account endpoints through
-            // hasSession, so the signed-in state is wired here as well as in
-            // onAppear — the two must not depend on running in that order.
-            // Idempotent; assigning it twice is harmless.
+            // #486 / #487 review: the load below calls account endpoints
+            // through hasSession, and links / resumes App Store purchases
+            // behind storeVM's signed-in check, so both are wired here as well
+            // as in onAppear — the two must not depend on running in that
+            // order. Idempotent; assigning them twice is harmless.
             vpnVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }
+            storeVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }
             guard RootRoute.decide(hasConsented: authVM.hasConsented,
                                    consentDeferred: authVM.consentDeferred) == .shell else { return }
             guard authVM.isLoggedIn else {

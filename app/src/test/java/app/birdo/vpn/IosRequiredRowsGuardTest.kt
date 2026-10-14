@@ -171,12 +171,28 @@ class IosRequiredRowsGuardTest {
         )
         // #486 review: onAppear running before the root .task(id:) is not a
         // SwiftUI guarantee, and that task's load makes account calls. The
-        // task wires it too, before anything else it does.
+        // task wires it too, before anything else it does. #487 review: the
+        // same for StoreKitService, whose link / resume-purchase calls in that
+        // task check its own isSignedIn.
+        val storeWiring = "storeVM.isSignedIn = { [weak auth] in auth?.isLoggedIn ?? false }"
+        assertTrue(
+            "the app root must wire StoreKitService's signed-in state in onAppear",
+            storeWiring in root.substringAfter(".onAppear {").substringBefore("\n        }\n"),
+        )
         val launchLoad = root.substringAfter(".task(id: launchLoadKey) {")
         assertTrue("the root launch load is gone", launchLoad.length < root.length)
-        val firstStatement = launchLoad.lines().map { it.trim() }
-            .first { it.isNotEmpty() && !it.startsWith("//") }
-        assertEquals("the launch load must wire isSignedIn before anything else", wiring, firstStatement)
+        val statements = launchLoad.lines().map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("//") }
+        assertEquals(
+            "the launch load must wire both signed-in checks before anything else",
+            listOf(wiring, "storeVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }"),
+            statements.take(2),
+        )
+        assertTrue(
+            "the launch load still links / resumes App Store purchases",
+            "await storeVM.linkExistingEntitlementsAfterSignIn()" in launchLoad &&
+                "await storeVM.resumePendingPurchase()" in launchLoad,
+        )
     }
 
     // ── MR-745: the PQ nonce is bounded like Android's ───────────────────────
