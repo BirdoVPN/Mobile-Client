@@ -45,10 +45,15 @@ runs:
     # why cgo and the NDK are involved at all. Pins live in the script. The
     # engines themselves are never cached: a cache hit would hand over a binary
     # that never went through the script's commit-SHA assertion.
+    #
+    # EXACT Go version (#487 review): '1.25' floated to the newest patch
+    # release, so the toolchain the release's corresponding-source asset names
+    # changed under it. Must equal XRAY_GO_VERSION in
+    # scripts/provision_xray_engines.sh, which refuses any other.
     - name: Set up Go (the 32-bit Xray engines are built from source)
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: '1.25'
+        go-version: '1.25.14'
         cache: false
 
     - name: Provision Xray Reality engines for every shipped ABI

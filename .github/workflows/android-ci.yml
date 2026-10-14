@@ -520,6 +520,7 @@ jobs:
           for out in xray-source xray-source-again; do
             python3 scripts/xray_corresponding_source.py --out "$RUNNER_TEMP/$out" \
               --binaries app/src/main/jniLibs/*/libxray.so \
+              --build-record "$RUNNER_TEMP/xray-provision/build-record.txt" \
               --cache "$RUNNER_TEMP/xray-source-cache"
           done
           cmp "$RUNNER_TEMP"/xray-source/*.tar.gz "$RUNNER_TEMP"/xray-source-again/*.tar.gz

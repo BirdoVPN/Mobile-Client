@@ -1,6 +1,7 @@
 package app.birdo.vpn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -124,10 +125,22 @@ class OpenSourceNoticesTest {
         assertTrue("the Xray entry does not name the release asset $sourceAsset as its source", source >= 0)
         assertTrue("the Xray entry lost its upstream link", upstream >= 0)
         assertTrue("the release asset must come first, upstream second", source < upstream)
+        // #487 review: the always-public release (xray-source-release in
+        // android.yml), not the android-v* draft, which 404s until published.
         assertTrue(
             "the Xray entry must say where the asset is",
-            "https://github.com/BirdoVPN/Mobile-Client/releases/download/android-v<version>/$sourceAsset" in entry,
+            "https://github.com/BirdoVPN/Mobile-Client/releases/download/xray-source-android-v<version>/$sourceAsset" in entry,
         )
+        assertFalse("the Xray entry must not point at the draft release", "/download/android-v<version>/" in entry)
+        // The Go standard library is linked but not mirrored: the entry says
+        // so, and names the source of each toolchain the engines were built with.
+        val script = text("scripts/provision_xray_engines.sh")
+        listOf("XRAY_GO_VERSION", "XRAY_UPSTREAM_GO_VERSION").forEach { key ->
+            val go = Regex("""(?m)^$key="(go[0-9.]+)"""").find(script)!!.groupValues[1]
+            assertTrue("the Xray entry must point at the $go source ($key)", "https://go.dev/dl/$go.src.tar.gz" in entry)
+            assertTrue("the Xray entry must name Go ${go.removePrefix("go")}", "Go ${go.removePrefix("go")}" in entry)
+        }
+        assertTrue("the Xray entry must say the Go standard library is not in the file", "which are not in that\n    file" in entry)
         assertTrue(
             "the script must write the asset under the name the notices give",
             "prefix = f\"xray-core-{version}-corresponding-source\"" in text("scripts/xray_corresponding_source.py"),
@@ -154,13 +167,38 @@ class OpenSourceNoticesTest {
     @Test
     fun `every release builds, checks and publishes the source asset`() {
         val script = text("scripts/provision_xray_engines.sh")
-        assertTrue("the tag archive is not pinned", Regex("""(?m)^XRAY_SOURCE_ARCHIVE_SHA256="[0-9a-f]{64}"$""").containsMatchIn(script))
+        // #487 review: content-addressed (a git tree), not GitHub's tarball bytes.
+        assertTrue("the Xray source tree is not pinned", Regex("""(?m)^XRAY_SOURCE_TREE="[0-9a-f]{40}"$""").containsMatchIn(script))
+        assertFalse("GitHub's generated tarball is not a stable pin", "XRAY_SOURCE_ARCHIVE_SHA256=" in script)
+        // #487 review: the 32-bit engines' Go is exact, and the action and the
+        // script agree on it (the script refuses any other at build time).
+        val goPin = Regex("""(?m)^XRAY_GO_VERSION="go([0-9.]+)"$""").find(script)!!.groupValues[1]
+        assertTrue("go-version must be exact: three numbers", Regex("""\d+\.\d+\.\d+""").matches(goPin))
+        assertTrue(
+            "android-native-libs must set up exactly XRAY_GO_VERSION",
+            "go-version: '$goPin'" in text(".github/actions/android-native-libs/action.yml"),
+        )
+        assertTrue("the build must refuse another Go", "if [ \"\$gover\" != \"\$XRAY_GO_VERSION\" ]; then" in script)
         val release = text(".github/workflows/android.yml")
         val build = release.substringAfter("- name: Build the Xray corresponding-source asset", "")
         assertTrue("the release job no longer builds the source asset", build.isNotEmpty())
         assertTrue(
-            "the release must check the asset against the engines it ships",
-            "--binaries app/src/main/jniLibs/*/libxray.so" in build.substringBefore("- name:"),
+            "the release must check the asset against the engines it ships, and their build record",
+            "--binaries app/src/main/jniLibs/*/libxray.so" in build.substringBefore("- name:") &&
+                "--build-record \"\$RUNNER_TEMP/xray-provision/build-record.txt\"" in build.substringBefore("- name:"),
+        )
+        // #487 review: an always-public source release the notices link to,
+        // which the Play upload waits for.
+        val publicJob = release.substringAfter("\n  xray-source-release:\n", "").substringBefore("\n  play-upload:\n")
+        assertTrue("there is no public source release job", publicJob.isNotEmpty())
+        assertTrue("tag_name: xray-source-\${{ steps.tag.outputs.tag }}" in publicJob)
+        assertTrue("the source release must never be a draft", "draft: false" in publicJob && "draft: true" !in publicJob)
+        assertTrue("the source release must never be Latest", "make_latest: false" in publicJob)
+        assertTrue("release-apk/xray-core-*-corresponding-source.tar.gz" in publicJob)
+        assertTrue(
+            "Play must wait for the public source",
+            "needs: [release, lint, test, native, pq-cpu-proof, xray-source-release]" in
+                release.substringAfter("\n  play-upload:\n"),
         )
         assertTrue(
             "the asset must be built before the APK is",

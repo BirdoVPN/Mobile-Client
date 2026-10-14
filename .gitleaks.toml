@@ -82,11 +82,11 @@ paths = [
 # same kind of item NAME as the one above.
 #
 # a41f170a...4b35bc7f: the SHA-256 of GitHub's public archive of the Xray-core
-# v26.2.6 tag, pinned in scripts/provision_xray_engines.sh. A digest of a
+# v26.2.6 tag, once pinned in scripts/provision_xray_engines.sh. A digest of a
 # public file, not a credential. The jfrog-identity-token rule reads the word
-# "xray" near 64 hex characters as a JFrog Xray token. The pin's variable is now
-# named so that the rule does not match it; this entry covers the PR commit
-# that first added it under a shorter name.
+# "xray" near 64 hex characters as a JFrog Xray token. That pin has since been
+# replaced by the commit's git tree id; this entry covers the PR commit that
+# added it, which squash-merging leaves out of main.
 regexes = [
   '''^birdo_pq_v1_keypair$''',
   '''^stale_anonymous_id_purged_v1$''',

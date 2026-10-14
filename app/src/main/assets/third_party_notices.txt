@@ -11,20 +11,24 @@ COMPONENTS
 
 Xray-core 26.2.6 (libxray.so, the Stealth Mode engine)
   Licence: Mozilla Public License 2.0 (MPL-2.0); full text below
-  Source: xray-core-v26.2.6-corresponding-source.tar.gz, a file attached to
-    every BirdoVPN for Android release at
-    https://github.com/BirdoVPN/Mobile-Client/releases (for the version in
-    Settings: https://github.com/BirdoVPN/Mobile-Client/releases/download/android-v<version>/xray-core-v26.2.6-corresponding-source.tar.gz;
-    its SHA-256 is in that release's SHA256SUMS.txt). It is the complete
-    corresponding source of this program, including every Go module linked
-    into it, at exactly the versions BirdoVPN ships.
+  Source: xray-core-v26.2.6-corresponding-source.tar.gz, published (never as a
+    draft) with every BirdoVPN for Android release; for the version shown in
+    Settings it is at
+    https://github.com/BirdoVPN/Mobile-Client/releases/download/xray-source-android-v<version>/xray-core-v26.2.6-corresponding-source.tar.gz
+    and its SHA-256 is in SHA256SUMS.txt beside it. That file contains: the
+    Xray-core source at the commit below (git archive of that commit); the
+    source of every Go module linked into libxray.so, each at the exact
+    version shipped (the module's zip from proxy.golang.org); the script that
+    fetched and built the four engines; and a README naming the Go toolchain
+    and Android NDK each engine was built with and the exact build commands.
   Upstream: https://github.com/XTLS/Xray-core/tree/v26.2.6 (commit
     12ee51e4bb1d02ece4ef4b7114efa2bcdc130995)
   BirdoVPN ships this program unmodified: the upstream release for arm64-v8a and
-    x86_64, and a build of the commit above for armeabi-v7a and x86. The
-    program also contains the Go modules listed in go.mod and go.sum at that
-    commit, each under its own licence, among them: the Go standard library
-    and golang.org/x modules (BSD 3-Clause), github.com/apernet/quic-go (MIT),
+    x86_64 (built by XTLS with Go 1.25.7), and a build of the commit above for
+    armeabi-v7a and x86 (built by BirdoVPN with Go 1.25.14). The program also
+    contains the Go modules listed in go.mod and go.sum at that commit, each
+    under its own licence, among them: the golang.org/x modules (BSD
+    3-Clause), github.com/apernet/quic-go (MIT),
     github.com/refraction-networking/utls (BSD 3-Clause),
     github.com/cloudflare/circl (BSD 3-Clause), github.com/miekg/dns (BSD
     3-Clause), github.com/xtls/reality (MPL-2.0), gvisor.dev/gvisor
@@ -32,8 +36,12 @@ Xray-core 26.2.6 (libxray.so, the Stealth Mode engine)
     License v3.0 with a linking exception; its licence below), and
     github.com/sagernet/sing and
     github.com/sagernet/sing-shadowsocks (GNU General Public License v3.0 or
-    later; full text below). Their source code is in the file named under
-    Source, and upstream on https://proxy.golang.org.
+    later; full text below). The source of every one of these modules is in
+    the file named under Source. The program also contains the Go standard
+    library and runtime (BSD 3-Clause; text below), which are not in that
+    file: their source is the Go source distribution of the version that
+    built each engine, https://go.dev/dl/go1.25.7.src.tar.gz and
+    https://go.dev/dl/go1.25.14.src.tar.gz.
 
 WireGuard tunnel library for Android 1.0.20260102
   Maven: com.wireguard.android:tunnel

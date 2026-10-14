@@ -10,39 +10,47 @@ github.com/xtls/reality (MPL-2.0) and some 28 permissively licensed modules.
 Under GPL-3.0 section 1 the Corresponding Source of the combined program is the
 source of ALL of it, so every linked module is mirrored, not only the copyleft
 ones. Section 6 lets the object code be conveyed with that source offered "from
-a designated place"; this asset, attached to the release, is that place, and the
-in-app notices (app/src/main/assets/third_party_notices.txt) point to it first.
+a designated place"; this asset, published with the release, is that place, and
+the in-app notices (app/src/main/assets/third_party_notices.txt) point to it.
 
 The asset, xray-core-<XRAY_VERSION>-corresponding-source.tar.gz, holds:
-  * Xray-core-<XRAY_VERSION>.tar.gz — GitHub's archive of the pinned tag, byte
-    for byte;
+  * Xray-core-<XRAY_VERSION>.tar.gz — `git archive` of XRAY_COMMIT, whose git
+    tree must be XRAY_SOURCE_TREE (content-addressed: a pin on what the source
+    IS, not on how GitHub happens to compress a tag), gzip'd deterministically;
   * go-modules/<module>@<version>.zip — EVERY Go module the shipped binaries
     link, byte for byte from proxy.golang.org;
   * provision_xray_engines.sh — the script that fetches two ABIs and builds the
-    other two from that source (the build instructions);
-  * README.txt — what each file is, its SHA-256 and Go checksum, which binaries
-    it builds, and the Go toolchain each shipped binary was built with.
+    other two from that source;
+  * README.txt — what each file is (SHA-256, Go checksum, licence), how each
+    shipped engine was made (upstream asset, or the Go toolchain, NDK revision
+    and exact `go build` command, from provision_xray_engines.sh's build
+    record), and where the Go toolchain's own source is (it is not included).
 
 Nothing is written unless all of this holds (exit 1 otherwise):
-  * the tag archive matches XRAY_SOURCE_ARCHIVE_SHA256 and was made from
-    XRAY_COMMIT (both pinned in provision_xray_engines.sh);
+  * XRAY_COMMIT's tree is XRAY_SOURCE_TREE (both pinned in
+    provision_xray_engines.sh);
   * every module in scripts/xray-go-modules.txt is at the version Xray-core's
-    own go.mod requires at that tag;
+    own go.mod requires at that commit;
   * every binary's Go build info lists exactly the table's modules at exactly
     its versions — so an Xray bump cannot ship until the table, and with it the
     licences and the mirrored source, follow;
   * each module zip matches its pinned SHA-256, and its Go checksum (dirhash
-    h1:) equals the line in the tag's go.sum and in the binaries' build info.
+    h1:) equals the line in Xray-core's go.sum and in the binaries' build info;
+  * the build record covers exactly the binaries given; each upstream binary
+    was built with XRAY_UPSTREAM_GO_VERSION and carries XRAY_COMMIT's stamp
+    (Xray's release build writes the abbreviated commit into core.build); each
+    of ours was built with XRAY_GO_VERSION.
 
-The output is deterministic: fixed tar headers, sorted members, a gzip header
-with no name and no timestamp. The same pins and the same binaries give the same
-bytes on every run (the README records the binaries' toolchains, so pass the
-same four engines to reproduce an asset).
+The output is deterministic: fixed tar headers, sorted members, gzip headers
+with no name and no timestamp. The same pins, binaries and build record give
+the same bytes on every run.
 
 Usage:
-  python3 scripts/xray_corresponding_source.py --out DIR --binaries libxray.so ... [--cache DIR]
+  python3 scripts/xray_corresponding_source.py --out DIR \\
+      --binaries app/src/main/jniLibs/*/libxray.so \\
+      --build-record "$RUNNER_TEMP/xray-provision/build-record.txt" [--cache DIR]
 
---cache keeps verified downloads, named by their SHA-256, for a second run.
+--cache keeps verified downloads (by SHA-256) and the Xray clone for a second run.
 """
 
 from __future__ import annotations
@@ -57,6 +65,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -66,6 +75,12 @@ ROOT = Path(__file__).resolve().parent.parent
 PROVISION = ROOT / "scripts" / "provision_xray_engines.sh"
 TABLE = ROOT / "scripts" / "xray-go-modules.txt"
 COPYLEFT = re.compile(r"\b(?:L?GPL|MPL)-")
+XRAY_REPO = "https://github.com/XTLS/Xray-core.git"
+# The upstream release assets and the pins that name their SHA-256.
+UPSTREAM_ASSETS = {
+    "Xray-android-arm64-v8a.zip": "XRAY_ANDROID_ARM64_SHA256",
+    "Xray-android-amd64.zip": "XRAY_ANDROID_AMD64_SHA256",
+}
 
 
 def fail(message: str) -> None:
@@ -76,8 +91,8 @@ def fail(message: str) -> None:
 def pins() -> dict[str, str]:
     text = PROVISION.read_text(encoding="utf-8")
     found = dict(re.findall(r'(?m)^(XRAY_[A-Z0-9_]+)="([^"]*)"', text))
-    for key in ("XRAY_VERSION", "XRAY_COMMIT", "XRAY_SOURCE_ARCHIVE_SHA256",
-                "XRAY_ANDROID_ARM64_SHA256", "XRAY_ANDROID_AMD64_SHA256"):
+    for key in ("XRAY_VERSION", "XRAY_COMMIT", "XRAY_SOURCE_TREE", "XRAY_GO_VERSION",
+                "XRAY_UPSTREAM_GO_VERSION", *UPSTREAM_ASSETS.values()):
         if not found.get(key):
             fail(f"{PROVISION.name} has no {key} pin")
     return found
@@ -91,7 +106,7 @@ def table() -> dict[str, tuple[str, str, str]]:
             continue
         cols = re.split(r"\s{2,}", line.strip())
         if len(cols) != 4 or not re.fullmatch(r"[0-9a-f]{64}", cols[3]):
-            fail(f"{TABLE.name}:{n}: expected module, version, licence, zip sha256 — every linked module is mirrored")
+            fail(f"{TABLE.name}:{n}: expected module, version, licence, zip sha256; every linked module is mirrored")
         module, version, licence, sha = cols
         if module in rows:
             fail(f"{TABLE.name}:{n}: {module} is listed twice")
@@ -101,33 +116,90 @@ def table() -> dict[str, tuple[str, str, str]]:
     return rows
 
 
+def build_record(path: Path) -> dict[str, list[str]]:
+    """abi -> [kind, ...]: `fetched <asset> <sha256>` or `built <go> <ndk> <command>`."""
+    if not path.is_file():
+        fail(f"no build record at {path}: provision_xray_engines.sh writes it next to its work files")
+    record: dict[str, list[str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        abi, *rest = line.split("\t")
+        if abi in record:
+            fail(f"the build record lists {abi} twice")
+        if not ((rest[:1] == ["fetched"] and len(rest) == 3) or (rest[:1] == ["built"] and len(rest) == 4)):
+            fail(f"unreadable build record line: {line!r}")
+        record[abi] = rest
+    return record
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fetch(url: str, want_sha: str | None, cache: Path | None) -> bytes:
-    """Download url. With want_sha and a cache, reuse a verified earlier copy."""
-    cached = cache / want_sha if cache and want_sha else None
-    if cached and cached.is_file():
-        data = cached.read_bytes()
-        if sha256(data) == want_sha:
-            return data
+def fetch(url: str, want_sha: str, into: Path) -> Path:
+    """Download url to into/<want_sha>, streamed, and refuse any other bytes.
+
+    A file already there with that SHA-256 (a --cache) is reused. Files, not
+    memory: the module zips are ~120 MB and unpack to far more.
+    """
+    into.mkdir(parents=True, exist_ok=True)
+    target = into / want_sha
+    if target.is_file() and file_sha256(target) == want_sha:
+        return target
+    part = into / (want_sha + ".part")
     last: Exception | None = None
     for attempt in range(4):
         try:
-            with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 (https only, fixed hosts)
-                data = response.read()
+            with urllib.request.urlopen(url, timeout=120) as response, open(part, "wb") as out:  # noqa: S310
+                for chunk in iter(lambda: response.read(1 << 20), b""):
+                    out.write(chunk)
             break
         except Exception as error:  # network blips: retry, then fail loudly
             last = error
             time.sleep(2 * (attempt + 1))
     else:
         fail(f"could not download {url}: {last}")
+    got = file_sha256(part)
+    if got != want_sha:
+        part.unlink()
+        fail(f"{url} is {got}, the pin says {want_sha}")
+    os.replace(part, target)
+    return target
+
+
+def git(*args: str, cwd: Path | None = None) -> bytes:
+    # Fixed line endings: `git archive` applies core.autocrlf, which would
+    # otherwise make the archive depend on the machine.
+    cmd = ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "advice.detachedHead=false", *args]
+    try:
+        return subprocess.run(cmd, cwd=cwd, check=True, capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail(f"`{' '.join(cmd)}` failed: {getattr(error, 'stderr', b'').decode(errors='replace').strip() or error}")
         raise AssertionError  # unreachable
-    if cached and sha256(data) == want_sha:
-        cache.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
-    return data
+
+
+def xray_checkout(version: str, commit: str, tree: str, cache: Path | None, scratch: Path) -> Path:
+    """A clone of the pinned commit, whose tree is the pinned tree."""
+    clone = (cache or scratch) / f"Xray-core-{commit}"
+    if not (clone / ".git").is_dir() or git("rev-parse", "HEAD", cwd=clone).decode().strip() != commit:
+        if clone.exists():
+            fail(f"{clone} exists but is not a clean clone of {commit}; remove it")
+        git("clone", "--quiet", "--depth", "1", "--branch", version, XRAY_REPO, str(clone))
+    got = git("rev-parse", "HEAD", cwd=clone).decode().strip()
+    if got != commit:
+        fail(f"Xray-core {version} resolves to {got}, not XRAY_COMMIT {commit}: the tag moved")
+    got_tree = git("rev-parse", "HEAD^{tree}", cwd=clone).decode().strip()
+    if got_tree != tree:
+        fail(f"Xray-core {commit} has tree {got_tree}, XRAY_SOURCE_TREE pins {tree}")
+    return clone
+
+
+def deterministic_gzip(data: bytes) -> bytes:
+    out = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=out, compresslevel=9, mtime=0) as gz:
+        gz.write(data)
+    return out.getvalue()
 
 
 def proxy_escape(path: str) -> str:
@@ -135,14 +207,18 @@ def proxy_escape(path: str) -> str:
     return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
 
 
-def dirhash_h1(zip_bytes: bytes) -> str:
+def dirhash_h1(zip_path: Path) -> str:
     """golang.org/x/mod/sumdb/dirhash.HashZip with Hash1 — what go.sum records."""
     summary = hashlib.sha256()
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+    with zipfile.ZipFile(zip_path) as z:
         for name in sorted(z.namelist()):
             if "\n" in name:
                 fail(f"module zip entry with a newline in its name: {name!r}")
-            summary.update(f"{sha256(z.read(name))}  {name}\n".encode())
+            digest = hashlib.sha256()
+            with z.open(name) as member:
+                for chunk in iter(lambda: member.read(1 << 20), b""):
+                    digest.update(chunk)
+            summary.update(f"{digest.hexdigest()}  {name}\n".encode())
     return "h1:" + base64.b64encode(summary.digest()).decode()
 
 
@@ -189,6 +265,7 @@ def build_info(binary: Path) -> tuple[dict[str, tuple[str, str]], str]:
                              capture_output=True, text=True).stdout
     except (OSError, subprocess.CalledProcessError) as error:
         fail(f"`go version -m {binary}` failed: {error}")
+        raise AssertionError  # unreachable
     deps: dict[str, tuple[str, str]] = {}
     toolchain = ""
     for n, line in enumerate(out.splitlines()):
@@ -200,24 +277,31 @@ def build_info(binary: Path) -> tuple[dict[str, tuple[str, str]], str]:
         elif len(cols) >= 2 and cols[1] == "=>":
             fail(f"{binary} was built with a replaced module ({line.strip()}); its source is not the proxy's")
     if len(deps) < 10 or not toolchain.startswith("go"):
-        fail(f"{binary}: `go version -m` listed only {len(deps)} modules — not a Go binary with build info?")
+        fail(f"{binary}: `go version -m` listed only {len(deps)} modules; not a Go binary with build info?")
     return deps, toolchain
 
 
-def write_deterministic_tar_gz(target: Path, members: list[tuple[str, bytes, int]]) -> None:
-    """Streamed to disk (the modules are ~120 MB), then moved into place."""
+def write_deterministic_tar_gz(target: Path, members: list[tuple[str, bytes | Path, int]]) -> None:
+    """Streamed to disk (the modules are ~120 MB), then moved into place.
+
+    A member is (name, bytes or a file to stream, mode)."""
     part = target.with_name(target.name + ".part")
     with open(part, "wb") as raw, \
             gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=6, mtime=0) as gz, \
             tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-        for name, data, mode in sorted(members):
+        for name, source, mode in sorted(members, key=lambda m: m[0]):
             info = tarfile.TarInfo(name)
-            info.size = len(data)
             info.mode = mode
             info.mtime = 0
             info.uid = info.gid = 0
             info.uname = info.gname = ""
-            tar.addfile(info, io.BytesIO(data))
+            if isinstance(source, Path):
+                info.size = source.stat().st_size
+                with open(source, "rb") as f:
+                    tar.addfile(info, f)
+            else:
+                info.size = len(source)
+                tar.addfile(info, io.BytesIO(source))
     os.replace(part, target)
 
 
@@ -234,22 +318,25 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path, help="directory to write the asset into")
     parser.add_argument("--binaries", required=True, nargs="+", type=Path,
                         help="the provisioned engines, app/src/main/jniLibs/<abi>/libxray.so")
-    parser.add_argument("--cache", type=Path, help="keep verified downloads here, by SHA-256")
+    parser.add_argument("--build-record", required=True, type=Path,
+                        help="provision_xray_engines.sh's build-record.txt for those engines")
+    parser.add_argument("--cache", type=Path, help="keep verified downloads and the Xray clone here")
     args = parser.parse_args()
 
     pin = pins()
     version, commit = pin["XRAY_VERSION"], pin["XRAY_COMMIT"]
     modules = table()
+    record = build_record(args.build_record)
 
-    # 1. The binaries link exactly the table.
+    # 1. The binaries link exactly the table, and were made as the record says.
     linked_h1: dict[str, str] = {}
-    toolchains: dict[str, str] = {}
+    abis: set[str] = set()
     for binary in args.binaries:
         deps, toolchain = build_info(binary)
         abi = binary.parent.name
-        if abi in toolchains:
+        if abi in abis:
             fail(f"two binaries for {abi}")
-        toolchains[abi] = toolchain
+        abis.add(abi)
         missing = sorted(set(deps) - set(modules))
         if missing:
             fail(f"{binary} links modules {TABLE.name} does not list (review their licences, add them): {missing}")
@@ -262,39 +349,47 @@ def main() -> None:
                 fail(f"{binary} links {module} {got}, {TABLE.name} pins {want}: the engine moved without its source")
             if linked_h1.setdefault(module, h1) != h1:
                 fail(f"the binaries disagree on the checksum of {module} {got}")
-        print(f"  {binary}: {len(deps)} modules match {TABLE.name} ({toolchain})")
+        how = record.get(abi)
+        if how is None:
+            fail(f"the build record does not say how {abi} was made")
+        if how[0] == "fetched":
+            asset, asset_sha = how[1], how[2]
+            if asset not in UPSTREAM_ASSETS or pin[UPSTREAM_ASSETS[asset]] != asset_sha:
+                fail(f"{abi} came from {asset} {asset_sha}, which no pin in {PROVISION.name} names")
+            if toolchain != pin["XRAY_UPSTREAM_GO_VERSION"]:
+                fail(f"{binary} was built with {toolchain}, XRAY_UPSTREAM_GO_VERSION pins {pin['XRAY_UPSTREAM_GO_VERSION']}")
+            if commit[:7].encode() not in binary.read_bytes():
+                fail(f"{binary} does not carry Xray's stamp of commit {commit[:7]}: not a build of {commit}")
+        else:
+            if not (toolchain == how[1] == pin["XRAY_GO_VERSION"]):
+                fail(f"{binary} was built with {toolchain}, the record says {how[1]}, XRAY_GO_VERSION pins {pin['XRAY_GO_VERSION']}")
+        print(f"  {binary}: {len(deps)} modules match {TABLE.name}; {how[0]} with {toolchain}")
+    if set(record) != abis:
+        fail(f"the build record covers {sorted(record)}, the binaries are {sorted(abis)}")
 
-    # 2. The tag archive is the pinned tag at the pinned commit.
+    scratch_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    scratch = Path(scratch_dir.name)
+    downloads = args.cache or scratch / "downloads"
+
+    # 2. The source: the pinned commit, checked by its tree.
+    clone = xray_checkout(version, commit, pin["XRAY_SOURCE_TREE"], args.cache, scratch)
     archive_name = f"Xray-core-{version}.tar.gz"
-    archive = fetch(f"https://github.com/XTLS/Xray-core/archive/refs/tags/{version}.tar.gz",
-                    pin["XRAY_SOURCE_ARCHIVE_SHA256"], args.cache)
-    if sha256(archive) != pin["XRAY_SOURCE_ARCHIVE_SHA256"]:
-        fail(f"the {version} tag archive is {sha256(archive)}, XRAY_SOURCE_ARCHIVE_SHA256 pins {pin['XRAY_SOURCE_ARCHIVE_SHA256']}")
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
-        if tar.pax_headers.get("comment") != commit:
-            fail(f"the {version} tag archive was made from {tar.pax_headers.get('comment')}, not {commit}")
-        top = tar.getnames()[0].split("/")[0]
-        go_mod_member = tar.extractfile(f"{top}/go.mod")
-        go_sum_member = tar.extractfile(f"{top}/go.sum")
-        if go_mod_member is None or go_sum_member is None:
-            fail(f"the {version} tag archive has no go.mod / go.sum")
-        requires, go_directive = go_mod(go_mod_member.read().decode())
-        sums = go_sum(go_sum_member.read().decode())
+    archive = deterministic_gzip(git("archive", "--format=tar", f"--prefix=Xray-core-{version}/", commit, cwd=clone))
+    requires, go_directive = go_mod(git("show", f"{commit}:go.mod", cwd=clone).decode())
+    sums = go_sum(git("show", f"{commit}:go.sum", cwd=clone).decode())
 
-    # 3. The table is Xray's go.mod at that tag.
+    # 3. The table is Xray's go.mod at that commit.
     for module, (want, _, _) in modules.items():
         if requires.get(module) != want:
             fail(f"{TABLE.name} pins {module} {want}, Xray-core {version}'s go.mod requires {requires.get(module)}")
 
     # 4. Every module zip, verified three ways.
-    members: list[tuple[str, bytes, int]] = []
+    members: list[tuple[str, bytes | Path, int]] = []
     rows = []
     total = 0
     for module, (mod_version, licence, want_sha) in sorted(modules.items()):
         url = f"https://proxy.golang.org/{proxy_escape(module)}/@v/{proxy_escape(mod_version)}.zip"
-        data = fetch(url, want_sha, args.cache)
-        if sha256(data) != want_sha:
-            fail(f"{module}@{mod_version}.zip is {sha256(data)}, {TABLE.name} pins {want_sha}")
+        data = fetch(url, want_sha, downloads)
         h1 = dirhash_h1(data)
         if sums.get((module, mod_version)) != h1:
             fail(f"{module}@{mod_version}: zip checksum {h1}, Xray-core's go.sum says {sums.get((module, mod_version))}")
@@ -303,8 +398,8 @@ def main() -> None:
         path = f"go-modules/{module}@{mod_version}.zip"
         members.append((path, data, 0o644))
         rows.append((path, want_sha, licence, h1))
-        total += len(data)
-        print(f"  {path}: {len(data)} bytes, {h1} ({licence})")
+        total += data.stat().st_size
+        print(f"  {path}: {data.stat().st_size} bytes, {h1} ({licence})")
     print(f"  {len(rows)} modules, {total} bytes")
 
     script = PROVISION.read_bytes().replace(b"\r\n", b"\n")
@@ -312,6 +407,22 @@ def main() -> None:
     members.append(("provision_xray_engines.sh", script, 0o755))
 
     copyleft = sorted(f"{m} ({lic})" for m, (_, lic, _) in modules.items() if COPYLEFT.search(lic))
+    toolchains = sorted({how[1] for how in record.values() if how[0] == "built"} | {pin["XRAY_UPSTREAM_GO_VERSION"]})
+    made = []
+    for abi in sorted(record):
+        how = record[abi]
+        if how[0] == "fetched":
+            made += [
+                f"  {abi}: the upstream release asset {how[1]} (sha256 {how[2]}),",
+                f"    unmodified; built by XTLS's release workflow with {pin['XRAY_UPSTREAM_GO_VERSION']} (its",
+                f"    build info) and stamped with commit {commit[:7]}.",
+            ]
+        else:
+            made += [
+                f"  {abi}: built by BirdoVPN from Xray-core-{version} above with {how[1]} and the",
+                f"    Android NDK {how[2]}, in the unpacked source directory:",
+                f"      {how[3]}",
+            ]
     readme = "\n".join([
         "BirdoVPN for Android: complete corresponding source of libxray.so",
         "",
@@ -319,39 +430,39 @@ def main() -> None:
         "unmodified. It is MPL-2.0, and it links the Go modules below, among them",
         "GPL-3.0, LGPL-3.0 and MPL-2.0 ones:",
     ] + [f"  {line}" for line in copyleft] + [
-        "This archive is the source of the program and of EVERY module it links,",
-        "at exactly the versions the shipped binaries link.",
+        "This archive is the source of the program and of EVERY Go module it links,",
+        "at exactly the versions the shipped engines link.",
         "",
-        "Which binary is which:",
-        f"  arm64-v8a  the upstream release asset Xray-android-arm64-v8a.zip (sha256 {pin['XRAY_ANDROID_ARM64_SHA256']})",
-        f"  x86_64     the upstream release asset Xray-android-amd64.zip (sha256 {pin['XRAY_ANDROID_AMD64_SHA256']})",
-        "  armeabi-v7a, x86",
-        "             built from the source below by provision_xray_engines.sh (in this",
-        "             archive; the `go build` command and flags are in build_from_source)",
+        "How each shipped engine was made:",
+    ] + made + [
         "",
-        "Go toolchain (BSD-3-Clause; its standard library and runtime are linked into",
-        "every binary). Not in this archive; each version's source is",
-        "https://go.dev/dl/<version>.src.tar.gz.",
-        f"  Xray-core's go.mod: go {go_directive}",
-    ] + [f"  {abi}: built with {toolchains[abi]}" for abi in sorted(toolchains)] + [
-        "",
-        "Contents (every file byte for byte as published upstream):",
+        "Contents (the module zips byte for byte as published upstream):",
         f"  {archive_name}",
-        f"    sha256 {pin['XRAY_SOURCE_ARCHIVE_SHA256']}",
-        f"    https://github.com/XTLS/Xray-core/archive/refs/tags/{version}.tar.gz",
-        "    Xray-core, MPL-2.0. Its go.mod and go.sum name every module below.",
+        f"    sha256 {sha256(archive)}",
+        f"    `git archive --prefix=Xray-core-{version}/ {commit}`, gzip'd without a",
+        f"    timestamp; that commit's git tree is {pin['XRAY_SOURCE_TREE']}.",
+        f"    From {XRAY_REPO}. Xray-core, MPL-2.0; its go.mod and go.sum name every",
+        "    module below.",
     ] + [line for path, digest, licence, h1 in rows for line in (
         f"  {path}",
         f"    sha256 {digest}",
-        f"    Go checksum {h1} (equal to Xray-core's go.sum and the binaries' build info)",
+        f"    Go checksum {h1} (equal to Xray-core's go.sum and the engines' build info)",
         f"    {licence}; from https://proxy.golang.org",
     )] + [
         "  provision_xray_engines.sh",
-        "    the build script, from https://github.com/BirdoVPN/Mobile-Client",
+        "    the script that fetched and built the engines above, from",
+        "    https://github.com/BirdoVPN/Mobile-Client",
         "",
-        "To build: unpack the Xray-core archive and run `go build ./main` in it.",
+        "NOT in this archive: the Go toolchain. Its standard library and runtime",
+        "(BSD-3-Clause) are linked into every engine; their source is the Go source",
+        "distribution of the version each engine was built with:",
+    ] + [f"  https://go.dev/dl/{t}.src.tar.gz" for t in toolchains] + [
+        f"(Xray-core's go.mod asks for go {go_directive}.) The Android NDK supplies only the",
+        "C toolchain and system libraries the 32-bit engines link against.",
+        "",
+        "To build: unpack the Xray-core archive and run the command above in it.",
         "Go downloads each module from proxy.golang.org and verifies it against",
-        "go.sum. These zips are exactly what it downloads (the same Go checksums),",
+        "go.sum; these zips are exactly what it downloads (the same Go checksums),",
         "kept here so the source stays available whatever happens upstream.",
         "",
     ])
@@ -360,7 +471,8 @@ def main() -> None:
     prefix = f"xray-core-{version}-corresponding-source"
     args.out.mkdir(parents=True, exist_ok=True)
     target = args.out / f"{prefix}.tar.gz"
-    write_deterministic_tar_gz(target, [(f"{prefix}/{name}", data, mode) for name, data, mode in members])
+    write_deterministic_tar_gz(target, [(f"{prefix}/{name}", source, mode) for name, source, mode in members])
+    scratch_dir.cleanup()
     print(f"{target.name}  sha256 {file_sha256(target)}  {target.stat().st_size} bytes")
 
 
