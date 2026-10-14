@@ -55,12 +55,40 @@ private data class PlanInfo(
 private sealed interface PlanFeature {
     data class Plain(@StringRes val text: Int) : PlanFeature
     data class Counted(@PluralsRes val text: Int, val count: Int) : PlanFeature
+    /**
+     * The free plan's monthly data allowance (MR-1980). Not a number in the
+     * build: resolved at render time from server data by [freePlanCapGb].
+     */
+    data object FreeMonthlyData : PlanFeature
 }
 
 @Composable
-private fun PlanFeature.label(): String = when (this) {
+private fun PlanFeature.label(freeCapGb: Long): String = when (this) {
     is PlanFeature.Plain -> stringResource(text)
     is PlanFeature.Counted -> pluralStringResource(text, count, count)
+    PlanFeature.FreeMonthlyData -> freeCapGb.toInt().let {
+        pluralStringResource(R.plurals.subscription_feature_monthly_data, it, it)
+    }
+}
+
+/** The owner's 2026-10-13 free cap (MR-1980). Shown only when the server has given this app no value. */
+internal const val FREE_PLAN_CAP_FALLBACK_GB = 50L
+
+/**
+ * MR-1980: the free (Recon) plan's monthly allowance, as the paywall states it.
+ * It was a literal 10 in the plan list; the owner raised the cap to 50 GB, and a
+ * number baked into the build keeps selling the old cap until every user updates.
+ * So: a server-wide value when the server publishes one ([configCapGb]), else
+ * the signed-in account's own `/vpn/stats` limit when that account is on Recon
+ * (a Recon account's `bandwidthLimitGb` IS the free cap), else
+ * [FREE_PLAN_CAP_FALLBACK_GB]. A paid account's limit (0 = unlimited) says
+ * nothing about the free plan.
+ */
+internal fun freePlanCapGb(current: SubscriptionStatus?, configCapGb: Long? = null): Long = when {
+    configCapGb != null && configCapGb > 0 -> configCapGb
+    current != null && current.plan.equals("RECON", ignoreCase = true) && current.bandwidthLimitGb > 0 ->
+        current.bandwidthLimitGb
+    else -> FREE_PLAN_CAP_FALLBACK_GB
 }
 
 /**
@@ -84,7 +112,7 @@ private val plans = listOf(
         features = listOf(
             PlanFeature.Counted(R.plurals.subscription_feature_devices, 1),
             PlanFeature.Plain(R.string.subscription_feature_core_locations),
-            PlanFeature.Counted(R.plurals.subscription_feature_monthly_data, 10),
+            PlanFeature.FreeMonthlyData,
             PlanFeature.Plain(R.string.subscription_feature_wireguard),
             PlanFeature.Plain(R.string.subscription_feature_post_quantum),
             PlanFeature.Plain(R.string.subscription_feature_kill_switch),
@@ -294,6 +322,7 @@ fun SubscriptionScreen(
             }
 
             // Plan cards
+            val freeCapGb = freePlanCapGb(currentSubscription)
             plans.forEach { plan ->
                 val isCurrent = currentSubscription?.plan?.equals(plan.id, ignoreCase = true) == true
                 // Google Play's own localised price, or null when this plan is
@@ -303,6 +332,7 @@ fun SubscriptionScreen(
                     if (billingPeriod == "yearly") plan.priceYearly else plan.priceMonthly
                 PlanCard(
                     plan = plan,
+                    freeCapGb = freeCapGb,
                     isCurrent = isCurrent,
                     price = when (
                         planPriceLabel(plan.id, isPlayBuild, playPrice, storefrontLoading)
@@ -547,6 +577,8 @@ private fun MetricCell(label: String, value: String, modifier: Modifier = Modifi
 @Composable
 private fun PlanCard(
     plan: PlanInfo,
+    /** The free plan's allowance, from [freePlanCapGb]. */
+    freeCapGb: Long,
     isCurrent: Boolean,
     price: String,
     isPurchasing: Boolean = false,
@@ -652,7 +684,7 @@ private fun PlanCard(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        feature.label(),
+                        feature.label(freeCapGb),
                         style = MaterialTheme.typography.bodySmall,
                         color = palette.onSurfaceMuted,
                     )

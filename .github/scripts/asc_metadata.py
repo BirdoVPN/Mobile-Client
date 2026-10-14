@@ -84,7 +84,7 @@ The account system processes:
     left out of our nightly backups. Our daily encrypted copy of the database
     files (kept 4 days, used for point-in-time recovery) does not contain it
     either
-  - data-usage totals per billing period, to enforce the free plan's 10 GB
+  - data-usage totals per billing period, to enforce the free plan's 50 GB
     allowance and fair use
   - App Store transactions, to grant the subscription that was bought
 Every request the app makes to our API, including the periodic check-in,

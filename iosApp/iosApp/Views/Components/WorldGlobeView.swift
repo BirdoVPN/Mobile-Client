@@ -29,7 +29,13 @@ import SwiftUI
 /// skip. A frozen globe is drawn, never a blank one.
 struct WorldGlobeView: View {
     let servers: [ServerInfo]
+    /// The node this device talks to: the selected server, or a Multi-Hop
+    /// session's ENTRY node.
     let selectedServerId: String?
+    /// MR-1100: a Multi-Hop session's EXIT node. When set, the globe draws the
+    /// second leg, entry -> exit, after the first ("you" -> entry) and frames
+    /// all three points (`GlobeRoute`). Nil for a single hop.
+    let exitServerId: String?
     let isConnected: Bool
     let autoRotate: Bool
     /// Android parity: we do not geolocate the user (that would be a privacy
@@ -49,12 +55,14 @@ struct WorldGlobeView: View {
     /// so `HomeView` could not construct this.
     init(servers: [ServerInfo],
          selectedServerId: String?,
+         exitServerId: String? = nil,
          isConnected: Bool,
          autoRotate: Bool = true,
          userLat: Double = 51.51,
          userLon: Double = -0.13) {
         self.servers = servers
         self.selectedServerId = selectedServerId
+        self.exitServerId = exitServerId
         self.isConnected = isConnected
         self.autoRotate = autoRotate
         self.userLat = userLat
@@ -119,27 +127,21 @@ struct WorldGlobeView: View {
                 serverPoints.append((id: s.id, lat: ll.lat, lon: ll.lon))
             }
         }
-        let selectedCoord: (lat: Double, lon: Double)? = serverPoints
+        let selectedCoord: GlobeRoute.Coord? = serverPoints
             .first { $0.id == selectedServerId }
-            .map { (lat: $0.lat, lon: $0.lon) }
+            .map { GlobeRoute.Coord(lat: $0.lat, lon: $0.lon) }
+        // Only meaningful behind an entry: an exit with no entry draws nothing.
+        let exitCoord: GlobeRoute.Coord? = selectedCoord == nil ? nil : serverPoints
+            .first { $0.id == exitServerId }
+            .map { GlobeRoute.Coord(lat: $0.lat, lon: $0.lon) }
+        let user = GlobeRoute.Coord(lat: userLat, lon: userLon)
 
-        // Focal target: midpoint of (user, server) so the connection arc sweeps
-        // across the visible front face rather than round the far side.
-        var focusLatTarget = 0.0
-        var focusLonTarget = 0.0
-        if let sel = selectedCoord {
-            let rawDLon = sel.lon - userLon
-            let shiftedSLon: Double
-            if rawDLon > 180 {
-                shiftedSLon = sel.lon - 360
-            } else if rawDLon < -180 {
-                shiftedSLon = sel.lon + 360
-            } else {
-                shiftedSLon = sel.lon
-            }
-            focusLatTarget = (userLat + sel.lat) / 2
-            focusLonTarget = (userLon + shiftedSLon) / 2
-        }
+        // Focal target: the middle of the route — (user, server) for a single
+        // hop, (user, entry, exit) for Multi-Hop — so the arcs sweep across the
+        // visible front face rather than round the far side.
+        let focusTarget = GlobeRoute.focus(user: user, entry: selectedCoord, exit: exitCoord)
+        let focusLatTarget = focusTarget?.lat ?? 0
+        let focusLonTarget = focusTarget?.lon ?? 0
 
         let focus = model.focus
         let idleLon = autoRotate ? (model.idleSpinDeg + userLon - 25) : userLon
@@ -334,9 +336,11 @@ struct WorldGlobeView: View {
 
         // ── Server dots ──────────────────────────────────────────────────────
         // ALL visible nodes are plotted so the user can see every choice. The
-        // selected one is skipped here — it gets the bigger pin below.
+        // selected one (and a Multi-Hop exit) is skipped here — each gets the
+        // bigger pin below.
         let pulse = model.pulse
-        for sp in serverPoints where sp.id != selectedServerId {
+        let pinnedExitId = exitCoord == nil ? nil : exitServerId
+        for sp in serverPoints where sp.id != selectedServerId && sp.id != pinnedExitId {
             let phi = sp.lat * .pi / 180
             let lam = sp.lon * .pi / 180 - lonRad
             let cP = cos(phi)
@@ -356,24 +360,32 @@ struct WorldGlobeView: View {
             fill(ctx, px, py, 1.3, .white.opacity(0.85 * a))
         }
 
-        // ── Connection: great-circle arc, then the two pins ──────────────────
+        // ── Connection: great-circle arc(s), then the pins ───────────────────
+        // One leg for a single hop; two for Multi-Hop (you -> entry, then
+        // entry -> exit), drawn one after the other in travel order.
         if let sel = selectedCoord {
-            drawGreatCircleArc(
-                ctx,
-                cx: cx, cy: cy, radius: radius,
-                cosLat: cosLat, sinLat: sinLat, cosLon: cosLon, sinLon: sinLon,
-                startLat: userLat, startLon: userLon,
-                endLat: sel.lat, endLon: sel.lon,
-                progress: model.arcProgress,
-                shimmer: model.arcShimmer,
-                color: isConnected ? Palette.connected : Palette.accent
-            )
+            let legs = GlobeRoute.legs(user: user, entry: sel, exit: exitCoord)
+            for (index, leg) in legs.enumerated() {
+                drawGreatCircleArc(
+                    ctx,
+                    cx: cx, cy: cy, radius: radius,
+                    cosLat: cosLat, sinLat: sinLat, cosLon: cosLon, sinLon: sinLon,
+                    startLat: leg.from.lat, startLon: leg.from.lon,
+                    endLat: leg.to.lat, endLon: leg.to.lon,
+                    progress: GlobeRoute.legProgress(model.arcProgress, leg: index, of: legs.count),
+                    shimmer: model.arcShimmer,
+                    color: isConnected ? Palette.connected : Palette.accent
+                )
+            }
             if let userPos = project(userLat, userLon) {
                 drawPin(ctx, userPos, isConnected ? Palette.connected : Palette.accent,
                         pulse: pulse, small: true)
             }
             if let srvPos = project(sel.lat, sel.lon) {
                 drawPin(ctx, srvPos, Palette.accent, pulse: pulse, small: false)
+            }
+            if let exitPoint = exitCoord, let exitPos = project(exitPoint.lat, exitPoint.lon) {
+                drawPin(ctx, exitPos, Palette.accent, pulse: pulse, small: false)
             }
         } else if let userPos = project(userLat, userLon) {
             drawPin(ctx, userPos, Palette.accent.opacity(0.95), pulse: pulse, small: true)

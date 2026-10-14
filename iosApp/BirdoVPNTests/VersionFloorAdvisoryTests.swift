@@ -123,6 +123,48 @@ final class VersionFloorAdvisoryTests: XCTestCase {
         }
     }
 
+    /// Review of #484: an https apps.apple.com link is not enough — it must be
+    /// THIS app's page, or the server (or a typo) could send the user to
+    /// another app's listing to "update".
+    func testOnlyThisAppsOwnAppStorePageIsAccepted() {
+        for link in ["https://apps.apple.com/app/id6670361940",
+                     "https://apps.apple.com/id6670361940",
+                     "https://apps.apple.com/gb/app/id6670361940",
+                     "https://apps.apple.com/app/birdovpn/id6670361940",
+                     "https://apps.apple.com/us/app/birdo-vpn/id6670361940",
+                     "https://APPS.apple.com/gb/app/birdovpn/id6670361940",
+                     "https://apps.apple.com/gb/app/birdovpn/id6670361940?mt=12"] {
+            let advisory = ClientUpdateAdvisory(required: true, minVersion: "1.4.40",
+                                                currentVersion: "1.4.33", updateUrl: link, message: "m")
+            XCTAssertEqual(advisory.storeURL?.absoluteString, link, link)
+        }
+    }
+
+    func testAnotherAppsOrAnOddlyShapedAppStoreLinkFallsBack() {
+        for link in ["https://apps.apple.com/app/id1234567890",
+                     "https://apps.apple.com/gb/app/other-app/id1234567890",
+                     "https://apps.apple.com/app/id66703619400",
+                     "https://apps.apple.com/app/id6670361940/",
+                     "https://apps.apple.com/app/id6670361940#x",
+                     "https://apps.apple.com/developer/birdo/id6670361940",
+                     "https://apps.apple.com/gb/app/birdovpn/extra/id6670361940",
+                     "https://apps.apple.com/GB/app/id6670361940",
+                     "https://apps.apple.com:8443/app/id6670361940",
+                     "https://user@apps.apple.com/app/id6670361940",
+                     "https://apps.apple.com/",
+                     "https://apps.apple.com"] {
+            let advisory = ClientUpdateAdvisory(required: true, minVersion: "1.4.40",
+                                                currentVersion: "1.4.33", updateUrl: link, message: "m")
+            XCTAssertEqual(advisory.storeURL, ClientUpdateAdvisory.appStoreURL, link)
+        }
+    }
+
+    func testTheFallbackIsItselfThisAppsPage() throws {
+        let url = try XCTUnwrap(ClientUpdateAdvisory.appStoreURL)
+        XCTAssertTrue(ClientUpdateAdvisory.isOwnAppStorePage(url))
+        XCTAssertEqual(url.absoluteString, "https://apps.apple.com/app/id6670361940")
+    }
+
     // MARK: - MR-1661: the 426 refusal (the hard floor)
 
     /// The contract's `update_required` (contract/vpn-protocol.schema.json):

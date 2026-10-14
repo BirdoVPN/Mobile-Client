@@ -193,7 +193,7 @@ struct LoginView: View {
     }
 
     private var subtitleText: String {
-        if isCreatedStep { return "Save your recovery ID" }
+        if isCreatedStep { return "Save your account number" }
         if authVM.isAutoProvisioning { return "No account needed" }
         if authVM.requiresTwoFactor { return "Enter your authenticator code" }
         return "Sign in to access the sovereign network"
@@ -373,7 +373,7 @@ struct LoginView: View {
                 .accessibilityIdentifier("login_anonymous_create")
                 .loginEntrance(entered, delay: 0.25)
 
-            Text("No email, no personal details — the server mints a 24-digit ID.")
+            Text("No email, no personal details — the server mints a 24-digit account number.")
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.white40)
                 .multilineTextAlignment(.center)
@@ -405,10 +405,10 @@ struct LoginView: View {
             anonymousDivider
                 .padding(.top, 20)
 
-            BirdoTextField("Account ID",
+            BirdoTextField("Account number",
                            placeholder: "XXXX XXXX XXXX XXXX XXXX XXXX",
                            text: $anonymousId,
-                           supportingText: "Enter the 24-digit ID from your anonymous account",
+                           supportingText: "Enter the 24-digit number of your anonymous account",
                            keyboardType: .numberPad,
                            monospaced: true)
                 .focused($focusedField, equals: .anonymousId)
@@ -432,8 +432,11 @@ struct LoginView: View {
                 .accessibilityIdentifier("login_anonymous_password_field")
                 .loginEntrance(entered, delay: 0.32)
 
-            PrimaryButton("Sign In",
-                          loadingTitle: "Connecting…",
+            // Android parity (MR-1617): `login_anonymous_submit` "Sign in" and
+            // `login_connecting` "Signing in…" — the same words as the email
+            // tab. PrimaryButton derives the VoiceOver label from these.
+            PrimaryButton("Sign in",
+                          loadingTitle: "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: anonymousId.count == 24,
                           action: submitAnonymousLogin)
@@ -443,11 +446,11 @@ struct LoginView: View {
         }
     }
 
-    /// "or sign in with an existing ID" rule between the two anonymous paths.
+    /// "or use an existing account number" rule between the two anonymous paths.
     private var anonymousDivider: some View {
         HStack(spacing: 12) {
             Rectangle().fill(BirdoTheme.hairlineSoft).frame(height: 1)
-            Text("or use an existing ID")
+            Text("or use an existing account number")
                 .font(.system(size: 12))
                 .foregroundStyle(BirdoTheme.white40)
                 .fixedSize()
@@ -669,7 +672,7 @@ struct LoginView: View {
                 }
                 .accessibilityHidden(true)
 
-                (Text("Your anonymous account is ready. This ID is the ")
+                (Text("Your anonymous account is ready. This account number is the ")
                     + Text("only").fontWeight(.semibold).foregroundStyle(.white)
                     + Text(" way back in."))
                     .font(.system(size: 14))
@@ -706,7 +709,7 @@ struct LoginView: View {
                 )
             }
             .buttonStyle(PressScaleButtonStyle())
-            .accessibilityLabel("Copy account ID")
+            .accessibilityLabel("Copy account number")
 
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "exclamationmark.shield.fill")
@@ -730,7 +733,7 @@ struct LoginView: View {
     private func copyCreatedId(_ id: String) {
         Clipboard.copySensitive(id)
         Haptics.notify(.success)
-        AccessibilityNotification.Announcement("Account ID copied").post()
+        AccessibilityNotification.Announcement("Account number copied").post()
         copyResetTask?.cancel()
         withAnimation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick)) {
             copiedId = true

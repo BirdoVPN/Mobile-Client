@@ -135,6 +135,51 @@ class OpenSourceNoticesTest {
         ).forEach { assertTrue("the notices lost: $it", it in notices) }
     }
 
+    /**
+     * libxray.so contains github.com/sagernet/sing and sing-shadowsocks, which
+     * are GPL-3.0-or-later. GPL-3.0 (sections 4 and 6) requires a copy of the
+     * licence to accompany the program; a link to it is not a copy. Owner
+     * ruling 2026-10-13: comply through the notices. So while libxray.so is
+     * listed, the complete text must be there, verbatim: the gnu.org
+     * gpl-3.0.txt is 674 lines and 35,149 characters, with sections 0 to 17.
+     */
+    @Test
+    fun `the full GPL-3 text ships while libxray is listed`() {
+        if ("libxray.so" !in notices) return
+        val first = "                    GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n"
+        val last = "<https://www.gnu.org/licenses/why-not-lgpl.html>.\n"
+        val start = notices.indexOf(first)
+        assertTrue("libxray.so is listed but the GPL-3.0 text is not in the notices", start >= 0)
+        val end = notices.indexOf(last, start)
+        assertTrue("the GPL-3.0 text is cut short (no closing paragraph)", end > start)
+        val gpl = notices.substring(start, end + last.length)
+        assertEquals("the GPL-3.0 text is not the verbatim gnu.org text (line count)", 674, gpl.lines().size - 1)
+        assertEquals("the GPL-3.0 text is not the verbatim gnu.org text (length)", 35_149, gpl.length)
+        listOf(
+            "0. Definitions.", "1. Source Code.", "2. Basic Permissions.",
+            "3. Protecting Users' Legal Rights From Anti-Circumvention Law.",
+            "4. Conveying Verbatim Copies.", "5. Conveying Modified Source Versions.",
+            "6. Conveying Non-Source Forms.", "7. Additional Terms.", "8. Termination.",
+            "9. Acceptance Not Required for Having Copies.",
+            "10. Automatic Licensing of Downstream Recipients.", "11. Patents.",
+            "12. No Surrender of Others' Freedom.",
+            "13. Use with the GNU Affero General Public License.",
+            "14. Revised Versions of this License.", "15. Disclaimer of Warranty.",
+            "16. Limitation of Liability.", "17. Interpretation of Sections 15 and 16.",
+            "END OF TERMS AND CONDITIONS",
+        ).forEach { heading ->
+            assertTrue(
+                "the GPL-3.0 text lost: $heading",
+                Regex("""(?m)^ +${Regex.escape(heading)}$""").containsMatchIn(gpl),
+            )
+        }
+        val xray = notices.substringAfter("Xray-core ").substringBefore("\n\n")
+        assertTrue(
+            "the Xray-core entry must say the GPL modules' licence text is included",
+            "sing-shadowsocks (GNU General Public License v3.0 or\n    later; full text below)" in xray,
+        )
+    }
+
     @Test
     fun `the notices ship in the app and Settings opens them`() {
         val screen = text("app/src/main/java/app/birdo/vpn/ui/screen/LicensesScreen.kt")

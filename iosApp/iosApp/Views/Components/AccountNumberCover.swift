@@ -6,9 +6,9 @@ import SwiftUI
 /// The number is the account's only credential, and iOS photographs the window
 /// for the app switcher as the app leaves the foreground. The only cover used
 /// to be Hide App Contents (`BiometricGate`), which is opt-in and off by
-/// default, so the snapshot showed the number in clear — on the "save your ID"
-/// step too, which is exactly where a user leaves the app to paste it into a
-/// password manager.
+/// default, so the snapshot showed the number in clear — on the "save your
+/// account number" step too, which is exactly where a user leaves the app to
+/// paste it into a password manager.
 ///
 /// Applied to every view that renders the number, and independent of Hide App
 /// Contents: while the scene is not `.active` (the app switcher opening, a

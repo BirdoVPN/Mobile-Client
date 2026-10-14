@@ -220,10 +220,11 @@ enum AnonymousCreateFailure {
             //   • `rl:anon-register:ip:*`  — 3 per IP per hour. Body says
             //     "from this network". Changing network, or an hour, clears it.
             //   • `rl:anon-register:dev:*` — 5 per DEVICE per 24h, keyed on
-            //     the stable deviceId. Body says "from this device". NOTHING
-            //     the user can do clears it — not another network, not signing
-            //     out, not reinstalling (device_id survives all three) — only
-            //     the 24 hours passing.
+            //     the stable deviceId. Body says "from this device". Neither
+            //     another network nor signing out clears it (device_id
+            //     survives both) — only the 24 hours passing. (A reinstall
+            //     mints a new device_id since MR-1726, as on Android; the
+            //     copy does not suggest it.)
             // This used to render the network/hour copy for BOTH, so a
             // device-capped user was sent off to change networks, which cannot
             // help, and told to wait an hour, which is 23 short.

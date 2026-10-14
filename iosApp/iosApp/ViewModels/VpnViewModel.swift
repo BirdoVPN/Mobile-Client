@@ -151,11 +151,13 @@ final class VpnViewModel: ObservableObject {
     /// Honest indicator: lit only when a true bilateral ML-KEM PSK was
     /// actually derived for this connection (BirdoPQManager mode).
     @Published var quantumActive = false
-    /// REAL kill-switch arming state (VPNManager.killSwitchArmed: on-demand
-    /// rule armed + includeAllNetworks in the persisted profile). Snapshotted
-    /// on every status transition. This — not the Settings preference — is
-    /// what decides whether the UI may claim traffic is being blocked.
-    @Published private(set) var killSwitchArmed = false
+    /// REAL kill-switch state (VPNManager.killSwitchState: the on-demand
+    /// Connect rule and includeAllNetworks as the system profile holds them).
+    /// Snapshotted on every status transition and after every kill-switch
+    /// save (MR-975). This — not the Settings preference — is what decides
+    /// whether the UI may claim traffic is being blocked or held.
+    @Published private(set) var killSwitchSystem: KillSwitchSystemState?
+    var killSwitchArmed: Bool { killSwitchSystem?.isArmed ?? false }
 
     /// P1-ios-redial-loop-blackhole: the tripped circuit-breaker record left by
     /// the tunnel extension, or nil.
@@ -286,6 +288,13 @@ final class VpnViewModel: ObservableObject {
         vpnManager.onStatusChange = { [weak self] status in
             Task { @MainActor in
                 self?.handleStatusChange(status)
+            }
+        }
+        // MR-975: a kill-switch toggle changes no tunnel status, so take the
+        // saved state from VPNManager when the save lands.
+        vpnManager.onKillSwitchStateChange = { [weak self] state in
+            Task { @MainActor in
+                self?.killSwitchSystem = state
             }
         }
 
@@ -824,7 +833,9 @@ final class VpnViewModel: ObservableObject {
                 // applyKillSwitchFlag mutates the in-memory profile
                 // synchronously; refresh the published snapshot so the UI
                 // reflects the arm without waiting for a status transition.
-                killSwitchArmed = vpnManager.killSwitchArmed
+                // When the save lands, onKillSwitchStateChange replaces it with
+                // what the system kept (MR-975).
+                killSwitchSystem = vpnManager.killSwitchState
                 return
             }
         }
@@ -1082,7 +1093,7 @@ final class VpnViewModel: ObservableObject {
         // transition (arming happens post-handshake, disarming in
         // disconnect()/stale-rule cleanup), so snapshotting here keeps the
         // published value honest without polling the system profile.
-        killSwitchArmed = vpnManager.killSwitchArmed
+        killSwitchSystem = vpnManager.killSwitchState
         switch status {
         case .connected:
             isConnected = true
@@ -1507,7 +1518,7 @@ final class VpnViewModel: ObservableObject {
                 // Real inbound bytes on the new peer: the breaker's streak is
                 // spent history (same rule as armKillSwitchAfterHandshake).
                 clearCircuitBreaker()
-                killSwitchArmed = vpnManager.killSwitchArmed
+                killSwitchSystem = vpnManager.killSwitchState
                 error = nil
                 // Belt-and-braces: the server retires the old key itself once
                 // the new peer handshakes (its supersede sweeper); this only

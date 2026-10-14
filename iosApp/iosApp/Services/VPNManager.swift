@@ -73,6 +73,8 @@ final class VPNManager: @unchecked Sendable {
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
+    /// MR-975 review: `.NEVPNConfigurationChange`, for the kill-switch chip.
+    private var configurationObserver: NSObjectProtocol?
 
     /// REAL kill-switch blocking state, read from the system profile — NOT the
     /// user preference. True only when the persisted on-demand rule is armed
@@ -82,11 +84,49 @@ final class VPNManager: @unchecked Sendable {
     /// disconnect() disarms before stopping, and applyKillSwitchFlag() arms
     /// only while a session is live, so in the steady disconnected state
     /// nothing is blocked no matter what the Settings toggle reads.
-    /// VpnViewModel snapshots this on every status transition.
-    var killSwitchArmed: Bool {
-        guard let mgr = manager, mgr.isOnDemandEnabled else { return false }
+    /// VpnViewModel snapshots this on every status transition. The rule must
+    /// be a CONNECT rule (MR-975): an enabled on-demand set without one does
+    /// not dial the tunnel back.
+    var killSwitchArmed: Bool { killSwitchState?.isArmed ?? false }
+
+    /// MR-975: the kill-switch flags as the system profile holds them, for the
+    /// Home chip (`KillSwitchChip`). Nil when no VPN configuration is loaded.
+    var killSwitchState: KillSwitchSystemState? {
+        manager.map(Self.killSwitchState(of:))
+    }
+
+    private static func killSwitchState(of mgr: NETunnelProviderManager) -> KillSwitchSystemState {
         let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol
-        return proto?.includeAllNetworks ?? false
+        return KillSwitchSystemState(
+            configurationEnabled: mgr.isEnabled,
+            onDemandEnabled: mgr.isOnDemandEnabled,
+            hasConnectRule: mgr.onDemandRules?.contains { $0 is NEOnDemandRuleConnect } ?? false,
+            includeAllNetworks: proto?.includeAllNetworks ?? false
+        )
+    }
+
+    /// MR-975: called on the main queue with the kill-switch state read FRESH
+    /// from the system (`refreshKillSwitchState`): after this app's own
+    /// kill-switch save, on every tunnel status change and on every
+    /// configuration change. A Settings toggle changes no tunnel status, so
+    /// without this the Home chip would show the pre-toggle state until the
+    /// next transition.
+    var onKillSwitchStateChange: ((KillSwitchSystemState?) -> Void)?
+
+    /// Read the kill-switch state from a FRESH copy of the system's
+    /// configuration and report it (vpn-d3 review). The in-memory `manager`
+    /// only knows this app's own edits: turning the VPN off in iOS Settings
+    /// (which also turns On Demand off) or choosing another VPN there never
+    /// reaches it, and a failed save leaves it edited while the system kept the
+    /// old values. The fresh copy is read and dropped — never assigned to
+    /// `manager` — so a reload can never overwrite edits this app is about to
+    /// save. Nil when the configuration is gone or cannot be read.
+    func refreshKillSwitchState() {
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
+            guard let self else { return }
+            let state = error == nil ? managers?.first.map(Self.killSwitchState(of:)) : nil
+            DispatchQueue.main.async { [weak self] in self?.onKillSwitchStateChange?(state) }
+        }
     }
 
     /// Why the tunnel last went down, straight from NetworkExtension.
@@ -100,10 +140,23 @@ final class VPNManager: @unchecked Sendable {
 
     init() {
         loadManager()
+        // MR-975 review: the user can turn this VPN off, turn On Demand off or
+        // choose another VPN in iOS Settings at any time; the system posts this
+        // for each, and only a fresh read sees it.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshKillSwitchState()
+        }
     }
 
     deinit {
         if let observer = statusObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = configurationObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -641,11 +694,13 @@ final class VPNManager: @unchecked Sendable {
             mgr.isOnDemandEnabled = false
             TunnelBreakerStore.shared.setOnDemandArmed(false)
         }
-        mgr.saveToPreferences { error in
+        mgr.saveToPreferences { [weak self] error in
             if let error {
                 debugLog("[VPNManager] applyKillSwitchFlag saveToPreferences failed: %@",
                          error.localizedDescription)
             }
+            // The system's copy, saved or not — never the in-memory edit.
+            self?.refreshKillSwitchState()
         }
     }
 
@@ -901,6 +956,9 @@ final class VPNManager: @unchecked Sendable {
                 }
             }
             self?.onStatusChange?(connection.status)
+            // A status change can follow a configuration change made outside
+            // the app (the VPN switched off in Settings); re-read it.
+            self?.refreshKillSwitchState()
         }
     }
 

@@ -35,6 +35,14 @@ struct SubscriptionView: View {
 
     private var period: StoreBillingPeriod { billingIndex == 1 ? .yearly : .monthly }
 
+    /// MR-1980: the free plan's monthly allowance as the server states it — a
+    /// Recon account's own `/vpn/stats` limit — or `FreePlanCap.fallbackGb`
+    /// when this app has no such value (a paid account, or no stats yet).
+    private var freeCapGb: Double {
+        FreePlanCap.gb(plan: vpnVM.subscription?.plan,
+                       bandwidthLimitGb: vpnVM.subscription?.bandwidthLimitGb)
+    }
+
     /// The account's paid plan was bought OUTSIDE the App Store (the website,
     /// a voucher or Google Play): nothing here may sell it a second one
     /// (audit 2026-09-29, A-9 / A-16). See `StorePurchaseGate`.
@@ -98,7 +106,7 @@ struct SubscriptionView: View {
                         style: .accent
                     )
 
-                    ForEach(PlanCardModel.catalog) { plan in
+                    ForEach(PlanCardModel.catalog(freeCapGb: freeCapGb)) { plan in
                         planCard(plan)
                     }
 
@@ -640,7 +648,9 @@ private struct PlanCardModel: Identifiable, Sendable {
         self.features = features
     }
 
-    static let catalog: [PlanCardModel] = [
+    /// `freeCapGb`: the free plan's monthly allowance from server data
+    /// (`FreePlanCap`, MR-1980) — never a number baked into the build.
+    static func catalog(freeCapGb: Double) -> [PlanCardModel] { [
         PlanCardModel(
             slug: "RECON",
             name: "Recon",
@@ -651,7 +661,7 @@ private struct PlanCardModel: Identifiable, Sendable {
             features: [
                 "1 device connection",
                 "Core server locations",
-                "10 GB monthly bandwidth",
+                FreePlanCap.featureLine(gb: freeCapGb),
                 "WireGuard® encryption",
                 "Post-quantum key exchange",
                 "Kill switch",
@@ -702,5 +712,5 @@ private struct PlanCardModel: Identifiable, Sendable {
                 "Priority support",
             ]
         ),
-    ]
+    ] }
 }

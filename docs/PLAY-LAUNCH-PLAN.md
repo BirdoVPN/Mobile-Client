@@ -164,7 +164,7 @@ bits that trip people up:
       outright one.** Since the entitlement floor landed, an account whose plan
       expires does not get locked out — it falls back to the free **Recon**
       tier and still connects. Nothing looks broken. But Recon is **1 device
-      and a 10 GB cap** (`device.service.ts`, `admin-users.controller.ts`)
+      and a 50 GB cap** (`device.service.ts`, `admin-users.controller.ts`)
       against Operative's 5 and Sovereign's 10, so the reviewer quietly sees a
       different app from the one the listing describes. **Re-check the expiry
       immediately before every submission**, not once at setup. Topping it up is

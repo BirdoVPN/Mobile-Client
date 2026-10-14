@@ -316,6 +316,28 @@ targets:
       # APIClient.swift and VpnViewModel.swift (its callers) cannot be compiled
       # into this bundle.
       - path: iosApp/Services/ConnectErrorCode.swift
+      # MR-1100: the Home globe's route — one leg for a single hop, you ->
+      # entry -> exit for Multi-Hop — its camera framing and draw order.
+      # Foundation-only by design (CountryCoords too), pinned by
+      # GlobeRouteTests; WorldGlobeView (a SwiftUI Canvas) cannot be compiled
+      # into this bundle.
+      - path: iosApp/Views/Components/GlobeRoute.swift
+      - path: iosApp/Views/Components/CountryCoords.swift
+      # MR-1726: the first-run sentinel that makes the device identity per
+      # install. Foundation-only by design — the keychain is behind the
+      # InstallIdentityStore protocol — so InstallIdentityTests pins the
+      # fresh-install / upgrade / later-launch decision with an in-memory store.
+      # It reads ConsentRecord (GuestAccess.swift, listed above).
+      - path: iosApp/Services/InstallIdentity.swift
+      # MR-1980: the free plan's allowance on the paywall, from server data
+      # (fallback 50 GB only when there is none). Foundation-only by design,
+      # pinned by FreePlanCapTests; SubscriptionView cannot be compiled here.
+      - path: iosApp/Services/FreePlanCap.swift
+      # MR-975: the Home kill-switch chip from the configuration the system
+      # holds (on-demand Connect rule + includeAllNetworks), not the toggle.
+      # Foundation-only by design, pinned by KillSwitchChipTests; VPNManager
+      # (NetworkExtension) and HomeView cannot be compiled into this bundle.
+      - path: iosApp/Services/KillSwitchChip.swift
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.

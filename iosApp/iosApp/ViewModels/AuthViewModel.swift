@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// Auth-method tabs on the Login screen. Labels (exact): `Email` |
 /// `Anonymous` | `SSO`. Hidden while the 2FA step is active.
@@ -77,7 +80,7 @@ final class AuthViewModel: ObservableObject {
     /// left it armed and the NEXT consent acceptance -- raised from Profile,
     /// from Settings, from anywhere -- minted an anonymous account nobody asked
     /// for, spent one of three mints per IP per hour, and locked the sheet onto
-    /// "save your recovery ID" instead of the login form that was requested.
+    /// "save your account number" instead of the login form that was requested.
     private var pendingProvisionReason: SignInReason?
     /// The in-flight anonymous mint, retained so backing out can CANCEL it.
     private var provisioningTask: Task<Void, Never>?
@@ -291,15 +294,35 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
+        // MR-1726: a fresh install signs out the session a previous install
+        // left in the keychain and discards its device identity, BEFORE
+        // anything reads either — the token check below then finds no session.
+        // This is the first keychain reader, and the scene creates it after
+        // launch — never during iOS prewarming, which stops short of
+        // UIApplicationMain and is when neither UserDefaults nor the keychain
+        // may read back yet.
+        let install = InstallIdentity.checkOnLaunch(defaults: .standard,
+                                                    store: keychain,
+                                                    protectedDataAvailable: Self.protectedDataAvailable,
+                                                    mintDeviceId: InstallIdentity.mintDeviceId)
+        if install == .discardedPreviousInstall {
+            // The rest of a sign-out (completeLocalLogout): the previous
+            // install's BirdoPQ client key and any heartbeat credentials a
+            // surviving VPN profile still carries.
+            BirdoPQManager.shared.resetPersistedKeypair()
+            VPNManager.shared.scrubHeartbeatCredentials()
+        }
+
         // Owner item 38: consent is VERSIONED. An acceptance of an older
         // disclosure does not count, so its user sees the current one once.
         let defaults = UserDefaults.standard
         let storedConsent = ConsentRecord.hasAcceptedCurrent(in: defaults)
         let storedDeferral = ConsentRecord.isDeferred(in: defaults)
         // Cold-start routing from local tokens only: logged in iff either
-        // stored JWT is unexpired. Unparseable = expired (fail-safe).
-        let sessionLive = Self.isTokenLive(keychain.accessToken)
-            || Self.isTokenLive(keychain.refreshToken)
+        // stored JWT is unexpired. Unparseable = expired (fail-safe). Never on
+        // a previous install's session that a failed clean-up left behind.
+        let sessionLive = !install.storedSessionUnusable
+            && (Self.isTokenLive(keychain.accessToken) || Self.isTokenLive(keychain.refreshToken))
         // A signed-in session is no longer grandfathered into consent: it
         // used to set `gdpr_consented` here, which made a signed-in user
         // immune to any change of the disclosure — exactly the users who must
@@ -321,12 +344,25 @@ final class AuthViewModel: ObservableObject {
                 hydrationAwaitsConsentScreen = true
             }
         } else {
-            // Both tokens dead: purge the leftovers so no half-expired
+            // Both tokens dead (or a previous install's session a failed
+            // clean-up left behind): purge the leftovers so no half-expired
             // session lingers in the keychain.
             if keychain.accessToken != nil || keychain.refreshToken != nil {
                 keychain.clear()
             }
         }
+    }
+
+    /// False before the first unlock after a boot (iOS only). The host app has
+    /// no background modes, so a user launch always sees true; the check is
+    /// there so an absent sentinel is never read as "fresh install" when the
+    /// data simply could not be read.
+    private static var protectedDataAvailable: Bool {
+        #if os(iOS)
+        UIApplication.shared.isProtectedDataAvailable
+        #else
+        true
+        #endif
     }
 
     // MARK: - Consent
@@ -670,7 +706,7 @@ final class AuthViewModel: ObservableObject {
         guard !isLoading else { return }
         let digits = anonymousId.filter { $0.isASCII && $0.isNumber }
         guard digits.count == 24 else {
-            error = "Anonymous ID must be 24 digits"
+            error = "Account number must be 24 digits"
             return
         }
         let trimmed = password?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -735,9 +771,11 @@ final class AuthViewModel: ObservableObject {
                                                 knownEmail: nil,
                                                 knownAnonymousId: registration.anonymousId,
                                                 context: .anonymousCreate) {
+                    // Never `keychain.anonymousId`: the number shown here must
+                    // be THIS account's, from the server — a stored one could
+                    // be a previous account's (MR-1726 follow-up).
                     let minted = registration.anonymousId
                         ?? user?.anonymousAccountNumber
-                        ?? keychain.anonymousId
                     if let minted {
                         createdAnonymousId = minted
                         isAutoProvisioning = false
@@ -938,9 +976,11 @@ final class AuthViewModel: ObservableObject {
     }
 
     private func completeLocalLogout() {
-        // Keychain keeps `device_id` (stable device identity) and
-        // `anonymous_id` (sole recovery credential) — everything else goes.
-        keychain.clear()
+        // Keychain keeps `device_id` (stable device identity) — everything else
+        // goes, the anonymous account number too, as on Android
+        // (`TokenManager.clearAll()`): no signed-out screen reads it, and a
+        // stored number could be shown as a different account's.
+        LocalSignOut.wipe(keychain)
         // Fence the API session (finding #1): bump the generation AFTER the
         // keychain wipe so any refresh still in flight drops its rotated pair
         // instead of resurrecting the signed-out session. Ordering matters —
