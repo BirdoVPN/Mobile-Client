@@ -152,6 +152,41 @@ class IosParityRowsGuardTest {
         )
     }
 
+    /**
+     * #485 review: the anonymous-number leftovers. The decisions are XCTested
+     * (InstallIdentityTests, AccountIdentityTests); this pins that
+     * AuthViewModel — which the test bundle cannot compile — makes them.
+     */
+    @Test
+    fun `no anonymous account number outlives its session`() {
+        val auth = source("$ios/ViewModels/AuthViewModel.swift")
+        val init = auth.substringAfter("init(api: APIClient = .shared").substringBefore("\n    }\n")
+        assertTrue("AuthViewModel.init is gone", init.length < auth.length)
+        // The expired-session clean-up: clear() alone kept anonymous_id.
+        assertFalse("the expired-session clean-up keeps the account number", "keychain.clear()" in init)
+        assertTrue("the expired-session clean-up must be a full local wipe", "LocalSignOut.wipe(keychain)" in init)
+        // The one-time purge of what older builds left after a sign-out.
+        assertTrue(
+            "older builds' leftover numbers are never purged",
+            "AnonymousNumberRecord.purgeStaleOnLaunch(" in init && "signedIn: sessionLive" in init,
+        )
+        // An anonymous sign-in without a number records none.
+        val complete = auth.substringAfter("private func completeAuthentication(")
+            .substringBefore("keychain.setSignedInWithApple")
+        assertTrue(
+            "AnonymousNumberRecord.recordSignIn(anonymous: true, number: knownAnonymousId, in: keychain)" in complete,
+        )
+        assertFalse("an anonymous sign-in with no number keeps an older one", "if let knownAnonymousId" in complete)
+        assertTrue(
+            auth.substringAfter("private func applyProfile(").substringBefore("\n    }\n")
+                .contains("AnonymousNumberRecord.recordProfile("),
+        )
+        // What is shown never falls back to a stored number on its own.
+        val display = auth.substringAfter("var isAnonymousAccount: Bool {").substringBefore("private var profileIdentity")
+        assertTrue("AnonymousAccountDisplay.isAnonymous(" in display && "AnonymousAccountDisplay.number(" in display)
+        assertFalse("?? keychain.anonymousId" in display)
+    }
+
     @Test
     fun `the apps say account number, never account ID`() {
         // Owner, 2026-10-14: "Use 'Account number' everywhere", as Android and

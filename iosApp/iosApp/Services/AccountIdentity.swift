@@ -73,3 +73,32 @@ enum AccountIdentity {
         return only.isEmpty ? nil : only
     }
 }
+
+/// #485 review — what the app shows as "anonymous account" and its number
+/// (`AuthViewModel.isAnonymousAccount` / `anonymousAccountNumber`).
+///
+/// The profile decides once it is known. Before it lands (a cold start
+/// offline), a number stored on the device stands in — but only while SIGNED
+/// IN, when it is the number recorded for this session
+/// (`AnonymousNumberRecord`). A stored number is never shown while signed out,
+/// nor once the profile says the account is not anonymous: it can then only be
+/// a previous account's.
+enum AnonymousAccountDisplay {
+    static func isAnonymous(profile: AccountIdentity.Resolved?,
+                            signedIn: Bool,
+                            email: String?,
+                            storedNumber: String?) -> Bool {
+        if let profile { return profile.isAnonymous }
+        return signedIn && email == nil && storedNumber != nil
+    }
+
+    static func number(profile: AccountIdentity.Resolved?,
+                       signedIn: Bool,
+                       storedNumber: String?) -> String? {
+        if let profile {
+            guard profile.isAnonymous else { return nil }
+            if let number = profile.accountNumber { return number }
+        }
+        return signedIn ? storedNumber : nil
+    }
+}

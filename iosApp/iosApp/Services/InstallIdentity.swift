@@ -172,6 +172,79 @@ enum LocalSignOut {
     }
 }
 
+/// #485 review — the anonymous account number stored on this device belongs
+/// to the session signed in on it, and to nothing else: never a previous
+/// account's number kept across a sign-out, an expired session or a sign-in
+/// that did not say what the new number is.
+enum AnonymousNumberRecord {
+    /// After a sign-in's tokens are stored. An anonymous sign-in records the
+    /// number the server or the user gave for THIS account; given none, it
+    /// records nothing rather than keep an older one, which would then be
+    /// shown as this account's (`/auth/me` fills it in, `recordProfile`). Any
+    /// other sign-in drops it.
+    static func recordSignIn(anonymous: Bool, number: String?, in store: any InstallIdentityStore) {
+        if anonymous, let number {
+            store.saveAnonymousId(number)
+        } else {
+            store.clearAnonymousId()
+        }
+    }
+
+    /// After `GET /auth/me`: the profile's number replaces the stored one, and
+    /// an account the profile says is not anonymous keeps none. An anonymous
+    /// profile without a number leaves the one this sign-in recorded.
+    static func recordProfile(isAnonymous: Bool, number: String?, in store: any InstallIdentityStore) {
+        guard isAnonymous else {
+            store.clearAnonymousId()
+            return
+        }
+        if let number { store.saveAnonymousId(number) }
+    }
+
+    /// The UserDefaults flag of `purgeStaleOnLaunch`.
+    static let stalePurgeDoneKey = "stale_anonymous_id_purged_v1"
+
+    enum PurgeOutcome: Equatable, Sendable {
+        /// Done on an earlier launch.
+        case alreadyDone
+        /// Signed in: the stored number is this session's, and its sign-out
+        /// wipes it (`LocalSignOut`). The purge waits for a signed-out launch.
+        case signedIn
+        /// Signed out with no number stored: nothing to purge; done.
+        case nothingStored
+        /// Signed out with a number stored: removed; done.
+        case purged
+        /// Nothing could be read, or the removal did not stick: next launch.
+        case retryNextLaunch
+    }
+
+    /// One-time, at launch. Builds before the sign-out wipe kept
+    /// `anonymous_id` after a sign-out, and an expired session's clean-up
+    /// kept it as well, so a device signed out on one of those builds still
+    /// holds a previous account's number. Only ever removed while SIGNED OUT,
+    /// when no screen reads it.
+    ///
+    /// - Parameter protectedDataAvailable: false before the first unlock after
+    ///   a boot, when an absent number proves nothing (see `InstallIdentity`).
+    @discardableResult
+    static func purgeStaleOnLaunch(defaults: UserDefaults,
+                                   store: any InstallIdentityStore,
+                                   signedIn: Bool,
+                                   protectedDataAvailable: Bool) -> PurgeOutcome {
+        guard protectedDataAvailable else { return .retryNextLaunch }
+        if defaults.bool(forKey: stalePurgeDoneKey) { return .alreadyDone }
+        guard !signedIn else { return .signedIn }
+        var outcome = PurgeOutcome.nothingStored
+        if store.anonymousId != nil {
+            store.clearAnonymousId()
+            guard store.anonymousId == nil else { return .retryNextLaunch }
+            outcome = .purged
+        }
+        defaults.set(true, forKey: stalePurgeDoneKey)
+        return outcome
+    }
+}
+
 /// The keychain items the check and the sign-out read and replace.
 /// `KeychainService` conforms; the tests use an in-memory store.
 protocol InstallIdentityStore: AnyObject {
@@ -180,6 +253,7 @@ protocol InstallIdentityStore: AnyObject {
     /// Either session token is stored.
     var hasSession: Bool { get }
     @discardableResult func saveDeviceId(_ id: String) -> Bool
+    @discardableResult func saveAnonymousId(_ id: String) -> Bool
     func clearAnonymousId()
     /// Drop the session: tokens and everything stored with them.
     func clearSession()
