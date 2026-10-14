@@ -2,6 +2,10 @@ package app.birdo.vpn.shared.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
 
 /**
  * What a redacting toString prints for a nullable secret: `[REDACTED]` when it
@@ -346,8 +350,8 @@ data class AppUpdateInfo(
  * (NetworkModule.json, `ignoreUnknownKeys = true`), so web-side additions never
  * break a shipped client.
  *
- * The field is NULLABLE and defaulted, and the difference between `false` and
- * absent is load-bearing — see [dnsFilteringAvailable].
+ * The fields are NULLABLE and defaulted, and the difference between `false`
+ * and absent is load-bearing — see [dnsFilteringAvailable].
  */
 @Serializable
 data class ClientConfigResponse(
@@ -363,7 +367,37 @@ data class ClientConfigResponse(
      * Only an explicit `false` disables the toggle.
      */
     val dnsFilteringAvailable: Boolean? = null,
-)
+    /**
+     * MR-1980 (birdo-web#708): `plans.<PLAN>`, one object per plan id with
+     * `monthlyPrice`, `yearlyPrice`, `currency` and `bandwidthLimitGb`. Only
+     * `RECON.bandwidthLimitGb` is read — see [freePlanCapGb]. The prices are
+     * the web checkout's and are deliberately never modelled: the store
+     * rails sell at their own localised prices.
+     *
+     * Kept as a raw [JsonElement] so that NO shape of it can fail the decode:
+     * a typed field that met an unexpected shape would throw away the whole
+     * response, BirdoShield gate included.
+     */
+    val plans: JsonElement? = null,
+) {
+    /**
+     * The free (Recon) plan's monthly allowance as the server publishes it:
+     * `plans.RECON.bandwidthLimitGb`, or null when this server publishes none
+     * (older than birdo-web#708) or the value is unusable — null (unlimited
+     * says nothing about a cap), not a JSON number, not a whole positive
+     * number of GB, or past what the paywall's `%d` can state.
+     */
+    val freePlanCapGb: Long?
+        get() {
+            val recon = (plans as? JsonObject)?.entries
+                ?.firstOrNull { it.key.equals("RECON", ignoreCase = true) }?.value as? JsonObject
+            val value = recon?.get("bandwidthLimitGb") as? JsonPrimitive ?: return null
+            if (value.isString) return null
+            val gb = value.doubleOrNull ?: return null
+            if (!gb.isFinite() || gb < 1.0 || gb > Int.MAX_VALUE.toDouble() || gb % 1.0 != 0.0) return null
+            return gb.toLong()
+        }
+}
 
 // ─── GDPR / Account Deletion ─────────────────────────────────────────────────
 

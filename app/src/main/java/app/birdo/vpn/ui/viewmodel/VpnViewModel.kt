@@ -119,6 +119,14 @@ data class VpnUiState(
      * treats unknown as AVAILABLE. See [nextDnsFilteringAvailable].
      */
     val dnsFilteringAvailable: Boolean? = null,
+    /**
+     * MR-1980: the free plan's monthly cap as `GET /api/client-config`
+     * publishes it (`plans.RECON.bandwidthLimitGb`, birdo-web#708), or null —
+     * not fetched yet, or a server that publishes none. The paywall falls back
+     * to the account's own `/vpn/stats` limit and then 50 GB; see
+     * [app.birdo.vpn.ui.screen.freePlanCapGb] and [nextFreePlanCapGb].
+     */
+    val configFreePlanCapGb: Long? = null,
     /** A server switch is in flight: Home says "Switching server…" (P1-parity-016). */
     val switching: Boolean = false,
     /**
@@ -153,6 +161,21 @@ internal fun nextDnsFilteringAvailable(
     result: ApiResult<ClientConfigResponse>,
 ): Boolean? = when (result) {
     is ApiResult.Success -> result.data.dnsFilteringAvailable ?: current
+    is ApiResult.Error -> current
+}
+
+/**
+ * The next server-published free cap (MR-1980) given the current one and a
+ * fetch outcome. An ERROR keeps [current]: a network blip must not undo what
+ * the server said. A SUCCESS replaces it, absent included — the latest answer
+ * is the server's word, and a server without `plans` (older than
+ * birdo-web#708) leaves the paywall on the account's own limit, then 50 GB.
+ */
+internal fun nextFreePlanCapGb(
+    current: Long?,
+    result: ApiResult<ClientConfigResponse>,
+): Long? = when (result) {
+    is ApiResult.Success -> result.data.freePlanCapGb
     is ApiResult.Error -> current
 }
 
@@ -683,13 +706,18 @@ class VpnViewModel @Inject constructor(
      * Failure is silent BY DESIGN: [nextDnsFilteringAvailable] keeps the current
      * value (initially `null` = unknown = available), so an unreachable web app
      * leaves the toggle usable instead of greying out a feature that works.
+     *
+     * The same response carries the free plan's cap for the paywall (MR-1980,
+     * [nextFreePlanCapGb]).
      */
     fun fetchClientConfig() {
         viewModelScope.launch {
             val result = repository.getClientConfig()
-            val next = nextDnsFilteringAvailable(_uiState.value.dnsFilteringAvailable, result)
-            if (next != _uiState.value.dnsFilteringAvailable) {
-                _uiState.value = _uiState.value.copy(dnsFilteringAvailable = next)
+            val state = _uiState.value
+            val next = nextDnsFilteringAvailable(state.dnsFilteringAvailable, result)
+            val freeCap = nextFreePlanCapGb(state.configFreePlanCapGb, result)
+            if (next != state.dnsFilteringAvailable || freeCap != state.configFreePlanCapGb) {
+                _uiState.value = _uiState.value.copy(dnsFilteringAvailable = next, configFreePlanCapGb = freeCap)
             }
         }
     }

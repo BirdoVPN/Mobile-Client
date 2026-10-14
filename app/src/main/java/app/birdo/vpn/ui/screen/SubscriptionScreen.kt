@@ -78,9 +78,10 @@ internal const val FREE_PLAN_CAP_FALLBACK_GB = 50L
  * MR-1980: the free (Recon) plan's monthly allowance, as the paywall states it.
  * It was a literal 10 in the plan list; the owner raised the cap to 50 GB, and a
  * number baked into the build keeps selling the old cap until every user updates.
- * So: a server-wide value when the server publishes one ([configCapGb]), else
- * the signed-in account's own `/vpn/stats` limit when that account is on Recon
- * (a Recon account's `bandwidthLimitGb` IS the free cap), else
+ * So: the server-wide value `/api/client-config` publishes as
+ * `plans.RECON.bandwidthLimitGb` ([configCapGb], birdo-web#708) when there is
+ * one, else the signed-in account's own `/vpn/stats` limit when that account is
+ * on Recon (a Recon account's `bandwidthLimitGb` IS the free cap), else
  * [FREE_PLAN_CAP_FALLBACK_GB]. A paid account's limit (0 = unlimited) says
  * nothing about the free plan.
  */
@@ -240,6 +241,13 @@ fun SubscriptionScreen(
      */
     purchaseManagedElsewhere: Boolean = false,
     /**
+     * MR-1980: the free plan's cap as `/api/client-config` publishes it
+     * (`plans.RECON.bandwidthLimitGb`), or null when the server has published
+     * none. First in [freePlanCapGb]'s order. Only the cap is taken from that
+     * payload — its card prices are the web checkout's, never shown here.
+     */
+    configFreeCapGb: Long? = null,
+    /**
      * Opens the Terms of Service / Privacy Policy. The purchase screen links
      * both, as the iOS one already does (audit 2026-09-29, D-20): a
      * subscription is bought here under those terms.
@@ -322,7 +330,7 @@ fun SubscriptionScreen(
             }
 
             // Plan cards
-            val freeCapGb = freePlanCapGb(currentSubscription)
+            val freeCapGb = freePlanCapGb(currentSubscription, configFreeCapGb)
             plans.forEach { plan ->
                 val isCurrent = currentSubscription?.plan?.equals(plan.id, ignoreCase = true) == true
                 // Google Play's own localised price, or null when this plan is

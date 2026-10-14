@@ -3,15 +3,15 @@ import Foundation
 /// MR-1980 — the free (Recon) plan's monthly data allowance, as the paywall
 /// states it.
 ///
-/// The Recon card hard-coded "10 GB monthly bandwidth". The owner raised the
-/// free cap to 50 GB (2026-10-13), and a number baked into the build cannot
-/// follow the server: it would keep selling the old cap until every user
-/// updated. So the card states what the SERVER says, from the data the app
-/// already has, and the literal is only a fallback for the moment it knows
-/// nothing:
+/// The Recon card used to hard-code its allowance; the owner set the free cap
+/// to 50 GB (2026-10-13), and a number baked into the build cannot follow the
+/// server: it would keep selling an old cap until every user updated. So the
+/// card states what the SERVER says, and the 50 GB literal is only a fallback
+/// for the moment it knows nothing:
 ///
-///   1. a free-cap value the server publishes for every client (`configGb`,
-///      e.g. from `/api/client-config`), when there is one;
+///   1. the free cap the server publishes for every client (`configGb`):
+///      `/api/client-config` `plans.RECON.bandwidthLimitGb` (birdo-web#708,
+///      `ClientConfigResponse.freePlanCapGb`), when there is one;
 ///   2. the signed-in account's own `/vpn/stats` limit, when that account is
 ///      on Recon — a Recon account's `bandwidthLimitGb` IS the free cap;
 ///   3. otherwise `fallbackGb` (a paid account's limit is 0 = unlimited and

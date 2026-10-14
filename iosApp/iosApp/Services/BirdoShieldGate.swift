@@ -25,8 +25,9 @@ import Foundation
 /// `third_party/` and enforced from there), the rest of the per-plan feature
 /// entitlements (which arrive with the subscription) and consent copy.
 /// Modelling them here would create a second source of truth for each. Of
-/// `features`, only `customDns` is read (owner item 40). Unknown keys are
-/// ignored, so web-side additions never break a shipped client.
+/// `features`, only `customDns` is read (owner item 40); of `plans`, only
+/// `RECON.bandwidthLimitGb` (MR-1980). Unknown keys are ignored, so web-side
+/// additions never break a shipped client.
 struct ClientConfigResponse: Decodable, Sendable {
     /// Is DNS filtering switched on for the fleet this account dials?
     ///
@@ -40,9 +41,16 @@ struct ClientConfigResponse: Decodable, Sendable {
     /// A flat `features.customDns`, should the payload ever carry one. It
     /// applies to every plan and wins over the per-plan map.
     let customDnsForAllPlans: Bool?
+    /// MR-1980 (birdo-web#708): the free plan's monthly cap, from
+    /// `plans.RECON.bandwidthLimitGb`. `nil` when the server publishes none
+    /// (older than #708), or the value is not a finite positive number —
+    /// `null` there means unlimited, which says nothing about a free cap. Each
+    /// `plans` entry also carries the web checkout's prices; those are never
+    /// read, because the App Store sells at its own. See `FreePlanCap`.
+    let freePlanCapGb: Double?
 
     private enum CodingKeys: String, CodingKey {
-        case dnsFilteringAvailable, features
+        case dnsFilteringAvailable, features, plans
     }
 
     private struct FeatureKey: CodingKey {
@@ -54,6 +62,10 @@ struct ClientConfigResponse: Decodable, Sendable {
 
     private struct PlanFeatures: Decodable {
         let customDns: Bool?
+    }
+
+    private struct PlanLimits: Decodable {
+        let bandwidthLimitGb: Double?
     }
 
     init(from decoder: Decoder) throws {
@@ -76,6 +88,18 @@ struct ClientConfigResponse: Decodable, Sendable {
         }
         customDnsByPlan = byPlan
         customDnsForAllPlans = flat
+        // `plans` the same way: a shape this build does not expect costs only
+        // the free cap (the paywall then falls back), never the gates above.
+        var freeCap: Double?
+        if let plans = try? c.nestedContainer(keyedBy: FeatureKey.self, forKey: .plans) {
+            for key in plans.allKeys where key.stringValue.uppercased() == "RECON" {
+                if let recon = try? plans.decode(PlanLimits.self, forKey: key),
+                   let gb = recon.bandwidthLimitGb, gb.isFinite, gb > 0 {
+                    freeCap = gb
+                }
+            }
+        }
+        freePlanCapGb = freeCap
     }
 }
 

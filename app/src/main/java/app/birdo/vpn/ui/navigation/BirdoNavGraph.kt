@@ -949,6 +949,14 @@ fun BirdoNavGraph(
                     // not started here — it lives in BirdoApp so that a deferred
                     // approval landing minutes later is still linked.
                     LaunchedEffect(Unit) { billingViewModel.refresh() }
+                    // MR-1980: the Recon card states the server's free cap
+                    // from /api/client-config. VpnViewModel.init fetched it at
+                    // cold start; refresh it here so a launch whose fetch
+                    // failed does not leave the card on the fallback for the
+                    // whole process. Public endpoint, after consent only.
+                    LaunchedEffect(Unit) {
+                        if (appPreferences.hasAcceptedCurrentConsent) vpnViewModel.fetchClientConfig()
+                    }
 
                     // Resolve a plan card + period toggle to a REAL offer, read
                     // from the collected state so the UI recomposes when the
@@ -998,6 +1006,7 @@ fun BirdoNavGraph(
 
                     SubscriptionScreen(
                         currentSubscription = vpnState.subscription,
+                        configFreeCapGb = vpnState.configFreePlanCapGb,
                         onNavigateBack = { navController.popBackStack() },
                         onSelectPlan = { planId, period ->
                             if (BuildConfig.IS_PLAY_BUILD) {
