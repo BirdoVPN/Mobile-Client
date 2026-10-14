@@ -716,11 +716,17 @@ struct LoginView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(BirdoTheme.yellow)
                     .accessibilityHidden(true)
-                Text("Save it somewhere safe — we can't reset it if you lose it.")
-                    .font(BirdoTheme.Fonts.bodySmall)
-                    .foregroundStyle(BirdoTheme.white40)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Save it somewhere safe — we can't reset it if you lose it.")
+                    // MR-1707 (owner, 2026-10-14): the number is permanent;
+                    // what to do if it leaks. Same words as Android's
+                    // `anon_created_permanent`.
+                    Text("It can't be changed. If it leaks, turn on two-factor sign-in or delete your account.")
+                }
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.white40)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             PrimaryButton("I've saved it — continue",

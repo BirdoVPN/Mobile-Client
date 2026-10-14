@@ -1010,12 +1010,22 @@ private fun AnonymousIdSavedDialog(
                         modifier = Modifier.size(16.dp).padding(top = 1.dp),
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text(
-                        stringResource(R.string.anon_created_warning),
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                        color = BirdoWhite40,
-                    )
+                    Column {
+                        Text(
+                            stringResource(R.string.anon_created_warning),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = BirdoWhite40,
+                        )
+                        // MR-1707: the number is permanent; what to do if it leaks.
+                        Text(
+                            stringResource(R.string.anon_created_permanent),
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = BirdoWhite40,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
                 }
             }
         },
