@@ -489,7 +489,10 @@ data class VpnServer(
 @Serializable
 data class AttestationNonceResponse(
     val nonce: String,
-)
+) {
+    /** The single-use challenge the integrity token is bound to (CredentialFieldGuardTest). */
+    override fun toString(): String = "AttestationNonceResponse(nonce=[REDACTED])"
+}
 
 /**
  * Wire values for [ConnectRequest.fallbackReason].

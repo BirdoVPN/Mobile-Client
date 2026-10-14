@@ -34,6 +34,7 @@ class CredentialToStringTest {
         "xray-uuid-123",
         "xray-short-id-456",
         "pq-ciphertext-789",
+        "attestation-nonce-abc",
     )
 
     private val tokens = TokenPair(accessToken = "access-secret-abc", refreshToken = "refresh-secret-def")
@@ -133,6 +134,11 @@ class CredentialToStringTest {
     @Test
     fun voucherRequestPrintsNoCode() {
         assertNoSecret(RedeemVoucherRequest(code = "voucher-code-pqr").toString())
+    }
+
+    @Test
+    fun attestationNoncePrintsNoNonce() {
+        assertNoSecret(AttestationNonceResponse(nonce = "attestation-nonce-abc").toString())
     }
 
     @Test
