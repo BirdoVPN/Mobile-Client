@@ -31,7 +31,8 @@ import Foundation
 ///
 /// Sign-out does NOT go through here and does not change the device id, as on
 /// Android (`BirdoRepository.logout` keeps it; only account deletion rotates
-/// it, `APIClient.resetDeviceIdentity`).
+/// it, `APIClient.resetDeviceIdentity`). What a sign-out does drop is
+/// `LocalSignOut.wipe` below.
 ///
 /// KNOWN LIMITS, accepted with the decision:
 /// - a reinstall registers as a NEW device server-side; the old row stays until
@@ -133,7 +134,21 @@ enum InstallIdentity {
     }
 }
 
-/// The keychain items the check reads and replaces.
+/// MR-1726 follow-up — what a sign-out removes from this device, as on
+/// Android, where `TokenManager.clearAll()` drops the tokens AND the pending
+/// anonymous id. iOS used to keep `anonymous_id` after a sign-out ("so a user
+/// who never wrote it down can still sign back in"), but no signed-out screen
+/// reads it, and the anonymous-create path could fall back to it and show a
+/// PREVIOUS account's number as the new one. The device id stays: only a
+/// deletion or a fresh install replaces it.
+enum LocalSignOut {
+    static func wipe(_ store: any InstallIdentityStore) {
+        store.clearSession()
+        store.clearAnonymousId()
+    }
+}
+
+/// The keychain items the check and the sign-out read and replace.
 /// `KeychainService` conforms; the tests use an in-memory store.
 protocol InstallIdentityStore: AnyObject {
     var deviceId: String? { get }

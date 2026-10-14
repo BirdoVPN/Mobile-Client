@@ -111,9 +111,7 @@ struct HomeView: View {
         .birdoConfirmDialog(
             isPresented: $showLogoutConfirm,
             title: "Sign out?",
-            message: vpnVM.isConnected
-                ? "You are still connected. Signing out will disconnect."
-                : "Are you sure you want to sign out?",
+            message: signOutMessage,
             confirmLabel: "Sign out",
             onConfirm: {
                 Task { @MainActor in
@@ -125,6 +123,18 @@ struct HomeView: View {
                 }
             }
         )
+    }
+
+    /// Signing out removes an anonymous account's number from this device
+    /// (`LocalSignOut`), so the confirmation says to keep it, as Android's
+    /// dialog does (`sign_out_anonymous_reminder`).
+    private var signOutMessage: String {
+        let base = vpnVM.isConnected
+            ? "You are still connected. Signing out will disconnect."
+            : "Are you sure you want to sign out?"
+        guard authVM.isAnonymousAccount else { return base }
+        return base + " Make sure you have saved your account number. "
+            + "It is the only way to sign in to this account again."
     }
 
     /// Reduce Motion: return nil so state changes land instantly.

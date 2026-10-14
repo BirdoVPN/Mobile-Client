@@ -1,7 +1,8 @@
 import XCTest
 
 /// MR-1726 — pins `InstallIdentity.checkOnLaunch`, the first-run sentinel that
-/// makes the Apple session and device identity per install (Android parity).
+/// makes the Apple session and device identity per install (Android parity),
+/// and `LocalSignOut.wipe`, what a sign-out removes.
 ///
 /// The keychain outlives the app, so before this a reinstall picked up the
 /// previous install's session, `device_id` and `anonymous_id`. The store here
@@ -211,6 +212,20 @@ final class InstallIdentityTests: XCTestCase {
         store.ignoreClears = true
         XCTAssertEqual(check(store), .retryNextLaunch)
         XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey))
+    }
+
+    // MARK: - Sign-out (LocalSignOut.wipe)
+
+    func testSignOutDropsTheSessionAndTheAccountNumberAndKeepsTheDeviceId() {
+        // Android's TokenManager.clearAll() drops the pending anonymous id too;
+        // iOS kept it, and the anonymous-create path could show it as a NEW
+        // account's number.
+        let store = signedInLeftovers()
+        LocalSignOut.wipe(store)
+        XCTAssertFalse(store.hasSession)
+        XCTAssertNil(store.anonymousId, "the account number outlived the sign-out")
+        XCTAssertEqual(store.deviceId, previousDevice, "sign-out rotated the device id (Android keeps it)")
+        XCTAssertEqual(store.writes, 0)
     }
 
     // MARK: - The minted id

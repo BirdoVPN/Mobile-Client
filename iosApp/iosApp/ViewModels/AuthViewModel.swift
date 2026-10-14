@@ -769,9 +769,11 @@ final class AuthViewModel: ObservableObject {
                                                 knownEmail: nil,
                                                 knownAnonymousId: registration.anonymousId,
                                                 context: .anonymousCreate) {
+                    // Never `keychain.anonymousId`: the number shown here must
+                    // be THIS account's, from the server — a stored one could
+                    // be a previous account's (MR-1726 follow-up).
                     let minted = registration.anonymousId
                         ?? user?.anonymousAccountNumber
-                        ?? keychain.anonymousId
                     if let minted {
                         createdAnonymousId = minted
                         isAutoProvisioning = false
@@ -972,9 +974,11 @@ final class AuthViewModel: ObservableObject {
     }
 
     private func completeLocalLogout() {
-        // Keychain keeps `device_id` (stable device identity) and
-        // `anonymous_id` (sole recovery credential) — everything else goes.
-        keychain.clear()
+        // Keychain keeps `device_id` (stable device identity) — everything else
+        // goes, the anonymous account number too, as on Android
+        // (`TokenManager.clearAll()`): no signed-out screen reads it, and a
+        // stored number could be shown as a different account's.
+        LocalSignOut.wipe(keychain)
         // Fence the API session (finding #1): bump the generation AFTER the
         // keychain wipe so any refresh still in flight drops its rotated pair
         // instead of resurrecting the signed-out session. Ordering matters —

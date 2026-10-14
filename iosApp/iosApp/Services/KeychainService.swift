@@ -51,10 +51,11 @@ final class KeychainService: @unchecked Sendable {
     /// an older build of THIS install is read back unchanged so nobody burns a
     /// device slot on upgrade.
     var deviceId: String? { read(key: "device_id") }
-    /// The 24-digit anonymous account ID — the SOLE recovery credential for an
-    /// anonymous account. Survives `clear()` (logout); wiped by
-    /// `clearAnonymousId()` (account deletion / switching to an email account)
-    /// and, like `deviceId`, on the first launch of a fresh install
+    /// The 24-digit anonymous account number — the SOLE recovery credential for
+    /// an anonymous account — kept for the signed-in session it belongs to.
+    /// Wiped by `clearAnonymousId()` on sign-out (`LocalSignOut.wipe`, as
+    /// Android drops its pending id), account deletion and switching to an
+    /// email account, and on the first launch of a fresh install
     /// (`InstallIdentity`, MR-1726).
     var anonymousId: String? { read(key: "anonymous_id") }
     /// Owner item 97: this device's CURRENT session was signed in with Sign in
@@ -122,9 +123,9 @@ final class KeychainService: @unchecked Sendable {
         }
     }
 
-    /// Wipe the session. `device_id` and `anonymous_id` intentionally survive a
-    /// sign-out — see their accessor docs (a reinstall is handled separately,
-    /// by `InstallIdentity`).
+    /// Wipe the session. `device_id` survives a sign-out — see its accessor
+    /// doc; a sign-out drops `anonymous_id` separately (`LocalSignOut.wipe`)
+    /// and a reinstall is handled by `InstallIdentity`.
     func clear() {
         delete(key: "access_token")
         delete(key: "refresh_token")
@@ -315,7 +316,8 @@ final class KeychainService: @unchecked Sendable {
     }
 }
 
-/// MR-1726: the store `InstallIdentity.checkOnLaunch` reads and replaces.
+/// MR-1726: the store `InstallIdentity.checkOnLaunch` and `LocalSignOut.wipe`
+/// read and replace.
 extension KeychainService: InstallIdentityStore {
     var hasSession: Bool { accessToken != nil || refreshToken != nil }
 

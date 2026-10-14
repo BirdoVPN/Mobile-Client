@@ -133,6 +133,25 @@ class IosParityRowsGuardTest {
         assertTrue(rest.contains("VPNManager.shared.scrubHeartbeatCredentials()"))
     }
 
+    @Test
+    fun `signing out forgets the anonymous account number, as on Android`() {
+        val auth = source("$ios/ViewModels/AuthViewModel.swift")
+        val logout = auth.substringAfter("private func completeLocalLogout() {").substringBefore("\n    }\n")
+        assertTrue("sign-out keeps the account number on the device", logout.contains("LocalSignOut.wipe(keychain)"))
+        assertTrue(
+            source("$ios/Services/InstallIdentity.swift")
+                .contains("static func wipe(_ store: any InstallIdentityStore) {\n        store.clearSession()\n        store.clearAnonymousId()"),
+        )
+        // The new account's number comes from the server, never from storage
+        // that could hold a previous account's.
+        val minted = auth.substringAfter("let minted = registration.anonymousId").substringBefore("if let minted")
+        assertFalse("anonymous create falls back to a stored number", minted.contains("keychain.anonymousId"))
+        assertTrue(
+            "the sign-out confirmation no longer says to keep the account number",
+            home.contains("Make sure you have saved your account number. "),
+        )
+    }
+
     // ── MR-975: the iOS kill-switch chip shows the real state ────────────────
 
     @Test
