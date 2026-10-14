@@ -8,7 +8,10 @@ import Foundation
 ///   - an enabled on-demand CONNECT rule — a dropped tunnel is dialled again
 ///     instead of the device falling back to the open network;
 ///   - `includeAllNetworks` on the tunnel protocol — while the tunnel is not
-///     up, traffic is dropped rather than sent around it.
+///     up, traffic is dropped rather than sent around it;
+/// and only while that configuration is the one the system uses (`isEnabled`),
+/// which the user can switch off in iOS Settings at any time. VPNManager reads
+/// all of it fresh from the system on every configuration and status change.
 /// The rule is armed only after a real handshake
 /// (`VpnViewModel.armKillSwitchAfterHandshake`) and is disarmed by connect()
 /// before dialling and by disconnect() before stopping. So the toggle being on
@@ -23,6 +26,11 @@ import Foundation
 /// `KillSwitchSystemState`, and the BirdoVPNTests bundle pins the mapping
 /// (KillSwitchChipTests) without NetworkExtension.
 struct KillSwitchSystemState: Equatable, Sendable {
+    /// `NEVPNManager.isEnabled`: this app's configuration is the one the system
+    /// will use. Turning the VPN off in iOS Settings, or choosing another
+    /// app's VPN there, clears it, and then none of the flags below does
+    /// anything (vpn-d3 review).
+    var configurationEnabled: Bool
     /// `NEVPNManager.isOnDemandEnabled`.
     var onDemandEnabled: Bool
     /// The on-demand rules include an `NEOnDemandRuleConnect`.
@@ -31,7 +39,9 @@ struct KillSwitchSystemState: Equatable, Sendable {
     var includeAllNetworks: Bool
 
     /// The kill switch is in force: a drop is held and dialled again.
-    var isArmed: Bool { onDemandEnabled && hasConnectRule && includeAllNetworks }
+    var isArmed: Bool {
+        configurationEnabled && onDemandEnabled && hasConnectRule && includeAllNetworks
+    }
 }
 
 /// What the Home chip says.

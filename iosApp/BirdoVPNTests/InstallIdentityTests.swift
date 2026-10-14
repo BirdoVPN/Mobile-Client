@@ -36,8 +36,11 @@ final class InstallIdentityTests: XCTestCase {
             refreshToken = nil
         }
 
+        /// Delete-then-add, as `KeychainService.write` is: a failed write
+        /// leaves NO id, not the old one.
         func saveDeviceId(_ id: String) -> Bool {
             writes += 1
+            deviceId = nil
             guard !failWrites else { return false }
             deviceId = id
             return true
@@ -108,7 +111,7 @@ final class InstallIdentityTests: XCTestCase {
         // A live session must never be left running under a new device id.
         let store = signedInLeftovers()
         store.ignoreSessionClears = true
-        XCTAssertEqual(check(store), .retryNextLaunch)
+        XCTAssertEqual(check(store), .cleanupIncomplete)
         XCTAssertEqual(store.deviceId, previousDevice)
         XCTAssertEqual(store.anonymousId, previousAnonymous)
         XCTAssertEqual(store.writes, 0)
@@ -196,22 +199,82 @@ final class InstallIdentityTests: XCTestCase {
         XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey))
     }
 
-    func testAFailedKeychainWriteRetriesInsteadOfAdoptingTheOldId() {
-        let store = MemoryStore(deviceId: previousDevice)
+    func testAFailedDeviceIdWriteNeverKeepsTheOldIdAndIsFinishedLater() {
+        let store = MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous)
         store.failWrites = true
-        XCTAssertEqual(check(store), .retryNextLaunch)
-        XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey),
-                       "the sentinel was set over a device id that was never replaced")
+        XCTAssertEqual(check(store), .cleanupIncomplete)
+        // Delete-then-add: nothing of the previous install's id is left, and
+        // APIClient would mint a fresh one on first use.
+        XCTAssertNil(store.deviceId)
+        XCTAssertEqual(store.anonymousId, previousAnonymous, "the clean-up stops at the failure")
+        XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey))
+        XCTAssertTrue(defaults.bool(forKey: InstallIdentity.pendingKey))
         store.failWrites = false
         XCTAssertEqual(check(store), .discardedPreviousInstall)
-        XCTAssertEqual(store.deviceId, freshDevice)
+        XCTAssertNil(store.anonymousId)
+        XCTAssertNotEqual(store.deviceId, previousDevice)
+        XCTAssertFalse(defaults.bool(forKey: InstallIdentity.pendingKey))
     }
 
-    func testAnAnonymousIdThatWillNotClearRetries() {
+    func testAnAnonymousIdThatWillNotClearIsRetried() {
         let store = MemoryStore(anonymousId: previousAnonymous)
         store.ignoreClears = true
-        XCTAssertEqual(check(store), .retryNextLaunch)
+        XCTAssertEqual(check(store), .cleanupIncomplete)
         XCTAssertFalse(defaults.bool(forKey: InstallIdentity.sentinelKey))
+    }
+
+    // MARK: - An unfinished clean-up survives the consent screen (vpn-d3 M1)
+
+    func testAnUnfinishedCleanUpIsFinishedEvenAfterConsentIsGiven() {
+        // The clean-up fails, the user answers the consent screen in that same
+        // launch, and the next launch must not read that consent as an upgrade
+        // — which kept the previous install's session and identity for good.
+        let store = signedInLeftovers()
+        store.ignoreSessionClears = true
+        let first = check(store)
+        XCTAssertEqual(first, .cleanupIncomplete)
+        XCTAssertTrue(first.storedSessionUnusable,
+                      "the first launch would run signed in as the previous install's account")
+        XCTAssertTrue(defaults.bool(forKey: InstallIdentity.pendingKey))
+
+        ConsentRecord.recordAcceptance(in: defaults)
+        store.ignoreSessionClears = false
+
+        XCTAssertEqual(check(store), .discardedPreviousInstall)
+        XCTAssertFalse(store.hasSession)
+        XCTAssertEqual(store.deviceId, freshDevice)
+        XCTAssertNil(store.anonymousId)
+        XCTAssertTrue(defaults.bool(forKey: InstallIdentity.sentinelKey))
+        XCTAssertFalse(defaults.bool(forKey: InstallIdentity.pendingKey))
+        XCTAssertEqual(check(store), .alreadyChecked)
+    }
+
+    func testADeviceIdFailureFollowedByConsentIsStillFinished() {
+        let store = MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous)
+        store.failWrites = true
+        XCTAssertEqual(check(store), .cleanupIncomplete)
+        ConsentRecord.recordDeferral(in: defaults)
+        store.failWrites = false
+        XCTAssertEqual(check(store), .discardedPreviousInstall,
+                       "a \"Not now\" given after a failed clean-up was read as an upgrade")
+        XCTAssertNil(store.anonymousId)
+    }
+
+    func testOnlyAnUnfinishedCleanUpMakesTheStoredSessionUnusable() {
+        let others: [InstallIdentity.Outcome] = [.alreadyChecked, .upgradeKeptIdentity, .freshInstall,
+                                                 .discardedPreviousInstall, .retryNextLaunch]
+        for outcome in others {
+            XCTAssertFalse(outcome.storedSessionUnusable, "\(outcome)")
+        }
+        XCTAssertTrue(InstallIdentity.Outcome.cleanupIncomplete.storedSessionUnusable)
+    }
+
+    func testAnUpgradeIsNeverMarkedPending() {
+        ConsentRecord.recordAcceptance(in: defaults)
+        let store = signedInLeftovers()
+        XCTAssertEqual(check(store), .upgradeKeptIdentity)
+        XCTAssertFalse(defaults.bool(forKey: InstallIdentity.pendingKey))
+        XCTAssertTrue(store.hasSession)
     }
 
     // MARK: - Sign-out (LocalSignOut.wipe)
