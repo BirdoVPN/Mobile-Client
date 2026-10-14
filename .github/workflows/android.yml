@@ -262,6 +262,25 @@ jobs:
       # for all four ABIs. No cache: see the header.
       - uses: ./.github/actions/android-native-libs
 
+      # Owner decision L1 (2026-10-14, the Android twin of Desktop D8): every
+      # release carries the complete corresponding source of libxray.so -- the
+      # Xray-core source, EVERY Go module it links (GPL-3.0 section 1: the
+      # whole combined program, permissive modules included) and the source of
+      # each Go toolchain that built an engine, at exactly the versions the four
+      # engines just provisioned link (~181 MB). The
+      # script refuses (and the release stops here, before signing) unless the
+      # engines' build info, Xray's go.mod/go.sum at the pinned tag and every
+      # pinned hash agree. The asset goes into SHA256SUMS.txt (Sigstore- and
+      # GPG-signed below) and onto the release next to the APK; the in-app
+      # notices point at it by name.
+      - name: Build the Xray corresponding-source asset
+        run: |
+          python3 scripts/xray_corresponding_source.py \
+            --out "$RUNNER_TEMP/xray-source" \
+            --binaries app/src/main/jniLibs/*/libxray.so \
+            --build-record "$RUNNER_TEMP/xray-provision/build-record.txt"
+          ls -la "$RUNNER_TEMP/xray-source"
+
       # Log in to Azure using OIDC - no stored client secrets required.
       - name: Azure Login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -486,6 +505,9 @@ jobs:
           sha256sum app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab \
             | sed 's#app/build/outputs/apk/release/##;s#app/build/outputs/bundle/release/##' \
             > app/build/release-artifacts/SHA256SUMS.txt
+          # The Xray corresponding-source asset (L1), by its bare name like the rest.
+          ( cd "$RUNNER_TEMP/xray-source" && sha256sum xray-core-*-corresponding-source.tar.gz ) \
+            >> app/build/release-artifacts/SHA256SUMS.txt
           cat app/build/release-artifacts/SHA256SUMS.txt
 
       - name: Sign checksums with Sigstore
@@ -555,9 +577,16 @@ jobs:
             app/build/outputs/apk/release/*.asc \
             app/build/outputs/bundle/release/*.aab \
             app/build/outputs/bundle/release/*.sigstore \
-            app/build/outputs/bundle/release/*.asc; do
+            app/build/outputs/bundle/release/*.asc \
+            "$RUNNER_TEMP"/xray-source/xray-core-*-corresponding-source.tar.gz; do
             cp "$artifact" app/build/release-artifacts/
           done
+          # L1: a release without its Xray source must not be published.
+          sources=(app/build/release-artifacts/xray-core-*-corresponding-source.tar.gz)
+          if [ "${#sources[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one Xray corresponding-source asset, found ${#sources[@]}"
+            exit 1
+          fi
           ls -la app/build/release-artifacts
 
       # Consumed by draft-release and play-upload in the same run; kept 30 days
@@ -672,6 +701,26 @@ jobs:
             - GPG:      `gpg --verify <apk>.asc <apk>`  (key: https://birdo.app/.well-known/birdo-release.asc)
             - SHA256:   `sha256sum -c SHA256SUMS.txt`
 
+            ### Source of the Stealth Mode engine (libxray.so)
+            `xray-core-*-corresponding-source.tar.gz` is the complete corresponding source of
+            libxray.so, the unmodified Xray-core program (MPL-2.0). It contains:
+            - `Xray-core-<version>.tar.gz`: `git archive` of the pinned Xray-core commit (its git tree is
+              `XRAY_SOURCE_TREE` in `scripts/provision_xray_engines.sh`);
+            - `go-modules/`: the proxy.golang.org zip of every Go module the four engines link, GPL-3.0,
+              LGPL-3.0, MPL-2.0 and permissive alike, at the exact versions shipped (each SHA-256-pinned and
+              checked against Xray-core's `go.sum` and the engines' build info);
+            - `go-toolchain/<go version>.src.tar.gz`: the Go source distribution (standard library and
+              runtime, which every engine links) of each toolchain that built a shipped engine, byte for byte
+              from go.dev and checked against the SHA-256 go.dev publishes: go1.25.7 for the two upstream
+              engines, go1.25.14 for the two BirdoVPN builds;
+            - `provision_xray_engines.sh`, the script that fetched two engines and built the other two;
+            - `README.txt`: every file's SHA-256 and licence, and how each engine was made (the upstream XTLS
+              asset, or the Go toolchain, Android NDK revision and exact `go build` command).
+
+            The same file is published, never as a draft, at the release tagged
+            `xray-source-${{ steps.tag.outputs.tag }}`; the app's licence notices link there. Its SHA-256 is in
+            `SHA256SUMS.txt`.
+
             > This is a **draft** release - not visible to the public until you click "Publish".
           files: |
             release-apk/*.apk
@@ -683,6 +732,111 @@ jobs:
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
             release-apk/SHA256SUMS.txt.asc
+            release-apk/xray-core-*-corresponding-source.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # -- The always-public corresponding source (owner decision L1) -----------
+  # The draft above stays a draft until the owner publishes it, while the Play
+  # upload below can reach users the same day, so the licence notices' link to
+  # the Xray source must not depend on the draft. This job publishes the same
+  # asset, with SHA256SUMS.txt and its signatures, as a NON-draft prerelease
+  # under its own tag, xray-source-<release tag> (android-v1.2.3 ->
+  # xray-source-android-v1.2.3), the URL third_party_notices.txt gives.
+  #   - never a draft, never "Latest" (github-latest-from-play.yml moves Latest,
+  #     and only ever to android-v* tags); the tag does not match android-v*;
+  #   - a re-run replaces its files in place;
+  #   - the Play upload waits for it, so no build reaches Play before its
+  #     source is public.
+  # Only for a REAL release: an android-v* tag push, or a dispatch that names
+  # an android-v* release_tag. A dispatch without one (a test build) publishes
+  # nothing here, and play-upload, which needs this job, is then skipped too --
+  # which is right: no Play build without its source public.
+  xray-source-release:
+    name: Publish the Xray corresponding source (public)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [release, lint, test, native, pq-cpu-proof]
+    if: ${{ startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-apk
+          path: release-apk/
+
+      - name: Check the source asset is there
+        run: |
+          shopt -s nullglob
+          sources=(release-apk/xray-core-*-corresponding-source.tar.gz)
+          if [ "${#sources[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one Xray corresponding-source asset, found ${#sources[@]}"
+            exit 1
+          fi
+          ls -la "${sources[0]}"
+
+      - name: Determine release tag
+        id: tag
+        # User input reaches the shell only via env and is validated before
+        # any tool sees it. Stricter than draft-release: the tag must be a
+        # release tag (android-v...), because this release is public at once.
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if ! printf '%s' "$TAG" | grep -Eq '^android-v[A-Za-z0-9._-]{1,55}$'; then
+            # Not echoed back: the value is untrusted input.
+            echo "::error::release_tag is not a release tag; a public source release needs one matching ^android-v[A-Za-z0-9._-]{1,55}$"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Source release tag: xray-source-$TAG"
+
+      - name: Create / update the public source release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: xray-source-${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "Xray corresponding source for Birdo Android ${{ steps.tag.outputs.tag }}"
+          draft: false
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: false
+          body: |
+            ## Complete corresponding source of libxray.so in Birdo Android `${{ steps.tag.outputs.tag }}`
+
+            **Commit:** `${{ github.sha }}`
+
+            ### Source of the Stealth Mode engine (libxray.so)
+            `xray-core-*-corresponding-source.tar.gz` is the complete corresponding source of
+            libxray.so, the unmodified Xray-core program (MPL-2.0). It contains:
+            - `Xray-core-<version>.tar.gz`: `git archive` of the pinned Xray-core commit (its git tree is
+              `XRAY_SOURCE_TREE` in `scripts/provision_xray_engines.sh`);
+            - `go-modules/`: the proxy.golang.org zip of every Go module the four engines link, GPL-3.0,
+              LGPL-3.0, MPL-2.0 and permissive alike, at the exact versions shipped (each SHA-256-pinned and
+              checked against Xray-core's `go.sum` and the engines' build info);
+            - `go-toolchain/<go version>.src.tar.gz`: the Go source distribution (standard library and
+              runtime, which every engine links) of each toolchain that built a shipped engine, byte for byte
+              from go.dev and checked against the SHA-256 go.dev publishes: go1.25.7 for the two upstream
+              engines, go1.25.14 for the two BirdoVPN builds;
+            - `provision_xray_engines.sh`, the script that fetched two engines and built the other two;
+            - `README.txt`: every file's SHA-256 and licence, and how each engine was made (the upstream XTLS
+              asset, or the Go toolchain, Android NDK revision and exact `go build` command).
+
+            `SHA256SUMS.txt` is the app release's checksum file (signed with Sigstore, and GPG when
+            configured); check this file with `sha256sum -c --ignore-missing SHA256SUMS.txt`.
+          files: |
+            release-apk/xray-core-*-corresponding-source.tar.gz
+            release-apk/SHA256SUMS.txt
+            release-apk/SHA256SUMS.txt.sigstore
+            release-apk/SHA256SUMS.txt.asc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -690,7 +844,9 @@ jobs:
     name: Upload AAB to Google Play
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    needs: [release, lint, test, native, pq-cpu-proof]
+    # xray-source-release: the licence notices' source link must resolve
+    # before the build reaches anyone through Play (owner decision L1).
+    needs: [release, lint, test, native, pq-cpu-proof, xray-source-release]
     if: ${{ vars.PLAY_UPLOAD_ENABLED == 'true' && (startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch') }}
     # P5-CICD-18: production uploads run in the `production` environment so
     # required-reviewer protection can gate them. The protection rule itself

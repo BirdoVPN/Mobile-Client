@@ -233,16 +233,26 @@ final class AuthViewModel: ObservableObject {
     var isGuest: Bool { !isLoggedIn }
 
     /// True for anonymous accounts (profile-derived; falls back to the stored
-    /// anonymous ID before hydration lands).
+    /// anonymous ID before hydration lands, while signed in only).
     var isAnonymousAccount: Bool {
-        if let user { return user.isAnonymous }
-        return isLoggedIn && userEmail == nil && keychain.anonymousId != nil
+        AnonymousAccountDisplay.isAnonymous(profile: profileIdentity,
+                                            signedIn: isLoggedIn,
+                                            email: userEmail,
+                                            storedNumber: keychain.anonymousId)
     }
 
     /// The 24-digit account number to show on the Profile identity card.
-    /// Only meaningful when `isAnonymousAccount`.
+    /// Never a stored number while signed out or for an account the profile
+    /// says is not anonymous (#485 review, `AnonymousAccountDisplay`).
     var anonymousAccountNumber: String? {
-        user?.anonymousAccountNumber ?? keychain.anonymousId
+        AnonymousAccountDisplay.number(profile: profileIdentity,
+                                       signedIn: isLoggedIn,
+                                       storedNumber: keychain.anonymousId)
+    }
+
+    private var profileIdentity: AccountIdentity.Resolved? {
+        user.map { AccountIdentity.Resolved(isAnonymous: $0.isAnonymous,
+                                            accountNumber: $0.anonymousAccountNumber) }
     }
 
     /// Uppercase plan id ("RECON" | "OPERATIVE" | "SOVEREIGN"); RECON until
@@ -346,11 +356,20 @@ final class AuthViewModel: ObservableObject {
         } else {
             // Both tokens dead (or a previous install's session a failed
             // clean-up left behind): purge the leftovers so no half-expired
-            // session lingers in the keychain.
+            // session lingers in the keychain. A local sign-out's wipe, the
+            // account number included (#485 review): `clear()` alone kept
+            // `anonymous_id`, a signed-out device's copy of a previous
+            // account's number.
             if keychain.accessToken != nil || keychain.refreshToken != nil {
-                keychain.clear()
+                LocalSignOut.wipe(keychain)
             }
         }
+        // #485 review: a device signed out on an older build still holds that
+        // account's number. Removed once, on a signed-out launch only.
+        AnonymousNumberRecord.purgeStaleOnLaunch(defaults: defaults,
+                                                 store: keychain,
+                                                 signedIn: sessionLive,
+                                                 protectedDataAvailable: Self.protectedDataAvailable)
     }
 
     /// False before the first unlock after a boot (iOS only). The host app has
@@ -1218,13 +1237,14 @@ final class AuthViewModel: ObservableObject {
         }
         switch context {
         case .anonymousLogin, .anonymousCreate:
-            if let knownAnonymousId {
-                keychain.saveAnonymousId(knownAnonymousId)
-            }
+            // #485 review: with no number for THIS account (a registration
+            // that did not return one), nothing is kept — never an older
+            // account's number, which the save step would show as the new one.
+            AnonymousNumberRecord.recordSignIn(anonymous: true, number: knownAnonymousId, in: keychain)
         case .emailLogin, .sso, .apple:
             // A previous anonymous account's ID must not survive into a
             // different identity on this device.
-            keychain.clearAnonymousId()
+            AnonymousNumberRecord.recordSignIn(anonymous: false, number: nil, in: keychain)
         }
         // Owner item 97: remember a Sign in with Apple session (and forget one
         // replaced by any other method), so deletion knows to re-authenticate
@@ -1252,9 +1272,9 @@ final class AuthViewModel: ObservableObject {
         user = profile
         // Never surface the synthetic anon_<id>@anonymous.local email.
         userEmail = profile.isAnonymous ? nil : profile.email
-        if let number = profile.anonymousAccountNumber {
-            keychain.saveAnonymousId(number)
-        }
+        AnonymousNumberRecord.recordProfile(isAnonymous: profile.isAnonymous,
+                                            number: profile.anonymousAccountNumber,
+                                            in: keychain)
     }
 
     private func hydrateOnColdStart() async {

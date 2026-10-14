@@ -46,6 +46,15 @@ final class InstallIdentityTests: XCTestCase {
             return true
         }
 
+        /// Delete-then-add, like `saveDeviceId`.
+        func saveAnonymousId(_ id: String) -> Bool {
+            writes += 1
+            anonymousId = nil
+            guard !failWrites else { return false }
+            anonymousId = id
+            return true
+        }
+
         func clearAnonymousId() {
             if !ignoreClears { anonymousId = nil }
         }
@@ -289,6 +298,88 @@ final class InstallIdentityTests: XCTestCase {
         XCTAssertNil(store.anonymousId, "the account number outlived the sign-out")
         XCTAssertEqual(store.deviceId, previousDevice, "sign-out rotated the device id (Android keeps it)")
         XCTAssertEqual(store.writes, 0)
+    }
+
+    // MARK: - #485 review: no number outlives its account (AnonymousNumberRecord)
+
+    private let newAnonymous = "000000000000000000000002"
+
+    private func purge(_ store: MemoryStore, signedIn: Bool,
+                       protectedDataAvailable: Bool = true) -> AnonymousNumberRecord.PurgeOutcome {
+        AnonymousNumberRecord.purgeStaleOnLaunch(defaults: defaults, store: store, signedIn: signedIn,
+                                                 protectedDataAvailable: protectedDataAvailable)
+    }
+
+    func testAnAnonymousSignInWithNoNumberKeepsNoOldNumber() {
+        // A registration that did not return the new number: the old code
+        // kept the previous account's, and the save step showed it as new.
+        let store = MemoryStore(anonymousId: previousAnonymous)
+        AnonymousNumberRecord.recordSignIn(anonymous: true, number: nil, in: store)
+        XCTAssertNil(store.anonymousId, "a previous account's number survived into a new anonymous account")
+    }
+
+    func testAnAnonymousSignInRecordsThisAccountsNumber() {
+        let store = MemoryStore(anonymousId: previousAnonymous)
+        AnonymousNumberRecord.recordSignIn(anonymous: true, number: newAnonymous, in: store)
+        XCTAssertEqual(store.anonymousId, newAnonymous)
+    }
+
+    func testAnyOtherSignInDropsTheNumber() {
+        let store = MemoryStore(anonymousId: previousAnonymous)
+        AnonymousNumberRecord.recordSignIn(anonymous: false, number: newAnonymous, in: store)
+        XCTAssertNil(store.anonymousId)
+    }
+
+    func testTheProfileCorrectsTheStoredNumber() {
+        let store = MemoryStore(anonymousId: previousAnonymous)
+        AnonymousNumberRecord.recordProfile(isAnonymous: true, number: newAnonymous, in: store)
+        XCTAssertEqual(store.anonymousId, newAnonymous)
+        // An anonymous profile with no number leaves this sign-in's.
+        AnonymousNumberRecord.recordProfile(isAnonymous: true, number: nil, in: store)
+        XCTAssertEqual(store.anonymousId, newAnonymous)
+        // A profile that is not anonymous keeps none.
+        AnonymousNumberRecord.recordProfile(isAnonymous: false, number: nil, in: store)
+        XCTAssertNil(store.anonymousId)
+    }
+
+    func testASignedOutLaunchPurgesAnOlderBuildsLeftoverOnce() {
+        // Signed out on a build that kept anonymous_id after a sign-out.
+        let store = MemoryStore(deviceId: previousDevice, anonymousId: previousAnonymous)
+        XCTAssertEqual(purge(store, signedIn: false), .purged)
+        XCTAssertNil(store.anonymousId, "a signed-out device still holds a previous account's number")
+        XCTAssertEqual(store.deviceId, previousDevice, "the purge touched the device id")
+        XCTAssertTrue(defaults.bool(forKey: AnonymousNumberRecord.stalePurgeDoneKey))
+        // One-time: a later launch does nothing at all.
+        store.anonymousId = newAnonymous
+        XCTAssertEqual(purge(store, signedIn: false), .alreadyDone)
+        XCTAssertEqual(store.anonymousId, newAnonymous)
+    }
+
+    func testASignedInLaunchKeepsTheSessionsNumberAndWaits() {
+        let store = signedInLeftovers()
+        XCTAssertEqual(purge(store, signedIn: true), .signedIn)
+        XCTAssertEqual(store.anonymousId, previousAnonymous, "the purge removed a signed-in session's number")
+        XCTAssertFalse(defaults.bool(forKey: AnonymousNumberRecord.stalePurgeDoneKey))
+        // The first signed-out launch then does it.
+        XCTAssertEqual(purge(store, signedIn: false), .purged)
+        XCTAssertNil(store.anonymousId)
+    }
+
+    func testThePurgeNeverMarksItselfDoneOnWhatItCouldNotRead() {
+        let store = MemoryStore(anonymousId: previousAnonymous)
+        XCTAssertEqual(purge(store, signedIn: false, protectedDataAvailable: false), .retryNextLaunch)
+        XCTAssertFalse(defaults.bool(forKey: AnonymousNumberRecord.stalePurgeDoneKey))
+        store.ignoreClears = true
+        XCTAssertEqual(purge(store, signedIn: false), .retryNextLaunch)
+        XCTAssertFalse(defaults.bool(forKey: AnonymousNumberRecord.stalePurgeDoneKey))
+        store.ignoreClears = false
+        XCTAssertEqual(purge(store, signedIn: false), .purged)
+    }
+
+    func testASignedOutLaunchWithNothingStoredIsDone() {
+        let store = MemoryStore(deviceId: previousDevice)
+        XCTAssertEqual(purge(store, signedIn: false), .nothingStored)
+        XCTAssertTrue(defaults.bool(forKey: AnonymousNumberRecord.stalePurgeDoneKey))
     }
 
     // MARK: - The minted id

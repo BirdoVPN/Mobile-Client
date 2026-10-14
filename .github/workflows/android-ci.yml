@@ -506,6 +506,36 @@ jobs:
             ~/go/pkg/mod
           key: xray-go-${{ runner.os }}-${{ hashFiles('scripts/provision_xray_engines.sh') }}
 
+      # Owner decision L1 (2026-10-14): every release publishes the complete
+      # corresponding source of libxray.so -- the Xray source, EVERY Go module
+      # it links and each Go toolchain's source -- built by this script
+      # (android.yml, release job). Run
+      # here on every PR, against the engines just provisioned, so a pin that
+      # no longer holds -- an Xray bump without scripts/xray-go-modules.txt, a
+      # moved tag, a changed module zip -- fails a PR, not a release. Built
+      # twice from the same inputs (the second from the verified download
+      # cache, so each file is downloaded once): the bytes must reproduce. The
+      # asset is ~181 MB, so only its README is kept as an artifact.
+      - name: Xray corresponding source matches the shipped engines
+        run: |
+          for out in xray-source xray-source-again; do
+            python3 scripts/xray_corresponding_source.py --out "$RUNNER_TEMP/$out" \
+              --binaries app/src/main/jniLibs/*/libxray.so \
+              --build-record "$RUNNER_TEMP/xray-provision/build-record.txt" \
+              --cache "$RUNNER_TEMP/xray-source-cache"
+          done
+          cmp "$RUNNER_TEMP"/xray-source/*.tar.gz "$RUNNER_TEMP"/xray-source-again/*.tar.gz
+          tar -xzf "$RUNNER_TEMP"/xray-source/*.tar.gz -C "$RUNNER_TEMP" --wildcards '*/README.txt'
+          ls -la "$RUNNER_TEMP"/xray-source
+
+      - name: Upload the Xray corresponding source's README
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: xray-corresponding-source-readme
+          path: ${{ runner.temp }}/xray-core-*-corresponding-source/README.txt
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Build Debug APK
         run: ./gradlew assembleDebug
 

@@ -27,6 +27,10 @@ struct SubscriptionView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
     @EnvironmentObject var authVM: AuthViewModel
     @EnvironmentObject var store: StoreKitService
+    /// For the server's free cap in `/api/client-config` (MR-1980). Every
+    /// route here is a push inside the tab shell, which inherits the app
+    /// root's environment.
+    @EnvironmentObject var settingsVM: SettingsViewModel
 
     @Environment(\.openURL) private var openURL
 
@@ -35,11 +39,14 @@ struct SubscriptionView: View {
 
     private var period: StoreBillingPeriod { billingIndex == 1 ? .yearly : .monthly }
 
-    /// MR-1980: the free plan's monthly allowance as the server states it — a
-    /// Recon account's own `/vpn/stats` limit — or `FreePlanCap.fallbackGb`
-    /// when this app has no such value (a paid account, or no stats yet).
+    /// MR-1980: the free plan's monthly allowance as the server states it —
+    /// `/api/client-config`'s `plans.RECON.bandwidthLimitGb`, else a Recon
+    /// account's own `/vpn/stats` limit — or `FreePlanCap.fallbackGb` when
+    /// this app has neither. Only the cap is read from `plans`; its prices are
+    /// the web checkout's and never appear here.
     private var freeCapGb: Double {
-        FreePlanCap.gb(plan: vpnVM.subscription?.plan,
+        FreePlanCap.gb(configGb: settingsVM.clientConfig?.freePlanCapGb,
+                       plan: vpnVM.subscription?.plan,
                        bandwidthLimitGb: vpnVM.subscription?.bandwidthLimitGb)
     }
 
@@ -137,6 +144,11 @@ struct SubscriptionView: View {
             }
             await store.refreshOwnership()
         }
+        // MR-1980: the Recon card's free cap comes from /api/client-config,
+        // which only Settings fetched — a paywall opened from Profile, Limit or
+        // an upsell would otherwise never see it. Consent-gated and silent on
+        // failure inside refreshClientConfig (the card then falls back).
+        .task { await settingsVM.refreshClientConfig() }
         .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick), value: store.notice)
     }
 

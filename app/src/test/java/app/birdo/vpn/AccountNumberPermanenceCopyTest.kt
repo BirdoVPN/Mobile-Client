@@ -17,8 +17,11 @@ import java.io.File
  */
 class AccountNumberPermanenceCopyTest {
 
-    /** The owner's words, verbatim. */
-    private val line = "It can't be changed. If it leaks, turn on two-factor sign-in or delete your account."
+    /**
+     * The owner's words, verbatim — including "at birdo.app" (owner decision
+     * 2026-10-14: two-factor is switched on from the website, not the app).
+     */
+    private val line = "It can't be changed. If it leaks, turn on two-factor sign-in at birdo.app or delete your account."
 
     private val repoRoot: File by lazy {
         var dir = File("").absoluteFile

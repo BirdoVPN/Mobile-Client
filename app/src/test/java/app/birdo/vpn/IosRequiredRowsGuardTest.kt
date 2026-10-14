@@ -163,9 +163,35 @@ class IosRequiredRowsGuardTest {
             "AccountSession.allowsAccountCalls(" in hasSession && "signedIn: isSignedIn()" in hasSession,
         )
         assertTrue("isSignedIn must default to signed out", "var isSignedIn: @MainActor () -> Bool = { false }" in vpn)
+        val wiring = "vpnVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }"
+        val root = source("$ios/ContentView.swift")
         assertTrue(
-            "the app root must wire hasSession to AuthViewModel.isLoggedIn",
-            "vpnVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }" in source("$ios/ContentView.swift"),
+            "the app root must wire hasSession to AuthViewModel.isLoggedIn in onAppear",
+            wiring in root.substringAfter(".onAppear {").substringBefore("\n        }\n"),
+        )
+        // #486 review: onAppear running before the root .task(id:) is not a
+        // SwiftUI guarantee, and that task's load makes account calls. The
+        // task wires it too, before anything else it does. #487 review: the
+        // same for StoreKitService, whose link / resume-purchase calls in that
+        // task check its own isSignedIn.
+        val storeWiring = "storeVM.isSignedIn = { [weak auth] in auth?.isLoggedIn ?? false }"
+        assertTrue(
+            "the app root must wire StoreKitService's signed-in state in onAppear",
+            storeWiring in root.substringAfter(".onAppear {").substringBefore("\n        }\n"),
+        )
+        val launchLoad = root.substringAfter(".task(id: launchLoadKey) {")
+        assertTrue("the root launch load is gone", launchLoad.length < root.length)
+        val statements = launchLoad.lines().map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith("//") }
+        assertEquals(
+            "the launch load must wire both signed-in checks before anything else",
+            listOf(wiring, "storeVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }"),
+            statements.take(2),
+        )
+        assertTrue(
+            "the launch load still links / resumes App Store purchases",
+            "await storeVM.linkExistingEntitlementsAfterSignIn()" in launchLoad &&
+                "await storeVM.resumePendingPurchase()" in launchLoad,
         )
     }
 

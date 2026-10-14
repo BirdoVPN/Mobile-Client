@@ -81,4 +81,44 @@ final class AccountIdentityTests: XCTestCase {
         XCTAssertNil(AccountIdentity.numberFromSyntheticEmail("anon_12ab@anonymous.local"))
         XCTAssertNil(AccountIdentity.numberFromSyntheticEmail(nil))
     }
+
+    // MARK: - #485 review: what is shown (AnonymousAccountDisplay)
+
+    private let stale = "000000000000000000000001"
+    private var anonymous: AccountIdentity.Resolved { .init(isAnonymous: true, accountNumber: number) }
+    private let standard = AccountIdentity.Resolved(isAnonymous: false, accountNumber: nil)
+
+    func testAStoredNumberIsNeverShownWhileSignedOut() {
+        // The old fallback was `user?.anonymousAccountNumber ?? keychain.anonymousId`.
+        XCTAssertNil(AnonymousAccountDisplay.number(profile: nil, signedIn: false, storedNumber: stale))
+        XCTAssertFalse(AnonymousAccountDisplay.isAnonymous(profile: nil, signedIn: false,
+                                                           email: nil, storedNumber: stale))
+    }
+
+    func testAStandardAccountNeverShowsAStoredNumber() {
+        XCTAssertNil(AnonymousAccountDisplay.number(profile: standard, signedIn: true, storedNumber: stale))
+        XCTAssertFalse(AnonymousAccountDisplay.isAnonymous(profile: standard, signedIn: true,
+                                                           email: nil, storedNumber: stale))
+    }
+
+    func testTheProfilesNumberWinsOverAStoredOne() {
+        XCTAssertEqual(AnonymousAccountDisplay.number(profile: anonymous, signedIn: true, storedNumber: stale),
+                       number)
+        XCTAssertTrue(AnonymousAccountDisplay.isAnonymous(profile: anonymous, signedIn: true,
+                                                          email: nil, storedNumber: nil))
+    }
+
+    func testBeforeTheProfileLandsTheSessionsStoredNumberStandsIn() {
+        // Signed in, offline cold start: the number recorded at sign-in.
+        XCTAssertEqual(AnonymousAccountDisplay.number(profile: nil, signedIn: true, storedNumber: number), number)
+        XCTAssertTrue(AnonymousAccountDisplay.isAnonymous(profile: nil, signedIn: true,
+                                                          email: nil, storedNumber: number))
+        // An account with an email is not anonymous, whatever is stored.
+        XCTAssertFalse(AnonymousAccountDisplay.isAnonymous(profile: nil, signedIn: true,
+                                                           email: "person@example.com", storedNumber: number))
+        // An anonymous profile without a number falls back to this session's.
+        let anonymousWithoutNumber = AccountIdentity.Resolved(isAnonymous: true, accountNumber: nil)
+        XCTAssertEqual(AnonymousAccountDisplay.number(profile: anonymousWithoutNumber,
+                                                      signedIn: true, storedNumber: number), number)
+    }
 }

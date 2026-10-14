@@ -1,6 +1,7 @@
 package app.birdo.vpn
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -97,6 +98,171 @@ class OpenSourceNoticesTest {
             "https://github.com/XTLS/Xray-core/tree/v$version" in head,
         )
         assertTrue("the Xray-core entry must name the pinned commit", commit in head)
+    }
+
+    // ── L1 (owner decision 2026-10-14): the corresponding source ships ──────
+
+    private val xrayVersion by lazy {
+        Regex("""(?m)^XRAY_VERSION="(v[^"]+)"""").find(text("scripts/provision_xray_engines.sh"))!!.groupValues[1]
+    }
+    private val sourceAsset by lazy { "xray-core-$xrayVersion-corresponding-source.tar.gz" }
+
+    /** (module, licence) of every GPL/LGPL/MPL row of scripts/xray-go-modules.txt. */
+    private val copyleftModules by lazy {
+        text("scripts/xray-go-modules.txt").lines()
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            .map { it.trim().split(Regex("""\s{2,}""")) }
+            .filter { cols -> Regex("""\b(?:L?GPL|MPL)-""").containsMatchIn(cols[2]) }
+            .map { cols -> cols[0] to cols[2] }
+            .also { assertTrue("found only ${it.size} copyleft modules in the table", it.size >= 3) }
+    }
+
+    @Test
+    fun `the Xray entry points at the release's source asset first, upstream second`() {
+        val entry = notices.substringAfter("Xray-core ${xrayVersion.removePrefix("v")} (libxray.so").substringBefore("\n\n")
+        val source = entry.indexOf("  Source: $sourceAsset")
+        val upstream = entry.indexOf("  Upstream: https://github.com/XTLS/Xray-core/tree/$xrayVersion")
+        assertTrue("the Xray entry does not name the release asset $sourceAsset as its source", source >= 0)
+        assertTrue("the Xray entry lost its upstream link", upstream >= 0)
+        assertTrue("the release asset must come first, upstream second", source < upstream)
+        // #487 review: the always-public release (xray-source-release in
+        // android.yml), not the android-v* draft, which 404s until published.
+        assertTrue(
+            "the Xray entry must say where the asset is",
+            "https://github.com/BirdoVPN/Mobile-Client/releases/download/xray-source-android-v<version>/$sourceAsset" in entry,
+        )
+        assertFalse("the Xray entry must not point at the draft release", "/download/android-v<version>/" in entry)
+        // The Go standard library is linked but not mirrored: the entry says
+        // so, and names the source of each toolchain the engines were built with.
+        val script = text("scripts/provision_xray_engines.sh")
+        listOf("XRAY_GO_VERSION", "XRAY_UPSTREAM_GO_VERSION").forEach { key ->
+            val go = Regex("""(?m)^$key="(go[0-9.]+)"""").find(script)!!.groupValues[1]
+            assertTrue("the Xray entry must point at the $go source ($key)", "https://go.dev/dl/$go.src.tar.gz" in entry)
+            assertTrue("the Xray entry must name Go ${go.removePrefix("go")}", "Go ${go.removePrefix("go")}" in entry)
+        }
+        // #487 re-check (owner: mirror, as Desktop #298): the Go sources are
+        // IN the asset, pinned to go.dev's published SHA-256.
+        assertTrue("the Xray entry must say the Go sources are in the file", "whose source is in that\n    file too" in entry)
+        assertFalse("the Xray entry still says the Go sources are missing", "not in that" in entry)
+        listOf("XRAY_GO_VERSION_SOURCE_SHA256", "XRAY_UPSTREAM_GO_SOURCE_SHA256").forEach { key ->
+            assertTrue("$key is not pinned", Regex("""(?m)^$key="[0-9a-f]{64}"$""").containsMatchIn(script))
+        }
+        val builder = text("scripts/xray_corresponding_source.py")
+        assertTrue(
+            "the builder must mirror each engine's Go source, checked against its pin",
+            "path = f\"go-toolchain/{toolchain}.src.tar.gz\"" in builder &&
+                "data = fetch(f\"https://go.dev/dl/{toolchain}.src.tar.gz\", want_sha, downloads)" in builder,
+        )
+        assertTrue(
+            "the script must write the asset under the name the notices give",
+            "prefix = f\"xray-core-{version}-corresponding-source\"" in text("scripts/xray_corresponding_source.py"),
+        )
+        copyleftModules.forEach { (module, licence) ->
+            assertTrue("$module ($licence) is in libxray.so but not named in the Xray entry", module in entry)
+        }
+    }
+
+    @Test
+    fun `the LGPL module's licence, exception and all, is included`() {
+        assertTrue(copyleftModules.any { (module, licence) -> module == "github.com/juju/ratelimit" && "LGPL-3.0" in licence })
+        val section = notices.substringAfter("LGPL-3.0 with a linking exception: github.com/juju/ratelimit (in libxray.so)\n", "")
+            .substringBefore("\n--------------------------------------------------------------------------------\n")
+        assertTrue("juju/ratelimit's licence is not in the notices", section.isNotEmpty())
+        listOf(
+            "As a special exception to the GNU Lesser General Public License version 3",
+            "                   GNU LESSER GENERAL PUBLIC LICENSE",
+            "  4. Combined Works.",
+            "  6. Revised Versions of the GNU Lesser General Public License.",
+        ).forEach { assertTrue("juju/ratelimit's licence lost: $it", it in section) }
+    }
+
+    @Test
+    fun `every release builds, checks and publishes the source asset`() {
+        val script = text("scripts/provision_xray_engines.sh")
+        // #487 review: content-addressed (a git tree), not GitHub's tarball bytes.
+        assertTrue("the Xray source tree is not pinned", Regex("""(?m)^XRAY_SOURCE_TREE="[0-9a-f]{40}"$""").containsMatchIn(script))
+        assertFalse("GitHub's generated tarball is not a stable pin", "XRAY_SOURCE_ARCHIVE_SHA256=" in script)
+        // #487 review: the 32-bit engines' Go is exact, and the action and the
+        // script agree on it (the script refuses any other at build time).
+        val goPin = Regex("""(?m)^XRAY_GO_VERSION="go([0-9.]+)"$""").find(script)!!.groupValues[1]
+        assertTrue("go-version must be exact: three numbers", Regex("""\d+\.\d+\.\d+""").matches(goPin))
+        assertTrue(
+            "android-native-libs must set up exactly XRAY_GO_VERSION",
+            "go-version: '$goPin'" in text(".github/actions/android-native-libs/action.yml"),
+        )
+        assertTrue("the build must refuse another Go", "if [ \"\$gover\" != \"\$XRAY_GO_VERSION\" ]; then" in script)
+        val release = text(".github/workflows/android.yml")
+        val build = release.substringAfter("- name: Build the Xray corresponding-source asset", "")
+        assertTrue("the release job no longer builds the source asset", build.isNotEmpty())
+        assertTrue(
+            "the release must check the asset against the engines it ships, and their build record",
+            "--binaries app/src/main/jniLibs/*/libxray.so" in build.substringBefore("- name:") &&
+                "--build-record \"\$RUNNER_TEMP/xray-provision/build-record.txt\"" in build.substringBefore("- name:"),
+        )
+        // #487 review: an always-public source release the notices link to,
+        // which the Play upload waits for.
+        val publicJob = release.substringAfter("\n  xray-source-release:\n", "").substringBefore("\n  play-upload:\n")
+        assertTrue("there is no public source release job", publicJob.isNotEmpty())
+        assertTrue("tag_name: xray-source-\${{ steps.tag.outputs.tag }}" in publicJob)
+        assertTrue("the source release must never be a draft", "draft: false" in publicJob && "draft: true" !in publicJob)
+        assertTrue("the source release must never be Latest", "make_latest: false" in publicJob)
+        assertTrue("the source release must be a prerelease", "prerelease: true" in publicJob)
+        // #487 re-check: only a REAL release publishes public source: a tag
+        // push, or a dispatch naming an android-v* tag (validated), never a
+        // dispatch-N test build.
+        assertTrue(
+            "the source release must run only for a real release",
+            "if: \${{ startsWith(github.ref, 'refs/tags/android-v') || " +
+                "(github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}" in publicJob,
+        )
+        assertTrue("the tag must be validated as android-v*", "grep -Eq '^android-v[A-Za-z0-9._-]{1,55}\$'" in publicJob)
+        assertFalse("a dispatch without a tag must not publish", "android-dispatch-" in publicJob)
+        assertTrue("release-apk/xray-core-*-corresponding-source.tar.gz" in publicJob)
+        assertTrue(
+            "Play must wait for the public source",
+            "needs: [release, lint, test, native, pq-cpu-proof, xray-source-release]" in
+                release.substringAfter("\n  play-upload:\n"),
+        )
+        assertTrue(
+            "the asset must be built before the APK is",
+            release.indexOf("- name: Build the Xray corresponding-source asset") <
+                release.indexOf("- name: Build Release APK and AAB"),
+        )
+        assertTrue("the asset is not in SHA256SUMS.txt", "sha256sum xray-core-*-corresponding-source.tar.gz" in release)
+        assertTrue(
+            "the draft release does not attach the asset",
+            "release-apk/xray-core-*-corresponding-source.tar.gz" in release.substringAfter("draft-release:"),
+        )
+        val ci = text(".github/workflows/android-ci.yml")
+            .substringAfter("- name: Xray corresponding source matches the shipped engines", "")
+            .substringBefore("- name:")
+        assertTrue("pull-request CI no longer builds the source asset", ci.isNotEmpty())
+        assertTrue(
+            "pull-request CI must build the asset against the provisioned engines",
+            "python3 scripts/xray_corresponding_source.py" in ci && "--binaries app/src/main/jniLibs/*/libxray.so" in ci,
+        )
+        assertTrue("pull-request CI must check that the bytes reproduce", "cmp " in ci)
+    }
+
+    /**
+     * GPL-3.0 section 1: the Corresponding Source of the combined program is
+     * the source of everything linked into it, so the asset mirrors every
+     * module the engines link, permissive ones too — each with a pinned zip.
+     */
+    @Test
+    fun `every linked module is mirrored, not only the copyleft ones`() {
+        val rows = text("scripts/xray-go-modules.txt").lines()
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            .map { it.trim().split(Regex("""\s{2,}""")) }
+        assertTrue("found only ${rows.size} modules in the table", rows.size >= 20)
+        val unpinned = rows.filter { cols -> cols.size != 4 || !Regex("""[0-9a-f]{64}""").matches(cols[3]) }
+            .map { it[0] }
+        assertEquals("modules with no pinned proxy.golang.org zip", emptyList<String>(), unpinned)
+        assertTrue(
+            "the script must mirror every row, not only the copyleft ones",
+            "for module, (mod_version, licence, want_sha) in sorted(modules.items()):\n        url =" in
+                text("scripts/xray_corresponding_source.py"),
+        )
     }
 
     @Test
