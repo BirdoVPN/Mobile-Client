@@ -224,4 +224,22 @@ class IosParityRowsGuardTest {
         // overwrite edits this app is about to save.
         assertFalse(refresh.contains("manager ="))
     }
+
+    // ── vpn-d3 review M1: an unfinished fresh-install clean-up ───────────────
+
+    @Test
+    fun `an unfinished fresh-install clean-up is never mistaken for an upgrade`() {
+        val identity = source("$ios/Services/InstallIdentity.swift")
+        val mark = identity.indexOf("defaults.set(true, forKey: pendingKey)")
+        val firstStep = identity.indexOf("store.clearSession()")
+        assertTrue("the clean-up is not marked pending before it starts", mark in 0 until firstStep)
+        assertTrue(
+            "the consent record still overrides a pending clean-up",
+            identity.contains("if !pending, earlierLaunchKeys.contains("),
+        )
+        assertTrue(
+            "AuthViewModel runs signed in on a session a failed clean-up left behind",
+            source("$ios/ViewModels/AuthViewModel.swift").contains("let sessionLive = !install.storedSessionUnusable"),
+        )
+    }
 }

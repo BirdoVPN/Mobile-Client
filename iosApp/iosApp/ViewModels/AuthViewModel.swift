@@ -319,9 +319,10 @@ final class AuthViewModel: ObservableObject {
         let storedConsent = ConsentRecord.hasAcceptedCurrent(in: defaults)
         let storedDeferral = ConsentRecord.isDeferred(in: defaults)
         // Cold-start routing from local tokens only: logged in iff either
-        // stored JWT is unexpired. Unparseable = expired (fail-safe).
-        let sessionLive = Self.isTokenLive(keychain.accessToken)
-            || Self.isTokenLive(keychain.refreshToken)
+        // stored JWT is unexpired. Unparseable = expired (fail-safe). Never on
+        // a previous install's session that a failed clean-up left behind.
+        let sessionLive = !install.storedSessionUnusable
+            && (Self.isTokenLive(keychain.accessToken) || Self.isTokenLive(keychain.refreshToken))
         // A signed-in session is no longer grandfathered into consent: it
         // used to set `gdpr_consented` here, which made a signed-in user
         // immune to any change of the disclosure — exactly the users who must
@@ -343,7 +344,8 @@ final class AuthViewModel: ObservableObject {
                 hydrationAwaitsConsentScreen = true
             }
         } else {
-            // Both tokens dead: purge the leftovers so no half-expired
+            // Both tokens dead (or a previous install's session a failed
+            // clean-up left behind): purge the leftovers so no half-expired
             // session lingers in the keychain.
             if keychain.accessToken != nil || keychain.refreshToken != nil {
                 keychain.clear()

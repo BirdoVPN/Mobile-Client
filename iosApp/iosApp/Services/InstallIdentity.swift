@@ -27,7 +27,11 @@ import Foundation
 /// upgrade), so the consent record — which every build since the guest shell
 /// writes on the first screen a new install shows, and which an earlier launch
 /// of THIS install is the only possible author of — marks the install as
-/// already run.
+/// already run. Unless a fresh install's clean-up is still PENDING: it marks
+/// itself before it starts and unmarks itself only when it is done, because
+/// the user can answer the consent screen in a launch whose clean-up failed,
+/// and the next launch would then read that consent as an upgrade and keep the
+/// previous install's session and identity for good.
 ///
 /// Sign-out does NOT go through here and does not change the device id, as on
 /// Android (`BirdoRepository.logout` keeps it; only account deletion rotates
@@ -50,6 +54,10 @@ enum InstallIdentity {
     /// The UserDefaults key of the first-run sentinel.
     static let sentinelKey = "install_identity_checked_v1"
 
+    /// Set while a fresh install's clean-up has started and not finished; the
+    /// consent record proves nothing while it is set (see the type doc).
+    static let pendingKey = "install_identity_pending_v1"
+
     /// UserDefaults keys only an earlier launch of THIS install can have
     /// written: the consent record (accepted or "Not now") that the first
     /// screen of every build since the guest shell asks for before anything
@@ -70,10 +78,17 @@ enum InstallIdentity {
         /// A fresh install that found a previous install's session or identity
         /// in the keychain: signed out, identity replaced, sentinel set.
         case discardedPreviousInstall
-        /// Nothing could be decided safely this launch (protected data not yet
-        /// available, or a keychain write failed): sentinel NOT set, so the
-        /// next launch tries again.
+        /// A fresh install's clean-up started but could not finish (the session
+        /// would not clear, or a keychain write failed). The pending flag stays
+        /// set, so every later launch finishes it — consent or not. The stored
+        /// session belongs to the previous install: do not run signed in on it.
+        case cleanupIncomplete
+        /// Nothing could be read this launch (protected data not yet
+        /// available): nothing changed, the next launch decides.
         case retryNextLaunch
+
+        /// The session in the keychain must not be used this launch.
+        var storedSessionUnusable: Bool { self == .cleanupIncomplete }
     }
 
     /// Run once per launch, before anything reads the session or the device
@@ -92,7 +107,8 @@ enum InstallIdentity {
                               mintDeviceId: () -> String) -> Outcome {
         guard protectedDataAvailable else { return .retryNextLaunch }
         if defaults.bool(forKey: sentinelKey) { return .alreadyChecked }
-        if earlierLaunchKeys.contains(where: { defaults.object(forKey: $0) != nil }) {
+        let pending = defaults.bool(forKey: pendingKey)
+        if !pending, earlierLaunchKeys.contains(where: { defaults.object(forKey: $0) != nil }) {
             defaults.set(true, forKey: sentinelKey)
             return .upgradeKeptIdentity
         }
@@ -100,28 +116,36 @@ enum InstallIdentity {
         let leftoverDevice = store.deviceId != nil
         let leftoverAnonymous = store.anonymousId != nil
         if !leftoverSession && !leftoverDevice && !leftoverAnonymous {
-            // Nothing to discard; APIClient mints the id on first use.
+            // Nothing (left) to discard; APIClient mints the id on first use.
             defaults.set(true, forKey: sentinelKey)
+            defaults.removeObject(forKey: pendingKey)
             return .freshInstall
         }
+        // Marked BEFORE anything is touched, cleared only when all of it is
+        // done: a clean-up that stops part-way must be finished by a later
+        // launch, even one that by then finds a consent record.
+        defaults.set(true, forKey: pendingKey)
         if leftoverSession {
             // FIRST, before the identity: if the sign-out cannot be completed,
-            // nothing else changes and the next launch tries again — a live
-            // session must never be left running under a new device id.
+            // nothing else changes — a live session must never be left running
+            // under a new device id.
             store.clearSession()
-            guard !store.hasSession else { return .retryNextLaunch }
+            guard !store.hasSession else { return .cleanupIncomplete }
         }
         if leftoverDevice {
-            // Overwrite rather than delete: a failed write leaves the old id in
-            // place, and then the sentinel must stay unset so the next launch
-            // tries again instead of adopting the previous install's identity.
-            guard store.saveDeviceId(mintDeviceId()) else { return .retryNextLaunch }
+            // The keychain write is delete-then-add, so a failed write leaves
+            // NO device id rather than the old one: APIClient would mint a
+            // fresh one on first use, which is safe. The rest of the clean-up
+            // still has to run, so a failure stops here and a later launch
+            // finishes it.
+            guard store.saveDeviceId(mintDeviceId()) else { return .cleanupIncomplete }
         }
         if leftoverAnonymous {
             store.clearAnonymousId()
-            guard store.anonymousId == nil else { return .retryNextLaunch }
+            guard store.anonymousId == nil else { return .cleanupIncomplete }
         }
         defaults.set(true, forKey: sentinelKey)
+        defaults.removeObject(forKey: pendingKey)
         return .discardedPreviousInstall
     }
 
