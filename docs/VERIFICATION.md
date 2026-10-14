@@ -57,6 +57,32 @@ Get-Content SHA256SUMS.txt | ForEach-Object {
 }
 ```
 
+## Source of the Stealth Mode engine (Android)
+
+The Android app ships Xray-core as `libxray.so`. It is MPL-2.0 and links Go
+modules under the GPL-3.0 (sagernet/sing, sing-shadowsocks), the LGPL-3.0
+(juju/ratelimit) and the MPL-2.0 (xtls/reality). Every Android release carries
+their complete corresponding source as the asset
+`xray-core-<xray version>-corresponding-source.tar.gz`, listed in
+`SHA256SUMS.txt` (so covered by the signatures above). It holds GitHub's
+archive of the Xray-core tag, each copyleft module's zip from
+proxy.golang.org, the build script, and a `README.txt` with every file's
+SHA-256 and Go checksum.
+
+It is built by `scripts/xray_corresponding_source.py`, which refuses unless the
+engines in the build link exactly the modules and versions in
+`scripts/xray-go-modules.txt`, those versions are what Xray-core's `go.mod`
+requires at the pinned tag, and every zip's Go checksum equals Xray-core's
+`go.sum`. The output is deterministic (fixed tar headers, no timestamps), so it
+can be rebuilt from a checkout of the release tag and compared; on a machine
+whose zlib compresses differently from the CI runner's, compare the unpacked
+files instead (each one's SHA-256 is in its `README.txt`):
+
+```bash
+python3 scripts/xray_corresponding_source.py --out /tmp/xray-source
+sha256sum /tmp/xray-source/*.tar.gz   # the line in SHA256SUMS.txt (ubuntu-24.04)
+```
+
 ## What Does This Prove?
 
 | Guarantee | How |

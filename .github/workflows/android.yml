@@ -262,6 +262,22 @@ jobs:
       # for all four ABIs. No cache: see the header.
       - uses: ./.github/actions/android-native-libs
 
+      # Owner decision L1 (2026-10-14, the Android twin of Desktop D8): every
+      # release carries the complete corresponding source of the GPL/LGPL code
+      # in libxray.so -- the Xray-core tag archive and the copyleft Go modules,
+      # at exactly the versions the four engines just provisioned link. The
+      # script refuses (and the release stops here, before signing) unless the
+      # engines' build info, Xray's go.mod/go.sum at the pinned tag and every
+      # pinned hash agree. The asset goes into SHA256SUMS.txt (Sigstore- and
+      # GPG-signed below) and onto the release next to the APK; the in-app
+      # notices point at it by name.
+      - name: Build the Xray corresponding-source asset
+        run: |
+          python3 scripts/xray_corresponding_source.py \
+            --out "$RUNNER_TEMP/xray-source" \
+            --binaries app/src/main/jniLibs/*/libxray.so
+          ls -la "$RUNNER_TEMP/xray-source"
+
       # Log in to Azure using OIDC - no stored client secrets required.
       - name: Azure Login (OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -486,6 +502,9 @@ jobs:
           sha256sum app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab \
             | sed 's#app/build/outputs/apk/release/##;s#app/build/outputs/bundle/release/##' \
             > app/build/release-artifacts/SHA256SUMS.txt
+          # The Xray corresponding-source asset (L1), by its bare name like the rest.
+          ( cd "$RUNNER_TEMP/xray-source" && sha256sum xray-core-*-corresponding-source.tar.gz ) \
+            >> app/build/release-artifacts/SHA256SUMS.txt
           cat app/build/release-artifacts/SHA256SUMS.txt
 
       - name: Sign checksums with Sigstore
@@ -555,9 +574,16 @@ jobs:
             app/build/outputs/apk/release/*.asc \
             app/build/outputs/bundle/release/*.aab \
             app/build/outputs/bundle/release/*.sigstore \
-            app/build/outputs/bundle/release/*.asc; do
+            app/build/outputs/bundle/release/*.asc \
+            "$RUNNER_TEMP"/xray-source/xray-core-*-corresponding-source.tar.gz; do
             cp "$artifact" app/build/release-artifacts/
           done
+          # L1: a release without its Xray source must not be published.
+          sources=(app/build/release-artifacts/xray-core-*-corresponding-source.tar.gz)
+          if [ "${#sources[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one Xray corresponding-source asset, found ${#sources[@]}"
+            exit 1
+          fi
           ls -la app/build/release-artifacts
 
       # Consumed by draft-release and play-upload in the same run; kept 30 days
@@ -672,6 +698,11 @@ jobs:
             - GPG:      `gpg --verify <apk>.asc <apk>`  (key: https://birdo.app/.well-known/birdo-release.asc)
             - SHA256:   `sha256sum -c SHA256SUMS.txt`
 
+            ### Source of the Stealth Mode engine
+            `xray-core-*-corresponding-source.tar.gz` is the complete corresponding source of
+            libxray.so (Xray-core, MPL-2.0) and of the GPL-3.0, LGPL-3.0 and MPL-2.0 Go modules it
+            links, at the exact versions this build ships. Its SHA-256 is in `SHA256SUMS.txt`.
+
             > This is a **draft** release - not visible to the public until you click "Publish".
           files: |
             release-apk/*.apk
@@ -683,6 +714,7 @@ jobs:
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
             release-apk/SHA256SUMS.txt.asc
+            release-apk/xray-core-*-corresponding-source.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

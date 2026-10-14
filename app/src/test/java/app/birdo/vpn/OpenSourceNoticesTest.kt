@@ -99,6 +99,87 @@ class OpenSourceNoticesTest {
         assertTrue("the Xray-core entry must name the pinned commit", commit in head)
     }
 
+    // ── L1 (owner decision 2026-10-14): the corresponding source ships ──────
+
+    private val xrayVersion by lazy {
+        Regex("""(?m)^XRAY_VERSION="(v[^"]+)"""").find(text("scripts/provision_xray_engines.sh"))!!.groupValues[1]
+    }
+    private val sourceAsset by lazy { "xray-core-$xrayVersion-corresponding-source.tar.gz" }
+
+    /** (module, licence) of every GPL/LGPL/MPL row of scripts/xray-go-modules.txt. */
+    private val copyleftModules by lazy {
+        text("scripts/xray-go-modules.txt").lines()
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            .map { it.trim().split(Regex("""\s{2,}""")) }
+            .filter { cols -> Regex("""\b(?:L?GPL|MPL)-""").containsMatchIn(cols[2]) }
+            .map { cols -> cols[0] to cols[2] }
+            .also { assertTrue("found only ${it.size} copyleft modules in the table", it.size >= 3) }
+    }
+
+    @Test
+    fun `the Xray entry points at the release's source asset first, upstream second`() {
+        val entry = notices.substringAfter("Xray-core ${xrayVersion.removePrefix("v")} (libxray.so").substringBefore("\n\n")
+        val source = entry.indexOf("  Source: $sourceAsset")
+        val upstream = entry.indexOf("  Upstream: https://github.com/XTLS/Xray-core/tree/$xrayVersion")
+        assertTrue("the Xray entry does not name the release asset $sourceAsset as its source", source >= 0)
+        assertTrue("the Xray entry lost its upstream link", upstream >= 0)
+        assertTrue("the release asset must come first, upstream second", source < upstream)
+        assertTrue(
+            "the Xray entry must say where the asset is",
+            "https://github.com/BirdoVPN/Mobile-Client/releases/download/android-v<version>/$sourceAsset" in entry,
+        )
+        assertTrue(
+            "the script must write the asset under the name the notices give",
+            "prefix = f\"xray-core-{version}-corresponding-source\"" in text("scripts/xray_corresponding_source.py"),
+        )
+        copyleftModules.forEach { (module, licence) ->
+            assertTrue("$module ($licence) is in libxray.so but not named in the Xray entry", module in entry)
+        }
+    }
+
+    @Test
+    fun `the LGPL module's licence, exception and all, is included`() {
+        assertTrue(copyleftModules.any { (module, licence) -> module == "github.com/juju/ratelimit" && "LGPL-3.0" in licence })
+        val section = notices.substringAfter("LGPL-3.0 with a linking exception: github.com/juju/ratelimit (in libxray.so)\n", "")
+            .substringBefore("\n--------------------------------------------------------------------------------\n")
+        assertTrue("juju/ratelimit's licence is not in the notices", section.isNotEmpty())
+        listOf(
+            "As a special exception to the GNU Lesser General Public License version 3",
+            "                   GNU LESSER GENERAL PUBLIC LICENSE",
+            "  4. Combined Works.",
+            "  6. Revised Versions of the GNU Lesser General Public License.",
+        ).forEach { assertTrue("juju/ratelimit's licence lost: $it", it in section) }
+    }
+
+    @Test
+    fun `every release builds, checks and publishes the source asset`() {
+        val script = text("scripts/provision_xray_engines.sh")
+        assertTrue("the tag archive is not pinned", Regex("""(?m)^XRAY_SOURCE_SHA256="[0-9a-f]{64}"$""").containsMatchIn(script))
+        val release = text(".github/workflows/android.yml")
+        val build = release.substringAfter("- name: Build the Xray corresponding-source asset", "")
+        assertTrue("the release job no longer builds the source asset", build.isNotEmpty())
+        assertTrue(
+            "the release must check the asset against the engines it ships",
+            "--binaries app/src/main/jniLibs/*/libxray.so" in build.substringBefore("- name:"),
+        )
+        assertTrue(
+            "the asset must be built before the APK is",
+            release.indexOf("- name: Build the Xray corresponding-source asset") <
+                release.indexOf("- name: Build Release APK and AAB"),
+        )
+        assertTrue("the asset is not in SHA256SUMS.txt", "sha256sum xray-core-*-corresponding-source.tar.gz" in release)
+        assertTrue(
+            "the draft release does not attach the asset",
+            "release-apk/xray-core-*-corresponding-source.tar.gz" in release.substringAfter("draft-release:"),
+        )
+        val ci = text(".github/workflows/android-ci.yml")
+        assertTrue(
+            "pull-request CI must build the asset against the provisioned engines",
+            "python3 scripts/xray_corresponding_source.py --out \"\$RUNNER_TEMP/xray-source\" \\\n" +
+                "            --binaries app/src/main/jniLibs/*/libxray.so" in ci,
+        )
+    }
+
     @Test
     fun `every native engine is named`() {
         listOf("libxray.so", "libwg-go.so", "librosenpass_jni.so", "wireguard-go").forEach {

@@ -1,0 +1,55 @@
+# The Go modules linked into libxray.so (Xray-core, scripts/provision_xray_engines.sh),
+# exactly as `go version -m` reports them for every shipped ABI, with each one's
+# reviewed licence (SPDX).
+#
+# Owner decision L1 (2026-10-14, the Android twin of Desktop D8): every Android
+# release carries the complete corresponding source of the copyleft code in
+# libxray.so. scripts/xray_corresponding_source.py builds that release asset
+# from this table and REFUSES to unless:
+#   * every module the four shipped binaries link is listed here, at exactly the
+#     version they link, and nothing else is (an Xray bump fails until this
+#     table is reviewed again — a new module arrives with no licence);
+#   * each version equals the one Xray-core's own go.mod requires at the pinned
+#     tag;
+#   * every GPL, LGPL or MPL module has the SHA-256 of its <module>@<version>.zip
+#     from proxy.golang.org, the zip matches it, and the zip's Go checksum (h1:)
+#     equals the line in Xray-core's go.sum and in the binaries' build info.
+# Those zips go into the asset byte for byte.
+#
+# Licences were reviewed against each module's LICENSE/COPYING at these
+# versions (and match Desktop-Client's third_party/licenses/xray-go-modules.json
+# for the modules both apps ship).
+#
+# module                                      version                                  licence (SPDX)                                    zip sha256 (copyleft only)
+github.com/andybalholm/brotli                 v1.0.6                                   MIT
+github.com/apernet/quic-go                    v0.57.2-0.20260111184307-eec823306178    MIT
+github.com/cloudflare/circl                   v1.6.3                                   BSD-3-Clause
+github.com/ghodss/yaml                        v1.0.1-0.20220118164431-d8423dcdf344     MIT AND BSD-3-Clause
+github.com/google/btree                       v1.1.2                                   Apache-2.0
+github.com/gorilla/websocket                  v1.5.3                                   BSD-2-Clause
+github.com/juju/ratelimit                     v1.0.2                                   LGPL-3.0-only WITH LGPL-3.0-linking-exception     881dd22b8ec7dadbbb1e9d08ed7eb2c1f1ce8b6b4c48f739bb65f4c7d2ec12ed
+github.com/klauspost/compress                 v1.17.4                                  BSD-3-Clause AND Apache-2.0 AND MIT
+github.com/klauspost/cpuid/v2                 v2.0.12                                  MIT
+github.com/miekg/dns                          v1.1.72                                  BSD-3-Clause
+github.com/pelletier/go-toml                  v1.9.5                                   MIT AND Apache-2.0
+github.com/pires/go-proxyproto                v0.9.2                                   Apache-2.0
+github.com/quic-go/qpack                      v0.6.0                                   MIT
+github.com/refraction-networking/utls         v1.8.2                                   BSD-3-Clause
+github.com/sagernet/sing                      v0.5.1                                   GPL-3.0-or-later                                  651e38489c33ec283b652f88b258d9832d889304cd42c94743c3d9237e825068
+github.com/sagernet/sing-shadowsocks          v0.2.7                                   GPL-3.0-or-later                                  9f910b57d0a67038408b548b69f3d2c0892e6604991739979fe16af023dd2815
+github.com/xtls/reality                       v0.0.0-20251014195629-e4eec4520535       MPL-2.0 AND BSD-3-Clause                          e08cd5396bdee2cdb3521c9c1f09150f5a11e0f2095aeae3242cf1c8e06f2dca
+go4.org/netipx                                v0.0.0-20231129151722-fdeea329fbba       BSD-3-Clause
+golang.org/x/crypto                           v0.47.0                                  BSD-3-Clause
+golang.org/x/exp                              v0.0.0-20240506185415-9bf2ced13842       BSD-3-Clause
+golang.org/x/net                              v0.49.0                                  BSD-3-Clause
+golang.org/x/sync                             v0.19.0                                  BSD-3-Clause
+golang.org/x/sys                              v0.40.0                                  BSD-3-Clause
+golang.org/x/text                             v0.33.0                                  BSD-3-Clause
+golang.org/x/time                             v0.12.0                                  BSD-3-Clause
+golang.zx2c4.com/wireguard                    v0.0.0-20231211153847-12269c276173       MIT
+google.golang.org/genproto/googleapis/rpc     v0.0.0-20251029180050-ab9386a59fda       Apache-2.0
+google.golang.org/grpc                        v1.78.0                                  Apache-2.0
+google.golang.org/protobuf                    v1.36.11                                 BSD-3-Clause
+gopkg.in/yaml.v2                              v2.4.0                                   Apache-2.0 AND MIT
+gvisor.dev/gvisor                             v0.0.0-20260122175437-89a5d21be8f0       Apache-2.0
+lukechampine.com/blake3                       v1.4.1                                   MIT
