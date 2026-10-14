@@ -413,6 +413,8 @@ struct LoginView: View {
                            monospaced: true)
                 .focused($focusedField, equals: .anonymousId)
                 .accessibilityIdentifier("login_anonymous_id_field")
+                // MR-1727: what is typed here is the account number too.
+                .accountNumberSnapshotCover(isInput: true)
                 .onChange(of: anonymousId) { _, newValue in
                     // Digits only, hard cap 24 (spec §3a).
                     let filtered = String(newValue.filter(\.isNumber).prefix(24))

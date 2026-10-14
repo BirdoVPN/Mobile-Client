@@ -9,8 +9,9 @@ import XCTest
 /// code, SSO code and verifier, account number or WireGuard keys in full the
 /// moment it was interpolated into a log line, crash breadcrumb or `po`.
 ///
-/// The models are the REAL ones: AuthWire.swift, ConnectWire.swift and
-/// AccountDeletion.swift are compiled into this bundle for exactly this.
+/// The models are the REAL ones: AuthWire.swift, ConnectWire.swift,
+/// AccountDeletion.swift, TunnelProfileSnapshot.swift and AccountIdentity.swift
+/// are compiled into this bundle for exactly this.
 final class CredentialDescriptionTests: XCTestCase {
 
     private let secrets = [
@@ -182,6 +183,39 @@ final class CredentialDescriptionTests: XCTestCase {
         XCTAssertTrue(config.description.contains("serverAddress: 203.0.113.7"),
                       "VPNConnectionConfig lost its endpoint")
         XCTAssertTrue(config.description.contains("keyId: key-1"), "VPNConnectionConfig lost keyId")
+    }
+
+    // MARK: - Live rebuild
+
+    func testTunnelProfileSnapshotPrintsNoKeyOrProfileValue() {
+        let snapshot = TunnelProfileSnapshot(
+            providerConfiguration: [
+                "wg-config": "[Interface]\nPrivateKey = wg-private-key-aaa",
+                "wg-preshared-key-ref": "wg_preshared_key",
+                // A profile written by an older build carried the heartbeat token itself.
+                "hb-access-token": "access-secret-abc",
+            ],
+            serverAddress: "203.0.113.7",
+            privateKey: "wg-private-key-aaa",
+            presharedKey: "wg-preshared-key-789")
+        assertNoSecret(snapshot)
+        XCTAssertTrue(snapshot.description.contains("serverAddress: 203.0.113.7"),
+                      "TunnelProfileSnapshot lost its server address")
+        XCTAssertTrue(snapshot.description.contains("\"hb-access-token\""),
+                      "TunnelProfileSnapshot no longer names its profile keys")
+        let noPsk = TunnelProfileSnapshot(providerConfiguration: [:], serverAddress: "203.0.113.7",
+                                          privateKey: "wg-private-key-aaa", presharedKey: nil)
+        XCTAssertTrue(noPsk.description.contains("presharedKey: nil"),
+                      "TunnelProfileSnapshot hides that no pre-shared key was held")
+    }
+
+    // MARK: - Account identity
+
+    func testResolvedIdentityPrintsNoAccountNumber() {
+        assertNoSecret(AccountIdentity.Resolved(isAnonymous: true, accountNumber: "123456789012345678901234"))
+        let signedIn = AccountIdentity.Resolved(isAnonymous: false, accountNumber: nil).description
+        XCTAssertTrue(signedIn.contains("isAnonymous: false") && signedIn.contains("accountNumber: nil"),
+                      "Resolved hides whether the account is anonymous or had a number")
     }
 
     // MARK: - Codable is untouched

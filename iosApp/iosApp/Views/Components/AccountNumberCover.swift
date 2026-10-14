@@ -16,14 +16,28 @@ import SwiftUI
 /// the redaction placeholder, so the snapshot holds no digits. They return the
 /// moment the scene is active again.
 ///
+/// `isInput` is for the sign-in field the user types the number into, which
+/// is the number as much as any label is. Redaction reaches `Text`, but it is
+/// not something to rely on for the platform text field behind a `TextField`,
+/// so an input is also hidden outright while the scene is not active.
+///
 /// iOS only: the app-switcher snapshot is an iOS behaviour. On a Mac the
 /// number stays as it was.
 struct AccountNumberSnapshotCover: ViewModifier {
     @Environment(\.scenePhase) private var scenePhase
+    private let isInput: Bool
+
+    /// Explicit: the private `scenePhase` would make the synthesized
+    /// memberwise init private, out of reach of `accountNumberSnapshotCover`.
+    init(isInput: Bool = false) {
+        self.isInput = isInput
+    }
 
     func body(content: Content) -> some View {
         #if os(iOS)
-        content.redacted(reason: scenePhase == .active ? [] : .placeholder)
+        content
+            .redacted(reason: scenePhase == .active ? [] : .placeholder)
+            .opacity(isInput && scenePhase != .active ? 0 : 1)
         #else
         content
         #endif
@@ -32,7 +46,7 @@ struct AccountNumberSnapshotCover: ViewModifier {
 
 extension View {
     /// See `AccountNumberSnapshotCover`.
-    func accountNumberSnapshotCover() -> some View {
-        modifier(AccountNumberSnapshotCover())
+    func accountNumberSnapshotCover(isInput: Bool = false) -> some View {
+        modifier(AccountNumberSnapshotCover(isInput: isInput))
     }
 }

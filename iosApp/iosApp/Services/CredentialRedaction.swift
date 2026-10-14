@@ -21,8 +21,11 @@ import Foundation
 // consult any of these.
 //
 // Foundation-only, compiled into BirdoVPNTests with the models it covers
-// (AuthWire.swift, ConnectWire.swift, AccountDeletion.swift), which is what
-// lets CredentialDescriptionTests check the real structs.
+// (AuthWire.swift, ConnectWire.swift, AccountDeletion.swift,
+// TunnelProfileSnapshot.swift, AccountIdentity.swift), which is what lets
+// CredentialDescriptionTests check the real structs. IosRequiredRowsGuardTest
+// (Android unit tests) finds every credential-bearing struct or enum in the
+// app and the extension and fails until it has a conformance here.
 
 enum Redaction {
     /// What a present secret prints as.
@@ -231,5 +234,30 @@ extension VPNConnectionConfig: CredentialRedacting {
             ("clientUpdate", Redaction.plain(clientUpdate)),
             ("multiHop", Redaction.plain(multiHop)),
         ]
+    }
+}
+
+// MARK: - Live rebuild
+
+extension TunnelProfileSnapshot: CredentialRedacting {
+    /// Never the private or pre-shared key. The provider configuration shows
+    /// only its keys: a profile written by an older build may still carry the
+    /// heartbeat token itself (see `VPNManager.restoreProfile`).
+    var redactedFields: [(label: String, value: String)] {
+        [
+            ("providerConfiguration", "\(providerConfiguration.keys.sorted())"),
+            ("serverAddress", serverAddress),
+            ("privateKey", Redaction.marker),
+            ("presharedKey", Redaction.optional(presharedKey)),
+        ]
+    }
+}
+
+// MARK: - Account identity
+
+extension AccountIdentity.Resolved: CredentialRedacting {
+    /// The account number is the anonymous account's only credential.
+    var redactedFields: [(label: String, value: String)] {
+        [("isAnonymous", "\(isAnonymous)"), ("accountNumber", Redaction.optional(accountNumber))]
     }
 }

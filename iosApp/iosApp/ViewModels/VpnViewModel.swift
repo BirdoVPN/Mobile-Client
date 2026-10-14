@@ -1278,7 +1278,7 @@ final class VpnViewModel: ObservableObject {
         /// The key the live tunnel is riding — the one the server defers.
         let oldKeyId: String
         /// The live profile + secrets, for the swap-back.
-        let snapshot: VPNManager.TunnelProfileSnapshot
+        let snapshot: TunnelProfileSnapshot
         /// The minted config, once /connect answered.
         var newConfig: VPNConnectionConfig?
         var confirmedRoute: String?
@@ -1312,7 +1312,7 @@ final class VpnViewModel: ObservableObject {
             legacyRebuild(target)
             return
         }
-        let snapshot: VPNManager.TunnelProfileSnapshot
+        let snapshot: TunnelProfileSnapshot
         do {
             snapshot = try vpnManager.snapshotRunningProfile()
         } catch {
