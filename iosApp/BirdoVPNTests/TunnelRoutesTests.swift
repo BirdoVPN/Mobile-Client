@@ -46,7 +46,7 @@ final class TunnelRoutesTests: XCTestCase {
     func testValidationRefusesAnInvalidAllowedIP() throws {
         let key = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="
         for bad in ["10.0.0.0/33", "not-a-cidr", "10.0.0.0", " 0.0.0.0/0"] {
-            var config = try JSONDecoder().decode(VPNConnectionConfig.self, Data("""
+            var config = try JSONDecoder().decode(VPNConnectionConfig.self, from: Data("""
             {"endpoint": "203.0.113.7:51820", "serverPublicKey": "\(key)",
              "assignedIp": "10.100.0.2", "allowedIps": ["\(bad)"]}
             """.utf8))
@@ -55,7 +55,7 @@ final class TunnelRoutesTests: XCTestCase {
                 XCTAssertEqual(error as? VPNConfigValidationError, .invalidAllowedIPs, bad)
             }
         }
-        var good = try JSONDecoder().decode(VPNConnectionConfig.self, Data("""
+        var good = try JSONDecoder().decode(VPNConnectionConfig.self, from: Data("""
         {"endpoint": "203.0.113.7:51820", "serverPublicKey": "\(key)",
          "assignedIp": "10.100.0.2", "allowedIps": ["10.0.0.1/8"]}
         """.utf8))
