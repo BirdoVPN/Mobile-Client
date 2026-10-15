@@ -26,8 +26,8 @@ import Foundation
 ///     only then deletes the shared one. Any failure leaves the old copy where
 ///     it is, to be retried on the next launch. A host copy that already exists
 ///     wins: only a write by this build can have put it there.
-///   - `read` falls back to the old copy while one is left, so an item not yet
-///     moved (keychain locked since boot, a failed write) never reads as absent.
+///   - `read` falls back to the old copy while one is left, so an item whose
+///     move failed or has not run yet still reads.
 ///   - `delete` names no group, so it removes both copies: a sign-out cannot
 ///     leave an old copy behind for the fallback to bring back.
 ///   - a build that cannot use the host group (`.unresolved`: signed without
@@ -51,33 +51,88 @@ enum HostOnlyKeychain {
     static func read(_ item: HostKeychainItem,
                      placement: HostKeychainPlacement,
                      store: any KeychainGroupStore) -> Data? {
-        // PRE-FIX behaviour (red commit): no access group.
-        store.lookup(service: item.service, account: item.account, group: nil).data
+        guard case .hostOnly(let host, _) = placement else {
+            return store.lookup(service: item.service, account: item.account, group: nil).data
+        }
+        switch store.lookup(service: item.service, account: item.account, group: host) {
+        case .found(let data):
+            return data
+        case .failed:
+            return nil
+        case .notFound:
+            // Not moved yet: the copy an older build wrote, wherever its
+            // default group put it. No group, because the host group was just
+            // found empty.
+            return store.lookup(service: item.service, account: item.account, group: nil).data
+        }
     }
 
-    /// Replace the item. False when it could not be written; the previous copy
-    /// is then still where it was.
+    /// Replace the item. False when the write failed. A copy an older build
+    /// left in the shared group is removed only after the write succeeded, so
+    /// a failed write leaves it readable.
     @discardableResult
     static func write(_ data: Data,
                       _ item: HostKeychainItem,
                       placement: HostKeychainPlacement,
                       store: any KeychainGroupStore) -> Bool {
-        // PRE-FIX behaviour (red commit): no access group, so the default one.
-        store.store(data, service: item.service, account: item.account, group: nil)
+        guard case .hostOnly(let host, let shared) = placement else {
+            return store.store(data, service: item.service, account: item.account, group: nil)
+        }
+        guard store.store(data, service: item.service, account: item.account, group: host) else {
+            return false
+        }
+        // Superseded: the copy the PacketTunnel extension could read.
+        store.remove(service: item.service, account: item.account, group: shared)
+        return true
     }
 
-    /// Remove every copy, wherever it is.
+    /// Remove every copy, wherever it is. No group, so a copy not moved yet
+    /// goes too and `read` cannot fall back to it after a sign-out.
     static func delete(_ item: HostKeychainItem, store: any KeychainGroupStore) {
         store.remove(service: item.service, account: item.account, group: nil)
     }
 
-    /// Move one item an older build stored in the shared group. Idempotent.
+    /// Move one item an older build stored in the shared group. Idempotent:
+    /// read the old copy, write the new one, read it back, and only then delete
+    /// the old one. Anything short of that leaves the old copy where it was.
     @discardableResult
     static func migrate(_ item: HostKeychainItem,
                         placement: HostKeychainPlacement,
                         store: any KeychainGroupStore) -> HostKeychainMigration {
-        // PRE-FIX behaviour (red commit): nothing was ever moved.
-        .nothingStored
+        guard case .hostOnly(let host, let shared) = placement else { return .deferred }
+        let service = item.service
+        let account = item.account
+
+        switch store.lookup(service: service, account: account, group: host) {
+        case .found:
+            // Already moved. A shared copy can only be one an interrupted move
+            // or write left behind, and the host copy is this build's own
+            // write, so it wins.
+            store.remove(service: service, account: account, group: shared)
+            return .alreadyMoved
+        case .failed:
+            return .deferred
+        case .notFound:
+            break
+        }
+
+        let old: Data
+        switch store.lookup(service: service, account: account, group: shared) {
+        case .found(let data):
+            old = data
+        case .notFound:
+            return .nothingStored
+        case .failed:
+            return .deferred
+        }
+
+        // Until the copy reads back, the shared copy is the only one there is.
+        guard store.store(old, service: service, account: account, group: host),
+              store.lookup(service: service, account: account, group: host) == .found(old) else {
+            return .deferred
+        }
+        store.remove(service: service, account: account, group: shared)
+        return .moved
     }
 
     /// `migrate` for every host-only item.

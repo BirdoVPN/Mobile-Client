@@ -24,8 +24,22 @@ struct MultiHopSession: Equatable, Sendable {
 @MainActor
 final class VpnViewModel: ObservableObject {
     // MARK: - Connection State
+    /// `NEVPNStatus.connected`: the tunnel extension STARTED. Not a handshake —
+    /// anything that says "Protected" reads `tunnelPhase` / `isProtected`.
     @Published var isConnected = false
     @Published var isConnecting = false
+    /// MR-974: a WireGuard handshake has been PROVEN on the current session —
+    /// inbound bytes seen since it came up (`HandshakeLatch`). Android parity:
+    /// its UI stays Connecting until the transport probe observes a handshake.
+    @Published private(set) var handshakeProven = false
+    /// What the UI may claim about the tunnel (MR-974). "Protected" only once
+    /// `handshakeProven`; before that a started tunnel reads "Connecting…".
+    var tunnelPhase: TunnelPhase {
+        TunnelPhase.resolve(isConnected: isConnected,
+                            isConnecting: isConnecting,
+                            handshakeProven: handshakeProven)
+    }
+    var isProtected: Bool { tunnelPhase == .protected }
     /// Connect-path error. Backend refusals arrive as the server's own words
     /// (`APIError.serverMessage`, incl. 2xx `{success:false}` envelopes and the
     /// 426 version-floor body) — render verbatim, never rephrase.
@@ -225,6 +239,13 @@ final class VpnViewModel: ObservableObject {
     // from deinit). Every read/write outside deinit is on the main actor.
     nonisolated(unsafe) private var statsTimer: Timer?
     nonisolated(unsafe) private var heartbeatTimer: Timer?
+
+    /// MR-974: the per-session proof behind `handshakeProven`. Reset when a
+    /// session comes up from down or goes down, and when a live rebuild puts a
+    /// different peer under the running session; fed by every place that
+    /// samples the extension's counters (the stats timer, the handshake arm,
+    /// the rebuild probe).
+    private var handshakeLatch = HandshakeLatch()
 
     /// Server-side handle of the live connection (`keyId` from the connect
     /// response). Persisted so a relaunch while the tunnel extension is still
@@ -832,7 +853,9 @@ final class VpnViewModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(HandshakeArm.pollMs))
             // The user (or a settings blip) tore it down while we waited.
             guard isConnected else { return }
+            let session = handshakeLatch.session
             let stats = await vpnManager.currentStats()
+            noteHandshake(rx: stats.rx, sampledIn: session)
             if stats.rx > 0 {
                 // PRIMARY BREAKER RESET: real inbound bytes prove this node's
                 // data plane works right now, so whatever streak the extension
@@ -1108,6 +1131,11 @@ final class VpnViewModel: ObservableObject {
         killSwitchSystem = vpnManager.killSwitchState
         switch status {
         case .connected:
+            // MR-974: up from down is a NEW session, "Connecting…" until its
+            // first inbound bytes (the stats timer and the handshake arm below
+            // sample them). A repeated `.connected`, or the end of a reassert,
+            // is the same session and keeps its proof.
+            if !isConnected { resetHandshakeProof() }
             isConnected = true
             isConnecting = false
             isReapplyingSettings = false
@@ -1162,6 +1190,7 @@ final class VpnViewModel: ObservableObject {
             }
             isConnected = false
             isConnecting = false
+            resetHandshakeProof()
             quantumActive = false
             connectedSince = nil
             // Match disconnect(): an OS-initiated drop must not leave the last
@@ -1208,6 +1237,7 @@ final class VpnViewModel: ObservableObject {
         revertRestoredPeerAwaitingConnected = false
         isConnected = false
         isConnecting = false
+        resetHandshakeProof()
         quantumActive = false
         connectedSince = nil
         connectedServerId = nil
@@ -1451,6 +1481,11 @@ final class VpnViewModel: ObservableObject {
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
             return
         }
+        // MR-974: a different peer is under the session now, and it is not
+        // "Protected" until IT answers. Reset after the swap, so every sample
+        // requested from here on counts the new peer's bytes and one already in
+        // flight for the old peer cannot prove it.
+        resetHandshakeProof()
 
         // 5. Only the NEW peer's bytes prove the switch.
         flagsOwnedElsewhere = await finishRebuild(await awaitNewPeerHandshake(), ctx)
@@ -1590,6 +1625,9 @@ final class VpnViewModel: ObservableObject {
                 } catch {
                     return await finishRebuild(.revertFailed(persistedProfileIsOld: false), ctx)
                 }
+                // MR-974: the OLD peer is back under the session and has to
+                // answer again before it is "Protected" (same rule as the swap).
+                resetHandshakeProof()
                 setActiveKeyId(ctx.oldKeyId)
                 if let previous = ctx.previous {
                     selectedServer = previous
@@ -1615,6 +1653,10 @@ final class VpnViewModel: ObservableObject {
                 // profile, and if that never comes up the breaker trips and
                 // `checkCircuitBreaker` performs the user-visible fail-open —
                 // the same recovery every dead tunnel already has.
+                // MR-974: nothing here is proven any more — the message says
+                // traffic is blocked. If a peer under the session does still
+                // answer, its next inbound bytes prove it again.
+                resetHandshakeProof()
                 if persistedProfileIsOld {
                     setActiveKeyId(ctx.oldKeyId)
                     if let previous = ctx.previous {
@@ -1663,7 +1705,10 @@ final class VpnViewModel: ObservableObject {
             passesDone += 1
             try? await Task.sleep(for: LiveRebuildProbe.nextSleep(remaining: remaining))
             guard isConnected || isConnecting else { return .sessionDroppedWhileProbing }
-            if await vpnManager.currentStats().rx > 0 { return .newPeerHandshaked }
+            let session = handshakeLatch.session
+            let rx = await vpnManager.currentStats().rx
+            noteHandshake(rx: rx, sampledIn: session)
+            if rx > 0 { return .newPeerHandshaked }
         }
         guard isConnected || isConnecting else { return .sessionDroppedWhileProbing }
         return .newPeerSilent
@@ -1825,9 +1870,11 @@ final class VpnViewModel: ObservableObject {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                let session = self.handshakeLatch.session
                 let stats = await self.vpnManager.currentStats()
                 self.bytesReceived = stats.rx
                 self.bytesSent = stats.tx
+                self.noteHandshake(rx: stats.rx, sampledIn: session)
             }
         }
     }
@@ -1835,6 +1882,22 @@ final class VpnViewModel: ObservableObject {
     private func stopStatsTimer() {
         statsTimer?.invalidate()
         statsTimer = nil
+    }
+
+    // MARK: - Handshake proof (MR-974)
+
+    /// A new session, or a new peer under the running one: unproven.
+    private func resetHandshakeProof() {
+        handshakeLatch.reset()
+        if handshakeProven { handshakeProven = false }
+    }
+
+    /// Fold in a `stats` sample requested while the latch's session was
+    /// `session`. Publishes only on the sample that proves the session.
+    private func noteHandshake(rx: Int64, sampledIn session: Int) {
+        if handshakeLatch.observe(rx: rx, sampledIn: session) {
+            handshakeProven = true
+        }
     }
 
     private func reportUnauthorized(_ error: Error) {

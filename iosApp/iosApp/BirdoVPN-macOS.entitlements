@@ -48,10 +48,17 @@
       PacketTunnelProvider — the two targets do not share source, so the group
       is declared once per side and a drift means the extension cannot read the
       private key and the tunnel dies with missingConfig.
+
+      The SECOND group is host-only (MR-1729): the tokens, email, device_id,
+      anonymous_id, sign-in method and BirdoPQ keypair, which the extension must
+      not read. PacketTunnel-macOS.entitlements must never list it, and the
+      shared group must stay first (the default group of every older build's
+      group-less write). See HostOnlyKeychain.swift.
     -->
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>
+        <string>$(AppIdentifierPrefix)app.birdo.vpn.host</string>
     </array>
 
 </dict>

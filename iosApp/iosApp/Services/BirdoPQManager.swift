@@ -64,12 +64,11 @@ final class BirdoPQManager: @unchecked Sendable {
     // `tryDecapsulate` now refuses to derive a PSK against a missing/malformed
     // per-connect nonce (parity with Android BirdoPqManager).
 
-    /// Keychain account name used to persist the keypair blob (pk||sk).
-    private static let keypairAccount = "birdo_pq_v1_keypair"
-    /// Service identifier for the PQ keychain item (separate from the
-    /// generic `app.birdo.vpn` service so audit + clear ops can target it
-    /// distinctly, and so a PQ-only purge doesn't nuke other items).
-    private static let keychainService = "app.birdo.vpn.pq"
+    // The keypair blob (pk||sk) is the host-only keychain item
+    // `HostKeychainItem.pqKeypair` (account `birdo_pq_v1_keypair`, its own
+    // service `app.birdo.vpn.pq` so a PQ-only purge doesn't nuke other items).
+    // MR-1729: kept in the host-only access group through KeychainService, so
+    // the PacketTunnel extension cannot read the ML-KEM secret key.
 
     private let queue = DispatchQueue(label: "app.birdo.vpn.pq", qos: .userInitiated)
     private var cachedKeypair: (pk: Data, sk: Data)?
@@ -280,51 +279,22 @@ final class BirdoPQManager: @unchecked Sendable {
     /// used to hold the length check and its own self-heal delete, which is
     /// why the FIPS 203 check had nowhere obvious to go and ended up nowhere.
     private func readStoredBlob() -> Data? {
-        let q: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keypairAccount,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        var result: AnyObject?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return data
+        KeychainService.shared.hostData(.pqKeypair)
     }
 
-    /// Delete the persisted keypair item. Also the upsert half of a write.
+    /// Delete the persisted keypair item, every copy of it.
     private func deleteStoredBlob() {
-        let del: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keypairAccount,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        SecItemDelete(del as CFDictionary)
+        KeychainService.shared.deleteHostData(.pqKeypair)
     }
 
     private func writeKeypairToKeychain(pk: Data, sk: Data) -> Bool {
         var blob = Data(capacity: pk.count + sk.count)
         blob.append(pk)
         blob.append(sk)
-
-        // Delete first so we get clean upsert semantics.
-        deleteStoredBlob()
-
-        let add: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: Self.keypairAccount,
-            kSecValueData as String: blob,
-            // Bound to this device so a restored backup on a new device has
-            // no PQ identity (fresh keypair is generated there). Same posture
-            // as the existing WireGuard private key.
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecAttrSynchronizable as String: kCFBooleanFalse as Any,
-            kSecUseDataProtectionKeychain as String: kCFBooleanTrue as Any,
-        ]
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+        // Replaces any previous item. Bound to this device
+        // (AfterFirstUnlockThisDeviceOnly, never synced) so a restored backup
+        // on a new device has no PQ identity (fresh keypair is generated
+        // there). Same posture as the existing WireGuard private key.
+        return KeychainService.shared.setHostData(blob, for: .pqKeypair)
     }
 }

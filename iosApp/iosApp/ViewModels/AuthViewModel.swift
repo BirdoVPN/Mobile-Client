@@ -304,6 +304,12 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
+        // MR-1729: move the app's own items (tokens, ids, the BirdoPQ key) out
+        // of the group the PacketTunnel extension can read, before anything
+        // below reads them. Lossless and idempotent: whatever cannot move now
+        // stays readable where it is and moves on a later launch.
+        keychain.migrateHostOnlyItems()
+
         // MR-1726: a fresh install signs out the session a previous install
         // left in the keychain and discards its device identity, BEFORE
         // anything reads either — the token check below then finds no session.

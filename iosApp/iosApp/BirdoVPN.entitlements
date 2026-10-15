@@ -12,9 +12,18 @@
     <array>
         <string>Default</string>
     </array>
+    <!--
+      FIRST: the group shared with the PacketTunnel extension (WireGuard keys,
+      heartbeat token, breaker record). It is also the default group, the one
+      every older build's group-less write landed in, so it must stay first.
+      SECOND: the host-only group (MR-1729) for the tokens, email, device_id,
+      anonymous_id, sign-in method and BirdoPQ keypair. PacketTunnel.entitlements
+      must never list it. See HostOnlyKeychain.swift.
+    -->
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>
+        <string>$(AppIdentifierPrefix)app.birdo.vpn.host</string>
     </array>
 </dict>
 </plist>

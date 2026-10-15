@@ -36,8 +36,7 @@ enum TunnelPhase: Equatable, Sendable {
     /// `NEVPNStatus` (`.reasserting` raises `isConnecting` with `isConnected`
     /// still set); `handshakeProven` is `HandshakeLatch.isProven`.
     static func resolve(isConnected: Bool, isConnecting: Bool, handshakeProven: Bool) -> TunnelPhase {
-        // PRE-FIX behaviour (red commit): `.connected` alone painted Protected.
-        if isConnected { return .protected }
+        if isConnected { return handshakeProven ? .protected : .connecting }
         return isConnecting ? .connecting : .disconnected
     }
 }
@@ -68,8 +67,7 @@ struct HandshakeLatch: Equatable, Sendable {
     /// so the caller publishes once.
     @discardableResult
     mutating func observe(rx: Int64, sampledIn: Int) -> Bool {
-        // PRE-FIX behaviour (red commit): any sample of a started tunnel counted.
-        guard !isProven else { return false }
+        guard !isProven, sampledIn == session, rx > 0 else { return false }
         isProven = true
         return true
     }

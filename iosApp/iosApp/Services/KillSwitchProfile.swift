@@ -39,13 +39,11 @@ struct KillSwitchProfileFlags: Equatable, Sendable {
     var excludeCellularServices: Bool
 
     static func forKillSwitch(_ on: Bool) -> KillSwitchProfileFlags {
-        // PRE-FIX behaviour (red commit): only includeAllNetworks / enforceRoutes
-        // were set; the three exemptions stayed at Apple's defaults.
         KillSwitchProfileFlags(
             includeAllNetworks: on,
             enforceRoutes: on,
-            excludeAPNs: true,
-            excludeDeviceCommunication: true,
+            excludeAPNs: !on,
+            excludeDeviceCommunication: !on,
             excludeCellularServices: true
         )
     }
