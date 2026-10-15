@@ -1083,9 +1083,16 @@ dependencies {
 
     // ── Networking ───────────────────────────────────────────────
     implementation("com.squareup.retrofit2:retrofit:2.12.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // ONE OkHttp version for all three, and it is the one that ships (MR-2092).
+    // These sat at 4.12.0 while an unused Ktor in :shared pulled the runtime
+    // core to 5.2.1, so the app compiled against 4.12.0, ran 5.2.1, and DoH
+    // (DohResolver) and logging ran their 4.12.0 builds on the 5.2.1 core.
+    // Ktor is gone and the declaration is now the 5.2.1 every release since
+    // 2026-06 has run. Bump the three together (Dependabot groups them);
+    // OkHttpVersionAlignmentTest fails if they or the lockfile drift apart.
+    implementation("com.squareup.okhttp3:okhttp:5.2.1")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.2.1")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.2.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")
 

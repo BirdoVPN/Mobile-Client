@@ -86,7 +86,7 @@ Kotlin standard library
   Copyright: JetBrains s.r.o. and Kotlin Programming Language contributors
   Source: https://github.com/JetBrains/kotlin
 
-kotlinx.coroutines, kotlinx.serialization and kotlinx-io
+kotlinx.coroutines and kotlinx.serialization
   Maven: org.jetbrains.kotlinx:*
   Licence: Apache License 2.0
   Copyright: JetBrains s.r.o. and respective authors and developers
@@ -97,12 +97,6 @@ JetBrains Java Annotations
   Licence: Apache License 2.0
   Copyright: JetBrains s.r.o.
   Source: https://github.com/JetBrains/java-annotations
-
-Ktor client
-  Maven: io.ktor:*
-  Licence: Apache License 2.0
-  Copyright: JetBrains s.r.o. and Ktor contributors
-  Source: https://github.com/ktorio/ktor
 
 OkHttp and Okio
   Maven: com.squareup.okhttp3:*, com.squareup.okio:*
@@ -181,11 +175,6 @@ epitaph
   Maven: com.abovevacant:*
   Licence: MIT (notice below)
   Source: https://github.com/abovevacant/epitaph
-
-SLF4J API
-  Maven: org.slf4j:*
-  Licence: MIT (notice below)
-  Source: https://github.com/qos-ch/slf4j
 
 Google Play Billing Library
   Maven: com.android.billingclient:*
@@ -1771,32 +1760,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
---------------------------------------------------------------------------------
-MIT: SLF4J
---------------------------------------------------------------------------------
-
-Copyright (c) 2004-2022 QOS.ch Sarl (Switzerland)
-All rights reserved.
-
-Permission is hereby granted, free  of charge, to any person obtaining
-a  copy  of this  software  and  associated  documentation files  (the
-"Software"), to  deal in  the Software without  restriction, including
-without limitation  the rights to  use, copy, modify,  merge, publish,
-distribute,  sublicense, and/or sell  copies of  the Software,  and to
-permit persons to whom the Software  is furnished to do so, subject to
-the following conditions:
-
-The  above  copyright  notice  and  this permission  notice  shall  be
-included in all copies or substantial portions of the Software.
-
-THE  SOFTWARE IS  PROVIDED  "AS  IS", WITHOUT  WARRANTY  OF ANY  KIND,
-EXPRESS OR  IMPLIED, INCLUDING  BUT NOT LIMITED  TO THE  WARRANTIES OF
-MERCHANTABILITY,    FITNESS    FOR    A   PARTICULAR    PURPOSE    AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE,  ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 MIT: bytes
