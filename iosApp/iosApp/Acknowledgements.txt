@@ -33,15 +33,6 @@ BirdoPQ native library (BirdoPQNative)
   Rust crates under the MIT licence: generic-array 0.14.7 (notice below)
   Rust crates under the BSD 3-Clause licence: subtle 2.6.1 (notice below)
 
-Kotlin Multiplatform libraries (BirdoShared)
-  Licence: Apache License 2.0
-  Copyright: JetBrains s.r.o. and respective contributors
-  Source: https://github.com/JetBrains/kotlin, https://github.com/Kotlin,
-    https://github.com/ktorio/ktor
-  The Kotlin standard library and Kotlin/Native runtime, kotlinx.coroutines,
-    kotlinx.serialization and the Ktor client, with the JetBrains libraries they
-    depend on.
-
 ================================================================================
 LICENCE TEXTS AND NOTICES
 ================================================================================

@@ -5,6 +5,7 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.api.AuthInterceptor
 import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.network.DohResolver
+import app.birdo.vpn.data.network.Ipv4FirstDns
 import app.birdo.vpn.data.network.ProtectingSocketFactory
 import app.birdo.vpn.data.network.RoutingCallFactory
 import app.birdo.vpn.data.repository.ApiErrorMapper
@@ -89,12 +90,17 @@ object NetworkModule {
      * and a call into a half-dead tunnel must fail fast as a transport error
      * (which never tears anything down) instead of holding a heartbeat or a
      * live rebuild for the bypass client's 45 s.
+     *
+     * IPv4 first (MR-949): on a node without IPv6 the tunnel blackholes IPv6,
+     * and an AAAA answer tried first would spend the whole connect timeout
+     * there before the IPv4 address was tried (see [Ipv4FirstDns]).
      */
     @Provides
     @Singleton
     @Named(TUNNEL_CLIENT)
     fun provideTunnelClient(authInterceptor: AuthInterceptor): OkHttpClient =
         baseClient(authInterceptor)
+            .dns(Ipv4FirstDns())
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)

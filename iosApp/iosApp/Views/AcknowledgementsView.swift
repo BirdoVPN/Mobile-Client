@@ -4,7 +4,7 @@ import SwiftUI
 ///
 /// The App Store app (iOS and macOS) ships WireGuardKit and wireguard-go (MIT)
 /// compiled in, with the Go runtime and golang.org/x (BSD 3-Clause), and
-/// BirdoPQNative and BirdoShared statically link more open-source code. Those
+/// BirdoPQNative statically links more open-source code. Those
 /// licences require their notices to travel with the app; until this screen the
 /// app carried none.
 ///

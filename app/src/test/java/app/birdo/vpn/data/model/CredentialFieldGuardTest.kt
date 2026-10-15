@@ -24,7 +24,9 @@ import java.io.File
  * nonce, accountNumber, anonymousId) requires an `override fun toString` in
  * the class body, and that toString may not read the property except to
  * redact it or test it for null or empty: not as a template (`$name`,
- * `${name}`, `${this.name}`), not concatenated, not passed to a call. A field
+ * `${name}`, `${this.name}`), not concatenated, not passed to a call; and the
+ * toString may not hand over the whole object (`Json.encodeToString(this)`,
+ * `"$this"`), which prints every field at once (MR-2044). A field
  * that matches the names but is not a secret is listed in [notSecret] with the
  * reason.
  */
@@ -194,6 +196,35 @@ class CredentialFieldGuardTest {
     }
 
     @Test
+    fun `a toString that serialises this is caught, and this-dot or this-class is not the whole object`() {
+        // MR-2044: none of these names the field, so the per-name check passed
+        // them, but each prints every field of the class, the password too.
+        val shapes = mapOf(
+            "encodeToString(this)" to "Json.encodeToString(this)",
+            "a serializer and this" to "json.encodeToString(Req.serializer(), this)",
+            "another library" to "gson.toJson(this)",
+            "this in a template" to "\"Req(${'$'}this)\"",
+            "a labelled this" to "Json.encodeToString(this@Req)",
+            "through a local" to "{\n        val me = this\n        return Json.encodeToString(me)\n    }",
+        )
+        shapes.forEach { (shape, body) ->
+            val separator = if (body.startsWith("{")) " " else " = "
+            val src = "@Serializable\ndata class Req(val password: String, val platform: String) {\n" +
+                "    override fun toString(): String$separator$body\n}"
+            assertEquals(shape, "prints it in toString (serialises this)", CredentialFields.scan(src).single().problem)
+        }
+
+        val src = """
+            @Serializable
+            data class Req(val password: String, val platform: String) {
+                override fun toString(): String =
+                    "${'$'}{this::class.simpleName}(password=[REDACTED], platform=${'$'}{this.platform})"
+            }
+        """.trimIndent()
+        assertEquals(null, CredentialFields.scan(src).single().problem)
+    }
+
+    @Test
     fun `a toString that only tests the field passes, and a member after it is not the toString`() {
         val src = """
             @Serializable
@@ -246,6 +277,12 @@ internal object CredentialFields {
 
     private val toStringDeclaration = Regex("""\boverride\s+fun\s+toString\s*\(\s*\)\s*(?::\s*String\s*)?""")
 
+    /**
+     * `this` as a value: the whole object, so every field (MR-2044). Not
+     * `this.x` (one member, which [reads] judges) and not `this::class`.
+     */
+    private val wholeObject = Regex("""\bthis(?:@\w+)?\b(?!\s*(?:\.|::))""")
+
     /** A line that starts the next member of a class body, ending an expression-bodied toString. */
     private val nextMember = Regex(
         """\n\s*(?:@\w|(?:override|public|internal|protected|private|open|abstract|suspend|inline|operator|const|lateinit)\s|""" +
@@ -270,12 +307,14 @@ internal object CredentialFields {
             val params = kt.code.substring(open + 1, close)
             val toString = kt.trailingBlock(close)?.let { toStringRange(kt, it) }
                 ?.let { kt.expressions.substring(it.first, it.last + 1) }
+            val serialisesThis = toString != null && wholeObject.containsMatchIn(toString)
             property.findAll(params)
                 .filter { p -> p.groupValues[2] in secretTypes && isCredentialName(p.groupValues[1]) }
                 .map { p ->
                     val name = p.groupValues[1]
                     val problem = when {
                         toString == null -> "has no redacting toString"
+                        serialisesThis -> "prints it in toString (serialises this)"
                         reads(toString, name) -> "prints it in toString"
                         else -> null
                     }
