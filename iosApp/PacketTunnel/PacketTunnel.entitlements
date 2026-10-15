@@ -8,6 +8,11 @@
     </array>
     <key>com.apple.security.personal-vpn</key>
     <true/>
+    <!--
+      The shared group ONLY. The app's host-only group
+      ($(AppIdentifierPrefix)app.birdo.vpn.host, MR-1729: the session tokens and
+      the rest of the app's own items) must never be listed here.
+    -->
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)app.birdo.vpn</string>

@@ -258,10 +258,10 @@ struct ProfileView: View {
     private var connectionStatusRow: some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(vpnVM.isConnected ? BirdoTheme.green : BirdoTheme.onSurfaceFaint)
+                .fill(vpnVM.isProtected ? BirdoTheme.green : BirdoTheme.onSurfaceFaint)
                 .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 1) {
-                Text(vpnVM.isConnected ? "Protected" : "Not connected")
+                Text(connectionStatus)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(BirdoTheme.onBackground)
                 Text(connectionDetail)
@@ -272,7 +272,7 @@ struct ProfileView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Image(systemName: "shield")
                 .font(.system(size: 20))
-                .foregroundStyle(vpnVM.isConnected ? BirdoTheme.green : BirdoTheme.onSurfaceFaint)
+                .foregroundStyle(vpnVM.isProtected ? BirdoTheme.green : BirdoTheme.onSurfaceFaint)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -620,11 +620,25 @@ struct ProfileView: View {
     /// service — iOS has no public-IP plumbing, so the connected state names
     /// the selected server instead of showing a stale prompt.
     private var connectionDetail: String {
-        if vpnVM.isConnected {
+        switch vpnVM.tunnelPhase {
+        case .protected:
             if let server = vpnVM.selectedServer { return "Connected · \(server.name)" }
             return "Connected"
+        case .connecting:
+            return vpnVM.selectedServer?.name ?? "Setting up the tunnel"
+        case .disconnected:
+            return "Tap Connect to start"
         }
-        return "Tap Connect to start"
+    }
+
+    /// MR-974: "Protected" only once a handshake is proven on the session;
+    /// a started tunnel nobody has answered yet is still connecting.
+    private var connectionStatus: String {
+        switch vpnVM.tunnelPhase {
+        case .protected: return "Protected"
+        case .connecting: return "Connecting…"
+        case .disconnected: return "Not connected"
+        }
     }
 
     // MARK: - Small pieces

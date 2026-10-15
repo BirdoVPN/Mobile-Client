@@ -11,7 +11,9 @@ import Security
 ///   `NETunnelProviderProtocol.providerConfiguration` (which is stored in
 ///   plaintext in NEVPN system preferences).
 /// - `includeAllNetworks = true` enables the iOS kill switch: traffic is
-///   blocked when the tunnel is down, even on cellular.
+///   blocked when the tunnel is down, even on cellular. With it, APNs and
+///   device-communication traffic are kept in the tunnel too (MR-1728,
+///   `KillSwitchProfileFlags`); carrier services stay exempt on purpose.
 /// - `excludeLocalNetworks` tracks the user's Local Network Sharing setting
 ///   (default OFF, matching Android): ON keeps AirPlay / printers reachable by
 ///   routing LAN traffic around the tunnel; OFF carries the LAN in the tunnel.
@@ -263,11 +265,11 @@ final class VPNManager: @unchecked Sendable {
         // exempted every user's whole local subnet from the VPN regardless of
         // what the toggle said.
         let localNetworkSharing = UserDefaults.standard.bool(forKey: "local_network_sharing")
-        if #available(iOS 14.0, *) {
-            proto.includeAllNetworks = killSwitch
-            proto.excludeLocalNetworks = localNetworkSharing
-            proto.enforceRoutes = killSwitch
-        }
+        // MR-1728: includeAllNetworks / enforceRoutes AND the exemptions Apple
+        // otherwise leaves outside the tunnel (APNs, device communication),
+        // decided in one place.
+        Self.applyKillSwitchFlags(.forKillSwitch(killSwitch), to: proto)
+        proto.excludeLocalNetworks = localNetworkSharing
         proto.disconnectOnSleep = false
 
         mgr.protocolConfiguration = proto
@@ -662,8 +664,7 @@ final class VPNManager: @unchecked Sendable {
     func applyKillSwitchFlag(_ enabled: Bool) {
         guard let mgr = manager else { return }
         if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
-            proto.includeAllNetworks = enabled
-            proto.enforceRoutes = enabled
+            Self.applyKillSwitchFlags(.forKillSwitch(enabled), to: proto)
             mgr.protocolConfiguration = proto
         }
         let status = mgr.connection.status
@@ -690,6 +691,24 @@ final class VPNManager: @unchecked Sendable {
             }
             // The system's copy, saved or not — never the in-memory edit.
             self?.refreshKillSwitchState()
+        }
+    }
+
+    /// MR-1728: write the kill switch's protocol flags, decided by
+    /// `KillSwitchProfileFlags`, onto the profile. The three sites that used to
+    /// set `includeAllNetworks` / `enforceRoutes` by hand (`connect`,
+    /// `applyKillSwitchFlag`, `failOpenAndStop`) all come through here, so an
+    /// exemption can no longer be set on one path and left at Apple's default
+    /// on another. Like `includeAllNetworks`, iOS applies them from the next
+    /// tunnel start.
+    private static func applyKillSwitchFlags(_ flags: KillSwitchProfileFlags,
+                                             to proto: NETunnelProviderProtocol) {
+        proto.includeAllNetworks = flags.includeAllNetworks
+        proto.enforceRoutes = flags.enforceRoutes
+        proto.excludeAPNs = flags.excludeAPNs
+        proto.excludeCellularServices = flags.excludeCellularServices
+        if #available(iOS 17.4, macOS 14.4, *) {
+            proto.excludeDeviceCommunication = flags.excludeDeviceCommunication
         }
     }
 
@@ -724,8 +743,7 @@ final class VPNManager: @unchecked Sendable {
         }
         debugLog("[VPNManager] circuit breaker tripped — failing OPEN (disarming on-demand, clearing kill-switch flags, stopping)")
         if let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol {
-            proto.includeAllNetworks = false
-            proto.enforceRoutes = false
+            Self.applyKillSwitchFlags(.forKillSwitch(false), to: proto)
             mgr.protocolConfiguration = proto
         }
         mgr.isOnDemandEnabled = false

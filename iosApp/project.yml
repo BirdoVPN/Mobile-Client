@@ -342,6 +342,32 @@ targets:
       # Foundation-only by design, pinned by KillSwitchChipTests; VPNManager
       # (NetworkExtension) and HomeView cannot be compiled into this bundle.
       - path: iosApp/Services/KillSwitchChip.swift
+      # MR-974: "Protected" only once a handshake is proven on the session
+      # (inbound bytes), as on Android. Foundation-only by design, pinned by
+      # TunnelProofTests; VpnViewModel and the views cannot be compiled here.
+      - path: iosApp/Services/TunnelProof.swift
+      # MR-1728: the kill switch's protocol flags, APNs and device-communication
+      # exemptions included. Foundation-only by design, pinned by
+      # KillSwitchProfileTests; VPNManager (NetworkExtension) cannot be compiled
+      # into this bundle.
+      - path: iosApp/Services/KillSwitchProfile.swift
+      # MR-1729: host-only keychain items in a group the PacketTunnel extension
+      # is not entitled to, and the lossless move of an older build's items.
+      # Foundation-only by design (the keychain is behind KeychainGroupStore),
+      # pinned by HostOnlyKeychainTests with an in-memory keychain;
+      # KeychainService (Security) is the live store.
+      - path: iosApp/Services/HostOnlyKeychain.swift
+      # ...and the four entitlements files, carried as RESOURCES so the same
+      # test checks that only the app (never the PacketTunnel extension) lists
+      # the host group.
+      - path: iosApp/BirdoVPN.entitlements
+        buildPhase: resources
+      - path: iosApp/BirdoVPN-macOS.entitlements
+        buildPhase: resources
+      - path: PacketTunnel/PacketTunnel.entitlements
+        buildPhase: resources
+      - path: PacketTunnel/PacketTunnel-macOS.entitlements
+        buildPhase: resources
       # The backend's generated connect schema, vendored byte-for-byte at the
       # repo root (shared with the Android test) and carried as a RESOURCE so
       # ConnectContractTests reads the same file the Android side validates.

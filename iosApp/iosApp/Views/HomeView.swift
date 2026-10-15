@@ -50,12 +50,13 @@ struct HomeView: View {
             // pair — you -> entry (the hop this device actually talks to), then
             // entry -> exit (MR-1100) — never the unrelated single-hop
             // `selectedServer`, which drew a wrong single-hop arc for the whole
-            // session.
+            // session. The connected colour and arc wait for a proven handshake
+            // (MR-974), like the "Protected" pill.
             WorldGlobeView(servers: vpnVM.servers,
                            selectedServerId: vpnVM.activeMultiHop?.entry.id
                                ?? vpnVM.selectedServer?.id,
                            exitServerId: vpnVM.activeMultiHop?.exit.id,
-                           isConnected: vpnVM.isConnected)
+                           isConnected: vpnVM.isProtected)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -104,9 +105,10 @@ struct HomeView: View {
         .sensoryFeedback(.impact(weight: .heavy), trigger: connectHapticTick)
         .sensoryFeedback(.warning, trigger: disconnectHapticTick)
         // Android parity: a Confirm haptic the moment the state becomes
-        // Connected (not when the user taps — when the tunnel actually is up).
-        .sensoryFeedback(.success, trigger: vpnVM.isConnected) { _, nowConnected in
-            nowConnected
+        // Connected (not when the user taps — when the tunnel actually is up,
+        // i.e. a handshake is proven: MR-974).
+        .sensoryFeedback(.success, trigger: vpnVM.isProtected) { _, nowProtected in
+            nowProtected
         }
         .birdoConfirmDialog(
             isPresented: $showLogoutConfirm,
@@ -323,6 +325,10 @@ struct HomeView: View {
     /// else falls through to the neutral pill (spec warning 4). iOS cannot
     /// observe "Disconnecting…" (the VM keeps `isConnected` until the drop
     /// actually lands), so that state renders as Protected until it does.
+    ///
+    /// MR-974: "Protected" is `tunnelPhase == .protected`, i.e. a handshake
+    /// proven on this session. A tunnel the extension has started but no peer
+    /// has answered yet stays "Connecting…", as on Android.
     private var statusText: String {
         // A live server switch tears the tunnel down and rebuilds it on the new
         // node — never show "Protected" over the new name until it lands.
@@ -331,29 +337,33 @@ struct HomeView: View {
         // "Not Connected", which reads like a failure the user should fix.
         // Not "Not signed in": nothing needs signing in to any more, and the
         // status line is one of the surfaces a reviewer reads.
-        if isGuest && !vpnVM.isConnected && !vpnVM.isConnecting { return "Not connected" }
-        if vpnVM.isConnected {
+        if isGuest && vpnVM.tunnelPhase == .disconnected { return "Not connected" }
+        switch vpnVM.tunnelPhase {
+        case .protected:
             return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
+        case .connecting:
+            return "Connecting…"
+        case .disconnected:
+            return vpnVM.error != nil ? "Connection Error" : "Not Connected"
         }
-        if vpnVM.isConnecting { return "Connecting…" }
-        if vpnVM.error != nil { return "Connection Error" }
-        return "Not Connected"
     }
 
     private var statusTone: StatusBadgePill.Tone {
         if vpnVM.isSwitching { return .warning }
-        if vpnVM.isConnected { return .success }
-        if vpnVM.isConnecting { return .warning }
-        if vpnVM.error != nil { return .danger }
-        return .neutral
+        switch vpnVM.tunnelPhase {
+        case .protected: return .success
+        case .connecting: return .warning
+        case .disconnected: return vpnVM.error != nil ? .danger : .neutral
+        }
     }
 
     private var statusIcon: String? {
         if vpnVM.isSwitching { return "arrow.triangle.2.circlepath" }
-        if vpnVM.isConnected { return nil } // pulse dot instead
-        if vpnVM.isConnecting { return "arrow.triangle.2.circlepath" }
-        if vpnVM.error != nil { return "exclamationmark.circle" }
-        return "wifi.slash"
+        switch vpnVM.tunnelPhase {
+        case .protected: return nil // pulse dot instead
+        case .connecting: return "arrow.triangle.2.circlepath"
+        case .disconnected: return vpnVM.error != nil ? "exclamationmark.circle" : "wifi.slash"
+        }
     }
 
     private var statusArea: some View {
@@ -362,7 +372,7 @@ struct HomeView: View {
                 StatusBadgePill(statusText,
                                 tone: statusTone,
                                 icon: statusIcon,
-                                pulse: vpnVM.isConnected && !vpnVM.isSwitching)
+                                pulse: vpnVM.isProtected && !vpnVM.isSwitching)
                     // Recreate the pill per state: the crossfade replaces
                     // Android's AnimatedContent, and a fresh PulsingDot replays
                     // its finite 3-burst on every re-entry into Connected.

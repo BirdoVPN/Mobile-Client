@@ -373,7 +373,8 @@ struct ServerListView: View {
                             // is ACTUALLY on (captured at connect), never to
                             // selectedServer — otherwise tapping a new server
                             // moved the mint dot before the tunnel switched.
-                            isConnected: vpnVM.isConnected
+                            // And only once a handshake is proven (MR-974).
+                            isConnected: vpnVM.isProtected
                                 && server.id == vpnVM.connectedServerId,
                             isSwitching: vpnVM.isSwitching
                                 && server.id == vpnVM.selectedServer?.id,

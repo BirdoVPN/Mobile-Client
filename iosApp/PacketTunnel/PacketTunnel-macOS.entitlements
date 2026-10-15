@@ -58,6 +58,10 @@
       WireGuard private key and preshared key from here; a mismatch fails with
       errSecMissingEntitlement (-34018) and the tunnel dies at startTunnel with
       missingConfig — the exact failure already documented on the iOS side.
+
+      The shared group ONLY: the app's host-only group (app.birdo.vpn.host,
+      MR-1729: the session tokens and the rest of the app's own items) must
+      never be listed here.
     -->
     <key>keychain-access-groups</key>
     <array>
