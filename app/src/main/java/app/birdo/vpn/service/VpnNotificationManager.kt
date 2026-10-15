@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
@@ -131,6 +132,20 @@ internal class VpnNotificationManager(private val context: Context) {
          */
         private fun offersReconnect(kind: FailureKind): Boolean =
             !kind.terminal || kind == FailureKind.REVOKED || kind == FailureKind.EVICTED
+
+        /**
+         * MR-1725: whether a Disconnect / "Stop blocking" tap must be refused
+         * because a secure lock screen is up. Both actions are marked
+         * setAuthenticationRequired, so from Android 12 (API 31) the system
+         * asks for the unlock BEFORE it sends them and a tap only ever arrives
+         * unlocked. On Android 10 and 11 the flag does nothing: with the lock
+         * screen showing full notification content, anyone holding the locked
+         * handset could drop the tunnel or release the kill switch's block.
+         * There the service refuses the tap itself; it works once the device
+         * is unlocked.
+         */
+        fun refusesLockedTap(sdkInt: Int, deviceLocked: Boolean): Boolean =
+            sdkInt < Build.VERSION_CODES.S && deviceLocked
 
         /** The body line while connected: "via {location}[ · {IP}]" (P1-parity-028). */
         fun connectedBody(location: String?, ip: String?): String? {
@@ -310,11 +325,12 @@ internal class VpnNotificationManager(private val context: Context) {
     private fun NotificationCompat.Builder.addActions(actions: List<Action>): NotificationCompat.Builder {
         for (action in actions) {
             // The destructive actions (drop the tunnel / release the
-            // fail-closed block) require device unlock before firing (API 31+;
-            // a no-op on older releases): anyone briefly holding a locked
-            // handset must not be able to strip its VPN protection from the
-            // lock screen. Both go through VpnManager (A1-009), never straight
-            // to ACTION_STOP.
+            // fail-closed block) require device unlock before firing: anyone
+            // briefly holding a locked handset must not be able to strip its
+            // VPN protection from the lock screen. The flag below does that
+            // on API 31+; below it the flag is a no-op, so BirdoVpnService
+            // refuses a locked tap itself ([refusesLockedTap], MR-1725). Both
+            // go through VpnManager (A1-009), never straight to ACTION_STOP.
             val built = when (action) {
                 Action.DISCONNECT -> NotificationCompat.Action.Builder(
                     R.drawable.ic_notif_disconnected,

@@ -1299,6 +1299,39 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `a tunnel_address_unavailable re-dial waits the server's 15 s, then dials again`() = runTest {
+        // MR-2058 (birdo-web #711): the allocator could not prove a tunnel
+        // address free and failed closed. The refusal is built from the
+        // server's own body by the mapper BirdoRepository uses, so this is the
+        // path from the wire to the supervisor.
+        connectAndEstablish()
+        val body = """{"statusCode":503,"message":"We could not assign your connection an address on this """ +
+            """server just now. Please try again in a moment.","error":"tunnel_address_unavailable",""" +
+            """"path":"/vpn/connect","details":{"retryable":true,"retryAfterSeconds":15}}"""
+        val mapped = app.birdo.vpn.data.repository.ApiErrorMapper(app.birdo.vpn.testing.StringsXml).fromResponse(
+            503, body, app.birdo.vpn.data.repository.ErrorContext.GENERAL, R.string.error_connect_failed,
+        )
+        val refusal = mapped.copy(
+            retryAfterMs = app.birdo.vpn.data.repository.RetryAfter.forFailure(body, null, mapped.serverCode),
+        )
+        assertTrue("decoded as the contract's retryable code", refusal.serverCode.retryable)
+        assertEquals(15_000L, refusal.retryAfterMs)
+        coEvery { repository.connectVpn(any(), any()) } returns refusal
+
+        serviceEmits(VpnState.Error("Connection lost. Reconnecting…", FailureKind.DIED_AFTER_HANDSHAKE))
+        // First re-dial ~2 s + the 5 s teardown wait; its 503 asks for 15 s.
+        // Without the wait the second would follow ~4 s (+5 s) later.
+        advanceTimeBy(19_000)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+        val reconnecting = vpnManager.state.value
+        assertTrue("TRANSIENT, not a refusal: still recovering, $reconnecting", reconnecting is VpnState.Reconnecting)
+
+        advanceTimeBy(16_000)
+        coVerify(exactly = 3) { repository.connectVpn(any(), any()) }
+        quiesce()
+    }
+
+    @Test
     fun `heartbeat valid=false after an idle gap past the reap window re-dials once behind the block`() = runTest {
         var now = 0L
         vpnManager.elapsedRealtime = { now }

@@ -48,6 +48,17 @@ final class ConnectErrorCodeTests: XCTestCase {
              + #""details":{"retryable":true,"retryAfterSeconds":\#(retryAfterSeconds)}}"#)
     }
 
+    private static let tunnelAddressMessage =
+        "We could not assign your connection an address on this server just now. Please try again in a moment."
+
+    /// vpn.controller.ts's TunnelAddressUnavailableError catch (birdo-web
+    /// #711), same envelope, RETRY_AFTER_SECONDS = 15.
+    private func tunnelAddressBody() -> Data {
+        data(#"{"statusCode":503,"message":"\#(Self.tunnelAddressMessage)","error":"tunnel_address_unavailable","#
+             + #""timestamp":"2026-10-15T09:00:00.000Z","path":"/vpn/multi-hop/connect","#
+             + #""details":{"retryable":true,"retryAfterSeconds":15}}"#)
+    }
+
     /// The wait a psk body with this raw `retryAfterSeconds` JSON value yields.
     private func pskWait(_ retryAfterSeconds: String,
                          file: StaticString = #filePath, line: UInt = #line) -> TimeInterval? {
@@ -118,6 +129,7 @@ final class ConnectErrorCodeTests: XCTestCase {
         }
         XCTAssertTrue(ConnectErrorCode.pskDeliveryUnavailable.isRetryable)
         XCTAssertTrue(ConnectErrorCode.quotaCheckUnavailable.isRetryable)
+        XCTAssertTrue(ConnectErrorCode.tunnelAddressUnavailable.isRetryable)
         XCTAssertFalse(ConnectErrorCode.unknown.isRetryable)
     }
 
@@ -127,7 +139,8 @@ final class ConnectErrorCodeTests: XCTestCase {
     func testTheSampleBodiesSatisfyTheirContractDefinitions() throws {
         let defs = Self.contractDefs()
         for (wire, body) in [("psk_delivery_unavailable", pskBody()),
-                             ("quota_check_unavailable", quotaBody())] {
+                             ("quota_check_unavailable", quotaBody()),
+                             ("tunnel_address_unavailable", tunnelAddressBody())] {
             let def = try XCTUnwrap(defs[wire] as? [String: Any], "$defs.\(wire) missing")
             let props = Self.properties(of: def)
             let sample = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
@@ -223,6 +236,19 @@ final class ConnectErrorCodeTests: XCTestCase {
                         + #""details":{"retryable":true,"retryAfterSeconds":30}}"#)
         let refusal = try XCTUnwrap(RetryableConnectRefusal.classify(status: 503, body: body))
         XCTAssertEqual(refusal.errorDescription, "first. second.")
+    }
+
+    // MARK: - tunnel_address_unavailable
+
+    /// MR-2058: the allocator could not prove an address free and failed
+    /// closed. Claimed as retryable, with the server's 15 s and its sentence
+    /// (the copy it had before, when the 503 rendered via `.serverMessage`).
+    func testTunnelAddressUnavailableWaitsTheServers15SecondsAndKeepsItsSentence() throws {
+        let refusal = try XCTUnwrap(RetryableConnectRefusal.classify(status: 503, body: tunnelAddressBody()))
+        XCTAssertEqual(refusal.code, .tunnelAddressUnavailable)
+        XCTAssertEqual(refusal.retryAfter, 15)
+        XCTAssertEqual(refusal.status, 503)
+        XCTAssertEqual(refusal.errorDescription, Self.tunnelAddressMessage)
     }
 
     // MARK: - Codes that are not claimed

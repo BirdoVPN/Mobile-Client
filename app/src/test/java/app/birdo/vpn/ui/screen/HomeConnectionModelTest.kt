@@ -1,6 +1,7 @@
 package app.birdo.vpn.ui.screen
 
 import app.birdo.vpn.R
+import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.service.FailureKind
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnState
@@ -157,5 +158,34 @@ class HomeConnectionModelTest {
             homeRemedy(VpnUiState(vpnState = VpnState.Error(SessionCopy.NO_TUNNEL, FailureKind.NEVER_ESTABLISHED))),
         )
         assertNull(homeRemedy(VpnUiState(vpnState = VpnState.Error("x", FailureKind.PLAN_REQUIRED), connectError = "screen")))
+    }
+
+    // ── MR-945: the server pickers' row markers follow Home ──────────────
+
+    private val amsterdam = VpnServer(id = "nl-1", name = "Amsterdam 1", country = "Netherlands", countryCode = "NL")
+
+    @Test
+    fun `while Home says Switching server, the list marks the target as switching and the node being left as nothing`() {
+        // Moving de-1 -> nl-1: selectServer selects the target before it dials,
+        // and Home's card names it under "Switching server…".
+        for (s in listOf(VpnState.Disconnecting, VpnState.Disconnected, VpnState.Connecting)) {
+            val state = VpnUiState(vpnState = s, switching = true, selectedServer = amsterdam, connectedServerId = "de-1")
+            assertEquals("Home for $s", R.string.status_switching, pill(state).text)
+            assertEquals("for $s", ServerRowMarkers(connectedServerId = null, switchingServerId = "nl-1"), serverRowMarkers(state, false))
+        }
+    }
+
+    @Test
+    fun `otherwise the list marks only the node the tunnel was dialled to, while it is up`() {
+        // Connected: the DIALLED node, not the selection (REVIEW-AND-008).
+        val connected = VpnUiState(vpnState = VpnState.Connected, selectedServer = amsterdam, connectedServerId = "de-1")
+        assertEquals(ServerRowMarkers(connectedServerId = "de-1", switchingServerId = null), serverRowMarkers(connected, false))
+        // A first connect is not a switch: Home says Connecting, the list marks nothing yet.
+        val connecting = VpnUiState(vpnState = VpnState.Connecting, selectedServer = amsterdam, connectedServerId = "nl-1")
+        assertEquals(ServerRowMarkers(null, null), serverRowMarkers(connecting, false))
+        // Multi-Hop armed: one row cannot stand for an entry -> exit route.
+        val switchingMultiHop = VpnUiState(vpnState = VpnState.Connecting, switching = true, selectedServer = amsterdam)
+        assertEquals(ServerRowMarkers(null, null), serverRowMarkers(switchingMultiHop, true))
+        assertEquals(ServerRowMarkers(null, null), serverRowMarkers(connected, true))
     }
 }

@@ -80,6 +80,8 @@ fun ServerSelectorSheet(
     onRefresh: () -> Unit = {},
     /** The node the live tunnel is on, marked in its row. */
     connectedServerId: String? = null,
+    /** The node a live switch is moving to, marked "Switching…" in its row. */
+    switchingServerId: String? = null,
     /** Where a locked row's upsell leads. */
     onViewPlans: () -> Unit = {},
 ) {
@@ -183,6 +185,7 @@ fun ServerSelectorSheet(
                             isSelected = server.id == selectedServer?.id,
                             isFavorite = favoriteServers.contains(server.id),
                             isConnected = server.id == connectedServerId,
+                            isSwitching = server.id == switchingServerId,
                             onSelect = {
                                 onSelectServer(server)
                                 onDismiss()

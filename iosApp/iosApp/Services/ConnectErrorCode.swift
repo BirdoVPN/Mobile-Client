@@ -44,6 +44,12 @@ enum ConnectErrorCode: CaseIterable, Equatable, Sendable {
     /// `APIClient.getConnectConfig` / `getMultiHopConfig` read Quantum
     /// Protection afresh on every dial and no failure path writes it.
     case pskDeliveryUnavailable
+    /// 503 (birdo-web #711, MR-2058): the allocator could not prove a tunnel
+    /// address free (a reservation it must read did not answer), so it failed
+    /// closed rather than risk handing out another customer's address.
+    /// Nothing is wrong with the account or the node; the server says to come
+    /// back after `details.retryAfterSeconds` (15).
+    case tunnelAddressUnavailable
     /// No code, a reason phrase, a non-string, or a code newer than this build.
     case unknown
 
@@ -54,6 +60,7 @@ enum ConnectErrorCode: CaseIterable, Equatable, Sendable {
         case .clientAttestationRequired: return "client_attestation_required"
         case .quotaCheckUnavailable: return "quota_check_unavailable"
         case .pskDeliveryUnavailable: return "psk_delivery_unavailable"
+        case .tunnelAddressUnavailable: return "tunnel_address_unavailable"
         case .unknown: return nil
         }
     }
@@ -61,10 +68,10 @@ enum ConnectErrorCode: CaseIterable, Equatable, Sendable {
     /// The contract's word, not a guess from the status: the server refused a
     /// connect that nothing about the account or the request will keep
     /// refusing, and said when to come back (`details.retryAfterSeconds`,
-    /// REQUIRED on exactly these two codes). Asking again later is the remedy.
+    /// REQUIRED on exactly these three codes). Asking again later is the remedy.
     var isRetryable: Bool {
         switch self {
-        case .quotaCheckUnavailable, .pskDeliveryUnavailable:
+        case .quotaCheckUnavailable, .pskDeliveryUnavailable, .tunnelAddressUnavailable:
             return true
         case .updateRequired, .clientAttestationRequired, .unknown:
             return false
@@ -82,18 +89,20 @@ enum ConnectErrorCode: CaseIterable, Equatable, Sendable {
 
 /// How long to wait after a retryable refusal. Android twin: `RetryAfter.kt`.
 ///
-/// The server sends `details.retryAfterSeconds: 30` on both retryable codes
-/// (`PskOverSshRefusedError.RETRY_AFTER_SECONDS`,
-/// `QuotaCheckUnavailableError.RETRY_AFTER_SECONDS`) and NO `Retry-After`
-/// header (GlobalExceptionFilter sets none), so the body is the only source.
+/// The server sends `details.retryAfterSeconds` on every retryable code (30
+/// from `PskOverSshRefusedError` and `QuotaCheckUnavailableError`, 15 from
+/// `TunnelAddressUnavailableError`, each `.RETRY_AFTER_SECONDS`) and NO
+/// `Retry-After` header (GlobalExceptionFilter sets none), so the body is the
+/// only source.
 enum ConnectRetryAfter {
     /// Floor: a wrong value must not let a client hammer the API.
     static let minimum: TimeInterval = 1
     /// Ceiling: a wrong value must not park a user for an hour.
     static let maximum: TimeInterval = 10 * 60
     /// The wait when a retryable refusal named none this client can use. The
-    /// contract REQUIRES `retryAfterSeconds` on both codes, so this only covers
-    /// a body that lost it on the way; it matches what the server sends.
+    /// contract REQUIRES `retryAfterSeconds` on every retryable code, so this
+    /// only covers a body that lost it on the way; it matches the longest wait
+    /// the server sends.
     static let retryableDefault: TimeInterval = 30
 
     /// A server-named wait, clamped to [`minimum`, `maximum`]. Nil when it is
@@ -156,7 +165,8 @@ struct ConnectErrorEnvelope: Decodable, Equatable {
 }
 
 /// A connect refused with a RETRYABLE code (`ConnectErrorCode.isRetryable`):
-/// HTTP 503 `psk_delivery_unavailable` or `quota_check_unavailable`.
+/// HTTP 503 `psk_delivery_unavailable`, `quota_check_unavailable` or
+/// `tunnel_address_unavailable`.
 ///
 /// Its own type rather than an `APIError` case, for the reason
 /// `RebuildRefusedError` is: it can only come from the two connect routes, and
@@ -198,10 +208,11 @@ struct RetryableConnectRefusal: Error, LocalizedError, Equatable {
         switch code {
         case .pskDeliveryUnavailable:
             return Self.secureSetupUnavailableCopy
-        case .quotaCheckUnavailable, .updateRequired, .clientAttestationRequired, .unknown:
-            // quota_check_unavailable keeps the copy it had before this type
-            // existed: the server's own sentence, which was rendered verbatim
-            // via `.serverMessage`.
+        case .quotaCheckUnavailable, .tunnelAddressUnavailable, .updateRequired, .clientAttestationRequired,
+             .unknown:
+            // quota_check_unavailable and tunnel_address_unavailable keep the
+            // copy they had before this type claimed them: the server's own
+            // sentence, which was rendered verbatim via `.serverMessage`.
             if let serverMessage, !serverMessage.isEmpty { return serverMessage }
             return Self.temporarilyUnavailableCopy
         }
