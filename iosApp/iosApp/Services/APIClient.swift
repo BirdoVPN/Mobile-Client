@@ -625,7 +625,8 @@ final class APIClient: @unchecked Sendable {
 
     /// `POST /vpn/heartbeat/{keyId}` — 30 s keepalive while connected, mirroring
     /// Android's `VpnManager.startHeartbeat`. The backend answers
-    /// `{ valid, serverOnline, message? }`; `valid: false` means the connection
+    /// `{ valid, serverOnline, message?, reason, quota fields? }` (HeartbeatResult,
+    /// HeartbeatWire.swift); `valid: false` means the connection
     /// was revoked server-side (free-tier eviction is silent by design — this
     /// heartbeat is the ONLY way a replaced client ever learns about it).
     func heartbeat(keyId: String) async throws -> HeartbeatResult {
