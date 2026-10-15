@@ -1512,28 +1512,9 @@ extension VpnStats: Decodable {
     }
 }
 
-/// Response of `POST /vpn/heartbeat/{keyId}`. `valid: false` means the
-/// connection was revoked server-side (silent free-tier eviction) — the
-/// client must disconnect and surface `message`. Fail-open on decode
-/// surprises: an absent `valid` must never kill a live tunnel.
-struct HeartbeatResult: Sendable {
-    let valid: Bool
-    let serverOnline: Bool?
-    let message: String?
-}
-
-extension HeartbeatResult: Decodable {
-    private enum CodingKeys: String, CodingKey {
-        case valid, serverOnline, message
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        valid = try c.decodeIfPresent(Bool.self, forKey: .valid) ?? true
-        serverOnline = try c.decodeIfPresent(Bool.self, forKey: .serverOnline)
-        message = try c.decodeIfPresent(String.self, forKey: .message)
-    }
-}
+// HeartbeatResult lives in HeartbeatWire.swift (MR-1638): it is the heartbeat
+// half of the K5 wire contract and is compiled into BirdoVPNTests, which
+// cannot host this file.
 
 /// Nest error envelope. `message` is a string for thrown HttpExceptions and an
 /// array of strings for class-validator failures, so decode both.
