@@ -11,7 +11,7 @@ import Foundation
 // models today; this makes sure a future log line, crash breadcrumb or
 // debugger `po` cannot leak one either.
 //
-// Each model below states the fields a log may show, with every secret
+// Each model states the fields a log may show, with every secret
 // replaced, and gets its `description`, `debugDescription` AND `customMirror`
 // from that one list, so all four printing paths agree. Android's rule is
 // kept: a secret prints as `[REDACTED]` when present and `nil` when absent, so

@@ -1,7 +1,9 @@
 # Route contract review: Android and iOS (MR-953)
 
 Recorded 2026-10-15 against Mobile-Client `main` 4a760dd2 plus the PR that adds
-this file. Line numbers are at that tree.
+this file. Line numbers are at that tree, and were re-checked unchanged after
+`main` moved to a3a33991 (#489 changed build files, notices and one test, none
+of the files cited here).
 
 ## The question
 
