@@ -5,7 +5,6 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.data.api.AuthInterceptor
 import app.birdo.vpn.data.api.BirdoApi
 import app.birdo.vpn.data.network.DohResolver
-import app.birdo.vpn.data.network.Ipv4FirstDns
 import app.birdo.vpn.data.network.ProtectingSocketFactory
 import app.birdo.vpn.data.network.RoutingCallFactory
 import app.birdo.vpn.data.repository.ApiErrorMapper
@@ -91,16 +90,22 @@ object NetworkModule {
      * (which never tears anything down) instead of holding a heartbeat or a
      * live rebuild for the bypass client's 45 s.
      *
-     * IPv4 first (MR-949): on a node without IPv6 the tunnel blackholes IPv6,
-     * and an AAAA answer tried first would spend the whole connect timeout
-     * there before the IPv4 address was tried (see [Ipv4FirstDns]).
+     * Happy Eyeballs, stated (MR-949): on a node without IPv6 the tunnel has
+     * no IPv6 address while `::/0` is routed into it (the leak blackhole in
+     * BirdoVpnService.buildVpnInterface), so an AAAA answer leads nowhere. Tried
+     * one address after another, the first call after Connected would sit out
+     * this 10 s connect timeout on IPv6 before trying IPv4. Fast fallback races
+     * the families instead (IPv4 starts 250 ms after IPv6) and takes the first
+     * connection that succeeds. It is OkHttp 5's default; it is set here so a
+     * default change, or a builder that drops it, fails TunnelClientFallbackTest
+     * rather than reintroducing the stall.
      */
     @Provides
     @Singleton
     @Named(TUNNEL_CLIENT)
     fun provideTunnelClient(authInterceptor: AuthInterceptor): OkHttpClient =
         baseClient(authInterceptor)
-            .dns(Ipv4FirstDns())
+            .fastFallback(true)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
