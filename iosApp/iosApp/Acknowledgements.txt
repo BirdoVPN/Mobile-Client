@@ -36,11 +36,9 @@ BirdoPQ native library (BirdoPQNative)
 Kotlin Multiplatform libraries (BirdoShared)
   Licence: Apache License 2.0
   Copyright: JetBrains s.r.o. and respective contributors
-  Source: https://github.com/JetBrains/kotlin, https://github.com/Kotlin,
-    https://github.com/ktorio/ktor
-  The Kotlin standard library and Kotlin/Native runtime, kotlinx.coroutines,
-    kotlinx.serialization and the Ktor client, with the JetBrains libraries they
-    depend on.
+  Source: https://github.com/JetBrains/kotlin, https://github.com/Kotlin
+  The Kotlin standard library and Kotlin/Native runtime, kotlinx.coroutines and
+    kotlinx.serialization, with the JetBrains libraries they depend on.
 
 ================================================================================
 LICENCE TEXTS AND NOTICES

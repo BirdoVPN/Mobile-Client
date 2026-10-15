@@ -19,11 +19,6 @@ updates:
       - "android"
     # Don't bump dependencies that require a newer Kotlin than we currently use.
     ignore:
-      # Ktor is declared by :shared but imported by nothing there yet, and it is
-      # what pulls okhttp to 5.2.1 on releaseRuntimeClasspath (see
-      # app/proguard-rules.pro) — a major bump is a shipped-artifact change.
-      - dependency-name: "io.ktor:*"
-        versions: [">=3.4.0"]
       # Major bumps that require code/Gradle migrations - hold for manual upgrade
       - dependency-name: "androidx.compose.compiler:*"
         update-types: ["version-update:semver-major"]
@@ -123,6 +118,11 @@ updates:
         patterns: ["androidx.compose*"]
       hilt:
         patterns: ["com.google.dagger*"]
+      # okhttp, okhttp-dnsoverhttps and logging-interceptor move as one
+      # (MR-2092): one PR per artifact would split them across versions, and
+      # OkHttpVersionAlignmentTest fails every such PR.
+      okhttp:
+        patterns: ["com.squareup.okhttp3*"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
