@@ -271,7 +271,7 @@ accounts) -> production (staged).
 | Review can't get past login | Medium | Provide reviewer account with an active plan (§3) |
 | 16 KB gate flags prebuilt Go libs | Low | Bump wg-go/xray to current builds (CI will name the file) |
 | In-app **voucher** redemption seen as alt-payment | **Settled — see below** | Vouchers are sold only on birdo.app; the app redeems, never sells. Redemption stays enabled in the Play build. |
-| Cert-pin expiry 2027-06-01 | Low (far off) | `lint` warns near expiry; ship an update before |
+| Cert-pin expiry 2027-06-01 | Low (far off) | Lint Check warns from 90 days and fails from 30 days before it (past it Android stops enforcing the pins; connections continue); ship an update that moves the date before then |
 
 ### Vouchers and Play's payments policy — settled
 

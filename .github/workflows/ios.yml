@@ -136,10 +136,15 @@ jobs:
       # `$(GOROOT)/.prepared` target asserts `go env GOROOT` is non-empty and
       # rsyncs it. The macos-14 image no longer ships Go on PATH, so install
       # it explicitly (was `go: command not found`).
+      #
+      # The version is iosApp/.go-version, never `stable` (MR-2102): a signed
+      # build must not change toolchain because Go shipped a release that
+      # morning. Every Apple workflow reads the same file, so apple-ci.yml has
+      # already built and tested with it; bump it there, deliberately.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
       - name: Build libwg-go.a (device)
         run: |
@@ -503,7 +508,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
       - name: Build libwg-go.a (simulator)
         run: |
@@ -699,7 +704,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
       - name: Build libwg-go.a (device)
         run: |

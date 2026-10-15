@@ -18,8 +18,10 @@ name: macOS Release
 # all. A native macOS build uses GOOS=darwin, which WireGuardKitGo supports.
 #
 # Triggers:
-#   * push of a mac-v* tag        -> build, sign, upload to App Store Connect
-#   * manual workflow_dispatch    -> build only, unless upload_appstore is set
+#   * push of a mac-v* tag        -> build, test, sign, upload to App Store Connect
+#   * manual workflow_dispatch    -> build and test only, unless upload_appstore is set
+# The upload needs the unit tests (`unit-tests`) to have passed on the same
+# commit, as ios.yml's TestFlight upload does.
 # The pull-request build of the macOS app is apple-ci.yml. This file uses NO
 # caches: it signs and uploads, and nothing a pull request could have written
 # may reach that.
@@ -94,10 +96,11 @@ jobs:
           rustc --version
           bash ./scripts/build-birdo-pq-xcframework.sh
 
+      # Go is pinned in iosApp/.go-version, never `stable` (MR-2102): see ios.yml.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
 
       - name: Build libwg-go.a (macOS, universal)
@@ -212,7 +215,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
 
       - name: Build libwg-go.a (macOS)
@@ -428,11 +431,135 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/screenshots.keychain-db" || true
           rm -f "$RUNNER_TEMP/private_keys/AuthKey_${API_KEY_ID}.p8"
 
+  # ==========================================================================
+  # Unit tests: the gate in front of the upload (MR-2102).
+  #
+  # release-macos used to need only build-macos, so a mac-v* tag could put a
+  # build on App Store Connect that no test had run against, while ios.yml's
+  # TestFlight upload has always needed test-ios. This is the same gate: the
+  # BirdoVPNTests bundle (logic-only, compiled from the sources both apps
+  # share; see project.yml) at the commit being uploaded, step for step as
+  # ios.yml's test-ios runs it, and cache-free like the rest of this file.
+  #
+  # On the iOS Simulator, not a macOS destination, because that is the
+  # invocation apple-ci.yml runs on every Apple pull request: a release must
+  # never be the first run of its own gate. The bundle's #if os(macOS) branches
+  # (ClientIdentityTests) are therefore not exercised here.
+  # ==========================================================================
+  unit-tests:
+    name: Unit Tests (iOS Simulator)
+    runs-on: macos-26
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ./gradlew runs below: only a published Gradle wrapper may.
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Set up JDK
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+
+      # Selected BEFORE the Kotlin/Native link, which uses the active Xcode's SDK.
+      - uses: ./.github/actions/apple-toolchain
+
+      - name: Build shared framework for iOS Simulator
+        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
+
+      # An exported BirdoPQ symbol with no Swift call site is not a mitigation;
+      # the Mac app ships the same Swift as the iOS one.
+      - name: Assert every BirdoPQ export is called from Swift
+        run: bash ./scripts/check_pq_ios_wiring.sh
+
+      - name: Build BirdoPQNative.xcframework
+        run: bash ./scripts/build-birdo-pq-xcframework.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: iosApp/.go-version
+          cache: false
+
+      # Simulator slice, with the deployment target set: see ios.yml.
+      - name: Build libwg-go.a (simulator)
+        run: |
+          set -euo pipefail
+          WG_LIB_DIR="$GITHUB_WORKSPACE/iosApp/.build-wg/iphonesimulator"
+          mkdir -p "$WG_LIB_DIR"
+          cd iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo
+          make ARCHS=arm64 PLATFORM_NAME=iphonesimulator GOOS_iphonesimulator=ios \
+            DEPLOYMENT_TARGET_CLANG_FLAG_NAME=mios-simulator-version-min \
+            DEPLOYMENT_TARGET_CLANG_ENV_NAME=IPHONEOS_DEPLOYMENT_TARGET \
+            IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+            SDKROOT="$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            CONFIGURATION_BUILD_DIR="$WG_LIB_DIR" \
+            CONFIGURATION_TEMP_DIR="$RUNNER_TEMP/wggo-sim"
+          echo "WG_LIB_DIR=$WG_LIB_DIR" >> "$GITHUB_ENV"
+
+      - name: Derive version from version.properties
+        run: |
+          set -euo pipefail
+          MAJOR=$(grep '^VERSION_MAJOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          MINOR=$(grep '^VERSION_MINOR=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          PATCH=$(grep '^VERSION_PATCH=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
+            echo "::error::Could not parse version.properties"
+            exit 1
+          fi
+          echo "BIRDO_MARKETING_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_ENV"
+          echo "BIRDO_PROJECT_VERSION=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))" >> "$GITHUB_ENV"
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      # Same invocation as ios.yml's test-ios and apple-ci.yml: the simulator
+      # is RESOLVED, not named; only the UNIT bundle runs (the UI bundle needs
+      # the screenshot secret); the step's status is xcodebuild's, not
+      # xcpretty's.
+      - name: Run unit tests
+        working-directory: iosApp
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json | python3 "$GITHUB_WORKSPACE/.github/scripts/pick-simulator.py")
+          if [ -z "$UDID" ]; then
+            echo "::error::No available iPhone simulator on this runner"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Testing on simulator $UDID"
+          xcodebuild test \
+            -project BirdoVPN.xcodeproj \
+            -scheme BirdoVPN \
+            -only-testing:BirdoVPNTests \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -configuration Debug \
+            ARCHS=arm64 \
+            EXCLUDED_ARCHS=x86_64 \
+            LIBRARY_SEARCH_PATHS="$WG_LIB_DIR" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/iostest.log" | xcpretty
+
+      # A green xcodebuild does not prove a test EXECUTED: every suite the
+      # bundle's sources declare must have reported.
+      - name: Assert the test bundle actually ran
+        run: bash scripts/check_xctest_suites_ran.sh "$RUNNER_TEMP/iostest.log" iosApp/BirdoVPNTests
+
   release-macos:
     name: Codesign & Upload to App Store Connect
     runs-on: macos-26
     timeout-minutes: 60
-    needs: [build-macos]
+    # Nothing is uploaded unless the unit tests passed on this commit.
+    needs: [build-macos, unit-tests]
     # A mac-v* tag, or a dispatch that explicitly asked to upload. A bare
     # dispatch builds only: uploading must stay a deliberate act, and a Mac App
     # Store build number is single-use, so an accidental upload burns one.
@@ -473,7 +600,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
 
       - name: Build libwg-go.a (macOS, universal)

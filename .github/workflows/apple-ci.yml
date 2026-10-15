@@ -9,48 +9,31 @@ name: Apple CI
 # that can affect it. The macOS build moved here from
 # macos.yml, which is now release-only and cache-free.
 #
-# Not a required check, so a workflow-level `paths` filter is fine: a pull
-# request that cannot affect the Apple apps does not start this at all.
 # Nothing here signs or uploads anything.
+#
+# REQUIRED-CHECK READY (MR-2060, MR-1802). There is deliberately no
+# workflow-level `paths:` filter: a required check that never starts blocks the
+# merge. Instead the `changes` job decides from the changed paths whether the
+# Apple jobs have anything to test (`apple` in
+# .github/scripts/classify-changes.sh, which holds the path list the filter
+# used to); when they do not, both are skipped, and a skipped job counts as
+# passing. The job NAMES "iOS simulator tests" and "macOS build (unsigned)" are
+# what branch protection lists once they are made required; do not rename them.
 
 on:
   pull_request:
-    paths:
-      - 'iosApp/**'
-      - 'shared/**'
-      - 'native/birdo-pq-ios/**'
-      - 'contract/**'
-      - 'scripts/build-birdo-pq-xcframework.sh'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - 'version.properties'
-      - 'rust-toolchain.toml'
-      - '.github/workflows/apple-ci.yml'
-      - '.github/actions/apple-toolchain/**'
-      - '.github/scripts/pick-simulator.py'
   push:
     branches: [main]
-    paths:
-      - 'iosApp/**'
-      - 'shared/**'
-      - 'native/birdo-pq-ios/**'
-      - 'contract/**'
-      - 'scripts/build-birdo-pq-xcframework.sh'
-      - 'gradle/**'
-      - '*.gradle.kts'
-      - 'gradle.properties'
-      - 'version.properties'
-      - 'rust-toolchain.toml'
-      - '.github/workflows/apple-ci.yml'
-      - '.github/actions/apple-toolchain/**'
-      - '.github/scripts/pick-simulator.py'
   workflow_dispatch:
 
 permissions: {}
 
+# A pull request cancels its own superseded run. Every other run is grouped by
+# its commit: a main push that touches nothing Apple now starts this workflow
+# too, and in a group shared by every main push its run would displace the
+# pending run of an earlier push that did -- which would then never be tested.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -64,8 +47,60 @@ env:
   MAC_DEPLOYMENT_TARGET: '14.0'
 
 jobs:
+  # Whether this change can affect the Apple apps. Fails OPEN: both jobs below
+  # run unless this job positively said 'false', so a broken classifier costs
+  # macOS minutes, never coverage. A pull request is diffed against its base
+  # (the merge commit's first parent), a main push against the commit it
+  # replaced; a dispatch, or a push whose predecessor cannot be fetched, runs
+  # everything.
+  changes:
+    name: Detect Apple changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      apple: ${{ steps.classify.outputs.apple }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The PR merge commit plus its first parent (the base tip).
+          fetch-depth: 2
+
+      # The classifier diffs with --no-renames, so Swift moved into docs/ still
+      # counts as a Swift change; Lint Check runs its self-test.
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          from=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            from="HEAD^1"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] \
+               && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+               && git fetch --quiet --no-tags --depth=1 origin "$BEFORE_SHA"; then
+            from="$BEFORE_SHA"
+          fi
+          if [ -n "$from" ]; then
+            git diff --no-renames --name-only "$from" HEAD || true
+            result=$(bash .github/scripts/classify-changes.sh --git-range "$from" HEAD)
+          else
+            result="apple=true"
+          fi
+          echo "$result" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Change detection"
+            echo '```'
+            echo "$result"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ios:
     name: iOS simulator tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -119,10 +154,12 @@ jobs:
             native/birdo-pq-ios/target
           key: birdo-pq-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'native/birdo-pq-ios/Cargo.lock', 'scripts/build-birdo-pq-xcframework.sh') }}
 
+      # The one Go version every Apple workflow builds with (MR-2102), so this
+      # tests the toolchain the signed apps are built with.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache-dependency-path: iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum
 
       # Simulator slice. The upstream Makefile maps GOOS only for
@@ -191,21 +228,15 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/iostest.log" | xcpretty
 
       # A green xcodebuild proves the run did not FAIL; it does not prove a
-      # single test EXECUTED. Assert the suites the bundle must contain reported.
+      # single test EXECUTED. Every suite the bundle's sources declare must
+      # have reported, not a hand-kept list of six.
       - name: Assert the test bundle actually ran
-        run: |
-          set -euo pipefail
-          for suite in ConnectContractTests ConnectErrorCodeTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
-            if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
-              echo "::error::$suite never reported — the test bundle did not run"
-              exit 1
-            fi
-          done
-          echo "Suites that reported:"
-          grep -oE "Test Suite '[A-Za-z]+Tests'" "$RUNNER_TEMP/iostest.log" | sort -u
+        run: bash scripts/check_xctest_suites_ran.sh "$RUNNER_TEMP/iostest.log" iosApp/BirdoVPNTests
 
   macos:
     name: macOS build (unsigned)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.apple != 'false' }}
     runs-on: macos-26
     timeout-minutes: 45
     permissions:
@@ -249,7 +280,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache-dependency-path: iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum
 
       - name: Build libwg-go.a (macOS, universal)

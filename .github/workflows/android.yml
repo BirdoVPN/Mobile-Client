@@ -676,13 +676,25 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
 
+      # target_commitish: a dispatch names a tag that may not exist yet, and a
+      # draft without a target is tagged from main's head at PUBLISH time --
+      # days later, a different commit from the one these assets were built
+      # from (the 1.4.33 draft sat targeted at main). It changes nothing for an
+      # android-v* push, whose tag already points at this commit.
+      #
+      # prerelease is ALWAYS true, on purpose (owner decision 2026-10-01): a
+      # release stays a prerelease until Play's production track has the build
+      # at 100%, when github-latest-from-play.yml clears the flag and marks it
+      # Latest. It used to read `contains(tag, '-')`, which is true for every
+      # tag here ("android-v...") and looked like a semver-suffix test.
       - name: Create / update draft GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: "Birdo Android ${{ steps.tag.outputs.tag }}"
           draft: true
-          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          prerelease: true
           generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/android-v') }}
           fail_on_unmatched_files: false
           body: |

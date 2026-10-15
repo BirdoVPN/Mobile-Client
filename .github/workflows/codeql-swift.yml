@@ -11,7 +11,7 @@
 # ----------------------------------------------------------------------
 # ios.yml is the release pipeline (tags, TestFlight). apple-ci.yml is the fast
 # PR signal; a traced CodeQL build is several times slower than a plain one and
-# must not hold that signal up. Not a required check.
+# must not hold that signal up.
 #
 # WHY THE BUILD CHAIN IS REPEATED HERE
 # ------------------------------------
@@ -31,6 +31,14 @@
 # shared/ changes no Swift source; apple-ci.yml still compiles the Swift
 # against it.
 #
+# Every pull request and main push STARTS this workflow (MR-2060): there is no
+# workflow-level `paths:` filter, because a required check that never starts
+# blocks the merge. The `changes` job decides from the changed paths (`swift`
+# in .github/scripts/classify-changes.sh, which holds the list the filter used
+# to) whether there is Swift to scan; when there is not, "Analyze (swift)" is
+# skipped, and a skipped job counts as passing. Do not rename that job: it is
+# the name branch protection lists once it is made required.
+#
 # WHERE THE TIME WENT (run 37057051350, 31.6 min, 23.4 of them in the traced
 # xcodebuild): ~8 min in "Resolve Package Graph" for the one LOCAL Swift
 # package, and ~9 min of single-threaded extraction of whole-module (WMO)
@@ -46,26 +54,14 @@
 #     evaluates Package.swift again) and turning off SwiftPM's manifest sandbox
 #     (466 s). Removing SwiftPM from the build (WireGuardKit as a project
 #     target instead of a local package) would remove it; that is a project
-#     change, not a CI one. Meanwhile this scan runs only when Swift changes,
-#     and it is not a required check.
+#     change, not a CI one. Meanwhile the scan itself runs only when Swift
+#     changes.
 name: CodeQL Swift
 
 on:
   pull_request:
-    paths:
-      - 'iosApp/**/*.swift'
-      - 'iosApp/project.yml'
-      - '.github/workflows/codeql-swift.yml'
-      - '.github/codeql/codeql-config-swift.yml'
-      - '.github/actions/apple-toolchain/**'
   push:
     branches: [main]
-    paths:
-      - 'iosApp/**/*.swift'
-      - 'iosApp/project.yml'
-      - '.github/workflows/codeql-swift.yml'
-      - '.github/codeql/codeql-config-swift.yml'
-      - '.github/actions/apple-toolchain/**'
   schedule:
     - cron: '0 7 * * 1'   # Mondays 07:00 UTC — same slot the retired codeql.yml used
   workflow_dispatch:
@@ -73,9 +69,12 @@ on:
 permissions: {}
 
 # The event is part of the group: the scheduled run and main pushes share a
-# ref, and one would otherwise displace the other's pending run.
+# ref, and one would otherwise displace the other's pending run. Outside pull
+# requests the group is the commit, not the ref: every main push starts this
+# workflow now, and one that changes no Swift must not displace the pending
+# run of an earlier push that did.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -87,10 +86,58 @@ env:
   JAVA_DISTRIBUTION: 'temurin'
 
 jobs:
+  # Whether this change has Swift to scan. Fails OPEN, like apple-ci.yml's:
+  # the scan runs unless this job positively said 'false'. The weekly sweep
+  # and a dispatch always scan.
+  changes:
+    name: Detect Swift changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      swift: ${{ steps.classify.outputs.swift }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The PR merge commit plus its first parent (the base tip).
+          fetch-depth: 2
+
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          from=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            from="HEAD^1"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] \
+               && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] \
+               && git fetch --quiet --no-tags --depth=1 origin "$BEFORE_SHA"; then
+            from="$BEFORE_SHA"
+          fi
+          if [ -n "$from" ]; then
+            git diff --no-renames --name-only "$from" HEAD || true
+            result=$(bash .github/scripts/classify-changes.sh --git-range "$from" HEAD)
+          else
+            result="swift=true"
+          fi
+          echo "$result" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Change detection"
+            echo '```'
+            echo "$result"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   analyze:
     name: Analyze (swift)
+    needs: changes
     # The weekly sweep runs only in this repository, never in a fork.
-    if: ${{ github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client' }}
+    if: >-
+      ${{ !cancelled() && needs.changes.outputs.swift != 'false' &&
+      (github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client') }}
     runs-on: macos-26
     timeout-minutes: 60
     permissions:
@@ -138,10 +185,11 @@ jobs:
           rustc --version
           bash ./scripts/build-birdo-pq-xcframework.sh
 
+      # The pinned Go of every Apple workflow (MR-2102).
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache-dependency-path: iosApp/Vendor/wireguard-apple/Sources/WireGuardKitGo/go.sum
 
       - name: Build libwg-go.a (device)
