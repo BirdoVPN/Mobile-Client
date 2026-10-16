@@ -30,6 +30,11 @@ struct ProfileView: View {
     @State private var localDeleteError: String?
     @State private var showCopiedToast = false
     @State private var copyToastTask: Task<Void, Never>?
+    /// MR-1362: the account number is masked until the user asks to see it,
+    /// as on Android and Windows and as the account API contract says. The
+    /// snapshot cover keeps it out of the app switcher; this keeps it out of
+    /// sight of whoever is beside the user. Copy still takes all of it.
+    @State private var accountNumberShown = false
 
     /// SSO / password-less anonymous accounts must NOT be asked for a
     /// password — the backend accepts a password-less delete (GDPR Art. 17).
@@ -220,39 +225,60 @@ struct ProfileView: View {
         }
     }
 
+    /// Masked (`•••• … 1234`) until revealed, then grouped in fours — Android's
+    /// Profile rule (MR-1362), from the same `AccountNumberText` rules.
+    private func shownAccountNumber(_ number: String) -> String {
+        accountNumberShown ? AccountNumberText.grouped(number) : AccountNumberText.masked(number)
+    }
+
     private func accountNumberRow(_ number: String) -> some View {
-        Button {
-            copyAccountNumber(number)
-        } label: {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("ACCOUNT NUMBER")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                    Text(number)
-                        .font(BirdoTheme.Fonts.mono)
-                        .foregroundStyle(BirdoTheme.onBackground)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .accountNumberSnapshotCover()
+        HStack(spacing: 2) {
+            Button {
+                copyAccountNumber(number)
+            } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("ACCOUNT NUMBER")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                        // Two lines, not a cut: the user copies it out by hand.
+                        Text(shownAccountNumber(number))
+                            .font(BirdoTheme.Fonts.mono)
+                            .foregroundStyle(BirdoTheme.onBackground)
+                            .lineLimit(2)
+                            .accountNumberSnapshotCover()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 18))
+                        .foregroundStyle(BirdoTheme.accent)
+                        .padding(8)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 18))
-                    .foregroundStyle(BirdoTheme.accent)
+            }
+            .buttonStyle(PressScaleButtonStyle())
+            .accessibilityLabel(accountNumberShown
+                                ? "Account number \(AccountNumberText.grouped(number))"
+                                : "Account number, hidden, ending \(AccountNumberText.lastGroup(number))")
+            .accessibilityHint("Copies the full account number")
+
+            Button {
+                accountNumberShown.toggle()
+            } label: {
+                Image(systemName: accountNumberShown ? "eye.slash" : "eye")
+                    .font(.system(size: 16))
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .padding(8)
             }
-            .padding(.leading, 14)
-            .padding(.trailing, 6)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(BirdoTheme.surfaceRaised)
-            )
+            .buttonStyle(.plain)
+            .accessibilityLabel(accountNumberShown ? "Hide account number" : "Show account number")
         }
-        .buttonStyle(PressScaleButtonStyle())
-        .accessibilityLabel("Account number \(number)")
-        .accessibilityHint("Copies the full account number")
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(BirdoTheme.surfaceRaised)
+        )
     }
 
     private var connectionStatusRow: some View {

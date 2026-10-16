@@ -23,12 +23,6 @@ if ! command -v xcodebuild &>/dev/null; then
 fi
 echo "[OK] Xcode $(xcodebuild -version | head -1 | awk '{print $2}')"
 
-if ! command -v java &>/dev/null; then
-  echo -e "${RED}[FAIL] Java not found. Install with: brew install openjdk@17${NC}"
-  exit 1
-fi
-echo "[OK] Java $(java -version 2>&1 | head -1)"
-
 if ! command -v brew &>/dev/null; then
   echo -e "${YELLOW} [WARN] Homebrew not found — installing XcodeGen via direct download${NC}"
 else
@@ -47,37 +41,11 @@ if ! command -v xcodegen &>/dev/null; then
 fi
 echo "[OK] XcodeGen $(xcodegen version 2>/dev/null || echo 'installed')"
 
-# ── Step 3: Build KMP shared framework ──────────────────────────
-echo -e "\n${YELLOW}[3/6] Building KMP shared framework for iOS Simulator...${NC}"
-
+# ── Step 3: (none) ──────────────────────────────────────────────
+# There is no Kotlin step: the app imports nothing from the KMP `shared`
+# module, so its BirdoShared framework is neither built nor linked (MR-1085).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
-
-# Detect architecture
-ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-  GRADLE_TARGET=":shared:linkDebugFrameworkIosSimulatorArm64"
-  FRAMEWORK_DIR="shared/build/bin/iosSimulatorArm64/debugFramework"
-else
-  GRADLE_TARGET=":shared:linkDebugFrameworkIosX64"
-  FRAMEWORK_DIR="shared/build/bin/iosX64/debugFramework"
-fi
-
-echo "  Architecture: $ARCH → $GRADLE_TARGET"
-
-if [ ! -f "gradlew" ]; then
-  echo -e "${RED}[FAIL] No gradlew found. Run this from the birdo-client-mobile/ directory.${NC}"
-  exit 1
-fi
-
-chmod +x gradlew
-./gradlew $GRADLE_TARGET --no-daemon
-
-if [ ! -d "$FRAMEWORK_DIR/BirdoShared.framework" ]; then
-  echo -e "${RED}[FAIL] Framework build failed — BirdoShared.framework not found at $FRAMEWORK_DIR${NC}"
-  exit 1
-fi
-echo -e " ${GREEN}[OK] BirdoShared.framework built${NC}"
 
 # ── Step 4: Build the BirdoPQNative XCFramework ──────────────────
 # Gitignored build artifact (Rust ML-KEM-1024). project.yml links

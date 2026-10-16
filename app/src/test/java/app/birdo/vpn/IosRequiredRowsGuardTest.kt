@@ -123,7 +123,7 @@ class IosRequiredRowsGuardTest {
         // The sign-in field: what the user typed is the number too.
         val fieldCover = ".accountNumberSnapshotCover(isInput: true)"
         val sites = listOf(
-            Triple("$ios/Views/ProfileView.swift", "Text(number)", textCover),
+            Triple("$ios/Views/ProfileView.swift", "Text(shownAccountNumber(number))", textCover),
             Triple("$ios/Views/LoginView.swift", "Text(id)", textCover),
             Triple("$ios/Views/HomeView.swift", "Text(identity)", textCover),
             Triple("$ios/Views/LoginView.swift", "BirdoTextField(\"Account number\",", fieldCover),
@@ -226,33 +226,88 @@ class IosRequiredRowsGuardTest {
         "RebuildRefusedError.code" to "error code",
     )
 
+    /**
+     * The Swift files the PacketTunnel extension compiles, from its `sources:`
+     * in project.yml (paths there are relative to iosApp/).
+     */
+    private val packetTunnelSwiftFiles: Set<String> by lazy {
+        val yml = source("iosApp/project.yml")
+        val start = yml.indexOf("\n  PacketTunnel:")
+        assertTrue("project.yml has no PacketTunnel target", start >= 0)
+        val block = yml.substring(start, yml.indexOf("\n    settings:", start))
+        Regex("""(?m)^\s+- path: (\S+)""").findAll(block).flatMap { m ->
+            val path = "iosApp/${m.groupValues[1]}"
+            val file = File(repoRoot, path)
+            if (file.isDirectory) {
+                file.walkTopDown().filter { it.isFile && it.extension == "swift" }
+                    .map { it.relativeTo(repoRoot).invariantSeparatorsPath }
+            } else {
+                sequenceOf(path)
+            }
+        }.filter { it.endsWith(".swift") }.toSet()
+            .also { assertTrue("PacketTunnel compiles no PacketTunnelProvider.swift; the parse is broken", "iosApp/PacketTunnel/PacketTunnelProvider.swift" in it) }
+    }
+
+    /** The targets that compile the Swift file at [path]: the app takes all of iosApp/iosApp. */
+    private fun targetsOf(path: String): Set<String> =
+        setOfNotNull("app".takeIf { path.startsWith("$ios/") }, "tunnel".takeIf { path in packetTunnelSwiftFiles })
+
     @Test
     fun `every credential-bearing Swift struct or enum adopts the redacting description`() {
-        val redaction = source("$ios/Services/CredentialRedaction.swift")
         // Every Swift file of the app and the extension, at any nesting depth:
         // it used to read three files, so a credential-bearing type anywhere
         // else (VPNManager's tunnel snapshot, the resolved account identity)
         // printed its secrets through Swift's default reflection unseen.
-        val found = swiftSources.flatMap { (path, src) ->
-            SwiftCredentialTypes.scan(src.replace("\r\n", "\n")).map { it to path }
-        }
+        val sources = swiftSources.map { (path, src) -> path to src.replace("\r\n", "\n") }
+        val found = sources.flatMap { (path, src) -> SwiftCredentialTypes.scan(src).map { it to path } }
         assertTrue("found only ${found.size} credential-bearing types; the scan is broken", found.size >= 18)
 
         val bearing = found.filter { (type, _) -> type.fields.any { "${type.name}.$it" !in swiftNotSecret } }
+        // MR-2044: the conformance must name the type by its qualified name (a
+        // nested `Resolved` is not any other `Resolved`), and must be compiled
+        // into every target that compiles the type: a type in the extension
+        // needs its conformance in a file the extension compiles too.
         val missing = bearing
-            .filter { (type, _) ->
-                !Regex("""(?m)^extension\s+(?:\w+\.)*${type.name}\s*:\s*CredentialRedacting\b""").containsMatchIn(redaction)
+            .filter { (type, path) ->
+                val needed = targetsOf(path)
+                val candidates = sources.filter { (other, _) -> targetsOf(other).containsAll(needed) }.map { it.second }
+                !SwiftCredentialTypes.conforms(type, candidates)
             }
-            .map { (type, path) -> "$path: ${type.name}" }
+            .map { (type, path) -> "$path: ${type.qualifiedName}" }
         assertEquals("credential-bearing Swift types with Swift's default (printing) description", emptyList<String>(), missing)
 
         // An exemption that no longer matches a field is a hole for the next one.
         val stale = swiftNotSecret.keys - found.flatMap { (type, _) -> type.fields.map { "${type.name}.$it" } }.toSet()
         assertEquals("stale swiftNotSecret entries", emptySet<String>(), stale)
 
-        val names = bearing.map { (type, _) -> type.name }
-        listOf("LoginResult", "VPNConnectionConfig", "TunnelProfileSnapshot", "Resolved").forEach {
+        val names = bearing.map { (type, _) -> type.qualifiedName }
+        listOf("LoginResult", "VPNConnectionConfig", "TunnelProfileSnapshot", "AccountIdentity.Resolved").forEach {
             assertTrue("the scan no longer finds $it", it in names)
+        }
+    }
+
+    // ── MR-2044: the extension can redact too ────────────────────────────────
+
+    @Test
+    fun `the redaction mechanism compiles into the PacketTunnel extension and names no model`() {
+        val core = "$ios/Services/CredentialRedaction.swift"
+        val models = "$ios/Services/CredentialRedactingModels.swift"
+        assertTrue("project.yml must compile $core into PacketTunnel", core in packetTunnelSwiftFiles)
+        val src = source(core)
+        assertTrue("enum Redaction" in src && "protocol CredentialRedacting" in src && "extension CredentialRedacting {" in src)
+        // It compiles into the extension, so it may not name an app model.
+        assertFalse(
+            "$core declares a model conformance: those belong in $models",
+            Regex("""(?m)^\s*extension\s+[\w.]+\s*:[^{]*\bCredentialRedacting\b""").containsMatchIn(src),
+        )
+        assertEquals("Foundation only", listOf("Foundation"), Regex("""(?m)^import\s+(\w+)""").findAll(src).map { it.groupValues[1] }.toList())
+        // The models' conformances name app types: never in the extension, always in the unit tests.
+        assertFalse("$models must stay out of PacketTunnel", models in packetTunnelSwiftFiles)
+        assertTrue("extension TokenPairData: CredentialRedacting" in source(models))
+        val projectYml = source("iosApp/project.yml")
+        val unitTests = projectYml.substring(projectYml.indexOf("\n  BirdoVPNTests:"), projectYml.indexOf("\n  BirdoVPNUITests:"))
+        listOf(core, models).forEach {
+            assertTrue("BirdoVPNTests must compile $it", "- path: ${it.removePrefix("iosApp/")}" in unitTests)
         }
     }
 
@@ -296,6 +351,78 @@ class IosRequiredRowsGuardTest {
         )
     }
 
+    @Test
+    fun `the Swift scan finds the shapes the first version missed`() {
+        // MR-2044: each of these printed its secret through Swift's default
+        // description, and the first scanner found none of the five types.
+        val src = """
+            enum Grant {
+                case refreshToken(String)
+                case challenge(
+                    challengeToken: String,
+                    attempts: Int
+                )
+                case none
+            }
+
+            struct Pair {
+                let accessToken, refreshToken: String
+                let platform: String, apiToken: String?
+            }
+
+            struct OneLine { let password: String; let platform: String }
+
+            @MainActor struct Attributed {
+                let wgPsk: Data
+            }
+
+            @available(iOS 17, *) public struct Available: Sendable {
+                var sessionToken: String = ""
+                var shownToken: String { "computed, not stored" }
+                static let fixtureToken = "fake-fixture-token"
+            }
+        """.trimIndent()
+        val found = SwiftCredentialTypes.scan(src).associate { it.name to it.fields }
+        assertEquals(
+            mapOf(
+                "Grant" to listOf("refreshToken", "challengeToken"),
+                "Pair" to listOf("accessToken", "refreshToken", "apiToken"),
+                "OneLine" to listOf("password"),
+                "Attributed" to listOf("wgPsk"),
+                "Available" to listOf("sessionToken"),
+            ),
+            found,
+        )
+    }
+
+    @Test
+    fun `a conformance counts only for the type it names`() {
+        // MR-2044: matched by bare name, `extension AccountIdentity.Resolved`
+        // also "covered" every other type called Resolved.
+        val src = """
+            enum AccountIdentity {
+                struct Resolved {
+                    let accountNumber: String?
+                }
+            }
+
+            extension Session {
+                struct Resolved {
+                    let refreshToken: String
+                }
+            }
+
+            struct Resolved {
+                let password: String
+            }
+        """.trimIndent()
+        val types = SwiftCredentialTypes.scan(src)
+        assertEquals(listOf("AccountIdentity.Resolved", "Session.Resolved", "Resolved"), types.map { it.qualifiedName })
+        val conformance = listOf("extension AccountIdentity.Resolved: CredentialRedacting {\n}")
+        assertEquals(listOf(true, false, false), types.map { SwiftCredentialTypes.conforms(it, conformance) })
+        assertTrue(SwiftCredentialTypes.conforms(types[2], listOf("extension Resolved: Equatable, CredentialRedacting {}")))
+    }
+
     // ── MR-1688: the App Store app carries its open-source notices ──────────
 
     @Test
@@ -325,41 +452,184 @@ class IosRequiredRowsGuardTest {
  * [CredentialFields.isCredentialName], so both platforms share one word list.
  * Relies on the 4-space indentation the iOS sources use: a type's own members
  * sit exactly one level inside it.
+ *
+ * MR-2044 widened it to the shapes the first version missed: an unlabelled
+ * enum payload (named by its case: `case refreshToken(String)`), a case whose
+ * payload spans lines, `let a, b: String`, a one-line `struct X { let a: String }`,
+ * and an attribute on the declaration line (`@MainActor struct X {`). Each
+ * type also carries its QUALIFIED name, so a conformance is matched to the
+ * type it is for, not to any type of the same bare name.
  */
 internal object SwiftCredentialTypes {
 
-    class Type(val name: String, val fields: List<String>)
+    /** [name] as declared; [qualifiedName] with every enclosing type or extension (`AccountIdentity.Resolved`). */
+    class Type(val name: String, val qualifiedName: String, val fields: List<String>)
 
     /** Types that can hold a secret's text or bytes. */
     private val secretTypes = setOf("String", "Data", "[String]", "[UInt8]")
 
-    private val declaration =
-        Regex("""(?m)^( *)(?:(?:public|internal|fileprivate|private|indirect|final)\s+)*(?:struct|enum)\s+(\w+)\b[^{\n]*\{\s*$""")
-
-    /** A stored instance property: no `static`, and no `{` getter after the type. */
-    private val stored = Regex(
-        """^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|internal|fileprivate|private(?:\(set\))?|weak|unowned|lazy|nonisolated)\s+)*""" +
-            """(?:let|var)\s+(\w+)\s*:\s*(\[?\w+]?)[?!]?\s*(?:=.*)?$""",
+    /**
+     * A type or extension whose body opens on its declaration line, with any
+     * attributes and modifiers in front. Group 4 is the rest of that line: a
+     * one-line type's whole body.
+     */
+    private val declaration = Regex(
+        """(?m)^( *)(?:@\w+(?:\([^)\n]*\))?[ \t]+)*(?:(?:public|internal|fileprivate|private|package|open|indirect|final)[ \t]+)*""" +
+            """(struct|enum|class|actor|extension)[ \t]+(?!(?:func|var|let)\b)([\w.]+)\b[^{\n]*\{([^\n]*)$""",
     )
-    private val payloadCase = Regex("""^(?:indirect\s+)?case\s+\w+\((.*)\)$""")
-    private val payloadLabel = Regex("""(\w+)\s*:\s*(\[?\w+]?)[?!]?""")
 
-    fun scan(src: String): List<Type> = declaration.findAll(src).mapNotNull { m ->
-        val indent = m.groupValues[1]
-        val member = "$indent    "
-        val body = src.substring(m.range.last + 1).substringBefore("\n$indent}")
-        val fields = body.lines()
-            .filter { it.startsWith(member) && !it.startsWith("$member ") }
-            .map { it.substringBefore("//").trim() }
-            .flatMap { line ->
-                stored.matchEntire(line)?.let { listOf(it.groupValues[1] to it.groupValues[2]) }
-                    ?: payloadCase.matchEntire(line)?.let { case ->
-                        payloadLabel.findAll(case.groupValues[1]).map { it.groupValues[1] to it.groupValues[2] }.toList()
-                    }
-                    ?: emptyList()
+    /** A stored instance property's bindings (group 1): no `static`; attributes and modifiers allowed. */
+    private val stored = Regex(
+        """^(?:@\w+(?:\([^)]*\))?\s+)*(?:(?:public|internal|fileprivate|private(?:\(set\))?|weak|unowned|lazy|nonisolated|final)\s+)*""" +
+            """(?:let|var)\s+(.+)$""",
+    )
+    private val case = Regex("""^(?:indirect\s+)?case\s+(.+)$""")
+    private val caseElement = Regex("""^(\w+)\s*\((.*)\)\s*(?:=.*)?$""")
+    private val labelled = Regex("""^(?:_\s+)?(\w+)\s*:\s*(.+)$""")
+    private val binding = Regex("""^(\w+)\s*(?::\s*([^={]+?))?\s*(=.*|\{.*)?$""")
+
+    private class Decl(
+        val start: Int,
+        val indent: Int,
+        val kind: String,
+        val name: String,
+        val bodyEnd: Int,
+        val members: List<String>,
+    )
+
+    fun scan(src: String): List<Type> {
+        val decls = declaration.findAll(src).map { m ->
+            val indent = m.groupValues[1]
+            val rest = m.groupValues[4].substringBefore("//")
+            val oneLine = closingBrace(rest)
+            if (oneLine != null) {
+                val body = rest.substring(0, oneLine)
+                Decl(m.range.first, indent.length, m.groupValues[2], m.groupValues[3], m.range.last, splitTopLevel(body, ';'))
+            } else {
+                val bodyStart = m.range.last + 1
+                val close = src.indexOf("\n$indent}", bodyStart).let { if (it < 0) src.length else it }
+                Decl(
+                    m.range.first, indent.length, m.groupValues[2], m.groupValues[3], close,
+                    members(src.substring(bodyStart, close), "$indent    "),
+                )
             }
-            .filter { (name, type) -> type in secretTypes && CredentialFields.isCredentialName(name) }
-            .map { (name, _) -> name }
-        if (fields.isEmpty()) null else Type(m.groupValues[2], fields)
-    }.toList()
+        }.toList()
+        return decls.filter { it.kind == "struct" || it.kind == "enum" }.mapNotNull { d ->
+            val fields = d.members.flatMap(::fieldsOf)
+                .filter { (name, type) -> type in secretTypes && CredentialFields.isCredentialName(name) }
+                .map { (name, _) -> name }
+            if (fields.isEmpty()) return@mapNotNull null
+            val outer = decls.filter { e -> e.indent < d.indent && e.start < d.start && d.start < e.bodyEnd }
+                .sortedBy { it.indent }
+            Type(d.name, (outer.map { it.name } + d.name).joinToString("."), fields)
+        }
+    }
+
+    /** Whether one of [sources] declares `extension <qualified name>: … CredentialRedacting`. */
+    fun conforms(type: Type, sources: Collection<String>): Boolean {
+        val ext = Regex("""(?m)^\s*extension\s+${Regex.escape(type.qualifiedName)}\s*:[^{]*\bCredentialRedacting\b""")
+        return sources.any { ext.containsMatchIn(it) }
+    }
+
+    /**
+     * The member statements of a multi-line body: the lines exactly one level
+     * in, each joined with the lines that close the brackets it opens.
+     */
+    private fun members(body: String, member: String): List<String> {
+        val out = mutableListOf<String>()
+        val lines = body.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i++]
+            if (!line.startsWith(member) || line.startsWith("$member ")) continue
+            var text = line.substringBefore("//").trim()
+            while (depth(text) > 0 && i < lines.size) text += " " + lines[i++].substringBefore("//").trim()
+            out += text
+        }
+        return out
+    }
+
+    /** (name, type) of every stored property or enum payload [member] declares. */
+    private fun fieldsOf(member: String): List<Pair<String, String>> {
+        val text = member.trim()
+        case.matchEntire(text)?.let { c ->
+            return splitTopLevel(c.groupValues[1], ',').flatMap { element ->
+                val payload = caseElement.matchEntire(element.trim()) ?: return@flatMap emptyList()
+                val caseName = payload.groupValues[1]
+                splitTopLevel(payload.groupValues[2], ',').map { it.trim() }.filter { it.isNotEmpty() }.map { param ->
+                    // Unlabelled: the case names the payload (`case refreshToken(String)`).
+                    labelled.matchEntire(param)?.let { it.groupValues[1] to typeOf(it.groupValues[2]) }
+                        ?: (caseName to typeOf(param))
+                }
+            }
+        }
+        val decl = stored.matchEntire(text) ?: return emptyList()
+        val fields = mutableListOf<Pair<String, String>>()
+        val pending = mutableListOf<String>()
+        for (piece in splitTopLevel(decl.groupValues[1], ',')) {
+            val b = binding.matchEntire(piece.trim()) ?: return emptyList()
+            // A `{` with no `=` before it is a getter: computed, never printed.
+            if (b.groupValues[3].startsWith("{")) return emptyList()
+            val type = b.groupValues[2].trim()
+            if (type.isEmpty()) {
+                // `let a, b: String`: a takes the type written after b.
+                if (b.groupValues[3].isEmpty()) pending += b.groupValues[1]
+                continue
+            }
+            (pending + b.groupValues[1]).forEach { fields += it to typeOf(type) }
+            pending.clear()
+        }
+        return fields
+    }
+
+    private fun typeOf(declared: String): String = declared.substringBefore("=").trim().trimEnd('?', '!').trim()
+
+    /** Open brackets minus closed ones, outside string literals. */
+    private fun depth(s: String): Int {
+        var d = 0
+        var quoted = false
+        for (c in s) {
+            if (c == '"') quoted = !quoted
+            if (quoted) continue
+            if (c in "([{") d++
+            if (c in ")]}") d--
+        }
+        return d
+    }
+
+    /** [s] split at every [separator] outside brackets, generics and string literals. */
+    private fun splitTopLevel(s: String, separator: Char): List<String> {
+        val parts = mutableListOf<String>()
+        var d = 0
+        var quoted = false
+        var from = 0
+        s.forEachIndexed { i, c ->
+            if (c == '"') quoted = !quoted
+            if (!quoted) {
+                if (c in "([{<") d++
+                if (c in ")]}>") d--
+                if (c == separator && d == 0) {
+                    parts += s.substring(from, i)
+                    from = i + 1
+                }
+            }
+        }
+        parts += s.substring(from)
+        return parts.filter { it.isNotBlank() }
+    }
+
+    /** The offset in [rest] of the `}` that closes a body opened just before it, or null when it stays open. */
+    private fun closingBrace(rest: String): Int? {
+        if (rest.isBlank()) return null
+        var d = 1
+        var quoted = false
+        rest.forEachIndexed { i, c ->
+            if (c == '"') quoted = !quoted
+            if (!quoted) {
+                if (c == '{') d++
+                if (c == '}' && --d == 0) return i
+            }
+        }
+        return null
+    }
 }

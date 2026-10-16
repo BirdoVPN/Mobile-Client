@@ -997,30 +997,12 @@ final class VPNManager: @unchecked Sendable {
         // setting, and a "53" or custom port an older build saved is never
         // read. The profile says so with `WireGuardPort.endpointPortSourceKey`.
         lines.append("Endpoint = \(endpointString(host: config.serverAddress, port: config.serverPort))")
-        // A peer with no AllowedIPs routes NO traffic. The server normally sends
-        // the full-tunnel pair; if it sent none, fall back to it rather than
-        // building a tunnel that silently carries nothing (matches Android's
-        // `?: listOf("0.0.0.0/0", "::/0")` plus its allowed-IP count check).
-        var allowedIPs = config.allowedIPs.isEmpty ? ["0.0.0.0/0", "::/0"] : config.allowedIPs
-        // Force an IPv6 default even when the server list is a non-empty IPv4-only
-        // set (our exit nodes are IPv4-only, so the backend often sends just
-        // ["0.0.0.0/0"]). Without ::/0 in AllowedIPs, WireGuardKit installs no
-        // IPv6 route, so with the kill switch OFF all IPv6 traffic + AAAA lookups
-        // egress outside the tunnel — the real-IPv6 leak Android already blocks
-        // by unconditionally adding `::/0` (BirdoVpnService.buildVpnInterface).
-        // ::/0 with no tunnel v6 address blackholes IPv6 (leak-safe).
-        if !allowedIPs.contains(where: { Self.isIPv6DefaultRoute($0) }) {
-            allowedIPs.append("::/0")
-        }
-        // Same floor for IPv4: a partial server response (backend bug, or a
-        // shaped connect response) that lists only specific prefixes would
-        // otherwise yield a silent split tunnel — most traffic egressing in
-        // cleartext while the UI says Protected and the handshake liveness
-        // check passes. There is no split-tunnel feature on iOS, so the v4
-        // default route is always wanted.
-        if !allowedIPs.contains(where: { Self.isIPv4DefaultRoute($0) }) {
-            allowedIPs.append("0.0.0.0/0")
-        }
+        // The route contract (MR-953): no entries -> the full tunnel; ::/0 and
+        // 0.0.0.0/0 always (IPv6 blackholed on a v4-only node, no silent split
+        // tunnel); every entry as its network address, because WireGuardKit
+        // hands AllowedIPs to includedRoutes unmasked. Android enforces the same
+        // floors in BirdoVpnService.buildVpnInterface. See TunnelRoutes.
+        let allowedIPs = TunnelRoutes.allowedIPs(config.allowedIPs)
         for ip in allowedIPs {
             lines.append("AllowedIPs = \(ip)")
         }
@@ -1044,32 +1026,6 @@ final class VPNManager: @unchecked Sendable {
             customPrimary: defaults.string(forKey: "custom_dns_primary") ?? "",
             customSecondary: defaults.string(forKey: "custom_dns_secondary") ?? ""
         )
-    }
-
-    /// True if an AllowedIPs entry is the IPv6 default route (`::/0`), tolerating
-    /// surrounding whitespace and the `0::/0` spelling. Used to decide whether the
-    /// server already captures IPv6 before we append our own blackhole route.
-    static func isIPv6DefaultRoute(_ s: String) -> Bool {
-        let trimmed = s.trimmingCharacters(in: .whitespaces)
-        guard let slash = trimmed.firstIndex(of: "/"),
-              Int(trimmed[trimmed.index(after: slash)...]) == 0 else { return false }
-        var v6 = in6_addr()
-        let addr = String(trimmed[..<slash])
-        guard addr.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 else { return false }
-        return withUnsafeBytes(of: &v6) { $0.allSatisfy { $0 == 0 } } // :: with prefix /0
-    }
-
-    /// True if an AllowedIPs entry is the IPv4 default route (`0.0.0.0/0`),
-    /// tolerating whitespace and equivalent spellings (`0/0` is not accepted —
-    /// inet_pton requires dotted quad). Mirror of `isIPv6DefaultRoute`.
-    static func isIPv4DefaultRoute(_ s: String) -> Bool {
-        let trimmed = s.trimmingCharacters(in: .whitespaces)
-        guard let slash = trimmed.firstIndex(of: "/"),
-              Int(trimmed[trimmed.index(after: slash)...]) == 0 else { return false }
-        var v4 = in_addr()
-        let addr = String(trimmed[..<slash])
-        guard addr.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 else { return false }
-        return v4.s_addr == 0 // 0.0.0.0 with prefix /0
     }
 
     /// `host:port`, bracketing IPv6 literals. `Endpoint = fd00::1:51820` is

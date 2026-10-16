@@ -169,7 +169,8 @@ struct HomeView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: 120, alignment: .trailing)
-                        // An anonymous account's identity IS its account number.
+                        // Shows no account number since MR-1362; the app-switcher
+                        // cover (MR-1727) stays as a second line of defence.
                         .accountNumberSnapshotCover()
                 }
 
@@ -225,11 +226,13 @@ struct HomeView: View {
         )
     }
 
-    /// Android shows the email here; for anonymous accounts it shows the
-    /// 24-digit anonymous ID instead.
+    /// The email, or "Anonymous account" — never the account number, which is
+    /// the account's only credential (MR-1362). Android's Home top bar has
+    /// shown that label since A2-013 (BirdoNavGraph `accountLabel`); this bar
+    /// used to show the 24 digits in the clear, cut to whatever fitted.
     private var accountIdentity: String? {
         if let email = authVM.userEmail { return email }
-        if authVM.isAnonymousAccount { return authVM.anonymousAccountNumber }
+        if authVM.isAnonymousAccount { return "Anonymous account" }
         return nil
     }
 
