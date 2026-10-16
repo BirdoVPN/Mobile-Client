@@ -1,6 +1,8 @@
 package app.birdo.vpn.utils
 
 import android.util.Log
+import io.sentry.DataCollection
+import io.sentry.KeyValueCollectionBehavior
 import io.sentry.protocol.App
 import io.sentry.protocol.Contexts
 import io.sentry.protocol.Device
@@ -63,6 +65,31 @@ object CrashReporting {
         if (consentSinceMillis <= 0L) return true
         val at = eventTime?.time ?: return false // no timestamp = captured now
         return at < consentSinceMillis
+    }
+
+    /**
+     * What the SDK may collect about a person on its own: nothing.
+     *
+     * sentry-java 8.59 deprecated `sendDefaultPii` (removed in 9.0) in favour
+     * of `dataCollection`, and the two are not a rename. Once ANY
+     * dataCollection field is set, every field left unset falls back to the
+     * SDK's documented defaults, and those collect: user info (the IP the
+     * server infers from `{{auto}}`), file paths, HTTP bodies, headers,
+     * cookies, query strings, SQL and GraphQL. Setting only `userInfo = false`
+     * would therefore switch the rest ON. Every field is set here, so no
+     * answer depends on an SDK default or on the deprecated switch.
+     */
+    fun noPersonalDataCollection(): DataCollection = DataCollection().apply {
+        userInfo = false
+        filePaths = false
+        databaseQueryData = false
+        httpBodies = emptySet()
+        cookies = KeyValueCollectionBehavior.off()
+        urlQueryParams = KeyValueCollectionBehavior.off()
+        httpHeaders.request = KeyValueCollectionBehavior.off()
+        httpHeaders.response = KeyValueCollectionBehavior.off()
+        graphql.document = false
+        graphql.variables = false
     }
 
     /**

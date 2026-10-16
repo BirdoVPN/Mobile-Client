@@ -273,7 +273,12 @@ class BirdoApp : Application() {
             // an SDK default is a decision made by someone else that can change
             // in a version bump, and "we relied on the default" is not an
             // answer to a data-protection question.
-            options.isSendDefaultPii = false          // no IP, no device name
+            //
+            // No IP, no user info, no paths, bodies, headers or cookies. This
+            // replaces sendDefaultPii (deprecated in sentry-java 8.59, removed
+            // in 9.0), and REPLACES the object rather than editing it, so
+            // nothing manifest meta-data configured survives.
+            options.dataCollection = CrashReporting.noPersonalDataCollection()
             options.isAttachScreenshot = false        // never photograph the UI
             options.isAttachViewHierarchy = false     // …nor describe it
             options.isAttachServerName = false        // no host identity
@@ -362,8 +367,8 @@ class BirdoApp : Application() {
                 event.tags?.keys?.toList()?.forEach { key ->
                     event.getTag(key)?.let { event.setTag(key, scrub(it) ?: "") }
                 }
-                // Belt and braces on identity: isSendDefaultPii=false already
-                // stops the SDK populating these, but an explicit
+                // Belt and braces on identity: dataCollection.userInfo=false
+                // already stops the SDK populating these, but an explicit
                 // Sentry.setUser(...) added later would land here regardless.
                 // The account this crash belongs to is not something a VPN
                 // needs in order to fix the crash.

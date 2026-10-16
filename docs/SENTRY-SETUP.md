@@ -317,7 +317,11 @@ and it can change in a version bump.
 
 **Off:**
 
-- `isSendDefaultPii` — no IP address, no device name, no username.
+- `dataCollection` = `CrashReporting.noPersonalDataCollection()` — no IP
+  address or other user info, no file paths, HTTP bodies, headers, cookies,
+  query strings, SQL or GraphQL. It replaces `sendDefaultPii` (deprecated in
+  sentry-java 8.59, removed in 9.0). Every field is set: once any one is, the
+  SDK's defaults for the unset ones collect.
 - `isAttachScreenshot`, `isAttachViewHierarchy` — never photograph or describe
   the UI.
 - `isEnableUserInteractionTracing` / `isEnableUserInteractionBreadcrumbs` — no
