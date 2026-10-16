@@ -126,6 +126,8 @@ fun ServerListScreen(
     errorMessage: String? = null,
     /** The node the live tunnel is on, marked in its row. */
     connectedServerId: String? = null,
+    /** The node a live switch is moving to, marked "Switching…" in its row ([serverRowMarkers]). */
+    switchingServerId: String? = null,
     /** Where a locked row's upsell leads. */
     onViewPlans: () -> Unit = {},
 ) {
@@ -233,6 +235,7 @@ fun ServerListScreen(
                             isSelected = server.id == selectedServer?.id,
                             isFavorite = favoriteServers.contains(server.id),
                             isConnected = server.id == connectedServerId,
+                            isSwitching = server.id == switchingServerId,
                             onSelect = { onSelectServer(server) },
                             onToggleFavorite = { onToggleFavorite(server.id) },
                             onLockedTap = { showUpsell(server) },
@@ -453,8 +456,10 @@ private val FlagShape = RoundedCornerShape(10.dp)
  *
  * What a row says (P1-014, iOS ServerListView's ServerRow): which plan unlocks
  * a locked node (a chip, and a tap that explains it), that a node is Offline
- * (in words, not only by fading), its capabilities, and which node the live
- * tunnel is on. TalkBack gets the selection as a state, not a border colour.
+ * (in words, not only by fading), its capabilities, which node the live
+ * tunnel is on, and which one a live switch is moving to (MR-945: Home said
+ * "Switching server…" while the list said nothing). TalkBack gets the
+ * selection as a state, not a border colour.
  */
 @Composable
 internal fun ServerCard(
@@ -465,6 +470,7 @@ internal fun ServerCard(
     onToggleFavorite: () -> Unit,
     onLockedTap: () -> Unit = {},
     isConnected: Boolean = false,
+    isSwitching: Boolean = false,
 ) {
     val palette = BirdoColors.current
     val haptics = LocalHapticFeedback.current
@@ -561,6 +567,15 @@ internal fun ServerCard(
                                 .clip(CircleShape)
                                 .background(BirdoGreen)
                                 .semantics { contentDescription = connectedDescription },
+                        )
+                    } else if (isSwitching) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = stringResource(R.string.cta_switching),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = palette.accent,
+                            maxLines = 1,
                         )
                     }
                     if (isLocked) {

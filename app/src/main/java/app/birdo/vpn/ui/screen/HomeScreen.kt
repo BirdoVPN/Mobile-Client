@@ -565,9 +565,10 @@ fun HomeScreen(
         )
     }
 
-    // The node the live tunnel is on, marked in the picker (P1-014). A live
-    // switch re-dials the selected node, so while connected they are the same.
-    val connectedServerId = state.selectedServer?.id?.takeIf { isConnected && !multiHopEnabled }
+    // The node the live tunnel was dialled to, and the one a live switch is
+    // moving to, marked in the picker as the Servers tab marks them (P1-014,
+    // MR-945).
+    val rowMarkers = serverRowMarkers(state, multiHopArmed = multiHopEnabled)
 
     if (showServerSheet) {
         ServerSelectorSheet(
@@ -580,7 +581,8 @@ fun HomeScreen(
             onDismiss = { showServerSheet = false },
             isLoading = state.isLoadingServers,
             onRefresh = onRefreshServers,
-            connectedServerId = connectedServerId,
+            connectedServerId = rowMarkers.connectedServerId,
+            switchingServerId = rowMarkers.switchingServerId,
             onViewPlans = {
                 showServerSheet = false
                 onViewPlans()

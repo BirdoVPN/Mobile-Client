@@ -370,7 +370,8 @@
         "update_required",
         "client_attestation_required",
         "quota_check_unavailable",
-        "psk_delivery_unavailable"
+        "psk_delivery_unavailable",
+        "tunnel_address_unavailable"
       ]
     },
     "RebuildRefusal": {
@@ -582,6 +583,54 @@
         },
         "error": {
           "const": "psk_delivery_unavailable"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "correlationId": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "properties": {
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterSeconds": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "retryable",
+            "retryAfterSeconds"
+          ]
+        }
+      },
+      "required": [
+        "statusCode",
+        "message",
+        "error",
+        "details"
+      ]
+    },
+    "tunnel_address_unavailable": {
+      "type": "object",
+      "description": "HTTP 503. No tunnel address could be proven free on this server just now: a reservation the allocator must read did not answer, and it fails closed rather than risk giving one customer another's address. Nothing is wrong with the account or the server; retry after details.retryAfterSeconds.",
+      "properties": {
+        "statusCode": {
+          "const": 503
+        },
+        "message": {
+          "type": "string"
+        },
+        "error": {
+          "const": "tunnel_address_unavailable"
         },
         "timestamp": {
           "type": "string"

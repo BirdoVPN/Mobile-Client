@@ -84,6 +84,15 @@ class ConnectErrorContractTest {
             """"error":"quota_check_unavailable","timestamp":"2026-10-13T09:00:00.000Z","path":"/vpn/connect",""" +
             """"details":{"retryable":true,"retryAfterSeconds":30}}"""
 
+        /**
+         * vpn.controller.ts rethrowRetryableConnectRefusal for
+         * TunnelAddressUnavailableError (birdo-web #711), RETRY_AFTER_SECONDS = 15.
+         */
+        const val TUNNEL = """{"statusCode":503,""" +
+            """"message":"We could not assign your connection an address on this server just now. Please try again in a moment.",""" +
+            """"error":"tunnel_address_unavailable","timestamp":"2026-10-15T09:00:00.000Z","path":"/vpn/multi-hop/connect",""" +
+            """"details":{"retryable":true,"retryAfterSeconds":15}}"""
+
         /** A code newer than this build, with details it has never seen. */
         const val UNKNOWN_503 = """{"statusCode":503,"message":"Relay is warming up.",""" +
             """"error":"relay_warming_up","timestamp":"2026-10-13T09:00:00.000Z","path":"/vpn/connect",""" +
@@ -124,6 +133,7 @@ class ConnectErrorContractTest {
         }
         assertTrue(ConnectErrorCode.PSK_DELIVERY_UNAVAILABLE.retryable)
         assertTrue(ConnectErrorCode.QUOTA_CHECK_UNAVAILABLE.retryable)
+        assertTrue(ConnectErrorCode.fromWire("tunnel_address_unavailable").retryable)
         assertFalse(ConnectErrorCode.UNKNOWN.retryable)
     }
 
@@ -131,6 +141,7 @@ class ConnectErrorContractTest {
     fun `the sample bodies are the server's shape, and the one without a wait is off-contract`() {
         assertTrue(validate("psk_delivery_unavailable", PSK).toString(), validate("psk_delivery_unavailable", PSK).isEmpty())
         assertTrue(validate("quota_check_unavailable", QUOTA).toString(), validate("quota_check_unavailable", QUOTA).isEmpty())
+        assertTrue(validate("tunnel_address_unavailable", TUNNEL).toString(), validate("tunnel_address_unavailable", TUNNEL).isEmpty())
         val missing = validate("psk_delivery_unavailable", PSK_NO_WAIT)
         assertTrue("expected a 'required' refusal, got $missing", missing.any { it.keyword == "required" })
     }
@@ -191,6 +202,35 @@ class ConnectErrorContractTest {
         assertEquals(StringsXml.text("error_server_unavailable"), e.message)
         assertEquals(30_000L, e.retryAfterMs)
         assertEquals(FailureKind.TRANSIENT, FailureKind.forApiError(e.code, e.serverCode))
+    }
+
+    // ── tunnel_address_unavailable (MR-2058, birdo-web #711) ─────────────
+
+    @Test
+    fun `tunnel_address_unavailable is a retryable 503 that waits the server's 15 s and says try again`() {
+        val e = connectFailure(503, TUNNEL)
+        // Decoded as the contract's code, not UNKNOWN classified by its status.
+        assertEquals("tunnel_address_unavailable", e.serverCode.wire)
+        assertTrue(e.serverCode.retryable)
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, e.reason)
+        val copy = StringsXml.text("error_server_unavailable")
+        assertEquals(copy, e.message)
+        assertTrue(copy, copy.contains("try again", ignoreCase = true))
+        assertEquals(15_000L, e.retryAfterMs)
+        assertEquals(FailureKind.TRANSIENT, FailureKind.forApiError(e.code, e.serverCode))
+    }
+
+    @Test
+    fun `tunnel_address_unavailable without its wait, or on another status, is still a retry after a wait`() {
+        // A body that lost retryAfterSeconds on the way waits the retryable default,
+        // never the supervisor's bare 2 s backoff.
+        val noWait = connectFailure(503, TUNNEL.replace(""","retryAfterSeconds":15""", ""))
+        assertEquals("tunnel_address_unavailable", noWait.serverCode.wire)
+        assertEquals(RetryAfter.RETRYABLE_DEFAULT_MS, noWait.retryAfterMs)
+        // The code decides, not the status it rode in on.
+        val on409 = connectFailure(409, TUNNEL.replace("\"statusCode\":503", "\"statusCode\":409"))
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, on409.reason)
+        assertEquals(FailureKind.TRANSIENT, FailureKind.forApiError(on409.code, on409.serverCode))
     }
 
     // ── Unknown codes fall back, never fail ──────────────────────────────

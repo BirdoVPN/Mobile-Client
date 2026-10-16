@@ -46,6 +46,19 @@ enum class ConnectErrorCode(val wire: String?, val retryable: Boolean) {
      */
     PSK_DELIVERY_UNAVAILABLE("psk_delivery_unavailable", retryable = true),
 
+    /**
+     * 503 (birdo-web #711, MR-2058): the allocator could not prove a tunnel
+     * address free, because a reservation it must read (the port-forward pins,
+     * or the Multi-Hop exit routes) did not answer, so it failed closed rather
+     * than risk handing this session another customer's address
+     * (TunnelAddressUnavailableError, on /vpn/connect and
+     * /vpn/multi-hop/connect). Nothing is wrong with the account or the node;
+     * the server says to come back after `details.retryAfterSeconds` (15).
+     * It used to decode as [UNKNOWN] and was retried only because it happened
+     * to arrive as a 503, with no wait at all when the body lost its own.
+     */
+    TUNNEL_ADDRESS_UNAVAILABLE("tunnel_address_unavailable", retryable = true),
+
     /** No code, a reason phrase, or a code newer than this build: classified by status. */
     UNKNOWN(null, retryable = false),
     ;

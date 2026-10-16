@@ -49,6 +49,35 @@ internal fun homeConnection(state: VpnUiState): HomeConnection {
     )
 }
 
+/**
+ * MR-945: the session markers a server picker (the Servers tab and Home's
+ * sheet) draws on its rows, read from the same state as Home so the two
+ * cannot disagree.
+ *
+ * [connectedServerId] is the node the live tunnel was DIALLED to
+ * (VpnManager.connectedServerId), only while Home says Protected. Not the
+ * selection, which Auto-Connect, the tile, the widget and a headless start
+ * never set (REVIEW-AND-008).
+ *
+ * [switchingServerId] is, while Home says "Switching server…", the node the
+ * switch is moving to: the selection, which a live switch sets before it
+ * dials and which Home's server card names. The node being left is marked
+ * as nothing, as on Home: it is not the one the session is on any more.
+ *
+ * Neither while Multi-Hop is armed: one row cannot stand for an entry → exit
+ * route.
+ */
+internal data class ServerRowMarkers(val connectedServerId: String?, val switchingServerId: String?)
+
+internal fun serverRowMarkers(state: VpnUiState, multiHopArmed: Boolean): ServerRowMarkers {
+    if (multiHopArmed) return ServerRowMarkers(connectedServerId = null, switchingServerId = null)
+    val c = homeConnection(state)
+    return ServerRowMarkers(
+        connectedServerId = state.connectedServerId?.takeIf { c.isConnected },
+        switchingServerId = state.selectedServer?.id?.takeIf { c.isSwitching },
+    )
+}
+
 internal enum class PillIcon { NONE, SYNC, ERROR, OFFLINE }
 
 internal data class PillModel(
