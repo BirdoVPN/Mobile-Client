@@ -1113,7 +1113,7 @@ dependencies {
     // and the redirect closes the tab, instead of leaving a stray browser tab.
     implementation("androidx.browser:browser:1.10.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.58.0")
+    implementation("io.sentry:sentry-android:8.60.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
