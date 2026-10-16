@@ -89,12 +89,23 @@ object NetworkModule {
      * and a call into a half-dead tunnel must fail fast as a transport error
      * (which never tears anything down) instead of holding a heartbeat or a
      * live rebuild for the bypass client's 45 s.
+     *
+     * Happy Eyeballs, stated (MR-949): on a node without IPv6 the tunnel has
+     * no IPv6 address while `::/0` is routed into it (the leak blackhole in
+     * BirdoVpnService.buildVpnInterface), so an AAAA answer leads nowhere. Tried
+     * one address after another, the first call after Connected would sit out
+     * this 10 s connect timeout on IPv6 before trying IPv4. Fast fallback races
+     * the families instead (IPv4 starts 250 ms after IPv6) and takes the first
+     * connection that succeeds. It is OkHttp 5's default; it is set here so a
+     * default change, or a builder that drops it, fails TunnelClientFallbackTest
+     * rather than reintroducing the stall.
      */
     @Provides
     @Singleton
     @Named(TUNNEL_CLIENT)
     fun provideTunnelClient(authInterceptor: AuthInterceptor): OkHttpClient =
         baseClient(authInterceptor)
+            .fastFallback(true)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)

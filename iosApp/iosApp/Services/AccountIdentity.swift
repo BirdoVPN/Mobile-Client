@@ -102,3 +102,42 @@ enum AnonymousAccountDisplay {
         return signedIn ? storedNumber : nil
     }
 }
+
+/// How the account number reads on screen (MR-1362): Android's rule
+/// (`AnonymousId.kt` `formatAnonymousId` / `maskAnonymousId`), so both apps
+/// show the same thing and both match the account API contract's "mask it by
+/// default". Profile shows `masked` until the user asks to see the number, then
+/// `grouped`; Copy always takes the full number.
+///
+/// Foundation-only, pinned by AccountIdentityTests against Android's own test
+/// values.
+enum AccountNumberText {
+    /// Digits only, in groups of four: `1234 5678 9012 3456 7890 1234`, the
+    /// shape the sign-in field reads back. Display formatting, never
+    /// validation: a partial number is grouped too.
+    static func grouped(_ raw: String) -> String {
+        groups(raw).joined(separator: " ")
+    }
+
+    /// Every group masked but the last — `•••• •••• •••• •••• •••• 1234` — so
+    /// the user can tell which account this is without showing the credential
+    /// to anyone beside them. Same length as `grouped`.
+    static func masked(_ raw: String) -> String {
+        let all = groups(raw)
+        return all.enumerated().map { index, group in
+            index == all.count - 1 ? group : String(repeating: "•", count: group.count)
+        }.joined(separator: " ")
+    }
+
+    /// The last group, for VoiceOver while the number is masked.
+    static func lastGroup(_ raw: String) -> String {
+        groups(raw).last ?? ""
+    }
+
+    private static func groups(_ raw: String) -> [String] {
+        let digits = Array(raw.filter { $0.isASCII && $0.isWholeNumber })
+        return stride(from: 0, to: digits.count, by: 4).map {
+            String(digits[$0..<min($0 + 4, digits.count)])
+        }
+    }
+}

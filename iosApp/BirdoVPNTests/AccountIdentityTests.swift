@@ -121,4 +121,24 @@ final class AccountIdentityTests: XCTestCase {
         XCTAssertEqual(AnonymousAccountDisplay.number(profile: anonymousWithoutNumber,
                                                       signedIn: true, storedNumber: number), number)
     }
+
+    // MARK: - MR-1362: how the number reads on screen (Android's rule)
+
+    /// The same values Android's AnonymousIdTest pins for formatAnonymousId /
+    /// maskAnonymousId, so the two apps cannot drift apart.
+    func testGroupedInFoursLikeAndroid() {
+        XCTAssertEqual(AccountNumberText.grouped(number), "1234 5678 9012 3456 7890 1234")
+        XCTAssertEqual(AccountNumberText.grouped("1234 5678-9012"), "1234 5678 9012")
+        XCTAssertEqual(AccountNumberText.grouped("123456"), "1234 56")
+        XCTAssertEqual(AccountNumberText.grouped(""), "")
+    }
+
+    func testMaskedShowsOnlyTheLastGroupLikeAndroid() {
+        XCTAssertEqual(AccountNumberText.masked(number), "•••• •••• •••• •••• •••• 1234")
+        XCTAssertEqual(AccountNumberText.masked(number).count, AccountNumberText.grouped(number).count)
+        XCTAssertEqual(AccountNumberText.masked("1234"), "1234")
+        XCTAssertEqual(AccountNumberText.masked(""), "")
+        XCTAssertFalse(AccountNumberText.masked(number).contains("5678"), "a masked number shows no other digits")
+        XCTAssertEqual(AccountNumberText.lastGroup(number), "1234")
+    }
 }

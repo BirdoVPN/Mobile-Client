@@ -124,6 +124,12 @@ jobs:
       - name: Change classifier self-test
         run: bash .github/scripts/classify-changes-test.sh
 
+      # macos.yml's screenshots-macos job runs only on a manual dispatch, and
+      # this script is what decides whether it passed (MR-1797). Its fixtures
+      # run here, on every PR, so it cannot quietly stop failing.
+      - name: Mac screenshot extraction self-test
+        run: bash scripts/tests/extract_mac_screenshots_test.sh
+
       # distributionSha256Sum makes the wrapper refuse a substituted Gradle
       # distribution. When it is present it must be the official checksum of
       # the distributionUrl. It may never be REMOVED: a pull request whose base

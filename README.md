@@ -36,9 +36,10 @@ pinning live in each platform's own source tree (`app/`, `iosApp/`), not here.
 
 Compiled to:
 - **Android:** Kotlin/JVM library linked directly into the app module
-- **iOS/macOS:** `BirdoShared.framework` is still produced and linked by
-  `project.yml`, but **no Swift file imports it today** — the Apple side of the
-  module is unused. Tracked as cleanup; do not rely on it.
+- **iOS/macOS:** not used. No Swift file imports the module, so the Xcode
+  project does not link its `BirdoShared` framework and no workflow builds it
+  (MR-1085). The Apple targets in `shared/build.gradle.kts` still compile if
+  asked, but nothing ships them.
 
 ### Android App (`app/`)
 
@@ -147,10 +148,7 @@ Compiled to:
 ### iOS
 
 ```bash
-# Build KMP shared framework for iOS
-./gradlew :shared:linkReleaseFrameworkIosArm64
-
-# Generate Xcode project
+# Generate Xcode project (no Kotlin step: the app uses no KMP code)
 cd iosApp && xcodegen generate
 
 # Build (unsigned)

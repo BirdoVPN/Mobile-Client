@@ -30,7 +30,7 @@ xcode-select --install
 
 # 2. Homebrew tools used by the iOS build:
 brew install xcodegen
-brew install --cask temurin@17     # Java 17 for Gradle
+brew install --cask temurin@17     # Java 17 for Gradle (Android only; the iOS app needs none)
 ```
 
 Confirm Xcode picked the iOS 17 SDK:
@@ -42,34 +42,12 @@ xcodebuild -showsdks | grep iphone
 
 ---
 
-## 1. Build the shared KMP framework
+## 1. No Kotlin step
 
-The Kotlin Multiplatform `shared` module produces a per-arch `BirdoShared.framework`
-that the Xcode project links against. Pick the target that matches your Mac:
-
-```bash
-cd birdo-client-mobile
-
-# Apple Silicon (M1/M2/M3/M4):
-./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
-
-# Intel Mac:
-./gradlew :shared:linkDebugFrameworkIosX64
-```
-
-Output:
-- ARM Mac -> `shared/build/bin/iosSimulatorArm64/debugFramework/BirdoShared.framework`
-- Intel  -> `shared/build/bin/iosX64/debugFramework/BirdoShared.framework`
-
-For a real-device or release build:
-
-```bash
-./gradlew :shared:linkReleaseFrameworkIosArm64
-# → shared/build/bin/iosArm64/releaseFramework/BirdoShared.framework
-```
-
-The Xcode project's `FRAMEWORK_SEARCH_PATHS` (in `iosApp/project.yml`) already
-points at both locations.
+The iOS/macOS app contains no Kotlin. No Swift file imported the Kotlin
+Multiplatform `shared` module's `BirdoShared.framework`, so the Xcode project no
+longer links it and nothing needs building with Gradle first (MR-1085). Java and
+Gradle are not needed for the Apple app.
 
 ---
 
@@ -190,13 +168,10 @@ Required only when you want strangers to install it. Cost: $99/yr.
 
 | Symptom | Fix |
 | --- | --- |
-| `No such module 'BirdoShared'` | Re-run step 1 (the framework wasn't built for your arch). |
 | `WireGuardKit fails to resolve` | Xcode ▸ **File ▸ Packages ▸ Reset Package Caches**. |
 | `Provisioning profile doesn't include packet-tunnel-provider` (paid team) | Enable the capability in App Store Connect for `app.birdo.vpn.tunnel`. |
-| Crashes immediately in simulator | Kotlin/Native exception — wrong arch. Delete `shared/build/bin/` and rebuild. |
 | Simulator boots forever | `xcrun simctl shutdown all && xcrun simctl erase all`, retry. |
 | `xcodegen: command not found` | `brew install xcodegen`. |
-| `JAVA_HOME not set` | `export JAVA_HOME=$(/usr/libexec/java_home -v 17)` and add to `~/.zshrc`. |
 
 ---
 
@@ -205,8 +180,6 @@ Required only when you want strangers to install it. Cost: $99/yr.
 ```bash
 # Full clean rebuild + open in Xcode
 cd birdo-client-mobile
-./gradlew :shared:clean
-./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
 cd iosApp && xcodegen generate && open BirdoVPN.xcodeproj
 # Then ⌘R in Xcode
 ```
