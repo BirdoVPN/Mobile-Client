@@ -168,7 +168,13 @@ class GlobeFrameMonitorInstrumentedTest {
             val offAtExit = atExit.tier(GlobeTag.OFF)!!.frames
 
             // Phase 2: remove it from the composition, keep driving frames.
-            scenario.onActivity { globeComposed.value = false }
+            // NOT scenario.onActivity: that waits for the main looper to go
+            // idle first, which it does only once the frame driver has run
+            // out, so the globe left the composition after the last frame and
+            // nothing could ever land under OFF (first emulator run, MR-1410:
+            // 600 frames drawn, then the flip, then 40 s of no frames).
+            // runOnMainSync waits only for this block.
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { globeComposed.value = false }
 
             // Let the disposal land first. Frames already in flight when the
             // flag flipped are still legitimately FULL, so they are not part of
