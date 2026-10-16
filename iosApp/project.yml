@@ -253,6 +253,10 @@ targets:
       # so ConnectContractTests can encode the REAL structs — APIClient.swift
       # itself (keychain, KMP framework) cannot be compiled into this bundle.
       - path: iosApp/Services/ConnectWire.swift
+      # MR-1638: the heartbeat reply, the other half of that contract, so
+      # ConnectContractTests decodes one body per HeartbeatReason with the REAL
+      # HeartbeatResult. Foundation-only, moved out of APIClient.swift.
+      - path: iosApp/Services/HeartbeatWire.swift
       # D18 BirdoShield, response side. Foundation-only by design: the
       # predicates that decide which resolver the wg-quick config carries —
       # and in particular that the node's own 10.13.13.1 filtering resolver
