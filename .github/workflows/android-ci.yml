@@ -213,13 +213,17 @@ jobs:
       # dispatches, so a gate removed from one would first be missed on release
       # day. This reads them on every pull request: Go pinned, uploads behind
       # tests, hashed pip where the App Store Connect key is, F-Droid and the
-      # draft release consistent, Apple CI able to be required (MR-2102, MR-2060).
+      # draft release consistent, Apple CI able to be required (MR-2102, MR-2060),
+      # and one pin-expiry gate in both Android workflows (MR-1669).
       - name: Release and Apple CI gates are wired
         run: python3 scripts/check_release_workflow_gates.py
 
       # Fails from 30 days before the pin-set's expiration, while a release can
-      # still move the date out; past it Android stops enforcing the pins
-      # (connections continue, unpinned), it does not stop connecting.
+      # still move the date out. Past it Android stops enforcing the
+      # network_security_config pin-set and falls back to CA validation for
+      # what it covers; the OkHttp CertificatePinner (NetworkModule.kt) has no
+      # expiry and keeps pinning API calls in release builds. Nothing stops
+      # connecting. android.yml's release lint job runs the same script.
       - name: Check certificate pin expiry
         run: bash scripts/check_pin_expiry.sh app/src/main/res/xml/network_security_config.xml
 
@@ -645,6 +649,11 @@ jobs:
       - name: Install the emulator and create the device
         run: |
           set -euo pipefail
+          # The emulator's qemu links host libraries the runner image need not
+          # ship: ubuntu-24.04 20261012 has no libpulse0, and qemu then exits
+          # 127 before it can even print its version (run 38762972189).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libpulse0
           tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           # `yes` answers the licence prompts; `|| true` keeps its SIGPIPE out
           # of the pipeline's status, which is then sdkmanager's own.
@@ -655,7 +664,28 @@ jobs:
             exit 1
           fi
           echo no | "$tools/avdmanager" create avd --force -n ci -k "$SYSTEM_IMAGE" -d pixel_6
-          "$ANDROID_HOME/emulator/emulator" -version | head -1
+          # Any host library still missing fails HERE, by name, rather than as
+          # an exit 127 at boot. The emulator's own bundled libraries go on the
+          # search path, as its launcher puts them there, so only what the
+          # host must provide can show up as "not found".
+          emu="$ANDROID_HOME/emulator"
+          qemu="$emu/qemu/linux-x86_64/qemu-system-x86_64"
+          test -x "$qemu" || { echo "::error::$qemu is missing — the emulator package did not install"; exit 1; }
+          bundled=$(find "$emu" -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)
+          deps=$(LD_LIBRARY_PATH="$bundled" ldd "$qemu")
+          missing=$(printf '%s\n' "$deps" | grep 'not found' || true)
+          if [ -n "$missing" ]; then
+            printf '%s\n' "$missing"
+            echo "::error::qemu-system-x86_64 needs host libraries this runner lacks (above): install them before the emulator runs"
+            exit 1
+          fi
+          echo "qemu-system-x86_64: every shared library resolves"
+          if ! version=$("$emu/emulator" -version 2>&1); then
+            printf '%s\n' "$version"
+            echo "::error::the emulator does not start (emulator -version failed)"
+            exit 1
+          fi
+          echo "${version%%$'\n'*}"
 
       - name: Boot the emulator
         run: |
@@ -664,7 +694,11 @@ jobs:
           nohup "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -no-audio -no-boot-anim \
             -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none \
             > "$RUNNER_TEMP/emulator.log" 2>&1 &
-          timeout 180 "$adb" wait-for-device
+          if ! timeout 180 "$adb" wait-for-device; then
+            tail -60 "$RUNNER_TEMP/emulator.log"
+            echo "::error::no emulator came up within 3 minutes"
+            exit 1
+          fi
           booted=""
           for _ in $(seq 1 120); do
             booted=$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
@@ -700,11 +734,23 @@ jobs:
           "$adb" shell am instrument -w -r "$runner" | tee "$RUNNER_TEMP/instrument.log"
           bash scripts/check_instrumentation_result.sh "$RUNNER_TEMP/instrument.log" app/src/androidTest
 
+      # With no device attached, `adb logcat -d` prints "- waiting for device -"
+      # and waits for one indefinitely: a failure before boot once held this
+      # step until the 30-minute job timeout, and the logs below were never
+      # uploaded. So logcat is read only from a device adb reports as there,
+      # and every adb call is bounded.
       - name: Emulator diagnostics (on failure)
         if: ${{ failure() }}
+        timeout-minutes: 3
         run: |
-          "$ANDROID_HOME/platform-tools/adb" logcat -d > "$RUNNER_TEMP/logcat.txt" 2>&1 || true
-          grep -E " (E|F) " "$RUNNER_TEMP/logcat.txt" | tail -60 || true
+          adb="$ANDROID_HOME/platform-tools/adb"
+          state=$(timeout 10 "$adb" get-state 2>/dev/null | tr -d '\r' || true)
+          if [ "$state" = "device" ]; then
+            timeout 60 "$adb" logcat -d > "$RUNNER_TEMP/logcat.txt" 2>&1 || true
+            grep -E " (E|F) " "$RUNNER_TEMP/logcat.txt" | tail -60 || true
+          else
+            echo "No device attached (adb state: '${state:-none}'), so no logcat to read."
+          fi
 
       - name: Upload the emulator logs (on failure)
         if: ${{ failure() }}
@@ -715,6 +761,7 @@ jobs:
             ${{ runner.temp }}/instrument.log
             ${{ runner.temp }}/logcat.txt
             ${{ runner.temp }}/emulator.log
+            ${{ runner.temp }}/sdkmanager.log
           if-no-files-found: warn
           retention-days: 7
 

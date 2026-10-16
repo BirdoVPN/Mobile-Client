@@ -119,23 +119,11 @@ jobs:
       - name: Scripts run on macOS are bash 3.2-clean
         run: bash scripts/check_macos_bash_compat.sh
 
+      # The same script, window and wording as android-ci.yml's Lint Check
+      # (MR-1669): fails from 30 days before the pin-set's expiration. A
+      # release must not be held to a weaker gate than a pull request.
       - name: Check certificate pin expiry
-        run: |
-          EXPIRY=$(grep -oP 'expiration="\K[^"]+' app/src/main/res/xml/network_security_config.xml)
-          if [ -z "$EXPIRY" ]; then
-            echo "::error::No pin-set expiration found in network_security_config.xml"
-            exit 1
-          fi
-          DAYS_LEFT=$(( ($(date -d "$EXPIRY" +%s) - $(date +%s)) / 86400 ))
-          echo "Certificate pins expire: $EXPIRY ($DAYS_LEFT days remaining)"
-          if [ "$DAYS_LEFT" -lt 0 ]; then
-            echo "::error::Certificate pins EXPIRED on $EXPIRY! App will fail to connect."
-            exit 1
-          elif [ "$DAYS_LEFT" -lt 60 ]; then
-            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Rotate pins NOW!"
-          elif [ "$DAYS_LEFT" -lt 90 ]; then
-            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Plan pin rotation soon."
-          fi
+        run: bash scripts/check_pin_expiry.sh app/src/main/res/xml/network_security_config.xml
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1

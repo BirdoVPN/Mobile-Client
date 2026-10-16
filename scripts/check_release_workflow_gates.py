@@ -8,8 +8,9 @@ fails if any of these stops holding:
 
   * every actions/setup-go step in the Apple workflows reads iosApp/.go-version,
     and that file holds one exact Go version (no `stable`, no `1.x`);
-  * macos.yml's upload needs a unit-test job that runs the XCTest bundle and the
-    suite assertion, as ios.yml's TestFlight upload needs test-ios;
+  * macos.yml's upload needs a unit-test job, as ios.yml's TestFlight upload
+    needs test-ios, and both test jobs run the XCTest bundle and assert with
+    scripts/check_xctest_suites_ran.sh that every suite in its sources ran;
   * a workflow that can read the App Store Connect key installs Python
     packages only with --require-hashes from a hashed requirements file;
   * fdroid.yml collects the same releases its guard admits: no drafts and no
@@ -18,7 +19,11 @@ fails if any of these stops holding:
     on purpose (`prerelease: true`, not an expression);
   * apple-ci.yml and codeql-swift.yml have no workflow-level `paths:` filter (a
     required check that never starts blocks the merge); each job but `changes`
-    needs `changes` and skips only when it positively said 'false'.
+    needs `changes` and skips only when it positively said 'false';
+  * the certificate pin expiry is checked by scripts/check_pin_expiry.sh, in
+    both android-ci.yml (pull requests) and android.yml (the Play release), and
+    no workflow parses the pin-set expiration itself or says the app will "fail
+    to connect" (MR-1669: past the date Android stops enforcing the pin-set).
 
 Plain text, standard library only: the files are this repo's own, and a
 formatting change that breaks a pattern fails here loudly, not silently.
@@ -34,6 +39,8 @@ WF = os.path.join(ROOT, ".github", "workflows")
 APPLE_WORKFLOWS = ["ios.yml", "macos.yml", "apple-ci.yml", "codeql-swift.yml"]
 GO_PIN = "iosApp/.go-version"
 ASC_KEY = "secrets.APPSTORE_API_KEY_BASE64"
+PIN_SCRIPT = "scripts/check_pin_expiry.sh"
+PIN_RUN = f"run: bash {PIN_SCRIPT} app/src/main/res/xml/network_security_config.xml"
 
 failures = []
 
@@ -100,7 +107,7 @@ for name, upload, test in [("macos.yml", "release-macos", "unit-tests"), ("ios.y
         fail(f"{name}: {test} must run `xcodebuild test -only-testing:BirdoVPNTests`")
     if "continue-on-error" in block:
         fail(f"{name}: {test} must not be continue-on-error")
-    if name == "macos.yml" and "scripts/check_xctest_suites_ran.sh" not in block:
+    if "scripts/check_xctest_suites_ran.sh" not in block:
         fail(f"{name}: {test} must assert the suites ran (scripts/check_xctest_suites_ran.sh)")
 
 # -- No floating Python packages where the App Store Connect key is ------------
@@ -138,6 +145,29 @@ if "target_commitish: ${{ github.sha }}" not in draft:
 if not re.search(r"^\s+prerelease: true\s*$", draft, re.M):
     fail("android.yml: draft-release must say `prerelease: true` (owner decision 2026-10-01), not an expression")
 
+# -- One certificate pin expiry gate (MR-1669) -----------------------------------
+# Two copies once drifted: android-ci.yml's moved to the script while the release
+# pipeline's inline step kept failing only after expiry, saying the app "will
+# fail to connect".
+pin_gates = {}
+for name in sorted(os.listdir(WF)):
+    if not name.endswith((".yml", ".yaml")):
+        continue
+    text = read(os.path.join(WF, name))
+    if re.search(r"fails? to connect", text, re.I):
+        fail(f"{name}: says the app will fail to connect at pin expiry; past it Android stops enforcing the pin-set (MR-1669)")
+    if "expiration=" in text:
+        fail(f"{name}: parses the pin-set expiration itself; only {PIN_SCRIPT} may (MR-1669)")
+    # A step is its `- name:` line plus every following line indented past
+    # the dash (blank lines included).
+    for m in re.finditer(r"^( *)- name: ([^\n]*pin expir[^\n]*)\n((?:\1  [^\n]*\n|[ \t]*\n)*)", text, re.I | re.M):
+        if not re.search(rf"^\s+{re.escape(PIN_RUN)}\s*$", m.group(3), re.M):
+            fail(f"{name}: step '{m.group(2).strip()}' must be exactly `{PIN_RUN}`")
+        pin_gates[name] = pin_gates.get(name, 0) + 1
+for name in ("android-ci.yml", "android.yml"):
+    if not pin_gates.get(name):
+        fail(f"{name}: no 'Check certificate pin expiry' step running {PIN_SCRIPT}")
+
 # -- Apple CI and CodeQL Swift can be required checks ----------------------------
 for name, output in [("apple-ci.yml", "apple"), ("codeql-swift.yml", "swift")]:
     text = read(os.path.join(WF, name))
@@ -161,4 +191,5 @@ if failures:
     sys.exit(1)
 print("check_release_workflow_gates: Go pinned to", pin, "in", ", ".join(APPLE_WORKFLOWS) + ";",
       "uploads gated on tests; hashed pip where the ASC key is; F-Droid and draft-release consistent;",
+      "one pin expiry gate in", ", ".join(sorted(pin_gates)) + ";",
       "Apple CI and CodeQL Swift start on every pull request")

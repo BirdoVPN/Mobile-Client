@@ -4,12 +4,14 @@
 # (MR-1669).
 #
 # network_security_config.xml gives the birdo.app pin-set an `expiration`.
-# Past that date Android STOPS ENFORCING the pins: it falls back to ordinary CA
-# validation and connections carry on, so nothing breaks that a user or a test
-# would notice; the pinning layer is simply gone. The step this replaces said
-# the app "will fail to connect", which is not what happens, and it failed only
-# once the date had passed, when every installed build had already stopped
-# pinning.
+# Past that date Android STOPS ENFORCING THAT PIN-SET: it falls back to
+# ordinary CA validation for what the pin-set covers. Release builds pin
+# birdo.app and *.birdo.app a second time, with the same pins, in the OkHttp
+# CertificatePinner (NetworkModule.kt, `if (!BuildConfig.DEBUG)`), which has no
+# expiry, so API calls stay pinned and no connection fails; what is lost is the
+# platform layer. The step this replaces said the app "will fail to connect",
+# which is not what happens, and it failed only once the date had passed, when
+# every installed build had already stopped enforcing the pin-set.
 #
 # The remedy is a release: move the date out (the pins themselves are checked
 # against the live chain daily by cert-pins.yml), ship it, and let installs
@@ -50,13 +52,13 @@ for exp in $dates; do
     days=$(( (exp_epoch - today_epoch) / 86400 ))
     echo "Certificate pin-set expiration: $exp ($days days from $today)"
     if [ "$days" -lt 0 ]; then
-        echo "::error file=$config::The pin-set EXPIRED on $exp. Every installed build has stopped enforcing these pins and validates birdo.app with the system CA store alone: connections still work, unpinned. Move expiration out and ship a release."
+        echo "::error file=$config::The pin-set EXPIRED on $exp. Android no longer enforces this network_security_config pin-set and falls back to CA validation for what it covers; the OkHttp CertificatePinner (NetworkModule.kt) has no expiry and keeps pinning API calls in release builds, so connections do not fail. Move expiration out (keep the pins) and ship a release."
         status=1
     elif [ "$days" -lt "$FAIL_DAYS" ]; then
-        echo "::error file=$config::The pin-set expires in $days days ($exp). After that date Android stops enforcing these pins and falls back to ordinary CA validation: connections keep working, unpinned. Move expiration out (keep the pins) and ship a release before then. This check fails from $FAIL_DAYS days out so that there is time to."
+        echo "::error file=$config::The pin-set expires in $days days ($exp). After that date Android stops enforcing the network_security_config pin-set and falls back to CA validation for what it covers; the OkHttp CertificatePinner (NetworkModule.kt) has no expiry and keeps pinning API calls in release builds; connections do not fail. Move expiration out (keep the pins) and ship a release before then. This check fails from $FAIL_DAYS days out so that there is time to."
         status=1
     elif [ "$days" -lt "$WARN_DAYS" ]; then
-        echo "::warning file=$config::The pin-set expires in $days days ($exp), after which Android stops enforcing the pins (connections continue, unpinned). Move expiration out in the next release: this check fails from $FAIL_DAYS days out."
+        echo "::warning file=$config::The pin-set expires in $days days ($exp). After that date Android stops enforcing the network_security_config pin-set (the OkHttp CertificatePinner keeps pinning API calls in release builds; connections do not fail). Move expiration out in the next release: this check fails from $FAIL_DAYS days out."
     else
         echo "Pin expiry OK: $days days left (warns under $WARN_DAYS, fails under $FAIL_DAYS)"
     fi

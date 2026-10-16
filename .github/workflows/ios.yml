@@ -553,18 +553,11 @@ jobs:
 
       # A green xcodebuild proves the run did not FAIL; it does not prove a
       # single test EXECUTED — the destination bug above is exactly that shape.
-      # Assert the suites the bundle is supposed to contain actually reported.
+      # Every suite the bundle's sources declare must have reported, read from
+      # the sources rather than a hand-kept list: the same script apple-ci.yml
+      # runs on every Apple pull request and macos.yml's unit-tests runs.
       - name: Assert the test bundle actually ran
-        run: |
-          set -euo pipefail
-          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
-            if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
-              echo "::error::$suite never reported — the test bundle did not run"
-              exit 1
-            fi
-          done
-          echo "Suites that reported:"
-          grep -oE "Test Suite '[A-Za-z]+Tests'" "$RUNNER_TEMP/iostest.log" | sort -u
+        run: bash scripts/check_xctest_suites_ran.sh "$RUNNER_TEMP/iostest.log" iosApp/BirdoVPNTests
 
   # -- Signed Release & TestFlight Upload ---------------------------
   # ENABLED 2026-07-31: the pause is deliberately lifted — code signing is
