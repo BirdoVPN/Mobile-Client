@@ -1090,9 +1090,9 @@ dependencies {
     // Ktor is gone and the declaration is now the 5.2.1 every release since
     // 2026-06 has run. Bump the three together (Dependabot groups them);
     // OkHttpVersionAlignmentTest fails if they or the lockfile drift apart.
-    implementation("com.squareup.okhttp3:okhttp:5.2.1")
-    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.2.1")
-    implementation("com.squareup.okhttp3:logging-interceptor:5.2.1")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.5.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:5.5.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")
 
