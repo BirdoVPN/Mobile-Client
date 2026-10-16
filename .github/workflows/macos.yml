@@ -57,8 +57,6 @@ defaults:
     shell: bash
 
 env:
-  JAVA_VERSION: '17'
-  JAVA_DISTRIBUTION: 'temurin'
   # Must track project.yml's deploymentTarget. Building the Go library against
   # the SDK's own minimum instead is what shipped an iOS 26 binary to a 17.7
   # device and killed the tunnel with SIGILL inside _cgo_wait_runtime_init_done.
@@ -76,20 +74,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # ./gradlew runs below: only a published Gradle wrapper may.
-      - name: Validate the Gradle wrapper
-        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
+      # No Kotlin step: the app imports nothing from the KMP `shared` module,
+      # so its BirdoShared framework is neither built nor linked (MR-1085).
       - uses: ./.github/actions/apple-toolchain
-
-      - name: Build shared framework (macOS)
-        run: ./gradlew :shared:linkReleaseFrameworkMacosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: |
@@ -173,8 +160,8 @@ jobs:
   #
   # It doubles as the first proof the macOS app actually LAUNCHES: everything
   # before this verified only that it compiles, signs and packages. So it must
-  # be able to FAIL: a failed UI test, a missing result manifest or zero
-  # captured screenshots turns the job red. The extraction and upload steps
+  # be able to FAIL: a failed UI test, a missing result manifest, any missing
+  # store screenshot or a 99-stuck capture turns the job red. The extraction and upload steps
   # still run after a failure, because partial captures and the raw log are
   # exactly what a failure needs.
   # ==========================================================================
@@ -194,20 +181,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # ./gradlew runs below: only a published Gradle wrapper may.
-      - name: Validate the Gradle wrapper
-        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
       - uses: ./.github/actions/apple-toolchain
-
-      - name: Build shared framework (macOS)
-        run: ./gradlew :shared:linkDebugFrameworkMacosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh
@@ -364,8 +338,11 @@ jobs:
           # The prepare script assigns entitlements per target instead.
 
       # Runs after a failed test as well: partial captures are still worth
-      # having. But a missing result bundle, a missing manifest or zero
-      # captures is a failure in its own right, never a warning.
+      # having. But a missing result bundle, a missing manifest, a missing
+      # store screenshot (00-launch, 01-connect, 02-servers, 03-settings) or a
+      # 99-stuck capture is a failure in its own right, never a warning
+      # (MR-1797): the test skips a screen it cannot reach rather than failing,
+      # so this is the check that a run produced the full set.
       - name: Extract screenshots
         if: ${{ !cancelled() }}
         run: |
@@ -382,31 +359,12 @@ jobs:
           xcrun xcresulttool export attachments \
             --path "$RUNNER_TEMP/mac.xcresult" \
             --output-path "$RUNNER_TEMP/att"
-          python3 - "$RUNNER_TEMP/att" "$OUT" <<'PYEOF'
-          import json, os, shutil, sys
-          att, out = sys.argv[1], sys.argv[2]
-          man = os.path.join(att, "manifest.json")
-          if not os.path.exists(man):
-              print("::error::no manifest.json in the exported attachments — the test attached nothing")
-              raise SystemExit(1)
-          n = 0
-          for entry in json.load(open(man)):
-              for a in entry.get("attachments", []):
-                  # XCUITest also attaches UI hierarchies, synthesized events and
-                  # a screen recording; keep only our named captures.
-                  human = a.get("suggestedHumanReadableName", "")
-                  if not human.startswith(("00-", "01-", "02-", "03-", "99-")):
-                      continue
-                  src = os.path.join(att, a["exportedFileName"])
-                  if os.path.exists(src):
-                      shutil.copy(src, os.path.join(out, "mac-%s.png" % human.split("_")[0]))
-                      n += 1
-          print("extracted %d screenshots" % n)
-          if n == 0:
-              print("::error::the result bundle holds no named screenshot (00-/01-/02-/03-/99-)")
-              raise SystemExit(1)
-          PYEOF
+          # Copies first, then decides; tested on fixtures by
+          # scripts/tests/extract_mac_screenshots_test.sh (Android CI).
+          status=0
+          python3 scripts/extract_mac_screenshots.py "$RUNNER_TEMP/att" "$OUT" || status=$?
           ls -la "$OUT"
+          exit "$status"
 
       - name: UI test diagnostics
         if: ${{ always() }}
@@ -421,7 +379,8 @@ jobs:
           name: birdo-vpn-macos-screenshots
           path: ${{ runner.temp }}/screenshots/*.png
           retention-days: 30
-          if-no-files-found: warn
+          # MR-1797: a run that captured nothing must not upload "successfully".
+          if-no-files-found: error
 
       - name: Cleanup keychain & API key
         if: ${{ always() }}
@@ -457,21 +416,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # ./gradlew runs below: only a published Gradle wrapper may.
-      - name: Validate the Gradle wrapper
-        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
-      # Selected BEFORE the Kotlin/Native link, which uses the active Xcode's SDK.
+      # No Kotlin step, as in test-ios: the app imports nothing from the KMP
+      # `shared` module (MR-1085).
       - uses: ./.github/actions/apple-toolchain
-
-      - name: Build shared framework for iOS Simulator
-        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
 
       # An exported BirdoPQ symbol with no Swift call site is not a mitigation;
       # the Mac app ships the same Swift as the iOS one.
@@ -576,23 +523,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # ./gradlew runs below: only a published Gradle wrapper may.
-      - name: Validate the Gradle wrapper
-        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-
       - name: Set keychain path
         run: echo "KEYCHAIN_PATH=$RUNNER_TEMP/birdo-mac.keychain-db" >> "$GITHUB_ENV"
 
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
       - uses: ./.github/actions/apple-toolchain
-
-      - name: Build shared framework (macOS)
-        run: ./gradlew :shared:linkReleaseFrameworkMacosArm64
 
       - name: Build BirdoPQNative.xcframework
         run: bash ./scripts/build-birdo-pq-xcframework.sh

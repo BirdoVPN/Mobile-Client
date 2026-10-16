@@ -72,10 +72,12 @@ kotlin {
                 // the iOS workflow is the only build that exercises the K/N side.
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
-                implementation("io.ktor:ktor-client-core:3.3.3")
-                implementation("io.ktor:ktor-client-content-negotiation:3.3.3")
-                implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.3")
-                implementation("io.ktor:ktor-client-logging:3.3.3")
+                // No Ktor (MR-2092). It was declared here and imported by
+                // nothing, and its Android engine (ktor-client-okhttp) pulled the
+                // app's runtime OkHttp past the version app/build.gradle.kts
+                // declares. The app talks HTTP through Retrofit/OkHttp; an HTTP
+                // client added here must not drag in a second OkHttp
+                // (OkHttpVersionAlignmentTest).
             }
         }
         commonTest {
@@ -85,22 +87,11 @@ kotlin {
             }
         }
 
-        androidMain {
-            dependencies {
-                implementation("io.ktor:ktor-client-okhttp:3.3.3")
-            }
-        }
-
-        // appleMain comes from Kotlin's default hierarchy template: it sits
-        // over every Apple target declared above (iOS device, both
-        // simulators, both macOS), so the Darwin ktor engine and the shared
-        // Kotlin are written once and cannot drift between iOS and macOS.
-        // Wiring the same edges by hand (`by creating` + dependsOn) made the
-        // plugin skip the template and warn on every build.
-        appleMain {
-            dependencies {
-                implementation("io.ktor:ktor-client-darwin:3.3.3")
-            }
-        }
+        // androidMain and appleMain need no block: they come from Kotlin's
+        // default hierarchy template. appleMain sits over every Apple target
+        // declared above (iOS device, both simulators, both macOS), so the
+        // shared Kotlin is written once and cannot drift between iOS and
+        // macOS. Wiring the same edges by hand (`by creating` + dependsOn) made
+        // the plugin skip the template and warn on every build.
     }
 }

@@ -36,9 +36,10 @@ pinning live in each platform's own source tree (`app/`, `iosApp/`), not here.
 
 Compiled to:
 - **Android:** Kotlin/JVM library linked directly into the app module
-- **iOS/macOS:** `BirdoShared.framework` is still produced and linked by
-  `project.yml`, but **no Swift file imports it today** — the Apple side of the
-  module is unused. Tracked as cleanup; do not rely on it.
+- **iOS/macOS:** not used. No Swift file imports the module, so the Xcode
+  project does not link its `BirdoShared` framework and no workflow builds it
+  (MR-1085). The Apple targets in `shared/build.gradle.kts` still compile if
+  asked, but nothing ships them.
 
 ### Android App (`app/`)
 
@@ -147,10 +148,7 @@ Compiled to:
 ### iOS
 
 ```bash
-# Build KMP shared framework for iOS
-./gradlew :shared:linkReleaseFrameworkIosArm64
-
-# Generate Xcode project
+# Generate Xcode project (no Kotlin step: the app uses no KMP code)
 cd iosApp && xcodegen generate
 
 # Build (unsigned)
@@ -193,7 +191,7 @@ cosign verify-blob \
 |----------|---------|-----------|
 | [Android CI](.github/workflows/android-ci.yml) | PRs (any base branch), push to `main` | Lint, unit tests, CodeQL, debug APK + R8, native gates, instrumented tests on an emulator |
 | [Android Release](.github/workflows/android.yml) | Push to `main` (dry run), `android-v*` tags, manual dispatch | Signed APK + AAB, Sigstore + GPG, draft release, Play upload |
-| [Apple CI](.github/workflows/apple-ci.yml) | Every PR and `main` push; the jobs are skipped unless `iosApp/`, `shared/`, `native/birdo-pq-ios/` or the build inputs changed | iOS simulator tests, unsigned macOS build |
+| [Apple CI](.github/workflows/apple-ci.yml) | Every PR and `main` push; the jobs are skipped unless `iosApp/`, `native/birdo-pq-ios/` or the build inputs changed | iOS simulator tests, unsigned macOS build |
 | [iOS Release](.github/workflows/ios.yml) | `android-v*` tags, manual dispatch | Unsigned .ipa on the release, TestFlight upload |
 | [macOS Release](.github/workflows/macos.yml) | `mac-v*` tags, manual dispatch | Unit tests, then the Mac App Store upload; UI screenshots |
 

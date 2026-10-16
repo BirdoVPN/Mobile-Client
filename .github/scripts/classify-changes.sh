@@ -56,16 +56,15 @@ while IFS= read -r f; do
     n=$((n + 1))
 
     # apple-ci.yml. A case `*` also matches `/`, so `iosApp/*` is the whole
-    # tree; the root-level Gradle files are matched only at the root.
+    # tree. No shared/ or Gradle path: the Apple apps neither import nor link
+    # the KMP module (MR-1085), so a Kotlin or Gradle change cannot reach them.
     case "$f" in
-        iosApp/*|shared/*|native/birdo-pq-ios/*|contract/*|gradle/*|\
+        iosApp/*|native/birdo-pq-ios/*|contract/*|\
         scripts/build-birdo-pq-xcframework.sh|scripts/check_xctest_suites_ran.sh|\
-        gradle.properties|version.properties|rust-toolchain.toml|\
+        version.properties|rust-toolchain.toml|\
         .github/workflows/apple-ci.yml|.github/actions/apple-toolchain/*|\
         .github/scripts/pick-simulator.py|.github/scripts/classify-changes.sh)
             apple=true ;;
-        */*) ;;
-        *.gradle.kts) apple=true ;;
     esac
 
     # codeql-swift.yml: Swift sources at any depth under iosApp/, and the

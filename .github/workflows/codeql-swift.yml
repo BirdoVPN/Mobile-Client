@@ -28,8 +28,8 @@
 # ------------
 # Pull requests and main pushes that change Swift sources or this scan's own
 # configuration, a weekly sweep, and on demand. A Kotlin-only change to
-# shared/ changes no Swift source; apple-ci.yml still compiles the Swift
-# against it.
+# shared/ cannot reach the Swift at all: the Apple apps neither import nor
+# link that module (MR-1085).
 #
 # Every pull request and main push STARTS this workflow (MR-2060): there is no
 # workflow-level `paths:` filter, because a required check that never starts
@@ -80,10 +80,6 @@ concurrency:
 defaults:
   run:
     shell: bash
-
-env:
-  JAVA_VERSION: '17'
-  JAVA_DISTRIBUTION: 'temurin'
 
 jobs:
   # Whether this change has Swift to scan. Fails OPEN, like apple-ci.yml's:
@@ -150,26 +146,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up JDK
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: ${{ env.JAVA_DISTRIBUTION }}
-
       # The same pinned Xcode the shipped build uses, so the Swift version the
-      # extractor sees is identical to the one that ships. Selected before the
-      # Kotlin/Native link, which uses the active Xcode's SDK.
+      # extractor sees is identical to the one that ships.
       - uses: ./.github/actions/apple-toolchain
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
-        with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-
       # ── prerequisites: mirror of ios.yml's build-ios job ──────────────────
-      - name: Build shared framework for iOS
-        run: ./gradlew :shared:linkReleaseFrameworkIosArm64
-
+      # (No Kotlin step: nothing imports the KMP BirdoShared framework, and it
+      # is no longer linked; MR-1085.)
       - name: Restore the BirdoPQ Rust cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -224,7 +207,7 @@ jobs:
 
       # ── the scan ──────────────────────────────────────────────────────────
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           languages: swift
           build-mode: manual
@@ -257,6 +240,6 @@ jobs:
             ONLY_ACTIVE_ARCH=NO
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: '/language:swift'

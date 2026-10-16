@@ -35,9 +35,9 @@ list "both sides of a rename into docs/"       $'app/src/main/java/Foo.kt\ndocs/
 # apple-ci.yml and codeql-swift.yml (MR-2060): the paths that were their
 # workflow-level `paths:` filters. A skipped Apple job counts as passing, so
 # every one of these has to say true.
-list "the KMP shared module"                   $'shared/src/commonMain/kotlin/A.kt\n'       true  true  true  false
-list "root build.gradle.kts"                   $'build.gradle.kts\n'                        true  true  true  false
-list "app/build.gradle.kts is not root-level"  $'app/build.gradle.kts\n'                    true  true  false false
+list "the KMP shared module (unlinked, MR-1085)" $'shared/src/commonMain/kotlin/A.kt\n'     true  true  false false
+list "root build.gradle.kts"                   $'build.gradle.kts\n'                        true  true  false false
+list "the Gradle version catalog"              $'gradle/libs.versions.toml\n'               true  true  false false
 list "version.properties"                      $'version.properties\n'                      true  true  true  false
 list "BirdoPQ for iOS"                         $'native/birdo-pq-ios/src/lib.rs\n'          true  true  true  false
 list "the vendored contract"                   $'contract/vpn-protocol.schema.json\n'       true  true  true  false

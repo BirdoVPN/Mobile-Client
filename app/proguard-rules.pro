@@ -246,14 +246,13 @@
 # real Android path — while 44 members are removed. The selection path is intact
 # and only the dead providers went.
 #
-# !! Note for whoever reads this next: the declared okhttp is 4.12.0 but
-# releaseRuntimeClasspath resolves okhttp 5.2.1, pulled up by
-# io.ktor:ktor-client-okhttp and okhttp-android (verified in
-# app/gradle.lockfile: 4.12.0 appears only on debugAndroidTestCompileClasspath).
-# The consumer rules that actually get applied are okhttp 5's, and they differ
-# from 4.x's — 4.x carried a -keepnames for
+# The okhttp the app declares (app/build.gradle.kts) is the one that ships:
+# 5.x, with okhttp-dnsoverhttps and logging-interceptor at the same version
+# (MR-2092; OkHttpVersionAlignmentTest pins it). On Android okhttp 5 resolves
+# to okhttp-android, whose consumer rules are what gets applied, and they
+# differ from 4.x's — 4.x carried a -keepnames for
 # okhttp3.internal.publicsuffix.PublicSuffixDatabase and 5.x does not. Read the
-# applied rules out of configuration.txt, not out of the 4.12.0 jar.
+# applied rules out of configuration.txt, not out of an okhttp jar.
 #
 # The -dontwarn lines stay. They keep NOTHING; they exist because AGP enforces
 # android.r8.failOnMissingClasses (BooleanOption R8_FAIL_ON_MISSING_CLASSES,
