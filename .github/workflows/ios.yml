@@ -93,10 +93,15 @@ jobs:
       # `$(GOROOT)/.prepared` target asserts `go env GOROOT` is non-empty and
       # rsyncs it. The macos-14 image no longer ships Go on PATH, so install
       # it explicitly (was `go: command not found`).
+      #
+      # The version is iosApp/.go-version, never `stable` (MR-2102): a signed
+      # build must not change toolchain because Go shipped a release that
+      # morning. Every Apple workflow reads the same file, so apple-ci.yml has
+      # already built and tested with it; bump it there, deliberately.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
       - name: Build libwg-go.a (device)
         run: |
@@ -446,7 +451,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
       - name: Build libwg-go.a (simulator)
         run: |
@@ -548,18 +553,11 @@ jobs:
 
       # A green xcodebuild proves the run did not FAIL; it does not prove a
       # single test EXECUTED — the destination bug above is exactly that shape.
-      # Assert the suites the bundle is supposed to contain actually reported.
+      # Every suite the bundle's sources declare must have reported, read from
+      # the sources rather than a hand-kept list: the same script apple-ci.yml
+      # runs on every Apple pull request and macos.yml's unit-tests runs.
       - name: Assert the test bundle actually ran
-        run: |
-          set -euo pipefail
-          for suite in ConnectContractTests LiveRebuildTests QuickSelectTests StoreCatalogTests StoredPQKeyTriageTests; do
-            if ! grep -q "Test Suite '$suite'" "$RUNNER_TEMP/iostest.log"; then
-              echo "::error::$suite never reported — the test bundle did not run"
-              exit 1
-            fi
-          done
-          echo "Suites that reported:"
-          grep -oE "Test Suite '[A-Za-z]+Tests'" "$RUNNER_TEMP/iostest.log" | sort -u
+        run: bash scripts/check_xctest_suites_ran.sh "$RUNNER_TEMP/iostest.log" iosApp/BirdoVPNTests
 
   # -- Signed Release & TestFlight Upload ---------------------------
   # ENABLED 2026-07-31: the pause is deliberately lifted — code signing is
@@ -628,7 +626,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 'stable'
+          go-version-file: iosApp/.go-version
           cache: false
       - name: Build libwg-go.a (device)
         run: |

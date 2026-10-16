@@ -271,7 +271,7 @@ accounts) -> production (staged).
 | Review can't get past login | Medium | Provide reviewer account with an active plan (§3) |
 | 16 KB gate flags prebuilt Go libs | Low | Bump wg-go/xray to current builds (CI will name the file) |
 | In-app **voucher** redemption seen as alt-payment | **Settled — see below** | Vouchers are sold only on birdo.app; the app redeems, never sells. Redemption stays enabled in the Play build. |
-| Cert-pin expiry 2027-06-01 | Low (far off) | `lint` warns near expiry; ship an update before |
+| Cert-pin expiry 2027-06-01 | Low (far off) | Lint Check (pull requests) and the release pipeline's lint job (`scripts/check_pin_expiry.sh`) warn from 90 days and fail from 30 days before it. Past it Android stops enforcing the network_security_config pin-set and falls back to CA validation for what it covers; the OkHttp CertificatePinner (`NetworkModule.kt`) has no expiry and keeps pinning API calls in release builds; connections do not fail. Ship an update that moves the date before then |
 
 ### Vouchers and Play's payments policy — settled
 

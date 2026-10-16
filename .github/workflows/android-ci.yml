@@ -198,28 +198,34 @@ jobs:
       - name: Scripts run on macOS are bash 3.2-clean
         run: bash scripts/check_macos_bash_compat.sh
 
-      - name: Check certificate pin expiry
+      # Gates that only bite on a date, on a macOS runner or on an emulator get
+      # their failure cases proven here, on every pull request: the pin-expiry
+      # window below (MR-1669), the XCTest suite assertion that gates the Mac
+      # App Store and Apple CI (MR-2102, MR-1802), and the reading of
+      # `am instrument` output that decides the emulator job (MR-1410).
+      - name: CI gate self-tests
         run: |
-          # Extract pin-set expiration date from network_security_config.xml
-          EXPIRY=$(grep -oP 'expiration="\K[^"]+' app/src/main/res/xml/network_security_config.xml)
-          if [ -z "$EXPIRY" ]; then
-            echo "::error::No pin-set expiration found in network_security_config.xml"
-            exit 1
-          fi
-          EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s)
-          NOW_EPOCH=$(date +%s)
-          DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
-          echo "Certificate pins expire: $EXPIRY ($DAYS_LEFT days remaining)"
-          if [ "$DAYS_LEFT" -lt 0 ]; then
-            echo "::error::Certificate pins EXPIRED on $EXPIRY! App will fail to connect."
-            exit 1
-          elif [ "$DAYS_LEFT" -lt 60 ]; then
-            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Rotate pins NOW!"
-          elif [ "$DAYS_LEFT" -lt 90 ]; then
-            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Plan pin rotation soon."
-          else
-            echo "Pin expiry OK: $DAYS_LEFT days remaining"
-          fi
+          bash scripts/tests/check_pin_expiry_test.sh
+          bash scripts/tests/check_xctest_suites_ran_test.sh
+          bash scripts/tests/check_instrumentation_result_test.sh
+
+      # macos.yml, ios.yml, android.yml and fdroid.yml run only on tags and
+      # dispatches, so a gate removed from one would first be missed on release
+      # day. This reads them on every pull request: Go pinned, uploads behind
+      # tests, hashed pip where the App Store Connect key is, F-Droid and the
+      # draft release consistent, Apple CI able to be required (MR-2102, MR-2060),
+      # and one pin-expiry gate in both Android workflows (MR-1669).
+      - name: Release and Apple CI gates are wired
+        run: python3 scripts/check_release_workflow_gates.py
+
+      # Fails from 30 days before the pin-set's expiration, while a release can
+      # still move the date out. Past it Android stops enforcing the
+      # network_security_config pin-set and falls back to CA validation for
+      # what it covers; the OkHttp CertificatePinner (NetworkModule.kt) has no
+      # expiry and keeps pinning API calls in release builds. Nothing stops
+      # connecting. android.yml's release lint job runs the same script.
+      - name: Check certificate pin expiry
+        run: bash scripts/check_pin_expiry.sh app/src/main/res/xml/network_security_config.xml
 
       # check_pq_docs.sh fails if any file still claims the post-migration
       # build is CLEAN-only (PQ-DOCS-OK: named, not claimed), that the
@@ -542,8 +548,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # The androidTest APK too, for the emulator job below (MR-1410): it then
+      # tests exactly the app APK this job verifies and uploads.
       - name: Build Debug APK
-        run: ./gradlew assembleDebug
+        run: ./gradlew assembleDebug assembleDebugAndroidTest
 
       # Same ABI x engine contract the release job enforces, run here on the
       # artifact a PR can actually build. --native-libs-only because a debug APK
@@ -574,6 +582,201 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+      - name: Upload androidTest APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: debug-android-test-apk
+          path: app/build/outputs/apk/androidTest/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  # -- Instrumented tests (androidTest) on an emulator --------------------
+  #
+  # MR-1410: app/src/androidTest ran in NO workflow, so
+  # GlobeFrameMonitorInstrumentedTest -- the only check that JankStats really
+  # labels the globe's frames, which no JVM test can reach -- was an on-device
+  # proof that no device ran. It runs here on every pull request that can
+  # affect the app, on an x86_64 emulator, against the debug APK "Build APK"
+  # just built and verified (every ABI's native stack included, so the app
+  # process is the real one). Not a required check.
+  #
+  # The image is the one baseline-profile.yml records on (API 34, google_apis,
+  # x86_64; docs/BASELINE-PROFILE.md says why not aosp_atd). The tests assert
+  # labelling and delivery, never frame times: an emulator's are not a phone's.
+  instrumented:
+    name: Instrumented tests (emulator)
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SYSTEM_IMAGE: 'system-images;android-34;google_apis;x86_64'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the debug APK
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: debug-apk
+          path: ${{ runner.temp }}/apk/app
+
+      - name: Download the androidTest APK
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: debug-android-test-apk
+          path: ${{ runner.temp }}/apk/test
+
+      # Same as baseline-profile.yml: /dev/kvm is there but only for the kvm
+      # group, and without it the emulator boots in software and times out.
+      - name: Enable KVM
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle --timeout=15 || true
+          for _ in 1 2 3 4 5 6 7 8 9 10; do test -w /dev/kvm && break; sleep 1; done
+          test -w /dev/kvm || { echo "::error::/dev/kvm is not writable — this runner cannot host an emulator."; exit 1; }
+          echo "/dev/kvm OK"
+
+      - name: Install the emulator and create the device
+        run: |
+          set -euo pipefail
+          # The emulator's qemu links host libraries the runner image need not
+          # ship: ubuntu-24.04 20261012 has no libpulse0, and qemu then exits
+          # 127 before it can even print its version (run 38762972189).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libpulse0
+          tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          # `yes` answers the licence prompts; `|| true` keeps its SIGPIPE out
+          # of the pipeline's status, which is then sdkmanager's own.
+          if ! { yes || true; } | "$tools/sdkmanager" --install emulator platform-tools "$SYSTEM_IMAGE" \
+               > "$RUNNER_TEMP/sdkmanager.log" 2>&1; then
+            tail -40 "$RUNNER_TEMP/sdkmanager.log"
+            echo "::error::sdkmanager could not install the emulator or $SYSTEM_IMAGE"
+            exit 1
+          fi
+          # avdmanager and the emulator need not default to the same AVD
+          # directory: in run 38859303616 the emulator searched only
+          # ~/.android/avd and found no ci.ini there. Both are told where it is.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          echo no | "$tools/avdmanager" create avd --force -n ci -k "$SYSTEM_IMAGE" -d pixel_6
+          # Any host library still missing fails HERE, by name, rather than as
+          # an exit 127 at boot. The emulator's own bundled libraries go on the
+          # search path, as its launcher puts them there, so only what the
+          # host must provide can show up as "not found".
+          emu="$ANDROID_HOME/emulator"
+          qemu="$emu/qemu/linux-x86_64/qemu-system-x86_64"
+          test -x "$qemu" || { echo "::error::$qemu is missing — the emulator package did not install"; exit 1; }
+          bundled=$(find "$emu" -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)
+          deps=$(LD_LIBRARY_PATH="$bundled" ldd "$qemu")
+          missing=$(printf '%s\n' "$deps" | grep 'not found' || true)
+          if [ -n "$missing" ]; then
+            printf '%s\n' "$missing"
+            echo "::error::qemu-system-x86_64 needs host libraries this runner lacks (above): install them before the emulator runs"
+            exit 1
+          fi
+          echo "qemu-system-x86_64: every shared library resolves"
+          if ! version=$("$emu/emulator" -version 2>&1); then
+            printf '%s\n' "$version"
+            echo "::error::the emulator does not start (emulator -version failed)"
+            exit 1
+          fi
+          echo "${version%%$'\n'*}"
+          avds=$("$emu/emulator" -list-avds 2>&1 || true)
+          if ! grep -qx ci <<< "$avds"; then
+            printf '%s\n' "$avds"
+            echo "::error::the emulator does not see the AVD 'ci' that avdmanager created in $ANDROID_AVD_HOME"
+            exit 1
+          fi
+          echo "AVD 'ci' is visible to the emulator ($ANDROID_AVD_HOME)"
+
+      - name: Boot the emulator
+        run: |
+          set -euo pipefail
+          adb="$ANDROID_HOME/platform-tools/adb"
+          nohup "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -no-audio -no-boot-anim \
+            -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none \
+            > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          if ! timeout 180 "$adb" wait-for-device; then
+            tail -60 "$RUNNER_TEMP/emulator.log"
+            echo "::error::no emulator came up within 3 minutes"
+            exit 1
+          fi
+          booted=""
+          for _ in $(seq 1 120); do
+            booted=$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            [ "$booted" = "1" ] && break
+            sleep 5
+          done
+          if [ "$booted" != "1" ]; then
+            tail -60 "$RUNNER_TEMP/emulator.log"
+            echo "::error::the emulator did not finish booting within 10 minutes"
+            exit 1
+          fi
+          "$adb" shell input keyevent 82 || true
+          echo "booted: $("$adb" shell getprop ro.build.fingerprint | tr -d '\r')"
+
+      # `am instrument` exits 0 whatever happened, so the verdict comes from
+      # scripts/check_instrumentation_result.sh: "OK (N tests)" with N equal to
+      # the @Test methods in app/src/androidTest, and no failure or crash.
+      - name: Run the instrumented tests
+        run: |
+          set -euo pipefail
+          adb="$ANDROID_HOME/platform-tools/adb"
+          "$adb" install -r -t "$RUNNER_TEMP"/apk/app/*.apk
+          "$adb" install -r -t "$RUNNER_TEMP"/apk/test/*.apk
+          runner=$("$adb" shell pm list instrumentation | tr -d '\r' \
+            | sed -nE 's/^instrumentation:([^ ]+) \(target=app\.birdo\.vpn\.debug\)$/\1/p' | head -1)
+          if [ -z "$runner" ]; then
+            "$adb" shell pm list instrumentation
+            echo "::error::no instrumentation targets app.birdo.vpn.debug — the androidTest APK did not install"
+            exit 1
+          fi
+          echo "Running $runner"
+          "$adb" logcat -c || true
+          "$adb" shell am instrument -w -r "$runner" | tee "$RUNNER_TEMP/instrument.log"
+          bash scripts/check_instrumentation_result.sh "$RUNNER_TEMP/instrument.log" app/src/androidTest
+
+      # With no device attached, `adb logcat -d` prints "- waiting for device -"
+      # and waits for one indefinitely: a failure before boot once held this
+      # step until the 30-minute job timeout, and the logs below were never
+      # uploaded. So logcat is read only from a device adb reports as there,
+      # and every adb call is bounded.
+      - name: Emulator diagnostics (on failure)
+        if: ${{ failure() }}
+        timeout-minutes: 3
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          state=$(timeout 10 "$adb" get-state 2>/dev/null | tr -d '\r' || true)
+          if [ "$state" = "device" ]; then
+            timeout 60 "$adb" logcat -d > "$RUNNER_TEMP/logcat.txt" 2>&1 || true
+            grep -E " (E|F) " "$RUNNER_TEMP/logcat.txt" | tail -60 || true
+          else
+            echo "No device attached (adb state: '${state:-none}'), so no logcat to read."
+          fi
+
+      - name: Upload the emulator logs (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: instrumented-tests-logs
+          path: |
+            ${{ runner.temp }}/instrument.log
+            ${{ runner.temp }}/logcat.txt
+            ${{ runner.temp }}/emulator.log
+            ${{ runner.temp }}/sdkmanager.log
+          if-no-files-found: warn
+          retention-days: 7
 
   # -- R8 on the pull-request path ---------------------------------------
   #

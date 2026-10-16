@@ -1,0 +1,42 @@
+# Python packages for asc-metadata.yml, the job that holds the App Store Connect
+# API key (MR-2102). Every package, transitive ones included, is pinned to an
+# exact version AND to the SHA-256 of its wheel, and the job installs with
+# --require-hashes --only-binary=:all:, the same way workflow-lint.yml installs
+# zizmor: a new release, or a replaced file on PyPI, cannot run with that key.
+#
+# Hashes cover the wheels pip can choose on the job's runner (ubuntu-24.04,
+# x86_64, CPython 3.12): pure-Python, cp312 and abi3 manylinux x86_64. To bump,
+# change the versions, resolve the set for that platform, e.g.
+#   pip download --only-binary=:all: --python-version 3.12 --implementation cp \
+#     --platform manylinux_2_34_x86_64 --platform manylinux_2_17_x86_64 \
+#     -d /tmp/asc pyjwt cryptography requests
+# and take each file's sha256 from https://pypi.org/pypi/<name>/<version>/json.
+
+# Direct: the scripts import jwt (ES256 needs cryptography) and requests.
+pyjwt==2.15.1 \
+    --hash=sha256:42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193
+cryptography==50.0.2 \
+    --hash=sha256:630ebfea3bf689d075f82316324ff7433dc447fe6bc1bfc76524b74b4a9567d2 \
+    --hash=sha256:4061c0079120205fb760c58acab6443e217307dcf05e3702cf970e0689972856 \
+    --hash=sha256:9dab55f57c74c3cad24c323bacbbd04be4705ba6eb0d92e920b1fc4837ed5079 \
+    --hash=sha256:ee247f5c245c9a2fe7c8e2214e295918838e44e00a45a6718451e4004219e767 \
+    --hash=sha256:f21e8a22c8605750c7af886bab299a363721264061b4ac0a30efb73cfd58efc5 \
+    --hash=sha256:1981f1db4630889b9ef7803fadef12b056f428cb6b85c27ba57b774793b6093c
+requests==2.34.2 \
+    --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+
+# Transitive: cryptography -> cffi -> pycparser; requests -> the other four.
+cffi==2.1.1 \
+    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf
+pycparser==3.11 \
+    --hash=sha256:51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80
+certifi==2026.7.22 \
+    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
+charset-normalizer==3.5.2 \
+    --hash=sha256:3d31298449090ab8d47b7b1b2a555ff73cac7ed438a08b7ac160980c7ebed649 \
+    --hash=sha256:1c50fe28bbc2ced33386f298650d91218076c05420e6cbd790b913adc41659e7 \
+    --hash=sha256:b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685
+idna==3.20 \
+    --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3

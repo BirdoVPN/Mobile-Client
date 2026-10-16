@@ -20,8 +20,8 @@
 # that macOS runs is a release-day failure by construction, and nothing read
 # the scripts for it. This does.
 #
-# What it checks: every `scripts/*.sh` referenced from a workflow that has a
-# macos-* runner (ios.yml, macos.yml today — found by reading the workflows,
+# What it checks: every `scripts/*.sh` and `.github/scripts/*.sh` referenced
+# from a workflow that has a macos-* runner (found by reading the workflows,
 # not a hard-coded list), for the bash 4+ constructs that 3.2 rejects at
 # parse or run time:
 #
@@ -50,9 +50,12 @@ if [ -z "$mac_workflows" ]; then
     exit 1
 fi
 
-# Every scripts/*.sh those workflows invoke (bash ./scripts/x.sh, scripts/x.sh, ./scripts/x.sh).
+# Every scripts/*.sh or .github/scripts/*.sh those workflows invoke (bash ./scripts/x.sh,
+# scripts/x.sh, ./scripts/x.sh, .github/scripts/x.sh). The optional .github/ is part of the
+# match so that a .github/scripts path is checked as itself, not cut down to a scripts/ path
+# that does not exist.
 # shellcheck disable=SC2086  # $mac_workflows is a whitespace-separated file list
-scripts=$(grep -hoE '(\./)?scripts/[A-Za-z0-9_./-]+\.sh' $mac_workflows | sed -E 's#^\./##' | sort -u)
+scripts=$(grep -hoE '(\./)?(\.github/)?scripts/[A-Za-z0-9_./-]+\.sh' $mac_workflows | sed -E 's#^\./##' | sort -u)
 if [ -z "$scripts" ]; then
     echo "::error::check_macos_bash_compat: the macOS workflows reference no scripts/*.sh — the grep is broken, not the tree." >&2
     exit 1
