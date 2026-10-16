@@ -170,16 +170,10 @@ targets:
         # "No signing certificate 'iOS Development' found". (The app-extension
         # preset has no such default, which is why only this target broke.)
         CODE_SIGN_IDENTITY: "Apple Distribution"
-        FRAMEWORK_SEARCH_PATHS:
-          - "$(inherited)"
-          - "$(SRCROOT)/../shared/build/bin/iosSimulatorArm64/debugFramework"
-          - "$(SRCROOT)/../shared/build/bin/iosArm64/releaseFramework"
-          - "$(SRCROOT)/../shared/build/bin/macosArm64/debugFramework"
-          - "$(SRCROOT)/../shared/build/bin/macosArm64/releaseFramework"
-        OTHER_LDFLAGS:
-          - "$(inherited)"
-          - "-framework"
-          - "BirdoShared"
+        # No BirdoShared (the KMP `shared` module's Kotlin/Native framework):
+        # no Swift file imports it, so it is neither linked nor searched for,
+        # and no workflow builds it (MR-1085). Linking it again would also put
+        # the Kotlin/Native runtime back in the app for nothing.
     dependencies:
       - target: PacketTunnel
       - package: WireGuardKit
@@ -259,6 +253,10 @@ targets:
       # so ConnectContractTests can encode the REAL structs — APIClient.swift
       # itself (keychain, KMP framework) cannot be compiled into this bundle.
       - path: iosApp/Services/ConnectWire.swift
+      # MR-1638: the heartbeat reply, the other half of that contract, so
+      # ConnectContractTests decodes one body per HeartbeatReason with the REAL
+      # HeartbeatResult. Foundation-only, moved out of APIClient.swift.
+      - path: iosApp/Services/HeartbeatWire.swift
       # D18 BirdoShield, response side. Foundation-only by design: the
       # predicates that decide which resolver the wg-quick config carries —
       # and in particular that the node's own 10.13.13.1 filtering resolver
@@ -286,6 +284,7 @@ targets:
       # both already listed.
       - path: iosApp/Services/AuthWire.swift
       - path: iosApp/Services/CredentialRedaction.swift
+      - path: iosApp/Services/CredentialRedactingModels.swift
       # The live-rebuild snapshot holds the tunnel's private and pre-shared
       # keys; moved out of VPNManager.swift (NetworkExtension) so
       # CredentialDescriptionTests can print the real struct.
@@ -351,6 +350,11 @@ targets:
       # KillSwitchProfileTests; VPNManager (NetworkExtension) cannot be compiled
       # into this bundle.
       - path: iosApp/Services/KillSwitchProfile.swift
+      # MR-953: the route contract — the AllowedIPs floors (full tunnel when
+      # empty, ::/0 and 0.0.0.0/0 always) and host bits cleared before
+      # WireGuardKit turns them into includedRoutes. Foundation-only, pinned by
+      # TunnelRoutesTests; VPNManager (NetworkExtension) cannot be compiled here.
+      - path: iosApp/Services/TunnelRoutes.swift
       # MR-1729: host-only keychain items in a group the PacketTunnel extension
       # is not entitled to, and the lossless move of an older build's items.
       # Foundation-only by design (the keychain is behind KeychainGroupStore),
@@ -446,6 +450,12 @@ targets:
       # profile without the host app. The extension pins such a profile to the
       # relays' port with the same helper the host app uses. Foundation-only.
       - path: iosApp/Services/WireGuardPort.swift
+      # MR-2044: the redaction MECHANISM (Redaction, CredentialRedacting), so a
+      # credential-bearing type in the extension can print only what a log may
+      # show, exactly as the app's models do. Foundation-only and naming no
+      # model; the app's conformances are CredentialRedactingModels.swift,
+      # which stays out of this target.
+      - path: iosApp/Services/CredentialRedaction.swift
     # NOTE: deliberately NO `info:` / `entitlements:` blocks — see the BirdoVPN
     # target above. Regenerating these stripped the NSExtension dict (so the
     # packet-tunnel provider could never load) and emptied the

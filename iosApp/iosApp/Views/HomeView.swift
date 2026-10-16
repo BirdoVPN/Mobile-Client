@@ -8,7 +8,7 @@ import UIKit
 /// spec-pixelcanvas-design.md §4.
 ///
 /// Structure, top to bottom: HomeTopBar (brand lockup + identity + logout) →
-/// StatusPill hero (+ kill-switch / quantum chips) → breathing space over the
+/// StatusPill hero (+ kill-switch chip) → breathing space over the
 /// full-bleed `WorldGlobeView` (which is itself transparent, so the app-root
 /// PixelCanvas still shows through — tab roots stay transparent, per the
 /// placement contract) → bottom action panel (connected stats, banners,
@@ -169,7 +169,8 @@ struct HomeView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: 120, alignment: .trailing)
-                        // An anonymous account's identity IS its account number.
+                        // Shows no account number since MR-1362; the app-switcher
+                        // cover (MR-1727) stays as a second line of defence.
                         .accountNumberSnapshotCover()
                 }
 
@@ -225,11 +226,13 @@ struct HomeView: View {
         )
     }
 
-    /// Android shows the email here; for anonymous accounts it shows the
-    /// 24-digit anonymous ID instead.
+    /// The email, or "Anonymous account" — never the account number, which is
+    /// the account's only credential (MR-1362). Android's Home top bar has
+    /// shown that label since A2-013 (BirdoNavGraph `accountLabel`); this bar
+    /// used to show the 24 digits in the clear, cut to whatever fitted.
     private var accountIdentity: String? {
         if let email = authVM.userEmail { return email }
-        if authVM.isAnonymousAccount { return authVM.anonymousAccountNumber }
+        if authVM.isAnonymousAccount { return "Anonymous account" }
         return nil
     }
 
@@ -391,9 +394,9 @@ struct HomeView: View {
             // with the tunnel down, "on" only while they are in force with it
             // up — never merely because the preference is on. The toggle only
             // decides the "arms once connected" hint, which is about the NEXT
-            // session. Quantum is the HONEST indicator — lit only when a
-            // bilateral ML-KEM PSK was derived.
-            if killSwitchChip != .hidden || vpnVM.quantumActive {
+            // session. No Quantum chip (MR-1518, owner decision 2026-10-07):
+            // Home shows none on any client; the setting lives in Settings.
+            if killSwitchChip != .hidden {
                 HStack(spacing: 8) {
                     switch killSwitchChip {
                     case .blocking:
@@ -414,18 +417,10 @@ struct HomeView: View {
                     case .hidden:
                         EmptyView()
                     }
-                    if vpnVM.quantumActive {
-                        StatusBadgePill("Quantum",
-                                        tone: .brand,
-                                        icon: "lock.fill")
-                            .accessibilityLabel("Quantum protection active")
-                    }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
-                   value: vpnVM.quantumActive)
         .animation(anim(BirdoTheme.Motion.easeStandard(0.2)),
                    value: killSwitchChip)
     }

@@ -1,6 +1,10 @@
 package app.birdo.vpn.data.model
 
 import app.birdo.vpn.di.NetworkModule
+import app.birdo.vpn.service.HeartbeatPolicy
+import app.birdo.vpn.service.HeartbeatPolicy.Verdict
+import app.birdo.vpn.service.QuotaGrace
+import app.birdo.vpn.service.QuotaPolicy
 import app.birdo.vpn.shared.model.TransportFallbackReason
 import com.networknt.schema.Error
 import com.networknt.schema.InputFormat
@@ -14,6 +18,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -43,6 +48,10 @@ import java.io.File
  * `encodeDefaults` change), and validates the output with a real Draft
  * 2020-12 validator. The mutation cases pin that the validator bites: an
  * unknown key, a renamed key, a broken pattern and an explicit null all FAIL.
+ *
+ * The heartbeat reply is checked here too (MR-1638): one body per
+ * `$defs.HeartbeatReason` value, validated against `$defs.HeartbeatResponse`,
+ * decoded by the real [HeartbeatResponse] and judged by [HeartbeatPolicy].
  *
  * Refresh the vendored file with the command in contract/README.md; the
  * backend's protocol-schema.spec.ts refuses to merge a contract change without
@@ -440,5 +449,206 @@ class ConnectContractTest {
     fun `a boolean sent as a string is refused`() {
         val body = encode(fullMultiHop()).mutate { it["stealthMode"] = JsonPrimitive("true") }
         assertRefused(multiHopSchema, body, keyword = "type", property = "stealthMode")
+    }
+
+    // ── Heartbeat (MR-1638): the reply side, one body per reason ────────
+
+    private val heartbeatSchema: Schema by lazy { definition("HeartbeatResponse") }
+
+    /** `$defs.HeartbeatReason.enum`: every reason the server can send, in the contract's order. */
+    private val contractHeartbeatReasons: List<String> by lazy {
+        schemaDoc["\$defs"]!!.jsonObject["HeartbeatReason"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }
+    }
+
+    /**
+     * One reply as birdo-web's VpnService.heartbeat() builds it
+     * (backend/src/vpn/vpn.service.ts), and what the app makes of it:
+     * [HeartbeatPolicy.verdict] on a beat over the live tunnel with beats
+     * flowing ([live]) and after the device slept past the reap window
+     * ([liveAfterSleep]), and [HeartbeatPolicy.forDeadTunnel] on the one beat
+     * sent around a tunnel the dead-tunnel check gave up on ([deadTunnel]).
+     */
+    private data class HeartbeatCase(
+        val body: String,
+        val live: Verdict,
+        val liveAfterSleep: Verdict,
+        val deadTunnel: Verdict,
+    )
+
+    /**
+     * Keyed by reason. The keys must be exactly the contract's reasons (checked
+     * below), so a reason a re-vendor adds fails until someone decides what the
+     * app does with it, here and in HeartbeatPolicy. The verdicts follow the
+     * contract's description of each reason.
+     */
+    private val heartbeatCases: Map<String, List<HeartbeatCase>> by lazy {
+        val gone = "\"message\":\"Connection not found. Please reconnect.\""
+        mapOf(
+            "ok" to listOf(
+                HeartbeatCase("""{"valid":true,"serverOnline":true,"reason":"ok"}""", Verdict.ALIVE, Verdict.ALIVE, Verdict.ALIVE),
+            ),
+            "server_offline" to listOf(
+                // The key is live on a node that is not ONLINE.
+                HeartbeatCase(
+                    """{"valid":true,"serverOnline":false,"message":"Your current VPN server is offline. Please reconnect to a different server.","reason":"server_offline"}""",
+                    Verdict.ALIVE, Verdict.ALIVE, Verdict.SERVER_GONE,
+                ),
+                // The key was removed because its node was drained or deleted.
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":false,$gone,"reason":"server_offline"}""",
+                    Verdict.SERVER_GONE, Verdict.SERVER_GONE, Verdict.SERVER_GONE,
+                ),
+            ),
+            "revoked" to listOf(
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":false,"message":"Connection has been revoked. Please reconnect.","reason":"revoked"}""",
+                    Verdict.REVOKED, Verdict.REVOKED, Verdict.REVOKED,
+                ),
+            ),
+            "evicted" to listOf(
+                HeartbeatCase("""{"valid":false,"serverOnline":false,$gone,"reason":"evicted"}""", Verdict.EVICTED, Verdict.EVICTED, Verdict.EVICTED),
+            ),
+            "reaped" to listOf(
+                HeartbeatCase("""{"valid":false,"serverOnline":false,$gone,"reason":"reaped"}""", Verdict.REAPED, Verdict.REAPED, Verdict.REAPED),
+            ),
+            "quota_exceeded" to listOf(
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":true,"quotaExceeded":true,"message":"Your free data for this month is used up.","reason":"quota_exceeded"}""",
+                    Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED,
+                ),
+            ),
+            // No record of why. The live path infers from the last good beat, as
+            // for a reply without a reason; around a dead tunnel it is a lost
+            // record, and one re-dial is safe (HeartbeatPolicy.forDeadTunnel).
+            "not_found" to listOf(
+                HeartbeatCase("""{"valid":false,"serverOnline":false,$gone,"reason":"not_found"}""", Verdict.REVOKED, Verdict.REAPED, Verdict.REAPED),
+            ),
+        )
+    }
+
+    /** The reply as the app decodes it: the Retrofit converter's [NetworkModule.json]. */
+    private fun decodeHeartbeat(body: String): HeartbeatResponse =
+        json.decodeFromString(serializer<HeartbeatResponse>(), body)
+
+    @Test
+    fun `the vendored heartbeat contract is the generated one`() {
+        val definitions = schemaDoc["_status"]!!.jsonObject["definitions"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertTrue("HeartbeatResponse missing from $definitions", "HeartbeatResponse" in definitions)
+        assertTrue("HeartbeatReason missing from $definitions", "HeartbeatReason" in definitions)
+        assertTrue("\$defs.HeartbeatReason has no enum", contractHeartbeatReasons.isNotEmpty())
+        // The reply's `reason` is that vocabulary, not a copy that could drift.
+        val reasonRule = schemaDoc["\$defs"]!!.jsonObject["HeartbeatResponse"]!!.jsonObject["properties"]!!
+            .jsonObject["reason"]!!.jsonObject
+        assertEquals(contractHeartbeatReasons, reasonRule["enum"]!!.jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `every heartbeat reason in the contract has a decided verdict`() {
+        assertEquals(
+            "a contract reason with no decided handling here and in HeartbeatPolicy, or a case for a reason the contract dropped",
+            contractHeartbeatReasons.toSet(),
+            heartbeatCases.keys,
+        )
+    }
+
+    @Test
+    fun `a heartbeat body for each contract reason validates, decodes and gets its verdict`() {
+        for (reason in contractHeartbeatReasons) {
+            val beats = heartbeatCases[reason] ?: error("no heartbeat case for the contract's '$reason'")
+            for (beat in beats) {
+                assertValid(heartbeatSchema, beat.body)
+                val sent = Json.parseToJsonElement(beat.body).jsonObject
+                val reply = decodeHeartbeat(beat.body)
+                assertEquals(reason, reply.reason)
+                assertEquals(sent["valid"]!!.jsonPrimitive.boolean, reply.valid)
+                assertEquals(sent["serverOnline"]!!.jsonPrimitive.boolean, reply.serverOnline)
+                assertEquals(sent["message"]?.jsonPrimitive?.content, reply.message)
+                assertEquals(sent["quotaExceeded"]?.jsonPrimitive?.boolean ?: false, reply.quotaExceeded)
+
+                assertEquals(
+                    "$reason (valid=${reply.valid}), live",
+                    beat.live,
+                    HeartbeatPolicy.verdict(reply.valid, reply.reason, 0L, reply.quotaExceeded),
+                )
+                assertEquals(
+                    "$reason (valid=${reply.valid}), live after a sleep past the reap window",
+                    beat.liveAfterSleep,
+                    HeartbeatPolicy.verdict(reply.valid, reply.reason, HeartbeatPolicy.REAP_WINDOW_MS, reply.quotaExceeded),
+                )
+                assertEquals(
+                    "$reason (valid=${reply.valid}), around a dead tunnel",
+                    beat.deadTunnel,
+                    HeartbeatPolicy.forDeadTunnel(reply, 0L),
+                )
+            }
+        }
+    }
+
+    /**
+     * The Free plan's grace window: the session is still live (`ok`) and the
+     * three quota fields say when the server ends it. This body sets EVERY
+     * property the contract declares, and the model must have exactly those.
+     */
+    @Test
+    fun `the quota grace fields decode, and the model has exactly the contract's heartbeat fields`() {
+        val fields = serializer<HeartbeatResponse>().descriptor.elementNames.toSet()
+        assertEquals("HeartbeatResponse and the contract disagree on the reply's fields", schemaProperties("HeartbeatResponse"), fields)
+
+        val body = """{"valid":true,"serverOnline":true,"reason":"ok",""" +
+            """"message":"Your free data is used up. This session ends in 10 minutes.","quotaExceeded":true,""" +
+            """"quotaGraceEndsAt":"2026-10-15T22:00:00.000Z","quotaGraceSecondsRemaining":600}"""
+        assertEquals(fields, Json.parseToJsonElement(body).jsonObject.keys)
+        assertValid(heartbeatSchema, body)
+        val reply = decodeHeartbeat(body)
+        assertTrue(reply.quotaExceeded)
+        assertEquals("2026-10-15T22:00:00.000Z", reply.quotaGraceEndsAt)
+        assertEquals(600L, reply.quotaGraceSecondsRemaining)
+        // Still live: the grace window is a notice, and the notice says 10 minutes.
+        assertEquals(Verdict.ALIVE, HeartbeatPolicy.verdict(reply.valid, reply.reason, 0L, reply.quotaExceeded))
+        assertEquals(
+            QuotaGrace(minutesLeft = 10),
+            QuotaPolicy.grace(reply.valid, reply.quotaExceeded, reply.quotaGraceSecondsRemaining, reply.quotaGraceEndsAt, nowEpochMs = 0L),
+        )
+    }
+
+    /**
+     * As the contract requires: a backend before birdo-web #599 sends no
+     * reason, and a newer one may send a reason this build does not know and
+     * keys it has never heard of. The reply still decodes, and an unknown
+     * reason is handled exactly like none.
+     */
+    @Test
+    fun `a heartbeat with no reason, an unknown reason or unknown keys still decodes`() {
+        val old = decodeHeartbeat("""{"valid":false,"serverOnline":false,"message":"Connection has been revoked. Please reconnect."}""")
+        assertValid(heartbeatSchema, """{"valid":false,"serverOnline":false,"message":"Connection has been revoked. Please reconnect."}""")
+        assertEquals(null, old.reason)
+        assertEquals(false, old.valid)
+
+        val newer = decodeHeartbeat("""{"valid":false,"serverOnline":true,"reason":"paused","nextCheckInSeconds":30}""")
+        assertEquals("paused", newer.reason)
+        for (since in listOf(0L, HeartbeatPolicy.REAP_WINDOW_MS)) {
+            assertEquals(
+                HeartbeatPolicy.verdict(newer.valid, null, since, newer.quotaExceeded),
+                HeartbeatPolicy.verdict(newer.valid, newer.reason, since, newer.quotaExceeded),
+            )
+            assertEquals(
+                HeartbeatPolicy.forDeadTunnel(newer.copy(reason = null), since),
+                HeartbeatPolicy.forDeadTunnel(newer, since),
+            )
+        }
+    }
+
+    @Test
+    fun `the validator bites on the heartbeat reply`() {
+        val ok = heartbeatCases.getValue("ok").first().body
+        assertValid(heartbeatSchema, ok)
+        assertRefused(heartbeatSchema, ok.mutate { it["reason"] = JsonPrimitive("paused") }, keyword = "enum", property = "reason")
+        assertRefused(
+            heartbeatSchema,
+            ok.mutate { it["quotaGraceSecondsRemaining"] = JsonPrimitive("600") },
+            keyword = "type",
+            property = "quotaGraceSecondsRemaining",
+        )
+        assertRefused(heartbeatSchema, ok.mutate { it.remove("valid") }, keyword = "required", property = "valid")
     }
 }
