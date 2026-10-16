@@ -1,5 +1,6 @@
 package app.birdo.vpn.service
 
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -204,7 +205,8 @@ class BirdoVpnService : VpnService() {
          * to VpnManager.disconnect() — the one path that releases the peer,
          * cancels recovery and supersedes an in-flight dial. They used to send
          * ACTION_STOP here directly, so a dial in flight could bring the
-         * tunnel back seconds after the user stopped it (A1-009).
+         * tunnel back seconds after the user stopped it (A1-009). Refused
+         * while the device is locked on Android 10/11 (MR-1725).
          */
         const val ACTION_USER_DISCONNECT = "app.birdo.vpn.USER_DISCONNECT"
 
@@ -931,7 +933,12 @@ class BirdoVpnService : VpnService() {
             }
             ACTION_USER_DISCONNECT -> {
                 val manager = entryPoint?.vpnManager()
-                if (manager != null) {
+                if (VpnNotificationManager.refusesLockedTap(Build.VERSION.SDK_INT, isDeviceLocked())) {
+                    // MR-1725: Android 10/11 sent this from the lock screen
+                    // with no unlock. Nothing changes until the user unlocks.
+                    Log.i(TAG, "Notification Disconnect refused: the device is locked")
+                    serial { stopIfIdle() }
+                } else if (manager != null) {
                     manager.requestDisconnect()
                 } else {
                     transitionGen.incrementAndGet()
@@ -939,16 +946,23 @@ class BirdoVpnService : VpnService() {
                 }
             }
             ACTION_USER_RECONNECT -> entryPoint?.vpnManager()?.requestConnectPreferred()
-            else -> serial {
-                // Nothing we know how to do; do not park in the foreground.
-                if (currentState is VpnState.Disconnected && !killSwitchActive) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
-            }
+            // Nothing we know how to do.
+            else -> serial { stopIfIdle() }
         }
         return RESTART_POLICY
     }
+
+    /** Do not park in the foreground with nothing to run and nothing to block. */
+    private fun stopIfIdle() {
+        if (currentState is VpnState.Disconnected && !killSwitchActive) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    /** A secure lock screen (PIN, pattern or password) is up right now. */
+    private fun isDeviceLocked(): Boolean =
+        (getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked == true
 
     /**
      * A start the SYSTEM made (A1-014, A1-015): decide what to do from the

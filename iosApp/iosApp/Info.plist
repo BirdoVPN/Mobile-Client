@@ -72,8 +72,10 @@
         <key>UIApplicationSupportsMultipleScenes</key>
         <false/>
     </dict>
+    <!-- MR-1094: what the gate does (BiometricGate.swift: a cover, not a lock),
+         nothing more. iOS shows this in the Face ID permission prompt. -->
     <key>NSFaceIDUsageDescription</key>
-    <string>BirdoVPN uses Face ID to protect your account.</string>
+    <string>Hide App Contents keeps the app's screen covered until you unlock it with Face ID.</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <!-- Custom URL scheme `birdo` (spec-auth-flow §4): the SSO broker 302s its

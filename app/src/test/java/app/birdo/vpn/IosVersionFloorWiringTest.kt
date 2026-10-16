@@ -71,9 +71,10 @@ class IosVersionFloorWiringTest {
 
     @Test
     fun `every connect path applies the advisory`() {
-        // Each successful connect obtains a config and lights the quantum
-        // badge. That line is the reliable marker for "a connect succeeded
-        // here", so every one of them must also apply the advisory.
+        // Each successful connect obtains a config and records quantumActive
+        // (no longer shown on Home, MR-1518). That line is the reliable marker
+        // for "a connect succeeded here", so every one of them must also apply
+        // the advisory.
         val quantumSites = Regex("""quantumActive = BirdoPQManager\.shared\.currentMode""")
             .findAll(viewModel).count()
         assertTrue(

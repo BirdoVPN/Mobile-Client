@@ -59,7 +59,7 @@
     <!-- Touch ID on the Mac is gated by the same key as Face ID on iOS —
          LocalAuthentication reads NSFaceIDUsageDescription on both platforms. -->
     <key>NSFaceIDUsageDescription</key>
-    <string>BirdoVPN uses Touch ID to protect your account.</string>
+    <string>Hide App Contents keeps the app's window covered until you unlock it with Touch ID.</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
     <!-- Same custom scheme as iOS: the SSO broker 302s its PKCE handoff to

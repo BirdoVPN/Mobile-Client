@@ -1,6 +1,8 @@
 package app.birdo.vpn.service
 
+import android.app.KeyguardManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
@@ -303,6 +305,25 @@ class BirdoVpnServiceLifecycleTest {
 
     @Test
     fun `the notification's Disconnect asks VpnManager, it does not stop the tunnel itself`() {
+        service.onStartCommand(intentWith(BirdoVpnService.ACTION_USER_DISCONNECT), 0, 1)
+        verify(exactly = 1) { manager.requestDisconnect() }
+    }
+
+    // ── MR-1725: no Disconnect / Stop blocking from a locked Android 10/11 ──
+
+    @Test
+    fun `on Android 10 and 11 a Disconnect tap from a locked device changes nothing until it is unlocked`() {
+        // setAuthenticationRequired is a no-op below API 31, so the tap really
+        // does arrive from the lock screen there. Build.VERSION.SDK_INT is 0 on
+        // these android.jar stubs: an old release, as far as the code can tell.
+        val keyguard = mockk<KeyguardManager>()
+        every { service.getSystemService(Context.KEYGUARD_SERVICE) } returns keyguard
+
+        every { keyguard.isDeviceLocked } returns true
+        service.onStartCommand(intentWith(BirdoVpnService.ACTION_USER_DISCONNECT), 0, 1)
+        verify(exactly = 0) { manager.requestDisconnect() }
+
+        every { keyguard.isDeviceLocked } returns false
         service.onStartCommand(intentWith(BirdoVpnService.ACTION_USER_DISCONNECT), 0, 1)
         verify(exactly = 1) { manager.requestDisconnect() }
     }

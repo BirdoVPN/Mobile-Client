@@ -124,10 +124,11 @@ enum class FailureKind(val terminal: Boolean) {
 
         /**
          * Classify a failed connect: a code the contract marks retryable (the
-         * 503s quota_check_unavailable and psk_delivery_unavailable) is
-         * [TRANSIENT] whatever status it rode in on, so the supervisor re-dials
-         * after the server's wait instead of stopping on a refusal. Anything
-         * else, including a code this build does not know, by [status].
+         * 503s quota_check_unavailable, psk_delivery_unavailable and
+         * tunnel_address_unavailable) is [TRANSIENT] whatever status it rode
+         * in on, so the supervisor re-dials after the server's wait instead of
+         * stopping on a refusal. Anything else, including a code this build
+         * does not know, by [status].
          */
         fun forApiError(status: Int, serverCode: ConnectErrorCode): FailureKind =
             if (serverCode.retryable) TRANSIENT else fromHttpStatus(status)

@@ -162,8 +162,9 @@ final class VpnViewModel: ObservableObject {
     }
 
     // MARK: - Features
-    /// Honest indicator: lit only when a true bilateral ML-KEM PSK was
-    /// actually derived for this connection (BirdoPQManager mode).
+    /// Whether a bilateral ML-KEM PSK was actually derived for this connection
+    /// (BirdoPQManager mode). Not shown on Home: the Quantum chip is gone on
+    /// every client (MR-1518).
     @Published var quantumActive = false
     /// REAL kill-switch state (VPNManager.killSwitchState: the on-demand
     /// Connect rule and includeAllNetworks as the system profile holds them).
@@ -538,8 +539,8 @@ final class VpnViewModel: ObservableObject {
                     releaseServerSlot()
                     throw error
                 }
-                // Honest indicator: light the "Quantum" badge only when a true
-                // bilateral ML-KEM PSK was actually derived for this connection.
+                // quantumActive: only when a true bilateral ML-KEM PSK was
+                // actually derived for this connection.
                 applyUpdateAdvisory(config.clientUpdate)
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // `startVPNTunnel()` only REQUESTS the tunnel — it is still

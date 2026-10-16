@@ -4,8 +4,9 @@
 `birdo-web/backend/contract/vpn-protocol.schema.json` (BirdoVPN/birdo-web,
 PR #459; refreshed for the BirdoShield `dnsFiltering` flag in PR #465, and for
 the Free allowance's `quotaExceeded` refusal and `quota_check_unavailable` 503
-in #590, and for the heartbeat `reason` field made optional in #599 —
-birdo-web 43176281, blob 8954cfac0e9f9d9e8b8c61a17893d315ed9f7feb). It is
+in #590, for the heartbeat `reason` field made optional in #599, and for the
+retryable `tunnel_address_unavailable` 503 in #711 —
+birdo-web 0a57d04e, blob 61cce0ba7de3b5331debf4f1e71aac7ffcb0713f). It is
 GENERATED there (`cd backend && npm run contract:generate`)
 from the code that enforces the wire contract — class-validator on
 `ConnectDto` for `POST /vpn/connect`, the `.strict()` zod schema for
@@ -29,6 +30,7 @@ git -C ../birdo-web rev-parse origin/main:backend/contract/vpn-protocol.schema.j
 |---|---|
 | `app/src/test/java/app/birdo/vpn/data/model/ConnectContractTest.kt` (Android, `./gradlew :app:testDebugUnitTest`) | the real `ConnectRequest` / `MultiHopConnectRequest`, encoded by the app's own `NetworkModule.json`, validate against `$defs.ConnectRequest` / `$defs.MultiHopConnectRequest` with a Draft 2020-12 validator; every model field has a schema twin; an unknown key, a renamed key, a broken pattern and an explicit null are refused. |
 | `iosApp/BirdoVPNTests/ConnectContractTests.swift` (iOS/macOS; on pull requests by `apple-ci.yml`, on release by `ios.yml`) | the real `ConnectBody` / `MultiHopBody` (`iosApp/Services/ConnectWire.swift`), encoded by the encoder `APIClient` uses, have keys that are a subset of the schema's properties, carry the required hop ids, and satisfy `type` / `minLength` / `maxLength` / `pattern` / `enum`; the same mutations are refused. The file reaches the test bundle as a resource (`project.yml`). |
+| the same two files, heartbeat section (MR-1638) | one `POST /vpn/heartbeat/:keyId` reply per `$defs.HeartbeatReason` value, generated from the schema's own enum, validates against `$defs.HeartbeatResponse` and decodes with the app's model (Android `HeartbeatResponse`, judged by `HeartbeatPolicy`; iOS `HeartbeatResult`, `iosApp/Services/HeartbeatWire.swift`); a reason the model does not know, a property it does not read, or a reason with no decided handling fails; a reply with no reason, an unknown reason or unknown keys still decodes. |
 
 Both routes refuse unknown properties (`additionalProperties: false`), so a
 field renamed on either side is not ignored — it is a 400 on every connect.

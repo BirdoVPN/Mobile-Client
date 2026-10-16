@@ -697,6 +697,11 @@ fun BirdoNavGraph(
                 exitTransition = tabExit,
             ) {
                 val multiHopArmed = vpnViewModel.multiHop.collectAsState().value.enabled
+                // The node the session was DIALLED to — not the selection,
+                // which Auto-Connect, the tile, the widget and a headless
+                // start never set (REVIEW-AND-008) — and, during a live
+                // switch, the node Home says it is switching to (MR-945).
+                val rowMarkers = serverRowMarkers(vpnState, multiHopArmed)
                 AdaptiveContainer {
                     ServerListScreen(
                         servers = vpnState.servers,
@@ -716,12 +721,8 @@ fun BirdoNavGraph(
                         // show only on Home (REVIEW-AND-009).
                         errorMessage = vpnState.serversError ?: vpnState.connectError
                             ?: (vpnState.vpnState as? VpnState.Error)?.message,
-                        // The node the session was DIALLED to — not the
-                        // selection, which Auto-Connect, the tile, the widget
-                        // and a headless start never set (REVIEW-AND-008).
-                        connectedServerId = vpnState.connectedServerId?.takeIf {
-                            vpnState.vpnState == VpnState.Connected && !multiHopArmed
-                        },
+                        connectedServerId = rowMarkers.connectedServerId,
+                        switchingServerId = rowMarkers.switchingServerId,
                         onViewPlans = {
                             vpnViewModel.fetchSubscription()
                             navController.navigate(Screen.Subscription.route)

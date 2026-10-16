@@ -918,6 +918,36 @@ class BirdoRepositoryTest {
         verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
     }
 
+    @Test
+    fun `both connect routes turn a 503 tunnel_address_unavailable into a retryable error with the server's 15 s`() = runTest {
+        // MR-2058: vpn.controller.ts rethrowRetryableConnectRefusal for
+        // TunnelAddressUnavailableError (birdo-web #711), on /vpn/connect and
+        // /vpn/multi-hop/connect alike. It used to decode as UNKNOWN.
+        fun <T> refusal(): Response<T> = Response.error(
+            503,
+            ("""{"statusCode":503,"message":"We could not assign your connection an address on this server """ +
+                """just now. Please try again in a moment.","error":"tunnel_address_unavailable",""" +
+                """"timestamp":"2026-10-15T09:00:00.000Z","path":"/vpn/connect",""" +
+                """"details":{"retryable":true,"retryAfterSeconds":15}}""")
+                .toResponseBody("application/json".toMediaType()),
+        )
+        coEvery { api.connect(any()) } returns refusal()
+        coEvery { api.connectMultiHop(any()) } returns refusal()
+
+        val single = repository.connectVpn(serverNodeId = "server_1") as ApiResult.Error
+        val multi = repository.connectMultiHop("de-1", "nl-1") as ApiResult.Error
+
+        for (error in listOf(single, multi)) {
+            assertEquals(503, error.code)
+            assertEquals("tunnel_address_unavailable", error.serverCode.wire)
+            assertTrue(error.serverCode.retryable)
+            assertEquals(FailureReason.SERVER_UNAVAILABLE, error.reason)
+            assertEquals(15_000L, error.retryAfterMs)
+            assertEquals(StringsXml.text("error_server_unavailable"), error.message)
+        }
+        verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
+    }
+
     // ── Disconnect VPN ──────────────────────────────────────────
 
     @Test

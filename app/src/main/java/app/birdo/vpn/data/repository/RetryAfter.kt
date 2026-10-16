@@ -8,7 +8,8 @@ import kotlinx.serialization.json.longOrNull
 /**
  * When the server says to come back: a retryable refusal such as birdo-web's
  * 503 `{error: "quota_check_unavailable" | "psk_delivery_unavailable",
- * details: {retryable: true, retryAfterSeconds: 30}}`, or a standard
+ * details: {retryable: true, retryAfterSeconds: 30}}` (15 s for
+ * `tunnel_address_unavailable`), or a standard
  * `Retry-After` header. Clamped, so a wrong value can neither hammer the API
  * nor park a session for an hour.
  */
@@ -20,11 +21,11 @@ internal object RetryAfter {
     /**
      * The wait after a [ConnectErrorCode.retryable] refusal that named none
      * the client could use. The contract REQUIRES details.retryAfterSeconds on
-     * both retryable codes and the server sends 30 for each
-     * (PskOverSshRefusedError and QuotaCheckUnavailableError
-     * .RETRY_AFTER_SECONDS), so this only covers a body that lost it on the
-     * way: re-asking at the supervisor's 2 s backoff would hammer a server
-     * that has already said "not yet".
+     * every retryable code and the server always sends one (30 for
+     * PskOverSshRefusedError and QuotaCheckUnavailableError, 15 for
+     * TunnelAddressUnavailableError .RETRY_AFTER_SECONDS), so this only covers
+     * a body that lost it on the way: re-asking at the supervisor's 2 s
+     * backoff would hammer a server that has already said "not yet".
      */
     const val RETRYABLE_DEFAULT_MS = 30_000L
 

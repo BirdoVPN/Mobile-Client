@@ -10,8 +10,12 @@ import XCTest
 /// unknown keys, so a renamed field is a 400 on every connect — iOS has done
 /// that once already (`serverId` for `serverNodeId`, AUDIT-M-DRIFT).
 ///
+/// The reply side of the heartbeat is here too (MR-1638): one body per
+/// `$defs.HeartbeatReason` value, checked against `$defs.HeartbeatResponse` and
+/// decoded by the REAL `HeartbeatResult` (HeartbeatWire.swift).
+///
 /// No third-party validator on iOS: the schema is parsed with
-/// JSONSerialization and the handful of keywords the two definitions actually
+/// JSONSerialization and the handful of keywords these definitions actually
 /// use (`properties` + `additionalProperties: false`, `required`, `type`,
 /// `minLength`/`maxLength`, `pattern`, `enum`) are checked by hand. The
 /// negative cases below prove that checker bites before the positive cases
@@ -98,6 +102,13 @@ final class ConnectContractTests: XCTestCase {
                 // a JSON string "true" is a String and must be refused.
                 guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
                     out.append("\(key): \(type(of: value)) is not a boolean"); continue
+                }
+            case "number":
+                // HeartbeatResponse.quotaGraceSecondsRemaining. The same NSNumber,
+                // the other way round: a JSON boolean is an NSNumber too, and
+                // must not pass as a number.
+                guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                    out.append("\(key): \(type(of: value)) is not a number"); continue
                 }
             default:
                 out.append("\(key): checker does not understand type \(rule["type"] ?? "nil") — extend it")
@@ -359,10 +370,162 @@ final class ConnectContractTests: XCTestCase {
     }
 
     func testTheCheckerRefusesATypeItDoesNotUnderstand() {
-        // If the backend adds e.g. a numeric field the checker must not pass it
-        // silently — it must demand to be extended.
-        let def: [String: Any] = ["properties": ["mtu": ["type": "number"]], "additionalProperties": false]
-        assertRefused(["mtu": 1280], def, containing: "checker does not understand type number")
+        // If the backend adds e.g. an integer field the checker must not pass it
+        // silently — it must demand to be extended. (`number` is understood
+        // since the heartbeat reply needed it.)
+        let def: [String: Any] = ["properties": ["mtu": ["type": "integer"]], "additionalProperties": false]
+        assertRefused(["mtu": 1280], def, containing: "checker does not understand type integer")
+    }
+
+    // MARK: - Heartbeat (MR-1638): the reply side, one body per reason
+
+    private var heartbeatDef: [String: Any] { Self.definition("HeartbeatResponse") }
+
+    /// `$defs.HeartbeatReason.enum`: every reason the server can send, in the
+    /// contract's order. The bodies below are generated from THIS list, so a
+    /// reason a re-vendor adds gets a body without anyone writing one.
+    private var contractHeartbeatReasons: [String] {
+        (Self.definition("HeartbeatReason")["enum"] as? [String]) ?? []
+    }
+
+    /// The replies birdo-web's `VpnService.heartbeat()` builds for `reason`
+    /// (backend/src/vpn/vpn.service.ts): a live key answers `valid: true`, a
+    /// key that is gone `valid: false` with the reason its removal recorded.
+    private static func heartbeatBodies(reason: String) -> [[String: Any]] {
+        let gone = "Connection not found. Please reconnect."
+        switch reason {
+        case "ok":
+            return [["valid": true, "serverOnline": true, "reason": reason]]
+        case "server_offline":
+            // Both forms the contract names: the key live on a node that is
+            // not ONLINE, and the key removed because its node was drained.
+            return [["valid": true, "serverOnline": false, "reason": reason,
+                     "message": "Your current VPN server is offline. Please reconnect to a different server."],
+                    ["valid": false, "serverOnline": false, "reason": reason, "message": gone]]
+        case "revoked":
+            return [["valid": false, "serverOnline": false, "reason": reason,
+                     "message": "Connection has been revoked. Please reconnect."]]
+        case "quota_exceeded":
+            return [["valid": false, "serverOnline": true, "reason": reason, "quotaExceeded": true,
+                     "message": "Your free data for this month is used up."]]
+        default:
+            // evicted, reaped, not_found, and any reason a re-vendor adds.
+            return [["valid": false, "serverOnline": false, "reason": reason, "message": gone]]
+        }
+    }
+
+    /// `body` as bytes, decoded by the decoder APIClient uses (a plain
+    /// `JSONDecoder`), and the same bytes re-read for the schema check, so the
+    /// checker and the model both see what a server would send.
+    private func heartbeatWire(_ body: [String: Any]) throws -> (wire: [String: Any], decoded: HeartbeatResult) {
+        let data = try JSONSerialization.data(withJSONObject: body)
+        let wire = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let decoded = try JSONDecoder().decode(HeartbeatResult.self, from: data)
+        return (wire, decoded)
+    }
+
+    func testTheVendoredHeartbeatContractIsTheGeneratedOne() {
+        let definitions = ((Self.schema["_status"] as? [String: Any])?["definitions"] as? [String]) ?? []
+        XCTAssertTrue(definitions.contains("HeartbeatResponse"), "\(definitions)")
+        XCTAssertTrue(definitions.contains("HeartbeatReason"), "\(definitions)")
+        XCTAssertFalse(contractHeartbeatReasons.isEmpty, "$defs.HeartbeatReason has no enum")
+        // The reply's `reason` is that vocabulary, not a copy that could drift.
+        XCTAssertEqual(Self.properties(of: heartbeatDef)["reason"]?["enum"] as? [String], contractHeartbeatReasons)
+        XCTAssertEqual(Set((heartbeatDef["required"] as? [String]) ?? []), ["valid", "serverOnline"])
+    }
+
+    /// What the row asks for: a reason the server sends that the client model
+    /// has no case for would decode as "no reason", silently. Checked both
+    /// ways, so a case the contract no longer has fails too.
+    func testEveryHeartbeatReasonInTheContractIsACaseOfTheClientModel() {
+        let model = HeartbeatReason.allCases.map(\.rawValue)
+        XCTAssertEqual(Set(model), Set(contractHeartbeatReasons),
+                       "missing from HeartbeatReason: \(Set(contractHeartbeatReasons).subtracting(model)); "
+                       + "not in the contract: \(Set(model).subtracting(contractHeartbeatReasons))")
+    }
+
+    func testAHeartbeatBodyForEachContractReasonValidatesAndDecodesThatReason() throws {
+        for reason in contractHeartbeatReasons {
+            for body in Self.heartbeatBodies(reason: reason) {
+                let (wire, decoded) = try heartbeatWire(body)
+                assertValid(wire, heartbeatDef)
+                XCTAssertEqual(decoded.reason?.rawValue, reason,
+                               "'\(reason)' did not decode: is it a HeartbeatReason case?")
+                XCTAssertEqual(decoded.valid, wire["valid"] as? Bool, reason)
+                XCTAssertEqual(decoded.serverOnline, wire["serverOnline"] as? Bool, reason)
+                XCTAssertEqual(decoded.message, wire["message"] as? String, reason)
+                XCTAssertEqual(decoded.quotaExceeded, (wire["quotaExceeded"] as? Bool) ?? false, reason)
+            }
+        }
+    }
+
+    /// The Free plan's grace window: the session is still live (`ok`) and the
+    /// three quota fields say when the server ends it. This body sets EVERY
+    /// property the contract declares, so a property a re-vendor adds fails
+    /// here until HeartbeatResult reads it.
+    func testTheQuotaGraceFieldsDecodeAndEveryHeartbeatPropertyIsRead() throws {
+        let body: [String: Any] = [
+            "valid": true, "serverOnline": true, "reason": "ok",
+            "message": "Your free data is used up. This session ends in 10 minutes.",
+            "quotaExceeded": true,
+            "quotaGraceEndsAt": "2026-10-15T22:00:00.000Z",
+            "quotaGraceSecondsRemaining": 600,
+        ]
+        XCTAssertEqual(Set(body.keys), Set(Self.properties(of: heartbeatDef).keys),
+                       "HeartbeatResponse's properties changed: decode the new ones in HeartbeatResult")
+        let (wire, decoded) = try heartbeatWire(body)
+        assertValid(wire, heartbeatDef)
+        XCTAssertTrue(decoded.valid)
+        XCTAssertEqual(decoded.serverOnline, true)
+        XCTAssertEqual(decoded.reason, .ok)
+        XCTAssertEqual(decoded.message, "Your free data is used up. This session ends in 10 minutes.")
+        XCTAssertTrue(decoded.quotaExceeded)
+        XCTAssertEqual(decoded.quotaGraceEndsAt, "2026-10-15T22:00:00.000Z")
+        XCTAssertEqual(decoded.quotaGraceSecondsRemaining, 600)
+    }
+
+    /// Fail-open, as the contract requires: a backend before birdo-web #599
+    /// sends no reason, and a newer one may send a reason this build does not
+    /// know and keys it has never heard of. None of that may fail the decode
+    /// of the `valid` the session depends on.
+    func testAHeartbeatWithNoReasonAnUnknownReasonOrUnknownKeysStillDecodes() throws {
+        let old = try heartbeatWire(["valid": false, "serverOnline": false,
+                                     "message": "Connection has been revoked. Please reconnect."])
+        assertValid(old.wire, heartbeatDef)
+        XCTAssertFalse(old.decoded.valid)
+        XCTAssertNil(old.decoded.reason)
+        XCTAssertFalse(old.decoded.quotaExceeded)
+        XCTAssertNil(old.decoded.quotaGraceEndsAt)
+        XCTAssertNil(old.decoded.quotaGraceSecondsRemaining)
+
+        let newer = try heartbeatWire(["valid": false, "serverOnline": true, "reason": "paused",
+                                       "nextCheckInSeconds": 30])
+        XCTAssertFalse(newer.decoded.valid)
+        XCTAssertNil(newer.decoded.reason, "an unknown reason must read as no reason")
+
+        // No `valid` at all is never a reason to end a live session.
+        XCTAssertTrue(try heartbeatWire(["serverOnline": true]).decoded.valid)
+    }
+
+    func testTheCheckerBitesOnTheHeartbeatDefinition() throws {
+        let ok = try heartbeatWire(Self.heartbeatBodies(reason: "ok")[0]).wire
+        assertValid(ok, heartbeatDef)
+
+        var body = ok
+        body["reason"] = "paused"
+        assertRefused(body, heartbeatDef, containing: "reason: not in enum")
+
+        body = ok
+        body["quotaGraceSecondsRemaining"] = "600"
+        assertRefused(body, heartbeatDef, containing: "quotaGraceSecondsRemaining: String is not a number")
+
+        body = ok
+        body["quotaGraceSecondsRemaining"] = true
+        assertRefused(body, heartbeatDef, containing: "quotaGraceSecondsRemaining: Bool is not a number")
+
+        body = ok
+        body.removeValue(forKey: "valid")
+        assertRefused(body, heartbeatDef, containing: "missing required valid")
     }
 
     // MARK: - D18 persisted key

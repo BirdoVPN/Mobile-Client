@@ -64,6 +64,23 @@ class SessionSurfaceModelsTest {
         assertEquals(emptyList<Action>(), status(VpnState.Error("x", FailureKind.UPDATE_REQUIRED)).actions)
     }
 
+    /**
+     * MR-1725: setAuthenticationRequired makes Android ask for the unlock
+     * before it sends Disconnect / Stop blocking only from API 31. On Android
+     * 10 and 11 it does nothing, so a locked tap is refused by the service.
+     */
+    @Test
+    fun `a locked Disconnect or Stop blocking tap is refused on Android 10 and 11, where the system lets it through`() {
+        for (sdk in listOf(29, 30)) {
+            assertTrue("API $sdk, locked", VpnNotificationManager.refusesLockedTap(sdk, deviceLocked = true))
+            assertFalse("API $sdk, unlocked", VpnNotificationManager.refusesLockedTap(sdk, deviceLocked = false))
+        }
+        // API 31+: the system's own unlock prompt runs first; the tap arrives unlocked.
+        for (sdk in listOf(31, 33, 36)) {
+            assertFalse("API $sdk", VpnNotificationManager.refusesLockedTap(sdk, deviceLocked = true))
+        }
+    }
+
     @Test
     fun `the connected body is via location and IP, each only when shown`() {
         assertEquals("via Frankfurt · 1.2.3.4", VpnNotificationManager.connectedBody("Frankfurt", "1.2.3.4"))

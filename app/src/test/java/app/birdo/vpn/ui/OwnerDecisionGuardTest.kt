@@ -51,4 +51,39 @@ class OwnerDecisionGuardTest {
         assertFalse(strings.contains("sovereign network", ignoreCase = true))
         assertFalse(source("$main/ui/screen/LoginScreen.kt").contains("login_status_badge"))
     }
+
+    // ── MR-1518: no Quantum chip on Home, on any client ──────────────────
+
+    @Test
+    fun `Home has no Quantum chip on iOS or Android`() {
+        // The chip stays removed everywhere (desktop dropped it in June). The
+        // Quantum Protection toggle in Settings is not the chip and stays.
+        val home = source("iosApp/iosApp/Views/HomeView.swift")
+        assertFalse("iOS Home still shows the Quantum chip", Regex("""StatusBadgePill\(\s*"Quantum"""").containsMatchIn(home))
+        assertFalse(home.contains("Quantum protection active"))
+        assertFalse("iOS Home still reads quantumActive", home.contains("vpnVM.quantumActive"))
+        assertFalse(source("$main/ui/screen/HomeScreen.kt").contains("quantum", ignoreCase = true))
+    }
+
+    // ── MR-1094: the Face ID / Touch ID prompt says what the gate does ───
+
+    @Test
+    fun `the Face ID and Touch ID purpose strings promise a cover, not protection`() {
+        // P1-ios-biometric-gate-is-cosmetic, kept by the owner: the gate covers
+        // the screen and protects no data (BiometricGate.swift). iOS shows this
+        // string in the system prompt the first time the gate runs.
+        val purpose = Regex("""<key>NSFaceIDUsageDescription</key>\s*<string>([^<]*)</string>""")
+        for (plist in listOf("iosApp/iosApp/Info.plist", "iosApp/iosApp/Info-macOS.plist")) {
+            val text = purpose.find(source(plist))?.groupValues?.get(1)
+            assertTrue("$plist has no NSFaceIDUsageDescription", text != null)
+            assertFalse("$plist: \"$text\" claims protection", text!!.contains("protect", ignoreCase = true))
+            assertFalse("$plist: \"$text\" claims security", text.contains("secur", ignoreCase = true))
+            assertTrue("$plist: \"$text\" does not name the setting it belongs to", text.contains("Hide App Contents"))
+        }
+        // A localised copy would show its own text in the prompt.
+        val localized = File(repoRoot, "iosApp").walkTopDown()
+            .filter { it.isFile && it.extension == "strings" && it.readText().contains("NSFaceIDUsageDescription") }
+            .toList()
+        localized.forEach { assertFalse("${it.path} claims protection", it.readText().contains("protect", ignoreCase = true)) }
+    }
 }

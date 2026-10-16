@@ -195,9 +195,9 @@ class VpnManager @Inject constructor(
 
     /**
      * The wait the last failed dial's server asked for (a 503
-     * quota_check_unavailable or psk_delivery_unavailable says 30 s; see
-     * RetryAfter). The next automatic re-dial waits at least this long;
-     * consumed by [onFailure].
+     * quota_check_unavailable or psk_delivery_unavailable says 30 s,
+     * tunnel_address_unavailable 15 s; see RetryAfter). The next automatic
+     * re-dial waits at least this long; consumed by [onFailure].
      */
     @Volatile private var retryAfterHintMs = 0L
 
