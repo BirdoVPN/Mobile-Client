@@ -663,6 +663,12 @@ jobs:
             echo "::error::sdkmanager could not install the emulator or $SYSTEM_IMAGE"
             exit 1
           fi
+          # avdmanager and the emulator need not default to the same AVD
+          # directory: in run 38859303616 the emulator searched only
+          # ~/.android/avd and found no ci.ini there. Both are told where it is.
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           echo no | "$tools/avdmanager" create avd --force -n ci -k "$SYSTEM_IMAGE" -d pixel_6
           # Any host library still missing fails HERE, by name, rather than as
           # an exit 127 at boot. The emulator's own bundled libraries go on the
@@ -686,6 +692,13 @@ jobs:
             exit 1
           fi
           echo "${version%%$'\n'*}"
+          avds=$("$emu/emulator" -list-avds 2>&1 || true)
+          if ! grep -qx ci <<< "$avds"; then
+            printf '%s\n' "$avds"
+            echo "::error::the emulator does not see the AVD 'ci' that avdmanager created in $ANDROID_AVD_HOME"
+            exit 1
+          fi
+          echo "AVD 'ci' is visible to the emulator ($ANDROID_AVD_HOME)"
 
       - name: Boot the emulator
         run: |
