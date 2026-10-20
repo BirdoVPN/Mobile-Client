@@ -216,6 +216,18 @@ class PrivacyBoundaryTest {
                 "sentry-java 9.0). Personal data is kept out by options.dataCollection.",
             !app.contains("isSendDefaultPii"),
         )
+        // The policy object is the only place a category may be set. A later
+        // `options.dataCollection.userInfo = true` here would pass
+        // CrashReportingTest, which checks the helper on its own.
+        val policyUses = Regex("""options\s*\.\s*dataCollection\b.*""").findAll(app)
+            .map { it.value.substringBefore("//").trim() }
+            .toList()
+        assertEquals(
+            "P6-CLI-SENTRY-01: BirdoApp uses options.dataCollection for more than replacing it. " +
+                "Set categories in CrashReporting.noPersonalDataCollection() instead.",
+            listOf("options.dataCollection = CrashReporting.noPersonalDataCollection()"),
+            policyUses,
+        )
     }
 
     @Test
