@@ -18,6 +18,9 @@ on:
     # are born draft+prerelease (android.yml) then published via `gh release edit`.
     # GitHub documents that 'released'/'prereleased' do NOT reliably fire for
     # releases published from a draft, so 'published' + the guard below is correct.
+    # A release stays a prerelease until Play's production track has it at 100%;
+    # github-latest-from-play.yml then clears the flag and dispatches this
+    # workflow (its GITHUB_TOKEN edit raises no event of its own).
     # Manual fallback (belt-and-suspenders): `gh workflow run "F-Droid repo"`.
     types: [published]
   workflow_dispatch:
@@ -42,7 +45,8 @@ jobs:
     permissions:
       contents: write
     # Only index stable, published releases into the repo. Skip drafts and
-    # prereleases; always allow manual (workflow_dispatch) runs.
+    # prereleases; always allow manual (workflow_dispatch) runs -- which index
+    # the same set, because "Collect release APKs" applies the same rule.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.release.draft == false && github.event.release.prerelease == false)
@@ -129,9 +133,14 @@ jobs:
           EXPECTED_SIGNER_SHA256="f1678ae98a199654b1a7e1a21f3861cc6beb7490b73f08685e907a55a81f2aa9"
           mkdir -p fdroid/repo/icons
           cp fdroid/icon.png fdroid/repo/icons/icon.png
+          # Published, non-prerelease releases only: the rule the job's guard
+          # applies to a release event (MR-2102). Collecting prereleases too let
+          # a dispatch -- including the one github-latest-from-play.yml sends --
+          # index a build Play had not rolled out to everyone, which the guard
+          # exists to keep out.
           tags=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 60 \
-                   --json tagName,isDraft \
-                   -q '.[] | select(.isDraft==false) | .tagName' \
+                   --json tagName,isDraft,isPrerelease \
+                   -q '.[] | select(.isDraft==false and .isPrerelease==false) | .tagName' \
                  | grep '^android-v' | head -8 || true)
           echo "Candidate releases:"; echo "$tags"
           count=0

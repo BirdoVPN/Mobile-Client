@@ -119,23 +119,11 @@ jobs:
       - name: Scripts run on macOS are bash 3.2-clean
         run: bash scripts/check_macos_bash_compat.sh
 
+      # The same script, window and wording as android-ci.yml's Lint Check
+      # (MR-1669): fails from 30 days before the pin-set's expiration. A
+      # release must not be held to a weaker gate than a pull request.
       - name: Check certificate pin expiry
-        run: |
-          EXPIRY=$(grep -oP 'expiration="\K[^"]+' app/src/main/res/xml/network_security_config.xml)
-          if [ -z "$EXPIRY" ]; then
-            echo "::error::No pin-set expiration found in network_security_config.xml"
-            exit 1
-          fi
-          DAYS_LEFT=$(( ($(date -d "$EXPIRY" +%s) - $(date +%s)) / 86400 ))
-          echo "Certificate pins expire: $EXPIRY ($DAYS_LEFT days remaining)"
-          if [ "$DAYS_LEFT" -lt 0 ]; then
-            echo "::error::Certificate pins EXPIRED on $EXPIRY! App will fail to connect."
-            exit 1
-          elif [ "$DAYS_LEFT" -lt 60 ]; then
-            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Rotate pins NOW!"
-          elif [ "$DAYS_LEFT" -lt 90 ]; then
-            echo "::warning::Certificate pins expire in $DAYS_LEFT days ($EXPIRY). Plan pin rotation soon."
-          fi
+        run: bash scripts/check_pin_expiry.sh app/src/main/res/xml/network_security_config.xml
 
       - name: Set up JDK
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -592,7 +580,7 @@ jobs:
       # Consumed by draft-release and play-upload in the same run; kept 30 days
       # for a release as an audit trail, 7 for a main dry run.
       - name: Upload Release APK
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-apk
           path: |
@@ -614,7 +602,7 @@ jobs:
       # A released build's mapping is the only way to symbolicate its crashes,
       # so a release keeps it for the maximum 90 days; a main dry run for 14.
       - name: Upload Mapping and R8 reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mapping
           path: app/build/outputs/mapping/release/
@@ -639,7 +627,7 @@ jobs:
       contents: write
     steps:
       - name: Download release APK artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-apk
           path: release-apk/
@@ -676,13 +664,25 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
 
+      # target_commitish: a dispatch names a tag that may not exist yet, and a
+      # draft without a target is tagged from main's head at PUBLISH time --
+      # days later, a different commit from the one these assets were built
+      # from (the 1.4.33 draft sat targeted at main). It changes nothing for an
+      # android-v* push, whose tag already points at this commit.
+      #
+      # prerelease is ALWAYS true, on purpose (owner decision 2026-10-01): a
+      # release stays a prerelease until Play's production track has the build
+      # at 100%, when github-latest-from-play.yml clears the flag and marks it
+      # Latest. It used to read `contains(tag, '-')`, which is true for every
+      # tag here ("android-v...") and looked like a semver-suffix test.
       - name: Create / update draft GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: "Birdo Android ${{ steps.tag.outputs.tag }}"
           draft: true
-          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          prerelease: true
           generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/android-v') }}
           fail_on_unmatched_files: false
           body: |
@@ -762,7 +762,7 @@ jobs:
       contents: write
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-apk
           path: release-apk/
@@ -872,7 +872,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download release artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-apk
           path: release-apk/
