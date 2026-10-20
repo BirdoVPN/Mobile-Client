@@ -1,5 +1,11 @@
 package app.birdo.vpn.utils
 
+import io.sentry.DataCollectionResolver
+import io.sentry.Hint
+import io.sentry.KeyValueCollectionBehavior
+import io.sentry.MainEventProcessor
+import io.sentry.SentryEvent
+import io.sentry.SentryOptions
 import io.sentry.protocol.App
 import io.sentry.protocol.Contexts
 import io.sentry.protocol.Device
@@ -13,6 +19,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.lang.reflect.Modifier
 import java.nio.file.Files
 import java.util.Date
 import java.util.TimeZone
@@ -77,6 +84,137 @@ class CrashReportingTest {
         assertFalse(CrashReporting.predatesConsent(null, 1_800_000_000_000L))
     }
 
+    // ── noPersonalDataCollection ──────────────────────────────────────────
+
+    /**
+     * Options carrying the app's data-collection policy, with the deprecated
+     * sendDefaultPii switch at [legacySendDefaultPii]. It is set on purpose:
+     * the policy must not depend on it, since 9.0 removes it.
+     */
+    @Suppress("DEPRECATION")
+    private fun optionsWithPolicy(legacySendDefaultPii: Boolean) = SentryOptions().apply {
+        isSendDefaultPii = legacySendDefaultPii
+        isAttachServerName = false // as BirdoApp sets it; skips a hostname lookup
+        dataCollection = CrashReporting.noPersonalDataCollection()
+    }
+
+    @Test
+    fun `the effective options collect no personal data, whatever the deprecated sendDefaultPii says`() {
+        val off = KeyValueCollectionBehavior.Mode.OFF
+        val collectedBySwitch = listOf(false, true).associateWith { legacy ->
+            val options = optionsWithPolicy(legacy)
+            // The resolver is what every SDK integration asks before it collects.
+            val r = options.dataCollectionResolver
+            // End to end through the SDK's own event processor, which is where
+            // the {{auto}} IP marker would be added.
+            val event = MainEventProcessor(options).process(SentryEvent(), Hint())
+            buildList {
+                if (event.user?.ipAddress != null) add("IP marker on the event")
+                if (!r.isDataCollectionConfigured) add("policy not applied (falls back to sendDefaultPii)")
+                if (r.isUserInfo) add("user info / IP")
+                if (r.isFilePaths) add("file paths")
+                if (r.isDatabaseQueryData) add("database query data")
+                if (r.isGraphqlDocument || r.isGraphqlDocumentWithLegacyBodyGate ||
+                    r.isGraphqlDocumentWithLegacyAlways
+                ) add("GraphQL document")
+                if (r.isGraphqlVariables || r.isGraphqlVariablesWithLegacyBodyGate ||
+                    r.isGraphqlVariablesWithLegacyAlways
+                ) add("GraphQL variables")
+                if (r.isIncomingRequestBody || r.isOutgoingRequestBody) add("request bodies")
+                if (r.isIncomingResponseBody || r.isOutgoingResponseBody ||
+                    r.isOutgoingResponseBodyWithLegacyBodyGate
+                ) add("response bodies")
+                if (r.cookies.mode != off) add("cookies")
+                if (r.urlQueryParams.mode != off) add("URL query params")
+                if (r.httpRequestHeaders.mode != off) add("request headers")
+                if (r.httpResponseHeaders.mode != off) add("response headers")
+            }
+        }
+        assertEquals(
+            "what the SDK may still collect, by the deprecated sendDefaultPii value",
+            mapOf(false to emptyList<String>(), true to emptyList()),
+            collectedBySwitch,
+        )
+    }
+
+    /**
+     * The resolver answers the test above reads by hand (sentry-java 8.60).
+     * Once the policy is configured, an answer the SDK adds in a later version
+     * resolves to its default, which mostly collects, and the hand-written
+     * list would not notice. The three tests below close that gap.
+     */
+    private val coveredResolverAnswers = setOf(
+        "isUserInfo", "isFilePaths", "isDatabaseQueryData",
+        "isGraphqlDocument", "isGraphqlDocumentWithLegacyBodyGate", "isGraphqlDocumentWithLegacyAlways",
+        "isGraphqlVariables", "isGraphqlVariablesWithLegacyBodyGate", "isGraphqlVariablesWithLegacyAlways",
+        "isIncomingRequestBody", "isOutgoingRequestBody",
+        "isIncomingResponseBody", "isOutgoingResponseBody", "isOutgoingResponseBodyWithLegacyBodyGate",
+        "getCookies", "getUrlQueryParams", "getHttpRequestHeaders", "getHttpResponseHeaders",
+    )
+
+    @Test
+    fun `every data-collection answer the SDK has is one this file checks`() {
+        val answers = DataCollectionResolver::class.java.methods
+            .filter { it.declaringClass == DataCollectionResolver::class.java && !Modifier.isStatic(it.modifiers) }
+            .map { it.name }
+            .toSet() - "isDataCollectionConfigured"
+        assertEquals(
+            "DataCollectionResolver changed in this SDK version. New answers: ${answers - coveredResolverAnswers}, " +
+                "gone: ${coveredResolverAnswers - answers}. Set each new category off in " +
+                "CrashReporting.noPersonalDataCollection(), then add it to the checks above.",
+            coveredResolverAnswers,
+            answers,
+        )
+    }
+
+    @Test
+    fun `every yes-or-no and key-value answer of the resolver is off, found by reflection`() {
+        val answers = DataCollectionResolver::class.java.methods.filter {
+            it.parameterCount == 0 && !Modifier.isStatic(it.modifiers) &&
+                it.name != "isDataCollectionConfigured" &&
+                it.returnType in setOf(
+                    Boolean::class.javaPrimitiveType,
+                    Boolean::class.javaObjectType,
+                    KeyValueCollectionBehavior::class.java,
+                )
+        }
+        assertFalse("reflection found no resolver answers", answers.isEmpty())
+        val onBySwitch = listOf(false, true).associateWith { legacy ->
+            val r = optionsWithPolicy(legacy).dataCollectionResolver
+            answers.filter { m ->
+                val v: Any? = m.invoke(r)
+                // Only `false` and Mode.OFF count as off; null is not an answer.
+                if (v is KeyValueCollectionBehavior) v.mode != KeyValueCollectionBehavior.Mode.OFF else v != false
+            }.map { it.name }.sorted()
+        }
+        assertEquals(
+            "resolver answers that are not off, by the deprecated sendDefaultPii value",
+            mapOf(false to emptyList<String>(), true to emptyList()),
+            onBySwitch,
+        )
+    }
+
+    @Test
+    fun `the policy leaves no data-collection field to an SDK default`() {
+        val policy = CrashReporting.noPersonalDataCollection()
+        // A null field is one the resolver fills with its (collecting) default.
+        val unset = listOf<Any>(policy, policy.httpHeaders, policy.graphql).flatMap { part ->
+            part.javaClass.methods
+                .filter {
+                    it.declaringClass == part.javaClass && it.parameterCount == 0 &&
+                        !Modifier.isStatic(it.modifiers) &&
+                        (it.name.startsWith("get") || it.name.startsWith("is"))
+                }
+                .filter { it.invoke(part) == null }
+                .map { "${part.javaClass.simpleName}.${it.name}" }
+        }
+        assertEquals(
+            "DataCollection fields CrashReporting.noPersonalDataCollection() leaves unset",
+            emptyList<String>(),
+            unset.sorted(),
+        )
+    }
+
     // ── minimiseContexts ──────────────────────────────────────────────────
 
     @Test
@@ -94,6 +232,7 @@ class CrashReportingTest {
                     timezone = TimeZone.getTimeZone("Europe/London")
                     memorySize = 8L * 1024 * 1024 * 1024
                     bootTime = Date()
+                    connectionEffectiveType = "5g" // new in sentry-java 8.60
                 },
             )
             setOperatingSystem(
@@ -135,6 +274,7 @@ class CrashReportingTest {
         assertNull(device.timezone)
         assertNull(device.memorySize)
         assertNull(device.bootTime)
+        assertNull(device.connectionEffectiveType)
 
         val os = contexts.operatingSystem
         assertNotNull(os)

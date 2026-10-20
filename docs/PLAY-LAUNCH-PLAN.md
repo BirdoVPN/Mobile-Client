@@ -80,7 +80,7 @@ The app was already hardened across previous work; verified this pass:
 | **Data at rest** |  Auth tokens sealed with an Android Keystore AES-256-GCM key (`KeystoreSecureStore`, with corruption recovery). |
 | **Transport** |  Cleartext blocked (`networkSecurityConfig`), SPKI cert-pinning (OkHttp + manifest pin-set, ISRG backup pin, expiry 2027-06-01). |
 | **Native integrity** |  SHA-256 hash-gate on wg-go/xray/rosenpass-jni; signing-cert fingerprint runtime tamper check. |
-| **Crash reporting** |  Sentry with `isSendDefaultPii = false` + `beforeSend` scrubber; no analytics or ad SDKs. |
+| **Crash reporting** |  Sentry with every `dataCollection` category off + `beforeSend` scrubber; no analytics or ad SDKs. |
 | **Self-update** |  None — the app does **not** download/sideload APKs (that would be a Device-and-Network-Abuse violation). Updates come through Play. |
 | **Account deletion** |  In-app account deletion exists (Play requirement for apps with accounts) + web URL `birdo.app/delete-account`. |
 | **Release engineering** |  AGP 9.4.0 (R8 full mode + optimised resource shrinking on by default; `scripts/check_r8_keeps.py` asserts both on the AAB), `debugSymbolLevel=FULL`, ABI filter arm64-v8a + armeabi-v7a + x86_64 + x86 (all four live Android ABIs, each with the complete native engine set), signed AAB in CI, Sigstore provenance, versionCode from `version.properties`. |

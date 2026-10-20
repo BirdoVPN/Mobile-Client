@@ -177,7 +177,9 @@ class PrivacyBoundaryTest {
         // is set EXPLICITLY in source precisely so a changed SDK default cannot
         // switch one back on without this pin failing.
         val required = listOf(
-            "options.isSendDefaultPii = false",
+            // sentry-java 8.59 replaced sendDefaultPii with dataCollection;
+            // CrashReportingTest pins what the policy object resolves to.
+            "options.dataCollection = CrashReporting.noPersonalDataCollection()",
             "options.isAttachScreenshot = false",
             "options.isAttachViewHierarchy = false",
             "options.isAttachServerName = false",
@@ -205,6 +207,26 @@ class PrivacyBoundaryTest {
                 "privacy-preserving value: $missing",
             emptyList<String>(),
             missing,
+        )
+        // Once the policy above is applied the SDK no longer reads the
+        // deprecated switch for any data category, and 9.0 deletes it: a
+        // line setting it would only look like a control.
+        assertTrue(
+            "P6-CLI-SENTRY-01: BirdoApp sets the deprecated sendDefaultPii (removed in " +
+                "sentry-java 9.0). Personal data is kept out by options.dataCollection.",
+            !app.contains("isSendDefaultPii"),
+        )
+        // The policy object is the only place a category may be set. A later
+        // `options.dataCollection.userInfo = true` here would pass
+        // CrashReportingTest, which checks the helper on its own.
+        val policyUses = Regex("""options\s*\.\s*dataCollection\b.*""").findAll(app)
+            .map { it.value.substringBefore("//").trim() }
+            .toList()
+        assertEquals(
+            "P6-CLI-SENTRY-01: BirdoApp uses options.dataCollection for more than replacing it. " +
+                "Set categories in CrashReporting.noPersonalDataCollection() instead.",
+            listOf("options.dataCollection = CrashReporting.noPersonalDataCollection()"),
+            policyUses,
         )
     }
 
