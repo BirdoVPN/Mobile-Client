@@ -1,7 +1,27 @@
 # Store screenshots
 
-**Re-captured 2026-09-20** on a Samsung SM-S938B (Android 16), 1440x3120, from a
-debug build with `-PallowScreenshots=true`.
+**Re-captured 2026-10-21** (MR-1181, MR-037), both sets, on the Android emulator
+(AVD `Pixel_7_API_35`, API 35) from a debug build of `main` with
+`-PallowScreenshots=true`. A debug build talks to production (`API_BASE_URL` is
+set in `defaultConfig`) and draws no debug label or HUD. The Play set is
+1440x3120 (`adb shell wm size 1440x3120` + `wm density 560`: the same dp layout
+as the device the 2026-09-20 set came from); the F-Droid set is the AVD's native
+1080x2400. System UI demo mode fixed the status bar (10:00, full battery, Wi-Fi,
+no notifications). `StoreScreenshotsTest` pins both sets and their sizes.
+
+Account: ONE fresh anonymous free account, created in-app for this capture.
+The "Save your account number" dialog was dismissed without a screenshot or a
+host-side UI dump (the button was found by a dump grepped and deleted on the
+device), no frame is taken from Profile (it shows the number's last group), and
+the account was deleted in-app (Profile → Delete Account) straight afterwards.
+The emulator ran with `-read-only`, so its install and sign-in were discarded
+on exit. The current UI never names the account elsewhere: the top bar says
+"Anonymous account".
+
+The frames this replaced showed an account identifier in the top bar (the Play
+home screen a staff e-mail address, two F-Droid frames 12 digits of an anonymous
+account number, treated as burned under MR-037). `StoreScreenshotsTest` refuses
+them by SHA-256, so they cannot be published again.
 
 ## Why this could not be done before
 
@@ -30,17 +50,26 @@ screen to photograph. Copy it from the main checkout first.
 
 ## The set
 
-Four, not five. `play_listing.py` accepts 2–8, and four verified images beat
-five where one is unchecked. `screenshot-05-split-tunneling` is gone: split
-tunnelling is not reachable from Settings in the current build, and the security
-panel below is a stronger asset anyway.
+Play: four. `play_listing.py` accepts 2–8. `screenshot-05-split-tunneling` was
+dropped on 2026-09-20 and stays out of the Play set; the F-Droid set keeps its
+split-tunnelling frame (Settings → Split Tunneling → Manage Apps).
 
 | File | Shows |
 |---|---|
 | `screenshot-01-login.png` | Email / Anonymous / SSO tabs |
-| `screenshot-02-home-protected.png` | Connected, the arc drawn to the node, live transfer counters |
+| `screenshot-02-home-protected.png` | Protected, the arc drawn to São Paulo, live timer and transfer counters |
 | `screenshot-03-servers.png` | "10 of 10 servers", search, All / Favorites / High-Speed / Port Forwarding |
-| `screenshot-04-security.png` | Quantum Protection and Kill Switch both on |
+| `screenshot-04-security.png` | Settings: Appearance, then Kill Switch and Quantum Protection both on |
+
+F-Droid (`fdroid/metadata/app.birdo.vpn/en-US/phoneScreenshots/`), 1080x2400:
+
+| File | Shows |
+|---|---|
+| `01.png` | Email / Anonymous / SSO tabs |
+| `02.png` | Protected, the arc drawn to São Paulo |
+| `03.png` | The server picker, "10 of 10 servers" |
+| `04.png` | Settings: Appearance, Kill Switch and Quantum Protection on |
+| `05.png` | Split Tunneling: the app list |
 
 ---
 
