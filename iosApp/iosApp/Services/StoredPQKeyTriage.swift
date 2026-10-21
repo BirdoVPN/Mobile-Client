@@ -26,7 +26,8 @@ import Foundation
 /// `scripts/check_pq_ios_wiring.sh` now sees it, and these tests pin what the
 /// call is supposed to decide.
 enum StoredPQKeyDecision: Equatable {
-    /// The blob is well formed and the KEM can still load its secret key.
+    /// The blob is well formed, the KEM can still load its secret key, and its
+    /// public key is the one embedded in that secret key.
     case use
     /// The blob exists but is unusable. Delete it, then generate a fresh
     /// keypair; the server re-pins the new public key on the next handshake,
@@ -64,12 +65,47 @@ enum StoredPQKeyTriage {
         // `Data(_:)` re-bases the slice. `suffix` keeps the parent's indices,
         // and handing a non-zero-based slice to `withUnsafeBytes` reads from
         // the wrong offset — the defect this whole path exists to avoid.
-        let secretKey = Data(blob.suffix(secretKeyLength))
+        var secretKey = Data(blob.suffix(secretKeyLength))
+        // MR-2123: that is a plaintext copy of the secret key. Wipe it on every
+        // path out (memset_s, which the optimiser may not remove).
+        defer { secretKey.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
         guard secretKeyIsLoadable(secretKey) else {
             return .discardAndRekey(
                 reason: "failed FIPS 203 §7.3 validation (H(ek) mismatch) — not recoverable")
         }
 
+        // MR-2121: §7.3 binds the encapsulation key EMBEDDED in the secret key
+        // to H(ek); nothing binds the public key stored beside it. A pair whose
+        // halves disagree passes the check above, uploads a public key this
+        // client cannot decapsulate for, and fails every BirdoPQ connect until
+        // sign-out. Desktop (birdo_pq.rs read_keypair) and Android reject it.
+        guard publicKeyMatchesSecretKey(blob: blob,
+                                        publicKeyLength: publicKeyLength,
+                                        secretKeyLength: secretKeyLength) else {
+            return .discardAndRekey(
+                reason: "stored public key differs from the one embedded in the secret key")
+        }
+
         return .use
+    }
+
+    /// Is the stored public key the encapsulation key embedded in the secret
+    /// key? FIPS 203 lays the expanded ML-KEM decapsulation key out as
+    /// `dk_pke || ek || H(ek) || z`, with `H(ek)` and `z` 32 bytes each, so `ek`
+    /// starts at `secretKeyLength - publicKeyLength - 64` (1536 for
+    /// ML-KEM-1024; the crate's `embedded_ek_sits_at_1536_in_the_expanded_dk`
+    /// test pins it). Compared in place on the blob: both halves are public
+    /// key material, and no further copy of the secret key is made.
+    static func publicKeyMatchesSecretKey(blob: Data,
+                                          publicKeyLength: Int,
+                                          secretKeyLength: Int) -> Bool {
+        let embeddedOffset = secretKeyLength - publicKeyLength - 64
+        guard publicKeyLength > 0, embeddedOffset >= 0,
+              blob.count == publicKeyLength + secretKeyLength else { return false }
+        let start = blob.startIndex
+        let stored = blob[start ..< start + publicKeyLength]
+        let embeddedStart = start + publicKeyLength + embeddedOffset
+        let embedded = blob[embeddedStart ..< embeddedStart + publicKeyLength]
+        return stored.elementsEqual(embedded)
     }
 }

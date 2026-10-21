@@ -248,6 +248,25 @@ jobs:
           bash scripts/check_pq_rng_panics.sh
           bash scripts/check_pq_ios_wiring.sh
 
+      # MR-2118: the vendored WireGuardKit called CCRandomGenerateBytes only
+      # inside assert(), so an NDEBUG build compiled the RNG out and
+      # PrivateKey() returned a fixed all-zero key. Local patch 4
+      # (iosApp/project.yml) calls it unconditionally; a re-vendor of the
+      # upstream sources must not quietly drop that.
+      - name: Vendored WireGuardKit calls its RNG outside assert()
+        run: |
+          set -euo pipefail
+          src=iosApp/Vendor/wireguard-apple/Sources
+          if grep -rnE 'assert[[:space:]]*\([^;]*(CCRandomGenerateBytes|SecRandomCopyBytes|arc4random)' "$src"; then
+            echo "::error::an RNG call inside assert() is compiled out of every NDEBUG build (MR-2118)"
+            exit 1
+          fi
+          if ! grep -qF 'if (CCRandomGenerateBytes(private_key, 32) != kCCSuccess)' "$src/WireGuardKitC/x25519.c"; then
+            echo "::error file=$src/WireGuardKitC/x25519.c::local patch 4 (MR-2118) is missing: curve25519_generate_private_key must call CCRandomGenerateBytes outside assert() and abort() on failure"
+            exit 1
+          fi
+          echo "ok: the vendored x25519 RNG call is outside assert()"
+
       - name: Set up JDK
         if: ${{ needs.changes.outputs.android != 'false' }}
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1

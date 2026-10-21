@@ -105,8 +105,12 @@ pub fn generate_keypair() -> Result<StaticKeypair, JniErr> {
     // NOT `KeyExport::to_bytes()`: that returns the 64-byte seed and panics
     // for expanded-loaded keys. The stored encoding is the 3168-byte expanded
     // form, and the assertion below is what makes a wrong call loud.
+    // MR-2122: `to_expanded_bytes()` returns a plain `Array` with no Drop of
+    // its own, so the temporary is held in `Zeroizing` and wiped when it goes
+    // out of scope (iOS lib.rs and desktop birdo_pq.rs do the same).
     #[allow(deprecated)]
-    let secret_key = Zeroizing::new(dk.to_expanded_bytes().to_vec());
+    let expanded = Zeroizing::new(dk.to_expanded_bytes());
+    let secret_key = Zeroizing::new(expanded.to_vec());
 
     if public_key.len() != EK_LEN || secret_key.len() != DK_LEN {
         return Err(JniErr::Crypto(format!(
@@ -139,19 +143,25 @@ pub fn stored_secret_key_is_usable(secret_key: &[u8]) -> bool {
 }
 
 fn load_secret_key(secret_key: &[u8]) -> Result<DecapsulationKey, JniErr> {
-    let enc = StoredDk::try_from(secret_key).map_err(|_| {
+    // MR-2122: `Array` has no Drop of its own, so this stack copy of the
+    // expanded secret key is wiped by hand on both outcomes. It is taken on
+    // every derive AND every usable-check, i.e. twice per connect (desktop
+    // `load_decapsulation_key` does the same).
+    let mut enc = StoredDk::try_from(secret_key).map_err(|_| {
         JniErr::Crypto(format!(
             "malformed client secret key: {} B, expected {DK_LEN}",
             secret_key.len()
         ))
     })?;
     #[allow(deprecated)]
-    DecapsulationKey::from_expanded_bytes(&enc).map_err(|_| {
+    let dk = DecapsulationKey::from_expanded_bytes(&enc).map_err(|_| {
         JniErr::Crypto(
             "malformed client secret key: failed FIPS 203 validation (H(ek) mismatch or non-canonical encapsulation key) — the stored key must be discarded and re-keyed"
                 .to_owned(),
         )
-    })
+    });
+    enc.zeroize();
+    dk
 }
 
 /// Client side: decap server ciphertext, derive PSK.
@@ -225,11 +235,19 @@ pub fn encapsulate(
     Ok((ct_bytes, psk))
 }
 
+/// MR-2112: `Hkdf::new` is `let (_, hkdf) = Self::extract(..)` (hkdf 0.12
+/// `src/lib.rs`), which drops the 32-byte PRK = HMAC(salt, ss) unwiped: it is
+/// a `GenericArray`, with no Drop. Extracting by hand keeps the PRK so it can
+/// be wiped. NOT wiped: the PRK-keyed HMAC state inside `Hkdf` itself. hmac
+/// 0.12 / sha2 0.10 have no zeroize support, and moving to hkdf 0.13 with
+/// sha2 0.11's `zeroize` feature is a dependency change the register leaves
+/// to a lead decision.
 fn hkdf_to_psk(shared_secret: &[u8], nonce: &[u8]) -> Zeroizing<Vec<u8>> {
-    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), shared_secret);
+    let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(HKDF_SALT), shared_secret);
     let mut psk = Zeroizing::new(vec![0u8; PSK_LEN]);
     hk.expand(nonce, psk.as_mut_slice())
         .expect("HKDF length OK (RFC 5869)");
+    prk.as_mut_slice().zeroize();
     psk
 }
 
@@ -469,6 +487,67 @@ mod tests {
             good.as_slice(),
             "and must differ from the true PSK"
         );
+    }
+
+    /// MR-2121: `BirdoPqManager.storedPublicKeyMatchesSecretKey` compares the
+    /// stored public key with `sk[1536..3104]` instead of asking the KEM. That
+    /// is only right if the FIPS 203 expanded decapsulation key really is
+    /// `dk_pke (1536) || ek (1568) || H(ek) (32) || z (32)`, so pin the layout
+    /// here, on a fresh key AND on the `PQClean` key already sealed on devices.
+    #[test]
+    fn embedded_ek_sits_at_1536_in_the_expanded_dk() {
+        let fresh = generate_keypair().expect("kp");
+        assert_eq!(&fresh.secret_key[1536..3104], fresh.public_key.as_slice());
+
+        let stored = unhex(PQCLEAN_DK_HEX);
+        assert_eq!(&stored[1536..3104], &unhex(PQCLEAN_EK_HEX)[..]);
+        assert_eq!(
+            DK_LEN - EK_LEN - 64,
+            1536,
+            "the offset the Kotlin check uses"
+        );
+    }
+
+    /// MR-2122 / MR-2112. No behavioural test can see a stack or heap residue,
+    /// so this one reads the source, as desktop's
+    /// `the_windows_keypair_lives_in_the_admin_only_directory` does: every
+    /// `StoredDk` copy of the secret key is bound `mut` and zeroized, the
+    /// keygen temporary is `Zeroizing`, and the HKDF PRK is extracted by hand
+    /// and wiped rather than dropped inside `Hkdf::new`.
+    #[test]
+    fn secret_copies_are_wiped_by_hand() {
+        let source = include_str!("handshake.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production half");
+
+        let copies = production.matches("StoredDk::try_from(").count();
+        assert!(
+            copies >= 1,
+            "the scan found no StoredDk copy: it is vacuous"
+        );
+        assert_eq!(
+            production
+                .matches("let mut enc = StoredDk::try_from(")
+                .count(),
+            copies,
+            "every StoredDk copy of the secret key must be bound `mut` so it can be wiped"
+        );
+        assert_eq!(
+            production.matches("enc.zeroize();").count(),
+            copies,
+            "every StoredDk copy of the secret key must be zeroized"
+        );
+        assert!(
+            production.contains("Zeroizing::new(dk.to_expanded_bytes())"),
+            "the keygen's expanded-key temporary must be Zeroizing"
+        );
+        assert!(
+            !production.contains("Hkdf::<Sha256>::new("),
+            "Hkdf::new drops the PRK unwiped; extract it and wipe it"
+        );
+        assert!(production.contains("prk.as_mut_slice().zeroize();"));
     }
 
     /// The generated constants must not drift from the JSON fixtures they came

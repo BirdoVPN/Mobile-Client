@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <assert.h>
+#include <stdlib.h>
 #include <CommonCrypto/CommonRandom.h>
 
 #include "x25519.h"
@@ -172,7 +172,12 @@ void curve25519_derive_public_key(uint8_t public_key[32], const uint8_t private_
 
 void curve25519_generate_private_key(uint8_t private_key[32])
 {
-    assert(CCRandomGenerateBytes(private_key, 32) == kCCSuccess);
+    /* BirdoVPN local patch 4 (MR-2118, see iosApp/project.yml): upstream made
+     * this RNG call INSIDE an assert, and NDEBUG compiles the whole assert out,
+     * RNG call included, leaving a fixed all-zero key. The RNG is called
+     * unconditionally; a failure aborts. */
+    if (CCRandomGenerateBytes(private_key, 32) != kCCSuccess)
+        abort();
     private_key[31] = (private_key[31] & 127) | 64;
     private_key[0] &= 248;
 }

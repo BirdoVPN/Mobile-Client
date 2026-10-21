@@ -25,6 +25,22 @@ class JceKeySource : SecretKeySource {
 }
 
 /**
+ * A [JceKeySource] that can be made to fail the way a broken Android Keystore
+ * does: `key()` throws [java.security.ProviderException] while [failing].
+ */
+class FlakyKeySource : SecretKeySource {
+    private val delegate = JceKeySource()
+    var failing = false
+
+    override fun key(): SecretKey {
+        if (failing) throw java.security.ProviderException("Keystore operation failed")
+        return delegate.key()
+    }
+
+    override fun destroy() = delegate.destroy()
+}
+
+/**
  * In-memory [SharedPreferences] with real commit/apply semantics tracking,
  * so tests can assert which write path a caller chose.
  */

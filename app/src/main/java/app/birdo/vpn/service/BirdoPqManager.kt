@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Coordinates BirdoPQ v1 post-quantum WireGuard PSK derivation.
@@ -43,6 +44,10 @@ import kotlinx.coroutines.withContext
  *            ──▶ performKeyExchange(ctx, response)  // returns derived PSK
  * disconnect() ──▶ stop()                            // zeroes secrets in memory
  * ```
+ *
+ * The keypair travels from the first call to the second through a one-shot
+ * in-memory hand-off (MR-2117), so the decapsulation uses exactly the pair
+ * whose public key was uploaded, even when the store could not keep it.
  *
  * **No rekey loop.** wireguard-android doesn't expose `wg set ... preshared-key`
  * via JNI, so we cannot hot-swap the PSK on the live tunnel. Each `/connect`
@@ -78,10 +83,46 @@ object BirdoPqManager {
     /** Upper bound for the server-supplied per-connect nonce (server mints 32 B). */
     private const val MAX_NONCE_BYTES = 64
 
+    /**
+     * Where the encapsulation key sits inside the 3168-byte expanded ML-KEM-1024
+     * decapsulation key. FIPS 203 lays it out as
+     * `dk_pke (1536) || ek (1568) || H(ek) (32) || z (32)`; the native
+     * `embedded_ek_sits_at_1536_in_the_expanded_dk` test pins it.
+     */
+    private const val EMBEDDED_PUBLIC_KEY_OFFSET =
+        RosenpassNative.SECRET_KEY_BYTES - RosenpassNative.PUBLIC_KEY_BYTES - 64
+
     enum class Mode { DISABLED, BILATERAL }
 
     @Volatile
     private var currentPsk: ByteArray? = null
+
+    /**
+     * MR-2117: the exact keypair whose public key [getClientPublicKeyB64] last
+     * uploaded, handed to the next [tryDecapsulate] exactly once.
+     *
+     * Without it the decapsulation re-read the keypair, and whenever the store
+     * could not keep the pair (a failing save, a transient read error on the
+     * public key, a Keystore failure) that re-read GENERATED A DIFFERENT ONE:
+     * the server encapsulated to pk_A, the client decapsulated with sk_B,
+     * implicit rejection gave a wrong PSK, and the tunnel never came up. Desktop
+     * (`CACHED_KEYPAIR`) and iOS hand the pair over the same way.
+     *
+     * It holds the secret key, so whoever clears it zeroes it:
+     * [tryDecapsulate]'s finally, [stop], [resetPersistedKeypair], and the next
+     * upload replacing it.
+     */
+    private val handOff = AtomicReference<RosenpassNative.StaticKeypair?>(null)
+
+    /**
+     * The public key [getClientPublicKeyB64] last uploaded. Public, so unlike
+     * [handOff] it survives [stop]: a decapsulation that has to fall back to
+     * the store (the hand-off already consumed or cleared) is still checked
+     * against it, and refuses loudly instead of deriving a PSK the server
+     * cannot match. Cleared by [resetPersistedKeypair].
+     */
+    @Volatile
+    private var uploadedPublicKey: ByteArray? = null
 
     // BirdoPqKeyStore keeps context.applicationContext only (see its
     // constructor), which lives as long as the process: nothing to leak.
@@ -107,6 +148,15 @@ object BirdoPqManager {
      */
     suspend fun getClientPublicKeyB64(context: Context): String? = withContext(Dispatchers.IO) {
         val kp = loadOrGenerateKeypair(context) ?: return@withContext null
+        // MR-2117: the decapsulation for this /connect uses exactly this pair.
+        // MR-2123: its secret key is zeroed when the hand-off is consumed or
+        // cleared, instead of being left to the garbage collector.
+        // Updated together, so two racing uploads cannot leave the record of
+        // the uploaded key naming a different pair from the hand-off.
+        synchronized(handOff) {
+            uploadedPublicKey = kp.publicKey.copyOf()
+            replaceHandOff(kp)
+        }
         Base64.encodeToString(kp.publicKey, Base64.NO_WRAP)
     }
 
@@ -155,12 +205,24 @@ object BirdoPqManager {
         Log.i(TAG, "stopping BirdoPQ PSK manager")
         currentPsk?.fill(0)
         currentPsk = null
+        // An unconsumed hand-off still holds the ML-KEM secret key.
+        replaceHandOff(null)
         _modeFlow.value = Mode.DISABLED
     }
 
     /** Permanently deletes the persisted ML-KEM keypair. Use on logout. */
     fun resetPersistedKeypair(context: Context) {
+        synchronized(handOff) {
+            uploadedPublicKey = null
+            replaceHandOff(null)
+        }
         ensureKeyStore(context).clear()
+    }
+
+    /** Swaps the hand-off and zeroes the secret key of the pair it replaced. */
+    private fun replaceHandOff(next: RosenpassNative.StaticKeypair?) {
+        val previous = handOff.getAndSet(next)
+        if (previous != null && previous !== next) previous.secretKey.fill(0)
     }
 
     // ── BirdoPQ v1 decapsulation ───────────────────────────────────────────
@@ -180,6 +242,26 @@ object BirdoPqManager {
      * downgrade.
      */
     private suspend fun tryDecapsulate(context: Context, config: ConnectResponse): ByteArray? {
+        // MR-2117: take the hand-off before anything can return, so every
+        // exit below (the by-design nulls included) zeroes it.
+        val handedOff = handOff.getAndSet(null)
+        try {
+            return decapsulate(context, config, handedOff)
+        } finally {
+            handedOff?.secretKey?.fill(0)
+        }
+    }
+
+    /**
+     * [tryDecapsulate]'s body. [handedOff] is the pair whose public key this
+     * connect uploaded, or null when there is none (consumed, cleared by
+     * [stop], or never set in this process); only then is the store read.
+     */
+    private suspend fun decapsulate(
+        context: Context,
+        config: ConnectResponse,
+        handedOff: RosenpassNative.StaticKeypair?,
+    ): ByteArray? {
         // PFA-H7: integrity-verify FIRST (which also performs the hash-then-load
         // sequence). isLoaded only becomes true after the hash matches.
         if (!RosenpassNative.verifyIntegrity(context)) {
@@ -255,8 +337,21 @@ object BirdoPqManager {
             return null
         }
 
-        val keypair = loadOrGenerateKeypair(context) ?: return null
+        val keypair = handedOff ?: loadOrGenerateKeypair(context) ?: return null
         try {
+            // MR-2117: the server encapsulated to the UPLOADED public key. A
+            // different pair can only derive a PSK the server does not have
+            // (implicit rejection), which shows up as a handshake that never
+            // completes; refuse here instead, where the cause is known.
+            val uploaded = uploadedPublicKey
+            if (uploaded != null && !keypair.publicKey.contentEquals(uploaded)) {
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_keypair_not_the_uploaded_one",
+                    "The ML-KEM keypair available to decapsulate is not the one whose public key was uploaded — bilateral PQ aborted",
+                )
+                return null
+            }
             // The generate path validates sizes via StaticKeypair.fromRaw; the
             // LOAD path reads raw bytes from disk with no length check, so a
             // truncated/corrupted file would reach the JNI boundary unvalidated.
@@ -325,13 +420,31 @@ object BirdoPqManager {
             // connect forever; discard it and re-key instead. The server
             // re-pins the new public key on the next handshake, so the only
             // cost is one extra keygen.
-            if (RosenpassNative.storedKeyUsable(existing.secretKey)) return existing
+            val usable = RosenpassNative.storedKeyUsable(existing.secretKey)
+            // MR-2121: FIPS 203 7.3 binds the encapsulation key EMBEDDED in the
+            // secret key to H(ek); nothing bound the separate public-key file to it.
+            // The two halves are written as two files, so a save that dies
+            // between them leaves one pair's pk beside another pair's sk. That
+            // sk passes 7.3, the wrong pk is uploaded on every connect, and
+            // every BirdoPQ connect fails until sign-out. Desktop rejects such
+            // a pair (birdo_pq.rs read_keypair); so does this.
+            if (usable && storedPublicKeyMatchesSecretKey(existing.publicKey, existing.secretKey)) {
+                return existing
+            }
 
-            FaultReporter.report(
-                FaultReporter.PATH_QUANTUM,
-                "pq_stored_key_unusable_rekeyed",
-                "Persisted ML-KEM secret key failed FIPS 203 validation — discarded and re-keying",
-            )
+            if (usable) {
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_stored_public_key_mismatch_rekeyed",
+                    "Persisted ML-KEM public key differs from the one embedded in the secret key — discarded and re-keying",
+                )
+            } else {
+                FaultReporter.report(
+                    FaultReporter.PATH_QUANTUM,
+                    "pq_stored_key_unusable_rekeyed",
+                    "Persisted ML-KEM secret key failed FIPS 203 validation — discarded and re-keying",
+                )
+            }
             existing.secretKey.fill(0)
             store.clear()
         }
@@ -361,6 +474,20 @@ object BirdoPqManager {
             )
         }
         return fresh
+    }
+
+    /**
+     * MR-2121: is [publicKey] the encapsulation key embedded in [secretKey] at
+     * [EMBEDDED_PUBLIC_KEY_OFFSET]? Both are public key material, so a plain
+     * comparison is enough. A half of the wrong length never matches.
+     */
+    private fun storedPublicKeyMatchesSecretKey(publicKey: ByteArray, secretKey: ByteArray): Boolean {
+        if (publicKey.size != RosenpassNative.PUBLIC_KEY_BYTES) return false
+        if (secretKey.size != RosenpassNative.SECRET_KEY_BYTES) return false
+        for (i in publicKey.indices) {
+            if (publicKey[i] != secretKey[EMBEDDED_PUBLIC_KEY_OFFSET + i]) return false
+        }
+        return true
     }
 
     private fun ensureKeyStore(context: Context): BirdoPqKeyStore {

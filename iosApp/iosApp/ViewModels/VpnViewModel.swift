@@ -475,6 +475,26 @@ final class VpnViewModel: ObservableObject {
         }
     }
 
+    /// A forced /vpn/stats fetch the caller can AWAIT (MR-2120), for a decision
+    /// that must not run on the cached snapshot: resuming a purchase straight
+    /// after sign-in, while a guest's snapshot is still nil. Publishes the
+    /// snapshot as `refreshSubscription` does and returns it; nil when there is
+    /// no session or the fetch failed (the cached snapshot is kept).
+    func fetchSubscriptionNow() async -> VpnStats? {
+        guard hasSession else { return nil }
+        do {
+            let fresh = try await api.fetchVpnStats()
+            subscription = fresh
+            subscriptionFetchedAt = Date()
+            subscriptionError = nil
+            return fresh
+        } catch {
+            subscriptionError = error.localizedDescription
+            reportUnauthorized(error)
+            return nil
+        }
+    }
+
     /// Server-truth plan slug, uppercased. "RECON" until /vpn/stats answers —
     /// locks render closed rather than flashing premium features open.
     var currentPlan: String { (subscription?.plan ?? "RECON").uppercased() }

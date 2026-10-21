@@ -109,3 +109,23 @@ if [ "${#MISSING[@]}" -ne 0 ]; then
 fi
 
 echo "check_pq_ios_wiring: ${#EXPORTS[@]} export(s) in $HEADER, $CHECKED production export(s), all called from iosApp/"
+
+# MR-2123: the managed layer must not keep the ML-KEM secret key in Swift
+# storage that nothing wipes. BirdoPQManager held it as `Data` in a
+# process-lifetime `cachedKeypair`; it now holds it only in a PQSecretKey
+# (memset_s after each decapsulation, PQSecretKeyTests). BirdoPQManager.swift
+# cannot be compiled into the unit-test bundle, so this reads it instead.
+MANAGER="iosApp/iosApp/Services/BirdoPQManager.swift"
+[ -f "$MANAGER" ] || { echo "::error::check_pq_ios_wiring: $MANAGER not found" >&2; exit 1; }
+regressed=$(grep -nE '(^|[^A-Za-z0-9_])(sk:[[:space:]]*Data([^A-Za-z0-9_]|$)|cachedKeypair)' "$MANAGER" \
+    | grep -vE '^[0-9]+:[[:space:]]*(//|\*|/\*)' || true)
+if [ -n "$regressed" ]; then
+    echo "::error file=$MANAGER::the ML-KEM secret key is held as Data again (MR-2123): keep it in PQSecretKey and wipe it after use." >&2
+    printf '%s\n' "$regressed" >&2
+    exit 1
+fi
+if ! grep -qE 'typealias Keypair = \(pk: Data, sk: PQSecretKey\)' "$MANAGER"; then
+    echo "::error file=$MANAGER::BirdoPQManager's keypair no longer holds its secret key in PQSecretKey (MR-2123)." >&2
+    exit 1
+fi
+echo "check_pq_ios_wiring: BirdoPQManager holds the ML-KEM secret key only in PQSecretKey"

@@ -184,6 +184,9 @@ struct ContentView: View {
                 // rather than up to half a minute after the user paid.
                 vpn?.refreshSubscription(force: true)
             }
+            // MR-2120: a resumed purchase awaits the account's plan before the
+            // "paid elsewhere" gate.
+            storeVM.fetchPlanNow = { [weak vpn] in await vpn?.fetchSubscriptionNow() }
             storeVM.start()
         }
         // Sign-in is a SHEET, raised only by an action that genuinely needs an
@@ -262,6 +265,7 @@ struct ContentView: View {
             // order. Idempotent; assigning them twice is harmless.
             vpnVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }
             storeVM.isSignedIn = { [weak authVM] in authVM?.isLoggedIn ?? false }
+            storeVM.fetchPlanNow = { [weak vpnVM] in await vpnVM?.fetchSubscriptionNow() }
             guard RootRoute.decide(hasConsented: authVM.hasConsented,
                                    consentDeferred: authVM.consentDeferred) == .shell else { return }
             guard authVM.isLoggedIn else {

@@ -209,16 +209,16 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
     // check only. A stored key that fails this is not recoverable, so Swift
     // MUST treat BAD_SECRET_KEY as "discard the Keychain item and re-key"
     // rather than retrying it on every connect. See birdo_pq_stored_key_usable.
-    let sk_obj = match StoredDk::try_from(sk_slice) {
-        Ok(enc) =>
-        {
-            #[allow(deprecated)]
-            match DecapsulationKey::from_expanded_bytes(&enc) {
-                Ok(dk) => dk,
-                Err(_) => return BirdoPqStatus::BadSecretKey as i32,
-            }
-        }
-        Err(_) => return BirdoPqStatus::BadSecretKey as i32,
+    // MR-2122: `Array` has no Drop of its own, so this stack copy of the
+    // expanded secret key is wiped by hand before either outcome returns.
+    let Ok(mut enc) = StoredDk::try_from(sk_slice) else {
+        return BirdoPqStatus::BadSecretKey as i32;
+    };
+    #[allow(deprecated)]
+    let loaded = DecapsulationKey::from_expanded_bytes(&enc);
+    enc.zeroize();
+    let Ok(sk_obj) = loaded else {
+        return BirdoPqStatus::BadSecretKey as i32;
     };
     let ct_obj = match Array::try_from(ct_slice) {
         Ok(c) => c,
@@ -235,8 +235,7 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
     let mut ss_bytes = Zeroizing::new(ss.to_vec());
 
     let mut psk = Zeroizing::new([0u8; BIRDO_PQ_PSK_LEN]);
-    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ss_bytes);
-    if hk.expand(nonce_slice, psk.as_mut_slice()).is_err() {
+    if !hkdf_to_psk(&ss_bytes, nonce_slice, psk.as_mut_slice()) {
         ss_bytes.fill(0);
         ss.zeroize();
         return BirdoPqStatus::Internal as i32;
@@ -249,6 +248,23 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
         std::ptr::copy_nonoverlapping(psk.as_ptr(), out_psk, BIRDO_PQ_PSK_LEN);
     }
     BirdoPqStatus::Ok as i32
+}
+
+/// `psk = HKDF-SHA-256(IKM = ss, salt = HKDF_SALT, info = nonce)`, written
+/// into `psk`. False only if HKDF refuses the output length.
+///
+/// MR-2112: `Hkdf::new` is `let (_, hkdf) = Self::extract(..)` (hkdf 0.12
+/// `src/lib.rs`), which drops the 32-byte PRK = HMAC(salt, ss) unwiped: it is
+/// a `GenericArray`, with no Drop. Extracting by hand keeps the PRK so it can
+/// be wiped. NOT wiped: the PRK-keyed HMAC state inside `Hkdf` itself. hmac
+/// 0.12 / sha2 0.10 have no zeroize support, and moving to hkdf 0.13 with
+/// sha2 0.11's `zeroize` feature is a dependency change the register leaves
+/// to a lead decision.
+fn hkdf_to_psk(shared_secret: &[u8], nonce: &[u8], psk: &mut [u8]) -> bool {
+    let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(HKDF_SALT), shared_secret);
+    let ok = hk.expand(nonce, psk).is_ok();
+    prk.as_mut_slice().zeroize();
+    ok
 }
 
 // -- Implementation identity + stored-key triage --------------------------
@@ -285,21 +301,32 @@ pub unsafe extern "C" fn birdo_pq_stored_key_usable(sk: *const u8, sk_len: usize
     }
     // SAFETY: caller asserts `sk` is valid for `sk_len` bytes; length checked.
     let sk_slice = unsafe { std::slice::from_raw_parts(sk, sk_len) };
-    let Ok(enc) = StoredDk::try_from(sk_slice) else {
+    // MR-2122: the stack copy of the expanded secret key is wiped by hand, as
+    // in `birdo_pq_derive_psk`.
+    let Ok(mut enc) = StoredDk::try_from(sk_slice) else {
         return 0;
     };
     #[allow(deprecated)]
     let ok = DecapsulationKey::from_expanded_bytes(&enc).is_ok();
+    enc.zeroize();
     i32::from(ok)
 }
 
-// ── Test helpers (compiled out of release) ────────────────────────────────
+// ── Test-only export, PRESENT in release builds ───────────────────────────
+//
+// MR-2119: this heading used to say the export below was "compiled out" of
+// release builds. It is not: it is an unconditional `#[no_mangle] pub extern
+// "C"` function, declared in include/birdo_pq_ios.h and listed in
+// scripts/build-birdo-pq-xcframework.sh, so it ships in the release
+// XCFramework. No Swift code calls it (scripts/check_pq_ios_wiring.sh lists it
+// as TEST_ONLY and fails the build on any other export without a call site).
 
-/// Server-side encapsulation. ONLY exposed so the Swift unit tests can do
-/// a self-contained round-trip without spinning up the backend. Not part
-/// of the production API surface — guarded so it shows up as a separate
-/// symbol that's easy to grep for if anyone ever ships a release that
-/// accidentally calls it.
+/// Server-side encapsulation. ONLY exposed so this crate's `cargo test` can
+/// do a self-contained round trip without the backend. Not part of the
+/// production API surface: no Swift call site exists, and it bounds the nonce
+/// less strictly than `birdo_pq_derive_psk` (an empty nonce is accepted). The
+/// test-named symbol is what makes a release that ever called it easy to grep
+/// for.
 #[no_mangle]
 pub unsafe extern "C" fn birdo_pq_test_encapsulate(
     pk: *const u8,
@@ -351,8 +378,7 @@ pub unsafe extern "C" fn birdo_pq_test_encapsulate(
     let ct_bytes = ct;
 
     let mut psk = Zeroizing::new([0u8; BIRDO_PQ_PSK_LEN]);
-    let hk = Hkdf::<Sha256>::new(Some(HKDF_SALT), &ss_bytes);
-    if hk.expand(nonce_slice, psk.as_mut_slice()).is_err() {
+    if !hkdf_to_psk(&ss_bytes, nonce_slice, psk.as_mut_slice()) {
         ss_bytes.fill(0);
         ss.zeroize();
         return BirdoPqStatus::Internal as i32;
@@ -602,6 +628,71 @@ mod tests {
         }
         assert!(exports.contains(&"birdo_pq_impl_name"));
         assert!(exports.contains(&"birdo_pq_stored_key_usable"));
+    }
+
+    /// MR-2121: `StoredPQKeyTriage` compares the stored public key with the
+    /// encapsulation key embedded in the secret key at `sk[1536..3104]`
+    /// (`skLen - pkLen - 64`), without asking the KEM. Pin that FIPS 203 layout,
+    /// `dk_pke (1536) || ek (1568) || H(ek) (32) || z (32)`, on a fresh key and
+    /// on the `PQClean` key already in the Keychain of older installs.
+    #[test]
+    fn embedded_ek_sits_at_1536_in_the_expanded_dk() {
+        let mut pk = vec![0u8; BIRDO_PQ_PUBLIC_KEY_LEN];
+        let mut sk = vec![0u8; BIRDO_PQ_SECRET_KEY_LEN];
+        let r = unsafe {
+            birdo_pq_generate_keypair(pk.as_mut_ptr(), pk.len(), sk.as_mut_ptr(), sk.len())
+        };
+        assert_eq!(r, 0);
+        assert_eq!(&sk[1536..3104], pk.as_slice());
+
+        let stored = unhex(PQCLEAN_DK_HEX);
+        assert_eq!(&stored[1536..3104], &unhex(PQCLEAN_EK_HEX)[..]);
+        assert_eq!(
+            BIRDO_PQ_SECRET_KEY_LEN - BIRDO_PQ_PUBLIC_KEY_LEN - 64,
+            1536,
+            "the offset StoredPQKeyTriage derives"
+        );
+    }
+
+    /// MR-2122 / MR-2112 / MR-2119. No behavioural test can see a stack
+    /// residue, so this one reads the source: every `StoredDk` copy of the
+    /// secret key is bound `mut` and zeroized, the HKDF PRK is extracted by
+    /// hand and wiped rather than dropped inside `Hkdf::new`, and the
+    /// test-only export is not described as absent from release builds.
+    #[test]
+    fn secret_copies_are_wiped_by_hand() {
+        let source = include_str!("lib.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production half");
+
+        let copies = production.matches("StoredDk::try_from(").count();
+        assert!(
+            copies >= 2,
+            "expected the derive and the usable-check copies"
+        );
+        assert_eq!(
+            production
+                .matches("let Ok(mut enc) = StoredDk::try_from(")
+                .count(),
+            copies,
+            "every StoredDk copy of the secret key must be bound `mut` so it can be wiped"
+        );
+        assert_eq!(
+            production.matches("enc.zeroize();").count(),
+            copies,
+            "every StoredDk copy of the secret key must be zeroized"
+        );
+        assert!(
+            !production.contains("Hkdf::<Sha256>::new("),
+            "Hkdf::new drops the PRK unwiped; extract it and wipe it"
+        );
+        assert!(production.contains("prk.as_mut_slice().zeroize();"));
+        assert!(
+            !production.contains("compiled out of release"),
+            "birdo_pq_test_encapsulate ships in the release XCFramework"
+        );
     }
 
     #[test]

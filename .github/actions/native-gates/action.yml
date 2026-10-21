@@ -41,8 +41,8 @@ runs:
       run: |
         set -euo pipefail
         declare -A MIN_TESTS=(
-          [rosenpass-jni]=12
-          [birdo-pq-ios]=13
+          [rosenpass-jni]=14
+          [birdo-pq-ios]=16
           [birdo-pq-server]=10
         )
         rustup component add rustfmt clippy
