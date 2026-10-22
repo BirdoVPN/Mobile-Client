@@ -1,9 +1,7 @@
-The app recovers by itself after a network outage, spots a dead connection within about 30 seconds, and usually switches servers without disconnecting first.
+The app recovers by itself after an outage, spots a dead connection in about 30 seconds while in use, and usually switches servers without disconnecting.
 
 Always-on VPN and "Block connections without VPN" are supported. Stealth Mode connects again.
 
 If the kill switch can't block traffic, the app tells you.
 
 Notifications no longer show the server's IP address or location unless you turn them on.
-
-On Android 10 and 11, a locked phone's notification can no longer disconnect the VPN.
