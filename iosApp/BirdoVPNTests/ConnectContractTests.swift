@@ -10,9 +10,10 @@ import XCTest
 /// unknown keys, so a renamed field is a 400 on every connect — iOS has done
 /// that once already (`serverId` for `serverNodeId`, AUDIT-M-DRIFT).
 ///
-/// The reply side of the heartbeat is here too (MR-1638): one body per
-/// `$defs.HeartbeatReason` value, checked against `$defs.HeartbeatResponse` and
-/// decoded by the REAL `HeartbeatResult` (HeartbeatWire.swift).
+/// The reply side of the heartbeat is here too (MR-1638): every
+/// `$defs.HeartbeatReason` value in every shape the server writes it, checked
+/// against `$defs.HeartbeatResponse` and decoded by the REAL `HeartbeatResult`
+/// (HeartbeatWire.swift).
 ///
 /// No third-party validator on iOS: the schema is parsed with
 /// JSONSerialization and the handful of keywords these definitions actually
@@ -389,29 +390,73 @@ final class ConnectContractTests: XCTestCase {
     }
 
     /// The replies birdo-web's `VpnService.heartbeat()` builds for `reason`
-    /// (backend/src/vpn/vpn.service.ts): a live key answers `valid: true`, a
-    /// key that is gone `valid: false` with the reason its removal recorded.
+    /// (backend/src/vpn/vpn.service.ts), in EVERY shape it writes one (checked
+    /// at birdo-web f10b614d: heartbeat, withQuota, quotaEndedResult,
+    /// freeTierCapMessage, key-removal.ts KEY_REMOVAL_REASONS) and in the
+    /// server's own sentences: a live key answers `valid: true`, a key that is
+    /// gone `valid: false` with the reason its removal recorded, and the 60 s
+    /// check-in cache answers for a deactivated row with its server's state.
     private static func heartbeatBodies(reason: String) -> [[String: Any]] {
         let gone = "Connection not found. Please reconnect."
+        let revoked = "Connection has been revoked. Please reconnect."
+        let offline = "Your current VPN server is offline. Please reconnect to a different server."
+        // freeTierCapMessage(bw, 'ended'), for a 50 GB allowance whose period ends 1 Nov.
+        let ended = "Free-tier data limit reached (50.2 / 50 GB this period). This connection has ended. "
+            + "Your allowance resets after 1 Nov. Upgrade to Operative for unlimited data."
+        // withQuota(): a live reply inside an over-cap Free session's grace
+        // window. The reason stays ok / server_offline; the three quota fields
+        // and the grace sentence (which replaces any other message) announce
+        // the end.
+        func inGrace(_ reply: [String: Any], seconds: Int) -> [String: Any] {
+            let minutes = (seconds + 59) / 60
+            let unit = minutes == 1 ? "minute" : "minutes"
+            var body = reply
+            body["quotaExceeded"] = true
+            body["quotaGraceEndsAt"] = "2026-10-31T23:50:00.000Z"
+            body["quotaGraceSecondsRemaining"] = seconds
+            body["message"] = "Free-tier data limit reached (50.2 / 50 GB this period). This connection will end in "
+                + "\(minutes) \(unit). Your allowance resets after 1 Nov. Upgrade to Operative for unlimited data."
+            return body
+        }
         switch reason {
         case "ok":
-            return [["valid": true, "serverOnline": true, "reason": reason]]
+            let live: [String: Any] = ["valid": true, "serverOnline": true, "reason": reason]
+            return [live, inGrace(live, seconds: 540)]
         case "server_offline":
             // Both forms the contract names: the key live on a node that is
-            // not ONLINE, and the key removed because its node was drained.
-            return [["valid": true, "serverOnline": false, "reason": reason,
-                     "message": "Your current VPN server is offline. Please reconnect to a different server."],
+            // not ONLINE (also inside the grace window), and the key removed
+            // because its node was drained.
+            let live: [String: Any] = ["valid": true, "serverOnline": false, "reason": reason, "message": offline]
+            return [live, inGrace(live, seconds: 60),
                     ["valid": false, "serverOnline": false, "reason": reason, "message": gone]]
         case "revoked":
-            return [["valid": false, "serverOnline": false, "reason": reason,
-                     "message": "Connection has been revoked. Please reconnect."]]
+            return [
+                // A deactivated row.
+                ["valid": false, "serverOnline": false, "reason": reason, "message": revoked],
+                // The same row from the check-in cache, its server ONLINE...
+                ["valid": false, "serverOnline": true, "reason": reason, "message": revoked],
+                // ...and not ONLINE, where the offline sentence overwrites the revoked one.
+                ["valid": false, "serverOnline": false, "reason": reason, "message": offline],
+                // A removal record.
+                ["valid": false, "serverOnline": false, "reason": reason, "message": gone],
+            ]
         case "quota_exceeded":
-            return [["valid": false, "serverOnline": true, "reason": reason, "quotaExceeded": true,
-                     "message": "Your free data for this month is used up."]]
+            return [
+                // quotaEndedResult(): the check-in that ends the session, its server ONLINE or not.
+                ["valid": false, "serverOnline": true, "reason": reason, "quotaExceeded": true, "message": ended],
+                ["valid": false, "serverOnline": false, "reason": reason, "quotaExceeded": true, "message": ended],
+                // The removal record a later check-in finds: the not-found sentence, the flag kept.
+                ["valid": false, "serverOnline": false, "reason": reason, "quotaExceeded": true, "message": gone],
+            ]
         default:
             // evicted, reaped, not_found, and any reason a re-vendor adds.
             return [["valid": false, "serverOnline": false, "reason": reason, "message": gone]]
         }
+    }
+
+    /// Every body above, for every reason in the contract.
+    private var allHeartbeatBodies: [[String: Any]] {
+        contractHeartbeatReasons.flatMap { Self.heartbeatBodies(reason: $0) }
     }
 
     /// `body` as bytes, decoded by the decoder APIClient uses (a plain
@@ -455,7 +500,40 @@ final class ConnectContractTests: XCTestCase {
                 XCTAssertEqual(decoded.serverOnline, wire["serverOnline"] as? Bool, reason)
                 XCTAssertEqual(decoded.message, wire["message"] as? String, reason)
                 XCTAssertEqual(decoded.quotaExceeded, (wire["quotaExceeded"] as? Bool) ?? false, reason)
+                XCTAssertEqual(decoded.quotaGraceEndsAt, wire["quotaGraceEndsAt"] as? String, reason)
+                XCTAssertEqual(decoded.quotaGraceSecondsRemaining,
+                               (wire["quotaGraceSecondsRemaining"] as? NSNumber)?.doubleValue, reason)
             }
+        }
+    }
+
+    /// Between them the bodies carry every property of the reply, so none is
+    /// left to a shape no case decodes.
+    func testTheHeartbeatBodiesCarryEveryPropertyOfTheContractsReply() {
+        let carried = Set(allHeartbeatBodies.flatMap { $0.keys })
+        XCTAssertEqual(carried, Set(Self.properties(of: heartbeatDef).keys))
+    }
+
+    /// The contract's rule, for every body above: an absent reason (a backend
+    /// before birdo-web #599) and one newer than this build decode to the same
+    /// reply, with no reason. The host acts on `valid` / `serverOnline` /
+    /// `message`, so the rest of the reply must not move either.
+    func testEveryHeartbeatBodyWithNoReasonOrAnUnknownOneDecodesTheSameReply() throws {
+        for body in allHeartbeatBodies {
+            var without = body
+            without.removeValue(forKey: "reason")
+            var unknown = body
+            unknown["reason"] = "relocated"
+            let none = try heartbeatWire(without)
+            let newer = try heartbeatWire(unknown)
+            assertValid(none.wire, heartbeatDef)
+            assertRefused(newer.wire, heartbeatDef, containing: "reason: not in enum")
+            XCTAssertNil(none.decoded.reason, "\(body)")
+            XCTAssertNil(newer.decoded.reason, "\(body)")
+            XCTAssertEqual(String(describing: none.decoded), String(describing: newer.decoded), "\(body)")
+            XCTAssertEqual(none.decoded.valid, body["valid"] as? Bool, "\(body)")
+            XCTAssertEqual(none.decoded.serverOnline, body["serverOnline"] as? Bool, "\(body)")
+            XCTAssertEqual(none.decoded.message, body["message"] as? String, "\(body)")
         }
     }
 
