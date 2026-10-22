@@ -93,6 +93,12 @@ final class StoreKitService: ObservableObject {
     /// (`/vpn/stats`) is re-fetched and every plan gate in the app opens.
     var onEntitlementChanged: @MainActor () -> Void = {}
 
+    /// The account's plan, fetched NOW, past the 30 s cache; nil when it could
+    /// not be fetched. `resumePendingPurchase()` awaits it before the "paid
+    /// elsewhere" gate (MR-2120). The default answers nil, which cancels a
+    /// resumed purchase rather than opening the payment sheet blind.
+    var fetchPlanNow: @MainActor () async -> VpnStats? = { nil }
+
     private let api: APIClient
 
     // MARK: - Internals
@@ -177,6 +183,13 @@ final class StoreKitService: ObservableObject {
     /// Safe to call on every sign-in. With nothing pending it does nothing, and
     /// the slot is cleared before the attempt so a failure cannot leave a
     /// purchase that retries itself forever.
+    ///
+    /// MR-2120: the account just signed into may already be paid on another
+    /// rail (the website, Google Play, a voucher), and the subscription
+    /// screen's "paid elsewhere" gate never ran on this path. So the plan is
+    /// fetched first, forced and AWAITED (the snapshot ContentView refreshes at
+    /// sign-in is still in flight here, and a guest's is nil), and
+    /// `PendingPurchaseResume` decides with the same `StorePurchaseGate`.
     func resumePendingPurchase() async {
         guard let productId = pendingPurchaseProductId else { return }
         pendingPurchaseProductId = nil
@@ -195,8 +208,36 @@ final class StoreKitService: ObservableObject {
             }
         }
         guard !alreadyOwned else { return }
-        guard let product = products.first(where: { $0.id == productId }) else { return }
-        await purchase(product)
+
+        let stats = await fetchPlanNow()
+        await refreshOwnership()
+        // A sign-out while those were in flight ends the intent
+        // (cancelPendingPurchase); purchase() would raise sign-in again.
+        guard isSignedIn() else { return }
+        let decision = PendingPurchaseResume.decide(productAlreadyOwned: false,
+                                                    planFetched: stats != nil,
+                                                    plan: stats?.plan,
+                                                    source: stats?.source,
+                                                    liveSources: stats?.liveSources,
+                                                    thisStoreOwnsSubscription: ownsStoreSubscription)
+        switch decision {
+        case .purchase:
+            guard let product = products.first(where: { $0.id == productId }) else { return }
+            await purchase(product)
+        case .alreadyOwned:
+            return
+        case .planUnknown, .paidElsewhere:
+            Self.log("pending purchase \(productId) not resumed: \(decision)")
+            if let text = PendingPurchaseResume.notice(for: decision,
+                                                        source: stats?.source,
+                                                        liveSources: stats?.liveSources) {
+                if decision == .paidElsewhere {
+                    notice = .info(text)
+                } else {
+                    notice = .error(text)
+                }
+            }
+        }
     }
 
     /// Clear a pending purchase. A sign-out means the intent is gone; keeping it

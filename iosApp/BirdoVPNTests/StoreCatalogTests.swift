@@ -432,3 +432,89 @@ final class StorePurchaseGateTests: XCTestCase {
         XCTAssertFalse(paidElsewhere(plan: "OPERATIVE", source: StorePurchaseGate.sourceFreeFloor, owns: true))
     }
 }
+
+/// MR-2120: a purchase a guest started before signing in is resumed straight
+/// after sign-in. It used to check only whether THIS Apple ID already owned the
+/// product, so an account already paid on the website, Google Play or a voucher
+/// was shown the App Store payment sheet for a second subscription. The resume
+/// now awaits a forced plan refresh and asks `StorePurchaseGate`.
+final class PendingPurchaseResumeTests: XCTestCase {
+
+    private func decide(owned: Bool = false,
+                        fetched: Bool = true,
+                        plan: String? = "RECON",
+                        source: String? = nil,
+                        liveSources: [String]? = nil,
+                        storeOwns: Bool = false) -> PendingPurchaseResume {
+        PendingPurchaseResume.decide(productAlreadyOwned: owned,
+                                     planFetched: fetched,
+                                     plan: plan,
+                                     source: source,
+                                     liveSources: liveSources,
+                                     thisStoreOwnsSubscription: storeOwns)
+    }
+
+    /// THE regression case: the guest signed into an account the website
+    /// already bills. No App Store sheet.
+    func testAnAccountPaidOnTheWebIsNotSoldASecondSubscription() {
+        XCTAssertEqual(decide(plan: "SOVEREIGN", source: StorePurchaseGate.sourceWeb), .paidElsewhere)
+        XCTAssertEqual(decide(plan: "OPERATIVE", source: StorePurchaseGate.sourceGooglePlay), .paidElsewhere)
+        XCTAssertEqual(decide(plan: "OPERATIVE",
+                              liveSources: [StorePurchaseGate.sourceAppStore, StorePurchaseGate.sourceWeb]),
+                       .paidElsewhere)
+    }
+
+    /// The guest App Review signs in as: a free account. The sheet opens
+    /// (APPLE 2.1(b): it must, without a second tap).
+    func testAFreeAccountGetsThePaymentSheet() {
+        XCTAssertEqual(decide(plan: "RECON"), .purchase)
+        XCTAssertEqual(decide(plan: "RECON", source: StorePurchaseGate.sourceFreeFloor), .purchase)
+    }
+
+    /// A plan the App Store itself sold may be changed here.
+    func testAPlanTheAppStoreSoldMayBeChanged() {
+        XCTAssertEqual(decide(plan: "OPERATIVE", source: StorePurchaseGate.sourceAppStore), .purchase)
+        XCTAssertEqual(decide(plan: "OPERATIVE", storeOwns: true), .purchase)
+    }
+
+    /// No plan, no sheet: the resume never opens a payment sheet blind.
+    func testAPlanThatCouldNotBeFetchedOpensNoSheet() {
+        XCTAssertEqual(decide(fetched: false, plan: nil), .planUnknown)
+        XCTAssertEqual(decide(fetched: false, plan: "RECON"), .planUnknown,
+                       "the plan fields are not consulted when the fetch failed")
+    }
+
+    /// Ownership of the product itself still comes first: the account just
+    /// regained it by linking, and nothing is said.
+    func testAProductThisAppleIDAlreadyOwnsIsNotBoughtAgain() {
+        XCTAssertEqual(decide(owned: true, plan: "SOVEREIGN", source: StorePurchaseGate.sourceWeb), .alreadyOwned)
+        XCTAssertEqual(decide(owned: true, fetched: false), .alreadyOwned)
+        XCTAssertNil(PendingPurchaseResume.notice(for: .alreadyOwned, source: nil, liveSources: nil))
+        XCTAssertNil(PendingPurchaseResume.notice(for: .purchase, source: nil, liveSources: nil))
+    }
+
+    /// The notice names where the plan is managed, as the register row asks.
+    func testThePaidElsewhereNoticeNamesWhereThePlanIsManaged() {
+        let web = PendingPurchaseResume.notice(for: .paidElsewhere,
+                                               source: StorePurchaseGate.sourceWeb, liveSources: nil)
+        XCTAssertTrue(web?.contains("on the Birdo website") == true, String(describing: web))
+        XCTAssertTrue(web?.contains("not billed twice") == true, String(describing: web))
+
+        let play = PendingPurchaseResume.notice(for: .paidElsewhere,
+                                                source: StorePurchaseGate.sourceAppStore,
+                                                liveSources: [StorePurchaseGate.sourceAppStore,
+                                                              StorePurchaseGate.sourceGooglePlay])
+        XCTAssertTrue(play?.contains("in Google Play") == true,
+                      "a live rail other than the App Store wins: \(String(describing: play))")
+
+        XCTAssertEqual(PendingPurchaseResume.managedWhere(source: nil, liveSources: nil), "where you bought it")
+        XCTAssertEqual(PendingPurchaseResume.managedWhere(source: "VOUCHER", liveSources: nil), "where you bought it")
+        XCTAssertEqual(PendingPurchaseResume.managedWhere(source: "web", liveSources: [StorePurchaseGate.sourceFreeFloor]),
+                       "on the Birdo website")
+    }
+
+    func testThePlanUnknownNoticeSaysToTapAgain() {
+        let text = PendingPurchaseResume.notice(for: .planUnknown, source: nil, liveSources: nil)
+        XCTAssertTrue(text?.contains("tap Subscribe again") == true, String(describing: text))
+    }
+}

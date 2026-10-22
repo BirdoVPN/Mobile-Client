@@ -2,6 +2,7 @@ package app.birdo.vpn.service
 
 import android.content.Context
 import app.birdo.vpn.security.AesGcmSealer
+import app.birdo.vpn.security.FlakyKeySource
 import app.birdo.vpn.security.JceKeySource
 import app.birdo.vpn.security.LegacyBlobSource
 import io.mockk.every
@@ -12,11 +13,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.security.ProviderException
 
 /**
  * BirdoPqKeyStore against a real temp `filesDir`, a JCE key in place of the
@@ -26,14 +29,19 @@ import java.nio.file.Files
  */
 class BirdoPqKeyStoreTest {
 
-    /** What the old EncryptedFile would decrypt to, or throw. */
+    /**
+     * What the old EncryptedFile would decrypt to, or throw. Each read hands
+     * out a FRESH buffer, as the real decrypt does: the store zeroes what it
+     * was given (MR-2123), and [handedOut] is how a test sees that.
+     */
     private inner class FakeLegacy(private val bytes: ByteArray?, private val throws: Boolean = false) : LegacyBlobSource {
         var destroyed = 0
         var reads = 0
+        var handedOut: ByteArray? = null
         override fun read(): ByteArray? {
             reads++
             if (throws) throw IllegalStateException("EncryptedFile: MAC check failed")
-            return bytes
+            return bytes?.copyOf().also { handedOut = it }
         }
         override fun destroy() {
             destroyed++
@@ -132,6 +140,27 @@ class BirdoPqKeyStoreTest {
         assertTrue(pkFile.exists())
     }
 
+    /**
+     * MR-2121: the halves are two separate atomic renames. A save whose
+     * Keystore seal fails must not have replaced the public key already: a new
+     * public key beside the old secret key is a pair that passes FIPS 203 7.3
+     * and uploads a key this client cannot decapsulate for. Secret key first.
+     */
+    @Test
+    fun `a save whose secret-key write fails leaves the previous public key in place`() {
+        val keystore = FlakyKeySource()
+        val s = BirdoPqKeyStore(context, AesGcmSealer(keystore), FakeLegacy(null))
+        s.save(keypair)
+
+        keystore.failing = true
+        val next = RosenpassNative.StaticKeypair(ByteArray(1568) { 9 }, ByteArray(3168) { 8 })
+        assertThrows(ProviderException::class.java) { s.save(next) }
+
+        assertArrayEquals("the public key of the pair still on disk", pk, pkFile.readBytes())
+        keystore.failing = false
+        assertEquals(keypair, s.load())
+    }
+
     @Test
     fun `clear removes everything`() {
         val s = store()
@@ -169,6 +198,17 @@ class BirdoPqKeyStoreTest {
         // Second load is pure v2: the legacy source is not consulted again.
         assertEquals(keypair, s.load())
         assertEquals(1, legacy.reads)
+    }
+
+    /** MR-2123: the plaintext secret key the migration decrypted is zeroed. */
+    @Test
+    fun `the migration zeroes the plaintext secret key it re-sealed`() {
+        val legacy = plantLegacy()
+        assertEquals(keypair, store(legacy).load())
+
+        val plaintext = legacy.handedOut
+        assertNotNull(plaintext)
+        assertTrue("the migrated secret key is still in memory", plaintext!!.all { it == 0.toByte() })
     }
 
     @Test

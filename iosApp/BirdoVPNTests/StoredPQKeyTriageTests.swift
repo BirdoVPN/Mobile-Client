@@ -81,6 +81,84 @@ final class StoredPQKeyTriageTests: XCTestCase {
         XCTAssertEqual(seen.last, 0x22)
     }
 
+    // MARK: - MR-2121: the stored public key must be the one inside the secret key
+
+    /// Where FIPS 203 puts `ek` in the expanded ML-KEM-1024 decapsulation key:
+    /// `dk_pke (1536) || ek (1568) || H(ek) (32) || z (32)`.
+    private static let embeddedOffset = 1536
+
+    /// A blob laid out like a real one: `pk || sk`, with the pk embedded in the
+    /// sk at 1536, and every other byte distinct from its neighbours so an
+    /// off-by-one read cannot match by accident.
+    private func agreeingBlob() -> Data {
+        let pk = (0..<Self.pkLen).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ 3) }
+        var sk = (0..<Self.skLen).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 1) }
+        sk.replaceSubrange(Self.embeddedOffset ..< Self.embeddedOffset + Self.pkLen, with: pk)
+        return Data(pk) + Data(sk)
+    }
+
+    /// THE regression test, a port of desktop's
+    /// `read_keypair_rejects_public_key_that_disagrees_with_secret_key`. The
+    /// secret key loads (the KEM says so), so only comparing the two halves can
+    /// catch this. Before the fix the pair was used, and a public key this
+    /// client cannot decapsulate for was uploaded on every connect.
+    func testStoredPublicKeyThatDisagreesWithTheSecretKeyIsDiscarded() {
+        var blob = agreeingBlob()
+        blob[0] ^= 0x01
+        guard case .discardAndRekey(let reason) = decide(blob: blob, loadable: true) else {
+            return XCTFail("a stored public key that is not the one inside the secret key must be "
+                           + "discarded, not uploaded on every connect")
+        }
+        XCTAssertTrue(reason.contains("public key"),
+                      "the log line should say the halves disagree, got: \(reason)")
+    }
+
+    /// The same, with the difference in the LAST byte of the embedded key, on
+    /// the secret-key side: the whole 1568 bytes are compared.
+    func testADifferenceAtTheEndOfTheEmbeddedKeyIsCaughtToo() {
+        var blob = agreeingBlob()
+        blob[Self.pkLen + Self.embeddedOffset + Self.pkLen - 1] ^= 0x80
+        guard case .discardAndRekey = decide(blob: blob, loadable: true) else {
+            return XCTFail("the comparison must cover the whole embedded key")
+        }
+    }
+
+    func testAgreeingHalvesAreUsed() {
+        XCTAssertEqual(decide(blob: agreeingBlob(), loadable: true), .use)
+    }
+
+    /// The offset is derived from the two lengths, not hardcoded.
+    func testTheEmbeddedKeyIsReadWhereFips203PutsIt() {
+        let blob = agreeingBlob()
+        XCTAssertTrue(StoredPQKeyTriage.publicKeyMatchesSecretKey(
+            blob: blob, publicKeyLength: Self.pkLen, secretKeyLength: Self.skLen))
+        // A blob whose sk carries the pk one byte later does not match.
+        let pk = blob.prefix(Self.pkLen)
+        var shifted = agreeingBlob()
+        let oneLate = Self.pkLen + Self.embeddedOffset + 1
+        shifted.replaceSubrange(oneLate ..< oneLate + Self.pkLen, with: pk)
+        XCTAssertFalse(StoredPQKeyTriage.publicKeyMatchesSecretKey(
+            blob: shifted, publicKeyLength: Self.pkLen, secretKeyLength: Self.skLen))
+    }
+
+    /// Data slices keep their parent's indices. The comparison must index from
+    /// the blob's own start, or a slice compares the wrong bytes.
+    func testTheComparisonIndexesFromTheBlobsOwnStart() {
+        let parent = Data([0xFF, 0xFE]) + agreeingBlob()
+        let slice = parent.dropFirst(2)
+        XCTAssertEqual(slice.startIndex, 2)
+        XCTAssertEqual(decide(blob: slice, loadable: true), .use)
+    }
+
+    /// A key that fails §7.3 is still reported as that, not as a disagreement:
+    /// the KEM's check comes first.
+    func testAnUnloadableKeyIsReportedAsUnloadableEvenWhenTheHalvesAgree() {
+        guard case .discardAndRekey(let reason) = decide(blob: agreeingBlob(), loadable: false) else {
+            return XCTFail("an unloadable key must be discarded")
+        }
+        XCTAssertTrue(reason.contains("7.3"), "got: \(reason)")
+    }
+
     // MARK: - The branches that already existed
 
     func testWellFormedLoadableKeyIsUsed() {

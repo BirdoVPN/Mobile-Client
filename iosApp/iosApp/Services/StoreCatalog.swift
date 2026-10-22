@@ -90,6 +90,91 @@ enum StorePurchaseGate {
     }
 }
 
+/// What to do with the purchase a guest started before signing in, once the
+/// session exists (MR-2120).
+///
+/// `StoreKitService.resumePendingPurchase()` runs straight after sign-in, while
+/// the plan refresh is still in flight. It used to ask StoreKit only whether
+/// THIS Apple ID already owned the product, so the `StorePurchaseGate` above,
+/// applied only by the subscription screen, never ran: a guest who tapped
+/// "Sign in to subscribe" and signed into an account already paid on the web,
+/// on Google Play or by a voucher was shown the App Store payment sheet for a
+/// second subscription. The resume now waits for a forced plan refresh and
+/// asks the same gate, here, where it can be tested.
+///
+/// Android has no twin to fix: a signed-out tap there only opens sign-in, and
+/// a purchase starts only from `startPlayPurchase`, which applies the gate to
+/// the plan the screen holds at that moment.
+enum PendingPurchaseResume: Equatable {
+    /// Open the App Store payment sheet.
+    case purchase
+    /// This Apple ID already owns the product (sign-in just linked it):
+    /// nothing to buy, nothing to say.
+    case alreadyOwned
+    /// The plan could not be fetched. A payment sheet is not opened blind; the
+    /// user is told to tap Subscribe again.
+    case planUnknown
+    /// The account's paid plan was bought elsewhere: cancelled, with a notice
+    /// naming where it is managed.
+    case paidElsewhere
+
+    /// - Parameters:
+    ///   - productAlreadyOwned: StoreKit's current entitlements include the
+    ///     pending product.
+    ///   - planFetched: the forced `/vpn/stats` refresh answered. When false,
+    ///     `plan`, `source` and `liveSources` are not consulted.
+    ///   - thisStoreOwnsSubscription: `StoreKitService.ownsStoreSubscription`.
+    static func decide(productAlreadyOwned: Bool,
+                       planFetched: Bool,
+                       plan: String?,
+                       source: String?,
+                       liveSources: [String]?,
+                       thisStoreOwnsSubscription: Bool) -> PendingPurchaseResume {
+        if productAlreadyOwned { return .alreadyOwned }
+        guard planFetched else { return .planUnknown }
+        if StorePurchaseGate.paidElsewhere(plan: plan,
+                                           source: source,
+                                           liveSources: liveSources,
+                                           thisStore: StorePurchaseGate.sourceAppStore,
+                                           thisStoreOwnsSubscription: thisStoreOwnsSubscription) {
+            return .paidElsewhere
+        }
+        return .purchase
+    }
+
+    /// The banner for a resume that did not open the sheet; nil when there is
+    /// nothing to say.
+    static func notice(for decision: PendingPurchaseResume,
+                       source: String?,
+                       liveSources: [String]?) -> String? {
+        switch decision {
+        case .purchase, .alreadyOwned:
+            return nil
+        case .planUnknown:
+            return "Birdo could not confirm this account's plan, so the App Store purchase was not "
+                + "started. Open Subscription and tap Subscribe again."
+        case .paidElsewhere:
+            return "Your plan is already active on this account and is managed "
+                + managedWhere(source: source, liveSources: liveSources)
+                + ". The App Store purchase was not started, so you are not billed twice."
+        }
+    }
+
+    /// Where a plan bought outside the App Store is managed, from the rail the
+    /// server reports. A live rail other than the App Store wins, as in
+    /// `StorePurchaseGate`; a voucher or an unknown rail is "where you bought it".
+    static func managedWhere(source: String?, liveSources: [String]?) -> String {
+        let live = (liveSources ?? []).map { $0.uppercased() }.first {
+            !$0.isEmpty && $0 != StorePurchaseGate.sourceFreeFloor && $0 != StorePurchaseGate.sourceAppStore
+        }
+        switch live ?? source?.uppercased() ?? "" {
+        case StorePurchaseGate.sourceGooglePlay: return "in Google Play"
+        case StorePurchaseGate.sourceWeb: return "on the Birdo website"
+        default: return "where you bought it"
+        }
+    }
+}
+
 /// The four auto-renewable subscriptions Birdo sells on the App Store.
 ///
 /// These identifiers are PROVISIONAL. They mirror `DEFAULT_APPLE_PRODUCT_PLANS`

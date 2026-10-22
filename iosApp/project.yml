@@ -50,7 +50,7 @@ settings:
 # extension (to actually carry packets).
 packages:
   WireGuardKit:
-    # VENDORED at iosApp/Vendor/wireguard-apple (tag 1.0.15-26 + 3 local patches).
+    # VENDORED at iosApp/Vendor/wireguard-apple (tag 1.0.15-26 + 4 local patches).
     # Upstream git.zx2c4.com/wireguard-apple is DORMANT (last commit 2023-02-15) and
     # its master (= tag 1.0.16-27) has an INVALID manifest: swift-tools-version:5.3
     # while using .macOS(.v12)/.iOS(.v15), which require 5.5 — SwiftPM under Xcode 16
@@ -64,6 +64,15 @@ packages:
     #      TunnelConfiguration(fromWgQuickConfig:called:) init we call.
     #   3. Sources/WireGuardKitGo/Makefile -> go build -ldflags='-w -checklinkname=0'
     #      (Go 1.23+ rejects x/net's old //go:linkname into syscall.recvmsg).
+    # And one for safety, not for the build:
+    #   4. Sources/WireGuardKitC/x25519.c curve25519_generate_private_key calls
+    #      CCRandomGenerateBytes OUTSIDE assert() and abort()s if it fails
+    #      (MR-2118). Upstream wrote `assert(CCRandomGenerateBytes(..) ==
+    #      kCCSuccess)`, so any build with NDEBUG compiled the RNG out and
+    #      PrivateKey() returned the clamped all-zero buffer: a fixed, public
+    #      "private" key. No Birdo code calls WireGuardKit's PrivateKey() today
+    #      (APIClient uses CryptoKit); android-ci.yml's lint job fails if the
+    #      patch is lost in a re-vendor.
     path: Vendor/wireguard-apple
 
 targets:
@@ -274,6 +283,11 @@ targets:
       # the iOS half of this mitigation shipped exported-but-never-called while
       # every library-side check stayed green.
       - path: iosApp/Services/StoredPQKeyTriage.swift
+      # MR-2123: the buffer BirdoPQManager keeps the ML-KEM secret key in,
+      # wiped with memset_s after each decapsulation. Foundation-only by
+      # design, pinned by PQSecretKeyTests; BirdoPQManager.swift imports
+      # BirdoPQNative and cannot be compiled into this bundle.
+      - path: iosApp/Services/PQSecretKey.swift
       # Owner item 96: the User-Agent / X-Desktop-Client strings, pinned by
       # ClientIdentityTests (the backend's UA parser keys on the exact token).
       - path: iosApp/Services/ClientIdentity.swift

@@ -1048,6 +1048,10 @@ class DataplaneFaultReportingTest {
                 "pq_derived_psk_wrong_size",
                 "pq_generate_keypair_threw",
                 "pq_keypair_persist_failed",
+                // MR-2117 / MR-2121: a decapsulation with a pair other than
+                // the uploaded one, and a stored pair whose halves disagree.
+                "pq_keypair_not_the_uploaded_one",
+                "pq_stored_public_key_mismatch_rekeyed",
             ),
         )
     }

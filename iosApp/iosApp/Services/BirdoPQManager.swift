@@ -45,6 +45,10 @@ import BirdoPQNative
 /// never syncs to iCloud Keychain. The PacketTunnel extension never reads
 /// it — only the host app needs PSK derivation, and the derived 32-byte
 /// PSK is what gets handed to the extension via the shared keychain.
+///
+/// In memory it is re-read from the Keychain per connect, as on Android, and
+/// held only in a `PQSecretKey`, which is wiped once the decapsulation is done
+/// (MR-2123). Nothing keeps it for the life of the process.
 final class BirdoPQManager: @unchecked Sendable {
     static let shared = BirdoPQManager()
 
@@ -71,7 +75,31 @@ final class BirdoPQManager: @unchecked Sendable {
     // the PacketTunnel extension cannot read the ML-KEM secret key.
 
     private let queue = DispatchQueue(label: "app.birdo.vpn.pq", qos: .userInitiated)
-    private var cachedKeypair: (pk: Data, sk: Data)?
+
+    private typealias Keypair = (pk: Data, sk: PQSecretKey)
+
+    /// The keypair whose public key `clientPublicKeyBase64()` last handed out
+    /// for a /connect, kept for exactly ONE `tryDecapsulate`. Guarded by `queue`.
+    ///
+    /// MR-2123: it replaces `cachedKeypair`, which held the 3168-byte secret key
+    /// as `Data` for the life of the process and never wiped it (resetting it to
+    /// nil freed the storage as it was). Whoever ends a hand-off's life wipes
+    /// its secret key: the decapsulation that consumes it, the next upload that
+    /// replaces it, and `resetPersistedKeypair()`.
+    ///
+    /// MR-2117: it is also what keeps the decapsulation on the uploaded pair.
+    /// Without a process-wide cache, a Keychain write that failed would make a
+    /// second read generate a DIFFERENT pair: the server encapsulated to pk_A,
+    /// the client decapsulated with sk_B, and implicit rejection gave a PSK the
+    /// server does not have (the Android defect of the same row).
+    private var handOff: Keypair?
+
+    /// The public key `clientPublicKeyBase64()` last returned. Public, so unlike
+    /// `handOff` it is kept: a decapsulation that has to fall back to the
+    /// Keychain is still checked against it, and refuses instead of deriving a
+    /// PSK the server cannot match. Guarded by `queue`.
+    private var uploadedPublicKey: Data?
+
     private(set) var currentMode: Mode = .disabled
 
     private init() {}
@@ -99,8 +127,15 @@ final class BirdoPQManager: @unchecked Sendable {
     /// the keypair on first call. Returns `nil` only if both keychain
     /// persistence AND in-memory generation fail (extremely unlikely).
     func clientPublicKeyBase64() -> String? {
-        guard let kp = loadOrGenerateKeypair() else { return nil }
-        return kp.pk.base64EncodedString()
+        return queue.sync { () -> String? in
+            guard let kp = loadOrGenerateKeypair() else { return nil }
+            // MR-2117: the decapsulation for this /connect uses exactly this
+            // pair. An unconsumed earlier hand-off is wiped, not dropped.
+            handOff?.sk.wipe()
+            handOff = kp
+            uploadedPublicKey = kp.pk
+            return kp.pk.base64EncodedString()
+        }
     }
 
     /// Try to derive a bilateral PQ PSK from the server response. Returns
@@ -114,6 +149,14 @@ final class BirdoPQManager: @unchecked Sendable {
         rosenpassPublicKeyBase64: String?,
         rosenpassEndpointBase64: String?
     ) -> String? {
+        // MR-2117 / MR-2123: take the hand-off before anything can return, so
+        // every path out (the early nils included) wipes its secret key.
+        let handedOff = queue.sync { () -> Keypair? in
+            defer { handOff = nil }
+            return handOff
+        }
+        defer { handedOff?.sk.wipe() }
+
         guard quantumEnabled, let ctB64 = rosenpassPublicKeyBase64 else {
             return nil
         }
@@ -134,8 +177,20 @@ final class BirdoPQManager: @unchecked Sendable {
             debugLog("BirdoPQ: server omitted/malformed/out-of-bounds per-connect nonce — bilateral PQ aborted (PFA-M5)")
             return nil
         }
-        guard let kp = loadOrGenerateKeypair() else {
+        // The Keychain is read only when no hand-off was taken for this connect.
+        guard let kp = handedOff ?? queue.sync(execute: { loadOrGenerateKeypair() }) else {
             debugLog("BirdoPQ: no client keypair available")
+            return nil
+        }
+        // MR-2123: the secret key does not outlive this derivation.
+        defer { kp.sk.wipe() }
+
+        // MR-2117: the server encapsulated to the UPLOADED public key. Any
+        // other pair can only derive a PSK the server does not have (implicit
+        // rejection), seen as a handshake that never completes; refuse here,
+        // where the cause is known.
+        if let uploaded = queue.sync(execute: { uploadedPublicKey }), uploaded != kp.pk {
+            debugLog("BirdoPQ: the keypair available to decapsulate is not the one whose public key was uploaded — bilateral PQ aborted")
             return nil
         }
 
@@ -145,7 +200,7 @@ final class BirdoPQManager: @unchecked Sendable {
                 nonce.withUnsafeBytes { noncePtr -> Int32 in
                     birdo_pq_derive_psk(
                         skPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                        kp.sk.count,
+                        skPtr.count,
                         ctPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
                         ct.count,
                         noncePtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
@@ -184,7 +239,10 @@ final class BirdoPQManager: @unchecked Sendable {
     /// Permanently delete the persisted keypair. Use on user logout.
     func resetPersistedKeypair() {
         queue.sync {
-            cachedKeypair = nil
+            // MR-2123: an unconsumed hand-off still holds the secret key.
+            handOff?.sk.wipe()
+            handOff = nil
+            uploadedPublicKey = nil
             currentMode = .disabled
             deleteStoredBlob()
         }
@@ -192,55 +250,59 @@ final class BirdoPQManager: @unchecked Sendable {
 
     // MARK: - Private
 
-    private func loadOrGenerateKeypair() -> (pk: Data, sk: Data)? {
-        return queue.sync {
-            if let kp = cachedKeypair { return kp }
+    /// The Keychain's keypair, or a freshly generated (and persisted) one.
+    /// Runs on `queue`. Every call returns a NEW `PQSecretKey`, which the
+    /// caller owns and wipes.
+    private func loadOrGenerateKeypair() -> Keypair? {
+        dispatchPrecondition(condition: .onQueue(queue))
 
-            // The KEM validates stored keys now. `ml-kem` enforces FIPS 203
-            // §7.3 — the 3168-byte expanded decapsulation key embeds H(ek),
-            // recomputed on load and compared — where the implementation that
-            // shipped up to 1.4.29 checked only the length. A key that fails
-            // that check is NOT recoverable, so keeping it would fail every
-            // connect forever: derive_psk returns BIRDO_PQ_ERR_BAD_SECRET_KEY,
-            // tryDecapsulate returns nil, and VPNManager throws
-            // quantumHandshakeFailed. Discard and re-key instead; the server
-            // re-pins the new public key on the next handshake, so the only
-            // cost is one extra keygen. Parity with Android
-            // BirdoPqManager.loadOrGenerateKeypair.
-            let stored = readStoredBlob()
-            let decision = StoredPQKeyTriage.decide(
-                blob: stored,
-                publicKeyLength: Int(BIRDO_PQ_PUBLIC_KEY_LEN),
-                secretKeyLength: Int(BIRDO_PQ_SECRET_KEY_LEN),
-                secretKeyIsLoadable: Self.secretKeyIsLoadable
-            )
-            switch decision {
-            case .use:
-                if let blob = stored {
-                    let kp = (
-                        pk: Data(blob.prefix(Int(BIRDO_PQ_PUBLIC_KEY_LEN))),
-                        sk: Data(blob.suffix(Int(BIRDO_PQ_SECRET_KEY_LEN)))
-                    )
-                    cachedKeypair = kp
-                    return kp
-                }
-            case .discardAndRekey(let reason):
-                debugLog("BirdoPQ: persisted ML-KEM keypair unusable (\(reason)) — deleting it and re-keying")
-                deleteStoredBlob()
-            case .generateFresh:
-                debugLog("BirdoPQ: no persisted ML-KEM keypair — generating fresh (~10–50 ms), impl=%@",
-                         Self.implementationName)
+        // The KEM validates stored keys now. `ml-kem` enforces FIPS 203
+        // §7.3 — the 3168-byte expanded decapsulation key embeds H(ek),
+        // recomputed on load and compared — where the implementation that
+        // shipped up to 1.4.29 checked only the length. A key that fails
+        // that check is NOT recoverable, so keeping it would fail every
+        // connect forever: derive_psk returns BIRDO_PQ_ERR_BAD_SECRET_KEY,
+        // tryDecapsulate returns nil, and VPNManager throws
+        // quantumHandshakeFailed. Discard and re-key instead; the server
+        // re-pins the new public key on the next handshake, so the only
+        // cost is one extra keygen. Parity with Android
+        // BirdoPqManager.loadOrGenerateKeypair. (MR-2121: the triage also
+        // discards a pair whose public key is not the one in its secret key.)
+        let stored = readStoredBlob()
+        let decision = StoredPQKeyTriage.decide(
+            blob: stored,
+            publicKeyLength: Int(BIRDO_PQ_PUBLIC_KEY_LEN),
+            secretKeyLength: Int(BIRDO_PQ_SECRET_KEY_LEN),
+            secretKeyIsLoadable: Self.secretKeyIsLoadable
+        )
+        switch decision {
+        case .use:
+            if let blob = stored {
+                // MR-2123: straight from the Keychain's blob into the wipeable
+                // buffer, with no `Data` copy of the secret key in between. The
+                // blob itself is the buffer the Keychain API returned; Swift
+                // cannot wipe that one in place.
+                return (
+                    pk: Data(blob.prefix(Int(BIRDO_PQ_PUBLIC_KEY_LEN))),
+                    sk: PQSecretKey(copying: blob.suffix(Int(BIRDO_PQ_SECRET_KEY_LEN)))
+                )
             }
-
-            guard let kp = generateKeypair() else { return nil }
-            // Best-effort persist; if it fails we still return the in-memory
-            // pair so the connect attempt isn't blocked.
-            if !writeKeypairToKeychain(pk: kp.pk, sk: kp.sk) {
-                debugLog("BirdoPQ: failed to persist keypair to Keychain — will regenerate next launch")
-            }
-            cachedKeypair = kp
-            return kp
+        case .discardAndRekey(let reason):
+            debugLog("BirdoPQ: persisted ML-KEM keypair unusable (\(reason)) — deleting it and re-keying")
+            deleteStoredBlob()
+        case .generateFresh:
+            debugLog("BirdoPQ: no persisted ML-KEM keypair — generating fresh (~10–50 ms), impl=%@",
+                     Self.implementationName)
         }
+
+        guard let kp = generateKeypair() else { return nil }
+        // Best-effort persist; if it fails we still return the in-memory
+        // pair so the connect attempt isn't blocked. The hand-off carries it
+        // to this connect's decapsulation (MR-2117).
+        if !writeKeypairToKeychain(pk: kp.pk, sk: kp.sk) {
+            debugLog("BirdoPQ: failed to persist keypair to Keychain — the next connect generates another")
+        }
+        return kp
     }
 
     /// Ask the native KEM whether this stored secret key still loads.
@@ -257,19 +319,18 @@ final class BirdoPQManager: @unchecked Sendable {
         }
     }
 
-    private func generateKeypair() -> (pk: Data, sk: Data)? {
+    private func generateKeypair() -> Keypair? {
         var pk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_PUBLIC_KEY_LEN))
         var sk = [UInt8](repeating: 0, count: Int(BIRDO_PQ_SECRET_KEY_LEN))
+        // MR-2123: the native call writes the secret key into `sk`; it is
+        // copied into the wipeable buffer, and `sk` is wiped on both outcomes.
+        defer { sk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
         let rc = birdo_pq_generate_keypair(&pk, pk.count, &sk, sk.count)
         if rc != BIRDO_PQ_OK {
             debugLog("BirdoPQ: generate_keypair failed rc=\(rc)")
-            sk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
             return nil
         }
-        let pkData = Data(pk)
-        let skData = Data(sk)
-        sk.withUnsafeMutableBufferPointer { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) }
-        return (pkData, skData)
+        return (pk: Data(pk), sk: PQSecretKey(copying: sk))
     }
 
     /// The raw `pk || sk` Keychain value, or `nil` when there is no item.
@@ -287,10 +348,17 @@ final class BirdoPQManager: @unchecked Sendable {
         KeychainService.shared.deleteHostData(.pqKeypair)
     }
 
-    private func writeKeypairToKeychain(pk: Data, sk: Data) -> Bool {
-        var blob = Data(capacity: pk.count + sk.count)
-        blob.append(pk)
-        blob.append(sk)
+    private func writeKeypairToKeychain(pk: Data, sk: PQSecretKey) -> Bool {
+        // MR-2123: the blob is another plaintext copy of the secret key. Built
+        // in one buffer and wiped once the Keychain has it.
+        var blob = Data(count: pk.count + sk.count)
+        defer { blob.withUnsafeMutableBytes { _ = memset_s($0.baseAddress, $0.count, 0, $0.count) } }
+        blob.withUnsafeMutableBytes { dst in
+            dst.copyBytes(from: pk)
+            sk.withUnsafeBytes { src in
+                UnsafeMutableRawBufferPointer(rebasing: dst[pk.count...]).copyMemory(from: src)
+            }
+        }
         // Replaces any previous item. Bound to this device
         // (AfterFirstUnlockThisDeviceOnly, never synced) so a restored backup
         // on a new device has no PQ identity (fresh keypair is generated

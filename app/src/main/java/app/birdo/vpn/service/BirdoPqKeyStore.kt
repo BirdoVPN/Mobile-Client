@@ -129,12 +129,21 @@ internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
         }
         try {
             val skBytes = legacy.read() ?: return
-            writeSecretKey(skBytes)
-            check(sealer.open(secretKeyFile.readBytes(), SK_AAD).contentEquals(skBytes)) {
-                "re-sealed secret key did not read back"
+            // MR-2123: both plaintext copies of the secret key (the legacy read
+            // and the read-back check) are zeroed, whatever the outcome.
+            try {
+                writeSecretKey(skBytes)
+                val readBack = sealer.open(secretKeyFile.readBytes(), SK_AAD)
+                try {
+                    check(readBack.contentEquals(skBytes)) { "re-sealed secret key did not read back" }
+                } finally {
+                    readBack.fill(0)
+                }
+                Log.i(TAG, "migrated BirdoPQ secret key to v2 sealing (${skBytes.size}B)")
+            } finally {
+                skBytes.fill(0)
             }
             legacy.destroy()
-            Log.i(TAG, "migrated BirdoPQ secret key to v2 sealing (${skBytes.size}B)")
         } catch (e: Exception) {
             Log.w(TAG, "legacy BirdoPQ secret key could not be migrated — regenerating keypair", e)
             runCatching { secretKeyFile.delete() }
@@ -151,11 +160,14 @@ internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
             throw IOException("could not create $DIR_NAME directory")
         }
 
-        // Write public key in plaintext — it IS public.
-        atomicWrite(publicKeyFile, keypair.publicKey)
-
-        // Write secret key sealed under the Keystore key.
+        // MR-2121: the secret key FIRST. The halves are two separate atomic
+        // renames, so a save that fails or dies between them leaves one pair's
+        // half beside the other pair's. BirdoPqManager rejects any pair whose
+        // public key is not the one embedded in the secret key, and re-keys.
         writeSecretKey(keypair.secretKey)
+
+        // Then the public key in plaintext — it IS public.
+        atomicWrite(publicKeyFile, keypair.publicKey)
 
         // A fresh pair supersedes any legacy file still lying around.
         if (legacySecretKeyFile.exists()) legacy.destroy()
