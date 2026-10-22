@@ -22,6 +22,7 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.serializer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -49,9 +50,10 @@ import java.io.File
  * 2020-12 validator. The mutation cases pin that the validator bites: an
  * unknown key, a renamed key, a broken pattern and an explicit null all FAIL.
  *
- * The heartbeat reply is checked here too (MR-1638): one body per
- * `$defs.HeartbeatReason` value, validated against `$defs.HeartbeatResponse`,
- * decoded by the real [HeartbeatResponse] and judged by [HeartbeatPolicy].
+ * The heartbeat reply is checked here too (MR-1638): every
+ * `$defs.HeartbeatReason` value in every shape the server writes it,
+ * validated against `$defs.HeartbeatResponse`, decoded by the real
+ * [HeartbeatResponse] and judged by [HeartbeatPolicy] and [QuotaPolicy].
  *
  * Refresh the vendored file with the command in contract/README.md; the
  * backend's protocol-schema.spec.ts refuses to merge a contract change without
@@ -465,14 +467,17 @@ class ConnectContractTest {
      * (backend/src/vpn/vpn.service.ts), and what the app makes of it:
      * [HeartbeatPolicy.verdict] on a beat over the live tunnel with beats
      * flowing ([live]) and after the device slept past the reap window
-     * ([liveAfterSleep]), and [HeartbeatPolicy.forDeadTunnel] on the one beat
-     * sent around a tunnel the dead-tunnel check gave up on ([deadTunnel]).
+     * ([liveAfterSleep]), [HeartbeatPolicy.forDeadTunnel] on the one beat
+     * sent around a tunnel the dead-tunnel check gave up on ([deadTunnel]),
+     * and the Free plan's notice [QuotaPolicy.grace] reads from it ([grace];
+     * null: no notice).
      */
     private data class HeartbeatCase(
         val body: String,
         val live: Verdict,
         val liveAfterSleep: Verdict,
         val deadTunnel: Verdict,
+        val grace: QuotaGrace? = null,
     )
 
     /**
@@ -480,18 +485,54 @@ class ConnectContractTest {
      * below), so a reason a re-vendor adds fails until someone decides what the
      * app does with it, here and in HeartbeatPolicy. The verdicts follow the
      * contract's description of each reason.
+     *
+     * Each reason in EVERY shape VpnService.heartbeat() writes it (checked at
+     * birdo-web f10b614d: heartbeat, withQuota, quotaEndedResult,
+     * freeTierCapMessage, key-removal.ts KEY_REMOVAL_REASONS), in the
+     * server's own sentences: a removed key answers [gone] with the reason its
+     * removal recorded, and the 60 s check-in cache answers for a deactivated
+     * row with its server's state.
      */
     private val heartbeatCases: Map<String, List<HeartbeatCase>> by lazy {
         val gone = "\"message\":\"Connection not found. Please reconnect.\""
+        val revoked = "\"message\":\"Connection has been revoked. Please reconnect.\""
+        val offline = "\"message\":\"Your current VPN server is offline. Please reconnect to a different server.\""
+        // freeTierCapMessage(bw, 'ended'), for a 50 GB allowance whose period ends 1 Nov.
+        val ended = "\"message\":\"Free-tier data limit reached (50.2 / 50 GB this period). This connection has ended. " +
+            "Your allowance resets after 1 Nov. Upgrade to Operative for unlimited data.\""
+
+        /**
+         * withQuota(): a live reply inside an over-cap Free session's grace
+         * window, [seconds] before the server ends it. The reason stays ok /
+         * server_offline; the three quota fields and the grace sentence (which
+         * replaces any other message) announce the end.
+         */
+        fun inGrace(seconds: Int): String {
+            val minutes = (seconds + 59) / 60
+            return "\"quotaExceeded\":true,\"quotaGraceEndsAt\":\"2026-10-31T23:50:00.000Z\"," +
+                "\"quotaGraceSecondsRemaining\":$seconds,\"message\":\"Free-tier data limit reached (50.2 / 50 GB " +
+                "this period). This connection will end in $minutes minute${if (minutes == 1) "" else "s"}. " +
+                "Your allowance resets after 1 Nov. Upgrade to Operative for unlimited data.\""
+        }
         mapOf(
             "ok" to listOf(
                 HeartbeatCase("""{"valid":true,"serverOnline":true,"reason":"ok"}""", Verdict.ALIVE, Verdict.ALIVE, Verdict.ALIVE),
+                // Over the Free cap and still live: say when it ends, keep the tunnel.
+                HeartbeatCase(
+                    """{"valid":true,"serverOnline":true,"reason":"ok",${inGrace(540)}}""",
+                    Verdict.ALIVE, Verdict.ALIVE, Verdict.ALIVE, QuotaGrace(minutesLeft = 9),
+                ),
             ),
             "server_offline" to listOf(
                 // The key is live on a node that is not ONLINE.
                 HeartbeatCase(
-                    """{"valid":true,"serverOnline":false,"message":"Your current VPN server is offline. Please reconnect to a different server.","reason":"server_offline"}""",
+                    """{"valid":true,"serverOnline":false,$offline,"reason":"server_offline"}""",
                     Verdict.ALIVE, Verdict.ALIVE, Verdict.SERVER_GONE,
+                ),
+                // The same inside the grace window: the notice still shows.
+                HeartbeatCase(
+                    """{"valid":true,"serverOnline":false,"reason":"server_offline",${inGrace(60)}}""",
+                    Verdict.ALIVE, Verdict.ALIVE, Verdict.SERVER_GONE, QuotaGrace(minutesLeft = 1),
                 ),
                 // The key was removed because its node was drained or deleted.
                 HeartbeatCase(
@@ -500,8 +541,27 @@ class ConnectContractTest {
                 ),
             ),
             "revoked" to listOf(
+                // A deactivated row.
                 HeartbeatCase(
-                    """{"valid":false,"serverOnline":false,"message":"Connection has been revoked. Please reconnect.","reason":"revoked"}""",
+                    """{"valid":false,"serverOnline":false,$revoked,"reason":"revoked"}""",
+                    Verdict.REVOKED, Verdict.REVOKED, Verdict.REVOKED,
+                ),
+                // The same row from the check-in cache, its server ONLINE: a
+                // valid:false with serverOnline:true is not a quota end.
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":true,$revoked,"reason":"revoked"}""",
+                    Verdict.REVOKED, Verdict.REVOKED, Verdict.REVOKED,
+                ),
+                // ... and its server not ONLINE: the cache's offline sentence
+                // overwrites the revoked one, so the reason decides, never the
+                // message (VpnManager shows its own sentence for a revoke).
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":false,$offline,"reason":"revoked"}""",
+                    Verdict.REVOKED, Verdict.REVOKED, Verdict.REVOKED,
+                ),
+                // A removal record.
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":false,$gone,"reason":"revoked"}""",
                     Verdict.REVOKED, Verdict.REVOKED, Verdict.REVOKED,
                 ),
             ),
@@ -512,8 +572,20 @@ class ConnectContractTest {
                 HeartbeatCase("""{"valid":false,"serverOnline":false,$gone,"reason":"reaped"}""", Verdict.REAPED, Verdict.REAPED, Verdict.REAPED),
             ),
             "quota_exceeded" to listOf(
+                // quotaEndedResult(): the check-in that ends the session, with
+                // its server ONLINE or not. No grace notice: it is over.
                 HeartbeatCase(
-                    """{"valid":false,"serverOnline":true,"quotaExceeded":true,"message":"Your free data for this month is used up.","reason":"quota_exceeded"}""",
+                    """{"valid":false,"serverOnline":true,"quotaExceeded":true,"reason":"quota_exceeded",$ended}""",
+                    Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED,
+                ),
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":false,"quotaExceeded":true,"reason":"quota_exceeded",$ended}""",
+                    Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED,
+                ),
+                // The removal record a later check-in finds: the not-found
+                // sentence, the flag kept.
+                HeartbeatCase(
+                    """{"valid":false,"serverOnline":false,$gone,"reason":"quota_exceeded","quotaExceeded":true}""",
                     Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED, Verdict.QUOTA_EXCEEDED,
                 ),
             ),
@@ -564,21 +636,79 @@ class ConnectContractTest {
                 assertEquals(sent["serverOnline"]!!.jsonPrimitive.boolean, reply.serverOnline)
                 assertEquals(sent["message"]?.jsonPrimitive?.content, reply.message)
                 assertEquals(sent["quotaExceeded"]?.jsonPrimitive?.boolean ?: false, reply.quotaExceeded)
+                assertEquals(sent["quotaGraceEndsAt"]?.jsonPrimitive?.content, reply.quotaGraceEndsAt)
+                assertEquals(sent["quotaGraceSecondsRemaining"]?.jsonPrimitive?.long, reply.quotaGraceSecondsRemaining)
 
                 assertEquals(
-                    "$reason (valid=${reply.valid}), live",
+                    "$reason, live: ${beat.body}",
                     beat.live,
                     HeartbeatPolicy.verdict(reply.valid, reply.reason, 0L, reply.quotaExceeded),
                 )
                 assertEquals(
-                    "$reason (valid=${reply.valid}), live after a sleep past the reap window",
+                    "$reason, live after a sleep past the reap window: ${beat.body}",
                     beat.liveAfterSleep,
                     HeartbeatPolicy.verdict(reply.valid, reply.reason, HeartbeatPolicy.REAP_WINDOW_MS, reply.quotaExceeded),
                 )
                 assertEquals(
-                    "$reason (valid=${reply.valid}), around a dead tunnel",
+                    "$reason, around a dead tunnel: ${beat.body}",
                     beat.deadTunnel,
                     HeartbeatPolicy.forDeadTunnel(reply, 0L),
+                )
+                assertEquals(
+                    "$reason, the grace notice: ${beat.body}",
+                    beat.grace,
+                    QuotaPolicy.grace(
+                        reply.valid, reply.quotaExceeded, reply.quotaGraceSecondsRemaining, reply.quotaGraceEndsAt, nowEpochMs = 0L,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Between them the bodies carry every property of the reply, so none is left to a shape no case decodes. */
+    @Test
+    fun `the heartbeat bodies carry every property of the contract's reply`() {
+        val carried = heartbeatCases.values.flatten().flatMap { Json.parseToJsonElement(it.body).jsonObject.keys }.toSet()
+        assertEquals(schemaProperties("HeartbeatResponse"), carried)
+    }
+
+    /**
+     * The contract's rule, for every body above: an absent reason (a backend
+     * before birdo-web #599) and one newer than this build are the same reply,
+     * on both paths; and on the live path not_found is that reply too. Around
+     * a dead tunnel not_found is a lost record and re-dials once
+     * ([HeartbeatPolicy.forDeadTunnel]), so there it is not.
+     */
+    @Test
+    fun `for every heartbeat body an unknown reason is handled as no reason`() {
+        for (beat in heartbeatCases.values.flatten()) {
+            val without = beat.body.mutate { it.remove("reason") }
+            val unknown = beat.body.mutate { it["reason"] = JsonPrimitive("relocated") }
+            assertValid(heartbeatSchema, without)
+            assertRefused(heartbeatSchema, unknown, keyword = "enum", property = "reason")
+            val none = decodeHeartbeat(without)
+            val newer = decodeHeartbeat(unknown)
+            assertEquals(none, newer.copy(reason = null))
+            for (since in listOf(0L, HeartbeatPolicy.REAP_WINDOW_MS)) {
+                assertEquals(
+                    "live, ${since}ms since the last good beat: ${beat.body}",
+                    HeartbeatPolicy.verdict(none.valid, none.reason, since, none.quotaExceeded),
+                    HeartbeatPolicy.verdict(newer.valid, newer.reason, since, newer.quotaExceeded),
+                )
+                assertEquals(
+                    "around a dead tunnel, ${since}ms since the last good beat: ${beat.body}",
+                    HeartbeatPolicy.forDeadTunnel(none, since),
+                    HeartbeatPolicy.forDeadTunnel(newer, since),
+                )
+            }
+        }
+        for (beat in heartbeatCases.getValue("not_found")) {
+            val reply = decodeHeartbeat(beat.body)
+            for (since in listOf(0L, HeartbeatPolicy.REAP_WINDOW_MS)) {
+                assertEquals(
+                    beat.body,
+                    HeartbeatPolicy.verdict(reply.valid, null, since, reply.quotaExceeded),
+                    HeartbeatPolicy.verdict(reply.valid, reply.reason, since, reply.quotaExceeded),
                 )
             }
         }
