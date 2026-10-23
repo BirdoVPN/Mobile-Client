@@ -12,10 +12,14 @@
 # inside a dependency, which is a confusing way to learn that the toolchain
 # moved.
 #
-# `rust-version = "1.85"` is also set in each native crate's [package] table,
+# Since 2026-10-23 the floor is 1.87: ctutils 0.4.4 (the RUSTSEC-2026-0385
+# fix, pulled in by module-lattice and hybrid-array) declares
+# `rust-version = "1.87"`.
+#
+# `rust-version = "1.87"` is also set in each native crate's [package] table,
 # so the failure names the requirement even if this file is bypassed.
 #
-# Raising this is a normal change; lowering it below 1.85 cannot work.
+# Raising this is a normal change; lowering it below 1.87 cannot work.
 [toolchain]
 channel = "1.96.0"
 components = ["rustfmt", "clippy"]
