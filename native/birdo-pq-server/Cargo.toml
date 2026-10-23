@@ -3,10 +3,12 @@ name = "birdo-pq-server"
 version = "0.1.0"
 edition = "2021"
 # ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
-# edition 2024 with rust-version = "1.85". Declared here so an older toolchain
-# fails with a message that names the requirement instead of an edition error
-# inside a dependency. See rust-toolchain.toml.
-rust-version = "1.85"
+# edition 2024 with rust-version = "1.85"; ctutils (under module-lattice and
+# hybrid-array) needs 1.87 from 0.4.3, and 0.4.4 is the RUSTSEC-2026-0385
+# fix. Declared here so an older toolchain fails with a message that names
+# the requirement instead of an edition error inside a dependency. See
+# rust-toolchain.toml.
+rust-version = "1.87"
 publish = false
 description = "Server-side BirdoPQ v1 helper — encapsulates against a client ML-KEM-1024 public key and prints (ciphertext, psk)."
 license = "Apache-2.0"
