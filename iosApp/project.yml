@@ -333,6 +333,12 @@ targets:
       # APIClient.swift and VpnViewModel.swift (its callers) cannot be compiled
       # into this bundle.
       - path: iosApp/Services/ConnectErrorCode.swift
+      # MR-1771: what a /auth/refresh answer means for the stored session (a
+      # 429 keeps it and is not re-asked before Retry-After; only 401/403 sign
+      # out) and the hold itself. Foundation-only by design, pinned by
+      # RefreshAnswerTests; it clamps with ConnectRetryAfter (the file above).
+      # APIClient.swift (its caller) cannot be compiled into this bundle.
+      - path: iosApp/Services/RefreshAnswer.swift
       # MR-1100: the Home globe's route — one leg for a single hop, you ->
       # entry -> exit for Multi-Hop — its camera framing and draw order.
       # Foundation-only by design (CountryCoords too), pinned by

@@ -777,6 +777,14 @@ data class ConnectResponse(
      * than as a generic refusal (REVIEW-AND2-001).
      */
     val quotaExceeded: Boolean = false,
+    /**
+     * MR-139: beside `success: false`, why the connect was refused, typed (the
+     * schema's ConnectRefusal values: device_limit, plan, quota_exceeded,
+     * server_capacity, server_unavailable), so the client picks its message
+     * from the code and not from [message]'s wording. A String, so a new value
+     * can never fail the decode; absent from older servers.
+     */
+    val refusalReason: String? = null,
 ) {
     /**
      * Never prints the key material (MR-1870): [config] (the wg-quick text,
@@ -795,7 +803,8 @@ data class ConnectResponse(
             "xrayUuid=${redacted(xrayUuid)}, xrayPublicKey=$xrayPublicKey, xrayShortId=${redacted(xrayShortId)}, " +
             "xraySni=$xraySni, xrayFlow=$xrayFlow, quantumEnabled=$quantumEnabled, " +
             "rosenpassPublicKey=${redacted(rosenpassPublicKey)}, rosenpassEndpoint=$rosenpassEndpoint, " +
-            "deferredKeyId=$deferredKeyId, rebuildRefused=$rebuildRefused, quotaExceeded=$quotaExceeded)"
+            "deferredKeyId=$deferredKeyId, rebuildRefused=$rebuildRefused, quotaExceeded=$quotaExceeded, " +
+            "refusalReason=$refusalReason)"
 }
 
 // ─── Multi-Hop (Double VPN) ──────────────────────────────────────────────────
@@ -919,6 +928,8 @@ data class MultiHopConnectResponse(
     val rebuildRefused: String? = null,
     /** See [ConnectResponse.quotaExceeded]: multi-hop passes the single-hop gate's refusal through. */
     val quotaExceeded: Boolean = false,
+    /** MR-139 — see [ConnectResponse.refusalReason]; the multi-hop route sends the same values. */
+    val refusalReason: String? = null,
 ) {
     /** Redacts what [ConnectResponse.toString] redacts (MR-1870). */
     override fun toString(): String =
@@ -931,7 +942,8 @@ data class MultiHopConnectResponse(
             "xrayUuid=${redacted(xrayUuid)}, xrayPublicKey=$xrayPublicKey, xrayShortId=${redacted(xrayShortId)}, " +
             "xraySni=$xraySni, xrayFlow=$xrayFlow, quantumEnabled=$quantumEnabled, " +
             "rosenpassPublicKey=${redacted(rosenpassPublicKey)}, rosenpassEndpoint=$rosenpassEndpoint, " +
-            "deferredKeyId=$deferredKeyId, rebuildRefused=$rebuildRefused, quotaExceeded=$quotaExceeded)"
+            "deferredKeyId=$deferredKeyId, rebuildRefused=$rebuildRefused, quotaExceeded=$quotaExceeded, " +
+            "refusalReason=$refusalReason)"
 }
 
 // ─── Port Forwarding ─────────────────────────────────────────────────────────

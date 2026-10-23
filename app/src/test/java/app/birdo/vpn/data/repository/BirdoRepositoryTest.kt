@@ -531,6 +531,140 @@ class BirdoRepositoryTest {
         verify(exactly = 0) { tokenManager.setAccessToken(any()) }
     }
 
+    // ── MR-1771: a refresh 429 is a rate limit, never a verdict on the token ──
+
+    /** A non-2xx /auth/refresh answer, with a Retry-After header when [retryAfter] is set. */
+    private fun refreshAnswer(status: Int, retryAfter: String? = null): Response<RefreshResponse> {
+        val raw = okhttp3.Response.Builder()
+            .code(status)
+            .message("refused")
+            .protocol(okhttp3.Protocol.HTTP_1_1)
+            .request(okhttp3.Request.Builder().url("https://api.birdo.app/auth/refresh").build())
+            .apply { if (retryAfter != null) header("Retry-After", retryAfter) }
+            .build()
+        val body = """{"statusCode":$status,"message":"Too many requests"}"""
+        return Response.error(body.toResponseBody("application/json".toMediaType()), raw)
+    }
+
+    /**
+     * birdo-web #739 answers every /auth/refresh rate limit with 429 and
+     * Retry-After (it was a 401, which every client read as "token dead").
+     * The 429 comes before the token is read, so the stored pair must stay
+     * exactly as it is, the caller must get a non-401 failure that says how
+     * long to wait (checkSession signs out only on a 401), and no refresh may
+     * be re-sent before the wait is over — the heartbeat's next 401 used to
+     * ask again 30 s later and earn another 429. Once it is over, the next
+     * 401 refreshes again.
+     */
+    @Test
+    fun `a refresh 429 keeps the stored session and is not re-sent before its Retry-After`() = runTest {
+        var now = 1_000_000L
+        repository.clock = { now }
+        var access: String? = "expired_access"
+        var refresh: String? = "live_refresh"
+        every { tokenManager.getAccessToken() } answers { access }
+        every { tokenManager.getRefreshToken() } answers { refresh }
+        every { tokenManager.clearAll() } answers { access = null; refresh = null }
+        every { tokenManager.setTokens(any(), any()) } answers { access = firstArg(); refresh = secondArg() }
+        every { tokenManager.setAccessToken(any()) } answers { access = firstArg() }
+        val profile = UserProfile(id = "1", email = "user@test.com")
+        coEvery { api.getProfile() } coAnswers {
+            if (access == "expired_access") {
+                Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+            } else {
+                Response.success(profile)
+            }
+        }
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "60")
+
+        val first = repository.getProfile() as ApiResult.Error
+
+        assertNotEquals("a 401 here is what signs the user out", 401, first.code)
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, first.reason)
+        assertEquals(60_000L, first.retryAfterMs)
+        assertEquals("expired_access", access)
+        assertEquals("live_refresh", refresh)
+        verify(exactly = 0) { tokenManager.clearAll() }
+        verify(exactly = 0) { tokenManager.setTokens(any(), any()) }
+        verify(exactly = 0) { tokenManager.setAccessToken(any()) }
+
+        // 59 s later: still held. The session is kept and no refresh is sent.
+        now += 59_000L
+        val held = repository.getProfile() as ApiResult.Error
+        assertNotEquals(401, held.code)
+        assertEquals(1_000L, held.retryAfterMs)
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        assertEquals("live_refresh", refresh)
+
+        // The wait is over: the next 401 refreshes, and the session goes on.
+        now += 1_000L
+        coEvery { api.refreshToken(any()) } returns Response.success(
+            RefreshResponse(accessToken = "new_access", refreshToken = "new_refresh", expiresIn = 3600),
+        )
+        val after = repository.getProfile()
+        assertTrue("$after", after is ApiResult.Success)
+        coVerify(exactly = 2) { api.refreshToken(any()) }
+        assertEquals("new_refresh", refresh)
+    }
+
+    @Test
+    fun `a refresh 429 waits the retryable default when it names no wait, and ten minutes at most`() = runTest {
+        var now = 5_000L
+        repository.clock = { now }
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { tokenManager.getAccessToken() } returns "expired_access"
+        coEvery { api.getProfile() } returns Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType()))
+
+        // No header, or an HTTP date (the device clock is not the server's): the default.
+        for (header in listOf(null, "Wed, 21 Oct 2026 07:28:00 GMT")) {
+            coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = header)
+            val e = repository.getProfile() as ApiResult.Error
+            assertEquals("Retry-After: $header", RetryAfter.RETRYABLE_DEFAULT_MS, e.retryAfterMs)
+            now += RetryAfter.RETRYABLE_DEFAULT_MS
+        }
+        // A day: clamped, so a wrong header cannot park the session's refresh for hours.
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(429, retryAfter = "86400")
+        assertEquals(RetryAfter.MAX_MS, (repository.getProfile() as ApiResult.Error).retryAfterMs)
+        // A clock set back before the hold began ends it rather than stretching it.
+        now -= 1_000L
+        repository.getProfile()
+        coVerify(exactly = 4) { api.refreshToken(any()) }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    @Test
+    fun `a refresh 503 with Retry-After is waited out too, and one without it is not held`() = runTest {
+        var now = 0L
+        repository.clock = { now }
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503, retryAfter = "20")
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+
+        now += 20_000L
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(503)
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        assertEquals(RefreshOutcome.TRANSIENT, repository.refreshToken())
+        coVerify(exactly = 3) { api.refreshToken(any()) }
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
+    /**
+     * Unchanged by MR-1771 (lead decision 2026-10-23): a refresh 403 still
+     * ends the session — the caller gets "Session expired" — but leaves the
+     * stored tokens alone, as before.
+     */
+    @Test
+    fun `a refresh 403 still signs out and leaves the tokens`() = runTest {
+        coEvery { tokenManager.getRefreshToken() } returns "live_refresh"
+        coEvery { api.refreshToken(any()) } returns refreshAnswer(403)
+
+        assertEquals(RefreshOutcome.UNAUTHORIZED, repository.refreshToken())
+        verify(exactly = 0) { tokenManager.clearAll() }
+    }
+
     // ── Logout ──────────────────────────────────────────────────
 
     @Test
@@ -1256,6 +1390,36 @@ class BirdoRepositoryTest {
         assertFalse(result.data.success)
         assertEquals(StringsXml.text("error_device_limit"), result.data.message)
         verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
+    }
+
+    /**
+     * MR-139: birdo-web #739 types the refusal (`refusalReason`), so the
+     * device cap is known by its code on both connect routes, however the
+     * server words it; another reason keeps the server's sentence even when
+     * the words look like the cap's.
+     */
+    @Test
+    fun `both connect routes tell the device cap by refusalReason, not by the wording`() = runTest {
+        val reworded = "Your plan allows 5 devices and all of them are connected."
+        coEvery { api.connect(any()) } returns Response.success(
+            ConnectResponse(success = false, message = reworded, refusalReason = "device_limit"),
+        )
+        coEvery { api.connectMultiHop(any()) } returns Response.success(
+            MultiHopConnectResponse(success = false, message = reworded, refusalReason = "device_limit"),
+        )
+
+        val single = repository.connectVpn("server_1") as ApiResult.Success
+        val multi = repository.connectMultiHop("entry_1", "exit_1") as ApiResult.Success
+
+        assertEquals(StringsXml.text("error_device_limit"), single.data.message)
+        assertEquals(StringsXml.text("error_device_limit"), multi.data.message)
+        verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
+
+        val full = "Device limit reached on this server's pool. Pick another server."
+        coEvery { api.connect(any()) } returns Response.success(
+            ConnectResponse(success = false, message = full, refusalReason = "server_capacity"),
+        )
+        assertEquals(full, (repository.connectVpn("server_1") as ApiResult.Success).data.message)
     }
 
     // ── MR-1517: the plan-gating table every gate reads ──────────
