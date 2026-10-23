@@ -199,13 +199,24 @@ class ApiErrorMapper(private val strings: StringLookup) {
      * never passes through [fromResponse]. The cap gets the canonical sentence,
      * which says what to do about it; any other explained refusal ("at
      * capacity") keeps the server's words.
+     *
+     * MR-139: the cap is told by [refusalReason] (`device_limit`), whatever
+     * the wording. A refusal with no reason, or one newer than this build
+     * ([ConnectRefusalReason.fromWire] null), is told by its wording as before
+     * (older servers send none).
      */
-    fun connectRefusal(serverMessage: String?): Pair<FailureReason, String> = when {
-        serverMessage != null && serverMessage.trim().startsWith("Device limit reached", ignoreCase = true) ->
-            FailureReason.DEVICE_LIMIT to textFor(FailureReason.DEVICE_LIMIT)
-        serverMessage != null && isPresentable(serverMessage) ->
-            FailureReason.REFUSED to serverMessage.trim()
-        else -> FailureReason.UNEXPECTED to strings.get(R.string.error_connect_failed)
+    fun connectRefusal(serverMessage: String?, refusalReason: String? = null): Pair<FailureReason, String> {
+        val reason = ConnectRefusalReason.fromWire(refusalReason)
+        return when {
+            reason == ConnectRefusalReason.DEVICE_LIMIT ->
+                FailureReason.DEVICE_LIMIT to textFor(FailureReason.DEVICE_LIMIT)
+            reason == null && serverMessage != null &&
+                serverMessage.trim().startsWith("Device limit reached", ignoreCase = true) ->
+                FailureReason.DEVICE_LIMIT to textFor(FailureReason.DEVICE_LIMIT)
+            serverMessage != null && isPresentable(serverMessage) ->
+                FailureReason.REFUSED to serverMessage.trim()
+            else -> FailureReason.UNEXPECTED to strings.get(R.string.error_connect_failed)
+        }
     }
 
     /**

@@ -895,15 +895,21 @@ class VpnManager @Inject constructor(
      * the block and offers View plans, where a generic refusal of a session
      * that was up kept the device blocked behind "can't connect". It is also
      * the second line of defence behind the dead-tunnel probe, for a quota end
-     * whose heartbeat reply was lost with the peer.
+     * whose heartbeat reply was lost with the peer. MR-139: the kind follows
+     * the refusal's typed reason ([FailureKind.forRefusal]).
      */
-    private fun refusal(serverMessage: String?, quotaExceeded: Boolean): Pair<String, FailureKind> =
-        if (quotaExceeded) {
-            (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to
-                FailureKind.QUOTA_EXCEEDED
+    private fun refusal(
+        serverMessage: String?,
+        quotaExceeded: Boolean,
+        refusalReason: String?,
+    ): Pair<String, FailureKind> {
+        val kind = FailureKind.forRefusal(quotaExceeded, refusalReason)
+        return if (kind == FailureKind.QUOTA_EXCEEDED) {
+            (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to kind
         } else {
-            (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG) to FailureKind.REFUSED
+            (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG) to kind
         }
+    }
 
     /**
      * Server switch / reconnect: fully tear down the existing tunnel +
@@ -1038,7 +1044,7 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val (message, kind) = refusal(config.message, config.quotaExceeded)
+                    val (message, kind) = refusal(config.message, config.quotaExceeded, config.refusalReason)
                     if (!superseded(gen)) publishError(message, kind)
                     return ApiResult.Error(message)
                 }
@@ -1151,7 +1157,7 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val (message, kind) = refusal(config.message, config.quotaExceeded)
+                    val (message, kind) = refusal(config.message, config.quotaExceeded, config.refusalReason)
                     publishError(message, kind)
                     return ApiResult.Error(message)
                 }

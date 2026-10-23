@@ -2,6 +2,7 @@ package app.birdo.vpn.service
 
 import app.birdo.vpn.data.model.HeartbeatResponse
 import app.birdo.vpn.data.repository.ConnectErrorCode
+import app.birdo.vpn.data.repository.ConnectRefusalReason
 import app.birdo.vpn.shared.model.PlanFeature
 import app.birdo.vpn.shared.model.PlanGates
 import app.birdo.vpn.shared.model.planHasFeature
@@ -135,6 +136,23 @@ enum class FailureKind(val terminal: Boolean) {
          */
         fun forApiError(status: Int, serverCode: ConnectErrorCode): FailureKind =
             if (serverCode.retryable) TRANSIENT else fromHttpStatus(status)
+
+        /**
+         * Classify a connect the server refused inside its 200
+         * (`success: false`). MR-139: by its typed `refusalReason` — `plan`
+         * offers View plans like a 402, `quota_exceeded` is the Free
+         * allowance's end — and `quotaExceeded` still ends it whatever the
+         * reason says. Any other reason, none, or one newer than this build is
+         * [REFUSED], as every refusal without `quotaExceeded` was before.
+         */
+        fun forRefusal(quotaExceeded: Boolean, refusalReason: String?): FailureKind {
+            val reason = ConnectRefusalReason.fromWire(refusalReason)
+            return when {
+                quotaExceeded || reason == ConnectRefusalReason.QUOTA_EXCEEDED -> QUOTA_EXCEEDED
+                reason == ConnectRefusalReason.PLAN -> PLAN_REQUIRED
+                else -> REFUSED
+            }
+        }
     }
 }
 
