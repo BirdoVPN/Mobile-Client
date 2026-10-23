@@ -9,6 +9,7 @@ import SwiftUI
 struct PortForwardView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
     @EnvironmentObject var authVM: AuthViewModel
+    @EnvironmentObject var settingsVM: SettingsViewModel
 
     @State private var portText = ""
     /// 0 = TCP, 1 = UDP (default tcp — Android parity).
@@ -80,12 +81,13 @@ struct PortForwardView: View {
 
     // MARK: - Plan gate
 
-    /// Locked only when the server snapshot POSITIVELY says the plan is below
-    /// SOVEREIGN — an unloaded snapshot shows the form and lets the backend
-    /// refuse (the entry-point lock in VPN Settings is the primary surface).
+    /// Locked only when the server snapshot POSITIVELY names a plan without
+    /// Port Forwarding (MR-1517: the plan table, the server's else SOVEREIGN
+    /// only) — an unloaded snapshot shows the form and lets the backend
+    /// refuse (the entry-point lock in Settings is the primary surface).
     private var isLockedOut: Bool {
         guard let sub = vpnVM.subscription else { return false }
-        return !sub.isSovereign
+        return settingsVM.planHas(.portForwarding, plan: sub.plan) == false
     }
 
     private var lockedCard: some View {

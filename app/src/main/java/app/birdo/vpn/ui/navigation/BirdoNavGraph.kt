@@ -34,6 +34,8 @@ import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.service.StealthPolicy
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.isConnectingPhase
+import app.birdo.vpn.shared.model.PlanFeature
+import app.birdo.vpn.shared.model.planHasFeature
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.ui.components.AdaptiveContainer
 import app.birdo.vpn.billing.BirdoBillingPeriod
@@ -745,11 +747,15 @@ fun BirdoNavGraph(
                     DisposableEffect(Unit) {
                         onDispose { settingsViewModel.commitPendingReapply() }
                     }
-                    // Port Forwarding is SOVEREIGN-only. Custom DNS Servers is
+                    // Port Forwarding follows the plan table (MR-1517: the
+                    // server's, else SOVEREIGN only). Custom DNS Servers is
                     // on every plan (owner decision D6, 2026-10-01), and so is
                     // post-quantum protection (per the pricing/feature lists).
-                    val settingsPlan = vpnState.subscription?.plan?.uppercase()
-                    val settingsIsSovereign = settingsPlan == "SOVEREIGN"
+                    val portForwardEntitled = planHasFeature(
+                        vpnState.subscription?.plan,
+                        vpnState.planGates,
+                        PlanFeature.PORT_FORWARDING,
+                    ) == true
                     SettingsScreen(
                         state = settingsState,
                         onDismissSettingsResetNotice = { settingsViewModel.dismissSettingsResetNotice() },
@@ -781,7 +787,7 @@ fun BirdoNavGraph(
                         onThemeModeChange = { settingsViewModel.setThemeMode(it) },
                         onCrashReportsChange = { settingsViewModel.setCrashReports(it) },
                         onOpenLicenses = { navController.navigate(Screen.Licenses.route) },
-                        portForwardUnlocked = settingsIsSovereign,
+                        portForwardUnlocked = portForwardEntitled,
                         quantumUnlocked = true,
                         onUpgradeRequired = {
                             vpnViewModel.fetchSubscription()
@@ -821,7 +827,8 @@ fun BirdoNavGraph(
                     // `.task { await settingsVM.refreshClientConfig() }`.
                     LaunchedEffect(Unit) { vpnViewModel.fetchClientConfig() }
                     // Plan gating mirrors the Multi-Hop pattern on the Connect
-                    // screen. Stealth is OPERATIVE-and-above, keyed on the plan
+                    // screen. Stealth follows the plan table (MR-1517: the
+                    // server's, else OPERATIVE-and-above), keyed on the plan
                     // string only — an anonymous account on RECON is gated
                     // exactly like an email/SSO account on RECON. A locked
                     // toggle routes to the upgrade flow instead of toggling.
@@ -834,7 +841,7 @@ fun BirdoNavGraph(
                         onDnsFilteringChange = { settingsViewModel.setDnsFiltering(it) },
                         onBack = { navController.popBackStack() },
                         // Unlocked while the plan is still loading, not OFF-and-locked.
-                        stealthUnlocked = StealthPolicy.toggleUnlocked(plan),
+                        stealthUnlocked = StealthPolicy.toggleUnlocked(plan, vpnState.planGates),
                         // BirdoShield fleet gate (see VpnUiState). Same shape as
                         // the plan gate above — server-side state, resolved
                         // here, passed down. `null` = not known yet = available.

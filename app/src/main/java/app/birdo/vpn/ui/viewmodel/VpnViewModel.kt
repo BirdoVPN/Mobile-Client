@@ -23,6 +23,7 @@ import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.WireGuardConfigBuilder
 import app.birdo.vpn.service.isConnectingPhase
+import app.birdo.vpn.shared.model.PlanGates
 import app.birdo.vpn.utils.InputValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -127,6 +128,15 @@ data class VpnUiState(
      * [app.birdo.vpn.ui.screen.freePlanCapGb] and [nextFreePlanCapGb].
      */
     val configFreePlanCapGb: Long? = null,
+    /**
+     * MR-1517: the server's plan-gating table (`features.<PLAN>` from
+     * `GET /api/client-config`, held by BirdoRepository.cachedPlanGates), or
+     * null until a config that carries one lands. Every Stealth, Multi-Hop and
+     * Port Forwarding gate reads it through
+     * [app.birdo.vpn.shared.model.planHasFeature], which falls back to the
+     * built-in table for anything the server did not say.
+     */
+    val planGates: PlanGates? = null,
     /** A server switch is in flight: Home says "Switching server…" (P1-parity-016). */
     val switching: Boolean = false,
     /**
@@ -708,7 +718,8 @@ class VpnViewModel @Inject constructor(
      * leaves the toggle usable instead of greying out a feature that works.
      *
      * The same response carries the free plan's cap for the paywall (MR-1980,
-     * [nextFreePlanCapGb]).
+     * [nextFreePlanCapGb]) and the plan-gating table (MR-1517), which the
+     * repository keeps for the gates that have no ViewModel.
      */
     fun fetchClientConfig() {
         viewModelScope.launch {
@@ -716,8 +727,13 @@ class VpnViewModel @Inject constructor(
             val state = _uiState.value
             val next = nextDnsFilteringAvailable(state.dnsFilteringAvailable, result)
             val freeCap = nextFreePlanCapGb(state.configFreePlanCapGb, result)
-            if (next != state.dnsFilteringAvailable || freeCap != state.configFreePlanCapGb) {
-                _uiState.value = _uiState.value.copy(dnsFilteringAvailable = next, configFreePlanCapGb = freeCap)
+            val gates = repository.cachedPlanGates()
+            if (next != state.dnsFilteringAvailable || freeCap != state.configFreePlanCapGb || gates != state.planGates) {
+                _uiState.value = _uiState.value.copy(
+                    dnsFilteringAvailable = next,
+                    configFreePlanCapGb = freeCap,
+                    planGates = gates,
+                )
             }
         }
     }
@@ -867,10 +883,10 @@ class VpnViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(needsVpnPermission = true)
     }
 
-    /** Multi-Hop is armed exactly as Home draws it: the pref AND a SOVEREIGN plan. */
+    /** Multi-Hop is armed exactly as Home draws it: the pref AND a plan that has it (MR-1517). */
     private fun multiHopArmedAsShown(): Boolean =
         prefs.multiHopEnabled &&
-            _uiState.value.subscription?.plan?.equals("SOVEREIGN", ignoreCase = true) == true
+            MultiHopPolicy.entitledByPlan(_uiState.value.subscription?.plan, _uiState.value.planGates) == true
 
     /**
      * Auto-Connect and quick connect: the same rule, with the persisted plan
@@ -879,7 +895,10 @@ class VpnViewModel @Inject constructor(
      */
     private fun multiHopArmedForDial(): Boolean =
         prefs.multiHopEnabled &&
-            MultiHopPolicy.entitledByPlan(_uiState.value.subscription?.plan ?: prefs.lastKnownPlan) == true
+            MultiHopPolicy.entitledByPlan(
+                _uiState.value.subscription?.plan ?: prefs.lastKnownPlan,
+                _uiState.value.planGates,
+            ) == true
 
     fun connect() {
         if (dialInProgress()) return

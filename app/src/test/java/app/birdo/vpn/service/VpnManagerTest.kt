@@ -9,6 +9,7 @@ import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.model.ServerNodeInfo
 import app.birdo.vpn.shared.model.MultiHopInfo
 import app.birdo.vpn.shared.model.MultiHopNodeInfo
+import app.birdo.vpn.shared.model.PlanFeature
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
@@ -1812,6 +1813,39 @@ class VpnManagerTest {
 
         coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
         coVerify(exactly = 0) { repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        quiesce()
+    }
+
+    /** MR-1517: the headless dial follows the plan table this process fetched, not the plan's name. */
+    @Test
+    fun `a headless start follows the server's Multi-Hop flag over the plan name`() = runTest {
+        armMultiHopPrefs()
+        every { prefs.lastKnownPlan } returns "SOVEREIGN"
+        every { repository.cachedPlanGates() } returns mapOf("SOVEREIGN" to mapOf(PlanFeature.MULTI_HOP to false))
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.connectVpn("srv-1", any()) }
+        coVerify(exactly = 0) { repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        quiesce()
+    }
+
+    @Test
+    fun `a headless start dials the pair when the server's table gives the plan Multi-Hop`() = runTest {
+        armMultiHopPrefs()
+        every { prefs.lastKnownPlan } returns "OPERATIVE"
+        every { repository.cachedPlanGates() } returns mapOf("OPERATIVE" to mapOf(PlanFeature.MULTI_HOP to true))
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+
+        vpnManager.connectHeadless(SystemStartKind.ALWAYS_ON)
+        runCurrent()
+
+        coVerify { repository.connectMultiHop("de-1", "nl-1", any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repository.connectVpn(any(), any()) }
         quiesce()
     }
 

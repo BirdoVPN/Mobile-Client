@@ -2,6 +2,9 @@ package app.birdo.vpn.service
 
 import app.birdo.vpn.data.model.HeartbeatResponse
 import app.birdo.vpn.data.repository.ConnectErrorCode
+import app.birdo.vpn.shared.model.PlanFeature
+import app.birdo.vpn.shared.model.PlanGates
+import app.birdo.vpn.shared.model.planHasFeature
 
 /**
  * The session supervisor's decisions, as pure functions.
@@ -379,15 +382,17 @@ internal object StealthPolicy {
     const val UNAVAILABLE_ENTITLEMENT = "entitlement"
 
     /**
-     * Whether the Settings toggle is offered (OPERATIVE and above). While the
-     * plan is not loaded it is: showing OFF-and-locked then told every paying
-     * user, on every cold start, that they had lost Stealth. A toggle a plan
-     * does not cover costs nothing to show now — the server answers a request
-     * it does not cover with a direct connection and a notice.
+     * Whether the Settings toggle is offered: Stealth as the plan table gives
+     * it (MR-1517) — the server's `features.<PLAN>.stealthMode` from [gates]
+     * when it said, else OPERATIVE and above. While the plan is not loaded it
+     * is: showing OFF-and-locked then told every paying user, on every cold
+     * start, that they had lost Stealth. A toggle a plan does not cover costs
+     * nothing to show now — the server answers a request it does not cover
+     * with a direct connection and a notice.
      */
-    fun toggleUnlocked(plan: String?): Boolean {
-        val known = plan?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return true
-        return known == "OPERATIVE" || known == "SOVEREIGN"
+    fun toggleUnlocked(plan: String?, gates: PlanGates?): Boolean {
+        val known = plan?.takeIf { it.isNotBlank() } ?: return true
+        return planHasFeature(known, gates, PlanFeature.STEALTH_MODE) == true
     }
 
     /** How the Settings row draws: what it shows, and whether a tap goes to the upgrade flow instead. */
@@ -938,18 +943,20 @@ internal object QuickToggle {
      * @param decision [MultiHopPolicy.forNewConnection] on the arming prefs.
      * @param plan the cached plan, or null when unknown (cold process, cache
      *   aged out).
+     * @param gates the server's plan-gating table this process last fetched,
+     *   or null for the built-in one (MR-1517).
      *
      * The pref alone is NOT the armed state: Home renders
-     * `multiHop.enabled && isSovereign`, and nothing clears the pref when a
-     * plan lapses — so an ex-SOVEREIGN account keeps multiHopEnabled == true
+     * `multiHop.enabled && multiHopEntitled`, and nothing clears the pref when
+     * a plan lapses — so an ex-SOVEREIGN account keeps multiHopEnabled == true
      * forever. A single hop is both what they are entitled to and what the app
      * draws for them, so there is no downgrade being hidden. With the plan
      * unknown, guessing single-hop could silently downgrade a paying user and
      * guessing multi-hop could dead-end a lapsed one, so hand off to the app.
      */
-    fun connectPlan(decision: MultiHopPolicy.NewConnection, plan: String?): ConnectPlan {
+    fun connectPlan(decision: MultiHopPolicy.NewConnection, plan: String?, gates: PlanGates?): ConnectPlan {
         if (decision == MultiHopPolicy.NewConnection.SingleHop) return ConnectPlan.Preferred(multiHopEntitled = false)
-        val entitled = MultiHopPolicy.entitledByPlan(plan)
+        val entitled = MultiHopPolicy.entitledByPlan(plan, gates)
             ?: return ConnectPlan.OpenApp("Multi-hop armed but entitlement unknown")
         if (!entitled) return ConnectPlan.Preferred(multiHopEntitled = false)
         return when (decision) {

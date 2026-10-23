@@ -1476,10 +1476,6 @@ struct VpnStats: Sendable, Equatable {
     let liveSources: [String]?
 
     var hasBandwidthCap: Bool { bandwidthLimitGb > 0 }
-    var isSovereign: Bool { plan.caseInsensitiveCompare("SOVEREIGN") == .orderedSame }
-    var isOperativeOrHigher: Bool {
-        isSovereign || plan.caseInsensitiveCompare("OPERATIVE") == .orderedSame
-    }
 }
 
 /// Compatibility alias — some call sites name the /vpn/stats model this way.

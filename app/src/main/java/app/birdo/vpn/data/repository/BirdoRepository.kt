@@ -13,6 +13,7 @@ import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.shared.model.LoginResult
+import app.birdo.vpn.shared.model.PlanGates
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -138,6 +139,22 @@ class BirdoRepository @Inject constructor(
     // ── Subscription cache ──────────────────────────────────────
     @Volatile private var cachedSubscription: SubscriptionStatus? = null
     @Volatile private var subscriptionCacheTimestamp: Long = 0L
+
+    // ── Plan-gating table (MR-1517) ─────────────────────────────
+    /**
+     * The server's plan-gating table from the last client config that carried
+     * one ([ClientConfigResponse.planGates]). Held here, not in a ViewModel,
+     * because the tile, the widget and VpnManager's headless dials gate on it
+     * too. Not persisted, and not per account (the table is public): a cold
+     * process gates on the built-in table until the app fetches the config.
+     */
+    @Volatile private var serverPlanGates: PlanGates? = null
+
+    /**
+     * The server's plan-gating table, or null for the built-in one
+     * ([app.birdo.vpn.shared.model.planHasFeature]).
+     */
+    fun cachedPlanGates(): PlanGates? = serverPlanGates
 
     /** Server list is considered fresh for 60 seconds. */
     companion object {
@@ -716,13 +733,19 @@ class BirdoRepository @Inject constructor(
      * and the fallback for the BirdoShield gate is "available". Synthesizing a
      * `dnsFilteringAvailable = false` on a network blip here would hide a
      * working feature on every offline client.
+     *
+     * A success that carries `features` replaces [cachedPlanGates]; one without
+     * it (an older deploy) and every error keep the table already held.
      */
     suspend fun getClientConfig(): ApiResult<ClientConfigResponse> = guarded {
         val response = api.getClientConfig(
             app.birdo.vpn.BuildConfig.WEB_BASE_URL + CLIENT_CONFIG_PATH,
         )
         if (response.isSuccessful) {
-            response.body()?.let { ApiResult.Success(it) } ?: errors.unexpected()
+            response.body()?.let { config ->
+                config.planGates?.let { serverPlanGates = it }
+                ApiResult.Success(config)
+            } ?: errors.unexpected()
         } else {
             errorFrom(response, ErrorContext.GENERAL, R.string.error_unexpected)
         }

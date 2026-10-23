@@ -3,6 +3,7 @@ package app.birdo.vpn.service
 import app.birdo.vpn.service.ReconnectPolicy.Decision
 import app.birdo.vpn.service.ReconnectPolicy.GiveUpReason
 import app.birdo.vpn.service.ReconnectPolicy.Session
+import app.birdo.vpn.shared.model.PlanFeature
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -477,10 +478,28 @@ class SessionPolicyTest {
 
     @Test
     fun `one entitlement rule for every dial`() {
-        assertEquals(true, MultiHopPolicy.entitledByPlan("SOVEREIGN"))
-        assertEquals(true, MultiHopPolicy.entitledByPlan("sovereign"))
-        assertEquals(false, MultiHopPolicy.entitledByPlan("OPERATIVE"))
-        assertEquals(null, MultiHopPolicy.entitledByPlan(null))
+        assertEquals(true, MultiHopPolicy.entitledByPlan("SOVEREIGN", null))
+        assertEquals(true, MultiHopPolicy.entitledByPlan("sovereign", null))
+        assertEquals(false, MultiHopPolicy.entitledByPlan("OPERATIVE", null))
+        assertEquals(null, MultiHopPolicy.entitledByPlan(null, null))
+    }
+
+    /** MR-1517: the server's table decides wherever it gave a flag. */
+    @Test
+    fun `the dial entitlement follows the server's plan table`() {
+        val gates = mapOf(
+            "OPERATIVE" to mapOf(PlanFeature.MULTI_HOP to true),
+            "SOVEREIGN" to mapOf(PlanFeature.MULTI_HOP to false),
+        )
+        assertEquals(true, MultiHopPolicy.entitledByPlan("operative", gates))
+        assertEquals(false, MultiHopPolicy.entitledByPlan("SOVEREIGN", gates))
+        // A plan the server said nothing about keeps the built-in rule.
+        assertEquals(false, MultiHopPolicy.entitledByPlan("RECON", gates))
+        assertEquals(null, MultiHopPolicy.entitledByPlan(null, gates))
+
+        val armed = MultiHopPolicy.NewConnection.MultiHop("de-1", "nl-1")
+        assertEquals(QuickToggle.ConnectPlan.MultiHop("de-1", "nl-1"), QuickToggle.connectPlan(armed, "OPERATIVE", gates))
+        assertEquals(QuickToggle.ConnectPlan.Preferred(multiHopEntitled = false), QuickToggle.connectPlan(armed, "SOVEREIGN", gates))
     }
 
     /** REVIEW-AND2-012: a kept session after a settings change is not a failed switch. */
@@ -521,15 +540,16 @@ class SessionPolicyTest {
     @Test
     fun `a one-tap connect never guesses at a Multi-Hop entitlement`() {
         val armed = MultiHopPolicy.NewConnection.MultiHop("de-1", "nl-1")
-        assertEquals(QuickToggle.ConnectPlan.MultiHop("de-1", "nl-1"), QuickToggle.connectPlan(armed, "SOVEREIGN"))
-        assertEquals(QuickToggle.ConnectPlan.Preferred(multiHopEntitled = false), QuickToggle.connectPlan(armed, "OPERATIVE"))
-        assertTrue(QuickToggle.connectPlan(armed, null) is QuickToggle.ConnectPlan.OpenApp)
+        assertEquals(QuickToggle.ConnectPlan.MultiHop("de-1", "nl-1"), QuickToggle.connectPlan(armed, "SOVEREIGN", null))
+        assertEquals(QuickToggle.ConnectPlan.Preferred(multiHopEntitled = false), QuickToggle.connectPlan(armed, "OPERATIVE", null))
+        assertTrue(QuickToggle.connectPlan(armed, null, null) is QuickToggle.ConnectPlan.OpenApp)
         assertTrue(
-            QuickToggle.connectPlan(MultiHopPolicy.NewConnection.RefuseIncompletePair, "SOVEREIGN") is QuickToggle.ConnectPlan.OpenApp,
+            QuickToggle.connectPlan(MultiHopPolicy.NewConnection.RefuseIncompletePair, "SOVEREIGN", null) is
+                QuickToggle.ConnectPlan.OpenApp,
         )
         assertEquals(
             QuickToggle.ConnectPlan.Preferred(multiHopEntitled = false),
-            QuickToggle.connectPlan(MultiHopPolicy.NewConnection.SingleHop, null),
+            QuickToggle.connectPlan(MultiHopPolicy.NewConnection.SingleHop, null, null),
         )
     }
 
@@ -539,11 +559,26 @@ class SessionPolicyTest {
     fun `the Stealth toggle is offered while the plan is loading`() {
         // OFF-and-locked before the plan loaded told every paying user, on
         // every cold start, that they had lost Stealth (second review, N6).
-        assertTrue(StealthPolicy.toggleUnlocked(null))
-        assertTrue(StealthPolicy.toggleUnlocked(" "))
-        assertTrue(StealthPolicy.toggleUnlocked("operative"))
-        assertTrue(StealthPolicy.toggleUnlocked("SOVEREIGN"))
-        assertFalse(StealthPolicy.toggleUnlocked("RECON"))
+        assertTrue(StealthPolicy.toggleUnlocked(null, null))
+        assertTrue(StealthPolicy.toggleUnlocked(" ", null))
+        assertTrue(StealthPolicy.toggleUnlocked("operative", null))
+        assertTrue(StealthPolicy.toggleUnlocked("SOVEREIGN", null))
+        assertFalse(StealthPolicy.toggleUnlocked("RECON", null))
+    }
+
+    /** MR-1517: the server's `stealthMode` flag decides wherever it gave one. */
+    @Test
+    fun `the Stealth toggle follows the server's plan table`() {
+        val gates = mapOf(
+            "RECON" to mapOf(PlanFeature.STEALTH_MODE to true),
+            "OPERATIVE" to mapOf(PlanFeature.STEALTH_MODE to false),
+        )
+        assertTrue(StealthPolicy.toggleUnlocked("recon", gates))
+        assertFalse(StealthPolicy.toggleUnlocked("OPERATIVE", gates))
+        // Not given for SOVEREIGN: the built-in table.
+        assertTrue(StealthPolicy.toggleUnlocked("SOVEREIGN", gates))
+        // Still offered while the plan is loading, whatever the table says.
+        assertTrue(StealthPolicy.toggleUnlocked(null, mapOf("RECON" to mapOf(PlanFeature.STEALTH_MODE to false))))
     }
 
     @Test
