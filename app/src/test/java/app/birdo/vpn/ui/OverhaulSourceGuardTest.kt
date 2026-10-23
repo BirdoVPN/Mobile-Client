@@ -413,7 +413,7 @@ class OverhaulSourceGuardTest {
             Regex("""onOpenVpnSettings\s*=\s*\{[^}]*?navController\.navigate\(Screen\.VpnSettings\.route\)\s*\{\s*launchSingleTop\s*=\s*true\s*\}""")
                 .containsMatchIn(graph),
         )
-        assertTrue(graph.contains("stealthUnlocked = StealthPolicy.toggleUnlocked(plan)"))
+        assertTrue(graph.contains("stealthUnlocked = StealthPolicy.toggleUnlocked(plan, vpnState.planGates)"))
         assertTrue(source("$main/ui/screen/HomeScreen.kt").contains("Remedy.OPEN_VPN_SETTINGS -> onOpenVpnSettings()"))
     }
 

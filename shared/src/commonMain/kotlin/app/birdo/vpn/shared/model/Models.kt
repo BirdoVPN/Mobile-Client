@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 
 /**
@@ -342,13 +343,13 @@ data class AppUpdateInfo(
 /**
  * `GET /api/client-config` — only the fields this client acts on.
  *
- * NOT a full mirror of the payload. The endpoint also serves cert pins,
- * per-plan feature entitlements and consent copy; pins are vendored into
- * `third_party/` and enforced from there, and the plan entitlements already
- * arrive with the subscription, so modelling them here would create a second
- * source of truth for each. Unknown keys are ignored by the shared `Json`
- * (NetworkModule.json, `ignoreUnknownKeys = true`), so web-side additions never
- * break a shipped client.
+ * NOT a full mirror of the payload. The endpoint also serves cert pins and
+ * consent copy; pins are vendored into `third_party/` and enforced from there.
+ * Of the per-plan feature entitlements, only the three flags a plan gates are
+ * read ([planGates], MR-1517): `/vpn/stats` names the plan but not what it
+ * includes, so this map is the server's only word on it. Unknown keys are
+ * ignored by the shared `Json` (NetworkModule.json, `ignoreUnknownKeys = true`),
+ * so web-side additions never break a shipped client.
  *
  * The fields are NULLABLE and defaulted, and the difference between `false`
  * and absent is load-bearing — see [dnsFilteringAvailable].
@@ -379,7 +380,35 @@ data class ClientConfigResponse(
      * response, BirdoShield gate included.
      */
     val plans: JsonElement? = null,
+    /**
+     * MR-1517: `features.<PLAN>`, one object per plan id with that plan's
+     * entitlements. Only the gating flags are read — see [planGates]. Raw
+     * [JsonElement] for the same reason as [plans].
+     */
+    val features: JsonElement? = null,
 ) {
+    /**
+     * The server's plan-gating table (MR-1517): for each plan in `features`,
+     * the [PlanFeature] flags it gave as JSON booleans, keyed by the
+     * uppercased plan id. A flag of any other type, or a plan entry that is
+     * not an object, is skipped, so that one falls back to
+     * [PlanFeature.minPlan] on its own. `null` when the payload has no
+     * `features` object at all (a deploy that predates it), so a caller can
+     * keep the table it had.
+     */
+    val planGates: PlanGates?
+        get() {
+            val byPlan = features as? JsonObject ?: return null
+            return byPlan.entries.mapNotNull { (plan, value) ->
+                val flags = value as? JsonObject ?: return@mapNotNull null
+                val gates = PlanFeature.entries.mapNotNull { feature ->
+                    val flag = flags[feature.key] as? JsonPrimitive
+                    flag?.takeUnless { it.isString }?.booleanOrNull?.let { feature to it }
+                }.toMap()
+                if (gates.isEmpty()) null else plan.trim().uppercase() to gates
+            }.toMap()
+        }
+
     /**
      * The free (Recon) plan's monthly allowance as the server publishes it:
      * `plans.RECON.bandwidthLimitGb`, or null when this server publishes none

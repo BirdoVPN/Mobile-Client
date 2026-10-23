@@ -51,6 +51,7 @@ import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.perf.GlobePerf
 import app.birdo.vpn.perf.GlobePerfControls
 import app.birdo.vpn.perf.GlobePerfOverlay
+import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
 import app.birdo.vpn.ui.components.*
@@ -110,9 +111,10 @@ fun HomeScreen(
     var showServerSheet by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // Multi-Hop is a SOVEREIGN-only feature. Free / OPERATIVE users see the
-    // toggle but tapping it surfaces an upgrade prompt rather than enabling it.
-    val isSovereign = state.subscription?.plan?.equals("SOVEREIGN", ignoreCase = true) == true
+    // Multi-Hop is gated by the plan table (MR-1517: the server's, else
+    // SOVEREIGN only). Other plans see the toggle but tapping it surfaces an
+    // upgrade prompt rather than enabling it.
+    val multiHopEntitled = MultiHopPolicy.entitledByPlan(state.subscription?.plan, state.planGates) == true
 
     // Multi-Hop state — toggle lives in the top bar, server selection happens
     // inline (the single ServerSelector becomes Entry → Exit when armed).
@@ -120,9 +122,9 @@ fun HomeScreen(
     // arming + entry/exit picks survive process death, not just rotation.
     // VpnServer is not Parcelable, so ids are stored and resolved back to
     // VpnServer from the loaded server list. Arming is honoured only while the
-    // plan is SOVEREIGN: a persisted armed state from a since-downgraded plan
+    // plan has Multi-Hop: a persisted armed state from a since-downgraded plan
     // must not resurrect the paid feature.
-    val multiHopEnabled = multiHop.enabled && isSovereign
+    val multiHopEnabled = multiHop.enabled && multiHopEntitled
     val multiHopEntryId = multiHop.entryId
     val multiHopExitId = multiHop.exitId
     val multiHopEntry = remember(multiHopEntryId, state.servers) {
@@ -232,9 +234,9 @@ fun HomeScreen(
             HomeTopBar(
                 accountLabel = accountLabel,
                 multiHopEnabled = multiHopEnabled,
-                multiHopUnlocked = isSovereign,
+                multiHopUnlocked = multiHopEntitled,
                 onToggleMultiHop = {
-                    if (!isSovereign) {
+                    if (!multiHopEntitled) {
                         haptics.performHapticFeedback(HapticFeedbackType.Reject)
                         scope.launch {
                             snackbarHostState.showSnackbar(multiHopUpsell)

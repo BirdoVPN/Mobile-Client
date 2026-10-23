@@ -2,15 +2,17 @@ import SwiftUI
 
 /// Multi-hop (double VPN) — entry and exit server selection.
 ///
-/// SOVEREIGN-only (spec-platform-constraints §3.5): the gate reads the
-/// server-truth plan from GET /vpn/stats via `vpnVM.isSovereign` — never
-/// StoreKit, never the auth method. Non-Sovereign users get the upsell card
-/// (Android's exact snackbar copy) routing to the Subscription screen, and
+/// Plan-gated (spec-platform-constraints §3.5; MR-1517): the gate reads the
+/// server-truth plan from GET /vpn/stats and the plan table from
+/// /api/client-config (`PlanGate`: the server's, else SOVEREIGN only) — never
+/// StoreKit, never the auth method. A plan without Multi-Hop gets the upsell
+/// card (Android's snackbar copy) routing to the Subscription screen, and
 /// the gate is re-validated on entry so a downgraded plan can never
 /// resurrect the paid feature. The backend refuses anyway — this lock is
 /// cosmetic, the server is the authority.
 struct MultiHopView: View {
     @EnvironmentObject var vpnVM: VpnViewModel
+    @EnvironmentObject var settingsVM: SettingsViewModel
     @Environment(\.dismiss) private var dismiss
 
     @State private var entryExpanded = false
@@ -38,8 +40,13 @@ struct MultiHopView: View {
         return e.id == x.id
     }
 
+    /// MR-1517: the plan table's answer; false while the plan is not loaded.
+    private var multiHopUnlocked: Bool {
+        settingsVM.planHas(.multiHop, plan: vpnVM.subscription?.plan) == true
+    }
+
     private var canConnect: Bool {
-        vpnVM.isSovereign && selectedEntry != nil && selectedExit != nil
+        multiHopUnlocked && selectedEntry != nil && selectedExit != nil
             && !sameServerWarning && !vpnVM.isConnecting && !isSubmitting
     }
 
@@ -51,7 +58,7 @@ struct MultiHopView: View {
 
             ScrollView {
                 VStack(spacing: BirdoTheme.Spacing.lg) {
-                    if vpnVM.isSovereign {
+                    if multiHopUnlocked {
                         pickerContent
                     } else if vpnVM.subscription == nil {
                         // Plan not hydrated yet — don't flash the lock at a
@@ -75,6 +82,7 @@ struct MultiHopView: View {
         .task {
             // Re-validate the gate on entry; the 30s cache keeps this cheap.
             vpnVM.refreshSubscription()
+            await settingsVM.refreshClientConfig()
         }
     }
 
@@ -172,7 +180,7 @@ struct MultiHopView: View {
         }
     }
 
-    // MARK: - Locked content (plan < SOVEREIGN)
+    // MARK: - Locked content (a plan without Multi-Hop)
 
     @ViewBuilder
     private var lockedContent: some View {
@@ -192,10 +200,11 @@ struct MultiHopView: View {
                     .font(BirdoTheme.Fonts.titleLarge)
                     .foregroundColor(BirdoTheme.onSurface)
 
-                PlanBadge("SOVEREIGN", locked: true)
+                // The lowest plan that has it, by the plan table (MR-1517).
+                PlanBadge(settingsVM.lowestPlan(with: .multiHop), locked: true)
 
-                // Android's upsell copy, verbatim.
-                Text("Multi-Hop is a SOVEREIGN feature. Upgrade to enable.")
+                // Android's upsell copy, naming that plan.
+                Text("Multi-Hop is a \(settingsVM.lowestPlan(with: .multiHop)) feature. Upgrade to enable.")
                     .font(BirdoTheme.Fonts.bodyMedium)
                     .foregroundColor(BirdoTheme.onSurfaceMuted)
                     .multilineTextAlignment(.center)
@@ -210,7 +219,7 @@ struct MultiHopView: View {
             .frame(maxWidth: .infinity)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Multi-Hop — SOVEREIGN plan required")
+        .accessibilityLabel("Multi-Hop — \(settingsVM.lowestPlan(with: .multiHop)) plan required")
     }
 
     // MARK: - Server Selector

@@ -6,7 +6,9 @@ import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
 import app.birdo.vpn.data.network.AroundTunnel
+import app.birdo.vpn.di.NetworkModule
 import app.birdo.vpn.shared.model.LoginResult
+import app.birdo.vpn.shared.model.PlanFeature
 import app.birdo.vpn.testing.StringsXml
 import io.mockk.*
 import kotlinx.coroutines.CompletableDeferred
@@ -1254,5 +1256,36 @@ class BirdoRepositoryTest {
         assertFalse(result.data.success)
         assertEquals(StringsXml.text("error_device_limit"), result.data.message)
         verify(exactly = 0) { tokenManager.setLastKeyId(any()) }
+    }
+
+    // ── MR-1517: the plan-gating table every gate reads ──────────
+
+    @Test
+    fun `the client config's plan table is kept for every gate, and only a newer table replaces it`() = runTest {
+        fun config(body: String) = NetworkModule.json.decodeFromString<ClientConfigResponse>(body)
+        assertNull("nothing fetched yet: the built-in table", repository.cachedPlanGates())
+
+        coEvery { api.getClientConfig(any()) } returns Response.success(
+            config("""{"features":{"SOVEREIGN":{"multiHop":false,"portForwarding":true}}}"""),
+        )
+        repository.getClientConfig()
+        val table = mapOf("SOVEREIGN" to mapOf(PlanFeature.MULTI_HOP to false, PlanFeature.PORT_FORWARDING to true))
+        assertEquals(table, repository.cachedPlanGates())
+
+        // An older deploy without `features`, an HTTP error and no network all keep it.
+        coEvery { api.getClientConfig(any()) } returns Response.success(config("""{"dnsFilteringAvailable":true}"""))
+        assertTrue(repository.getClientConfig() is ApiResult.Success)
+        assertEquals(table, repository.cachedPlanGates())
+        coEvery { api.getClientConfig(any()) } returns Response.error(503, "down".toResponseBody("text/plain".toMediaType()))
+        assertTrue(repository.getClientConfig() is ApiResult.Error)
+        coEvery { api.getClientConfig(any()) } throws IOException("offline")
+        assertTrue(repository.getClientConfig() is ApiResult.Error)
+        assertEquals(table, repository.cachedPlanGates())
+
+        coEvery { api.getClientConfig(any()) } returns Response.success(
+            config("""{"features":{"OPERATIVE":{"multiHop":true}}}"""),
+        )
+        repository.getClientConfig()
+        assertEquals(mapOf("OPERATIVE" to mapOf(PlanFeature.MULTI_HOP to true)), repository.cachedPlanGates())
     }
 }

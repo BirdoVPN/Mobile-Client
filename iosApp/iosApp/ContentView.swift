@@ -281,6 +281,10 @@ struct ContentView: View {
                 vpnVM.loadServers()
             }
             vpnVM.refreshSubscription()   // plan gates + Profile/Limit hero (30s cache)
+            // MR-1517: the server's plan-gating table for those gates (Android
+            // fetches it at launch too). Not awaited: until it lands the gates
+            // use the built-in table, and auto-connect must not wait on it.
+            Task { @MainActor in await settingsVM.refreshClientConfig() }
             vpnVM.autoConnectIfEnabled()  // no-op unless the "auto_connect" pref is ON
             // A purchase can complete while signed out — the App Store does not
             // care whether Birdo has a session — and /link needs one. Signing

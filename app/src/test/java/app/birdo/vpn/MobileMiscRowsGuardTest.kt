@@ -1,7 +1,12 @@
 package app.birdo.vpn
 
+import app.birdo.vpn.data.model.ClientConfigResponse
+import app.birdo.vpn.di.NetworkModule
 import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.StealthPolicy
+import app.birdo.vpn.shared.model.PlanFeature
+import app.birdo.vpn.shared.model.PlanGates
+import app.birdo.vpn.shared.model.planHasFeature
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -173,17 +178,78 @@ class MobileMiscRowsGuardTest {
         "SOVEREIGN" to mapOf("splitTunneling" to true, "stealthMode" to true, "multiHop" to true, "portForwarding" to true, "customDns" to true),
     )
 
+    private val gatedFeatures = listOf("stealthMode", "multiHop", "portForwarding")
+
+    /** [table] as the server serves it: `{"features":{"<PLAN>":{"<flag>":bool}}}`, decoded by THE wire Json. */
+    private fun served(table: Map<String, Map<String, Boolean>>): PlanGates? {
+        val body = table.entries.joinToString(",", "{\"features\":{", "}}") { (plan, flags) ->
+            flags.entries.joinToString(",", "\"$plan\":{", "}") { (flag, on) -> "\"$flag\":$on" }
+        }
+        return NetworkModule.json.decodeFromString<ClientConfigResponse>(body).planGates
+    }
+
+    /** What each Android gate site answers for [plan] under [gates]. */
+    private fun androidGates(plan: String, gates: PlanGates?): Map<String, Boolean> = mapOf(
+        "stealthMode" to StealthPolicy.toggleUnlocked(plan, gates),
+        "multiHop" to (MultiHopPolicy.entitledByPlan(plan, gates) == true),
+        "portForwarding" to (planHasFeature(plan, gates, PlanFeature.PORT_FORWARDING) == true),
+    )
+
     @Test
     fun `Android gates Stealth, Multi-Hop and Port Forwarding as the server table does`() {
+        // The served table and the built-in fallback (no config yet) agree.
         serverTable.forEach { (plan, features) ->
             listOf(plan, plan.lowercase()).forEach { spelling ->
-                assertEquals("Stealth for $spelling", features.getValue("stealthMode"), StealthPolicy.toggleUnlocked(spelling))
-                assertEquals("Multi-Hop for $spelling", features.getValue("multiHop"), MultiHopPolicy.entitledByPlan(spelling))
+                listOf(served(serverTable), null).forEach { gates ->
+                    androidGates(spelling, gates).forEach { (feature, unlocked) ->
+                        assertEquals("$feature for $spelling, gates=$gates", features.getValue(feature), unlocked)
+                    }
+                }
             }
         }
+        gatedFeatures.forEach { feature ->
+            val lowest = serverTable.entries.first { it.value.getValue(feature) }.key
+            assertEquals("built-in lowest plan for $feature", lowest, PlanFeature.entries.single { it.key == feature }.minPlan)
+        }
+        // A change to the server's table reaches every gate: flip each flag in a mocked `features` block.
+        serverTable.forEach { (plan, features) ->
+            gatedFeatures.forEach { feature ->
+                val flipped = serverTable + (plan to features + (feature to !features.getValue(feature)))
+                assertEquals(
+                    "$feature for $plan after the server flipped it",
+                    !features.getValue(feature),
+                    androidGates(plan, served(flipped)).getValue(feature),
+                )
+            }
+        }
+
+        // The sites that are not plain functions read the same table.
         val nav = source("app/src/main/java/app/birdo/vpn/ui/navigation/BirdoNavGraph.kt")
-        assertTrue("val settingsIsSovereign = settingsPlan == \"SOVEREIGN\"" in nav)
-        assertTrue("Port Forwarding is Sovereign-only", "portForwardUnlocked = settingsIsSovereign," in nav)
+        assertTrue(
+            "Port Forwarding must gate on the plan table",
+            Regex("""val portForwardEntitled = planHasFeature\(\s*vpnState\.subscription\?\.plan,\s*vpnState\.planGates,\s*PlanFeature\.PORT_FORWARDING,\s*\) == true""")
+                .containsMatchIn(nav) && "portForwardUnlocked = portForwardEntitled," in nav,
+        )
+        assertTrue("stealthUnlocked = StealthPolicy.toggleUnlocked(plan, vpnState.planGates)," in nav)
+        val home = source("app/src/main/java/app/birdo/vpn/ui/screen/HomeScreen.kt")
+        assertTrue("val multiHopEntitled = MultiHopPolicy.entitledByPlan(state.subscription?.plan, state.planGates) == true" in home)
+        val vm = source("app/src/main/java/app/birdo/vpn/ui/viewmodel/VpnViewModel.kt")
+        assertTrue("the ViewModel must publish the fetched table", "planGates = gates," in vm)
+        listOf("service/BirdoTileService.kt", "widget/BirdoWidget.kt").forEach {
+            assertTrue(
+                "$it dials on the plan table",
+                "QuickToggle.connectPlan(decision, knownPlan, repository.cachedPlanGates())" in
+                    source("app/src/main/java/app/birdo/vpn/$it"),
+            )
+        }
+        assertTrue(
+            "MultiHopPolicy.entitledByPlan(prefs.lastKnownPlan, repository.cachedPlanGates())" in
+                source("app/src/main/java/app/birdo/vpn/service/VpnManager.kt"),
+        )
+        // No gate site compares a plan name any more.
+        listOf(nav, home, vm).forEach {
+            assertFalse(Regex("\"(SOVEREIGN|OPERATIVE)\"").containsMatchIn(it))
+        }
         // Split tunnelling and Custom DNS are on every plan: no lock exists to pass.
         val settings = source("app/src/main/java/app/birdo/vpn/ui/screen/SettingsScreen.kt")
         assertFalse(Regex("""(?i)(split\w*|customDns\w*)Unlocked""").containsMatchIn(settings))
@@ -209,15 +275,36 @@ class MobileMiscRowsGuardTest {
     }
 
     @Test
-    fun `iOS gates Multi-Hop and Port Forwarding on Sovereign and lists them only there`() {
-        val sub = source("$ios/Services/APIClient.swift")
-        assertTrue("var isSovereign: Bool { plan.caseInsensitiveCompare(\"SOVEREIGN\") == .orderedSame }" in sub)
-        assertTrue("vpnVM.isSovereign && selectedEntry != nil && selectedExit != nil" in source("$ios/Views/MultiHopView.swift"))
-        assertTrue("let unlocked = vpnVM.isSovereign" in source("$ios/Views/HomeView.swift"))
-        val settings = source("$ios/Views/SettingsView.swift")
-        assertTrue(settings.substringAfter("private var portForwardingRow: some View {").trimStart().startsWith("if vpnVM.isSovereign {"))
-        // Custom DNS: every plan, unless the server's own table says otherwise.
+    fun `iOS gates Multi-Hop and Port Forwarding on the plan table and lists them only on Sovereign`() {
+        // The pure gate is PlanGateTests' (Apple CI); its built-in table is the decided one.
         val gate = source("$ios/Services/BirdoShieldGate.swift")
+        assertTrue("case stealthMode, multiHop, portForwarding" in gate)
+        assertTrue("case .stealthMode: return \"OPERATIVE\"" in gate && "case .multiHop, .portForwarding: return \"SOVEREIGN\"" in gate)
+        assertTrue(File(repoRoot, "iosApp/BirdoVPNTests/PlanGateTests.swift").isFile)
+        // Every gate site asks it; nothing keeps a plan-name gate to fall back on.
+        val multiHop = "settingsVM.planHas(.multiHop, plan: vpnVM.subscription?.plan) == true"
+        val home = source("$ios/Views/HomeView.swift")
+        assertTrue(multiHop in home && "let unlocked = multiHopUnlocked" in home && "} else if multiHopUnlocked {" in home)
+        val hop = source("$ios/Views/MultiHopView.swift")
+        assertTrue(multiHop in hop && "multiHopUnlocked && selectedEntry != nil && selectedExit != nil" in hop)
+        assertTrue("if multiHopUnlocked {\n                        pickerContent" in hop)
+        assertTrue("the badge names the lowest plan with it", "PlanBadge(settingsVM.lowestPlan(with: .multiHop), locked: true)" in hop)
+        val settings = source("$ios/Views/SettingsView.swift")
+        assertTrue(
+            settings.substringAfter("private var portForwardingRow: some View {").trimStart()
+                .startsWith("if settingsVM.planHas(.portForwarding, plan: vpnVM.subscription?.plan) == true {"),
+        )
+        val portForward = source("$ios/Views/PortForwardView.swift")
+        assertTrue("return settingsVM.planHas(.portForwarding, plan: sub.plan) == false" in portForward)
+        listOf(hop, portForward).forEach { assertTrue("@EnvironmentObject var settingsVM: SettingsViewModel" in it) }
+        listOf("Services/APIClient.swift", "ViewModels/VpnViewModel.swift", "Views/HomeView.swift", "Views/MultiHopView.swift",
+            "Views/SettingsView.swift", "Views/PortForwardView.swift").forEach {
+            assertFalse("$it gates on a plan name again", Regex("""isSovereign|isOperativeOrHigher""").containsMatchIn(source("$ios/$it")))
+        }
+        // The table is fetched at launch, as on Android, and re-read when Multi-Hop opens.
+        assertTrue("await settingsVM.refreshClientConfig()" in source("$ios/ContentView.swift"))
+        assertTrue("await settingsVM.refreshClientConfig()" in hop)
+        // Custom DNS: every plan, unless the server's own table says otherwise.
         assertTrue("guard let config else { return true }" in gate && "?? true" in gate)
 
         // iOS has neither Stealth nor split tunnelling, so its paywall offers neither.

@@ -1367,8 +1367,10 @@ class VpnManager @Inject constructor(
         // knows, else the persisted last-known plan. Headless and quick dials
         // used to read the raw pref, which a lapsed plan never clears, so an
         // ex-Sovereign user with Always-on booted into a refused Multi-Hop dial
-        // and a held block every time.
-        val entitled = multiHopEntitled ?: MultiHopPolicy.entitledByPlan(prefs.lastKnownPlan)
+        // and a held block every time. The plan table is the server's when this
+        // process has fetched it, else the built-in one (MR-1517).
+        val entitled = multiHopEntitled
+            ?: MultiHopPolicy.entitledByPlan(prefs.lastKnownPlan, repository.cachedPlanGates())
         val armed = prefs.multiHopEnabled && entitled != false
         // The live or last route rebuilds that pair — but only while Multi-Hop
         // is still armed and not known to be lapsed (REVIEW-AND-019).

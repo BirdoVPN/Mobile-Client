@@ -197,11 +197,13 @@ struct SettingsView: View {
         return "Enter a valid IP address"
     }
 
-    // MARK: - Port Forwarding (SOVEREIGN-gated) — promoted from VPN Settings
+    // MARK: - Port Forwarding (plan-gated) — promoted from VPN Settings
 
+    /// MR-1517: the plan table (the server's, else SOVEREIGN only); locked
+    /// while the plan is not loaded, as before.
     @ViewBuilder
     private var portForwardingRow: some View {
-        if vpnVM.isSovereign {
+        if settingsVM.planHas(.portForwarding, plan: vpnVM.subscription?.plan) == true {
             NavigationLink {
                 PortForwardView()
             } label: {

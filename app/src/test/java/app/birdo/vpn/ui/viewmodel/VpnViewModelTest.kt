@@ -1,6 +1,8 @@
 package app.birdo.vpn.ui.viewmodel
 
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.ClientConfigResponse
+import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
@@ -9,6 +11,8 @@ import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnManager
 import app.birdo.vpn.service.VpnState
+import app.birdo.vpn.shared.model.PlanFeature
+import app.birdo.vpn.shared.model.PlanGates
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -102,6 +106,42 @@ class VpnViewModelTest {
         minPlan = "RECON", accessible = accessible, isPremium = false, isHighSpeed = false,
         isPortForwarding = false, isOnline = true,
     )
+
+    // ── MR-1517: the server's plan table reaches the dial guard ──────────
+
+    private fun armMultiHop(plan: String, gates: PlanGates) {
+        every { prefs.multiHopEnabled } returns true
+        every { prefs.multiHopEntryNodeId } returns "de-1"
+        every { prefs.multiHopExitNodeId } returns "nl-1"
+        every { repository.cachedSubscriptionOrNull() } returns SubscriptionStatus(plan = plan)
+        coEvery { repository.getClientConfig() } returns ApiResult.Success(ClientConfigResponse())
+        every { repository.cachedPlanGates() } returns gates
+    }
+
+    @Test
+    fun `Connect builds Multi-Hop for a plan the server's table gives it to`() = runTest {
+        val gates = mapOf("OPERATIVE" to mapOf(PlanFeature.MULTI_HOP to true))
+        armMultiHop("OPERATIVE", gates)
+        val vm = viewModel()
+        vm.fetchClientConfig()
+        assertEquals(gates, vm.uiState.value.planGates)
+
+        vm.connect()
+
+        coVerify(exactly = 1) { vpnManager.connectMultiHop("de-1", "nl-1") }
+        coVerify(exactly = 0) { vpnManager.connect(any()) }
+    }
+
+    @Test
+    fun `Connect never builds Multi-Hop for a plan the server's table takes it from`() = runTest {
+        armMultiHop("SOVEREIGN", mapOf("SOVEREIGN" to mapOf(PlanFeature.MULTI_HOP to false)))
+        val vm = viewModel()
+        vm.fetchClientConfig()
+
+        vm.connect()
+
+        coVerify(exactly = 0) { vpnManager.connectMultiHop(any(), any()) }
+    }
 
     // ── A1-007: the permission grant replays the exact dial ───────────────
 

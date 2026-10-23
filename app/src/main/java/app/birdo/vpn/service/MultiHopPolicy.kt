@@ -1,5 +1,9 @@
 package app.birdo.vpn.service
 
+import app.birdo.vpn.shared.model.PlanFeature
+import app.birdo.vpn.shared.model.PlanGates
+import app.birdo.vpn.shared.model.planHasFeature
+
 /**
  * The single place that decides whether an action may build, replace, or
  * downgrade a Multi-Hop route.
@@ -114,12 +118,15 @@ object MultiHopPolicy {
      * the refusal the first one raised.
      */
     /**
-     * The ONE entitlement rule for a dial (REVIEW-AND-007): Multi-Hop is a
-     * Sovereign feature. True or false from a known [plan]; null when the plan
-     * is not known, so a caller with no UI refuses to guess rather than
-     * silently downgrade a paying user or dead-end a lapsed one.
+     * The ONE entitlement rule for a dial (REVIEW-AND-007): Multi-Hop as the
+     * plan table gives it (MR-1517) — the server's `features.<PLAN>.multiHop`
+     * from [gates] when it said, else Sovereign. True or false from a known
+     * [plan]; null when the plan is not known, so a caller with no UI refuses
+     * to guess rather than silently downgrade a paying user or dead-end a
+     * lapsed one.
      */
-    fun entitledByPlan(plan: String?): Boolean? = plan?.equals("SOVEREIGN", ignoreCase = true)
+    fun entitledByPlan(plan: String?, gates: PlanGates?): Boolean? =
+        planHasFeature(plan, gates, PlanFeature.MULTI_HOP)
 
     fun forRouteChange(onTunnel: Boolean, activeRoute: Pair<String, String>?): RouteChange =
         if (onTunnel && activeRoute != null) {

@@ -136,8 +136,9 @@ class WidgetToggleAction : ActionCallback {
                         prefs.multiHopEntryNodeId,
                         prefs.multiHopExitNodeId,
                     )
-                    val knownPlan = entryPoint.repository().cachedSubscriptionOrNull()?.plan ?: prefs.lastKnownPlan
-                    when (val plan = QuickToggle.connectPlan(decision, knownPlan)) {
+                    val repository = entryPoint.repository()
+                    val knownPlan = repository.cachedSubscriptionOrNull()?.plan ?: prefs.lastKnownPlan
+                    when (val plan = QuickToggle.connectPlan(decision, knownPlan, repository.cachedPlanGates())) {
                         is QuickToggle.ConnectPlan.OpenApp -> openApp(context)
                         // connectPreferred dials the armed pair through the
                         // same MultiHopPolicy decision, so the entitled

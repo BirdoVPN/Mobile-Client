@@ -92,7 +92,9 @@ final class SettingsViewModel: ObservableObject {
     @Published private(set) var dnsFilteringAvailable: Bool?
 
     /// The last decoded `/api/client-config`, for the per-plan Custom DNS flag
-    /// (owner item 40). Nil until a fetch succeeds — read as AVAILABLE.
+    /// (owner item 40) and the plan-gating table (MR-1517). Nil until a fetch
+    /// succeeds — Custom DNS then reads as AVAILABLE and the plan gates use
+    /// the built-in table.
     @Published private(set) var clientConfig: ClientConfigResponse?
 
     /// Custom DNS on this plan? Every plan, unless the server's client config
@@ -101,8 +103,20 @@ final class SettingsViewModel: ObservableObject {
         CustomDnsGate.isAvailable(plan: plan, config: clientConfig)
     }
 
-    /// Refresh the fleet gate and the Custom DNS flag. Called by Settings and
-    /// the VPN Settings screen on appear.
+    /// MR-1517: does `plan` have `feature`? The server's table, else the
+    /// built-in one; `nil` while the plan is not known (`PlanGate.has`).
+    func planHas(_ feature: PlanFeature, plan: String?) -> Bool? {
+        PlanGate.has(plan: plan, config: clientConfig, feature: feature)
+    }
+
+    /// MR-1517: the lowest plan with `feature`, for an upsell to name.
+    func lowestPlan(with feature: PlanFeature) -> String {
+        PlanGate.lowestPlan(with: feature, config: clientConfig)
+    }
+
+    /// Refresh the fleet gate, the Custom DNS flag and the plan-gating table.
+    /// Called at launch, and by Settings, VPN Settings, Subscription and
+    /// Multi-Hop on appear.
     ///
     /// Failure is silent BY DESIGN: the value is left untouched, so an
     /// unreachable web app leaves the toggle usable instead of greying out a

@@ -238,12 +238,17 @@ struct HomeView: View {
 
     // MARK: - Multi-Hop entry chip (Android §3.2 item 1)
 
-    /// Multi-Hop is SOVEREIGN-only. Non-SOVEREIGN shows a locked chip whose tap
-    /// fires the upsell snackbar; SOVEREIGN opens the full Multi-Hop flow. The
+    /// Multi-Hop follows the plan table (MR-1517: the server's, else
+    /// SOVEREIGN only). A plan without it shows a locked chip whose tap fires
+    /// the upsell snackbar; a plan with it opens the full Multi-Hop flow. The
     /// server is the authority — this lock is cosmetic (MultiHopView and the
-    /// backend both re-gate).
+    /// backend both re-gate). Locked while the plan is not loaded, as before.
+    private var multiHopUnlocked: Bool {
+        settingsVM.planHas(.multiHop, plan: vpnVM.subscription?.plan) == true
+    }
+
     private var multiHopChip: some View {
-        let unlocked = vpnVM.isSovereign
+        let unlocked = multiHopUnlocked
         return Button(action: handleMultiHopTap) {
             ZStack(alignment: .bottomTrailing) {
                 Image(systemName: "arrow.triangle.branch")
@@ -282,17 +287,17 @@ struct HomeView: View {
         .buttonStyle(PressScaleButtonStyle())
         .accessibilityLabel(unlocked
             ? "Multi-Hop"
-            : "Multi-Hop — SOVEREIGN plan required")
+            : "Multi-Hop — \(settingsVM.lowestPlan(with: .multiHop)) plan required")
     }
 
     private func handleMultiHopTap() {
         if isGuest {
             authVM.requestSignIn(.multiHop)
-        } else if vpnVM.isSovereign {
+        } else if multiHopUnlocked {
             showMultiHop = true
         } else {
             Haptics.notify(.error)
-            let message = "Multi-Hop is a SOVEREIGN feature. Upgrade to enable."
+            let message = "Multi-Hop is a \(settingsVM.lowestPlan(with: .multiHop)) feature. Upgrade to enable."
             withAnimation(BirdoTheme.Motion.decel()) { multiHopUpsell = message }
             AccessibilityNotification.Announcement(message).post()
         }

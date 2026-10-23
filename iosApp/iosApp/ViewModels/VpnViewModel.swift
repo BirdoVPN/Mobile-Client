@@ -498,8 +498,9 @@ final class VpnViewModel: ObservableObject {
     /// Server-truth plan slug, uppercased. "RECON" until /vpn/stats answers —
     /// locks render closed rather than flashing premium features open.
     var currentPlan: String { (subscription?.plan ?? "RECON").uppercased() }
-    var isSovereign: Bool { subscription?.isSovereign ?? false }
-    var isOperativeOrHigher: Bool { subscription?.isOperativeOrHigher ?? false }
+    // Multi-Hop and Port Forwarding gate on `SettingsViewModel.planHas`
+    // (MR-1517: the server's plan table, else the built-in one), never on a
+    // plan name here.
 
     // MARK: - Connection
 
