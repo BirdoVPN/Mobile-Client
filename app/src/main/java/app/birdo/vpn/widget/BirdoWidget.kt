@@ -27,6 +27,7 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import app.birdo.vpn.MainActivity
 import app.birdo.vpn.R
+import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.QuickToggle
@@ -50,6 +51,8 @@ class BirdoWidget : GlanceAppWidget() {
         @param:StringRes val status: Int,
         /** What a tap does, said in words; null when the status says it. */
         @param:StringRes val hint: Int?,
+        /** The server's name under the status; null when it is not shown. */
+        val serverLabel: String? = null,
     )
 
     companion object {
@@ -59,9 +62,23 @@ class BirdoWidget : GlanceAppWidget() {
          * read as one inviting a connect (A1-044). The live state is
          * VpnManager's, read in-process, so a fresh process after a reboot or a
          * force-stop renders what is true now, never a stale persisted claim.
+         *
+         * The server's name only while connected, and only when [showLocation]
+         * (MR-2129): the home screen is as visible as the notification and the
+         * Quick Settings tile, which gate it on the same preference.
          */
-        fun widgetModel(state: VpnState, killSwitchActive: Boolean): WidgetModel = when {
-            state is VpnState.Connected -> WidgetModel(Look.PROTECTED, R.string.status_protected, R.string.widget_tap_to_disconnect)
+        fun widgetModel(
+            state: VpnState,
+            killSwitchActive: Boolean,
+            serverLabel: String? = null,
+            showLocation: Boolean = false,
+        ): WidgetModel = when {
+            state is VpnState.Connected -> WidgetModel(
+                Look.PROTECTED,
+                R.string.status_protected,
+                R.string.widget_tap_to_disconnect,
+                serverLabel?.takeIf { showLocation },
+            )
             state is VpnState.Reconnecting -> WidgetModel(Look.BUSY, R.string.status_reconnecting, R.string.widget_tap_to_cancel)
             state.isConnectingPhase -> WidgetModel(Look.BUSY, R.string.connecting, R.string.widget_tap_to_cancel)
             state is VpnState.Disconnecting -> WidgetModel(Look.BUSY, R.string.disconnecting, null)
@@ -80,17 +97,20 @@ class BirdoWidget : GlanceAppWidget() {
             null
         }
         val state = manager?.state?.value ?: BirdoVpnService.currentState
-        val model = widgetModel(state, BirdoVpnService.killSwitchActive)
-        // The server name only while connected: the persisted value outlives
-        // the session and must never be drawn next to anything but "Protected".
-        val serverName = if (state is VpnState.Connected) {
-            manager?.connectedServer?.value ?: prefs.getString("server_name", null)
-        } else {
-            null
-        }
+        val model = widgetModel(
+            state,
+            BirdoVpnService.killSwitchActive,
+            // The model keeps it only while connected: the persisted value
+            // outlives the session and must never be drawn next to anything
+            // but "Protected".
+            serverLabel = manager?.connectedServer?.value ?: prefs.getString("server_name", null),
+            // Settings → Show Server Location, the notification's and the
+            // tile's gate. Settings redraws the widget when it changes.
+            showLocation = AppPreferences(context.applicationContext).showLocationInNotification,
+        )
 
         provideContent {
-            BirdoWidgetContent(model = model, serverName = serverName)
+            BirdoWidgetContent(model = model, serverName = model.serverLabel)
         }
     }
 }

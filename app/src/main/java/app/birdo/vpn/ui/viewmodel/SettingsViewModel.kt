@@ -146,6 +146,9 @@ class SettingsViewModel @Inject constructor(
     fun setShowLocationInNotification(enabled: Boolean) {
         prefs.showLocationInNotification = enabled
         _uiState.value = _uiState.value.copy(showLocationInNotification = enabled)
+        // MR-2129: the home-screen widget draws the server's name under this
+        // setting too, and redraws by itself only when the state changes.
+        viewModelScope.launch { vpnManager.refreshWidget() }
     }
 
     fun setSplitTunneling(enabled: Boolean) {
