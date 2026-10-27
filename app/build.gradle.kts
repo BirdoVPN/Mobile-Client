@@ -1119,6 +1119,11 @@ dependencies {
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.glance:glance-material3:1.1.1")
 
+    // ── WorkManager (MR-2129: the 60 s clipboard clear) ──────────
+    // Already shipped: Glance runs on it, and 2.7.1 is what the lockfile
+    // resolves. Declared so the app can compile against it; no upgrade.
+    implementation("androidx.work:work-runtime:2.7.1")
+
     // ── Testing ──────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
@@ -1137,6 +1142,9 @@ dependencies {
     // dialog opened under the cover must not exist while it is up. Test-only.
     // Its tests pin @Config(sdk = 34): newer SDK jars need Java 21, and CI runs 17.
     testImplementation("org.robolectric:robolectric:4.17")
+    // MR-2129: runs the clipboard-clear work under Robolectric (TestDriver).
+    // Test-only, at the runtime's version.
+    testImplementation("androidx.work:work-testing:2.7.1")
     testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     testImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")

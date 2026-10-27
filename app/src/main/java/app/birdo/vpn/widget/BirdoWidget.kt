@@ -5,6 +5,8 @@ import android.content.Intent
 import android.util.Log
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,6 +38,7 @@ import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.service.isConnectingPhase
 import app.birdo.vpn.utils.FaultReporter
 import dagger.hilt.android.EntryPointAccessors
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Birdo VPN home screen widget — minimal dark card that shows VPN status.
@@ -96,20 +99,33 @@ class BirdoWidget : GlanceAppWidget() {
             Log.w("BirdoWidget", "VpnManager unavailable to the widget", e)
             null
         }
-        val state = manager?.state?.value ?: BirdoVpnService.currentState
-        val model = widgetModel(
-            state,
-            BirdoVpnService.killSwitchActive,
-            // The model keeps it only while connected: the persisted value
-            // outlives the session and must never be drawn next to anything
-            // but "Protected".
-            serverLabel = manager?.connectedServer?.value ?: prefs.getString("server_name", null),
-            // Settings → Show Server Location, the notification's and the
-            // tile's gate. Settings redraws the widget when it changes.
-            showLocation = AppPreferences(context.applicationContext).showLocationInNotification,
-        )
+        val appPreferences = AppPreferences(context.applicationContext)
+        // Sources only: every value is read INSIDE the composition. Glance
+        // keeps a session's composition alive for a while (about 45 s) and
+        // update()/updateAll() do not re-run provideGlance while it is, so a
+        // value read out here stayed on screen until a fresh session: the
+        // server's name after Show Server Location went off (MR-2129), and the
+        // state before a Connecting → Connected change.
+        val stateFlow = manager?.state ?: BirdoVpnService.stateFlow
+        val serverFlow = manager?.connectedServer ?: MutableStateFlow<String?>(null)
 
         provideContent {
+            val state by stateFlow.collectAsState()
+            val connectedServer by serverFlow.collectAsState()
+            val killSwitchActive by BirdoVpnService.killSwitchActiveFlow.collectAsState()
+            // Settings → Show Server Location, the notification's and the
+            // tile's gate.
+            val showLocation by appPreferences.showLocationInNotificationFlow
+                .collectAsState(initial = appPreferences.showLocationInNotification)
+            val model = widgetModel(
+                state,
+                killSwitchActive,
+                // The model keeps it only while connected: the persisted value
+                // outlives the session and must never be drawn next to anything
+                // but "Protected".
+                serverLabel = connectedServer ?: prefs.getString("server_name", null),
+                showLocation = showLocation,
+            )
             BirdoWidgetContent(model = model, serverName = model.serverLabel)
         }
     }

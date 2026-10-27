@@ -123,6 +123,25 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_NOTIF_SHOW_LOCATION, false)
         set(value) = prefs.edit { putBoolean(KEY_NOTIF_SHOW_LOCATION, value) }
 
+    /**
+     * [showLocationInNotification] now and on every change (MR-2129). The
+     * home-screen widget's composition collects it: Glance keeps a session
+     * alive for a while and does not re-run provideGlance while it is, so a
+     * value read once there would keep drawing the server after the user
+     * turned the setting off.
+     */
+    val showLocationInNotificationFlow: Flow<Boolean> =
+        callbackFlow {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_NOTIF_SHOW_LOCATION) trySend(showLocationInNotification)
+            }
+            trySend(showLocationInNotification)
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            awaitClose {
+                prefs.unregisterOnSharedPreferenceChangeListener(listener)
+            }
+        }
+
     // ── VPN Protocol Settings ────────────────────────────────────
     /** HMAC-PROTECTED (SettingsHmac.PROTECTED_KEYS): rewrites the tunnel route
      *  table (private ranges bypass the VPN), so it must commit() + re-sign
