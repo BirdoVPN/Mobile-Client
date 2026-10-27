@@ -67,6 +67,7 @@ import struct
 import sys
 import zipfile
 
+ACC_PUBLIC = 0x0001
 ACC_NATIVE = 0x0100
 
 # --- The contracts ---------------------------------------------------------
@@ -97,6 +98,22 @@ ROSENPASS_NATIVE_METHODS = (
 BUILDCONFIG_CLASS = "Lapp/birdo/vpn/BuildConfig;"
 
 DEFAULT_SOURCE_ROOTS = ("app/src/main", "shared/src")
+
+# WorkManager builds a worker by reflection: Class.forName on the class name it
+# stored in its database, then getDeclaredConstructor(Context, WorkerParameters)
+# and newInstance(). R8 keeping the class but dropping, narrowing or renaming
+# any of that compiles, passes every unit test (they run unminified) and fails
+# only on a device, where WorkManager logs "Could not create Worker" (stripped
+# from release builds) and the work never runs. For ClearClipboardWorker that
+# means a copied account number is never cleared (MR-2129).
+WORKER_SUPERCLASSES = ("Worker", "CoroutineWorker", "ListenableWorker", "RxWorker")
+WORKER_RE = re.compile(
+    r"\bclass\s+(?P<name>[A-Za-z_]\w*)\s*\([^)]*\)\s*:\s*(?:androidx\.work\.)?"
+    r"(?:" + "|".join(WORKER_SUPERCLASSES) + r")\s*\(",
+    re.S,
+)
+WORKER_CONTEXT = "Landroid/content/Context;"
+WORKER_PARAMETERS = "androidx.work.WorkerParameters"
 
 DEFAULT_ARTIFACT_GLOBS = (
     "app/build/outputs/apk/release/*.apk",
@@ -173,6 +190,7 @@ class Dex:
         self._strings: dict[int, str] = {}
         self.string_ids_off = struct.unpack_from("<I", data, 0x3C)[0]
         self.type_ids_off = struct.unpack_from("<I", data, 0x44)[0]
+        self.proto_ids_off = struct.unpack_from("<I", data, 0x4C)[0]
         self.field_ids_off = struct.unpack_from("<I", data, 0x54)[0]
         self.method_ids_off = struct.unpack_from("<I", data, 0x5C)[0]
         self.class_defs_size = struct.unpack_from("<I", data, 0x60)[0]
@@ -196,6 +214,18 @@ class Dex:
     def method_name(self, index: int) -> str:
         return self.string(struct.unpack_from("<I", self.data, self.method_ids_off + index * 8 + 4)[0])
 
+    def method_params(self, index: int) -> tuple[str, ...]:
+        """The parameter type descriptors of method_ids[index], from its proto."""
+        proto_idx = struct.unpack_from("<H", self.data, self.method_ids_off + index * 8 + 2)[0]
+        params_off = struct.unpack_from("<I", self.data, self.proto_ids_off + proto_idx * 12 + 8)[0]
+        if not params_off:
+            return ()
+        size = struct.unpack_from("<I", self.data, params_off)[0]
+        return tuple(
+            self.type_name(struct.unpack_from("<H", self.data, params_off + 4 + i * 2)[0])
+            for i in range(size)
+        )
+
     def field_name(self, index: int) -> str:
         return self.string(struct.unpack_from("<I", self.data, self.field_ids_off + index * 8 + 4)[0])
 
@@ -203,14 +233,15 @@ class Dex:
         return self.type_name(struct.unpack_from("<H", self.data, self.field_ids_off + index * 8 + 2)[0])
 
     def classes(self) -> dict[str, dict]:
-        """descriptor -> {'methods': {name: access}, 'fields': {name: (access, type)}}."""
+        """descriptor -> {'methods': {name: access}, 'fields': {name: (access, type)},
+        'ctors': {parameter descriptors: access}}."""
         out: dict[str, dict] = {}
         for i in range(self.class_defs_size):
             base = self.class_defs_off + i * 32
             class_idx = struct.unpack_from("<I", self.data, base)[0]
             class_data_off = struct.unpack_from("<I", self.data, base + 24)[0]
             descriptor = self.type_name(class_idx)
-            entry = out.setdefault(descriptor, {"methods": {}, "fields": {}})
+            entry = out.setdefault(descriptor, {"methods": {}, "fields": {}, "ctors": {}})
             if not class_data_off:
                 continue
             offset = class_data_off
@@ -236,6 +267,10 @@ class Dex:
                     index += diff
                     name = self.method_name(index)
                     entry["methods"][name] = entry["methods"].get(name, 0) | access
+                    if name == "<init>":
+                        # By name alone every constructor is "<init>": the
+                        # worker check needs to know WHICH ones survived.
+                        entry["ctors"][self.method_params(index)] = access
         return out
 
 
@@ -263,9 +298,10 @@ def load_classes(artifact: str) -> dict[str, dict]:
     merged: dict[str, dict] = {}
     for blob in blobs:
         for descriptor, entry in Dex(blob).classes().items():
-            target = merged.setdefault(descriptor, {"methods": {}, "fields": {}})
+            target = merged.setdefault(descriptor, {"methods": {}, "fields": {}, "ctors": {}})
             target["methods"].update(entry["methods"])
             target["fields"].update(entry["fields"])
+            target["ctors"].update(entry["ctors"])
     return merged
 
 
@@ -410,6 +446,26 @@ def find_serializable_classes(roots: list[str]) -> list[tuple[str, str, str]]:
     return found
 
 
+def find_worker_classes(roots: list[str]) -> list[str]:
+    """Every WorkManager worker declared in the Kotlin sources, as a fqcn."""
+    found: list[str] = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for filename in filenames:
+                if not filename.endswith(".kt"):
+                    continue
+                with open(os.path.join(dirpath, filename), "r", encoding="utf-8") as handle:
+                    text = handle.read()
+                package_match = PACKAGE_RE.search(text)
+                if not package_match:
+                    continue
+                for match in WORKER_RE.finditer(text):
+                    found.append(f"{package_match.group(1)}.{match.group('name')}")
+    return sorted(found)
+
+
 def descriptor_of(fqcn: str) -> str:
     return "L" + fqcn.replace(".", "/") + ";"
 
@@ -522,6 +578,65 @@ def check_room_database_constructors(classes: dict[str, dict], failures: list[st
             )
         else:
             print(f"  room: {impl} keeps <init>")
+
+
+def check_worker_constructors(
+    classes: dict[str, dict], renames: dict[str, str], workers: list[str], failures: list[str]
+) -> None:
+    """Every worker must ship under its own name with a public (Context, WorkerParameters) <init>.
+
+    See WORKER_RE for why. Like the Room check above, an empty list is said out
+    loud rather than passed in silence. Resolved through mapping.txt, so a
+    renamed class is told apart from a removed one.
+    """
+    if not workers:
+        print("  workers: no WorkManager worker declared in the sources - nothing to check")
+        return
+    if not renames:
+        # Step 4 has already failed the run for the missing mapping.txt.
+        print("  workers: no mapping.txt - not checked")
+        return
+    wanted = (WORKER_CONTEXT, descriptor_of(renames.get(WORKER_PARAMETERS, WORKER_PARAMETERS)))
+    fix = (
+        "Fix: -keep class {0} {{ public <init>(android.content.Context, "
+        "androidx.work.WorkerParameters); }}"
+    )
+    for fqcn in workers:
+        minified = renames.get(fqcn)
+        if minified is None:
+            failures.append(
+                f"{fqcn} is not in mapping.txt: R8 removed the worker, so WorkManager "
+                "cannot load it and its work never runs. " + fix.format(fqcn)
+            )
+            continue
+        if minified != fqcn:
+            failures.append(
+                f"{fqcn} was RENAMED to {minified}. WorkManager stores a worker's class "
+                "name in its database and loads it with Class.forName, so work enqueued "
+                "by one release names a class the next one may not have. " + fix.format(fqcn)
+            )
+            continue
+        entry = classes.get(descriptor_of(fqcn))
+        if entry is None:
+            failures.append(
+                f"{fqcn} is in mapping.txt but not in the shipped DEX. The artifact and "
+                "the mapping are not from the same R8 run - pass --mapping for THIS artifact."
+            )
+            continue
+        access = entry.get("ctors", {}).get(wanted)
+        if access is None:
+            failures.append(
+                f"{fqcn} has no <init>(Context, WorkerParameters) in the shipped DEX. "
+                "WorkManager builds workers with exactly that constructor, so the work "
+                "fails on every device. " + fix.format(fqcn)
+            )
+        elif not access & ACC_PUBLIC:
+            failures.append(
+                f"{fqcn}.<init>(Context, WorkerParameters) survived but is not public; "
+                "WorkManager's newInstance() is refused. " + fix.format(fqcn)
+            )
+        else:
+            print(f"  workers: {fqcn} keeps a public <init>(Context, WorkerParameters)")
 
 
 def check_recorded_profile(profile_path: str, mapping_path: str, failures: list[str]) -> None:
@@ -788,6 +903,7 @@ def main() -> int:
     check_play_r8_metadata(artifact, failures)
 
     check_room_database_constructors(classes, failures)
+    check_worker_constructors(classes, renames, find_worker_classes(roots), failures)
     if failures:
         print("", file=sys.stderr)
         for failure in failures:
