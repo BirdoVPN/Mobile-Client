@@ -1030,6 +1030,18 @@ class VpnManagerTest {
         assertTrue("refreshes=$widgetRefreshes", widgetRefreshes >= 1)
     }
 
+    @Test
+    fun `a widget redraw Settings asks for runs on the manager's own scope`() = runTest {
+        // MR-2129: Settings launched it in viewModelScope, which its screen
+        // cancels; the manager lives as long as the process.
+        val before = widgetRefreshes
+
+        vpnManager.requestWidgetRefresh()
+        advanceUntilIdle()
+
+        assertEquals(before + 1, widgetRefreshes)
+    }
+
     // ── MR-938 (REVIEW-AND-012): a refused widget tap is alerted ─────────
 
     /** A widget tap from idle: nothing runs, and the app is not on screen. */

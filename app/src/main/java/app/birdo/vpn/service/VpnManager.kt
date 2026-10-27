@@ -298,6 +298,16 @@ class VpnManager @Inject constructor(
     }
 
     /**
+     * Redraw the widget now, on this manager's application-lifetime [scope]
+     * (MR-2129): Settings asks after Show Server Location changes, and a
+     * ViewModel's scope is cancelled with its screen, possibly before the
+     * redraw ran.
+     */
+    fun requestWidgetRefresh() {
+        scope.launch { refreshWidget() }
+    }
+
+    /**
      * MR-938 (REVIEW-AND-012): post and withdraw the alert for a widget tap
      * whose start was refused while no service ran. Its own notification id,
      * so it never replaces or withdraws an alert the service posted. Seams,

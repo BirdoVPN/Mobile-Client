@@ -9,6 +9,13 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
 import android.util.Log
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequest
+import androidx.work.WorkManager
+import androidx.work.Worker
+import androidx.work.WorkerParameters
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Copies [text] to the system clipboard flagged as SENSITIVE, so Android 13+
@@ -28,7 +35,8 @@ import android.util.Log
 fun copySensitiveToClipboard(context: Context, label: String, text: String) {
     // The application's clipboard: the pending clear outlives the screen, and
     // one taken from an Activity would hold on to the Activity.
-    val cm = context.applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    val app = context.applicationContext
+    val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val clip = ClipData.newPlainText(label, text)
     clip.description.extras = PersistableBundle().apply {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -39,7 +47,7 @@ fun copySensitiveToClipboard(context: Context, label: String, text: String) {
         }
     }
     cm.setPrimaryClip(clip)
-    SensitiveClipboard.arm(cm, label, text)
+    SensitiveClipboard.arm(app, cm, label, text)
 }
 
 /**
@@ -52,16 +60,25 @@ fun copySensitiveToClipboard(context: Context, label: String, text: String) {
  * cannot see what is there and clears it unseen. Writing, clearing included,
  * needs no focus.
  *
+ * The clear is WorkManager work ([ClearClipboardWorker]), not a timer of this
+ * process: Android 14+ freezes a cached app seconds after it leaves the
+ * screen, and a frozen process's timer does not fire until the app runs
+ * again. Typically that is a copy on the sign-up screen, then straight off to
+ * a password manager. The work is a job the SYSTEM runs: about
+ * [CLEAR_AFTER_MS] after the copy, with this process frozen or killed (it is
+ * started for it). While the device dozes the system may hold it back. The
+ * phone is then idle and nothing is pasted; the work runs when it wakes.
+ * Each copy REPLACEs the last copy's work ([WORK_NAME]), so the latest copy's
+ * minute is the one that counts.
+ *
+ * The work carries NO data. The copied text stays in this process's memory
+ * only, for the foreground check, and never reaches WorkManager's database.
+ *
  * Only when the app CAN see the clipboard, and it visibly holds something
  * else, is it left: the copy is gone already. The label is checked before the
  * text, so another app's clip is never read (Android 12+ would tell the user
- * "BirdoVPN pasted from your clipboard").
- *
- * The minute is the main looper's, which is awake time: a phone asleep inside
- * it finishes it once awake, before anyone can paste. The pending clear lives
- * in this process; a process killed inside the minute leaves the copy.
- *
- * Main thread only.
+ * "BirdoVPN pasted from your clipboard"). In a process started for the work,
+ * the copy is not known, and the clipboard is cleared unseen as well.
  */
 internal object SensitiveClipboard {
 
@@ -70,46 +87,70 @@ internal object SensitiveClipboard {
     /** How long a copy stays on the clipboard: Desktop's and iOS's minute. */
     const val CLEAR_AFTER_MS = 60_000L
 
+    /** The clear's unique work: one at a time, the latest copy's. */
+    const val WORK_NAME = "sensitive-clipboard-clear"
+
     enum class Verdict { CLEAR, LEAVE }
 
-    private class Pending(val clipboard: ClipboardManager, val label: String, val text: String)
+    private class Copy(val clipboard: ClipboardManager, val label: String, val text: String)
 
-    /** The latest copy: each copy replaces the last, and only its minute counts. */
-    private var pending: Pending? = null
+    /** The latest copy, in this process only; taken by the clear that runs for it. */
+    private val latest = AtomicReference<Copy?>(null)
 
-    fun arm(clipboard: ClipboardManager, label: String, text: String) {
-        val copy = Pending(clipboard, label, text)
-        pending = copy
-        Handler(Looper.getMainLooper()).postDelayed({
-            // A later copy replaced this one and owes its own clear.
-            if (pending === copy) {
-                pending = null
-                settle(copy)
-            }
-        }, CLEAR_AFTER_MS)
+    fun arm(context: Context, clipboard: ClipboardManager, label: String, text: String) {
+        val copy = Copy(clipboard, label, text)
+        latest.set(copy)
+        try {
+            WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, clearRequest())
+        } catch (e: RuntimeException) {
+            // WorkManager not initialised (it is, by androidx.startup, in the
+            // app's process): fall back to this process's own timer, which a
+            // frozen process runs late. The main looper counts awake time:
+            // deep sleep pauses it and the remaining seconds run after wake.
+            Log.w(TAG, "Clipboard clear not scheduled; using the in-process timer", e)
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (latest.get() === copy) clear(context)
+            }, CLEAR_AFTER_MS)
+        }
     }
 
-    private fun settle(copy: Pending) {
-        // A clipboard that throws is one this app cannot see: clear it.
-        val seen = try {
-            copy.clipboard.primaryClipDescription?.let { Seen(it.label) }
+    /** The clear's work: a delay and nothing else, no input data. */
+    fun clearRequest(): OneTimeWorkRequest =
+        OneTimeWorkRequest.Builder(ClearClipboardWorker::class.java)
+            .setInitialDelay(CLEAR_AFTER_MS, TimeUnit.MILLISECONDS)
+            .build()
+
+    /** The minute is over. Any thread; never throws. */
+    fun clear(context: Context) {
+        val copy = latest.getAndSet(null)
+        val clipboard = copy?.clipboard ?: try {
+            context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         } catch (e: RuntimeException) {
-            Log.w(TAG, "Clipboard description unreadable", e)
-            null
+            Log.w(TAG, "Clipboard unavailable", e)
+            return
         }
-        val verdict = verdict(copy.label, copy.text, seen) {
-            try {
-                copy.clipboard.primaryClip?.takeIf { it.itemCount == 1 }?.getItemAt(0)?.text
+        if (copy != null) {
+            // A clipboard that throws is one this app cannot see: clear it.
+            val seen = try {
+                clipboard.primaryClipDescription?.let { Seen(it.label) }
             } catch (e: RuntimeException) {
-                Log.w(TAG, "Clipboard text unreadable", e)
+                Log.w(TAG, "Clipboard description unreadable", e)
                 null
             }
+            val verdict = verdict(copy.label, copy.text, seen) {
+                try {
+                    clipboard.primaryClip?.takeIf { it.itemCount == 1 }?.getItemAt(0)?.text
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "Clipboard text unreadable", e)
+                    null
+                }
+            }
+            if (verdict == Verdict.LEAVE) return
         }
-        if (verdict == Verdict.LEAVE) return
         try {
-            copy.clipboard.clearPrimaryClip()
+            clipboard.clearPrimaryClip()
         } catch (e: RuntimeException) {
-            // A timer must never take the app down, least of all in the background.
+            // Neither the work nor a timer may take the app down.
             Log.w(TAG, "Clipboard clear refused", e)
         }
     }
@@ -129,5 +170,18 @@ internal object SensitiveClipboard {
         // Our label with text it cannot read: it may be ours, and the minute is over.
         val current = seenText() ?: return Verdict.CLEAR
         return if (current.toString() == text) Verdict.CLEAR else Verdict.LEAVE
+    }
+}
+
+/**
+ * Runs [SensitiveClipboard.clear] when the copy's minute is over (MR-2129).
+ * It needs nothing injected: in a process started only for it, the
+ * Application has run its normal start-up (as for a widget refresh or the
+ * tile) and this reads nothing but the clipboard.
+ */
+class ClearClipboardWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+    override fun doWork(): Result {
+        SensitiveClipboard.clear(applicationContext)
+        return Result.success()
     }
 }
