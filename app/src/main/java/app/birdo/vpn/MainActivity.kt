@@ -55,7 +55,6 @@ import app.birdo.vpn.ui.theme.BirdoTheme
 import app.birdo.vpn.ui.viewmodel.VpnViewModel
 import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.RootDetector
-import app.birdo.vpn.utils.SensitiveClipboard
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -339,14 +338,6 @@ class MainActivity : FragmentActivity() {
         if (BuildConfig.IS_PLAY_BUILD && appPreferences.hasAcceptedCurrentConsent) {
             lifecycleScope.launch(Dispatchers.Default) { playBilling.get().onAppResumed() }
         }
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        // MR-2129: a copied account number whose minute ran out while the app
-        // could not read the clipboard (Android 10+ allows it only with focus)
-        // is cleared now, if the clipboard still holds it.
-        if (hasFocus) SensitiveClipboard.onWindowFocusGained()
     }
 
     override fun onStop() {

@@ -20,6 +20,9 @@ import java.time.Duration
  * MR-2129 (AUD-MOB-13): a copied account number stayed on the clipboard until
  * something replaced it, where iOS and Desktop clear it after a minute. Run on
  * Robolectric's clipboard and main looper, so the minute is the real delay.
+ * Robolectric's clipboard is always readable, as the app's is while it has
+ * focus; the background, where nothing is readable, is
+ * SensitiveClipboardBackgroundTest.
  *
  * SDK 34: Robolectric's SDK 35+ jars need Java 21, and CI runs 17.
  */
@@ -47,13 +50,14 @@ class SensitiveClipboardTest {
     }
 
     @Test
-    fun `something the user copied since is never wiped`() {
+    fun `with the clipboard in view, a clip the user copied since is left - the copy is gone already`() {
         copySensitiveToClipboard(context, LABEL, NUMBER)
         idleSeconds(10)
         clipboard.setPrimaryClip(ClipData.newPlainText("note", USERS_OWN))
 
         idleSeconds(60)
 
+        // Only here: unseen, in the background, it is cleared (owner decision 2026-10-27).
         assertEquals(USERS_OWN, clipText())
     }
 
