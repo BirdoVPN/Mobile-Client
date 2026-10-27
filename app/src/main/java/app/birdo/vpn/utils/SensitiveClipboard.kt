@@ -14,6 +14,7 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -71,6 +72,13 @@ fun copySensitiveToClipboard(context: Context, label: String, text: String) {
  * Each copy REPLACEs the last copy's work ([WORK_NAME]), so the latest copy's
  * minute is the one that counts.
  *
+ * A force-stop cancels it. Android cancels a force-stopped app's pending jobs,
+ * and that includes Settings → Force stop and an OEM "swipe away" that
+ * force-stops the app. The copy then stays on the clipboard until BirdoVPN
+ * next starts; WorkManager reschedules the work at that start, and it runs
+ * straight away, its minute long over. A plain swipe from Recents or a
+ * low-memory kill does not cancel it.
+ *
  * The work carries NO data. The copied text stays in this process's memory
  * only, for the foreground check, and never reaches WorkManager's database.
  *
@@ -100,18 +108,43 @@ internal object SensitiveClipboard {
     fun arm(context: Context, clipboard: ClipboardManager, label: String, text: String) {
         val copy = Copy(clipboard, label, text)
         latest.set(copy)
-        try {
-            WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, clearRequest())
+        val main = Handler(Looper.getMainLooper())
+        val scheduled = try {
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, clearRequest())
+                .result
         } catch (e: RuntimeException) {
             // WorkManager not initialised (it is, by androidx.startup, in the
-            // app's process): fall back to this process's own timer, which a
-            // frozen process runs late. The main looper counts awake time:
-            // deep sleep pauses it and the remaining seconds run after wake.
-            Log.w(TAG, "Clipboard clear not scheduled; using the in-process timer", e)
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (latest.get() === copy) clear(context)
-            }, CLEAR_AFTER_MS)
+            // app's process).
+            fallBack(context, copy, main, e)
+            return
         }
+        // The enqueue itself runs later, on WorkManager's own thread, and a
+        // failure there (its database, say) arrives only through this future:
+        // nothing throws above, and nothing would be scheduled.
+        scheduled.addListener({
+            try {
+                scheduled.get()
+            } catch (e: Exception) {
+                fallBack(context, copy, main, e)
+            }
+        }, Executor { main.post(it) })
+    }
+
+    /**
+     * The work could not be scheduled: this process's own timer clears the
+     * copy instead. A frozen process runs it late, and a dead one never. The
+     * main looper counts awake time: deep sleep pauses it and the remaining
+     * seconds run after wake.
+     */
+    private fun fallBack(context: Context, copy: Copy, main: Handler, error: Throwable) {
+        Log.w(TAG, "Clipboard clear not scheduled; using the in-process timer", error)
+        // Release builds strip Log; the breadcrumb is what survives. The event
+        // only: nothing of the clip.
+        FaultReporter.trail(FaultReporter.PATH_CLIPBOARD, "clipboard clear fell back to the in-process timer")
+        main.postDelayed({
+            if (latest.get() === copy) clear(context)
+        }, CLEAR_AFTER_MS)
     }
 
     /** The clear's work: a delay and nothing else, no input data. */

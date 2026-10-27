@@ -84,6 +84,13 @@ internal object FaultReporter {
     /** BirdoPQ (ML-KEM) key exchange and the rosenpass JNI bridge. */
     const val PATH_QUANTUM = "quantum"
 
+    /**
+     * The timed clear of a copied account number (MR-2129). Off the data
+     * plane, but the same problem: its failure path logs, and release builds
+     * strip every log.
+     */
+    const val PATH_CLIPBOARD = "clipboard"
+
     /** One event per fault code immediately, then at most one per window. */
     private const val THROTTLE_WINDOW_MS = 5L * 60L * 1000L
 
