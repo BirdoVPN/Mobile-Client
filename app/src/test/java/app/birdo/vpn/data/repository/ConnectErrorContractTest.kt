@@ -2,6 +2,7 @@ package app.birdo.vpn.data.repository
 
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.di.NetworkModule
 import app.birdo.vpn.service.FailureKind
 import app.birdo.vpn.testing.StringsXml
@@ -11,6 +12,7 @@ import com.networknt.schema.SchemaRegistry
 import com.networknt.schema.SpecificationVersion
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -37,6 +39,11 @@ import java.io.File
  * The client must: map both 503s as retryable and honour the wait (clamped),
  * fall back to a sane wait when a retryable body lost it, and decode any code
  * it does not know to [ConnectErrorCode.UNKNOWN] rather than fail.
+ *
+ * MR-139 (birdo-web #739): a connect refused inside its 200 carries a typed
+ * `refusalReason` (`$defs.ConnectRefusal`). The client keys its message and
+ * its [FailureKind] on it, and handles a refusal with no reason, or one newer
+ * than this build, by its wording as before.
  */
 class ConnectErrorContractTest {
 
@@ -63,6 +70,16 @@ class ConnectErrorContractTest {
 
         fun validate(definition: String, body: String) =
             registry.getSchema(SchemaLocation.of("$SCHEMA_ID#/\$defs/$definition")).validate(body, InputFormat.JSON)
+
+        /**
+         * [schema] with a local `$ref` (`#/$defs/<name>`) followed. Since
+         * MR-1637 every retryable code's `details` is a `$ref` to
+         * `$defs.RetryableDetails` instead of an inline object.
+         */
+        fun resolved(schema: JsonObject?): JsonObject? {
+            val ref = schema?.get("\$ref")?.jsonPrimitive?.content ?: return schema
+            return defs[ref.removePrefix("#/\$defs/")]?.jsonObject
+        }
 
         // ── Bodies, GlobalExceptionFilter's envelope ─────────────────────
 
@@ -126,7 +143,7 @@ class ConnectErrorContractTest {
             val def = defs[code.wire!!]!!.jsonObject
             val props = def["properties"]!!.jsonObject
             val status = props["statusCode"]!!.jsonObject["const"]!!.jsonPrimitive.content.toInt()
-            val detailsRequired = props["details"]?.jsonObject?.get("required")?.jsonArray
+            val detailsRequired = resolved(props["details"]?.jsonObject)?.get("required")?.jsonArray
                 ?.map { it.jsonPrimitive.content }.orEmpty()
             val contractRetryable = status == 503 && "retryAfterSeconds" in detailsRequired
             assertEquals("${code.wire}: status $status, details $detailsRequired", contractRetryable, code.retryable)
@@ -273,5 +290,89 @@ class ConnectErrorContractTest {
         assertFalse(decoded.success)
         assertTrue(decoded.quotaExceeded)
         assertEquals("a-refusal-from-the-future", decoded.rebuildRefused)
+    }
+
+    // ── Connect refusal reason (MR-139, birdo-web #739) ──────────────────
+
+    /** `$defs.ConnectRefusal`: what a refused connect's `refusalReason` may say. */
+    private val contractRefusals: List<String>
+        get() = defs["ConnectRefusal"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }
+
+    /** A connect refused inside its 200, as vpn.service.ts connect() writes it. */
+    private fun refusedConnect(reason: String?, message: String, quotaExceeded: Boolean = false): String =
+        JsonObject(
+            buildMap {
+                put("success", JsonPrimitive(false))
+                put("message", JsonPrimitive(message))
+                if (reason != null) put("refusalReason", JsonPrimitive(reason))
+                if (quotaExceeded) put("quotaExceeded", JsonPrimitive(true))
+            },
+        ).toString()
+
+    @Test
+    fun `ConnectRefusalReason is exactly the contract's ConnectRefusal, which is what refusalReason carries`() {
+        assertTrue("\$defs.ConnectRefusal has no values", contractRefusals.isNotEmpty())
+        val client = ConnectRefusalReason.entries.map { it.wire }
+        assertEquals("re-vendored contract and ConnectRefusalReason disagree", contractRefusals.toSet(), client.toSet())
+        assertEquals("two values share a wire spelling", client.size, client.toSet().size)
+        val property = defs["ConnectResponse"]!!.jsonObject["properties"]!!.jsonObject["refusalReason"]!!.jsonObject
+        assertEquals(contractRefusals, property["enum"]!!.jsonArray.map { it.jsonPrimitive.content })
+        contractRefusals.forEach { assertEquals(it, ConnectRefusalReason.fromWire(it)?.wire) }
+    }
+
+    @Test
+    fun `a refused connect for every contract reason validates, decodes on both routes and gets its handling`() {
+        // Not the device cap's usual "Device limit reached …": the code decides, never the words.
+        val message = "The server refused this connection."
+        val expected = mapOf(
+            "device_limit" to (StringsXml.text("error_device_limit") to FailureKind.REFUSED),
+            "plan" to (message to FailureKind.PLAN_REQUIRED),
+            "quota_exceeded" to (message to FailureKind.QUOTA_EXCEEDED),
+            "server_capacity" to (message to FailureKind.REFUSED),
+            "server_unavailable" to (message to FailureKind.REFUSED),
+        )
+        assertEquals("a contract reason with no decided handling here", contractRefusals.toSet(), expected.keys)
+        for (reason in contractRefusals) {
+            // quota_exceeded always rides with quotaExceeded: true (the contract says so).
+            val body = refusedConnect(reason, message, quotaExceeded = reason == "quota_exceeded")
+            val invalid = validate("ConnectResponse", body)
+            assertTrue("$reason: $invalid", invalid.isEmpty())
+            val single = NetworkModule.json.decodeFromString(serializer<ConnectResponse>(), body)
+            val multi = NetworkModule.json.decodeFromString(serializer<MultiHopConnectResponse>(), body)
+            assertEquals(reason, single.refusalReason)
+            assertEquals(reason, multi.refusalReason)
+            val (copy, kind) = expected.getValue(reason)
+            assertEquals(reason, copy, mapper.connectRefusal(single.message, single.refusalReason).second)
+            assertEquals(reason, copy, mapper.connectRefusal(multi.message, multi.refusalReason).second)
+            assertEquals(reason, kind, FailureKind.forRefusal(single.quotaExceeded, single.refusalReason))
+            assertEquals(reason, kind, FailureKind.forRefusal(multi.quotaExceeded, multi.refusalReason))
+        }
+        // A reason other than the cap keeps the server's words, even words that look like the cap's.
+        val capWords = "Device limit reached (5 devices for OPERATIVE plan)"
+        assertEquals(FailureReason.REFUSED to capWords, mapper.connectRefusal(capWords, "server_capacity"))
+        // quotaExceeded still ends the session whatever the reason says.
+        assertEquals(FailureKind.QUOTA_EXCEEDED, FailureKind.forRefusal(true, "device_limit"))
+    }
+
+    @Test
+    fun `a refusal with no reason, or one newer than this build, is handled by its wording as before`() {
+        val cap = "Device limit reached (5 devices for OPERATIVE plan)"
+        val full = "This server is at capacity. Try another location."
+        for (reason in listOf(null, "device_cap_v2")) {
+            val decoded = NetworkModule.json.decodeFromString(serializer<ConnectResponse>(), refusedConnect(reason, cap))
+            assertEquals(reason, decoded.refusalReason)
+            assertNull(ConnectRefusalReason.fromWire(decoded.refusalReason))
+            assertEquals(
+                "$reason",
+                FailureReason.DEVICE_LIMIT to StringsXml.text("error_device_limit"),
+                mapper.connectRefusal(decoded.message, decoded.refusalReason),
+            )
+            assertEquals("$reason", FailureReason.REFUSED to full, mapper.connectRefusal(full, reason))
+            assertEquals("$reason", FailureKind.REFUSED, FailureKind.forRefusal(decoded.quotaExceeded, decoded.refusalReason))
+            assertEquals("$reason", FailureKind.QUOTA_EXCEEDED, FailureKind.forRefusal(true, reason))
+        }
+        // The validator bites on a value outside the contract, yet the app still decodes it (above).
+        val newer = validate("ConnectResponse", refusedConnect("device_cap_v2", cap))
+        assertTrue("expected an 'enum' refusal, got $newer", newer.any { it.keyword == "enum" })
     }
 }

@@ -57,9 +57,9 @@ sealed class ApiResult<out T> {
 /**
  * Outcome of a token refresh. Distinguishing these is load-bearing (parity with
  * the iOS APIClient): only a DEFINITIVE 401/403 should force the user to
- * re-login; a transient failure (5xx, timeout, network) must keep the session,
- * and an ABORTED refresh (a logout/delete landed while the refresh was in
- * flight) must neither resurrect the session nor trigger a second logout.
+ * re-login; a transient failure (429, 5xx, timeout, network) must keep the
+ * session, and an ABORTED refresh (a logout/delete landed while the refresh was
+ * in flight) must neither resurrect the session nor trigger a second logout.
  */
 internal enum class RefreshOutcome { SUCCESS, UNAUTHORIZED, TRANSIENT }
 
@@ -94,6 +94,32 @@ class BirdoRepository @Inject constructor(
      * next. Replaced by tests to run on the test scheduler.
      */
     internal var refreshScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Wall-clock milliseconds for [refreshHold]. Replaced by tests. */
+    internal var clock: () -> Long = System::currentTimeMillis
+
+    /**
+     * MR-1771: when the server last said "not yet" to a refresh ([clock]
+     * time), and for how long. A rate-limited refresh (429) is answered before
+     * the token is even read, so the session is intact and the token unspent
+     * (birdo-web backend/contract/README.md, "Token refresh"); its Retry-After
+     * says when to ask again. Before, the next 401 — the heartbeat's, 30 s
+     * later, or any of the cold-start calls — asked again at once and earned
+     * another 429. Clamped by [RetryAfter] to ten minutes at most, well inside
+     * an access token's hour, so a sign-in never needs it cleared.
+     */
+    @Volatile private var refreshHold: Pair<Long, Long>? = null
+
+    /**
+     * What is left of [refreshHold], or null when a refresh may be sent. A
+     * clock set back before the hold began ends it: one early refresh costs at
+     * worst another 429, where trusting the wrong clock could hold for hours.
+     */
+    private fun refreshHoldMs(): Long? {
+        val (since, wait) = refreshHold ?: return null
+        val elapsed = clock() - since
+        return if (elapsed in 0L until wait) wait - elapsed else null
+    }
 
     /**
      * Makes a refresh's fence check and the write it guards one step against a
@@ -335,6 +361,9 @@ class BirdoRepository @Inject constructor(
             if (current != null && current != staleAccessToken) return@withLock RefreshOutcome.SUCCESS
         }
         val presented = tokenManager.getRefreshToken() ?: return@withLock RefreshOutcome.UNAUTHORIZED
+        // MR-1771: the server said when to ask again; asking sooner only earns
+        // another 429. The session stays as it is.
+        if (refreshHoldMs() != null) return@withLock RefreshOutcome.TRANSIENT
         // Captured BEFORE the network round-trip; compared after, so a sign-out
         // that lands mid-flight is detected.
         val genAtStart = sessionGeneration.get()
@@ -430,7 +459,14 @@ class BirdoRepository @Inject constructor(
                 // leave the tokens alone so recovery is possible.
                 RefreshOutcome.UNAUTHORIZED
             } else {
-                // 5xx / unexpected status — the credentials may still be valid.
+                // 429 / 5xx / unexpected status — the credentials may still be
+                // valid. A 429 is every limiter on the route answering before the
+                // token is read (MR-1771): never a verdict on it, so nothing is
+                // cleared, and no refresh is sent again before its Retry-After
+                // (the retryable default when it named none; see [refreshHold]).
+                val wait = RetryAfter.fromHeader(runCatching { response.headers()["Retry-After"] }.getOrNull())
+                    ?: RetryAfter.RETRYABLE_DEFAULT_MS.takeIf { response.code() == 429 }
+                if (wait != null) refreshHold = clock() to wait
                 RefreshOutcome.TRANSIENT
             }
         } catch (_: Exception) {
@@ -638,10 +674,12 @@ class BirdoRepository @Inject constructor(
                 RefreshOutcome.SUCCESS -> Sent.Answered(call())
                 // Definitive: the refresh token is dead, so force re-login.
                 RefreshOutcome.UNAUTHORIZED -> Sent.Failed(errors.sessionExpired())
-                // Transient (5xx/timeout/network) or a logout landed mid-flight:
-                // keep the session. A non-401 code means checkSession() will
-                // NOT sign the user out (finding #7).
-                RefreshOutcome.TRANSIENT -> Sent.Failed(errors.temporarilyUnavailable())
+                // Transient (429/5xx/timeout/network) or a logout landed
+                // mid-flight: keep the session. A non-401 code means
+                // checkSession() will NOT sign the user out (finding #7). A
+                // server that said when to come back is waited out (MR-1771).
+                RefreshOutcome.TRANSIENT ->
+                    Sent.Failed(errors.temporarilyUnavailable().copy(retryAfterMs = refreshHoldMs()))
             }
         }
     } catch (e: CancellationException) {
@@ -909,7 +947,8 @@ class BirdoRepository @Inject constructor(
                 // how a full device cap arrives), so it never passes through the
                 // error mapper; VpnManager publishes body.message verbatim.
                 if (!body.success) {
-                    return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
+                    val message = errors.connectRefusal(body.message, body.refusalReason).second
+                    return ApiResult.Success(body.copy(message = message))
                 }
                 // FIX-1-1: the locally generated private key, never the server's.
                 // The server no longer returns privateKey when clientPublicKey was sent.
@@ -1043,7 +1082,8 @@ class BirdoRepository @Inject constructor(
                 val body = result.data
                 // Same 200-refusal shape as connectVpn.
                 if (!body.success) {
-                    return ApiResult.Success(body.copy(message = errors.connectRefusal(body.message).second))
+                    val message = errors.connectRefusal(body.message, body.refusalReason).second
+                    return ApiResult.Success(body.copy(message = message))
                 }
                 val localPrivateKey = String(privateKeyChars)
                 // The private key is NOT persisted (A1-041): it lives in the

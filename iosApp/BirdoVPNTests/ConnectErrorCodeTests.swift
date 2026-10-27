@@ -93,6 +93,17 @@ final class ConnectErrorCodeTests: XCTestCase {
         (def["properties"] as? [String: Any]) ?? [:]
     }
 
+    /// `schema` with a local `$ref` (`#/$defs/<name>`) followed. Since MR-1637
+    /// every retryable code's `details` is a `$ref` to `$defs.RetryableDetails`
+    /// instead of an inline object.
+    private static func resolved(_ schema: Any?, in defs: [String: Any]) -> [String: Any]? {
+        guard let schema = schema as? [String: Any] else { return nil }
+        guard let ref = schema["$ref"] as? String else { return schema }
+        let prefix = "#/$defs/"
+        guard ref.hasPrefix(prefix) else { return nil }
+        return defs[String(ref.dropFirst(prefix.count))] as? [String: Any]
+    }
+
     /// THE drift guard. A re-vendor that adds a code fails here until it is
     /// mapped on purpose, and a code this client invents fails here too.
     func testErrorCodesAreExactlyTheContracts() {
@@ -121,7 +132,7 @@ final class ConnectErrorCodeTests: XCTestCase {
             }
             let props = Self.properties(of: def)
             let status = (props["statusCode"] as? [String: Any])?["const"] as? Int
-            let detailsRequired = ((props["details"] as? [String: Any])?["required"] as? [String]) ?? []
+            let detailsRequired = (Self.resolved(props["details"], in: defs)?["required"] as? [String]) ?? []
             let contractSaysRetryable = status == 503 && detailsRequired.contains("retryAfterSeconds")
             XCTAssertEqual(code.isRetryable, contractSaysRetryable,
                            "\(wire): isRetryable disagrees with the contract (status \(String(describing: status)), "
@@ -152,7 +163,7 @@ final class ConnectErrorCodeTests: XCTestCase {
             XCTAssertEqual(sample["statusCode"] as? Int,
                            (props["statusCode"] as? [String: Any])?["const"] as? Int)
             let details = try XCTUnwrap(sample["details"] as? [String: Any])
-            for key in ((props["details"] as? [String: Any])?["required"] as? [String]) ?? [] {
+            for key in (Self.resolved(props["details"], in: defs)?["required"] as? [String]) ?? [] {
                 XCTAssertNotNil(details[key], "\(wire) sample details is missing required \(key)")
             }
         }
