@@ -13,8 +13,16 @@
       "ConnectResponse",
       "ErrorCode",
       "RebuildRefusal",
+      "ConnectRefusal",
       "HeartbeatResponse",
-      "HeartbeatReason"
+      "HeartbeatReason",
+      "ErrorEnvelope",
+      "RetryableDetails",
+      "update_required",
+      "client_attestation_required",
+      "quota_check_unavailable",
+      "psk_delivery_unavailable",
+      "tunnel_address_unavailable"
     ]
   },
   "$defs": {
@@ -335,10 +343,12 @@
           "type": "boolean"
         },
         "rosenpassPublicKey": {
-          "type": "string"
+          "type": "string",
+          "description": "Quantum Protection (BirdoPQ v1): the ML-KEM-1024 CIPHERTEXT the server encapsulated against the request's pqClientPublicKey, base64. This is the canonical wire name for it (kept from the Rosenpass era for wire compatibility): there is no pqCiphertext alias, sent or accepted. Present when quantumEnabled is true."
         },
         "rosenpassEndpoint": {
-          "type": "string"
+          "type": "string",
+          "description": "Quantum Protection (BirdoPQ v1): the per-connect NONCE, base64, the HKDF info the client derives the WireGuard PSK with (with the decapsulated secret). This is the canonical wire name for it: there is no pqNonce alias, sent or accepted. Not an endpoint despite the name. Present when quantumEnabled is true."
         },
         "deferredKeyId": {
           "type": "string"
@@ -354,14 +364,26 @@
           ]
         },
         "quotaExceeded": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "FREE-TIER CAP: true, with success:false, when a free account has used its whole data allowance for the period; message says how much and when it resets. Companion of success:false: STOP auto-reconnecting. Every connect is refused the same way until the reset or an upgrade."
+        },
+        "refusalReason": {
+          "type": "string",
+          "enum": [
+            "device_limit",
+            "plan",
+            "quota_exceeded",
+            "server_capacity",
+            "server_unavailable"
+          ],
+          "description": "Why the connect was refused (with success:false), machine-readable: key the client screen on this, never on message wording. device_limit: the device cap of the plan is reached (device screen or upgrade; a retry changes nothing). plan: the server, or every server, is outside the plan (upgrade, or pick an included server). quota_exceeded: the free data allowance is used up (always with quotaExceeded:true). server_capacity: the chosen server is full (pick another). server_unavailable: the chosen server is missing or not ONLINE, or none can be used now (pick another, or retry later). Absent on a success, on a rebuild refusal (rebuildRefused) and on other failures. Older servers never send it: treat an absent or unknown value as a refusal without one and show message."
         }
       },
       "required": [
         "success"
       ],
       "additionalProperties": true,
-      "description": "Body of a 200 from POST /vpn/connect and /vpn/multi-hop/connect. success:false + message (and rebuildRefused when a rebuild was refused untouched). Extra keys may appear; clients must ignore unknowns."
+      "description": "Body of a 200 from POST /vpn/connect and /vpn/multi-hop/connect. success:false + message, with refusalReason (ConnectRefusal) when the connect was refused for a reason the client can act on, and rebuildRefused when a rebuild was refused untouched. Extra keys may appear; clients must ignore unknowns."
     },
     "ErrorCode": {
       "type": "string",
@@ -383,6 +405,17 @@
         "lookup-failed",
         "key-reuse",
         "same-entry-exit-change"
+      ]
+    },
+    "ConnectRefusal": {
+      "type": "string",
+      "description": "ConnectResponse.refusalReason values (success:false; MR-139). device_limit: device cap reached. plan: outside the plan. quota_exceeded: free allowance used up. server_capacity: the server is full. server_unavailable: the server is missing or not ONLINE, or none is usable now. Full semantics: CONNECT_REFUSALS in vpn.service.ts. Treat an unknown value as absent.",
+      "enum": [
+        "device_limit",
+        "plan",
+        "quota_exceeded",
+        "server_capacity",
+        "server_unavailable"
       ]
     },
     "HeartbeatResponse": {
@@ -439,18 +472,18 @@
         "not_found"
       ]
     },
-    "update_required": {
+    "ErrorEnvelope": {
       "type": "object",
-      "description": "HTTP 426. Client below the platform support floor (or missing clientPublicKey below the key-custody floor), or a quantumProtection request without pqClientPublicKey + pqClientCanDecapsulate:true (refused on every platform; minVersion is \"latest\" when no version is known). details carries the versions.",
+      "description": "The GlobalExceptionFilter envelope every connect error rides in. Each error code below references it, pins statusCode and error, and adds its own details.",
       "properties": {
         "statusCode": {
-          "const": 426
+          "type": "integer"
         },
         "message": {
           "type": "string"
         },
         "error": {
-          "const": "update_required"
+          "type": "string"
         },
         "timestamp": {
           "type": "string"
@@ -463,6 +496,45 @@
         },
         "correlationId": {
           "type": "string"
+        }
+      },
+      "required": [
+        "statusCode",
+        "message",
+        "error"
+      ]
+    },
+    "RetryableDetails": {
+      "type": "object",
+      "description": "details of a retryable connect refusal: nothing is wrong with the account; retry the same connect after retryAfterSeconds.",
+      "properties": {
+        "retryable": {
+          "const": true
+        },
+        "retryAfterSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "retryable",
+        "retryAfterSeconds"
+      ]
+    },
+    "update_required": {
+      "type": "object",
+      "description": "HTTP 426. Client below the platform support floor (or missing clientPublicKey below the key-custody floor), or a quantumProtection request without pqClientPublicKey + pqClientCanDecapsulate:true (refused on every platform; minVersion is \"latest\" when no version is known). details carries the versions.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorEnvelope"
+        }
+      ],
+      "properties": {
+        "statusCode": {
+          "const": 426
+        },
+        "error": {
+          "const": "update_required"
         },
         "details": {
           "type": "object",
@@ -494,27 +566,17 @@
     "client_attestation_required": {
       "type": "object",
       "description": "HTTP 403. Attestation policy refused this build. Only message accompanies it on the wire.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorEnvelope"
+        }
+      ],
       "properties": {
         "statusCode": {
           "const": 403
         },
-        "message": {
-          "type": "string"
-        },
         "error": {
           "const": "client_attestation_required"
-        },
-        "timestamp": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "correlationId": {
-          "type": "string"
         }
       },
       "required": [
@@ -526,42 +588,20 @@
     "quota_check_unavailable": {
       "type": "object",
       "description": "HTTP 503. A FREE (RECON) account was refused because its data allowance could not be read — the free-tier cap fails closed. Retryable: nothing is wrong with the account; retry after details.retryAfterSeconds. Paid plans never receive it.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorEnvelope"
+        }
+      ],
       "properties": {
         "statusCode": {
           "const": 503
         },
-        "message": {
-          "type": "string"
-        },
         "error": {
           "const": "quota_check_unavailable"
         },
-        "timestamp": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "correlationId": {
-          "type": "string"
-        },
         "details": {
-          "type": "object",
-          "properties": {
-            "retryable": {
-              "type": "boolean"
-            },
-            "retryAfterSeconds": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "retryable",
-            "retryAfterSeconds"
-          ]
+          "$ref": "#/$defs/RetryableDetails"
         }
       },
       "required": [
@@ -574,42 +614,20 @@
     "psk_delivery_unavailable": {
       "type": "object",
       "description": "HTTP 503. The connection's pre-shared key could only have reached the server over the SSH fallback, which never carries one; the peer was rolled back, nothing was downgraded. Retryable after details.retryAfterSeconds.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorEnvelope"
+        }
+      ],
       "properties": {
         "statusCode": {
           "const": 503
         },
-        "message": {
-          "type": "string"
-        },
         "error": {
           "const": "psk_delivery_unavailable"
         },
-        "timestamp": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "correlationId": {
-          "type": "string"
-        },
         "details": {
-          "type": "object",
-          "properties": {
-            "retryable": {
-              "type": "boolean"
-            },
-            "retryAfterSeconds": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "retryable",
-            "retryAfterSeconds"
-          ]
+          "$ref": "#/$defs/RetryableDetails"
         }
       },
       "required": [
@@ -622,42 +640,20 @@
     "tunnel_address_unavailable": {
       "type": "object",
       "description": "HTTP 503. No tunnel address could be proven free on this server just now: a reservation the allocator must read did not answer, and it fails closed rather than risk giving one customer another's address. Nothing is wrong with the account or the server; retry after details.retryAfterSeconds.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/ErrorEnvelope"
+        }
+      ],
       "properties": {
         "statusCode": {
           "const": 503
         },
-        "message": {
-          "type": "string"
-        },
         "error": {
           "const": "tunnel_address_unavailable"
         },
-        "timestamp": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "requestId": {
-          "type": "string"
-        },
-        "correlationId": {
-          "type": "string"
-        },
         "details": {
-          "type": "object",
-          "properties": {
-            "retryable": {
-              "type": "boolean"
-            },
-            "retryAfterSeconds": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "retryable",
-            "retryAfterSeconds"
-          ]
+          "$ref": "#/$defs/RetryableDetails"
         }
       },
       "required": [

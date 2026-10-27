@@ -768,17 +768,26 @@ final class APIClient: @unchecked Sendable {
         // Perform the refresh WITHOUT the generic error mapping so we can read
         // the raw HTTP status. Classification is load-bearing (finding #1b):
         // only a definitive 401/403 from /auth/refresh may become .unauthorized
-        // (→ sign-out, keychain wipe); URLError / 5xx / pin-cancel are TRANSIENT
-        // and must propagate unchanged so a valid 30-day refresh token is KEPT
-        // and retried on the next cold start. (The backend's rotation grace
-        // window `refresh:rotated:{jti}` makes a retry after a lost response
-        // safe.)
+        // (→ sign-out, keychain wipe); URLError / 429 / 5xx / pin-cancel are
+        // TRANSIENT and must propagate unchanged so a valid 30-day refresh token
+        // is KEPT and retried on the next cold start. (The backend's rotation
+        // grace window `refresh:rotated:{jti}` makes a retry after a lost
+        // response safe.)
         let (data, http) = try await rawRefreshRequest(body: body)
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 {
-                throw APIError.unauthorized
+        switch RefreshAnswer.classify(status: http.statusCode,
+                                      retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")) {
+        case .rotated:
+            break
+        case .dead:
+            throw APIError.unauthorized
+        case .keepSession(let retryAfter):
+            // MR-1771: a 429 (the route's rate limit, answered before the
+            // token is read) or a 5xx during a deploy window etc. The session
+            // is kept, and a server that said when to come back is not asked
+            // again before then.
+            if let retryAfter {
+                await refreshActor.hold(for: retryAfter)
             }
-            // 5xx / other non-2xx during a deploy window etc. — transient.
             throw APIError.httpError(http.statusCode)
         }
         let tokens = try decoder.decode(RefreshTokensResponse.self, from: data)
@@ -1150,16 +1159,29 @@ final class APIClient: @unchecked Sendable {
 /// with the freshly-stored token.
 private actor RefreshCoordinator {
     private var inFlight: Task<Void, Error>?
+    /// MR-1771: set by `refreshTokens()` when the server said when to ask
+    /// again (`RefreshHoldOff`).
+    private var holdOff = RefreshHoldOff()
 
     func refresh(_ work: @escaping @Sendable () async throws -> Void) async throws {
         if let task = inFlight {
             try await task.value
             return
         }
+        // The server rate limited the last refresh and its wait is not over:
+        // the same transient answer, the session untouched, nothing sent.
+        if holdOff.isHeld(now: Date()) {
+            throw APIError.httpError(429)
+        }
         let task = Task<Void, Error> { try await work() }
         inFlight = task
         defer { inFlight = nil }
         try await task.value
+    }
+
+    /// Hold every refresh for `wait` seconds from now.
+    func hold(for wait: TimeInterval) {
+        holdOff.hold(for: wait, now: Date())
     }
 }
 
