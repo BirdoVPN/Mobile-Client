@@ -41,9 +41,21 @@ final class VpnViewModel: ObservableObject {
     }
     var isProtected: Bool { tunnelPhase == .protected }
     /// Connect-path error. Backend refusals arrive as the server's own words
-    /// (`APIError.serverMessage`, incl. 2xx `{success:false}` envelopes and the
-    /// 426 version-floor body) — render verbatim, never rephrase.
+    /// (`APIError.serverMessage`, the 426 version-floor body) — render
+    /// verbatim, never rephrase. A 2xx `{success:false}` refusal arrives as a
+    /// `ConnectRefusedError` whose text is keyed on its `refusalReason`
+    /// (MR-139; the device cap has its own sentence).
     @Published var error: String?
+    /// MR-139: the typed refusal behind the last failed dial, nil when the
+    /// last dial failed any other way. Read only through `refusalOffersPlans`.
+    @Published private(set) var connectRefusal: ConnectRefusedError?
+    /// Home offers the plans under the banner: the refusal it shows is a
+    /// server outside the plan or the Free allowance used up. Only while that
+    /// refusal is still what the banner says.
+    var refusalOffersPlans: Bool {
+        guard let refusal = connectRefusal, error == refusal.message else { return false }
+        return refusal.offersPlans
+    }
     /// True while a settings "blip" reconnect is in flight — Home shows
     /// "Applying settings — reconnecting…" off this.
     @Published private(set) var isReapplyingSettings = false
@@ -155,6 +167,12 @@ final class VpnViewModel: ObservableObject {
     private func showUpdateRequired(after error: Error) {
         guard let refusal = error as? UpdateRequiredRefusal else { return }
         updateAdvisory = refusal.advisory
+    }
+
+    /// MR-139: remember the typed refusal a dial failed with (nil for any
+    /// other failure), so Home can offer what its reason asks for.
+    private func noteRefusal(after error: Error) {
+        connectRefusal = error as? ConnectRefusedError
     }
 
     private var dismissedFloors: Set<String> {
@@ -576,6 +594,7 @@ final class VpnViewModel: ObservableObject {
                 // is held off for the server's wait.
                 holdAutomaticDials(after: error)
                 showUpdateRequired(after: error)
+                noteRefusal(after: error)
                 self.error = error.localizedDescription
                 reportUnauthorized(error)
                 isConnecting = false
@@ -740,6 +759,7 @@ final class VpnViewModel: ObservableObject {
             // MR-1948: shown, not auto-retried — see connect().
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
+            noteRefusal(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             isConnecting = false
@@ -1436,6 +1456,7 @@ final class VpnViewModel: ObservableObject {
             // and nothing is re-requested without it.
             holdAutomaticDials(after: error)
             showUpdateRequired(after: error)
+            noteRefusal(after: error)
             self.error = error.localizedDescription
             reportUnauthorized(error)
             flagsOwnedElsewhere = await finishRebuild(.configRequestFailed, ctx)
