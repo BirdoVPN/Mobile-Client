@@ -202,12 +202,14 @@ jobs:
       # their failure cases proven here, on every pull request: the pin-expiry
       # window below (MR-1669), the XCTest suite assertion that gates the Mac
       # App Store and Apple CI (MR-2102, MR-1802), and the reading of
-      # `am instrument` output that decides the emulator job (MR-1410).
+      # `am instrument` output that decides the emulator job (MR-1410), and
+      # the R8 job's worker check, which passes on every real build (MR-2129).
       - name: CI gate self-tests
         run: |
           bash scripts/tests/check_pin_expiry_test.sh
           bash scripts/tests/check_xctest_suites_ran_test.sh
           bash scripts/tests/check_instrumentation_result_test.sh
+          python3 scripts/tests/check_r8_keeps_test.py
 
       # macos.yml, ios.yml, android.yml and fdroid.yml run only on tags and
       # dispatches, so a gate removed from one would first be missed on release
