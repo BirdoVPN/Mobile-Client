@@ -228,6 +228,18 @@ class SessionSurfaceModelsTest {
         assertEquals(BirdoWidget.Look.IDLE, BirdoWidget.widgetModel(VpnState.Disconnected, false).look)
     }
 
+    @Test
+    fun `the widget shows the server only when Show Server Location is on, like the tile`() {
+        // MR-2129: it drew the server's name on the home screen whatever the setting.
+        assertNull(BirdoWidget.widgetModel(VpnState.Connected, false, "Frankfurt", showLocation = false).serverLabel)
+        assertEquals("Frankfurt", BirdoWidget.widgetModel(VpnState.Connected, false, "Frankfurt", showLocation = true).serverLabel)
+        // Off unless asked for, like the setting itself.
+        assertNull(BirdoWidget.widgetModel(VpnState.Connected, false, "Frankfurt").serverLabel)
+        // Never next to anything but Protected, whatever the setting.
+        assertNull(BirdoWidget.widgetModel(VpnState.Reconnecting(1), false, "Frankfurt", showLocation = true).serverLabel)
+        assertNull(BirdoWidget.widgetModel(VpnState.Disconnected, false, "Frankfurt", showLocation = true).serverLabel)
+    }
+
     // ── P2-2: the not-armed warning on the ongoing notification ──────────
 
     @Test
