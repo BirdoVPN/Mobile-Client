@@ -354,6 +354,11 @@ targets:
       # into this bundle.
       - path: iosApp/Views/Components/GlobeRoute.swift
       - path: iosApp/Views/Components/CountryCoords.swift
+      # MR-1519: the globe's clock and tweens — held still while connected,
+      # with the connect transition still playing out. Foundation-only by
+      # design (its ObservableObject conformance stays in WorldGlobeView),
+      # pinned by GlobeModelTests.
+      - path: iosApp/Views/Components/GlobeModel.swift
       # MR-1726: the first-run sentinel that makes the device identity per
       # install. Foundation-only by design — the keychain is behind the
       # InstallIdentityStore protocol — so InstallIdentityTests pins the

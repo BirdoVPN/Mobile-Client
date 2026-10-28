@@ -58,7 +58,7 @@ class BirdoApp : Application() {
         resumeSessionAfterProcessDeath()
         // STARTUP WARM-UP, OFF THE MAIN THREAD (A2-021). Opening the token
         // store is Keystore work (key generation on a first run, a seal/open
-        // probe, the legacy migration, and a delete-and-regenerate recovery
+        // probe, deleting a pre-1.4.28 store, and a delete-and-regenerate recovery
         // when the Keystore misbehaves), and the Play rail's construction
         // builds the whole Retrofit/OkHttp/TokenManager graph. Both used to
         // run right here, on the cold-start critical path of the store build.

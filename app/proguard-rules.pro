@@ -261,13 +261,6 @@
 -dontwarn okhttp3.**
 -dontwarn okio.**
 
-# Google Tink / Security-Crypto — kept only for the one-shot legacy migration
-# in security/LegacySecurityCrypto.kt; drop these with that file.
--dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
--dontwarn com.google.errorprone.annotations.CheckReturnValue
--dontwarn com.google.errorprone.annotations.Immutable
--dontwarn com.google.errorprone.annotations.RestrictedApi
-
 # Sentry
 #
 # The blanket `-keep class io.sentry.** { *; }` that used to live here produced

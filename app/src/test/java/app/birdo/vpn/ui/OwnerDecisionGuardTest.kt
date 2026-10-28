@@ -42,6 +42,22 @@ class OwnerDecisionGuardTest {
         )
     }
 
+    @Test
+    fun `the iOS globe holds still while connected too`() {
+        // MR-1519, iOS half (owner, 2026-10-28: stop while connected). Home
+        // passes the hold; the globe holds its CLOCK, not just the spin, so it
+        // stops where it is instead of snapping to a fixed longitude; and once
+        // the connect transition has landed the timeline stops drawing.
+        val home = source("iosApp/iosApp/Views/HomeView.swift")
+        assertTrue("iOS Home no longer stops the globe while protected", home.contains("autoRotate: !vpnVM.isProtected"))
+        val globe = source("iosApp/iosApp/Views/Components/WorldGlobeView.swift")
+        assertTrue("the iOS globe's clock no longer holds", globe.contains("model.advance(clockRunning: autoRotate)"))
+        assertFalse("the iOS globe snaps to a fixed longitude on connect", globe.contains("autoRotate ? (model.idleSpinDeg"))
+        assertTrue("a held, settled iOS globe still draws every frame", globe.contains("|| heldStill"))
+        assertTrue(source("iosApp/project.yml").contains("- path: iosApp/Views/Components/GlobeModel.swift"))
+        assertTrue(File(repoRoot, "iosApp/BirdoVPNTests/GlobeModelTests.swift").isFile)
+    }
+
     // ── MR-1520: no "Secure Connection" badge on Login ───────────────────
 
     @Test
