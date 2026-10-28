@@ -204,6 +204,18 @@ struct BiometricGate<Content: View>: View {
 /// therefore BELOW them: the sign-in sheet showing a new 24-digit account
 /// number stayed on top, usable, after the app had re-locked, and in the
 /// app-switcher snapshot. A window at `.alert + 1` is above all of them.
+///
+/// Two things a window level alone does not settle (#522 re-review):
+/// - The KEYBOARD's windows sit above `.alert + 1`. A keyboard left up in the
+///   sign-in sheet could show its QuickType / AutoFill bar over the lock, so
+///   locking first resigns every first responder, which takes the keyboard
+///   down.
+/// - VoiceOver: `accessibilityViewIsModal` hides siblings inside this window
+///   only and is not documented to reach other windows. A sheet or alert in
+///   the app's window could still be swiped into, and the sign-in sheet reads
+///   the 24 digits. So while the cover is up, every OTHER window of the scene
+///   is `accessibilityElementsHidden`, and each one's previous value comes
+///   back when it hides.
 @MainActor
 final class LockCoverWindow {
     /// Above `.alert`, the highest level the app's own presentations reach.
@@ -211,6 +223,9 @@ final class LockCoverWindow {
 
     private var window: UIWindow?
     private weak var previousKeyWindow: UIWindow?
+    /// The windows hidden from VoiceOver while covered, with the value each
+    /// had before, to restore.
+    private var silencedWindows: [(window: UIWindow, wasHidden: Bool)] = []
 
     nonisolated init() {}
 
@@ -230,22 +245,57 @@ final class LockCoverWindow {
             window.rootViewController = host
             self.window = window
         }
-        if window.isHidden {
+        let revealed = window.isHidden
+        if revealed {
             window.isHidden = false
         }
-        if takeFocus && !window.isKeyWindow {
-            previousKeyWindow = window.windowScene?.windows.first { $0.isKeyWindow && $0 !== window }
-            window.makeKey()
+        silenceOtherWindows(besides: window)
+        if revealed {
+            // VoiceOver moves to the lock screen.
+            UIAccessibility.post(notification: .screenChanged, argument: window.rootViewController?.view)
+        }
+        if takeFocus {
+            // Takes the keyboard down: its windows (and their QuickType /
+            // AutoFill bar) sit above this one.
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            if !window.isKeyWindow {
+                previousKeyWindow = window.windowScene?.windows.first { $0.isKeyWindow && $0 !== window }
+                window.makeKey()
+            }
         }
     }
 
     func hide() {
         guard let window, !window.isHidden else { return }
+        let wasKey = window.isKeyWindow
         window.isHidden = true
-        if window.isKeyWindow || previousKeyWindow != nil {
-            previousKeyWindow?.makeKey()
+        restoreOtherWindows()
+        if wasKey || previousKeyWindow != nil {
+            // Nothing was key at the first show (a locked cold launch): fall
+            // back to the scene's app window, at .normal.
+            let target = previousKeyWindow
+                ?? window.windowScene?.windows.first { $0 !== window && !$0.isHidden && $0.windowLevel == .normal }
+            target?.makeKey()
             previousKeyWindow = nil
         }
+    }
+
+    /// Hides every other window of the scene from VoiceOver, including ones
+    /// that appeared since the cover went up; each keeps its earlier value.
+    private func silenceOtherWindows(besides cover: UIWindow) {
+        for other in cover.windowScene?.windows ?? [] where other !== cover {
+            if !silencedWindows.contains(where: { $0.window === other }) {
+                silencedWindows.append((other, other.accessibilityElementsHidden))
+            }
+            other.accessibilityElementsHidden = true
+        }
+    }
+
+    private func restoreOtherWindows() {
+        for (other, wasHidden) in silencedWindows {
+            other.accessibilityElementsHidden = wasHidden
+        }
+        silencedWindows.removeAll()
     }
 
     private static func scene() -> UIWindowScene? {

@@ -147,6 +147,34 @@ class OwnerDecisionGuardTest {
         assertTrue("the cover window is not shown while covered", Regex("""if state\.covered \{\s*coverWindow\.show\(""").containsMatchIn(sync))
         assertTrue("the cover window is never hidden", sync.contains("coverWindow.hide()"))
 
+        // #522 re-review C1: the keyboard's windows sit above .alert + 1, so
+        // locking takes the keyboard down (its QuickType / AutoFill bar would
+        // show over the lock).
+        val show = gate.substringAfter("func show(_ root: AnyView, takeFocus: Bool) {", "").substringBefore("\n    func hide()")
+        val focus = show.substringAfter("if takeFocus {", "")
+        assertTrue(
+            "locking does not take the keyboard down first",
+            focus.trimStart().let { body ->
+                body.lines().filterNot { it.trimStart().startsWith("//") }.joinToString("\n").trimStart()
+                    .startsWith("UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)")
+            },
+        )
+        // C2: accessibilityViewIsModal reaches only the cover's own window, so
+        // every other window of the scene is hidden from VoiceOver while
+        // covered, and gets its earlier value back when the cover hides.
+        assertTrue("the other windows are not hidden from VoiceOver on show", show.contains("silenceOtherWindows(besides: window)"))
+        val silence = gate.substringAfter("private func silenceOtherWindows(besides cover: UIWindow) {", "").substringBefore("\n    }")
+        assertTrue(silence.contains("for other in cover.windowScene?.windows ?? [] where other !== cover {"))
+        assertTrue(silence.contains("silencedWindows.append((other, other.accessibilityElementsHidden))"))
+        assertTrue(silence.contains("other.accessibilityElementsHidden = true"))
+        val hide = gate.substringAfter("    func hide() {", "").substringBefore("\n    }")
+        assertTrue("hiding the cover leaves the app silent to VoiceOver", hide.contains("restoreOtherWindows()"))
+        val restore = gate.substringAfter("private func restoreOtherWindows() {", "").substringBefore("\n    }")
+        assertTrue(restore.contains("other.accessibilityElementsHidden = wasHidden"))
+        // Nit: with nothing key at the first show (a locked cold launch), the
+        // app's .normal window becomes key again.
+        assertTrue(hide.contains("\$0.windowLevel == .normal"))
+
         // A presentation escapes the cover only from another window: one the
         // app opens itself, a window level above the cover's, a separately
         // hosted SwiftUI tree, a UIKit present(), or a second scene. The gate's
