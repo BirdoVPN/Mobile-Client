@@ -44,13 +44,30 @@ struct ConnectEnvelope: Decodable, Sendable {
     /// rebuild refusal). Raw, for the same reason as `rebuildRefused`.
     let refusalReason: String?
     let quotaExceeded: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case success, message, rebuildRefused, refusalReason, quotaExceeded
+    }
+
+    /// The MR-139 fields are read leniently: a wrong-typed `refusalReason` or
+    /// `quotaExceeded` reads as absent. Decoded strictly, it failed the whole
+    /// envelope, and the refusal lost the server's sentence with it.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        success = try c.decodeIfPresent(Bool.self, forKey: .success)
+        message = try c.decodeIfPresent(String.self, forKey: .message)
+        rebuildRefused = try c.decodeIfPresent(String.self, forKey: .rebuildRefused)
+        refusalReason = (try? c.decodeIfPresent(String.self, forKey: .refusalReason)) ?? nil
+        quotaExceeded = (try? c.decodeIfPresent(Bool.self, forKey: .quotaExceeded)) ?? nil
+    }
 }
 
 /// A connect the server refused inside its 200 (`success: false`), that is
 /// not a refused rebuild (`RebuildRefusedError`). Keyed on `refusalReason`,
-/// never on the server's wording: the banner's text, and whether Home offers
-/// the plans, come from the reason. `LocalizedError`, so the connect paths'
-/// `error.localizedDescription` shows `message` as for any refusal.
+/// never on the server's wording: whether the banner shows the device cap's
+/// own sentence, and whether Home offers the plans, come from the reason.
+/// `LocalizedError`, so the connect paths' `error.localizedDescription` shows
+/// `message` as for any refusal.
 struct ConnectRefusedError: Error, LocalizedError, Equatable, Sendable {
     /// Nil for none and for a reason newer than this build.
     let reason: ConnectRefusalReason?
@@ -73,45 +90,52 @@ struct ConnectRefusedError: Error, LocalizedError, Equatable, Sendable {
         "This account is already connected on the maximum number of devices for its plan. "
         + "Disconnect another device or upgrade your plan."
 
-    /// Today's copy for a refusal that explains nothing.
-    static let genericMessage = "Could not connect. Please try again."
+    /// The copy for a refusal that explains nothing, or nothing showable
+    /// (Android's `error_connect_failed`, word for word).
+    static let genericMessage = "Couldn't connect to this server. Try again, or choose another location."
 
-    /// The refusal for an envelope's fields.
+    /// The refusal for an envelope's fields: Android's
+    /// `ApiErrorMapper.connectRefusal`, with one difference noted below.
     ///
     /// - `device_limit`: `deviceLimitMessage`, whatever the wording.
-    /// - Another reason: the server's own sentence; when it sent none, the
-    ///   reason's own copy (`fallback(for:)`), never the generic one.
-    /// - No reason, or one newer than this build: exactly as before MR-139,
-    ///   the server's sentence verbatim, or `genericMessage` when it sent none
-    ///   (older backends send no reason).
+    /// - Any other reason, none, or one newer than this build: the server's
+    ///   own sentence when `isPresentable`, otherwise `genericMessage`.
+    ///
+    /// Unlike Android, a refusal with NO reason is never matched on its
+    /// wording ("Device limit reached …"): iOS never did, and every backend
+    /// this build talks to sends the reason (birdo-web #739).
     static func classify(message: String?, refusalReason: String?, quotaExceeded: Bool) -> ConnectRefusedError {
         let reason = ConnectRefusalReason(wire: refusalReason)
         let text: String
-        switch reason {
-        case .deviceLimit?:
+        if reason == .deviceLimit {
             text = deviceLimitMessage
-        case let typed?:
-            let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            text = trimmed.isEmpty ? fallback(for: typed) : trimmed
-        case nil:
-            text = message ?? genericMessage
+        } else if let message, isPresentable(message) {
+            text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            text = genericMessage
         }
         return ConnectRefusedError(reason: reason, quotaExceeded: quotaExceeded, message: text)
     }
 
-    /// The copy for a typed refusal whose server sentence is missing or blank.
-    static func fallback(for reason: ConnectRefusalReason) -> String {
-        switch reason {
-        case .deviceLimit:
-            return deviceLimitMessage
-        case .plan:
-            return "This server is not included in your plan. Choose another server, or view the plans."
-        case .quotaExceeded:
-            return "Your free data for this period is used up. View the plans to keep connecting."
-        case .serverCapacity:
-            return "This server is full right now. Choose another server."
-        case .serverUnavailable:
-            return "This server is not available right now. Choose another server or try again later."
-        }
+    /// Bare HTTP reason phrases, which say nothing a user can act on.
+    private static let reasonPhrases: Set<String> = [
+        "bad request", "unauthorized", "forbidden", "not found", "conflict", "gone",
+        "unprocessable entity", "too many requests", "internal server error",
+        "service unavailable", "bad gateway", "gateway timeout", "http exception",
+        "validation failed",
+    ]
+
+    /// Whether a server sentence can be shown as-is: Android's
+    /// `ApiErrorMapper.isPresentable`, rule for rule. Not blank, at most 200
+    /// UTF-16 units (Kotlin's `length`), not JSON, no markup, no stack trace,
+    /// and not a bare HTTP reason phrase.
+    static func isPresentable(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty || t.utf16.count > 200 { return false }
+        if t.hasPrefix("{") || t.hasPrefix("[") || t.contains("<") { return false }
+        if t.contains("Exception") || t.contains("\tat ") || t.contains("stackTrace") { return false }
+        var phrase = t.lowercased()
+        while phrase.hasSuffix(".") { phrase.removeLast() }
+        return !reasonPhrases.contains(phrase)
     }
 }

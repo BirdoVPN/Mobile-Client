@@ -86,37 +86,73 @@ final class ConnectRefusalTests: XCTestCase {
         }
     }
 
-    /// Every other typed reason keeps the server's sentence, and has copy of
-    /// its own (never the generic sentence) when the server sent none.
-    func testTheOtherReasonsKeepTheServersSentenceAndHaveTheirOwnFallback() {
+    /// Android's `error_connect_failed`, word for word (vpn-d8's parity
+    /// decision): the one sentence for a refusal with nothing showable.
+    private static let androidConnectFailed =
+        "Couldn't connect to this server. Try again, or choose another location."
+
+    func testTheGenericSentenceIsAndroidsConnectFailedCopy() {
+        XCTAssertEqual(ConnectRefusedError.genericMessage, Self.androidConnectFailed)
+    }
+
+    /// Every other typed reason keeps the server's sentence, and gets the
+    /// generic sentence when the server sent none: no copy of its own, as on
+    /// Android.
+    func testTheOtherReasonsKeepTheServersSentenceOrGetTheGenericOne() {
         for reason in Self.typedReasons {
             let worded = refusal("  The server's own words.  ", reason.rawValue)
             XCTAssertEqual(worded.reason, reason)
             XCTAssertEqual(worded.message, "The server's own words.", reason.rawValue)
 
             for silent in [nil, "", "   "] {
-                let fallback = refusal(silent, reason.rawValue).message
-                XCTAssertEqual(fallback, ConnectRefusedError.fallback(for: reason), reason.rawValue)
-                XCTAssertFalse(fallback.isEmpty, reason.rawValue)
-                XCTAssertNotEqual(fallback, ConnectRefusedError.genericMessage, reason.rawValue)
+                XCTAssertEqual(refusal(silent, reason.rawValue).message, Self.androidConnectFailed,
+                               "\(reason.rawValue), \(String(describing: silent))")
             }
         }
-        // Distinct copy per reason: a full server is not "outside your plan".
-        let fallbacks = Self.typedReasons.map { ConnectRefusedError.fallback(for: $0) }
-        XCTAssertEqual(Set(fallbacks).count, fallbacks.count)
+    }
+
+    /// A sentence the user should not see is dropped for the generic one,
+    /// Android's `isPresentable` rule for rule: over 200 characters, JSON,
+    /// markup, a stack trace, or a bare HTTP reason phrase. Whatever the
+    /// reason, or none; the device cap's own sentence is never replaced.
+    func testAnUnshowableSentenceGetsTheGenericOneInstead() {
+        let unshowable = [
+            String(repeating: "x", count: 201),
+            #"{"statusCode":500,"message":"Internal server error"}"#,
+            #"["a","b"]"#,
+            "<html><body>502 Bad Gateway</body></html>",
+            "java.lang.IllegalStateException: boom",
+            "Error: boom\n\tat VpnService.connect (vpn.service.ts:120)",
+            "stackTrace: none",
+            "Bad Request",
+            "service unavailable.",
+            "Validation failed",
+        ]
+        for message in unshowable {
+            for reason in ["plan", "quota_exceeded", "server_capacity", "server_unavailable", nil,
+                           "a_reason_newer_than_this_build"] {
+                XCTAssertEqual(refusal(message, reason).message, Self.androidConnectFailed,
+                               "\(String(describing: reason)): \(message.prefix(40))")
+            }
+            XCTAssertEqual(refusal(message, "device_limit").message, ConnectRefusedError.deviceLimitMessage)
+        }
+        // At the limit it is shown; so is a sentence that merely mentions a phrase.
+        let twoHundred = String(repeating: "x", count: 200)
+        XCTAssertEqual(refusal(twoHundred, "plan").message, twoHundred)
+        XCTAssertEqual(refusal("Not found on this plan: pick another server.", nil).message,
+                       "Not found on this plan: pick another server.")
     }
 
     /// Without a reason (an older backend) or with one newer than this build,
-    /// a refusal reads exactly as before MR-139: the server's sentence,
-    /// verbatim, or the generic one when it sent none. Even the device cap's
-    /// wording is not read: before MR-139 iOS never did.
-    func testWithoutAKnownReasonItReadsExactlyAsBefore() {
+    /// the server's sentence when it is showable, otherwise the generic one.
+    /// The device cap's wording is not read: iOS never did.
+    func testWithoutAKnownReasonTheServersSentenceIsShown() {
         for reason in [nil, "a_reason_newer_than_this_build"] {
             let worded = refusal(Self.deviceCapWording, reason)
             XCTAssertNil(worded.reason)
             XCTAssertEqual(worded.message, Self.deviceCapWording)
             XCTAssertFalse(worded.offersPlans)
-            XCTAssertEqual(refusal(nil, reason).message, ConnectRefusedError.genericMessage)
+            XCTAssertEqual(refusal(nil, reason).message, Self.androidConnectFailed)
         }
     }
 
@@ -175,5 +211,36 @@ final class ConnectRefusalTests: XCTestCase {
         XCTAssertNil(older.refusalReason)
         XCTAssertNil(older.quotaExceeded)
         XCTAssertEqual(older.message, "Server is offline")
+    }
+
+    /// A wrong-typed `refusalReason` (a number) or `quotaExceeded` (a string)
+    /// must not fail the whole envelope: decoded strictly, the refusal lost
+    /// the server's sentence and became an opaque decoding failure. Both read
+    /// as absent; the sentence survives.
+    func testAWrongTypedReasonOrQuotaFlagReadsAsAbsentAndKeepsTheSentence() {
+        let bodies = [
+            #"{"success":false,"message":"The server's own words.","refusalReason":42,"quotaExceeded":"yes"}"#,
+            #"{"success":false,"message":"The server's own words.","refusalReason":{"code":"plan"}}"#,
+            #"{"success":false,"message":"The server's own words.","quotaExceeded":1}"#,
+        ]
+        for json in bodies {
+            let envelope: ConnectEnvelope
+            do {
+                envelope = try JSONDecoder().decode(ConnectEnvelope.self, from: Data(json.utf8))
+            } catch {
+                XCTFail("the envelope failed to decode, losing the server's sentence: \(error) — \(json)")
+                continue
+            }
+            XCTAssertEqual(envelope.success, false, json)
+            XCTAssertEqual(envelope.message, "The server's own words.", json)
+            XCTAssertNil(envelope.refusalReason, json)
+            XCTAssertNil(envelope.quotaExceeded, json)
+            let refused = ConnectRefusedError.classify(message: envelope.message,
+                                                       refusalReason: envelope.refusalReason,
+                                                       quotaExceeded: envelope.quotaExceeded ?? false)
+            XCTAssertNil(refused.reason, json)
+            XCTAssertEqual(refused.message, "The server's own words.", json)
+            XCTAssertFalse(refused.offersPlans, json)
+        }
     }
 }
