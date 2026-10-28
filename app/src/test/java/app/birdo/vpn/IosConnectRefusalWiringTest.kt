@@ -1,5 +1,8 @@
 package app.birdo.vpn
 
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -27,6 +30,13 @@ import java.io.File
  *   may have changed meanwhile;
  * - neither file writes the Quantum Protection preference, so no failure path
  *   can turn a retry into a non-PQ request.
+ *
+ * MR-139, the same split: `ConnectRefusalTests` pins ConnectRefusal.swift
+ * (the reasons against the contract, the copy, whether the plans are
+ * offered), and this pins its wiring: `decodeConnectResult` throws the typed
+ * refusal from the envelope's `refusalReason`, every dial records it, Home's
+ * "View plans" reads it rather than the wording, and the unit bundle compiles
+ * the file.
  *
  * Messages report counts and paths only, never source text.
  */
@@ -214,5 +224,103 @@ class IosConnectRefusalWiringTest {
             2,
             reads.findAll(apiClient).count(),
         )
+    }
+
+    // ── MR-139: a refusal inside the 200, keyed on refusalReason ─────────
+
+    private val refusalPath = "iosApp/iosApp/Services/ConnectRefusal.swift"
+    private val homePath = "iosApp/iosApp/Views/HomeView.swift"
+    private val envelopeDecl = Regex("""\bstruct\s+ConnectEnvelope\b""")
+    private val noteCall = "noteRefusal(after: error)"
+
+    @Test
+    fun `a refusal inside the 200 is thrown as the typed refusal, never as the server's bare words`() {
+        val decodeAt = apiClient.indexOf("private func decodeConnectResult(")
+        assertTrue("$apiClientPath: decodeConnectResult not found — this test would be vacuous", decodeAt >= 0)
+        val decode = apiClient.substring(decodeAt, apiClient.indexOf("\n    }\n", decodeAt))
+        val typedAt = decode.indexOf("throw ConnectRefusedError.classify(")
+        assertTrue("$apiClientPath: decodeConnectResult does not throw ConnectRefusedError.classify(", typedAt >= 0)
+        assertTrue(
+            "$apiClientPath: the typed refusal is not built from the envelope's refusalReason and quotaExceeded",
+            "refusalReason: envelope.refusalReason," in decode &&
+                "quotaExceeded: envelope.quotaExceeded ?? false" in decode,
+        )
+        assertFalse(
+            "$apiClientPath: decodeConnectResult still throws the server's bare words",
+            "APIError.serverMessage(" in decode,
+        )
+        // A refused rebuild keeps its own type and is told apart first.
+        val rebuildAt = decode.indexOf("throw RebuildRefusedError(")
+        assertTrue(
+            "$apiClientPath: the rebuild refusal is no longer thrown ahead of the typed refusal",
+            rebuildAt in 0 until typedAt,
+        )
+        // One envelope, the one the unit bundle decodes in ConnectRefusalTests.
+        assertFalse("$apiClientPath declares its own ConnectEnvelope again", envelopeDecl.containsMatchIn(apiClient))
+        assertTrue("$refusalPath has no ConnectEnvelope", envelopeDecl.containsMatchIn(source(refusalPath)))
+    }
+
+    @Test
+    fun `every function that dials a connect route records the typed refusal beside the hold`() {
+        val dialChunks = functionChunks(viewModel).filter { dialCall.containsMatchIn(it) }
+        assertEquals("$viewModelPath: dial functions", 3, dialChunks.size)
+        val recording = dialChunks.count { chunk ->
+            val hold = chunk.indexOf(holdCall)
+            val note = chunk.indexOf(noteCall, maxOf(hold, 0))
+            val banner = chunk.indexOf("self.error = error.localizedDescription", maxOf(note, 0))
+            hold >= 0 && note > hold && banner > note
+        }
+        assertEquals(
+            "$viewModelPath: dial functions whose catch calls $noteCall after the hold and before the banner",
+            dialChunks.size,
+            recording,
+        )
+        assertEquals(
+            "$viewModelPath: $noteCall call count (one per dial function)",
+            dialChunks.size,
+            Regex(Regex.escape(noteCall)).findAll(viewModel).count(),
+        )
+    }
+
+    @Test
+    fun `Home offers the plans off the refusal's reason, never off its wording`() {
+        val home = source(homePath)
+        assertTrue("$homePath: no View plans action keyed on vpnVM.refusalOffersPlans", "if vpnVM.refusalOffersPlans {" in home)
+        val destinationAt = home.indexOf(".navigationDestination(isPresented: \$showPlans)")
+        assertTrue("$homePath: the plans are not pushed off showPlans", destinationAt >= 0)
+        assertTrue(
+            "$homePath: showPlans does not push SubscriptionView",
+            home.indexOf("SubscriptionView()", destinationAt) in destinationAt until destinationAt + 200,
+        )
+        val offersAt = viewModel.indexOf("var refusalOffersPlans: Bool {")
+        assertTrue("$viewModelPath: refusalOffersPlans not found", offersAt >= 0)
+        val offers = viewModel.substring(offersAt, viewModel.indexOf("\n    }", offersAt))
+        assertTrue("$viewModelPath: refusalOffersPlans does not read the typed refusal", "refusal.offersPlans" in offers)
+        assertFalse(
+            "$viewModelPath: refusalOffersPlans reads the wording",
+            Regex("""\.(?:contains|hasPrefix|lowercased|range)\(""").containsMatchIn(offers),
+        )
+    }
+
+    @Test
+    fun `the unit bundle compiles the refusal rule, and its reasons are the contract's`() {
+        val project = source("iosApp/project.yml")
+        val unitBundle = project.substringAfter("\n  BirdoVPNTests:\n").substringBefore("\n  BirdoVPNUITests:")
+        assertTrue(
+            "iosApp/project.yml: BirdoVPNTests does not compile $refusalPath",
+            "- path: iosApp/Services/ConnectRefusal.swift" in unitBundle,
+        )
+        val swift = source(refusalPath)
+        val enumBody = swift.substringAfter("enum ConnectRefusalReason").substringBefore("init?(wire:")
+        val swiftReasons = Regex("""(?m)^\s*case\s+(\w+)(?:\s*=\s*"([^"]+)")?\s*$""").findAll(enumBody)
+            .map { it.groupValues[2].ifEmpty { it.groupValues[1] } }
+            .toSet()
+        val schema = File(repoRoot, "contract/vpn-protocol.schema.json").readText()
+        val contractReasons = kotlinx.serialization.json.Json.parseToJsonElement(schema)
+            .jsonObject["\$defs"]!!.jsonObject["ConnectRefusal"]!!.jsonObject["enum"]!!.jsonArray
+            .map { it.jsonPrimitive.content }
+            .toSet()
+        assertTrue("contract: \$defs.ConnectRefusal.enum is empty", contractReasons.isNotEmpty())
+        assertEquals("$refusalPath: ConnectRefusalReason wire values vs \$defs.ConnectRefusal", contractReasons, swiftReasons)
     }
 }
