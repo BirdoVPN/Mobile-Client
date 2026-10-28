@@ -374,6 +374,13 @@ targets:
       # Foundation-only by design, pinned by KillSwitchChipTests; VPNManager
       # (NetworkExtension) and HomeView cannot be compiled into this bundle.
       - path: iosApp/Services/KillSwitchChip.swift
+      # MR-1094: the App Lock's decisions (turn on only with a passcode, a
+      # removed passcode switches it off with a notice, no fail-open, only the
+      # background re-locks, the account number asks whenever a passcode
+      # exists). Foundation-only by design, pinned by AppLockPolicyTests;
+      # DeviceOwnerAuth (LocalAuthentication) and BiometricGate cannot be
+      # compiled into this bundle.
+      - path: iosApp/Services/AppLockPolicy.swift
       # MR-974: "Protected" only once a handshake is proven on the session
       # (inbound bytes), as on Android. Foundation-only by design, pinned by
       # TunnelProofTests; VpnViewModel and the views cannot be compiled here.

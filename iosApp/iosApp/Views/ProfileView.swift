@@ -20,6 +20,7 @@ struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @EnvironmentObject var vpnVM: VpnViewModel
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var showSubscription = false
     @State private var showDeleteDialog = false
@@ -34,7 +35,14 @@ struct ProfileView: View {
     /// as on Android and Windows and as the account API contract says. The
     /// snapshot cover keeps it out of the app switcher; this keeps it out of
     /// sight of whoever is beside the user. Copy still takes all of it.
+    /// MR-1094 (owner decision 2026-10-28): revealing it and copying it both
+    /// ask for the device owner first (Face ID, Touch ID or the passcode)
+    /// whenever the device has a passcode, App Lock on or off; it is masked
+    /// again when the app goes to the background.
     @State private var accountNumberShown = false
+    /// #522 review: a prompt's success counts only if the app has not been to
+    /// the background since it was asked (AppLockPolicy.Epoch).
+    @State private var revealEpoch = AppLockPolicy.Epoch()
 
     /// SSO / password-less anonymous accounts must NOT be asked for a
     /// password — the backend accepts a password-less delete (GDPR Art. 17).
@@ -135,6 +143,15 @@ struct ProfileView: View {
         .onDisappear {
             copyToastTask?.cancel()
         }
+        .onChange(of: scenePhase) { _, phase in
+            // MR-1094: a revealed number is masked again once the app leaves
+            // for the background; showing it again asks again.
+            // A success that lands after this is dropped (revealEpoch).
+            if phase == .background {
+                revealEpoch.enterBackground()
+                accountNumberShown = false
+            }
+        }
         .onChange(of: authVM.isLoggedIn) { _, loggedIn in
             // A confirmed deletion signs the user out from inside the dialog.
             // The shell no longer rebuilds on sign-out, so close it here or it
@@ -234,7 +251,13 @@ struct ProfileView: View {
     private func accountNumberRow(_ number: String) -> some View {
         HStack(spacing: 2) {
             Button {
-                copyAccountNumber(number)
+                let asked = revealEpoch
+                Task {
+                    if await DeviceOwnerAuth.confirmReveal(reason: "Copy your account number"),
+                       revealEpoch.stillCurrent(asked) {
+                        copyAccountNumber(number)
+                    }
+                }
             } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -262,7 +285,17 @@ struct ProfileView: View {
             .accessibilityHint("Copies the full account number")
 
             Button {
-                accountNumberShown.toggle()
+                if accountNumberShown {
+                    accountNumberShown = false
+                } else {
+                    let asked = revealEpoch
+                    Task {
+                        if await DeviceOwnerAuth.confirmReveal(reason: "Show your account number"),
+                           revealEpoch.stillCurrent(asked) {
+                            accountNumberShown = true
+                        }
+                    }
+                }
             } label: {
                 Image(systemName: accountNumberShown ? "eye.slash" : "eye")
                     .font(.system(size: 16))

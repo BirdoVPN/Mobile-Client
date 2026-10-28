@@ -40,6 +40,8 @@ struct SettingsView: View {
 
     /// Upgrade destination for the two locked VPN rows (§0.5).
     @State private var showSubscription = false
+    /// MR-1094: why App Lock could not be turned on (no device passcode).
+    @State private var appLockRefusal: String?
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
@@ -229,29 +231,66 @@ struct SettingsView: View {
 
     // MARK: - Privacy
 
+    /// App Lock (MR-1094). Turning it ON asks for the device owner first: it
+    /// needs a device passcode (AppLockPolicy.canTurnOn), and a successful
+    /// prompt both proves the owner can unlock and asks iOS for Face ID
+    /// permission at a moment the user expects it. The switch stays off until
+    /// then. Turning it off asks nothing: the app is already unlocked.
+    private var appLockBinding: Binding<Bool> {
+        Binding(
+            get: { settingsVM.biometricLockEnabled },
+            set: { on in
+                if on {
+                    Task { await turnOnAppLock() }
+                } else {
+                    settingsVM.biometricLockEnabled = false
+                }
+            }
+        )
+    }
+
+    private func turnOnAppLock() async {
+        guard AppLockPolicy.canTurnOn(DeviceOwnerAuth.availability()) else {
+            appLockRefusal = "Set a passcode for this device first. App Lock asks for Face ID, Touch ID "
+                + "or the passcode, and needs a passcode to fall back on."
+            return
+        }
+        switch await DeviceOwnerAuth.authenticate(reason: "Turn on App Lock") {
+        case .success:
+            settingsVM.biometricLockEnabled = true
+        case .passcodeNotSet:
+            appLockRefusal = "Set a passcode for this device first. App Lock asks for Face ID, Touch ID "
+                + "or the passcode, and needs a passcode to fall back on."
+        case .failed:
+            break // cancelled or failed: it stays off
+        }
+    }
+
     /// Grouped so the body stays a flat list of sections; a @ViewBuilder
     /// property flattens into the enclosing VStack, so spacing is unchanged.
     @ViewBuilder
     private var privacySection: some View {
-        // P1-ios-biometric-gate-is-cosmetic: the BEHAVIOUR is accepted as-is
-        // (owner decision) — this gate covers the UI and nothing else. It
-        // unlocks no keychain item, decrypts nothing, and the app keeps running
-        // behind the cover, so Auto-Connect still brings the tunnel up while
-        // the screen is "locked". What changed is that it no longer *reads* as
-        // a security guarantee: it is out of the Security section, off the
-        // green (= protected) icon colour, and the copy says what it actually
-        // does. Do not restore the old wording without also making the gate
-        // gate something.
+        // MR-1094 (owner decision 2026-10-28): App Lock is opt-in, but real
+        // when on. Nothing is shown until the owner unlocks with Face ID, Touch
+        // ID or the passcode; it re-locks in the background; the VPN keeps
+        // running underneath (BiometricGate, AppLockPolicy). It replaces the
+        // cover-only "Hide App Contents" under the same stored setting.
         SectionHeader("Privacy")
-        SettingsToggleRow(icon: "eye.slash", iconColor: BirdoTheme.white60,
-                          title: "Hide App Contents",
-                          description: "Covers the screen with a Face ID prompt when you "
-                            + "open the app. Hides what is on screen only — it protects "
-                            + "no data, and the VPN keeps running behind it, including "
-                            + "Auto-Connect.",
-                          isOn: $settingsVM.biometricLockEnabled)
-        // The two settings that actually protect traffic sit directly under
-        // the gate that protects none of it — the ordering is the point. Kill
+        SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.white60,
+                          title: "App Lock",
+                          description: "Asks for Face ID, Touch ID or your passcode before BirdoVPN shows "
+                            + "anything, each time you open it or come back to it. Needs a device "
+                            + "passcode. The VPN keeps running while the app is locked.",
+                          isOn: appLockBinding)
+            .alert("App Lock needs a passcode",
+                   isPresented: Binding(get: { appLockRefusal != nil },
+                                        set: { if !$0 { appLockRefusal = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(appLockRefusal ?? "")
+            }
+        // The two settings that protect traffic sit directly under App Lock,
+        // which guards the app, not the traffic. Kill
         // Switch keeps its T2 binding (`killSwitchToggleBinding`, never
         // `killSwitchEnabled`) and the confirm-before-disable dialog attached
         // to this screen's body.
@@ -510,10 +549,8 @@ private struct SettingsRowText: View {
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 // 4, not 2: every other row's copy is one or two lines, so this
-                // is a max that only bites on the one row that needs the space
-                // — "Hide App Contents", whose whole point is saying plainly
-                // what it does NOT protect. A truncated honesty disclaimer is
-                // worse than none.
+                // is a max that only bites on the rows that need the space
+                // (App Lock, Kill Switch).
                 .lineLimit(4)
         }
         .multilineTextAlignment(.leading)

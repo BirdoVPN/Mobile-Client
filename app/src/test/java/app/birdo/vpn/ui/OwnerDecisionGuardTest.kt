@@ -1,5 +1,6 @@
 package app.birdo.vpn.ui
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -81,25 +82,159 @@ class OwnerDecisionGuardTest {
         assertFalse(source("$main/ui/screen/HomeScreen.kt").contains("quantum", ignoreCase = true))
     }
 
-    // ── MR-1094: the Face ID / Touch ID prompt says what the gate does ───
+    // ── MR-1094: the iOS App Lock is real when on (owner, 2026-10-28) ──────
 
     @Test
-    fun `the Face ID and Touch ID purpose strings promise a cover, not protection`() {
-        // P1-ios-biometric-gate-is-cosmetic, kept by the owner: the gate covers
-        // the screen and protects no data (BiometricGate.swift). iOS shows this
-        // string in the system prompt the first time the gate runs.
+    fun `the Face ID and Touch ID purpose strings name App Lock and the account number`() {
+        // iOS shows this string in the system prompt the first time Face ID is
+        // asked for: turning App Lock on, or revealing the account number.
         val purpose = Regex("""<key>NSFaceIDUsageDescription</key>\s*<string>([^<]*)</string>""")
         for (plist in listOf("iosApp/iosApp/Info.plist", "iosApp/iosApp/Info-macOS.plist")) {
             val text = purpose.find(source(plist))?.groupValues?.get(1)
             assertTrue("$plist has no NSFaceIDUsageDescription", text != null)
-            assertFalse("$plist: \"$text\" claims protection", text!!.contains("protect", ignoreCase = true))
-            assertFalse("$plist: \"$text\" claims security", text.contains("secur", ignoreCase = true))
-            assertTrue("$plist: \"$text\" does not name the setting it belongs to", text.contains("Hide App Contents"))
+            assertTrue("$plist: \"$text\" does not name the setting it belongs to", text!!.contains("App Lock"))
+            assertTrue("$plist: \"$text\" does not say it guards the account number", text.contains("account number"))
+            assertFalse("$plist: \"$text\" still names the old cover", text.contains("Hide App Contents"))
         }
         // A localised copy would show its own text in the prompt.
         val localized = File(repoRoot, "iosApp").walkTopDown()
             .filter { it.isFile && it.extension == "strings" && it.readText().contains("NSFaceIDUsageDescription") }
             .toList()
-        localized.forEach { assertFalse("${it.path} claims protection", it.readText().contains("protect", ignoreCase = true)) }
+        localized.forEach { assertFalse("${it.path} names the old cover", it.readText().contains("Hide App Contents")) }
+    }
+
+    @Test
+    fun `the iOS App Lock is real when on and the account number asks first`() {
+        val ios = "iosApp/iosApp"
+        // The gate can switch the setting off itself (passcode removed).
+        assertTrue(source("$ios/BirdoVPNApp.swift").contains("BiometricGate(enabled: \$settingsVM.biometricLockEnabled)"))
+        val gate = source("$ios/Views/BiometricGate.swift")
+        assertTrue("the gate no longer decides from AppLockPolicy", gate.contains("AppLockPolicy.reconcile("))
+        assertTrue(gate.contains("AppLockPolicy.covered("))
+        assertTrue(gate.contains("AppLockPolicy.locked(after:"))
+        // Nothing shown: not visible, not touchable, not reachable by VoiceOver
+        // or a hardware keyboard.
+        listOf(".opacity(covered ? 0 : 1)", ".allowsHitTesting(!covered)", ".disabled(covered)", ".accessibilityHidden(covered)")
+            .forEach { assertTrue("the covered content lost $it", gate.contains(it)) }
+        assertFalse("the gate still fails open", gate.contains("fail open"))
+        // Face ID or Touch ID with the passcode fallback, never biometrics alone.
+        // Code only: the file's own doc comment names the policy it must not use.
+        val auth = source("$ios/Services/DeviceOwnerAuth.swift").lines()
+            .filterNot { it.trimStart().startsWith("//") }.joinToString(" ")
+        assertTrue(auth.contains("evaluatePolicy(.deviceOwnerAuthentication,"))
+        assertFalse(auth.contains("deviceOwnerAuthenticationWithBiometrics"))
+        // Owner: the tokens are NOT tied to Face ID.
+        val keychain = source("$ios/Services/KeychainService.swift")
+        assertFalse(keychain.contains("biometryCurrentSet") || keychain.contains(".userPresence"))
+        // Settings: turning it on asks for the owner first; the copy is the real one.
+        val settings = source("$ios/Views/SettingsView.swift")
+        assertTrue(settings.contains("title: \"App Lock\""))
+        assertFalse(settings.contains("protects no data"))
+        assertTrue("turning App Lock on does not authenticate first", settings.contains("DeviceOwnerAuth.authenticate("))
+        // Profile: both the reveal and the copy ask; the one-time "save your
+        // number" screen after account creation is exempt.
+        val profile = source("$ios/Views/ProfileView.swift")
+        assertTrue(Regex("""DeviceOwnerAuth\.confirmReveal\(""").findAll(profile).count() >= 2)
+        assertFalse(source("$ios/Views/LoginView.swift").contains("DeviceOwnerAuth"))
+        val project = source("iosApp/project.yml")
+        assertTrue(project.contains("- path: iosApp/Services/AppLockPolicy.swift"))
+        assertTrue(File(repoRoot, "iosApp/BirdoVPNTests/AppLockPolicyTests.swift").isFile)
+    }
+
+    /**
+     * #522 review B1: SwiftUI presents sheets, alerts, confirmation dialogs and
+     * full-screen covers from the app's window, above anything in its view
+     * hierarchy, so a cover that is a sibling of the content stays BELOW them.
+     * The sign-in sheet with a new 24-digit number stayed on top, usable, after
+     * the app re-locked. The lock screen is a window of its own above every
+     * presentation, shown and hidden with the lock state.
+     */
+    @Test
+    fun `the iOS lock screen is a window above every sheet, alert and full-screen cover`() {
+        val ios = "iosApp/iosApp"
+        val gate = source("$ios/Views/BiometricGate.swift")
+        assertTrue("the cover window is not above .alert", gate.contains("static let level = UIWindow.Level.alert + 1"))
+        assertTrue(gate.contains("window.windowLevel = Self.level"))
+        assertTrue("VoiceOver can reach what is under the cover", gate.contains("host.view.accessibilityViewIsModal = true"))
+        // It follows the lock state from the first frame, and hides when unlocked.
+        assertTrue(gate.contains(".onChange(of: coverState, initial: true)"))
+        val sync = gate.substringAfter("private func syncCoverWindow(", "")
+            .substringBefore("private func reconcileAndUnlock(")
+        assertTrue("the cover window is not shown while covered", Regex("""if state\.covered \{\s*coverWindow\.show\(""").containsMatchIn(sync))
+        assertTrue("the cover window is never hidden", sync.contains("coverWindow.hide()"))
+
+        // #522 re-review C1: the keyboard's windows sit above .alert + 1, so
+        // locking takes the keyboard down (its QuickType / AutoFill bar would
+        // show over the lock).
+        val show = gate.substringAfter("func show(_ root: AnyView, takeFocus: Bool) {", "").substringBefore("\n    func hide()")
+        val focus = show.substringAfter("if takeFocus {", "")
+        assertTrue(
+            "locking does not take the keyboard down first",
+            focus.trimStart().let { body ->
+                body.lines().filterNot { it.trimStart().startsWith("//") }.joinToString("\n").trimStart()
+                    .startsWith("UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)")
+            },
+        )
+        // C2: accessibilityViewIsModal reaches only the cover's own window, so
+        // every other window of the scene is hidden from VoiceOver while
+        // covered, and gets its earlier value back when the cover hides.
+        assertTrue("the other windows are not hidden from VoiceOver on show", show.contains("silenceOtherWindows(besides: window)"))
+        val silence = gate.substringAfter("private func silenceOtherWindows(besides cover: UIWindow) {", "").substringBefore("\n    }")
+        assertTrue(silence.contains("for other in cover.windowScene?.windows ?? [] where other !== cover {"))
+        assertTrue(silence.contains("silencedWindows.append((other, other.accessibilityElementsHidden))"))
+        assertTrue(silence.contains("other.accessibilityElementsHidden = true"))
+        val hide = gate.substringAfter("    func hide() {", "").substringBefore("\n    }")
+        assertTrue("hiding the cover leaves the app silent to VoiceOver", hide.contains("restoreOtherWindows()"))
+        val restore = gate.substringAfter("private func restoreOtherWindows() {", "").substringBefore("\n    }")
+        assertTrue(restore.contains("other.accessibilityElementsHidden = wasHidden"))
+        // Nit: with nothing key at the first show (a locked cold launch), the
+        // app's .normal window becomes key again.
+        assertTrue(hide.contains("\$0.windowLevel == .normal"))
+
+        // A presentation escapes the cover only from another window: one the
+        // app opens itself, a window level above the cover's, a separately
+        // hosted SwiftUI tree, a UIKit present(), or a second scene. The gate's
+        // cover window is the only one of any of these.
+        val escapes = listOf(
+            Regex("""\bUIWindow\s*\("""),
+            Regex("""\bwindowLevel\s*="""),
+            Regex("""\bUIHostingController\s*\("""),
+            Regex("""\.present\s*\("""),
+            Regex("""(?m)^\s*(?:WindowGroup|Window|DocumentGroup|MenuBarExtra|UtilityWindow)\b[^\n]*\{"""),
+        )
+        val offenders = File(repoRoot, ios).walkTopDown()
+            .filter { it.isFile && it.extension == "swift" && it.name != "BiometricGate.swift" }
+            .flatMap { file ->
+                val code = file.readLines().filterNot { it.trimStart().startsWith("//") }.joinToString("\n")
+                escapes.filter { it.containsMatchIn(code) }.map { "${file.name}: ${it.pattern}" }
+            }
+            .toList()
+        // The app's one WindowGroup is the one the gate wraps.
+        assertEquals(listOf("BirdoVPNApp.swift: ${escapes.last().pattern}"), offenders)
+        val app = source("$ios/BirdoVPNApp.swift")
+        assertEquals("a second scene would not be under the lock", 1, Regex("""\bWindowGroup\s*\{""").findAll(app).count())
+        assertTrue(Regex("""WindowGroup\s*\{\s*(?://[^\n]*\s*)*BiometricGate\(""").containsMatchIn(app))
+    }
+
+    /** #522 review N3: the passcode-removed notice, and N1: no late success. */
+    @Test
+    fun `a removed passcode switches App Lock off with a notice, and a late Face ID success is dropped`() {
+        val ios = "iosApp/iosApp"
+        val gate = source("$ios/Views/BiometricGate.swift")
+        assertTrue(gate.contains(".alert(\"App Lock is off\", isPresented: \$showPasscodeRemovedNotice)"))
+        val switchOff = gate.substringAfter("private func switchOffForMissingPasscode(notify: Bool) {", "")
+            .substringBefore("\n    }")
+        assertTrue("the setting is not switched off", switchOff.contains("enabled = false"))
+        assertTrue("the notice is not raised", switchOff.contains("if notify { showPasscodeRemovedNotice = true }"))
+        assertTrue(gate.contains("switchOffForMissingPasscode(notify: result.notify)"))
+        // Both at launch/foreground and when the passcode goes mid-prompt.
+        assertTrue(gate.contains("case .passcodeNotSet:\n                // The passcode went between the check and the prompt.\n                switchOffForMissingPasscode(notify: true)"))
+
+        // N1: a success that lands after the app reached the background is dropped.
+        assertTrue(gate.contains("if newPhase == .background { epoch.enterBackground() }"))
+        assertTrue(gate.contains("guard epoch.stillCurrent(asked) else { return }"))
+        val profile = source("$ios/Views/ProfileView.swift")
+        assertTrue(profile.contains("revealEpoch.enterBackground()"))
+        assertEquals("the reveal and the copy must both drop a late success", 2, Regex("""revealEpoch\.stillCurrent\(asked\)""").findAll(profile).count())
     }
 }
