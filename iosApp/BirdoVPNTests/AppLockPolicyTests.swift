@@ -72,4 +72,24 @@ final class AppLockPolicyTests: XCTestCase {
         XCTAssertTrue(Policy.revealNeedsOwner(.unavailable(reason: "Biometry is locked out.")))
         XCTAssertFalse(Policy.revealNeedsOwner(.passcodeNotSet))
     }
+
+    /// #522 review N1: a Face ID success can land after the app has gone to
+    /// the background (a swipe home during the success animation). It belongs
+    /// to the lock period that ended and must not unlock the next open or
+    /// reveal the account number.
+    func testASuccessAskedBeforeTheBackgroundIsDropped() {
+        var epoch = Policy.Epoch()
+        let asked = epoch
+        XCTAssertTrue(epoch.stillCurrent(asked), "nothing happened in between")
+
+        epoch.enterBackground()
+        XCTAssertFalse(epoch.stillCurrent(asked), "a success from before the background still counts")
+
+        let askedAgain = epoch
+        XCTAssertTrue(epoch.stillCurrent(askedAgain), "a prompt asked after returning counts")
+        epoch.enterBackground()
+        epoch.enterBackground()
+        XCTAssertFalse(epoch.stillCurrent(askedAgain))
+        XCTAssertFalse(epoch.stillCurrent(asked))
+    }
 }

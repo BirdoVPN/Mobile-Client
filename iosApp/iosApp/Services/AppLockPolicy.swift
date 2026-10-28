@@ -73,4 +73,21 @@ enum AppLockPolicy {
     static func revealNeedsOwner(_ availability: Availability) -> Bool {
         availability != .passcodeNotSet
     }
+
+    /// The lock period a prompt was asked in (#522 review). A Face ID success
+    /// can land after the app has reached the background, for instance when
+    /// the user swipes home during the success animation. Applied then, it
+    /// would unlock the NEXT open, or reveal the account number, without
+    /// asking. The epoch moves on every trip to the background, and a success
+    /// asked in an earlier one is dropped.
+    struct Epoch: Equatable, Sendable {
+        private var value = 0
+
+        init() {}
+
+        mutating func enterBackground() { value &+= 1 }
+
+        /// Whether a prompt asked at `asked` still speaks for now.
+        func stillCurrent(_ asked: Epoch) -> Bool { asked == self }
+    }
 }

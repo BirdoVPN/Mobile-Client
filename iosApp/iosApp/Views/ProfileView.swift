@@ -40,6 +40,9 @@ struct ProfileView: View {
     /// whenever the device has a passcode, App Lock on or off; it is masked
     /// again when the app goes to the background.
     @State private var accountNumberShown = false
+    /// #522 review: a prompt's success counts only if the app has not been to
+    /// the background since it was asked (AppLockPolicy.Epoch).
+    @State private var revealEpoch = AppLockPolicy.Epoch()
 
     /// SSO / password-less anonymous accounts must NOT be asked for a
     /// password — the backend accepts a password-less delete (GDPR Art. 17).
@@ -143,7 +146,11 @@ struct ProfileView: View {
         .onChange(of: scenePhase) { _, phase in
             // MR-1094: a revealed number is masked again once the app leaves
             // for the background; showing it again asks again.
-            if phase == .background { accountNumberShown = false }
+            // A success that lands after this is dropped (revealEpoch).
+            if phase == .background {
+                revealEpoch.enterBackground()
+                accountNumberShown = false
+            }
         }
         .onChange(of: authVM.isLoggedIn) { _, loggedIn in
             // A confirmed deletion signs the user out from inside the dialog.
@@ -244,8 +251,10 @@ struct ProfileView: View {
     private func accountNumberRow(_ number: String) -> some View {
         HStack(spacing: 2) {
             Button {
+                let asked = revealEpoch
                 Task {
-                    if await DeviceOwnerAuth.confirmReveal(reason: "Copy your account number") {
+                    if await DeviceOwnerAuth.confirmReveal(reason: "Copy your account number"),
+                       revealEpoch.stillCurrent(asked) {
                         copyAccountNumber(number)
                     }
                 }
@@ -279,8 +288,10 @@ struct ProfileView: View {
                 if accountNumberShown {
                     accountNumberShown = false
                 } else {
+                    let asked = revealEpoch
                     Task {
-                        if await DeviceOwnerAuth.confirmReveal(reason: "Show your account number") {
+                        if await DeviceOwnerAuth.confirmReveal(reason: "Show your account number"),
+                           revealEpoch.stillCurrent(asked) {
                             accountNumberShown = true
                         }
                     }

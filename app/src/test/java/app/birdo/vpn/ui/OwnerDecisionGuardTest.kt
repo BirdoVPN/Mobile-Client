@@ -1,5 +1,6 @@
 package app.birdo.vpn.ui
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -122,5 +123,74 @@ class OwnerDecisionGuardTest {
         val project = source("iosApp/project.yml")
         assertTrue(project.contains("- path: iosApp/Services/AppLockPolicy.swift"))
         assertTrue(File(repoRoot, "iosApp/BirdoVPNTests/AppLockPolicyTests.swift").isFile)
+    }
+
+    /**
+     * #522 review B1: SwiftUI presents sheets, alerts, confirmation dialogs and
+     * full-screen covers from the app's window, above anything in its view
+     * hierarchy, so a cover that is a sibling of the content stays BELOW them.
+     * The sign-in sheet with a new 24-digit number stayed on top, usable, after
+     * the app re-locked. The lock screen is a window of its own above every
+     * presentation, shown and hidden with the lock state.
+     */
+    @Test
+    fun `the iOS lock screen is a window above every sheet, alert and full-screen cover`() {
+        val ios = "iosApp/iosApp"
+        val gate = source("$ios/Views/BiometricGate.swift")
+        assertTrue("the cover window is not above .alert", gate.contains("static let level = UIWindow.Level.alert + 1"))
+        assertTrue(gate.contains("window.windowLevel = Self.level"))
+        assertTrue("VoiceOver can reach what is under the cover", gate.contains("host.view.accessibilityViewIsModal = true"))
+        // It follows the lock state from the first frame, and hides when unlocked.
+        assertTrue(gate.contains(".onChange(of: coverState, initial: true)"))
+        val sync = gate.substringAfter("private func syncCoverWindow(", "")
+            .substringBefore("private func reconcileAndUnlock(")
+        assertTrue("the cover window is not shown while covered", Regex("""if state\.covered \{\s*coverWindow\.show\(""").containsMatchIn(sync))
+        assertTrue("the cover window is never hidden", sync.contains("coverWindow.hide()"))
+
+        // A presentation escapes the cover only from another window: one the
+        // app opens itself, a window level above the cover's, a separately
+        // hosted SwiftUI tree, a UIKit present(), or a second scene. The gate's
+        // cover window is the only one of any of these.
+        val escapes = listOf(
+            Regex("""\bUIWindow\s*\("""),
+            Regex("""\bwindowLevel\s*="""),
+            Regex("""\bUIHostingController\s*\("""),
+            Regex("""\.present\s*\("""),
+            Regex("""(?m)^\s*(?:WindowGroup|Window|DocumentGroup|MenuBarExtra|UtilityWindow)\b[^\n]*\{"""),
+        )
+        val offenders = File(repoRoot, ios).walkTopDown()
+            .filter { it.isFile && it.extension == "swift" && it.name != "BiometricGate.swift" }
+            .flatMap { file ->
+                val code = file.readLines().filterNot { it.trimStart().startsWith("//") }.joinToString("\n")
+                escapes.filter { it.containsMatchIn(code) }.map { "${file.name}: ${it.pattern}" }
+            }
+            .toList()
+        // The app's one WindowGroup is the one the gate wraps.
+        assertEquals(listOf("BirdoVPNApp.swift: ${escapes.last().pattern}"), offenders)
+        val app = source("$ios/BirdoVPNApp.swift")
+        assertEquals("a second scene would not be under the lock", 1, Regex("""\bWindowGroup\s*\{""").findAll(app).count())
+        assertTrue(Regex("""WindowGroup\s*\{\s*(?://[^\n]*\s*)*BiometricGate\(""").containsMatchIn(app))
+    }
+
+    /** #522 review N3: the passcode-removed notice, and N1: no late success. */
+    @Test
+    fun `a removed passcode switches App Lock off with a notice, and a late Face ID success is dropped`() {
+        val ios = "iosApp/iosApp"
+        val gate = source("$ios/Views/BiometricGate.swift")
+        assertTrue(gate.contains(".alert(\"App Lock is off\", isPresented: \$showPasscodeRemovedNotice)"))
+        val switchOff = gate.substringAfter("private func switchOffForMissingPasscode(notify: Bool) {", "")
+            .substringBefore("\n    }")
+        assertTrue("the setting is not switched off", switchOff.contains("enabled = false"))
+        assertTrue("the notice is not raised", switchOff.contains("if notify { showPasscodeRemovedNotice = true }"))
+        assertTrue(gate.contains("switchOffForMissingPasscode(notify: result.notify)"))
+        // Both at launch/foreground and when the passcode goes mid-prompt.
+        assertTrue(gate.contains("case .passcodeNotSet:\n                // The passcode went between the check and the prompt.\n                switchOffForMissingPasscode(notify: true)"))
+
+        // N1: a success that lands after the app reached the background is dropped.
+        assertTrue(gate.contains("if newPhase == .background { epoch.enterBackground() }"))
+        assertTrue(gate.contains("guard epoch.stillCurrent(asked) else { return }"))
+        val profile = source("$ios/Views/ProfileView.swift")
+        assertTrue(profile.contains("revealEpoch.enterBackground()"))
+        assertEquals("the reveal and the copy must both drop a late success", 2, Regex("""revealEpoch\.stillCurrent\(asked\)""").findAll(profile).count())
     }
 }
