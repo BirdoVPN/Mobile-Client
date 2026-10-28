@@ -8,8 +8,8 @@ import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.AndroidKeystoreKeySource
 import app.birdo.vpn.security.InMemorySecureStore
 import app.birdo.vpn.security.KeystoreSecureStore
-import app.birdo.vpn.security.LegacyEncryptedPrefsSource
-import app.birdo.vpn.security.LegacySecretSource
+import app.birdo.vpn.security.LegacyEncryptedPrefsLeftover
+import app.birdo.vpn.security.LegacyLeftover
 import app.birdo.vpn.security.SecureStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.sentry.Sentry
@@ -25,8 +25,10 @@ import javax.inject.Singleton
  * Values live in a plain SharedPreferences file (`birdo_vpn_secure_v2`) where
  * every value is sealed with an Android Keystore AES-256-GCM key
  * ([KeystoreSecureStore]); the key never leaves the Keystore. This replaced
- * androidx.security's deprecated EncryptedSharedPreferences; the legacy file
- * is migrated in place, once, by [migrateLegacyStore].
+ * androidx.security's deprecated EncryptedSharedPreferences. Releases 1.4.28
+ * to 1.4.34 migrated that file in place, once; since MR-958 the library is
+ * gone and what an older install still holds is deleted unread
+ * ([discardLegacyStore]): that user signs in again.
  *
  * Includes recovery logic for Android Keystore corruption — a known issue on
  * Samsung devices (Knox key rotation, OS updates) where the key cannot be used
@@ -43,7 +45,7 @@ class TokenManager @VisibleForTesting internal constructor(
     /**
      * What the manager needs from the platform: a way to open the sealed store
      * (throwing if the Keystore cannot be used), a way to wipe it after a
-     * corruption, and the legacy store to migrate from.
+     * corruption, and the pre-1.4.28 store to delete if it is still on disk.
      */
     interface Backend {
         @Throws(Exception::class)
@@ -52,7 +54,7 @@ class TokenManager @VisibleForTesting internal constructor(
         /** Delete the Keystore key and the v2 file so [open] starts from scratch. */
         fun reset()
 
-        val legacy: LegacySecretSource
+        val legacy: LegacyLeftover
     }
 
     companion object {
@@ -75,50 +77,7 @@ class TokenManager @VisibleForTesting internal constructor(
         private const val KEY_PENDING_ANON_ID = "pending_anonymous_id"
         /** Maximum sane token length — prevents storage of garbage data */
         private const val MAX_TOKEN_LENGTH = 4096
-
-        /**
-         * Copy every value of the legacy EncryptedSharedPreferences file into
-         * [store], verify each one reads back, then destroy the legacy file
-         * and its master key. Idempotent: with no legacy file it does nothing.
-         *
-         * - Legacy exists but cannot be opened → the data was already
-         *   unrecoverable (the old code path deleted it and re-logged the user
-         *   in); destroy it and move on.
-         * - [store] already holds any of the legacy keys → a previous run
-         *   copied but failed to destroy; do NOT overwrite (the user may have
-         *   logged in since, and a stale single-use refresh token written over
-         *   a fresh one trips the server's theft detection). Just destroy.
-         * - A copied value does not read back → undo the copies and leave the
-         *   legacy file for the next launch; nothing is destroyed.
-         */
-        @VisibleForTesting
-        internal fun migrateLegacyStore(store: SecureStore, legacy: LegacySecretSource): Migration {
-            val values = try {
-                legacy.readAll() ?: return Migration.NOTHING_TO_DO
-            } catch (e: Exception) {
-                Log.w(TAG, "legacy secure prefs exist but cannot be opened — discarding them", e)
-                legacy.destroy()
-                return Migration.LEGACY_UNREADABLE
-            }
-            if (values.keys.any { store.contains(it) }) {
-                Log.i(TAG, "v2 store already populated — dropping the legacy copy")
-                legacy.destroy()
-                return Migration.ALREADY_MIGRATED
-            }
-            for ((k, v) in values) store.put(k, v, commit = true)
-            val bad = values.entries.firstOrNull { (k, v) -> store.get(k) != v }
-            if (bad != null) {
-                Log.e(TAG, "migrated value '${bad.key}' did not read back — keeping the legacy store")
-                for (k in values.keys) store.remove(k, commit = true)
-                return Migration.VERIFY_FAILED
-            }
-            legacy.destroy()
-            Log.i(TAG, "migrated ${values.size} legacy secure value(s) to the v2 store")
-            return Migration.MIGRATED
-        }
     }
-
-    internal enum class Migration { NOTHING_TO_DO, MIGRATED, ALREADY_MIGRATED, LEGACY_UNREADABLE, VERIFY_FAILED }
 
     /** True when Keystore recovery failed and we fell back to non-persistent storage. */
     @Volatile
@@ -145,6 +104,7 @@ class TokenManager @VisibleForTesting internal constructor(
     internal fun holdsWireGuardKey(): Boolean = store.contains(LEGACY_KEY_WG_PRIVATE_KEY)
 
     private fun openWithRecovery(): SecureStore {
+        discardLegacyStore()
         val opened = try {
             backend.open()
         } catch (e: Exception) {
@@ -162,14 +122,26 @@ class TokenManager @VisibleForTesting internal constructor(
                 return InMemorySecureStore()
             }
         }
-        try {
-            migrateLegacyStore(opened, backend.legacy)
-        } catch (e: Exception) {
-            // Migration must never take the app down with it.
-            Log.e(TAG, "legacy migration threw — continuing with whatever is in the v2 store", e)
-            Sentry.captureException(e)
-        }
         return opened
+    }
+
+    /**
+     * MR-958: the pre-1.4.28 EncryptedSharedPreferences file cannot be read
+     * since androidx.security:security-crypto left the build. An install that
+     * skipped every release carrying the one-shot migration (1.4.28 to 1.4.34)
+     * still has it: delete it and its master key unread, whatever state the
+     * Keystore is in. The v2 store is never touched, so a session that already
+     * migrated is kept. Must never take the app down with it.
+     */
+    private fun discardLegacyStore() {
+        try {
+            if (backend.legacy.present()) {
+                Log.i(TAG, "pre-1.4.28 secure prefs found — deleting them unread (the user signs in again)")
+                backend.legacy.discard()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "could not delete the pre-1.4.28 secure prefs — retried on the next start", e)
+        }
     }
 
     // ── Access Token ─────────────────────────────────────────────
@@ -326,12 +298,12 @@ class TokenManager @VisibleForTesting internal constructor(
  * The production [TokenManager.Backend]: a Keystore AES-256-GCM key under
  * [TokenManager.KEY_ALIAS_V2] sealing values into the plain prefs file
  * [TokenManager.PREFS_NAME_V2], with the pre-v2 EncryptedSharedPreferences
- * file as the legacy source.
+ * file as the leftover to delete.
  */
 private class AndroidBackend(private val context: Context) : TokenManager.Backend {
 
-    override val legacy: LegacySecretSource =
-        LegacyEncryptedPrefsSource(context, TokenManager.LEGACY_PREFS_NAME, TokenManager.LEGACY_MASTER_KEY_ALIAS)
+    override val legacy: LegacyLeftover =
+        LegacyEncryptedPrefsLeftover(context, TokenManager.LEGACY_PREFS_NAME, TokenManager.LEGACY_MASTER_KEY_ALIAS)
 
     override fun open(): SecureStore {
         val keys = AndroidKeystoreKeySource(TokenManager.KEY_ALIAS_V2)

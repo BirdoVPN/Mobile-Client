@@ -5,8 +5,8 @@ import android.util.Log
 import androidx.annotation.VisibleForTesting
 import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.AndroidKeystoreKeySource
-import app.birdo.vpn.security.LegacyBlobSource
-import app.birdo.vpn.security.LegacyEncryptedFileSource
+import app.birdo.vpn.security.LegacyEncryptedFileLeftover
+import app.birdo.vpn.security.LegacyLeftover
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -30,9 +30,10 @@ import java.nio.file.StandardCopyOption
  *
  * - `rosenpass/static.pk` — plaintext public key (it IS public)
  * - `rosenpass/static.sk.v2` — sealed secret key
- * - `rosenpass/static.sk.enc` — the pre-v2 androidx EncryptedFile; read once
- *   by [load] and re-sealed into `static.sk.v2`, then deleted with its master
- *   key. The keypair the servers have pinned survives the upgrade.
+ * - `rosenpass/static.sk.enc` — the pre-1.4.28 androidx EncryptedFile.
+ *   1.4.28 to 1.4.34 re-sealed it into `static.sk.v2` once; since MR-958 the
+ *   library that could read it is gone, so one still on disk is deleted
+ *   unread with its master key and the keypair is regenerated.
  *
  * ## Why two files instead of the token store
  *
@@ -43,7 +44,7 @@ import java.nio.file.StandardCopyOption
 internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
     context: Context,
     private val sealer: AesGcmSealer,
-    legacySource: LegacyBlobSource?,
+    legacyLeftover: LegacyLeftover?,
 ) {
     constructor(context: Context) : this(
         context,
@@ -65,12 +66,12 @@ internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
     private val legacySecretKeyFile: File
         get() = File(dir, LEGACY_SECRET_KEY_FILENAME)
 
-    private val legacy: LegacyBlobSource =
-        legacySource ?: LegacyEncryptedFileSource(ctx, legacySecretKeyFile, LEGACY_MASTER_KEY_ALIAS)
+    private val legacy: LegacyLeftover =
+        legacyLeftover ?: LegacyEncryptedFileLeftover(ctx, legacySecretKeyFile, LEGACY_MASTER_KEY_ALIAS)
 
     /** Returns the persisted keypair if both files exist and load successfully, else null. */
     fun load(): RosenpassNative.StaticKeypair? {
-        migrateLegacySecretKey()
+        discardLegacySecretKey()
 
         val pkFile = publicKeyFile
         val skFile = secretKeyFile
@@ -111,45 +112,27 @@ internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
     }
 
     /**
-     * One-shot: if the pre-v2 EncryptedFile is still on disk, re-seal its
-     * contents into the v2 file and delete it (plus its master key).
+     * MR-958: a pre-1.4.28 `static.sk.enc` cannot be read any more (the
+     * library that wrote it is gone), so it is deleted unread with its master
+     * key.
      *
-     * - Both present (a previous run sealed but failed to delete): keep v2,
-     *   just delete the legacy file.
-     * - Legacy cannot be decrypted, or the v2 write fails: the secret half is
-     *   lost either way, so delete the whole pair and let the caller regenerate
-     *   — the same outcome the old code had for an undecryptable EncryptedFile.
+     * - No v2 secret key beside it: the public key on disk is half of a pair
+     *   whose secret half is lost, so it goes too and the caller regenerates;
+     *   the server re-pins the new public key on the next handshake. The same
+     *   outcome an undecryptable legacy file always had.
+     * - A v2 secret key beside it (1.4.28 to 1.4.34 re-sealed it but failed
+     *   to delete the legacy file): the pair is intact; only the legacy file
+     *   goes.
      */
-    private fun migrateLegacySecretKey() {
-        if (!legacySecretKeyFile.exists()) return
-        if (secretKeyFile.exists()) {
-            Log.i(TAG, "v2 secret key already present — dropping legacy file")
-            legacy.destroy()
-            return
-        }
-        try {
-            val skBytes = legacy.read() ?: return
-            // MR-2123: both plaintext copies of the secret key (the legacy read
-            // and the read-back check) are zeroed, whatever the outcome.
-            try {
-                writeSecretKey(skBytes)
-                val readBack = sealer.open(secretKeyFile.readBytes(), SK_AAD)
-                try {
-                    check(readBack.contentEquals(skBytes)) { "re-sealed secret key did not read back" }
-                } finally {
-                    readBack.fill(0)
-                }
-                Log.i(TAG, "migrated BirdoPQ secret key to v2 sealing (${skBytes.size}B)")
-            } finally {
-                skBytes.fill(0)
-            }
-            legacy.destroy()
-        } catch (e: Exception) {
-            Log.w(TAG, "legacy BirdoPQ secret key could not be migrated — regenerating keypair", e)
-            runCatching { secretKeyFile.delete() }
+    private fun discardLegacySecretKey() {
+        if (!legacy.present()) return
+        if (!secretKeyFile.exists()) {
+            Log.w(TAG, "pre-1.4.28 BirdoPQ secret key cannot be read any more — regenerating keypair")
             runCatching { publicKeyFile.delete() }
-            legacy.destroy()
+        } else {
+            Log.i(TAG, "v2 secret key already present — dropping legacy file")
         }
+        legacy.discard()
     }
 
     /** Atomically persists the keypair. Throws on I/O failure. */
@@ -170,7 +153,7 @@ internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
         atomicWrite(publicKeyFile, keypair.publicKey)
 
         // A fresh pair supersedes any legacy file still lying around.
-        if (legacySecretKeyFile.exists()) legacy.destroy()
+        if (legacy.present()) legacy.discard()
 
         Log.i(TAG, "persisted BirdoPQ keypair (pk=${keypair.publicKey.size}B, sk sealed=${secretKeyFile.length()}B)")
     }
@@ -197,12 +180,12 @@ internal class BirdoPqKeyStore @VisibleForTesting internal constructor(
     fun clear() {
         runCatching { publicKeyFile.delete() }
         runCatching { secretKeyFile.delete() }
-        if (legacySecretKeyFile.exists()) legacy.destroy()
+        if (legacy.present()) legacy.discard()
         Log.i(TAG, "cleared persisted BirdoPQ keypair")
     }
 
     fun hasPersistedKeypair(): Boolean =
-        publicKeyFile.exists() && (secretKeyFile.exists() || legacySecretKeyFile.exists())
+        publicKeyFile.exists() && secretKeyFile.exists()
 
     companion object {
         private const val TAG = "BirdoPqKeyStore"
