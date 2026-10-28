@@ -267,8 +267,9 @@
     <string name="cd_state_off">Off</string>
     <string name="cd_show_password">Show password</string>
     <string name="cd_hide_password">Hide password</string>
-    <string name="cd_widget_connected">BirdoVPN — protected via %1$s. Double-tap to disconnect.</string>
-    <string name="cd_widget_state">BirdoVPN — %1$s. %2$s</string>
+    <!-- No "BirdoVPN — " prefix (MR-1514 follow-up, owner decision 2026-10-28), as on the notifications. -->
+    <string name="cd_widget_connected">Protected via %1$s. Double-tap to disconnect.</string>
+    <string name="cd_widget_state">%1$s. %2$s</string>
     <string name="servers_empty_hint">Check your connection, then tap Retry.</string>
     <!-- Settings -->
     <string name="settings_subtitle">App preferences &amp; account</string>
