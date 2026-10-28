@@ -267,8 +267,16 @@
     <string name="cd_state_off">Off</string>
     <string name="cd_show_password">Show password</string>
     <string name="cd_hide_password">Hide password</string>
-    <string name="cd_widget_connected">BirdoVPN — protected via %1$s. Double-tap to disconnect.</string>
-    <string name="cd_widget_state">BirdoVPN — %1$s. %2$s</string>
+    <!-- The widget's TalkBack description (BirdoWidget.describe): it replaces the
+         card's Texts, so it names the VPN, says the state and what a double-tap
+         does. No "BirdoVPN — " prefix (MR-1514 follow-up, owner decision
+         2026-10-28), as on the notifications. -->
+    <string name="cd_widget_connected">VPN protected via %1$s. %2$s.</string>
+    <string name="cd_widget_state">VPN %1$s. %2$s.</string>
+    <string name="cd_widget_double_tap_to_connect">Double-tap to connect</string>
+    <string name="cd_widget_double_tap_to_disconnect">Double-tap to disconnect</string>
+    <string name="cd_widget_double_tap_to_cancel">Double-tap to cancel</string>
+    <string name="cd_widget_double_tap_to_stop_blocking">Double-tap to stop blocking</string>
     <string name="servers_empty_hint">Check your connection, then tap Retry.</string>
     <!-- Settings -->
     <string name="settings_subtitle">App preferences &amp; account</string>
@@ -342,6 +350,7 @@
     <string name="widget_tap_to_disconnect">Tap to disconnect</string>
     <string name="widget_tap_to_cancel">Tap to cancel</string>
     <string name="widget_tap_to_stop_blocking">Tap to stop blocking</string>
+    <string name="widget_please_wait">Please wait</string>
     <string name="yes">Yes</string>
     <string name="no">No</string>
     <string name="settings_version">Version %s</string>
