@@ -473,10 +473,14 @@ struct HomeView: View {
                 ErrorBanner(TunnelCircuitBreaker.userMessage(for: trip),
                             icon: "bolt.horizontal.circle")
             } else if let message = vpnVM.error {
-                // Backend refusals arrive verbatim in `error` (device cap,
-                // plan gate, node offline/maintenance, 426 version floor,
-                // heartbeat revocation) — render the server's own words,
-                // never rephrase. ErrorBanner announces assertively.
+                // `error` is already the copy to show; the banner renders it
+                // as it is. Backend refusals (plan gate, a full or offline
+                // node, 426 version floor, heartbeat revocation) carry the
+                // server's own words when they are showable. A connect
+                // refusal is keyed on its `refusalReason` (MR-139): the device
+                // cap gets its own fixed sentence, and an unshowable or
+                // missing sentence the generic one (ConnectRefusal.swift).
+                // ErrorBanner announces assertively.
                 ErrorBanner(message, icon: "exclamationmark.circle")
                 // MR-139: keyed on the refusal's reason, never its wording.
                 // The plan or the Free allowance is what stands in the way, so

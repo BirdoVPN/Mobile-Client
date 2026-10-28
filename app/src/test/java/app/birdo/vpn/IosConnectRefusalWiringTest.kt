@@ -323,4 +323,67 @@ class IosConnectRefusalWiringTest {
         assertTrue("contract: \$defs.ConnectRefusal.enum is empty", contractReasons.isNotEmpty())
         assertEquals("$refusalPath: ConnectRefusalReason wire values vs \$defs.ConnectRefusal", contractReasons, swiftReasons)
     }
+
+    // ── MR-139 follow-up (#517 review) ───────────────────────────────────
+
+    /** The Swift string a `static let <name> =` declaration builds, its literals joined. */
+    private fun swiftStaticString(swift: String, name: String): String {
+        val at = swift.indexOf("static let $name =")
+        assertTrue("$refusalPath: static let $name not found — this test would be vacuous", at >= 0)
+        val declaration = swift.substring(at, swift.indexOf("\n\n", at))
+        return Regex(""""((?:[^"\\]|\\.)*)"""").findAll(declaration).joinToString("") { it.groupValues[1] }
+    }
+
+    /** An Android string resource's text, with its escaped apostrophes read. */
+    private fun androidString(name: String): String {
+        val strings = source("app/src/main/res/values/strings.xml")
+        val text = Regex("""<string name="$name">([^<]*)</string>""").find(strings)?.groupValues?.get(1)
+        assertTrue("strings.xml: $name not found", text != null)
+        return text!!.replace("\\'", "'")
+    }
+
+    @Test
+    fun `the refusal copy is Android's, word for word`() {
+        // vpn-d8's parity decision: no per-reason sentences of iOS's own.
+        val swift = source(refusalPath)
+        assertEquals(
+            "$refusalPath: genericMessage vs Android's error_connect_failed",
+            androidString("error_connect_failed"),
+            swiftStaticString(swift, "genericMessage"),
+        )
+        assertEquals(
+            "$refusalPath: deviceLimitMessage vs Android's error_device_limit",
+            androidString("error_device_limit"),
+            swiftStaticString(swift, "deviceLimitMessage"),
+        )
+        assertFalse("$refusalPath still has per-reason fallback copy", "func fallback(for" in swift)
+    }
+
+    @Test
+    fun `the live rebuild's other failures clear the refusal, so its View plans cannot linger`() {
+        val rebuild = chunkNamed("rebuildLive")
+        val refusedAt = rebuild.indexOf("catch let refusal as RebuildRefusedError {")
+        assertTrue("$viewModelPath: rebuildLive has no RebuildRefusedError catch", refusedAt >= 0)
+        val refusedBanner = rebuild.indexOf("self.error = refusal.message", refusedAt)
+        assertTrue("$viewModelPath: the rebuild refusal no longer sets the banner", refusedBanner > refusedAt)
+        assertTrue(
+            "$viewModelPath: a refused rebuild does not clear connectRefusal before its banner",
+            "connectRefusal = nil" in rebuild.substring(refusedAt, refusedBanner),
+        )
+        for (event in listOf(".routeNotConfirmed", ".swapFailed")) {
+            assertTrue(
+                "$viewModelPath: the $event failure does not clear connectRefusal before its banner",
+                Regex(
+                    """connectRefusal = nil\s*\n\s*self\.error = \w+\.localizedDescription\s*\n\s*""" +
+                        """flagsOwnedElsewhere = await finishRebuild\(${Regex.escape(event)}, ctx\)""",
+                ).containsMatchIn(rebuild),
+            )
+        }
+    }
+
+    @Test
+    fun `Home's banner comment no longer promises the server's words verbatim`() {
+        // The device cap has its own sentence and an unshowable one is dropped.
+        assertFalse("$homePath still says refusals are never rephrased", "never rephrase" in source(homePath))
+    }
 }

@@ -47,7 +47,10 @@ final class VpnViewModel: ObservableObject {
     /// (MR-139; the device cap has its own sentence).
     @Published var error: String?
     /// MR-139: the typed refusal behind the last failed dial, nil when the
-    /// last dial failed any other way. Read only through `refusalOffersPlans`.
+    /// last dial failed any other way, and cleared by the live rebuild's other
+    /// failures (a refused rebuild, an unconfirmed route, a failed swap) so a
+    /// stale "View plans" never sits under their banner. Read only through
+    /// `refusalOffersPlans`.
     @Published private(set) var connectRefusal: ConnectRefusedError?
     /// Home offers the plans under the banner: the refusal it shows is a
     /// server outside the plan or the Free allowance used up. Only while that
@@ -1444,6 +1447,9 @@ final class VpnViewModel: ObservableObject {
             // classified event, never the server's string.
             let event = RebuildRefusal.event(forCode: refusal.code)
             debugLog("[VpnViewModel] rebuild: refused by the server — %@", String(describing: event))
+            // Not a connect refusal: whatever the banner shows next, it is no
+            // longer one that offers the plans.
+            connectRefusal = nil
             if !LiveRebuildPolicy.directive(for: event).stopsTheTunnel {
                 self.error = refusal.message
             }
@@ -1474,6 +1480,7 @@ final class VpnViewModel: ObservableObject {
                     config.multiHop, requestedEntryId: entry.id, requestedExitId: exit.id
                 ).route
             } catch {
+                connectRefusal = nil
                 self.error = error.localizedDescription
                 flagsOwnedElsewhere = await finishRebuild(.routeNotConfirmed, ctx)
                 return
@@ -1520,6 +1527,7 @@ final class VpnViewModel: ObservableObject {
             // restore had failed — leaving the persisted profile, and so the
             // armed on-demand rule's re-dial, on a peer this client had just
             // deleted.
+            connectRefusal = nil
             self.error = swapError.localizedDescription
             flagsOwnedElsewhere = await finishRebuild(.swapFailed, ctx)
             return
