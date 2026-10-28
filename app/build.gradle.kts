@@ -1105,9 +1105,9 @@ dependencies {
     // XrayManager falls back to bundled xray binary if library is absent.
 
     // ── Security ─────────────────────────────────────────────────
-    // Deprecated upstream; kept ONLY for the one-shot migration in
-    // security/LegacySecurityCrypto.kt (see its header for the removal plan).
-    implementation("androidx.security:security-crypto:1.1.0")
+    // No androidx.security:security-crypto (MR-958, owner decision 2026-10-28):
+    // secrets are sealed by security/AesGcmSealer; what a pre-1.4.28 install
+    // left in the library's formats is deleted unread (security/LegacyLeftovers.kt).
     implementation("androidx.biometric:biometric:1.1.0")
     // Custom Tabs for the SSO broker (SsoLauncher): sign-in stays in this task
     // and the redirect closes the tab, instead of leaving a stray browser tab.
