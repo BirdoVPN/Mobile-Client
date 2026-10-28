@@ -333,6 +333,14 @@ targets:
       # APIClient.swift and VpnViewModel.swift (its callers) cannot be compiled
       # into this bundle.
       - path: iosApp/Services/ConnectErrorCode.swift
+      # MR-139: a connect refused inside its 200, keyed on `refusalReason`
+      # (device cap, plan, quota, a full or unavailable server): the reason
+      # decode (an unknown one reads as absent), the user copy, whether Home
+      # offers the plans, and the envelope itself. Foundation-only by design,
+      # pinned by ConnectRefusalTests against the vendored contract's
+      # $defs.ConnectRefusal. APIClient.swift, VpnViewModel.swift and HomeView
+      # (its callers) cannot be compiled into this bundle.
+      - path: iosApp/Services/ConnectRefusal.swift
       # MR-1771: what a /auth/refresh answer means for the stored session (a
       # 429 keeps it and is not re-asked before Retry-After; only 401/403 sign
       # out) and the hold itself. Foundation-only by design, pinned by
