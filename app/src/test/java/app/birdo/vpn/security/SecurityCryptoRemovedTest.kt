@@ -34,10 +34,15 @@ class SecurityCryptoRemovedTest {
 
     @Test
     fun `the build does not declare security-crypto`() {
-        assertFalse(
-            "app/build.gradle.kts declares androidx.security:security-crypto again",
-            "androidx.security:security-crypto" in text("app/build.gradle.kts"),
-        )
+        // A declaration is a quoted coordinate; the comment that says why the
+        // library is gone names it unquoted and does not count.
+        val declared = Regex(""""androidx\.security:security-crypto[:"]""")
+        listOf("build.gradle.kts", "app/build.gradle.kts", "shared/build.gradle.kts").forEach { path ->
+            val file = File(repoRoot, path)
+            if (file.isFile) {
+                assertFalse("$path declares androidx.security:security-crypto again", declared.containsMatchIn(file.readText()))
+            }
+        }
     }
 
     @Test
