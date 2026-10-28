@@ -54,6 +54,12 @@ class BirdoWidget : GlanceAppWidget() {
         @param:StringRes val status: Int,
         /** What a tap does, said in words; null when the status says it. */
         @param:StringRes val hint: Int?,
+        /**
+         * What TalkBack says a tap does: "Double-tap to …", or "Please wait"
+         * while disconnecting. The visible [hint] says "Tap"; TalkBack users
+         * double-tap.
+         */
+        @param:StringRes val spokenHint: Int,
         /** The server's name under the status; null when it is not shown. */
         val serverLabel: String? = null,
     )
@@ -80,15 +86,50 @@ class BirdoWidget : GlanceAppWidget() {
                 Look.PROTECTED,
                 R.string.status_protected,
                 R.string.widget_tap_to_disconnect,
+                R.string.cd_widget_double_tap_to_disconnect,
                 serverLabel?.takeIf { showLocation },
             )
-            state is VpnState.Reconnecting -> WidgetModel(Look.BUSY, R.string.status_reconnecting, R.string.widget_tap_to_cancel)
-            state.isConnectingPhase -> WidgetModel(Look.BUSY, R.string.connecting, R.string.widget_tap_to_cancel)
-            state is VpnState.Disconnecting -> WidgetModel(Look.BUSY, R.string.disconnecting, null)
-            killSwitchActive -> WidgetModel(Look.BLOCKED, R.string.tile_traffic_blocked, R.string.widget_tap_to_stop_blocking)
-            state is VpnState.Error -> WidgetModel(Look.ERROR, R.string.status_error, R.string.widget_tap_to_connect)
-            else -> WidgetModel(Look.IDLE, R.string.status_not_connected, R.string.widget_tap_to_connect)
+            state is VpnState.Reconnecting -> WidgetModel(
+                Look.BUSY, R.string.status_reconnecting, R.string.widget_tap_to_cancel, R.string.cd_widget_double_tap_to_cancel,
+            )
+            state.isConnectingPhase -> WidgetModel(
+                Look.BUSY, R.string.connecting, R.string.widget_tap_to_cancel, R.string.cd_widget_double_tap_to_cancel,
+            )
+            // A tap does nothing while the tunnel comes down; say so rather
+            // than read the status alone (#521 review).
+            state is VpnState.Disconnecting -> WidgetModel(
+                Look.BUSY, R.string.disconnecting, R.string.widget_please_wait, R.string.widget_please_wait,
+            )
+            killSwitchActive -> WidgetModel(
+                Look.BLOCKED, R.string.tile_traffic_blocked, R.string.widget_tap_to_stop_blocking,
+                R.string.cd_widget_double_tap_to_stop_blocking,
+            )
+            state is VpnState.Error -> WidgetModel(
+                Look.ERROR, R.string.status_error, R.string.widget_tap_to_connect, R.string.cd_widget_double_tap_to_connect,
+            )
+            else -> WidgetModel(
+                Look.IDLE, R.string.status_not_connected, R.string.widget_tap_to_connect, R.string.cd_widget_double_tap_to_connect,
+            )
         }
+
+        /**
+         * What TalkBack says for the widget. The card's contentDescription
+         * REPLACES the Texts inside it, so this is everything a TalkBack user
+         * hears: it names the VPN, says the state and what a double-tap does
+         * ("Please wait" while disconnecting). No brand prefix (MR-1514,
+         * owner decision 2026-10-28). [text] resolves a string resource.
+         */
+        fun describe(model: WidgetModel, serverName: String?, text: (Int) -> String): String =
+            if (model.look == Look.PROTECTED) {
+                text(R.string.cd_widget_connected).format(serverName ?: text(R.string.app_name), text(model.spokenHint))
+            } else {
+                text(R.string.cd_widget_state).format(
+                    // The format adds its own full stop: "Connecting…." read
+                    // as a double stop (REVIEW-AND-021).
+                    text(model.status).trimEnd('.', '…'),
+                    text(model.spokenHint),
+                ).trim()
+            }
     }
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
@@ -236,17 +277,7 @@ private fun BirdoWidgetContent(
     val context = LocalContext.current
     // Without this the whole widget is an unlabeled clickable surface: TalkBack
     // reads the Texts but never says it is actionable or what a tap does.
-    val widgetDescription = if (model.look == BirdoWidget.Look.PROTECTED) {
-        context.getString(R.string.cd_widget_connected, serverName ?: context.getString(R.string.app_name))
-    } else {
-        context.getString(
-            R.string.cd_widget_state,
-            // The format adds its own full stop: "Connecting…." read as a
-            // double stop (REVIEW-AND-021).
-            context.getString(model.status).trimEnd('.', '…'),
-            model.hint?.let { context.getString(it) }.orEmpty(),
-        ).trim()
-    }
+    val widgetDescription = BirdoWidget.describe(model, serverName) { context.getString(it) }
 
     Box(
         modifier = GlanceModifier
