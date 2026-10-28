@@ -2,13 +2,27 @@ import Foundation
 
 // MARK: - Animation model
 
-/// The globe's clock and its three tweens. Held by `@StateObject` and advanced
-/// from inside the `Canvas` draw closure — see the note there.
+/// The Home globe's clock and its three tweens. Held by `WorldGlobeView` as a
+/// `@StateObject` (the `ObservableObject` conformance lives there) and
+/// advanced from inside its `Canvas` draw closure — see the note there.
+///
+/// Foundation-only by design, so `GlobeModelTests` can pin it in the
+/// un-hosted test bundle; WorldGlobeView (a SwiftUI Canvas) cannot be compiled
+/// there.
+///
+/// MR-1519 (owner decision 2026-10-07, confirmed 2026-10-28): the globe stops
+/// turning while connected, as on Windows and Android. That is the CLOCK
+/// holding (`advance(clockRunning: false)`), not the spin being swapped for a
+/// fixed longitude: the spin, the sun's terminator, the pulse and the arc
+/// shimmer all freeze where they are, so nothing snaps on connect, and they
+/// resume from the same place on disconnect. The focus, zoom and arc tweens
+/// are not on that clock, so the connect transition still plays out in full.
 @MainActor
 final class GlobeModel {
-    /// Accumulated VISIBLE seconds. Advances only while the timeline is running,
-    /// so a backgrounded app resumes the spin where it left off rather than
-    /// jumping forward by however long it was away.
+    /// Accumulated VISIBLE, UNHELD seconds. Advances only while the timeline
+    /// is running and the globe may turn, so a backgrounded app resumes the
+    /// spin where it left off rather than jumping forward by however long it
+    /// was away, and a connected globe stays where it stopped.
     private var clock: Double = 0
     private var lastFrameAt: TimeInterval = 0
 
@@ -19,6 +33,10 @@ final class GlobeModel {
     var focus: Double { focusTween.value }
     var zoom: Double { zoomTween.value }
     var arcProgress: Double { arcTween.value }
+
+    /// True once every tween has landed. With the clock held as well, nothing
+    /// on the globe moves after this, so its timeline can stop drawing frames.
+    var isSettled: Bool { !focusTween.isRunning && !zoomTween.isRunning && !arcTween.isRunning }
 
     /// Cyclic phases, all pure functions of `clock` (Android runs five separate
     /// infinite transitions; one monotonic counter reproduces them exactly).
@@ -33,21 +51,28 @@ final class GlobeModel {
     nonisolated init() {}
 
     func retarget(isConnected: Bool, hasFocus: Bool) {
+        let wasSettled = isSettled
         focusTween.retarget(hasFocus ? 1 : 0)
         zoomTween.retarget(isConnected ? 1.20 : (hasFocus ? 1.06 : 1.0))
         // The 400 ms lead-in lets the connected colour land before the arc starts
         // drawing, exactly like the Kotlin `delayMillis`.
         arcTween.retarget(isConnected && hasFocus ? 1 : 0,
                           delay: isConnected ? 0.4 : 0)
+        // A settled, held globe may have drawn no frame for minutes. Without
+        // this, the first frame of the new transition would be credited with
+        // that whole gap (clamped to 0.25 s) and open with a visible jump.
+        if wasSettled && !isSettled { lastFrameAt = 0 }
     }
 
-    func advance() {
-        let now = Date.timeIntervalSinceReferenceDate
+    /// One frame. `clockRunning` false holds the spin and every cyclic phase
+    /// where they are (connected, MR-1519); the tweens advance regardless.
+    func advance(now: TimeInterval = Date.timeIntervalSinceReferenceDate,
+                 clockRunning: Bool = true) {
         defer { lastFrameAt = now }
         guard lastFrameAt > 0 else { return }
         // Clamp so a stalled — or just-resumed — timeline can't teleport things.
         let dt = min(max(now - lastFrameAt, 0), 0.25)
-        clock += dt
+        if clockRunning { clock += dt }
         focusTween.advance(dt)
         zoomTween.advance(dt)
         arcTween.advance(dt)
@@ -75,6 +100,8 @@ private struct Tween {
     private var delay: Double = 0
     private let duration: Double
     private var running = false
+
+    var isRunning: Bool { running }
 
     init(_ initial: Double, duration: Double) {
         value = initial

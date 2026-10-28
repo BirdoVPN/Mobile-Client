@@ -54,12 +54,15 @@ struct HomeView: View {
             // entry -> exit (MR-1100) — never the unrelated single-hop
             // `selectedServer`, which drew a wrong single-hop arc for the whole
             // session. The connected colour and arc wait for a proven handshake
-            // (MR-974), like the "Protected" pill.
+            // (MR-974), like the "Protected" pill. While protected it holds
+            // still (MR-1519, owner decision: stop while connected, as on
+            // Windows and Android); the connect transition still plays out.
             WorldGlobeView(servers: vpnVM.servers,
                            selectedServerId: vpnVM.activeMultiHop?.entry.id
                                ?? vpnVM.selectedServer?.id,
                            exitServerId: vpnVM.activeMultiHop?.exit.id,
-                           isConnected: vpnVM.isProtected)
+                           isConnected: vpnVM.isProtected,
+                           autoRotate: !vpnVM.isProtected)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {

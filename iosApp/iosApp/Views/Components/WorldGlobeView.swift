@@ -27,6 +27,14 @@ import SwiftUI
 /// disappears (tab switch, or a push onto `ServerListView` / `MultiHopView`) —
 /// the equivalent of Android's lifecycle gate plus its `if (!showServerSheet)`
 /// skip. A frozen globe is drawn, never a blank one.
+///
+/// Connected, it holds still (MR-1519, as on Windows and Android): HomeView
+/// passes `autoRotate: false`, which holds the model's clock — the spin, the
+/// sun, the pulse and the arc shimmer stop where they are, nothing snaps — while
+/// the focus, zoom and arc tweens still play the connect transition out. Once
+/// they have landed the timeline pauses too (`heldStill`), so a connected globe
+/// costs one frame, not 30 a second. Any change of state lifts the hold and
+/// the transition plays from where the globe stood.
 struct WorldGlobeView: View {
     let servers: [ServerInfo]
     /// The node this device talks to: the selected server, or a Multi-Hop
@@ -37,6 +45,8 @@ struct WorldGlobeView: View {
     /// all three points (`GlobeRoute`). Nil for a single hop.
     let exitServerId: String?
     let isConnected: Bool
+    /// False holds the globe still: the clock stops (see the type note), not
+    /// just the spin. HomeView passes `!isProtected` (MR-1519).
     let autoRotate: Bool
     /// Android parity: we do not geolocate the user (that would be a privacy
     /// regression in a VPN app), so the "you" pin is a fixed London anchor and
@@ -49,6 +59,9 @@ struct WorldGlobeView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model = GlobeModel()
     @State private var onScreen = false
+    /// Held still and settled: nothing would change between frames, so the
+    /// timeline stops. Set by the `.task` below, never from the draw closure.
+    @State private var heldStill = false
 
     /// Explicit, like every other component here: the synthesised memberwise
     /// initialiser would be fileprivate because the wrappers above are private,
@@ -70,7 +83,25 @@ struct WorldGlobeView: View {
     }
 
     private var isPaused: Bool {
-        reduceMotion || scenePhase != .active || !onScreen
+        reduceMotion || scenePhase != .active || !onScreen || heldStill
+    }
+
+    /// Everything that can start a transition or stop the timeline. A change
+    /// restarts the hold check below.
+    private struct HoldKey: Equatable {
+        let autoRotate: Bool
+        let isConnected: Bool
+        let selectedServerId: String?
+        let exitServerId: String?
+        let running: Bool
+    }
+
+    private var holdKey: HoldKey {
+        HoldKey(autoRotate: autoRotate,
+                isConnected: isConnected,
+                selectedServerId: selectedServerId,
+                exitServerId: exitServerId,
+                running: !(reduceMotion || scenePhase != .active || !onScreen))
     }
 
     /// Halve the clock in Low Power Mode.
@@ -96,7 +127,7 @@ struct WorldGlobeView: View {
                     // no arc and no zoom — snap to the end state instead.
                     model.snapToTargets()
                 } else {
-                    model.advance()
+                    model.advance(clockRunning: autoRotate)
                 }
                 render(ctx, size: size)
             }
@@ -105,6 +136,21 @@ struct WorldGlobeView: View {
         .accessibilityHidden(true)
         .onAppear { onScreen = true }
         .onDisappear { onScreen = false }
+        .task(id: holdKey) {
+            // Lift the hold first, so whatever just changed plays out. The
+            // targets are set here as well as in the draw closure: this task
+            // may run before the Canvas has redrawn, and checking a model that
+            // has not been retargeted yet would hold a transition that never
+            // started.
+            heldStill = false
+            guard !autoRotate, holdKey.running else { return }
+            model.retarget(isConnected: isConnected, hasFocus: selectedServerId != nil)
+            while !model.isSettled {
+                try? await Task.sleep(for: .milliseconds(250))
+                if Task.isCancelled { return }
+            }
+            heldStill = true
+        }
     }
 
     // MARK: - Render
@@ -144,7 +190,10 @@ struct WorldGlobeView: View {
         let focusLonTarget = focusTarget?.lon ?? 0
 
         let focus = model.focus
-        let idleLon = autoRotate ? (model.idleSpinDeg + userLon - 25) : userLon
+        // No autoRotate branch: autoRotate false holds the clock, which freezes
+        // the spin where it is, so the globe stops in place instead of snapping
+        // to userLon on connect (MR-1519; the Kotlin note says the same).
+        let idleLon = model.idleSpinDeg + userLon - 25
         let effectiveLat = focusLatTarget * focus
         // Shortest-arc lerp against the LIVE idle value — that is what gives a
         // smooth bidirectional handoff instead of a second animation chasing the
