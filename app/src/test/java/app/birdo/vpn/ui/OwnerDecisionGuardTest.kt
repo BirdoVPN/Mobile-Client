@@ -65,25 +65,60 @@ class OwnerDecisionGuardTest {
         assertFalse(source("$main/ui/screen/HomeScreen.kt").contains("quantum", ignoreCase = true))
     }
 
-    // ── MR-1094: the Face ID / Touch ID prompt says what the gate does ───
+    // ── MR-1094: the iOS App Lock is real when on (owner, 2026-10-28) ──────
 
     @Test
-    fun `the Face ID and Touch ID purpose strings promise a cover, not protection`() {
-        // P1-ios-biometric-gate-is-cosmetic, kept by the owner: the gate covers
-        // the screen and protects no data (BiometricGate.swift). iOS shows this
-        // string in the system prompt the first time the gate runs.
+    fun `the Face ID and Touch ID purpose strings name App Lock and the account number`() {
+        // iOS shows this string in the system prompt the first time Face ID is
+        // asked for: turning App Lock on, or revealing the account number.
         val purpose = Regex("""<key>NSFaceIDUsageDescription</key>\s*<string>([^<]*)</string>""")
         for (plist in listOf("iosApp/iosApp/Info.plist", "iosApp/iosApp/Info-macOS.plist")) {
             val text = purpose.find(source(plist))?.groupValues?.get(1)
             assertTrue("$plist has no NSFaceIDUsageDescription", text != null)
-            assertFalse("$plist: \"$text\" claims protection", text!!.contains("protect", ignoreCase = true))
-            assertFalse("$plist: \"$text\" claims security", text.contains("secur", ignoreCase = true))
-            assertTrue("$plist: \"$text\" does not name the setting it belongs to", text.contains("Hide App Contents"))
+            assertTrue("$plist: \"$text\" does not name the setting it belongs to", text!!.contains("App Lock"))
+            assertTrue("$plist: \"$text\" does not say it guards the account number", text.contains("account number"))
+            assertFalse("$plist: \"$text\" still names the old cover", text.contains("Hide App Contents"))
         }
         // A localised copy would show its own text in the prompt.
         val localized = File(repoRoot, "iosApp").walkTopDown()
             .filter { it.isFile && it.extension == "strings" && it.readText().contains("NSFaceIDUsageDescription") }
             .toList()
-        localized.forEach { assertFalse("${it.path} claims protection", it.readText().contains("protect", ignoreCase = true)) }
+        localized.forEach { assertFalse("${it.path} names the old cover", it.readText().contains("Hide App Contents")) }
+    }
+
+    @Test
+    fun `the iOS App Lock is real when on and the account number asks first`() {
+        val ios = "iosApp/iosApp"
+        // The gate can switch the setting off itself (passcode removed).
+        assertTrue(source("$ios/BirdoVPNApp.swift").contains("BiometricGate(enabled: \$settingsVM.biometricLockEnabled)"))
+        val gate = source("$ios/Views/BiometricGate.swift")
+        assertTrue("the gate no longer decides from AppLockPolicy", gate.contains("AppLockPolicy.reconcile("))
+        assertTrue(gate.contains("AppLockPolicy.covered("))
+        assertTrue(gate.contains("AppLockPolicy.locked(after:"))
+        // Nothing shown: not visible, not touchable, not reachable by VoiceOver
+        // or a hardware keyboard.
+        listOf(".opacity(covered ? 0 : 1)", ".allowsHitTesting(!covered)", ".disabled(covered)", ".accessibilityHidden(covered)")
+            .forEach { assertTrue("the covered content lost $it", gate.contains(it)) }
+        assertFalse("the gate still fails open", gate.contains("fail open"))
+        // Face ID or Touch ID with the passcode fallback, never biometrics alone.
+        val auth = source("$ios/Services/DeviceOwnerAuth.swift")
+        assertTrue(auth.contains("evaluatePolicy(.deviceOwnerAuthentication,"))
+        assertFalse(auth.contains("deviceOwnerAuthenticationWithBiometrics"))
+        // Owner: the tokens are NOT tied to Face ID.
+        val keychain = source("$ios/Services/KeychainService.swift")
+        assertFalse(keychain.contains("biometryCurrentSet") || keychain.contains(".userPresence"))
+        // Settings: turning it on asks for the owner first; the copy is the real one.
+        val settings = source("$ios/Views/SettingsView.swift")
+        assertTrue(settings.contains("title: \"App Lock\""))
+        assertFalse(settings.contains("protects no data"))
+        assertTrue("turning App Lock on does not authenticate first", settings.contains("DeviceOwnerAuth.authenticate("))
+        // Profile: both the reveal and the copy ask; the one-time "save your
+        // number" screen after account creation is exempt.
+        val profile = source("$ios/Views/ProfileView.swift")
+        assertTrue(Regex("""DeviceOwnerAuth\.confirmReveal\(""").findAll(profile).count() >= 2)
+        assertFalse(source("$ios/Views/LoginView.swift").contains("DeviceOwnerAuth"))
+        val project = source("iosApp/project.yml")
+        assertTrue(project.contains("- path: iosApp/Services/AppLockPolicy.swift"))
+        assertTrue(File(repoRoot, "iosApp/BirdoVPNTests/AppLockPolicyTests.swift").isFile)
     }
 }
