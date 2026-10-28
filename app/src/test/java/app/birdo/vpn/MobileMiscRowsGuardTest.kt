@@ -129,7 +129,8 @@ class MobileMiscRowsGuardTest {
         )
         assertTrue("Profile must render the masked text", "Text(shownAccountNumber(number))" in profile)
         assertFalse("Profile renders the raw number again", "Text(number)" in profile)
-        assertTrue("there must be a way to reveal it", "accountNumberShown.toggle()" in profile)
+        // MR-1094: revealing it asks for the device owner first (OwnerDecisionGuardTest).
+        assertTrue("there must be a way to reveal it", "accountNumberShown = true" in profile)
         assertTrue("Copy still takes all of it", "copyAccountNumber(number)" in profile)
 
         val home = source("$ios/Views/HomeView.swift")

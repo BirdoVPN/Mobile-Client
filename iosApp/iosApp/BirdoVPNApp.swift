@@ -24,7 +24,9 @@ struct BirdoVPNApp: App {
 
     var body: some Scene {
         WindowGroup {
-            BiometricGate(enabled: settingsVM.biometricLockEnabled) {
+            // App Lock (MR-1094): a binding, so the gate can switch the
+            // setting off itself when the device passcode has been removed.
+            BiometricGate(enabled: $settingsVM.biometricLockEnabled) {
                 ContentView()
                     .environmentObject(authVM)
                     .environmentObject(vpnVM)

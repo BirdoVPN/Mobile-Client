@@ -626,9 +626,9 @@ struct SubscriptionView: View {
 /// none of which exists on iOS or macOS — plus "2 server locations", a count
 /// the web deliberately never states (audit 2026-09-29, A-10 / D-4 / A-24;
 /// Guidelines 2.3 / 3.1.2). Every line below is something this app does, on
-/// the plan it is listed under. Face ID "Hide App Contents" is not listed: it
-/// covers the screen and protects no data (SettingsView), so selling it as a
-/// security feature would overstate it.
+/// the plan it is listed under. App Lock (Face ID) is not listed: it is on
+/// every plan, guards the app rather than the traffic (SettingsView), and is
+/// not something a plan sells.
 ///
 /// The prices here are a FALLBACK ONLY, shown when StoreKit could not resolve a
 /// product. Anything actually purchasable is priced by `Product.displayPrice`,
