@@ -123,12 +123,6 @@ Dagger and Hilt
   Copyright: The Dagger Authors
   Source: https://github.com/google/dagger
 
-Gson
-  Maven: com.google.code.gson:*
-  Licence: Apache License 2.0
-  Copyright: Google Inc.
-  Source: https://github.com/google/gson
-
 JSR 305 annotations
   Maven: com.google.code.findbugs:*
   Licence: Apache License 2.0
@@ -139,12 +133,6 @@ Guava ListenableFuture
   Licence: Apache License 2.0
   Copyright: The Guava Authors
   Source: https://github.com/google/guava
-
-Tink
-  Maven: com.google.crypto.tink:*
-  Licence: Apache License 2.0
-  Copyright: Google LLC
-  Source: https://github.com/tink-crypto/tink-java
 
 Google Android DataTransport and Firebase encoders
   Maven: com.google.android.datatransport:*, com.google.firebase:*

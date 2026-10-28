@@ -4,7 +4,7 @@ import android.content.Context
 import app.birdo.vpn.data.model.ConnectResponse
 import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.FlakyKeySource
-import app.birdo.vpn.security.LegacyBlobSource
+import app.birdo.vpn.security.LegacyLeftover
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -46,9 +46,9 @@ class BirdoPqManagerTest {
     private var keygens = 0
     private val generated = mutableListOf<RosenpassNative.StaticKeypair>()
 
-    private object NoLegacy : LegacyBlobSource {
-        override fun read(): ByteArray? = null
-        override fun destroy() {}
+    private object NoLegacy : LegacyLeftover {
+        override fun present(): Boolean = false
+        override fun discard() {}
     }
 
     @Before

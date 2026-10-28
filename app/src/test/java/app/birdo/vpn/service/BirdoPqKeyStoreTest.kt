@@ -4,14 +4,13 @@ import android.content.Context
 import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.FlakyKeySource
 import app.birdo.vpn.security.JceKeySource
-import app.birdo.vpn.security.LegacyBlobSource
+import app.birdo.vpn.security.LegacyLeftover
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -23,28 +22,18 @@ import java.security.ProviderException
 
 /**
  * BirdoPqKeyStore against a real temp `filesDir`, a JCE key in place of the
- * Keystore, and a scripted legacy EncryptedFile source: the v2 layout, atomic
- * writes, corruption handling and the one-shot migration of the pre-v2
- * `static.sk.enc`.
+ * Keystore, and a scripted legacy leftover: the v2 layout, atomic writes,
+ * corruption handling, and deleting a pre-1.4.28 `static.sk.enc` unread
+ * (MR-958).
  */
 class BirdoPqKeyStoreTest {
 
-    /**
-     * What the old EncryptedFile would decrypt to, or throw. Each read hands
-     * out a FRESH buffer, as the real decrypt does: the store zeroes what it
-     * was given (MR-2123), and [handedOut] is how a test sees that.
-     */
-    private inner class FakeLegacy(private val bytes: ByteArray?, private val throws: Boolean = false) : LegacyBlobSource {
-        var destroyed = 0
-        var reads = 0
-        var handedOut: ByteArray? = null
-        override fun read(): ByteArray? {
-            reads++
-            if (throws) throw IllegalStateException("EncryptedFile: MAC check failed")
-            return bytes?.copyOf().also { handedOut = it }
-        }
-        override fun destroy() {
-            destroyed++
+    /** The pre-1.4.28 EncryptedFile: present while `static.sk.enc` is on disk. */
+    private inner class FakeLegacy : LegacyLeftover {
+        var discarded = 0
+        override fun present(): Boolean = legacyFile.exists()
+        override fun discard() {
+            discarded++
             legacyFile.delete()
         }
     }
@@ -76,7 +65,7 @@ class BirdoPqKeyStoreTest {
         filesDir.deleteRecursively()
     }
 
-    private fun store(legacy: LegacyBlobSource = FakeLegacy(null)) = BirdoPqKeyStore(context, sealer, legacy)
+    private fun store(legacy: LegacyLeftover = FakeLegacy()) = BirdoPqKeyStore(context, sealer, legacy)
 
     // ── v2 layout ────────────────────────────────────────────────
 
@@ -149,7 +138,7 @@ class BirdoPqKeyStoreTest {
     @Test
     fun `a save whose secret-key write fails leaves the previous public key in place`() {
         val keystore = FlakyKeySource()
-        val s = BirdoPqKeyStore(context, AesGcmSealer(keystore), FakeLegacy(null))
+        val s = BirdoPqKeyStore(context, AesGcmSealer(keystore), FakeLegacy())
         s.save(keypair)
 
         keystore.failing = true
@@ -173,75 +162,43 @@ class BirdoPqKeyStoreTest {
         assertFalse(s.hasPersistedKeypair())
     }
 
-    // ── Legacy EncryptedFile migration ───────────────────────────
+    // ── Pre-1.4.28 EncryptedFile (MR-958) ────────────────────────
 
     private fun plantLegacy(): FakeLegacy {
         dir.mkdirs()
         pkFile.writeBytes(pk)
         legacyFile.writeBytes(ByteArray(3300) { 0x55 }) // opaque Tink ciphertext
-        return FakeLegacy(sk)
+        return FakeLegacy()
     }
 
     @Test
-    fun `legacy secret key is re-sealed into v2 and the legacy file destroyed on first load`() {
+    fun `a pre-1_4_28 secret key is deleted unread with its public key so the caller regenerates`() {
         val legacy = plantLegacy()
         val s = store(legacy)
-        assertTrue("legacy pair counts as persisted", s.hasPersistedKeypair())
-
-        assertEquals(keypair, s.load())
-        assertEquals(1, legacy.reads)
-        assertEquals(1, legacy.destroyed)
-        assertFalse(legacyFile.exists())
-        assertTrue(skFile.exists())
-        assertArrayEquals(sk, sealer.open(skFile.readBytes(), "birdo-rosenpass-static-sk-v1".toByteArray()))
-
-        // Second load is pure v2: the legacy source is not consulted again.
-        assertEquals(keypair, s.load())
-        assertEquals(1, legacy.reads)
-    }
-
-    /** MR-2123: the plaintext secret key the migration decrypted is zeroed. */
-    @Test
-    fun `the migration zeroes the plaintext secret key it re-sealed`() {
-        val legacy = plantLegacy()
-        assertEquals(keypair, store(legacy).load())
-
-        val plaintext = legacy.handedOut
-        assertNotNull(plaintext)
-        assertTrue("the migrated secret key is still in memory", plaintext!!.all { it == 0.toByte() })
-    }
-
-    @Test
-    fun `an undecryptable legacy secret key deletes the pair so the caller regenerates`() {
-        dir.mkdirs()
-        pkFile.writeBytes(pk)
-        legacyFile.writeBytes(ByteArray(64))
-        val legacy = FakeLegacy(null, throws = true)
-        val s = store(legacy)
+        assertFalse("a pair whose secret half is unreadable is not persisted", s.hasPersistedKeypair())
 
         assertNull(s.load())
-        assertEquals(1, legacy.destroyed)
-        assertFalse(pkFile.exists())
-        assertFalse(skFile.exists())
+        assertEquals(1, legacy.discarded)
         assertFalse(legacyFile.exists())
+        assertFalse("the orphaned public key goes too", pkFile.exists())
+        assertFalse(skFile.exists())
 
         // …and the regenerated pair persists normally afterwards.
         s.save(keypair)
         assertEquals(keypair, s.load())
+        assertEquals(1, legacy.discarded)
     }
 
     @Test
-    fun `when v2 already exists a lingering legacy file is dropped, not re-read`() {
-        val s0 = store()
-        s0.save(keypair)
+    fun `when v2 already exists a lingering legacy file is dropped and the pair kept`() {
+        store().save(keypair)
         legacyFile.writeBytes(ByteArray(64))
-        val legacy = FakeLegacy(ByteArray(3168) { 1 }) // would be a DIFFERENT key
-        val s = store(legacy)
+        val legacy = FakeLegacy()
 
-        assertEquals(keypair, s.load())
-        assertEquals(0, legacy.reads)
-        assertEquals(1, legacy.destroyed)
+        assertEquals(keypair, store(legacy).load())
+        assertEquals(1, legacy.discarded)
         assertFalse(legacyFile.exists())
+        assertTrue(pkFile.exists() && skFile.exists())
     }
 
     @Test
@@ -250,21 +207,21 @@ class BirdoPqKeyStoreTest {
         val s = store(legacy)
         val fresh = RosenpassNative.StaticKeypair(ByteArray(1568) { 2 }, ByteArray(3168) { 4 })
         s.save(fresh)
-        assertEquals(1, legacy.destroyed)
+        assertEquals(1, legacy.discarded)
         assertFalse(legacyFile.exists())
         assertEquals(fresh, s.load())
     }
 
     @Test
-    fun `legacy migration without a public key still yields null and cleans up`() {
+    fun `a legacy file alone is deleted and loads nothing`() {
         dir.mkdirs()
         legacyFile.writeBytes(ByteArray(64))
-        val legacy = FakeLegacy(sk)
+        val legacy = FakeLegacy()
         val s = store(legacy)
         assertNull(s.load())
-        // The sk was re-sealed (nothing wrong with it) but the pair is incomplete.
-        assertNotNull(skFile.takeIf { it.exists() })
-        assertEquals(1, legacy.destroyed)
+        assertEquals(1, legacy.discarded)
+        assertFalse(legacyFile.exists())
+        assertFalse(skFile.exists())
         assertFalse(s.hasPersistedKeypair())
     }
 }

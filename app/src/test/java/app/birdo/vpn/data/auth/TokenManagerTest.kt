@@ -5,7 +5,7 @@ import app.birdo.vpn.security.AesGcmSealer
 import app.birdo.vpn.security.FakeSharedPreferences
 import app.birdo.vpn.security.JceKeySource
 import app.birdo.vpn.security.KeystoreSecureStore
-import app.birdo.vpn.security.LegacySecretSource
+import app.birdo.vpn.security.LegacyLeftover
 import app.birdo.vpn.security.SecureStore
 import io.mockk.every
 import io.mockk.mockkStatic
@@ -22,29 +22,25 @@ import org.junit.Test
 
 /**
  * TokenManager over the real [KeystoreSecureStore] (with a JCE key standing
- * in for the Android Keystore) and a scripted legacy source, so every path —
- * CRUD, commit discipline, the EncryptedSharedPreferences → v2 migration,
- * and Keystore-corruption recovery — is asserted, not merely "did not crash".
+ * in for the Android Keystore) and a scripted legacy leftover, so every path —
+ * CRUD, commit discipline, deleting a pre-1.4.28 EncryptedSharedPreferences
+ * file unread (MR-958), and Keystore-corruption recovery — is asserted, not
+ * merely "did not crash".
  */
 class TokenManagerTest {
 
-    /** Scripted [LegacySecretSource]: what the old EncryptedSharedPreferences would yield. */
-    private class FakeLegacy(var values: Map<String, String>?, var throws: Boolean = false) : LegacySecretSource {
-        var destroyed = 0
-        var reads = 0
-        override fun readAll(): Map<String, String>? {
-            reads++
-            if (throws) throw IllegalStateException("Tink keyset unreadable")
-            return values
-        }
-        override fun destroy() {
-            destroyed++
-            values = null
+    /** Scripted [LegacyLeftover]: whether a pre-1.4.28 EncryptedSharedPreferences file is on disk. */
+    private class FakeLegacy(var onDisk: Boolean = false) : LegacyLeftover {
+        var discarded = 0
+        override fun present(): Boolean = onDisk
+        override fun discard() {
+            discarded++
+            onDisk = false
         }
     }
 
     private class FakeBackend(
-        override val legacy: LegacySecretSource,
+        override val legacy: LegacyLeftover,
         /** Number of open() calls that must fail before one succeeds. */
         var failuresBeforeOpen: Int = 0,
         private val storeFactory: () -> SecureStore = {
@@ -81,7 +77,7 @@ class TokenManagerTest {
         every { Base64.decode(any<String>(), any()) } answers {
             java.util.Base64.getUrlDecoder().decode(firstArg<String>())
         }
-        legacy = FakeLegacy(values = null)
+        legacy = FakeLegacy()
         backend = FakeBackend(legacy)
         tokenManager = TokenManager(backend)
     }
@@ -237,88 +233,52 @@ class TokenManagerTest {
         assertFalse(tokenManager.isLoggedIn())
     }
 
-    // ── Legacy migration ─────────────────────────────────────────
+    // ── Pre-1.4.28 store (MR-958) ────────────────────────────────
 
     @Test
-    fun `legacy EncryptedSharedPreferences values are copied in, verified and the legacy store destroyed`() {
-        legacy = FakeLegacy(
-            mapOf(
-                "access_token" to "legacy-access",
-                "refresh_token" to "legacy-refresh",
-                "wireguard_private_key" to "legacy-wg",
-                "pending_anonymous_id" to "legacy-anon",
-            ),
-        )
+    fun `a pre-1_4_28 EncryptedSharedPreferences file is deleted unread and the user signs in again`() {
+        legacy = FakeLegacy(onDisk = true)
         backend = FakeBackend(legacy)
         tokenManager = TokenManager(backend)
 
-        assertEquals("legacy-access", tokenManager.getAccessToken())
-        assertEquals("legacy-refresh", tokenManager.getRefreshToken())
-        // A1-041: the session key a pre-2026-10-01 build left at rest is not carried over.
-        assertFalse(tokenManager.holdsWireGuardKey())
-        assertEquals("legacy-anon", tokenManager.getPendingAnonymousId())
-        assertEquals(1, legacy.destroyed)
-        assertEquals(1, legacy.reads)
+        assertEquals(1, legacy.discarded)
+        assertFalse(legacy.onDisk)
+        assertNull(tokenManager.getAccessToken())
+        assertNull(tokenManager.getRefreshToken())
+        assertFalse(tokenManager.isLoggedIn())
     }
 
     @Test
-    fun `no legacy store means nothing is read or destroyed`() {
-        assertEquals(1, legacy.reads)
-        assertEquals(0, legacy.destroyed)
+    fun `no legacy file means nothing is deleted`() {
+        assertEquals(0, legacy.discarded)
         assertNull(tokenManager.getAccessToken())
     }
 
     @Test
-    fun `an unreadable legacy store is destroyed and the user starts logged out`() {
-        legacy = FakeLegacy(values = mapOf("access_token" to "x"), throws = true)
-        backend = FakeBackend(legacy)
-        tokenManager = TokenManager(backend)
-        assertNull(tokenManager.getAccessToken())
-        assertEquals(1, legacy.destroyed)
-    }
-
-    @Test
-    fun `a populated v2 store is never overwritten by a lingering legacy copy`() {
+    fun `a session that already migrated survives a lingering legacy file`() {
         val prefs = FakeSharedPreferences()
         val sealer = AesGcmSealer(JceKeySource())
         KeystoreSecureStore(prefs, sealer).put("refresh_token", "fresh-rotated", commit = true)
-        legacy = FakeLegacy(mapOf("access_token" to "stale-access", "refresh_token" to "stale-consumed"))
+        legacy = FakeLegacy(onDisk = true)
         backend = FakeBackend(legacy) { KeystoreSecureStore(prefs, sealer) }
         tokenManager = TokenManager(backend)
 
         assertEquals("fresh-rotated", tokenManager.getRefreshToken())
-        assertNull("nothing from the stale copy leaks in", tokenManager.getAccessToken())
-        assertEquals(1, legacy.destroyed)
+        assertEquals(1, legacy.discarded)
     }
 
     @Test
-    fun `a copy that does not read back is rolled back and the legacy store kept`() {
-        // A store that silently loses one key — the migration must notice.
-        val lossy = object : SecureStore {
-            val inner = KeystoreSecureStore(FakeSharedPreferences(), AesGcmSealer(JceKeySource()))
-            override fun get(key: String) = if (key == "refresh_token") null else inner.get(key)
-            override fun put(key: String, value: String, commit: Boolean) = inner.put(key, value, commit)
-            override fun remove(key: String, commit: Boolean) = inner.remove(key, commit)
-            override fun contains(key: String) = inner.contains(key)
-            override fun clear() = inner.clear()
+    fun `a legacy file that cannot be deleted does not take the app down`() {
+        val stuck = object : LegacyLeftover {
+            override fun present(): Boolean = true
+            override fun discard() {
+                throw SecurityException("no")
+            }
         }
-        legacy = FakeLegacy(mapOf("access_token" to "a", "refresh_token" to "r"))
-        val result = TokenManager.migrateLegacyStore(lossy, legacy)
-        assertEquals(TokenManager.Migration.VERIFY_FAILED, result)
-        assertEquals(0, legacy.destroyed)
-        assertFalse("copies undone", lossy.inner.contains("access_token"))
-        assertFalse(lossy.inner.contains("refresh_token"))
-    }
-
-    @Test
-    fun `migration outcomes are reported`() {
-        val store = KeystoreSecureStore(FakeSharedPreferences(), AesGcmSealer(JceKeySource()))
-        assertEquals(TokenManager.Migration.NOTHING_TO_DO, TokenManager.migrateLegacyStore(store, FakeLegacy(null)))
-        assertEquals(TokenManager.Migration.MIGRATED, TokenManager.migrateLegacyStore(store, FakeLegacy(mapOf("k" to "v"))))
-        assertEquals("v", store.get("k"))
-        assertEquals(TokenManager.Migration.ALREADY_MIGRATED, TokenManager.migrateLegacyStore(store, FakeLegacy(mapOf("k" to "old"))))
-        assertEquals("v", store.get("k"))
-        assertEquals(TokenManager.Migration.LEGACY_UNREADABLE, TokenManager.migrateLegacyStore(store, FakeLegacy(mapOf("k" to "x"), throws = true)))
+        backend = FakeBackend(stuck)
+        tokenManager = TokenManager(backend)
+        tokenManager.setTokens("a", "r")
+        assertEquals("a", tokenManager.getAccessToken())
     }
 
     // ── Keystore corruption recovery ─────────────────────────────
@@ -358,11 +318,11 @@ class TokenManagerTest {
     }
 
     @Test
-    fun `legacy migration is skipped while on the in-memory fallback`() {
-        legacy = FakeLegacy(mapOf("access_token" to "x"))
+    fun `a legacy file is deleted even while on the in-memory fallback`() {
+        legacy = FakeLegacy(onDisk = true)
         backend = FakeBackend(legacy, failuresBeforeOpen = 2)
         tokenManager = TokenManager(backend)
-        assertEquals(0, legacy.reads)
-        assertEquals(0, legacy.destroyed)
+        assertEquals(1, legacy.discarded)
+        assertNull(tokenManager.getAccessToken())
     }
 }
