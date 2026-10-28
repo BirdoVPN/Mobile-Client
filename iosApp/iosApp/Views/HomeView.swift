@@ -29,6 +29,9 @@ struct HomeView: View {
     /// plan gets the upsell snackbar instead.
     @State private var showMultiHop = false
     @State private var multiHopUpsell: String?
+    /// MR-139: the plans, pushed from the refusal banner when the server
+    /// refused the connect for the plan or the Free allowance.
+    @State private var showPlans = false
     // Haptic triggers — `.sensoryFeedback` fires on value CHANGE only, so a
     // bumped counter plays exactly one tap's worth of feedback.
     @State private var connectHapticTick = 0
@@ -89,6 +92,11 @@ struct HomeView: View {
         // Multi-Hop flow — pushed for SOVEREIGN users from the top-bar chip.
         .navigationDestination(isPresented: $showMultiHop) {
             MultiHopView()
+        }
+        // MR-139: the refusal banner's "View plans" (a `plan` or
+        // `quota_exceeded` refusal), the same screen as the Limit tab's upgrade.
+        .navigationDestination(isPresented: $showPlans) {
+            SubscriptionView()
         }
         // Upsell snackbar for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy).
         .overlay(alignment: .bottom) {
@@ -465,11 +473,24 @@ struct HomeView: View {
                 ErrorBanner(TunnelCircuitBreaker.userMessage(for: trip),
                             icon: "bolt.horizontal.circle")
             } else if let message = vpnVM.error {
-                // Backend refusals arrive verbatim in `error` (device cap,
-                // plan gate, node offline/maintenance, 426 version floor,
-                // heartbeat revocation) — render the server's own words,
-                // never rephrase. ErrorBanner announces assertively.
+                // `error` is already the copy to show; the banner renders it
+                // as it is. Backend refusals (plan gate, a full or offline
+                // node, 426 version floor, heartbeat revocation) carry the
+                // server's own words when they are showable. A connect
+                // refusal is keyed on its `refusalReason` (MR-139): the device
+                // cap gets its own fixed sentence, and an unshowable or
+                // missing sentence the generic one (ConnectRefusal.swift).
+                // ErrorBanner announces assertively.
                 ErrorBanner(message, icon: "exclamationmark.circle")
+                // MR-139: keyed on the refusal's reason, never its wording.
+                // The plan or the Free allowance is what stands in the way, so
+                // the way out is one tap away (Android: View plans).
+                if vpnVM.refusalOffersPlans {
+                    PrimaryButton("View plans", variant: .secondary, height: 44) {
+                        showPlans = true
+                    }
+                    .accessibilityIdentifier("home_refusal_view_plans")
+                }
             }
 
             if let advisory = vpnVM.updateAdvisory {

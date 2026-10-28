@@ -598,15 +598,25 @@ final class APIClient: @unchecked Sendable {
     /// old-backend 400 (that is `APIError.isRebuildFieldRejection`, matched
     /// by fragment in `RebuildFieldRejection`); a backend that predates
     /// `rebuild` never answers this shape.
+    ///
+    /// MR-139: every other refusal is a `ConnectRefusedError`, keyed on the
+    /// typed `refusalReason` (device cap, plan, quota, a full or unavailable
+    /// server), never on the wording. Without a reason (an older backend) or
+    /// with one newer than this build it reads exactly as before: the
+    /// server's sentence. ConnectRefusal.swift holds the rule.
     private func decodeConnectResult(_ data: Data) throws -> VPNConnectionConfig {
         if let envelope = try? decoder.decode(ConnectEnvelope.self, from: data),
            envelope.success == false {
-            let message = envelope.message ?? "Could not connect. Please try again."
             if let code = envelope.rebuildRefused, !code.isEmpty {
+                let message = envelope.message ?? ConnectRefusedError.genericMessage
                 throw RebuildRefusedError(code: code, message: message)
             }
             // Carried on a 2xx, so there is no error status to attribute.
-            throw APIError.serverMessage(message, status: nil)
+            throw ConnectRefusedError.classify(
+                message: envelope.message,
+                refusalReason: envelope.refusalReason,
+                quotaExceeded: envelope.quotaExceeded ?? false
+            )
         }
         return try decoder.decode(VPNConnectionConfig.self, from: data)
     }
@@ -1634,17 +1644,6 @@ private struct PortForwardBody: Encodable {
         case internalPort
         case proto = "protocol"
     }
-}
-
-/// The `{ success, message }` envelope both connect routes use for
-/// user-actionable refusals returned with a 2xx status — plus, for a refused
-/// `rebuild: true` connect, the reason (`LiveRebuildWire.rebuildRefusedField`).
-private struct ConnectEnvelope: Decodable {
-    let success: Bool?
-    let message: String?
-    /// One of birdo-web's `RebuildRefusal` codes, or absent. Kept as the raw
-    /// wire string so a code this build cannot read still reaches the policy.
-    let rebuildRefused: String?
 }
 
 /// REBUILD (Mobile-Client #159): a `rebuild: true` connect the server refused
