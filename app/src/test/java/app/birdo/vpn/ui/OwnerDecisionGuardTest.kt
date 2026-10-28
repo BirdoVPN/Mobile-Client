@@ -103,8 +103,7 @@ class OwnerDecisionGuardTest {
         // Face ID or Touch ID with the passcode fallback, never biometrics alone.
         // Code only: the file's own doc comment names the policy it must not use.
         val auth = source("$ios/Services/DeviceOwnerAuth.swift").lines()
-            .filterNot { it.trimStart().startsWith("//") }.joinToString("
-")
+            .filterNot { it.trimStart().startsWith("//") }.joinToString(" ")
         assertTrue(auth.contains("evaluatePolicy(.deviceOwnerAuthentication,"))
         assertFalse(auth.contains("deviceOwnerAuthenticationWithBiometrics"))
         // Owner: the tokens are NOT tied to Face ID.
