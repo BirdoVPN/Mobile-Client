@@ -49,6 +49,21 @@ class NotificationPrivacyCopyTest {
         titles.forEach { assertFalse("prefixed title: $it", it.startsWith("BirdoVPN")) }
     }
 
+    /**
+     * MR-1514 follow-up (owner, 2026-10-28): the widget's TalkBack
+     * descriptions drop the prefix too. They were "BirdoVPN — protected via
+     * …" and "BirdoVPN — {status}. {hint}".
+     */
+    @Test
+    fun `the widget's TalkBack descriptions carry no BirdoVPN prefix`() {
+        val strings = source("app/src/main/res/values/strings.xml")
+        listOf("cd_widget_connected", "cd_widget_state").forEach { name ->
+            val value = Regex("""<string name="$name">([^<]*)</string>""").find(strings)?.groupValues?.get(1)
+            assertTrue("no $name string", value != null)
+            assertFalse("$name is prefixed: $value", value!!.startsWith("BirdoVPN"))
+        }
+    }
+
     @Test
     fun `only an automatic Stealth fallback says the network blocks VPN traffic`() {
         assertEquals(R.string.stealth_fallback_active, stealthBannerText(stealthChosen = false))
