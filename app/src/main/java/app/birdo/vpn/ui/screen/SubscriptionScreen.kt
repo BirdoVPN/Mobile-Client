@@ -201,6 +201,17 @@ internal fun planPriceLabel(
     else -> PriceLabel.NOT_ON_PLAY
 }
 
+/**
+ * MR-1239 / LR22 (LEGAL-ACCOUNTING-ANSWERS-2026-10-30): vouchers are sold only
+ * on birdo.app through Polar, so in the Google Play build a voucher prompt on
+ * the paywall, or a "Redeem voucher" entry in the app, points at a purchase
+ * route outside Play Billing (the Payments policy's steering rule). The Play
+ * build shows neither; a voucher is redeemed at birdo.app/dashboard and the
+ * app shows the entitlement after sign-in. The sideload and F-Droid builds,
+ * whose checkout is the website, keep both.
+ */
+internal fun showsVoucherEntry(isPlayBuild: Boolean): Boolean = !isPlayBuild
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SubscriptionScreen(
@@ -461,21 +472,20 @@ fun SubscriptionScreen(
                 )
             }
 
-            // Footer note about vouchers (redeemable on the Profile tab). The
-            // Play build omits any steering to external purchase / web billing.
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(
-                    if (isPlayBuild) R.string.subscription_voucher_note
-                    else R.string.subscription_voucher_note_web,
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = palette.onSurfaceMuted,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-            )
+            // Footer note about vouchers (redeemable on the Profile tab). Not in
+            // the Play build at all: vouchers are sold on the web (LR22).
+            if (showsVoucherEntry(isPlayBuild)) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.subscription_voucher_note_web),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.onSurfaceMuted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                )
+            }
 
             // The terms a subscription is bought under. Birdo's own pages,
             // not a purchase route, so they belong in every build.

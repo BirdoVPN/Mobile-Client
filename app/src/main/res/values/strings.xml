@@ -317,7 +317,6 @@
     <string name="subscription_yearly">Yearly · Save up to 20%</string>
     <string name="subscription_manage_web">Manage on web</string>
     <string name="subscription_web_note">Subscriptions are purchased and managed on birdo.app.</string>
-    <string name="subscription_voucher_note">Have a voucher code? Redeem it on the Profile tab.</string>
     <string name="subscription_voucher_note_web">Have a voucher code? Redeem it on the Profile tab. All purchases can also be managed on birdo.app.</string>
     <string name="subscription_active">Active subscription</string>
     <string name="subscription_inactive">Inactive</string>
