@@ -139,7 +139,9 @@ fun ProfileScreen(
     deletionPreflight: DeletionPreflightResponse? = null,
     onDeleteDialogOpened: () -> Unit = {},
     // Google Play build: hide the "Manage on web" row, which links out to the
-    // billing dashboard (external-purchase steering). See IS_PLAY_BUILD.
+    // billing dashboard (external-purchase steering), and the "Redeem voucher"
+    // row, since vouchers are sold only on the web (LR22, showsVoucherEntry).
+    // See IS_PLAY_BUILD.
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
     /** Anonymous accounts are reminded, before signing out, to keep the account number. */
     isAnonymousAccount: Boolean = false,
@@ -169,12 +171,14 @@ fun ProfileScreen(
         Spacer(Modifier.height(4.dp))
 
         SectionLabel(stringResource(R.string.profile_section_account))
-        ProfileActionRow(
-            icon = Icons.Outlined.CardGiftcard,
-            title = stringResource(R.string.voucher_title),
-            subtitle = null,
-            onClick = { showVoucherDialog = true },
-        )
+        if (showsVoucherEntry(isPlayBuild)) {
+            ProfileActionRow(
+                icon = Icons.Outlined.CardGiftcard,
+                title = stringResource(R.string.voucher_title),
+                subtitle = null,
+                onClick = { showVoucherDialog = true },
+            )
+        }
         if (!isPlayBuild) {
             ProfileActionRow(
                 icon = Icons.AutoMirrored.Outlined.OpenInNew,

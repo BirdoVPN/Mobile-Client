@@ -85,6 +85,23 @@ class ScreenLogicTest {
         assertEquals(PriceLabel.WEB, planPriceLabel("OPERATIVE", isPlayBuild = false, playPrice = null, storefrontLoading = false))
     }
 
+    // ── MR-1239 / LR22 ───────────────────────────────────────────────────
+
+    @Test
+    fun `the Play build shows no voucher prompt or redeem entry, other builds keep both`() {
+        assertFalse(showsVoucherEntry(isPlayBuild = true))
+        assertTrue(showsVoucherEntry(isPlayBuild = false))
+        // The Play-only paywall line is gone, so no build can show it; the
+        // sideload/F-Droid line stays.
+        var dir = java.io.File("").absoluteFile
+        while (!java.io.File(dir, "settings.gradle.kts").isFile) {
+            dir = dir.parentFile ?: error("settings.gradle.kts not found")
+        }
+        val strings = java.io.File(dir, "app/src/main/res/values/strings.xml").readText()
+        assertFalse(strings.contains("name=\"subscription_voucher_note\""))
+        assertTrue(strings.contains("name=\"subscription_voucher_note_web\""))
+    }
+
     // ── P1-014 / P1-015 ──────────────────────────────────────────────────
 
     private fun server(id: String, accessible: Boolean = true, online: Boolean = true, load: Int = 10, city: String = "") =
