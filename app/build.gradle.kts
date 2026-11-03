@@ -1054,7 +1054,7 @@ dependencies {
     // Not imported directly (AppPreferences uses SharedPreferences), but this is
     // a VERSION FLOOR: DataStore arrives transitively and without this line the
     // resolved version drops to 1.0.0 (and okio to 3.6.0). Do not "clean up".
-    implementation("androidx.datastore:datastore-preferences:1.2.1")
+    implementation("androidx.datastore:datastore-preferences:1.3.0")
 
     // ── Frame timing ─────────────────────────────────────────────
     // JankStats: the supported wrapper over Window.OnFrameMetricsAvailableListener
@@ -1122,7 +1122,7 @@ dependencies {
     // ── WorkManager (MR-2129: the 60 s clipboard clear) ──────────
     // Already shipped: Glance runs on it, and 2.7.1 is what the lockfile
     // resolves. Declared so the app can compile against it; no upgrade.
-    implementation("androidx.work:work-runtime:2.7.1")
+    implementation("androidx.work:work-runtime:2.12.0")
 
     // ── Testing ──────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
@@ -1144,7 +1144,7 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.17")
     // MR-2129: runs the clipboard-clear work under Robolectric (TestDriver).
     // Test-only, at the runtime's version.
-    testImplementation("androidx.work:work-testing:2.7.1")
+    testImplementation("androidx.work:work-testing:2.12.0")
     testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     testImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
