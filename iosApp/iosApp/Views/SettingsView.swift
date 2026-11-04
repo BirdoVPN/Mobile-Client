@@ -109,6 +109,7 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, BirdoTheme.Spacing.screenH)
                 .padding(.vertical, BirdoTheme.Spacing.screenV)
+                .adaptiveColumn()
             }
         }
         .modifier(HideNavigationBar())
@@ -361,6 +362,7 @@ struct SettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(minHeight: 56)
+            .adaptiveColumn()
 
             Rectangle()
                 .fill(BirdoTheme.hairlineSoft)

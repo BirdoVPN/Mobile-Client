@@ -81,6 +81,7 @@ struct VpnSettingsView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
+                    .adaptiveColumn()
                 }
             }
         }
@@ -130,6 +131,7 @@ struct VpnSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(minHeight: 56)
+            .adaptiveColumn()
 
             Rectangle()
                 .fill(BirdoTheme.hairlineSoft)
