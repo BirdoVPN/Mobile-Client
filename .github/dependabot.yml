@@ -90,7 +90,7 @@ updates:
         update-types: ["version-update:semver-major"]
       # (The kotlinx-serialization-json ">=1.10.0" ceiling that lived here was
       # lifted with the Kotlin 2.4 move: its Kotlin/Native klibs are readable
-      # again and :shared is on 1.11.0 like the app. The semver-major hold above
+      # again and :shared is on the app's version. The semver-major hold above
       # still applies.)
       - dependency-name: "com.google.devtools.ksp"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
