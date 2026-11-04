@@ -7,6 +7,11 @@ extension BirdoTheme {
         /// Settings, Profile, Limit and the sub-screens: rows and buttons wider
         /// than this stop reading as one line of thought.
         static let column: CGFloat = 640
+        /// The plans screen, which puts its cards side by side when it can.
+        static let wideColumn: CGFloat = 1080
+        /// One plan card when the cards share a row. Three of these plus their
+        /// gaps is the width at which the row is chosen over the stack.
+        static let planCardMinWidth: CGFloat = 300
     }
 }
 
