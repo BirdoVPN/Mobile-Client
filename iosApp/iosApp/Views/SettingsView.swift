@@ -70,7 +70,7 @@ struct SettingsView: View {
                                        title: "Notification Settings",
                                        description: "Open system notification settings",
                                        trailing: "arrow.up.forward.square") {
-                        SystemOpen.appSettings()
+                        SystemOpen.notificationSettings()
                     }
 
                     vpnSection
