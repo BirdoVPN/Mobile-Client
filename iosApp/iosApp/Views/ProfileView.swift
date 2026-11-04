@@ -116,6 +116,7 @@ struct ProfileView: View {
             .adaptiveColumn()
         }
         .scrollIndicators(.hidden)
+        .topEdgeScrim()
         .modifier(HideNavigationBar())
         .navigationDestination(isPresented: $showSubscription) {
             SubscriptionView()

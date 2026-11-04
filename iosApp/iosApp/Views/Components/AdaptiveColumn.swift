@@ -22,4 +22,16 @@ extension View {
     func adaptiveColumn(_ width: CGFloat = BirdoTheme.Layout.column) -> some View {
         frame(maxWidth: width).frame(maxWidth: .infinity)
     }
+
+    /// For a scrolling screen with no top bar of its own: without this, scrolled
+    /// content runs under the clock on iOS and the title bar on macOS, and the
+    /// two read as one line of text. A zero-height inset leaves the layout as it
+    /// was; only its background reaches up into the safe area.
+    func topEdgeScrim() -> some View {
+        safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear
+                .frame(height: 0)
+                .background(BirdoTheme.black.opacity(0.92), ignoresSafeAreaEdges: .top)
+        }
+    }
 }
