@@ -420,7 +420,7 @@ private struct VpnRowText: View {
             Text(description)
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .multilineTextAlignment(.leading)
     }

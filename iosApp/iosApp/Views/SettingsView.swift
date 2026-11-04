@@ -550,10 +550,9 @@ private struct SettingsRowText: View {
             Text(description)
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                // 4, not 2: every other row's copy is one or two lines, so this
-                // is a max that only bites on the rows that need the space
-                // (App Lock, Kill Switch).
-                .lineLimit(4)
+                // No line limit. This copy says what a switch does, and four
+                // lines cut App Lock's short on every phone.
+                .fixedSize(horizontal: false, vertical: true)
         }
         .multilineTextAlignment(.leading)
     }
