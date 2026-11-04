@@ -163,8 +163,11 @@ struct ServerListView: View {
             .animation(BirdoTheme.Motion.easeStandard(), value: vpnVM.isLoadingServers)
         }
         // HideNavigationBar is a no-op on macOS, where the system back chevron
-        // would otherwise sit in the toolbar beside the top bar's own Back.
+        // would otherwise sit in the toolbar beside the top bar's own Back. Not
+        // on iOS: hiding the back button there can also stop the swipe back.
+        #if os(macOS)
         .navigationBarBackButtonHidden(true)
+        #endif
         .modifier(HideNavigationBar())
         .overlay(alignment: .bottom) {
             if let notice = upsellNotice {
