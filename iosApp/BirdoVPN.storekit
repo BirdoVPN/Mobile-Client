@@ -43,7 +43,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Everything in Operative plus Multi-Hop routing, port forwarding, custom DNS and 10 device connections.",
+              "description" : "Everything in Operative plus Multi-Hop routing, port forwarding, custom DNS and 5 device connections.",
               "displayName" : "Sovereign (Monthly)",
               "locale" : "en_GB"
             }
@@ -71,7 +71,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Everything in Operative plus Multi-Hop routing, port forwarding, custom DNS and 10 device connections. Billed yearly.",
+              "description" : "Everything in Operative plus Multi-Hop routing, port forwarding, custom DNS and 5 device connections. Billed yearly.",
               "displayName" : "Sovereign (Yearly)",
               "locale" : "en_GB"
             }
@@ -99,7 +99,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Unlimited data, every server location and 5 device connections.",
+              "description" : "Unlimited data, every server location and 3 device connections.",
               "displayName" : "Operative (Monthly)",
               "locale" : "en_GB"
             }
@@ -127,7 +127,7 @@
           "introductoryOffer" : null,
           "localizations" : [
             {
-              "description" : "Unlimited data, every server location and 5 device connections. Billed yearly.",
+              "description" : "Unlimited data, every server location and 3 device connections. Billed yearly.",
               "displayName" : "Operative (Yearly)",
               "locale" : "en_GB"
             }

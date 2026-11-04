@@ -126,4 +126,37 @@ class PaywallFeatureListTest {
         assertFalse(storekit.contains("stealth", ignoreCase = true))
         assertFalse(storekit.contains("split tunnel", ignoreCase = true))
     }
+
+    /**
+     * Paid limits change on 5 December 2026: Operative 5 to 3, Sovereign 10 to 5
+     * (birdo-web lib/plans.ts). A card states what a new buyer gets, so it has no
+     * date logic. A subscriber's own limit is the server's (`maxConnections`) and
+     * can be the old one until then.
+     */
+    @Test
+    fun `each paywall card sells the connection limit a new buyer gets`() {
+        val android = source("app/src/main/java/app/birdo/vpn/ui/screen/SubscriptionScreen.kt")
+        val ios = source("iosApp/iosApp/Views/SubscriptionView.swift")
+        val counted = Regex("""subscription_feature_devices,\s*(\d+)""")
+        mapOf("RECON" to 1, "OPERATIVE" to 3, "SOVEREIGN" to 5).forEach { (plan, limit) ->
+            val androidCard = android.substringAfter("id = \"$plan\",").substringBefore("PlanInfo(")
+            assertEquals("Android $plan card", "$limit", counted.find(androidCard)?.groupValues?.get(1))
+            val iosCard = ios.substringAfter("slug: \"$plan\",").substringBefore("PlanCardModel(")
+            val line = if (limit == 1) "\"1 device connection\"" else "\"$limit device connections\""
+            assertTrue("iOS $plan card does not say $line", line in iosCard)
+        }
+    }
+
+    @Test
+    fun `the store texts state the connection limit a new buyer gets`() {
+        val listing = source("store-assets/listing/en-US/full-description.txt")
+        assertTrue(listing.contains("• Operative: 3 devices,"))
+        assertTrue(listing.contains("• Sovereign: 5 devices,"))
+        val storekit = source("iosApp/BirdoVPN.storekit").lines().filter { "device connections" in it }
+        assertEquals("the StoreKit paid products that state a limit", 4, storekit.size)
+        storekit.forEach { line ->
+            val limit = if ("Everything in Operative" in line) 5 else 3
+            assertTrue(line, "and $limit device connections" in line)
+        }
+    }
 }

@@ -27,9 +27,9 @@ class PlanGatingTest {
           "features": {
             "RECON": { "maxDevices": 1, "bandwidth": "50GB", "splitTunneling": true, "stealthMode": false,
                        "multiHop": false, "portForwarding": false, "customDns": true },
-            "OPERATIVE": { "maxDevices": 5, "bandwidth": "unlimited", "splitTunneling": true, "stealthMode": true,
+            "OPERATIVE": { "maxDevices": 3, "bandwidth": "unlimited", "splitTunneling": true, "stealthMode": true,
                            "multiHop": false, "portForwarding": false, "customDns": true },
-            "SOVEREIGN": { "maxDevices": 10, "bandwidth": "unlimited", "splitTunneling": true, "stealthMode": true,
+            "SOVEREIGN": { "maxDevices": 5, "bandwidth": "unlimited", "splitTunneling": true, "stealthMode": true,
                            "multiHop": true, "portForwarding": true, "customDns": true }
           },
           "plans": { "RECON": { "bandwidthLimitGb": 50 } }

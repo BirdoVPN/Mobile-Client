@@ -690,7 +690,7 @@ private struct PlanCardModel: Identifiable, Sendable {
             yearlyPrice: "£38/yr",
             isPopular: true,
             features: [
-                "5 device connections",
+                "3 device connections",
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
@@ -710,7 +710,7 @@ private struct PlanCardModel: Identifiable, Sendable {
             yearlyPrice: "£99/yr",
             isPopular: false,
             features: [
-                "10 device connections",
+                "5 device connections",
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
