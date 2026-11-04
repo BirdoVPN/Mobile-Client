@@ -74,6 +74,17 @@ struct LoginView: View {
                     .frame(maxWidth: .infinity, minHeight: geo.size.height)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                #if os(iOS)
+                // The number pad has no return key, and on a phone it covers
+                // Sign in, so the 24-digit field needs its own way out.
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { focusedField = nil }
+                            .accessibilityIdentifier("login_keyboard_done")
+                    }
+                }
+                #endif
             }
             .pixelCanvasTouchTrail(pixelModel)
         }
