@@ -78,13 +78,14 @@
 # ActivityThread.handleBindApplication before any of our code. Play rejected
 # 10428 for it under Broken Functionality, and 10429 carries the same defect.
 #
-# The shipped rule is NOT enough. room-runtime 2.2.5 - which arrives here
-# TRANSITIVELY, nothing in this repo asks for Room or WorkManager - ships only:
+# The rule room-runtime 2.2.5 shipped was NOT enough:
 #
 #     -keep class * extends androidx.room.RoomDatabase
 #
-# with no member specification. Newer Room ships `{ <init>(); }`; 2.2.5 predates
-# that. Keeping a class does not keep its members in full mode.
+# with no member specification, and keeping a class does not keep its members
+# in full mode. Room now arrives at 2.7.0 through work-runtime 2.12.0 (nothing
+# here asks for Room itself), whose shipped rule does name `{ void <init>(); }`.
+# This one stays: a transitive rule can change with any version bump.
 #
 # Asserted against the real minified DEX by scripts/check_r8_keeps.py, because
 # nothing else can see it: R8 does not run in debug, so every unit test, every

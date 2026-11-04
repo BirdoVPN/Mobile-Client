@@ -90,7 +90,7 @@ class SensitiveClipboardBackgroundTest {
 
         verify(exactly = 1) { clipboard.clearPrimaryClip() }
         val done = WorkManager.getInstance(app).getWorkInfoById(clear.id).get()
-        assertEquals(WorkInfo.State.SUCCEEDED, done.state)
+        assertEquals(WorkInfo.State.SUCCEEDED, done?.state)
     }
 
     @Test
