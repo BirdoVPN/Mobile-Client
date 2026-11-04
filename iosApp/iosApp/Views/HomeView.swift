@@ -174,15 +174,17 @@ struct HomeView: View {
                 Spacer(minLength: BirdoTheme.Spacing.md)
 
                 if let identity = accountIdentity {
-                    Text(identity)
-                        .font(BirdoTheme.Fonts.bodySmall)
-                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 120, alignment: .trailing)
-                        // Shows no account number since MR-1362; the app-switcher
-                        // cover (MR-1727) stays as a second line of defence.
-                        .accountNumberSnapshotCover()
+                    // The short form is for a phone, where "Anonymous account"
+                    // leaves "Anonymous ac…". An email has no short form, so the
+                    // last view in the list simply truncates.
+                    ViewThatFits(in: .horizontal) {
+                        identityLabel(identity)
+                        identityLabel(authVM.isAnonymousAccount ? "Anonymous" : identity)
+                    }
+                    .frame(maxWidth: 240, alignment: .trailing)
+                    // Shows no account number since MR-1362; the app-switcher
+                    // cover (MR-1727) stays as a second line of defence.
+                    .accountNumberSnapshotCover()
                 }
 
                 if isGuest {
@@ -235,6 +237,14 @@ struct HomeView: View {
             BirdoTheme.surface.opacity(0.78)
                 .ignoresSafeArea(edges: .top)
         )
+    }
+
+    private func identityLabel(_ text: String) -> some View {
+        Text(text)
+            .font(BirdoTheme.Fonts.bodySmall)
+            .foregroundStyle(BirdoTheme.onSurfaceFaint)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     /// The email, or "Anonymous account" — never the account number, which is
