@@ -50,7 +50,10 @@ struct BirdoVPNApp: App {
                     // stop a window being too tall, and saying otherwise (as an
                     // earlier draft of this comment did) describes a mechanism
                     // that does not exist. It is here so the window cannot be
-                    // dragged small enough to hide its own title bar.
+                    // dragged small enough to hide its own title bar. 480 wide,
+                    // because any narrower and a pushed screen's back button and
+                    // the four tabs no longer fit the toolbar: both collapse
+                    // into its overflow menu.
                     //
                     // What actually fixes the rejection is clampToVisibleFrame
                     // below. `.defaultSize` alone would not: AppKit restores a
@@ -59,7 +62,7 @@ struct BirdoVPNApp: App {
                     // frame -- the very machine the fix must work on is the one
                     // where the default is ignored.
                     #if os(macOS)
-                    .frame(minWidth: 420, minHeight: 560)
+                    .frame(minWidth: 480, minHeight: 560)
                     .onAppear { MacWindow.clampToVisibleFrame() }
                     #endif
             }
