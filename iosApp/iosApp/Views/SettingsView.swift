@@ -420,6 +420,9 @@ private struct SettingsToggleRow: View {
                     Spacer(minLength: 8)
                     Toggle("", isOn: $isOn)
                         .labelsHidden()
+                        // macOS's default is a checkbox, which disappears
+                        // against this card when off.
+                        .toggleStyle(.switch)
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
                 }

@@ -392,6 +392,7 @@ private struct VpnToggleRow: View {
                     Spacer(minLength: 8)
                     Toggle("", isOn: shownBinding)
                         .labelsHidden()
+                        .toggleStyle(.switch)
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
                 }
