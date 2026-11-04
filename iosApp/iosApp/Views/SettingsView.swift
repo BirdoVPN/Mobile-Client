@@ -43,6 +43,17 @@ struct SettingsView: View {
     /// MR-1094: why App Lock could not be turned on (no device passcode).
     @State private var appLockRefusal: String?
 
+    private var appLockDescription: String {
+        #if os(macOS)
+        return "Asks for Touch ID or your Mac's password before BirdoVPN shows anything, each "
+            + "time you open it or come back to it. The VPN keeps running while the app is locked."
+        #else
+        return "Asks for Face ID, Touch ID or your passcode before BirdoVPN shows anything, each "
+            + "time you open it or come back to it. Needs a device passcode. The VPN keeps "
+            + "running while the app is locked."
+        #endif
+    }
+
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
@@ -279,9 +290,7 @@ struct SettingsView: View {
         SectionHeader("Privacy")
         SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.white60,
                           title: "App Lock",
-                          description: "Asks for Face ID, Touch ID or your passcode before BirdoVPN shows "
-                            + "anything, each time you open it or come back to it. Needs a device "
-                            + "passcode. The VPN keeps running while the app is locked.",
+                          description: appLockDescription,
                           isOn: appLockBinding)
             .alert("App Lock needs a passcode",
                    isPresented: Binding(get: { appLockRefusal != nil },
