@@ -27,10 +27,9 @@ settings:
     # mistaken for, or silently ship as, a release.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
-    # "1" = iPhone only. An iPhone-only app still INSTALLS and runs on iPad in
-    # scaled compatibility mode, which is enough to test the packet tunnel on
-    # real hardware. Set to "1,2" only if you intend to ship native iPad layouts
-    # (App Review will then expect proper iPad UI).
+    # Project-level only. It does NOT make the app iPhone-only: `supportedDestinations`
+    # on the BirdoVPN target makes XcodeGen write "1,2" at target level, so the
+    # app has always been a native iPad app (UIDeviceFamily 1, 2 in the bundle).
     TARGETED_DEVICE_FAMILY: "1"
     # Team is KPUFGR98A5 (Phillip Bird), taken from BirdoVPN_App_Store_Profile.
     # Declared here so Xcode's automatic signing survives `xcodegen generate` —
