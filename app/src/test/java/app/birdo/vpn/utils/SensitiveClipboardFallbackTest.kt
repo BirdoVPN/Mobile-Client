@@ -13,7 +13,6 @@ import com.google.common.util.concurrent.Futures
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
-import io.mockk.mockkStatic
 import io.mockk.unmockkAll
 import io.mockk.verify
 import org.junit.After
@@ -61,6 +60,12 @@ class SensitiveClipboardFallbackTest {
 
     private fun clipText(): String? = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
 
+    /**
+     * Stubs [WorkManager.getInstance]. Since WorkManager's Kotlin rewrite, Kotlin
+     * callers reach it through the Companion, so mockkStatic no longer sees the call.
+     */
+    private fun mockWorkManagerSingleton() = mockkObject(WorkManager.Companion)
+
     /** The fallback's breadcrumb, matched on its words so this also runs against the old code. */
     private fun fallbackTrails(times: Int) =
         verify(exactly = times) { FaultReporter.trail(any(), match { "fell back to the in-process timer" in it }) }
@@ -71,7 +76,7 @@ class SensitiveClipboardFallbackTest {
         val failed = mockk<Operation>()
         every { failed.result } returns Futures.immediateFailedFuture(IllegalStateException("work database unavailable"))
         every { workManager.enqueueUniqueWork(any<String>(), any(), any<OneTimeWorkRequest>()) } returns failed
-        mockkStatic(WorkManager::class)
+        mockWorkManagerSingleton()
         every { WorkManager.getInstance(any()) } returns workManager
 
         copySensitiveToClipboard(context, LABEL, NUMBER)
@@ -86,7 +91,7 @@ class SensitiveClipboardFallbackTest {
 
     @Test
     fun `no WorkManager at all falls back to the timer, and says so`() {
-        mockkStatic(WorkManager::class)
+        mockWorkManagerSingleton()
         every { WorkManager.getInstance(any()) } throws IllegalStateException("WorkManager is not initialized properly")
 
         copySensitiveToClipboard(context, LABEL, NUMBER)
