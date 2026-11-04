@@ -62,7 +62,7 @@ kotlin {
     sourceSets {
         commonMain {
             dependencies {
-                // Same 1.11.0 as the app module. This sat on 1.9.0 while the root
+                // Same 1.12.0 as the app module. This sat on 1.9.0 while the root
                 // Kotlin pin was 2.2.21: 1.10+/1.11 ship Kotlin/Native klibs with
                 // ABI 2.3.0, which the 2.2.x compiler cannot read — the JVM/Android
                 // path tolerates the skew, so only `compileKotlinIosArm64` ever
@@ -70,7 +70,7 @@ kotlin {
                 // iosArm64…1.11.0.klib"). Kotlin 2.4 (2026-09-13, OPEN-WORK G4)
                 // reads it. Keep this and the root Kotlin version moving together;
                 // the iOS workflow is the only build that exercises the K/N side.
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
                 // No Ktor (MR-2092). It was declared here and imported by
                 // nothing, and its Android engine (ktor-client-okhttp) pulled the
