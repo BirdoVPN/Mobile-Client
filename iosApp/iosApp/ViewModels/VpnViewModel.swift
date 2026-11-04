@@ -519,6 +519,15 @@ final class VpnViewModel: ObservableObject {
     /// Server-truth plan slug, uppercased. "RECON" until /vpn/stats answers —
     /// locks render closed rather than flashing premium features open.
     var currentPlan: String { (subscription?.plan ?? "RECON").uppercased() }
+
+    /// What a failed dial says. NetworkExtension's own text is written for
+    /// developers ("IPC failed", "permission denied"); declining the system's
+    /// VPN prompt lands here too, and that user needs to hear what to do next.
+    private static func dialFailureMessage(_ error: Error) -> String {
+        guard (error as NSError).domain.hasPrefix("NE") else { return error.localizedDescription }
+        return "BirdoVPN couldn't set up its VPN on this device. If you were asked to allow "
+            + "a VPN configuration, choose Allow, then try again."
+    }
     // Multi-Hop and Port Forwarding gate on `SettingsViewModel.planHas`
     // (MR-1517: the server's plan table, else the built-in one), never on a
     // plan name here.
@@ -598,7 +607,7 @@ final class VpnViewModel: ObservableObject {
                 holdAutomaticDials(after: error)
                 showUpdateRequired(after: error)
                 noteRefusal(after: error)
-                self.error = error.localizedDescription
+                self.error = Self.dialFailureMessage(error)
                 reportUnauthorized(error)
                 isConnecting = false
                 isReapplyingSettings = false
