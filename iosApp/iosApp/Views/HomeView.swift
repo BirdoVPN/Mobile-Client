@@ -536,6 +536,13 @@ struct HomeView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            // MR-2199: from `applyProfile`, so it goes with the profile on sign-out.
+            if let notices = authVM.user?.termsNotices, !notices.isEmpty {
+                // A new answer is a new view, so it starts from the clock as it is now.
+                TermsNoticeRows(notices: notices)
+                    .id(notices)
+            }
+
             // Upsell for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy). In the
             // panel, not over it: as an overlay it sat on the Connect button.
             if let notice = multiHopUpsell {
@@ -937,4 +944,63 @@ func flagEmoji(_ code: String) -> String {
         UnicodeScalar(base + $0.value - UnicodeScalar("A").value)
     }
     return String(chars.map { Character($0) })
+}
+
+/// MR-2199 (birdo-web #808): the terms-change notices the server names for this
+/// account, which is how an account with no address on file hears of a change.
+/// One line per entry, in the server's order, the text exactly as sent. Not an
+/// error and not dismissible: each goes by itself at its effective date, with
+/// the app left open and no new fetch (`TermsNotice`). Nothing is recorded.
+private struct TermsNoticeRows: View {
+    /// Two long sentences must not take the screen from Connect: past this, or
+    /// when the panel has no room, they scroll.
+    private static let maxHeight: CGFloat = 200
+
+    let notices: [TermsNotice]
+
+    @State private var now = Date()
+
+    var body: some View {
+        let live = TermsNotice.live(notices, at: now)
+        if !live.isEmpty {
+            ViewThatFits(in: .vertical) {
+                rows(live)
+                ScrollView { rows(live) }
+            }
+            .frame(maxHeight: Self.maxHeight)
+            .task {
+                while true {
+                    now = Date()
+                    guard let wait = TermsNotice.nextCheck(notices, at: now) else { return }
+                    try? await Task.sleep(for: .seconds(wait))
+                    guard !Task.isCancelled else { return }
+                }
+            }
+        }
+    }
+
+    private func rows(_ live: [TermsNotice]) -> some View {
+        VStack(spacing: 10) {
+            ForEach(live, id: \.version) { notice in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: notice.text)
+                        .font(.system(size: 13))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let url = notice.link {
+                        Link("See every change", destination: url)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(BirdoTheme.accentSoft)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                        .fill(BirdoTheme.accentBg)
+                )
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("home_terms_notice")
+            }
+        }
+    }
 }

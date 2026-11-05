@@ -83,7 +83,7 @@ final class CredentialDescriptionTests: XCTestCase {
         let profile = UserProfile(id: "user-1", email: "user@example.com", name: "Alice",
                                   emailVerified: true, hasPassword: false, isSSO: false,
                                   accountType: "anonymous", isAnonymousField: true,
-                                  accountNumber: "123456789012345678901234")
+                                  accountNumber: "123456789012345678901234", termsNotices: [])
         assertNoSecret(profile)
         XCTAssertTrue(profile.description.contains("accountType: anonymous"), "UserProfile lost its type")
     }

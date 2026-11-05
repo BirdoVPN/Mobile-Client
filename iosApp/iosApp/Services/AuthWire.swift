@@ -35,6 +35,77 @@ struct AnonymousRegistration: Sendable {
     let tokens: TokenPairData
 }
 
+/// One entry of `/auth/me` `termsNotices` (MR-2199, birdo-web #808): an account
+/// with no address on file gets no e-mail about a terms change, so Home says it
+/// instead. The web banner's rule, and Desktop's (#393): one line per entry in
+/// the server's order, `text` exactly as sent, gone once the time reaches
+/// `effectiveAt` with the app left open and no new fetch.
+///
+/// The Android twin is `TermsNotices` (TermsNotices.kt). HomeView.swift, the
+/// caller, cannot be compiled into the unit bundle, so the rules are here.
+struct TermsNotice: Sendable, Hashable {
+    let version: String
+    let text: String
+    let effectiveAt: String
+    /// A site path; nil when it was not a string, which costs the link, never
+    /// the notice.
+    let path: String?
+
+    /// The longest Home waits before reading the clock again. A timer does not
+    /// run while the app is suspended or the Mac sleeps, so one set for the
+    /// date would leave a notice up after it has ended.
+    static let tick: TimeInterval = 60
+
+    /// When the notice ends; nil unless `effectiveAt` is a full timestamp with
+    /// a zone, which is what `toISOString()` sends.
+    var endDate: Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: effectiveAt) ?? ISO8601DateFormatter().date(from: effectiveAt)
+    }
+
+    /// The site page behind "See every change"; nil shows the text with no link.
+    var link: URL? { SitePath.url(path) }
+
+    /// The entries to show at `now`, in the order sent. A bad date or a blank
+    /// text is not shown.
+    static func live(_ notices: [TermsNotice], at now: Date) -> [TermsNotice] {
+        notices.filter { notice in
+            guard let end = notice.endDate else { return false }
+            return end > now && !notice.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// Seconds to wait before the next look at the clock; nil when no notice
+    /// is left to end.
+    static func nextCheck(_ notices: [TermsNotice], at now: Date) -> TimeInterval? {
+        guard let end = live(notices, at: now).compactMap(\.endDate).min() else { return nil }
+        return min(end.timeIntervalSince(now), tick)
+    }
+}
+
+extension TermsNotice: Decodable {
+    private enum CodingKeys: String, CodingKey { case version, text, effectiveAt, path }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(String.self, forKey: .version)
+        text = try c.decode(String.self, forKey: .text)
+        effectiveAt = try c.decode(String.self, forKey: .effectiveAt)
+        path = (try? c.decodeIfPresent(String.self, forKey: .path)) ?? nil
+    }
+}
+
+/// One element of `termsNotices` whatever its shape, so a bad entry is dropped
+/// on its own: two can be in force together, and one must not hide the other.
+private struct TermsNoticeEntry: Decodable {
+    let notice: TermsNotice?
+
+    init(from decoder: Decoder) throws {
+        notice = try? TermsNotice(from: decoder)
+    }
+}
+
 /// Identity model from `GET /auth/me`. Unknown wire keys are ignored and
 /// every field is defaulted so a new backend field can never break decoding.
 struct UserProfile: Sendable, Equatable {
@@ -53,6 +124,8 @@ struct UserProfile: Sendable, Equatable {
     let isAnonymousField: Bool?
     /// Owner item 86: the 24-digit account number, when the backend sends it.
     let accountNumber: String?
+    /// MR-2199: the terms-change notices for this account, in the order sent.
+    let termsNotices: [TermsNotice]
 
     /// Anonymous account? The explicit `/auth/me` fields win; an older
     /// backend is read from the synthetic email `anon_<24digits>@anonymous.local`
@@ -74,7 +147,7 @@ struct UserProfile: Sendable, Equatable {
 extension UserProfile: Decodable {
     private enum CodingKeys: String, CodingKey {
         case id, email, name, emailVerified, hasPassword, isSSO
-        case accountType, isAnonymous, accountNumber
+        case accountType, isAnonymous, accountNumber, termsNotices
     }
 
     init(from decoder: Decoder) throws {
@@ -91,6 +164,9 @@ extension UserProfile: Decodable {
         accountType = (try? c.decodeIfPresent(String.self, forKey: .accountType)) ?? nil
         isAnonymousField = (try? c.decodeIfPresent(Bool.self, forKey: .isAnonymous)) ?? nil
         accountNumber = (try? c.decodeIfPresent(String.self, forKey: .accountNumber)) ?? nil
+        // Absent when no notice applies; null or any other shape reads the same.
+        termsNotices = ((try? c.decodeIfPresent([TermsNoticeEntry].self, forKey: .termsNotices)) ?? [])
+            .compactMap(\.notice)
     }
 }
 
