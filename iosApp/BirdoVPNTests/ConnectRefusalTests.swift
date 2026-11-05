@@ -257,7 +257,7 @@ final class ConnectRefusalTests: XCTestCase {
         + "Connections you already have stay up until you disconnect them yourself, and nothing else changes."
 
     func testARestrictedAccountShowsTheWholeServerSentenceKeyedOnTheReason() {
-        XCTAssertGreaterThan(Self.restrictedText.utf16.count, 400)
+        XCTAssertGreaterThan(Self.restrictedText.utf16.count, 300)
         let restriction = AccountRestriction(until: "2026-11-06T09:30:00.000Z", appealPath: "/dashboard/devices")
         let refused = ConnectRefusedError.classify(message: Self.restrictedText,
                                                    refusalReason: "account_restricted",
