@@ -394,6 +394,12 @@ targets:
       # WireGuardKit turns them into includedRoutes. Foundation-only, pinned by
       # TunnelRoutesTests; VPNManager (NetworkExtension) cannot be compiled here.
       - path: iosApp/Services/TunnelRoutes.swift
+      # Guideline 4: the arithmetic that keeps a Mac window below the menu bar.
+      # Compiled on every platform, though only the macOS app calls it, because
+      # this bundle's CI run is on the iOS Simulator. CoreGraphics geometry
+      # only, pinned by WindowFrameClampTests; MacWindow (AppKit, in
+      # BirdoVPNApp.swift) cannot be compiled into this bundle.
+      - path: iosApp/Platform/WindowFrameClamp.swift
       # MR-1729: host-only keychain items in a group the PacketTunnel extension
       # is not entitled to, and the lossless move of an older build's items.
       # Foundation-only by design (the keychain is behind KeychainGroupStore),

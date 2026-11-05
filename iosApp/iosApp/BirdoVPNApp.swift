@@ -64,6 +64,9 @@ struct BirdoVPNApp: App {
                     #if os(macOS)
                     .frame(minWidth: 480, minHeight: 560)
                     .onAppear { MacWindow.clampToVisibleFrame() }
+                    .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeMainNotification)) { _ in
+                        MacWindow.clampToVisibleFrame()
+                    }
                     #endif
             }
         }
@@ -75,37 +78,49 @@ struct BirdoVPNApp: App {
         #if os(macOS)
         .defaultSize(width: 480, height: 760)
         .windowResizability(.contentMinSize)
+        // One tunnel and one session, so a second window only shows the same
+        // state twice: no File > New Window, no Command-N. This stays a
+        // WindowGroup rather than a `Window` scene, which iOS does not have and
+        // which quits the app when its window closes.
+        .commands { CommandGroup(replacing: .newItem) { } }
         #endif
     }
 
     #if os(macOS)
-    /// Pull the window fully inside the screen's usable area.
+    /// Pull every window fully inside its own screen's usable area.
     ///
     /// Guideline 4 was "windows laid out and partially hidden under menu bar".
     /// `visibleFrame` already excludes the menu bar and the Dock, so clamping
-    /// to it is exactly the property the reviewer checked. Runs on appear
-    /// because a RESTORED frame is applied after the scene's defaultSize, and
-    /// a Mac that ran the rejected build has one saved.
+    /// to it is exactly the property the reviewer checked. The arithmetic is
+    /// `WindowFrameClamp.clamped`, which sits outside `#if os(macOS)` because
+    /// CI's test run is on the iOS Simulator.
+    ///
+    /// EVERY window, each against its own screen, because removing New Window
+    /// does not make one the only case: a Mac that ran the rejected build may
+    /// restore a saved layout of several, possibly across displays, and SwiftUI
+    /// opens a new window for a `birdo://` URL that no open scene claims.
+    /// Sheets move with their parent and a full-screen window fills its screen
+    /// on purpose, so both are left alone.
+    ///
+    /// Runs on appear because a RESTORED frame is applied after the scene's
+    /// defaultSize, and a Mac that ran the rejected build has one saved. Runs
+    /// again when a window becomes main because `canBecomeMain` is false until
+    /// a window is visible, and SwiftUI may not have put it on screen yet by
+    /// the hop below: nothing would qualify on that pass, and the fix would
+    /// silently do nothing. The cost is that a window left hanging off an edge
+    /// comes back the next time it takes focus.
     enum MacWindow {
         static func clampToVisibleFrame() {
             DispatchQueue.main.async {
-                guard let window = NSApplication.shared.keyWindow
-                        ?? NSApplication.shared.windows.first,
-                      let visible = (window.screen ?? NSScreen.main)?.visibleFrame
-                else { return }
-                var frame = window.frame
-                frame.size.width = min(frame.width, visible.width)
-                frame.size.height = min(frame.height, visible.height)
-                frame.origin.x = min(max(frame.minX, visible.minX),
-                                     visible.maxX - frame.width)
-                // maxY is the top edge. Keeping it at or below the visible
-                // maximum is what keeps the title bar CLEAR of the menu bar --
-                // an earlier wording of this comment said the opposite, and
-                // described the defect as though it were the goal.
-                frame.origin.y = min(max(frame.minY, visible.minY),
-                                     visible.maxY - frame.height)
-                guard frame != window.frame else { return }
-                window.setFrame(frame, display: true)
+                for window in NSApplication.shared.windows
+                where window.isVisible && window.canBecomeMain && !window.isSheet
+                    && !window.styleMask.contains(.fullScreen) {
+                    guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+                    else { continue }
+                    let frame = WindowFrameClamp.clamped(window.frame, into: visible)
+                    guard frame != window.frame else { continue }
+                    window.setFrame(frame, display: true)
+                }
             }
         }
     }
