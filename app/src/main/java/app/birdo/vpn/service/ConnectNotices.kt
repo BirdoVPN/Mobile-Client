@@ -26,7 +26,9 @@ internal object ConnectNotices {
     /** A website path the app may open, or null: it must be a plain `/path` of this site. */
     fun sitePath(path: String?): String? {
         val p = path?.trim() ?: return null
-        if (!p.startsWith("/") || p.startsWith("//") || '\\' in p || ' ' in p || p.length > 200) return null
+        // Printable ASCII only, no space and no control character (Desktop's rule).
+        if (p.any { it.code !in 0x21..0x7E }) return null
+        if (!p.startsWith("/") || p.startsWith("//") || '\\' in p || p.length > 200) return null
         return p
     }
 
@@ -36,7 +38,4 @@ internal object ConnectNotices {
     /** The notice's sentence when it can be shown as it is, else null (never a partial). */
     fun noticeText(notice: DeviceNotice?): String? =
         notice?.message?.trim()?.takeIf { ApiErrorMapper.isPresentable(it, MAX_NOTICE_LENGTH) }
-
-    /** Whether a connect at [nowMs] is still inside a restriction that ended at [untilMs]. */
-    fun held(nowMs: Long, untilMs: Long): Boolean = untilMs > 0L && nowMs < untilMs
 }

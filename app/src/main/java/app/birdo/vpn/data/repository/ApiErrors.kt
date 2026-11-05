@@ -378,7 +378,7 @@ class ApiErrorMapper(private val strings: StringLookup) {
         private const val REGISTRATION_REFUSAL_MAX_LENGTH = 500
 
         /** The longest `account_restricted` message shown whole (the server's is about 454). */
-        private const val RESTRICTION_MAX_LENGTH = 1000
+        const val RESTRICTION_MAX_LENGTH = 1000
 
         /** The deletion routes' `error` codes for an account with 2FA (ACCOUNT-API-2026-10-01, item 85). */
         private const val ERROR_TWO_FACTOR_REQUIRED = "two_factor_required"

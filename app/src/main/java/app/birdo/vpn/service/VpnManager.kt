@@ -18,6 +18,7 @@ import app.birdo.vpn.data.model.ServerNodeInfo
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.data.repository.ApiErrorMapper
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.shared.model.TransportFallbackReason
@@ -173,10 +174,6 @@ class VpnManager @Inject constructor(
      */
     private val _accountRestriction = MutableStateFlow<AccountRestriction?>(null)
     val accountRestriction: StateFlow<AccountRestriction?> = _accountRestriction.asStateFlow()
-
-    /** When that restriction ends (epoch ms, 0 = none) and the sentence to show until then. */
-    private var restrictedUntilMs = 0L
-    private var restrictedMessage: String? = null
 
     /**
      * MR-2220: the server's notice on a successful connect that other devices
@@ -941,9 +938,14 @@ class VpnManager @Inject constructor(
         val kind = FailureKind.forRefusal(quotaExceeded, refusalReason)
         return if (kind == FailureKind.ACCOUNT_RESTRICTED) {
             // MR-2221: the server's sentence, then when it ends in the user's
-            // own time. Remembered, so a tap before then is answered here.
+            // own time. A restriction can end before then (a review, an upgrade,
+            // another account), so a user tap always reaches the server; only
+            // automatic re-dials stop, by the terminal kind.
             val endMs = ConnectNotices.restrictionEndMs(restriction)
-            val text = (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG).let { base ->
+            val shownMessage = serverMessage
+                ?.takeIf { ApiErrorMapper.isPresentable(it, ApiErrorMapper.RESTRICTION_MAX_LENGTH) }?.trim()
+                ?: context.getString(R.string.error_account_restricted)
+            val text = shownMessage.let { base ->
                 if (endMs > 0L) {
                     val shown = java.text.DateFormat
                         .getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
@@ -954,8 +956,6 @@ class VpnManager @Inject constructor(
                 }
             }
             _accountRestriction.value = restriction
-            restrictedUntilMs = endMs
-            restrictedMessage = text
             text to kind
         } else if (kind == FailureKind.QUOTA_EXCEEDED) {
             (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to kind
@@ -1036,15 +1036,6 @@ class VpnManager @Inject constructor(
         // rebuilds it in place instead of tearing it down to the block.
         if (allowLiveRebuild && fallbackReason == null && activeMultiHop == null && liveRebuildEligible(prior)) {
             return liveRebuildSingle(serverId, gen, prior)
-        }
-        // MR-2221: a connect before the restriction's end is refused again, so
-        // it is not sent. Only from a dead session: a live one is never cut here.
-        if ((prior is VpnState.Disconnected || prior is VpnState.Error) &&
-            ConnectNotices.held(System.currentTimeMillis(), restrictedUntilMs)
-        ) {
-            val held = restrictedMessage ?: SessionCopy.BAD_SERVER_CONFIG
-            publishError(held, FailureKind.ACCOUNT_RESTRICTED)
-            return ApiResult.Error(held)
         }
         if (!teardownLiveSession(prior, gen)) return ApiResult.Error(SUPERSEDED)
 
@@ -1129,8 +1120,6 @@ class VpnManager @Inject constructor(
                 // The connect went through: no restriction stands, and a notice
                 // the server attached is shown without touching the tunnel.
                 _accountRestriction.value = null
-                restrictedUntilMs = 0L
-                restrictedMessage = null
                 _deviceNotice.value = config.deviceNotice?.takeIf { ConnectNotices.noticeText(it) != null }
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.

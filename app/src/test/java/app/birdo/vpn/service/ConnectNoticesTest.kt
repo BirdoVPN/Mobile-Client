@@ -3,9 +3,7 @@ package app.birdo.vpn.service
 import app.birdo.vpn.data.model.AccountRestriction
 import app.birdo.vpn.data.model.DeviceNotice
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** MR-2221 / MR-2220: the connect reply's two optional objects, read without ever throwing. */
@@ -24,14 +22,6 @@ class ConnectNoticesTest {
     }
 
     @Test
-    fun `a connect is held only before the end, never after, never without one`() {
-        assertTrue(ConnectNotices.held(nowMs = 999, untilMs = 1_000))
-        assertFalse(ConnectNotices.held(nowMs = 1_000, untilMs = 1_000))
-        assertFalse(ConnectNotices.held(nowMs = 5_000, untilMs = 1_000))
-        assertFalse(ConnectNotices.held(nowMs = 5, untilMs = 0))
-    }
-
-    @Test
     fun `only a plain path of this site becomes a link`() {
         assertEquals("https://birdo.app/dashboard/devices", ConnectNotices.siteUrl("/dashboard/devices"))
         assertNull(ConnectNotices.siteUrl(null))
@@ -41,6 +31,9 @@ class ConnectNoticesTest {
         assertNull(ConnectNotices.siteUrl("https://evil.example/x"))
         assertNull(ConnectNotices.siteUrl("/\\evil.example"))
         assertNull(ConnectNotices.siteUrl("/a b"))
+        assertNull(ConnectNotices.siteUrl("/a" + 0x0A.toChar() + "b"))
+        assertNull(ConnectNotices.siteUrl("/caf" + 0xE9.toChar()))
+        assertNull(ConnectNotices.siteUrl("/a" + 0x7F.toChar()))
     }
 
     @Test

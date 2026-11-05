@@ -55,10 +55,6 @@ final class VpnViewModel: ObservableObject {
     /// MR-2220: the server's notice on a successful connect (other devices kept
     /// taking the connection). Shown on Home; the tunnel never waits on it.
     @Published private(set) var deviceNotice: DeviceNotice?
-    /// MR-2221: the `account_restricted` refusal still in force. A connect
-    /// before its end is answered here with the same text, not sent.
-    private var restrictionHold: ConnectRefusedError?
-
     func dismissDeviceNotice() { deviceNotice = nil }
 
     /// Home offers the plans under the banner: the refusal it shows is a
@@ -185,7 +181,6 @@ final class VpnViewModel: ObservableObject {
     /// other failure), so Home can offer what its reason asks for.
     private func noteRefusal(after error: Error) {
         connectRefusal = error as? ConnectRefusedError
-        if let refusal = connectRefusal, refusal.reason == .accountRestricted { restrictionHold = refusal }
     }
 
     private var dismissedFloors: Set<String> {
@@ -555,13 +550,6 @@ final class VpnViewModel: ObservableObject {
             error = "Select a server first"
             return
         }
-        // MR-2221: a restricted account is refused again until the end the
-        // server named, so the tap is answered with the same text, unsent.
-        if let held = restrictionHold, held.holds(at: Date()) {
-            connectRefusal = held
-            error = held.message
-            return
-        }
         // Re-entrancy guard, matching the Android VpnViewModel: a second tap
         // while a connect is already in flight mints a second tunnel session
         // (and a second server-side peer) for the same device. Asked of
@@ -603,7 +591,6 @@ final class VpnViewModel: ObservableObject {
                 applyUpdateAdvisory(config.clientUpdate)
                 // The connect went through: no restriction stands, and a notice
                 // the server attached is shown without touching the tunnel.
-                restrictionHold = nil
                 deviceNotice = config.deviceNotice?.text == nil ? nil : config.deviceNotice
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // `startVPNTunnel()` only REQUESTS the tunnel — it is still

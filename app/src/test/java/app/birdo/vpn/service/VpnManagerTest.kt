@@ -1635,7 +1635,7 @@ class VpnManagerTest {
     )
 
     @Test
-    fun `a restricted account is told why, with the end, and is not asked again before it`() = runTest {
+    fun `a restricted account is told why, with the end, and a manual connect still reaches the server`() = runTest {
         every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns
             "New connections resume tomorrow."
         val until = java.time.Instant.now().plusSeconds(3_600).toString()
@@ -1650,25 +1650,27 @@ class VpnManagerTest {
         assertTrue(error.message, error.message.endsWith("New connections resume tomorrow."))
         assertEquals("/dashboard/devices", vpnManager.accountRestriction.value?.appealPath)
 
-        // A second tap before `until` is answered here, not by the server.
+        // The pause may have ended on the website, or the user may have changed
+        // account or plan: a tap is always sent, and the server answers afresh.
         vpnManager.connect("srv-1")
         advanceUntilIdle()
-        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
-        assertEquals(FailureKind.ACCOUNT_RESTRICTED, (vpnManager.state.value as VpnState.Error).kind)
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
     }
 
     @Test
-    fun `an end that has passed, or none, lets the next connect through`() = runTest {
-        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
-        val past = java.time.Instant.now().minusSeconds(60).toString()
-        coEvery { repository.connectVpn(any(), any()) } returns restrictedRefusal(past)
-
-        vpnManager.connect("srv-1")
-        advanceUntilIdle()
-        vpnManager.connect("srv-1")
-        advanceUntilIdle()
-
-        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+    fun `a restricted refusal with no usable message says what it is, never blames the server config`() = runTest {
+        every { context.getString(R.string.error_account_restricted) } returns
+            app.birdo.vpn.testing.StringsXml.text("error_account_restricted")
+        for (message in listOf(null, "<html>blocked</html>")) {
+            coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
+                ConnectResponse(success = false, refusalReason = "account_restricted", message = message),
+            )
+            vpnManager.connect("srv-1")
+            advanceUntilIdle()
+            val error = vpnManager.state.value as VpnState.Error
+            assertEquals(FailureKind.ACCOUNT_RESTRICTED, error.kind)
+            assertEquals(app.birdo.vpn.testing.StringsXml.text("error_account_restricted"), error.message)
+        }
     }
 
     @Test

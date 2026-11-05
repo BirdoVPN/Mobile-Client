@@ -283,7 +283,6 @@ final class ConnectRefusalTests: XCTestCase {
         XCTAssertEqual(bare.message, ConnectRefusedError.restrictedMessage)
         XCTAssertNil(bare.restrictedUntil)
         XCTAssertNil(bare.appealURL)
-        XCTAssertFalse(bare.holds(at: Date()))
         let noMessage = ConnectRefusedError.classify(message: nil, refusalReason: "account_restricted",
                                                      quotaExceeded: false,
                                                      accountRestriction: AccountRestriction(until: "tomorrow-ish",
@@ -291,20 +290,9 @@ final class ConnectRefusalTests: XCTestCase {
         XCTAssertEqual(noMessage.message, ConnectRefusedError.restrictedMessage)
     }
 
-    func testAConnectIsHeldBeforeTheEndAndNeverAfter() {
-        let now = Date()
-        func held(until: Date) -> ConnectRefusedError {
-            ConnectRefusedError(reason: .accountRestricted, quotaExceeded: false, message: "x", restrictedUntil: until)
-        }
-        XCTAssertTrue(held(until: now.addingTimeInterval(60)).holds(at: now))
-        XCTAssertFalse(held(until: now.addingTimeInterval(-60)).holds(at: now))
-        XCTAssertFalse(ConnectRefusedError(reason: .plan, quotaExceeded: false, message: "x",
-                                           restrictedUntil: now.addingTimeInterval(60)).holds(at: now))
-    }
-
     func testOnlyAPlainPathOfTheSiteBecomesALink() {
         XCTAssertEqual(SitePath.url("/dashboard/devices")?.absoluteString, "https://birdo.app/dashboard/devices")
-        for bad in [nil, "", "dashboard", "//evil.example/x", "https://evil.example/x", "/a b", "/\\evil.example"] {
+        for bad in [nil, "", "dashboard", "//evil.example/x", "https://evil.example/x", "/a b", "/a\u{0A}b", "/caf\u{E9}", "/a\u{7F}", "/\\evil.example"] {
             XCTAssertNil(SitePath.url(bad), String(describing: bad))
         }
     }

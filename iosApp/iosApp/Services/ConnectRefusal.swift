@@ -101,6 +101,8 @@ enum SitePath {
     static func url(_ path: String?) -> URL? {
         guard let p = path?.trimmingCharacters(in: .whitespacesAndNewlines),
               p.hasPrefix("/"), !p.hasPrefix("//"), p.count <= 200,
+              // Printable ASCII only, no space and no control character (Desktop's rule).
+              p.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value <= 0x7E }),
               !p.contains("\\"), !p.contains(" ") else { return nil }
         return URL(string: "https://birdo.app" + p)
     }
@@ -201,12 +203,6 @@ struct ConnectRefusedError: Error, LocalizedError, Equatable, Sendable {
     /// For a restricted account with no showable sentence.
     static let restrictedMessage =
         "New connections on this account are paused for now. You can ask for a review from the Devices page on birdo.app."
-
-    /// A connect before `restrictedUntil` is refused again, so it is not sent.
-    func holds(at now: Date) -> Bool {
-        guard reason == .accountRestricted, let restrictedUntil else { return false }
-        return now < restrictedUntil
-    }
 
     var errorDescription: String? { message }
 
