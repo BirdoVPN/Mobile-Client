@@ -762,7 +762,8 @@ final class AuthViewModel: ObservableObject {
                     requiresTwoFactor = true
                 }
             } catch {
-                self.error = mapAuthError(error, fallback: "Anonymous login failed")
+                self.error = Self.anonymousLoginMessage(
+                    mapAuthError(error, fallback: "Anonymous login failed"))
             }
             self.isLoading = false
         }
@@ -1398,6 +1399,13 @@ final class AuthViewModel: ObservableObject {
     /// Map a login-path failure to user copy. Server text is sanitized first
     /// (blank / >200 chars / HTML / stack-trace fragments → fallback), then
     /// matched against the known-condition table.
+    /// The shared mapping speaks for the email form. This form has no email.
+    private static func anonymousLoginMessage(_ message: String) -> String {
+        message == "Invalid email or password"
+            ? "That account number or password isn't right"
+            : message
+    }
+
     private func mapAuthError(_ error: Error, fallback: String) -> String {
         // SSOService errors already carry their exact user-facing copy.
         if let sso = error as? SSOService.SSOError {

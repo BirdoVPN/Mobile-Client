@@ -101,12 +101,6 @@ struct HomeView: View {
         .navigationDestination(isPresented: $showPlans) {
             SubscriptionView()
         }
-        // Upsell snackbar for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy).
-        .overlay(alignment: .bottom) {
-            if let notice = multiHopUpsell {
-                multiHopUpsellSnackbar(notice)
-            }
-        }
         .task(id: multiHopUpsell) {
             guard multiHopUpsell != nil else { return }
             try? await Task.sleep(for: .seconds(3.2))
@@ -174,15 +168,21 @@ struct HomeView: View {
                 Spacer(minLength: BirdoTheme.Spacing.md)
 
                 if let identity = accountIdentity {
-                    Text(identity)
-                        .font(BirdoTheme.Fonts.bodySmall)
-                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 120, alignment: .trailing)
-                        // Shows no account number since MR-1362; the app-switcher
-                        // cover (MR-1727) stays as a second line of defence.
-                        .accountNumberSnapshotCover()
+                    // The short form is for a phone, where "Anonymous account"
+                    // leaves "Anonymous ac…". An email has no short form, so the
+                    // last view in the list simply truncates.
+                    ViewThatFits(in: .horizontal) {
+                        Text(identity)
+                        Text(authVM.isAnonymousAccount ? "Anonymous" : identity)
+                    }
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 240, alignment: .trailing)
+                    // Shows no account number since MR-1362; the app-switcher
+                    // cover (MR-1727) stays as a second line of defence.
+                    .accountNumberSnapshotCover()
                 }
 
                 if isGuest {
@@ -333,8 +333,6 @@ struct HomeView: View {
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
                 .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
         )
-        .padding(.horizontal, BirdoTheme.Spacing.lg)
-        .padding(.bottom, BirdoTheme.Spacing.xl)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
@@ -499,6 +497,12 @@ struct HomeView: View {
             if let advisory = vpnVM.updateAdvisory {
                 updateAdvisoryBanner(advisory)
                     .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // Upsell for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy). In the
+            // panel, not over it: as an overlay it sat on the Connect button.
+            if let notice = multiHopUpsell {
+                multiHopUpsellSnackbar(notice)
             }
 
             serverSelector

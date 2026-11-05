@@ -43,6 +43,17 @@ struct SettingsView: View {
     /// MR-1094: why App Lock could not be turned on (no device passcode).
     @State private var appLockRefusal: String?
 
+    private var appLockDescription: String {
+        #if os(macOS)
+        return "Asks for Touch ID or your Mac's password before BirdoVPN shows anything, each "
+            + "time you open it or come back to it. The VPN keeps running while the app is locked."
+        #else
+        return "Asks for Face ID, Touch ID or your passcode before BirdoVPN shows anything, each "
+            + "time you open it or come back to it. Needs a device passcode. The VPN keeps "
+            + "running while the app is locked."
+        #endif
+    }
+
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
@@ -70,7 +81,7 @@ struct SettingsView: View {
                                        title: "Notification Settings",
                                        description: "Open system notification settings",
                                        trailing: "arrow.up.forward.square") {
-                        SystemOpen.appSettings()
+                        SystemOpen.notificationSettings()
                     }
 
                     vpnSection
@@ -109,6 +120,7 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, BirdoTheme.Spacing.screenH)
                 .padding(.vertical, BirdoTheme.Spacing.screenV)
+                .adaptiveColumn()
             }
         }
         .modifier(HideNavigationBar())
@@ -278,9 +290,7 @@ struct SettingsView: View {
         SectionHeader("Privacy")
         SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.white60,
                           title: "App Lock",
-                          description: "Asks for Face ID, Touch ID or your passcode before BirdoVPN shows "
-                            + "anything, each time you open it or come back to it. Needs a device "
-                            + "passcode. The VPN keeps running while the app is locked.",
+                          description: appLockDescription,
                           isOn: appLockBinding)
             .alert("App Lock needs a passcode",
                    isPresented: Binding(get: { appLockRefusal != nil },
@@ -361,6 +371,7 @@ struct SettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(minHeight: 56)
+            .adaptiveColumn()
 
             Rectangle()
                 .fill(BirdoTheme.hairlineSoft)
@@ -418,6 +429,9 @@ private struct SettingsToggleRow: View {
                     Spacer(minLength: 8)
                     Toggle("", isOn: $isOn)
                         .labelsHidden()
+                        // macOS's default is a checkbox, which disappears
+                        // against this card when off.
+                        .toggleStyle(.switch)
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
                 }
@@ -548,10 +562,9 @@ private struct SettingsRowText: View {
             Text(description)
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                // 4, not 2: every other row's copy is one or two lines, so this
-                // is a max that only bites on the rows that need the space
-                // (App Lock, Kill Switch).
-                .lineLimit(4)
+                // No line limit. This copy says what a switch does, and four
+                // lines cut App Lock's short on every phone.
+                .fixedSize(horizontal: false, vertical: true)
         }
         .multilineTextAlignment(.leading)
     }

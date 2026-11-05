@@ -113,8 +113,10 @@ struct ProfileView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 24)
+            .adaptiveColumn()
         }
         .scrollIndicators(.hidden)
+        .topEdgeScrim()
         .modifier(HideNavigationBar())
         .navigationDestination(isPresented: $showSubscription) {
             SubscriptionView()

@@ -81,6 +81,7 @@ struct VpnSettingsView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
+                    .adaptiveColumn()
                 }
             }
         }
@@ -130,6 +131,7 @@ struct VpnSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(minHeight: 56)
+            .adaptiveColumn()
 
             Rectangle()
                 .fill(BirdoTheme.hairlineSoft)
@@ -390,6 +392,7 @@ private struct VpnToggleRow: View {
                     Spacer(minLength: 8)
                     Toggle("", isOn: shownBinding)
                         .labelsHidden()
+                        .toggleStyle(.switch)
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
                 }
@@ -418,7 +421,7 @@ private struct VpnRowText: View {
             Text(description)
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .multilineTextAlignment(.leading)
     }
