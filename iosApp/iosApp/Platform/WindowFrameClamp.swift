@@ -18,13 +18,11 @@ enum WindowFrameClamp {
     /// of this comment said the opposite, and described the defect as though it
     /// were the goal.
     static func clamped(_ frame: CGRect, into visible: CGRect) -> CGRect {
-        // WIP, DELIBERATELY WRONG: this commit exists to show the tests fail.
-        // It pins the ORIGIN to the top of the visible area, so the whole window
-        // hangs above it, and it neither shrinks nor clamps the right edge.
-        // The next commit replaces it.
-        CGRect(x: max(frame.minX, visible.minX),
-               y: visible.maxY,
-               width: frame.width,
-               height: frame.height)
+        let width = min(frame.width, visible.width)
+        let height = min(frame.height, visible.height)
+        return CGRect(x: min(max(frame.minX, visible.minX), visible.maxX - width),
+                      y: min(max(frame.minY, visible.minY), visible.maxY - height),
+                      width: width,
+                      height: height)
     }
 }
