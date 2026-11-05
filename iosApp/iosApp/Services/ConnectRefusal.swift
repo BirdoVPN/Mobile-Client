@@ -21,11 +21,117 @@ enum ConnectRefusalReason: String, CaseIterable, Sendable {
     case serverCapacity = "server_capacity"
     /// The chosen server is missing or not ONLINE, or none can be used now.
     case serverUnavailable = "server_unavailable"
+    /// MR-2221: new free-plan connections on the account are paused until
+    /// `accountRestriction.until`. Final until then; the server's own long
+    /// sentence is shown, with the end time and the appeal link.
+    case accountRestricted = "account_restricted"
 
     /// The reason `wire` names; nil for none and for one newer than this build.
     init?(wire: String?) {
         guard let wire, let known = ConnectRefusalReason(rawValue: wire) else { return nil }
         self = known
+    }
+}
+
+/// MR-2221: `$defs.ConnectResponse.accountRestriction`. Every member optional,
+/// so a body missing a part still decodes; read leniently by the envelope.
+struct AccountRestriction: Decodable, Equatable, Sendable {
+    let until: String?
+    let appealPath: String?
+
+    private enum CodingKeys: String, CodingKey { case until, appealPath }
+
+    init(until: String?, appealPath: String?) {
+        self.until = until
+        self.appealPath = appealPath
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        until = (try? c.decodeIfPresent(String.self, forKey: .until)) ?? nil
+        appealPath = (try? c.decodeIfPresent(String.self, forKey: .appealPath)) ?? nil
+    }
+
+    /// When the restriction ends; nil when `until` is missing or not ISO-8601
+    /// (then nothing is held back and the server decides, as before).
+    var endDate: Date? {
+        guard let until else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        return fractional.date(from: until) ?? plain.date(from: until)
+    }
+
+    /// The appeal page on the site, or nil unless `appealPath` is a plain path.
+    var appealURL: URL? { SitePath.url(appealPath) }
+}
+
+/// MR-2220: `$defs.ConnectResponse.deviceNotice`, on a SUCCESSFUL connect.
+struct DeviceNotice: Decodable, Equatable, Sendable {
+    let kind: String?
+    let message: String?
+    let managePath: String?
+
+    private enum CodingKeys: String, CodingKey { case kind = "code", message, managePath }
+
+    init(kind: String?, message: String?, managePath: String?) {
+        self.kind = kind
+        self.message = message
+        self.managePath = managePath
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? nil
+        message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil
+        managePath = (try? c.decodeIfPresent(String.self, forKey: .managePath)) ?? nil
+    }
+
+    /// The sentence when it can be shown as the server wrote it, else nil.
+    var text: String? {
+        guard let message, ConnectRefusedError.isPresentable(message, maxLength: 1000) else { return nil }
+        return message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var manageURL: URL? { SitePath.url(managePath) }
+}
+
+/// A link the app may open: a plain `/path` of birdo.app, nothing else.
+enum SitePath {
+    static func url(_ path: String?) -> URL? {
+        guard let p = path?.trimmingCharacters(in: .whitespacesAndNewlines),
+              p.hasPrefix("/"), !p.hasPrefix("//"), p.count <= 200,
+              // Printable ASCII only, no space and no control character (Desktop's rule).
+              p.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value <= 0x7E }),
+              !p.contains("\\"), !p.contains(" ") else { return nil }
+        return URL(string: "https://birdo.app" + p)
+    }
+}
+
+/// MR-2220: a sign-up refused because new accounts are not accepted from the
+/// caller's country: HTTP 403 `{ statusCode, message, details: { code:
+/// "registration_country_not_allowed" } }` (birdo-web `refusal()` in
+/// registration-gate.service.ts). Told by `details.code` on a 403, never by
+/// wording, and shown as the server wrote it. No other 403 is classified here.
+/// Thrown from the `refusal:` hook of the account-creating requests, so the
+/// generic mapping (which filters and re-words server text) never sees it.
+struct RegistrationRefusedError: Error, LocalizedError, Equatable, Sendable {
+    static let code = "registration_country_not_allowed"
+    static let maxLength = 500
+
+    let message: String
+
+    var errorDescription: String? { message }
+
+    /// The refusal for a response, or nil when it is anything else.
+    static func classify(status: Int, body: Data) -> RegistrationRefusedError? {
+        guard status == 403,
+              let root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let details = root["details"] as? [String: Any],
+              (details["code"] as? String) == code,
+              let message = root["message"] as? String,
+              ConnectRefusedError.isPresentable(message, maxLength: maxLength) else { return nil }
+        return RegistrationRefusedError(message: message.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 
@@ -44,9 +150,11 @@ struct ConnectEnvelope: Decodable, Sendable {
     /// rebuild refusal). Raw, for the same reason as `rebuildRefused`.
     let refusalReason: String?
     let quotaExceeded: Bool?
+    /// MR-2221: with `account_restricted` only; a malformed one reads as absent.
+    let accountRestriction: AccountRestriction?
 
     private enum CodingKeys: String, CodingKey {
-        case success, message, rebuildRefused, refusalReason, quotaExceeded
+        case success, message, rebuildRefused, refusalReason, quotaExceeded, accountRestriction
     }
 
     /// The MR-139 fields are read leniently: a wrong-typed `refusalReason` or
@@ -59,6 +167,7 @@ struct ConnectEnvelope: Decodable, Sendable {
         rebuildRefused = try c.decodeIfPresent(String.self, forKey: .rebuildRefused)
         refusalReason = (try? c.decodeIfPresent(String.self, forKey: .refusalReason)) ?? nil
         quotaExceeded = (try? c.decodeIfPresent(Bool.self, forKey: .quotaExceeded)) ?? nil
+        accountRestriction = (try? c.decodeIfPresent(AccountRestriction.self, forKey: .accountRestriction)) ?? nil
     }
 }
 
@@ -74,6 +183,26 @@ struct ConnectRefusedError: Error, LocalizedError, Equatable, Sendable {
     let quotaExceeded: Bool
     /// What the connect paths render.
     let message: String
+    /// MR-2221: when an `account_restricted` refusal ends, and where to appeal.
+    /// Nil for every other refusal.
+    let restrictedUntil: Date?
+    let appealURL: URL?
+
+    init(reason: ConnectRefusalReason?, quotaExceeded: Bool, message: String,
+         restrictedUntil: Date? = nil, appealURL: URL? = nil) {
+        self.reason = reason
+        self.quotaExceeded = quotaExceeded
+        self.message = message
+        self.restrictedUntil = restrictedUntil
+        self.appealURL = appealURL
+    }
+
+    /// The longest `account_restricted` sentence shown whole (the server's is about 454).
+    static let restrictionMaxLength = 1000
+
+    /// For a restricted account with no showable sentence.
+    static let restrictedMessage =
+        "New connections on this account are paused for now. You can ask for a review from the Devices page on birdo.app."
 
     var errorDescription: String? { message }
 
@@ -104,10 +233,26 @@ struct ConnectRefusedError: Error, LocalizedError, Equatable, Sendable {
     /// Unlike Android, a refusal with NO reason is never matched on its
     /// wording ("Device limit reached …"): iOS never did, and every backend
     /// this build talks to sends the reason (birdo-web #739).
-    static func classify(message: String?, refusalReason: String?, quotaExceeded: Bool) -> ConnectRefusedError {
+    static func classify(message: String?, refusalReason: String?, quotaExceeded: Bool,
+                         accountRestriction: AccountRestriction? = nil) -> ConnectRefusedError {
         let reason = ConnectRefusalReason(wire: refusalReason)
         let text: String
-        if reason == .deviceLimit {
+        if reason == .accountRestricted {
+            // MR-2221: keyed on the reason. The sentence is longer than the usual
+            // limit, so only for this reason the ceiling is higher; every other
+            // rule of `isPresentable` still applies. Then the end in local time.
+            var shown = message.flatMap { isPresentable($0, maxLength: restrictionMaxLength) ? $0 : nil }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? restrictedMessage
+            let end = accountRestriction?.endDate
+            if let end {
+                let formatter = DateFormatter()
+                formatter.dateStyle = .medium
+                formatter.timeStyle = .short
+                shown += "\n\nNew connections resume \(formatter.string(from: end))."
+            }
+            return ConnectRefusedError(reason: reason, quotaExceeded: quotaExceeded, message: shown,
+                                       restrictedUntil: end, appealURL: accountRestriction?.appealURL)
+        } else if reason == .deviceLimit {
             text = deviceLimitMessage
         } else if let message, isPresentable(message) {
             text = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -129,9 +274,9 @@ struct ConnectRefusedError: Error, LocalizedError, Equatable, Sendable {
     /// `ApiErrorMapper.isPresentable`, rule for rule. Not blank, at most 200
     /// UTF-16 units (Kotlin's `length`), not JSON, no markup, no stack trace,
     /// and not a bare HTTP reason phrase.
-    static func isPresentable(_ text: String) -> Bool {
+    static func isPresentable(_ text: String, maxLength: Int = 200) -> Bool {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty || t.utf16.count > 200 { return false }
+        if t.isEmpty || t.utf16.count > maxLength { return false }
         if t.hasPrefix("{") || t.hasPrefix("[") || t.contains("<") { return false }
         if t.contains("Exception") || t.contains("\tat ") || t.contains("stackTrace") { return false }
         var phrase = t.lowercased()

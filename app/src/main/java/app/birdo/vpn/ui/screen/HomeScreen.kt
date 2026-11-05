@@ -51,6 +51,7 @@ import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.perf.GlobePerf
 import app.birdo.vpn.perf.GlobePerfControls
 import app.birdo.vpn.perf.GlobePerfOverlay
+import app.birdo.vpn.service.ConnectNotices
 import app.birdo.vpn.service.MultiHopPolicy
 import app.birdo.vpn.service.VpnState
 import app.birdo.vpn.ui.TestTags
@@ -97,6 +98,9 @@ fun HomeScreen(
     /** The upgrade flow: the device-limit refusal and locked servers route here. */
     onViewPlans: () -> Unit = {},
     onDismissMessage: () -> Unit = {},
+    /** Opens a website page (the appeal and Devices pages of MR-2221 / MR-2220). */
+    onOpenUrl: (String) -> Unit = {},
+    onDismissDeviceNotice: () -> Unit = {},
     /** Anonymous accounts are reminded, before signing out, that the account number is the only way back in. */
     isAnonymousAccount: Boolean = false,
 ) {
@@ -431,6 +435,23 @@ fun HomeScreen(
                         )
                     }
 
+                    // MR-2220: the server says other devices kept taking this free
+                    // connection. The tunnel is already up; this only tells.
+                    val deviceNotice = state.deviceNotice
+                    val deviceNoticeText = ConnectNotices.noticeText(deviceNotice)
+                    AnimatedVisibility(visible = isConnected && deviceNoticeText != null) {
+                        val manageUrl = ConnectNotices.siteUrl(deviceNotice?.managePath)
+                        HomeBanner(
+                            icon = Icons.Default.ErrorOutline,
+                            message = deviceNoticeText.orEmpty(),
+                            tone = BannerTone.Info,
+                            action = manageUrl?.let { url ->
+                                BannerAction(stringResource(R.string.banner_action_manage_devices)) { onOpenUrl(url) }
+                            },
+                            onDismiss = onDismissDeviceNotice,
+                        )
+                    }
+
                     // ONE message banner (A2-011): a message of the Connect
                     // screen's own (dismissible), else the session's Error with
                     // the action that fixes it (P1-parity-040). The two used to
@@ -450,6 +471,8 @@ fun HomeScreen(
                                         Remedy.UPDATE -> onUpdateApp()
                                         Remedy.CHOOSE_SERVER ->
                                             if (state.servers.isNotEmpty()) showServerSheet = true else onOpenServers()
+                                        Remedy.ASK_REVIEW ->
+                                            ConnectNotices.siteUrl(state.accountRestriction?.appealPath)?.let(onOpenUrl)
                                     }
                                 }
                             },

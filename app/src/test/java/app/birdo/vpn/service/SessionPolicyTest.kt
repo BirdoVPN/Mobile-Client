@@ -52,6 +52,16 @@ class SessionPolicyTest {
     }
 
     @Test
+    fun `account_restricted is a terminal failure of its own, other and unknown reasons stay REFUSED`() {
+        assertTrue(FailureKind.ACCOUNT_RESTRICTED.terminal)
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, FailureKind.forRefusal(false, "account_restricted"))
+        assertEquals(FailureKind.REFUSED, FailureKind.forRefusal(false, "a_reason_from_the_future"))
+        assertEquals(0, ReconnectPolicy.maxAttempts(FailureKind.ACCOUNT_RESTRICTED))
+        val out = ReconnectPolicy.onFailure(established(), FailureKind.ACCOUNT_RESTRICTED, online = true, nowMs = t0, jitter = 0.0)
+        assertEquals(GiveUpReason.TERMINAL, (out.decision as Decision.GiveUp).reason)
+    }
+
+    @Test
     fun `a user dial that never connected is not retried, whatever the failure`() {
         val out = ReconnectPolicy.onFailure(Session.userDial(), FailureKind.TRANSIENT, online = true, nowMs = t0, jitter = 0.0)
         assertEquals(GiveUpReason.NEVER_CONNECTED, (out.decision as Decision.GiveUp).reason)

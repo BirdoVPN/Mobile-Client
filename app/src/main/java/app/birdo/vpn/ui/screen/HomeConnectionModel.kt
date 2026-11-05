@@ -2,6 +2,7 @@ package app.birdo.vpn.ui.screen
 
 import androidx.annotation.StringRes
 import app.birdo.vpn.R
+import app.birdo.vpn.service.ConnectNotices
 import app.birdo.vpn.service.FailureKind
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnState
@@ -146,6 +147,8 @@ internal enum class Remedy(@param:StringRes val label: Int) {
     VIEW_PLANS(R.string.banner_action_view_plans),
     UPDATE(R.string.update_action),
     CHOOSE_SERVER(R.string.banner_action_choose_server),
+    /** MR-2221: the website's review page for a restricted account (the server's `appealPath`). */
+    ASK_REVIEW(R.string.banner_action_ask_review),
 }
 
 /**
@@ -158,6 +161,7 @@ internal fun remedyFor(kind: FailureKind): Remedy? = when (kind) {
     // "…or turn off Stealth Mode in Settings": straight to the toggle.
     FailureKind.STEALTH_FAILED -> Remedy.OPEN_VPN_SETTINGS
     FailureKind.PLAN_REQUIRED, FailureKind.QUOTA_EXCEEDED -> Remedy.VIEW_PLANS
+    FailureKind.ACCOUNT_RESTRICTED -> Remedy.ASK_REVIEW
     FailureKind.UPDATE_REQUIRED -> Remedy.UPDATE
     // "…Try another location."
     FailureKind.NEVER_ESTABLISHED -> Remedy.CHOOSE_SERVER
@@ -191,5 +195,8 @@ internal fun homeRemedy(state: VpnUiState): Remedy? {
     if (state.connectError != null || killSwitchWarning(state) != null) return null
     val error = state.vpnState as? VpnState.Error ?: return null
     if (SessionCopy.isKillSwitchNotArmed(error.message)) return null
-    return remedyFor(error.kind)
+    val remedy = remedyFor(error.kind)
+    // No review button without a link of this site to open.
+    if (remedy == Remedy.ASK_REVIEW && ConnectNotices.siteUrl(state.accountRestriction?.appealPath) == null) return null
+    return remedy
 }
