@@ -218,7 +218,9 @@ final class APIClient: @unchecked Sendable {
             platformVersion: device.osVersion,
             appVersion: kBirdoClientVersion
         ))
-        let data = try await post(path: "/auth/register/anonymous", body: body, authenticated: false)
+        // MR-2220: a sign-up refused for the caller's country keeps its sentence.
+        let data = try await post(path: "/auth/register/anonymous", body: body, authenticated: false,
+                                  refusal: { status, data in RegistrationRefusedError.classify(status: status, body: data) })
         let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
         guard parsed.ok != false, let tokens = parsed.tokens, !tokens.accessToken.isEmpty else {
             // Client-minted: the response WAS 2xx, we just could not use it.
@@ -273,7 +275,8 @@ final class APIClient: @unchecked Sendable {
             platformVersion: device.osVersion,
             appVersion: kBirdoClientVersion
         ))
-        let data = try await post(path: "/auth/apple/native", body: body, authenticated: false)
+        let data = try await post(path: "/auth/apple/native", body: body, authenticated: false,
+                                  refusal: { status, data in RegistrationRefusedError.classify(status: status, body: data) })
         return try parseAuthResponse(data)
     }
 
@@ -615,7 +618,8 @@ final class APIClient: @unchecked Sendable {
             throw ConnectRefusedError.classify(
                 message: envelope.message,
                 refusalReason: envelope.refusalReason,
-                quotaExceeded: envelope.quotaExceeded ?? false
+                quotaExceeded: envelope.quotaExceeded ?? false,
+                accountRestriction: envelope.accountRestriction
             )
         }
         return try decoder.decode(VPNConnectionConfig.self, from: data)
@@ -963,8 +967,10 @@ final class APIClient: @unchecked Sendable {
         try await performRequest(method: "GET", path: path, body: nil, authenticated: true)
     }
 
-    private func post(path: String, body: Data?, authenticated: Bool) async throws -> Data {
-        try await performRequest(method: "POST", path: path, body: body, authenticated: authenticated)
+    private func post(path: String, body: Data?, authenticated: Bool,
+                      refusal: ((Int, Data) -> Error?)? = nil) async throws -> Data {
+        try await performRequest(method: "POST", path: path, body: body, authenticated: authenticated,
+                                 refusal: refusal)
     }
 
     private func performRequest(

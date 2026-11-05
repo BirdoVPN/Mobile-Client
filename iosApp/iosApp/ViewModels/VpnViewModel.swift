@@ -52,6 +52,11 @@ final class VpnViewModel: ObservableObject {
     /// stale "View plans" never sits under their banner. Read only through
     /// `refusalOffersPlans`.
     @Published private(set) var connectRefusal: ConnectRefusedError?
+    /// MR-2220: the server's notice on a successful connect (other devices kept
+    /// taking the connection). Shown on Home; the tunnel never waits on it.
+    @Published private(set) var deviceNotice: DeviceNotice?
+    func dismissDeviceNotice() { deviceNotice = nil }
+
     /// Home offers the plans under the banner: the refusal it shows is a
     /// server outside the plan or the Free allowance used up. Only while that
     /// refusal is still what the banner says.
@@ -584,6 +589,9 @@ final class VpnViewModel: ObservableObject {
                 // quantumActive: only when a true bilateral ML-KEM PSK was
                 // actually derived for this connection.
                 applyUpdateAdvisory(config.clientUpdate)
+                // The connect went through: no restriction stands, and a notice
+                // the server attached is shown without touching the tunnel.
+                deviceNotice = config.deviceNotice?.text == nil ? nil : config.deviceNotice
                 quantumActive = BirdoPQManager.shared.currentMode == .bilateral
                 // `startVPNTunnel()` only REQUESTS the tunnel — it is still
                 // handshaking at this point. `isConnected`, `connectedSince` and
@@ -1280,6 +1288,7 @@ final class VpnViewModel: ObservableObject {
         // from `disconnect()`, which a user can tap INSIDE the teardown window,
         // and clearing it there would re-open the double-dial gap it closes.
         revertRestoredPeerAwaitingConnected = false
+        deviceNotice = nil
         isConnected = false
         isConnecting = false
         resetHandshakeProof()

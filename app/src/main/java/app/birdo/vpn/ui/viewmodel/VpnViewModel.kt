@@ -6,7 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.AccountRestriction
 import app.birdo.vpn.data.model.ClientConfigResponse
+import app.birdo.vpn.data.model.DeviceNotice
 import app.birdo.vpn.data.model.PortForward
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
@@ -82,6 +84,10 @@ data class VpnUiState(
     val stealthChosen: Boolean = false,
     /** Asked for Stealth, connected without it for the plan (VpnManager.stealthNotice). */
     val stealthNotice: String? = null,
+    /** MR-2221: what the last refused connect said about a restricted account (VpnManager.accountRestriction). */
+    val accountRestriction: AccountRestriction? = null,
+    /** MR-2220: the server's notice on a successful connect (VpnManager.deviceNotice). */
+    val deviceNotice: DeviceNotice? = null,
     /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
     val quantumActive: Boolean = false,
     /**
@@ -470,6 +476,16 @@ class VpnViewModel @Inject constructor(
         viewModelScope.launch {
             vpnManager.stealthNotice.collect { notice ->
                 _uiState.value = _uiState.value.copy(stealthNotice = notice)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.accountRestriction.collect { restriction ->
+                _uiState.value = _uiState.value.copy(accountRestriction = restriction)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.deviceNotice.collect { notice ->
+                _uiState.value = _uiState.value.copy(deviceNotice = notice)
             }
         }
     }
@@ -1046,6 +1062,9 @@ class VpnViewModel @Inject constructor(
     }
 
     fun getVpnPermissionIntent(): Intent? = vpnManager.getVpnPermissionIntent()
+
+    /** Home's dismiss on the device notice (MR-2220). */
+    fun dismissDeviceNotice() = vpnManager.dismissDeviceNotice()
 
     /** Home's dismiss affordance on its message banner (A2-012). */
     fun dismissConnectError() {

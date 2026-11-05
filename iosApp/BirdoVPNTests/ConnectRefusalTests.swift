@@ -22,7 +22,10 @@ import XCTest
 final class ConnectRefusalTests: XCTestCase {
 
     private static let deviceCapWording = "Device limit reached (5 devices for OPERATIVE plan)"
-    private static let typedReasons = ConnectRefusalReason.allCases.filter { $0 != .deviceLimit }
+    /// `account_restricted` has its own copy and is pinned below (MR-2221).
+    private static let typedReasons = ConnectRefusalReason.allCases.filter {
+        $0 != .deviceLimit && $0 != .accountRestricted
+    }
 
     private func refusal(_ message: String?, _ reason: String?, quota: Bool = false) -> ConnectRefusedError {
         ConnectRefusedError.classify(message: message, refusalReason: reason, quotaExceeded: quota)
@@ -242,5 +245,97 @@ final class ConnectRefusalTests: XCTestCase {
             XCTAssertEqual(refused.message, "The server's own words.", json)
             XCTAssertFalse(refused.offersPlans, json)
         }
+    }
+
+    // MARK: - MR-2221: account_restricted
+
+    /// About what birdo-web's `restrictionMessage()` writes: far over 200.
+    private static let restrictedText =
+        "New free-plan connections on this account are paused until the time below. "
+        + "Devices on it kept taking the connection from each other. If this wasn't you, set or change your password. "
+        + "If this is a mistake, ask for a review on the Devices page, and we will look at it as soon as we can. "
+        + "Connections you already have stay up until you disconnect them yourself, and nothing else changes."
+
+    func testARestrictedAccountShowsTheWholeServerSentenceKeyedOnTheReason() {
+        XCTAssertGreaterThan(Self.restrictedText.utf16.count, 300)
+        let restriction = AccountRestriction(until: "2026-11-06T09:30:00.000Z", appealPath: "/dashboard/devices")
+        let refused = ConnectRefusedError.classify(message: Self.restrictedText,
+                                                   refusalReason: "account_restricted",
+                                                   quotaExceeded: false,
+                                                   accountRestriction: restriction)
+        XCTAssertEqual(refused.reason, .accountRestricted)
+        XCTAssertTrue(refused.message.hasPrefix(Self.restrictedText))
+        XCTAssertTrue(refused.message.contains("New connections resume"))
+        XCTAssertEqual(refused.restrictedUntil, Date(timeIntervalSince1970: 1_793_957_400))
+        XCTAssertEqual(refused.appealURL, URL(string: "https://birdo.app/dashboard/devices"))
+        XCTAssertFalse(refused.offersPlans)
+        // Only for that reason: the same long text under another one is still generic.
+        for reason in ["server_capacity", "plan", nil] {
+            XCTAssertEqual(refusal(Self.restrictedText, reason).message, Self.androidConnectFailed,
+                           String(describing: reason))
+        }
+    }
+
+    func testARestrictedAccountWithNoUsableSentenceOrEndStillSaysWhatItIs() {
+        let bare = ConnectRefusedError.classify(message: "<html>blocked</html>",
+                                                refusalReason: "account_restricted",
+                                                quotaExceeded: false)
+        XCTAssertEqual(bare.message, ConnectRefusedError.restrictedMessage)
+        XCTAssertNil(bare.restrictedUntil)
+        XCTAssertNil(bare.appealURL)
+        let noMessage = ConnectRefusedError.classify(message: nil, refusalReason: "account_restricted",
+                                                     quotaExceeded: false,
+                                                     accountRestriction: AccountRestriction(until: "tomorrow-ish",
+                                                                                            appealPath: nil))
+        XCTAssertEqual(noMessage.message, ConnectRefusedError.restrictedMessage)
+    }
+
+    func testOnlyAPlainPathOfTheSiteBecomesALink() {
+        XCTAssertEqual(SitePath.url("/dashboard/devices")?.absoluteString, "https://birdo.app/dashboard/devices")
+        for bad in [nil, "", "dashboard", "//evil.example/x", "https://evil.example/x", "/a b", "/a\u{0A}b", "/caf\u{E9}", "/a\u{7F}", "/\\evil.example"] {
+            XCTAssertNil(SitePath.url(bad), String(describing: bad))
+        }
+    }
+
+    func testTheEnvelopeReadsTheRestrictionLeniently() throws {
+        let ok = try JSONDecoder().decode(ConnectEnvelope.self, from: Data(
+            #"{"success":false,"message":"m","refusalReason":"account_restricted","accountRestriction":{"until":"2026-11-06T09:30:00Z","appealPath":"/dashboard/devices"},"newField":1}"#.utf8))
+        XCTAssertEqual(ok.accountRestriction?.appealPath, "/dashboard/devices")
+        XCTAssertNotNil(ok.accountRestriction?.endDate)
+        for json in [#"{"success":false,"message":"m","accountRestriction":"nope"}"#,
+                     #"{"success":false,"message":"m","accountRestriction":{"until":5}}"#] {
+            let envelope = try JSONDecoder().decode(ConnectEnvelope.self, from: Data(json.utf8))
+            XCTAssertEqual(envelope.message, "m", json)
+            XCTAssertNil(envelope.accountRestriction?.until, json)
+        }
+    }
+
+    // MARK: - MR-2220: deviceNotice and the country refusal
+
+    func testADeviceNoticeIsShownOnlyAsTheServerWroteIt() throws {
+        let notice = try JSONDecoder().decode(DeviceNotice.self, from: Data(
+            #"{"code":"device_limit_conflict","message":" Other devices kept taking this connection. ","managePath":"/dashboard/devices"}"#.utf8))
+        XCTAssertEqual(notice.text, "Other devices kept taking this connection.")
+        XCTAssertEqual(notice.manageURL?.absoluteString, "https://birdo.app/dashboard/devices")
+        XCTAssertNil(DeviceNotice(kind: "c", message: "<html>x</html>", managePath: nil).text)
+        XCTAssertNil(DeviceNotice(kind: "c", message: nil, managePath: nil).text)
+        XCTAssertNil(DeviceNotice(kind: "c", message: String(repeating: "x", count: 1001), managePath: nil).text)
+        // A code from the future, with parts missing, still decodes.
+        let partial = try JSONDecoder().decode(DeviceNotice.self, from: Data(#"{"code":"a_code_from_the_future","extra":1}"#.utf8))
+        XCTAssertNil(partial.text)
+    }
+
+    func testTheCountryRefusalIsToldByDetailsCodeOn403Only() {
+        let sentence = "BirdoVPN cannot create new accounts in your country right now. Existing accounts are not affected."
+        let body = Data(#"{"statusCode":403,"message":"\#(sentence)","error":"FORBIDDEN","details":{"code":"registration_country_not_allowed"}}"#.utf8)
+        XCTAssertEqual(RegistrationRefusedError.classify(status: 403, body: body)?.message, sentence)
+        XCTAssertEqual(RegistrationRefusedError.classify(status: 403, body: body)?.localizedDescription, sentence)
+        // Another status, another code, or no usable sentence: not this refusal.
+        XCTAssertNil(RegistrationRefusedError.classify(status: 429, body: body))
+        let other = Data(#"{"statusCode":403,"message":"Creating an account needs the official BirdoVPN app.","details":{"code":"attestation_required"}}"#.utf8)
+        XCTAssertNil(RegistrationRefusedError.classify(status: 403, body: other))
+        let bare = Data(#"{"statusCode":403,"message":"Forbidden","details":{"code":"registration_country_not_allowed"}}"#.utf8)
+        XCTAssertNil(RegistrationRefusedError.classify(status: 403, body: bare))
+        XCTAssertNil(RegistrationRefusedError.classify(status: 403, body: Data("<html>".utf8)))
     }
 }

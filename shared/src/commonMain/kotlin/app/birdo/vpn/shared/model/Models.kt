@@ -688,6 +688,21 @@ data class ServerNodeInfo(
     val hostname: String = "",
 )
 
+/** `$defs.ConnectResponse.accountRestriction` (`until` ISO-8601, `appealPath` a site path). */
+@Serializable
+data class AccountRestriction(
+    val until: String? = null,
+    val appealPath: String? = null,
+)
+
+/** `$defs.ConnectResponse.deviceNotice`; the wire `code` is `device_limit_conflict` today. */
+@Serializable
+data class DeviceNotice(
+    @SerialName("code") val kind: String? = null,
+    val message: String? = null,
+    val managePath: String? = null,
+)
+
 /**
  * NOTE ON KEY MATERIAL LIFETIME:
  * The `privateKey`, `presharedKey`, and `rosenpassPublicKey` (BirdoPQ ciphertext)
@@ -785,6 +800,17 @@ data class ConnectResponse(
      * can never fail the decode; absent from older servers.
      */
     val refusalReason: String? = null,
+    /**
+     * MR-2221: with `refusalReason: "account_restricted"` only. New free-plan
+     * connections are paused until [AccountRestriction.until]. Every member is
+     * nullable, so a body missing a part still decodes.
+     */
+    val accountRestriction: AccountRestriction? = null,
+    /**
+     * MR-2220: on a SUCCESSFUL free-plan connect only, other devices kept
+     * taking the connection. Shown once; the connect went ahead.
+     */
+    val deviceNotice: DeviceNotice? = null,
 ) {
     /**
      * Never prints the key material (MR-1870): [config] (the wg-quick text,

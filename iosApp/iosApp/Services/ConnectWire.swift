@@ -161,11 +161,15 @@ struct VPNConnectionConfig: Decodable {
     /// MultiHopRoute.swift. Absent on single-hop responses.
     let multiHop: MultiHopRouteInfo?
 
+    /// MR-2220: set on a successful free-plan connect while other devices keep
+    /// taking the connection. Shown, never acted on; a malformed one is nil.
+    let deviceNotice: DeviceNotice?
+
     private enum CodingKeys: String, CodingKey {
         case endpoint, privateKey, serverPublicKey, presharedKey
         case assignedIp, clientIpv6, dns, allowedIps, mtu, keyId, deferredKeyId
         case quantumEnabled, rosenpassPublicKey, rosenpassEndpoint
-        case multiHop, clientUpdate
+        case multiHop, clientUpdate, deviceNotice
     }
 
     init(from decoder: Decoder) throws {
@@ -212,6 +216,7 @@ struct VPNConnectionConfig: Decodable {
         // Advice, never a reason to reject a good tunnel config: a malformed
         // advisory decodes to nil and the connect proceeds untouched.
         clientUpdate = try? c.decodeIfPresent(ClientUpdateAdvisory.self, forKey: .clientUpdate)
+        deviceNotice = (try? c.decodeIfPresent(DeviceNotice.self, forKey: .deviceNotice)) ?? nil
     }
 
     /// Hardening: every field is treated as untrusted server input.
