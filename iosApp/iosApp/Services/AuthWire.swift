@@ -51,9 +51,9 @@ struct TermsNotice: Sendable, Hashable {
     /// the notice.
     let path: String?
 
-    /// The longest Home waits before reading the clock again. A timer does not
-    /// run while the app is suspended or the Mac sleeps, so one set for the
-    /// date would leave a notice up after it has ended.
+    /// The longest Home waits before reading the clock again, as on Android
+    /// and Desktop: an app can be suspended and a Mac can sleep through any
+    /// wait, and neither may keep a notice up after it has ended.
     static let tick: TimeInterval = 60
 
     /// When the notice ends; nil unless `effectiveAt` is a full timestamp with
