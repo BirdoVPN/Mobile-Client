@@ -492,6 +492,43 @@ struct HomeView: View {
                     }
                     .accessibilityIdentifier("home_refusal_view_plans")
                 }
+                // MR-2221: keyed on the reason; the link is the server's
+                // `appealPath` on birdo.app, nothing else.
+                if let appeal = vpnVM.connectRefusal?.appealURL,
+                   vpnVM.connectRefusal?.reason == .accountRestricted,
+                   vpnVM.error == vpnVM.connectRefusal?.message {
+                    Link("Ask for a review", destination: appeal)
+                        .font(.system(size: 14, weight: .semibold))
+                        .accessibilityIdentifier("home_refusal_appeal")
+                }
+            }
+
+            // MR-2220: the connection is up; this only tells the user why other
+            // devices keep losing theirs, and where to manage them.
+            if vpnVM.isConnected, let notice = vpnVM.deviceNotice, let text = notice.text {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(text)
+                        .font(.system(size: 13))
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 16) {
+                        if let url = notice.manageURL {
+                            Link("Manage devices", destination: url)
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        Button("Dismiss") { vpnVM.dismissDeviceNotice() }
+                            .font(.system(size: 13))
+                            .foregroundStyle(BirdoTheme.white60)
+                    }
+                }
+                .foregroundStyle(BirdoTheme.accentSoft)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                        .fill(BirdoTheme.accentBg)
+                )
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("home_device_notice")
             }
 
             if let advisory = vpnVM.updateAdvisory {

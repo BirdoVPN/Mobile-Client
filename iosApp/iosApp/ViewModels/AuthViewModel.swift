@@ -88,6 +88,9 @@ final class AuthViewModel: ObservableObject {
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
     @Published private(set) var anonymousCreateFailureStatus: Int?
+    /// MR-2220: the last anonymous create was refused for the caller's country.
+    /// Asking again changes nothing, so no "Try again".
+    private var anonymousCreateRefusedByCountry = false
     /// Single-flight flag for every auth submit (login / 2FA / anonymous /
     /// SSO). Double submits mint duplicate backend Session rows — guard on it.
     @Published var isLoading = false
@@ -830,6 +833,15 @@ final class AuthViewModel: ObservableObject {
                 // On a shared App Review address that copy reads as a broken
                 // app. AnonymousCreateFailure says whose limit it is, how long
                 // it lasts, and that the app still works without an account.
+                if let refused = error as? RegistrationRefusedError {
+                    self.isAutoProvisioning = false
+                    self.anonymousCreateRefusedByCountry = true
+                    self.anonymousCreateFailureStatus = 403
+                    self.error = refused.message
+                    self.isLoading = false
+                    return
+                }
+                self.anonymousCreateRefusedByCountry = false
                 let status = Self.httpStatus(of: error)
                 // Hand the user back the ordinary sheet: the no-input path
                 // could not be delivered, and AnonymousCreateFailure's copy
@@ -850,7 +862,8 @@ final class AuthViewModel: ObservableObject {
     /// button. A 429 inside the rate-limit hour is not: retrying burns another
     /// attempt and fails again.
     var canRetryAnonymousCreate: Bool {
-        AnonymousCreateFailure.isImmediatelyRetryable(status: anonymousCreateFailureStatus)
+        !anonymousCreateRefusedByCountry
+            && AnonymousCreateFailure.isImmediatelyRetryable(status: anonymousCreateFailureStatus)
     }
 
     /// The user confirmed they saved the freshly-minted anonymous ID —
@@ -1407,6 +1420,9 @@ final class AuthViewModel: ObservableObject {
     }
 
     private func mapAuthError(_ error: Error, fallback: String) -> String {
+        // MR-2220: the server's own sentence, with no "Login failed:" prefix and
+        // no substring re-mapping.
+        if let refused = error as? RegistrationRefusedError { return refused.message }
         // SSOService errors already carry their exact user-facing copy.
         if let sso = error as? SSOService.SSOError {
             return sso.errorDescription ?? fallback

@@ -618,6 +618,8 @@ fun BirdoNavGraph(
                         },
                         onDismissUpdate = { updateViewModel.dismiss() },
                         onViewPlans = openPlans,
+                        onOpenUrl = { settingsViewModel.openUrl(it) },
+                        onDismissDeviceNotice = { vpnViewModel.dismissDeviceNotice() },
                     )
                 }
             }

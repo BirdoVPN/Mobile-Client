@@ -1619,6 +1619,95 @@ class VpnManagerTest {
         coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
     }
 
+    /** MR-2221: the 454-character sentence, as the server writes it (past the usual 200-character limit). */
+    private val restrictedText = "New free-plan connections on this account are paused until the time below. " +
+        "Devices on it kept taking the connection from each other. If this wasn't you, set or change your password. " +
+        "If this is a mistake, ask for a review on the Devices page, and we will look at it as soon as we can. " +
+        "Connections you already have stay up until you disconnect them yourself, and nothing else changes."
+
+    private fun restrictedRefusal(until: String) = ApiResult.Success(
+        ConnectResponse(
+            success = false,
+            refusalReason = "account_restricted",
+            message = restrictedText,
+            accountRestriction = app.birdo.vpn.data.model.AccountRestriction(until, "/dashboard/devices"),
+        ),
+    )
+
+    @Test
+    fun `a restricted account is told why, with the end, and is not asked again before it`() = runTest {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns
+            "New connections resume tomorrow."
+        val until = java.time.Instant.now().plusSeconds(3_600).toString()
+        coEvery { repository.connectVpn(any(), any()) } returns restrictedRefusal(until)
+
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+
+        val error = vpnManager.state.value as VpnState.Error
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, error.kind)
+        assertTrue(error.message, error.message.startsWith(restrictedText))
+        assertTrue(error.message, error.message.endsWith("New connections resume tomorrow."))
+        assertEquals("/dashboard/devices", vpnManager.accountRestriction.value?.appealPath)
+
+        // A second tap before `until` is answered here, not by the server.
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+        coVerify(exactly = 1) { repository.connectVpn(any(), any()) }
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, (vpnManager.state.value as VpnState.Error).kind)
+    }
+
+    @Test
+    fun `an end that has passed, or none, lets the next connect through`() = runTest {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        val past = java.time.Instant.now().minusSeconds(60).toString()
+        coEvery { repository.connectVpn(any(), any()) } returns restrictedRefusal(past)
+
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a re-dial refused as account_restricted releases the kill switch block and never re-dials`() = runTest {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        probeAnswers(ApiResult.Error("Couldn't reach BirdoVPN.", 0))
+        coEvery { repository.connectVpn(any(), any()) } returns
+            restrictedRefusal(java.time.Instant.now().plusSeconds(3_600).toString())
+
+        tunnelDies()
+        advanceTimeBy(30 * 60_000L)
+
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, (vpnManager.state.value as VpnState.Error).kind)
+        assertTrue(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+        verify { prefs.sessionShouldBeUp = false }
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a device notice on a successful connect is kept for Home and cleared by Disconnect`() = runTest {
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
+            makeConnectResponse().copy(
+                deviceNotice = app.birdo.vpn.data.model.DeviceNotice(
+                    "device_limit_conflict", "Other devices kept taking this connection.", "/dashboard/devices",
+                ),
+            ),
+        )
+
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+
+        assertEquals("Other devices kept taking this connection.", vpnManager.deviceNotice.value?.message)
+        assertNull(vpnManager.accountRestriction.value)
+        vpnManager.dismissDeviceNotice()
+        assertNull(vpnManager.deviceNotice.value)
+    }
+
     @Test
     fun `a drained server is left for another one instead of re-dialled into a refusal`() = runTest {
         connectAndEstablish()

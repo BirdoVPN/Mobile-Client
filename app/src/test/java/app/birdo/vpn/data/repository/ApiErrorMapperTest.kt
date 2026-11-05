@@ -310,6 +310,40 @@ class ApiErrorMapperTest {
         assertEquals(text("error_connect_failed"), mapper.connectRefusal("""{"statusCode":500}""").second)
     }
 
+    // ── A refused sign-up from a country that is not accepted (MR-2220) ──
+
+    private val countryBody = """{"statusCode":403,"message":"BirdoVPN cannot create new accounts in your country right now. Existing accounts are not affected.","error":"FORBIDDEN","details":{"code":"registration_country_not_allowed"}}"""
+
+    private fun register(status: Int, body: String?, context: ErrorContext = ErrorContext.ANONYMOUS_REGISTER) =
+        mapper.fromResponse(status, body, context, R.string.error_anon_register_failed)
+
+    @Test
+    fun `a country refusal on sign-up shows the server's sentence, told by details code`() {
+        val e = register(403, countryBody)
+        assertEquals("BirdoVPN cannot create new accounts in your country right now. Existing accounts are not affected.", e.message)
+        assertEquals(FailureReason.REFUSED, e.reason)
+        assertEquals(e.message, register(403, countryBody, ErrorContext.SIGN_IN).message)
+        // A longer sentence than the usual limit is still shown, up to a sane ceiling.
+        val longer = "x ".repeat(120).trim()
+        assertEquals(longer, register(403, countryBody.replace(Regex("\"message\":\"[^\"]*\""), "\"message\":\"$longer\"")).message)
+    }
+
+    @Test
+    fun `no other 403 is changed by the country rule`() {
+        val other = """{"statusCode":403,"message":"Creating an account needs the official BirdoVPN app.","error":"FORBIDDEN","details":{"code":"attestation_required"}}"""
+        assertEquals("Creating an account needs the official BirdoVPN app.", register(403, other).message)
+        // Same code on another status or another route is not this refusal.
+        assertEquals(text("error_anon_register_network_limit"), register(429, countryBody).message)
+        // Another route is untouched by the rule: it maps exactly as it did before.
+        assertEquals(
+            general(403, countryBody).message,
+            mapper.fromResponse(403, countryBody.replace("registration_country_not_allowed", "x"), ErrorContext.GENERAL, R.string.error_load_servers).message,
+        )
+        // The code with no usable message falls back to the old mapping.
+        val bare = countryBody.replace(Regex("\"message\":\"[^\"]*\""), "\"message\":\"Forbidden\"")
+        assertEquals(text("error_anon_register_failed"), register(403, bare).message)
+    }
+
     @Test
     fun `presentable rejects bodies, reason phrases and stack traces`() {
         assertTrue(ApiErrorMapper.isPresentable("Port 8080 is already forwarded."))

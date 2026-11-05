@@ -48,6 +48,14 @@ import java.io.File
 class ConnectErrorContractTest {
 
     private companion object {
+        /** About what `restrictionMessage()` in birdo-web writes: over 400 characters. */
+        const val RESTRICTED_MESSAGE =
+            "New free-plan connections on this account are paused until 6 Nov 2026, 09:30 UTC, because devices " +
+                "on it kept taking the connection from each other. Your other devices are not affected. If this " +
+                "wasn't you, set or change your password so nobody else can sign in with your account number. " +
+                "If this is a mistake, ask for a review on the Devices page and we will look at it. Connections " +
+                "you already have stay up until you disconnect them yourself."
+
         val repoRoot: File by lazy {
             var dir = File("").absoluteFile
             while (!File(dir, "settings.gradle.kts").isFile) {
@@ -330,6 +338,7 @@ class ConnectErrorContractTest {
             "quota_exceeded" to (message to FailureKind.QUOTA_EXCEEDED),
             "server_capacity" to (message to FailureKind.REFUSED),
             "server_unavailable" to (message to FailureKind.REFUSED),
+            "account_restricted" to (message to FailureKind.ACCOUNT_RESTRICTED),
         )
         assertEquals("a contract reason with no decided handling here", contractRefusals.toSet(), expected.keys)
         for (reason in contractRefusals) {
@@ -352,6 +361,78 @@ class ConnectErrorContractTest {
         assertEquals(FailureReason.REFUSED to capWords, mapper.connectRefusal(capWords, "server_capacity"))
         // quotaExceeded still ends the session whatever the reason says.
         assertEquals(FailureKind.QUOTA_EXCEEDED, FailureKind.forRefusal(true, "device_limit"))
+    }
+
+    /** MR-2221: the 454-character message and the restriction object, as vpn.service.ts writes them. */
+    private val restrictedBody: String
+        get() = JsonObject(
+            mapOf(
+                "success" to JsonPrimitive(false),
+                "refusalReason" to JsonPrimitive("account_restricted"),
+                "message" to JsonPrimitive(RESTRICTED_MESSAGE),
+                "accountRestriction" to JsonObject(
+                    mapOf(
+                        "until" to JsonPrimitive("2026-11-06T09:30:00.000Z"),
+                        "appealPath" to JsonPrimitive("/dashboard/devices"),
+                    ),
+                ),
+            ),
+        ).toString()
+
+    @Test
+    fun `account_restricted validates, decodes with its restriction and shows the whole server message`() {
+        assertTrue(RESTRICTED_MESSAGE.length > 400)
+        val body = restrictedBody
+        val invalid = validate("ConnectResponse", body)
+        assertTrue("$invalid", invalid.isEmpty())
+        val decoded = NetworkModule.json.decodeFromString(serializer<ConnectResponse>(), body)
+        assertEquals("2026-11-06T09:30:00.000Z", decoded.accountRestriction?.until)
+        assertEquals("/dashboard/devices", decoded.accountRestriction?.appealPath)
+        // The reason, not the wording, lifts the 200-character limit...
+        assertEquals(
+            FailureReason.REFUSED to RESTRICTED_MESSAGE,
+            mapper.connectRefusal(decoded.message, decoded.refusalReason),
+        )
+        // ...and only for it: the same text under another reason is still the generic line.
+        assertEquals(
+            FailureReason.UNEXPECTED to StringsXml.text("error_connect_failed"),
+            mapper.connectRefusal(RESTRICTED_MESSAGE, "server_capacity"),
+        )
+        assertEquals(
+            FailureReason.UNEXPECTED to StringsXml.text("error_connect_failed"),
+            mapper.connectRefusal(RESTRICTED_MESSAGE, null),
+        )
+        // A restricted refusal whose message is unusable still says what it is.
+        assertEquals(
+            FailureReason.REFUSED to StringsXml.text("error_account_restricted"),
+            mapper.connectRefusal("<html>blocked</html>", "account_restricted"),
+        )
+        assertEquals(
+            FailureReason.REFUSED to StringsXml.text("error_account_restricted"),
+            mapper.connectRefusal(null, "account_restricted"),
+        )
+    }
+
+    @Test
+    fun `a successful connect carrying a deviceNotice validates and decodes, and one with parts missing still decodes`() {
+        val notice = JsonObject(
+            mapOf(
+                "code" to JsonPrimitive("device_limit_conflict"),
+                "message" to JsonPrimitive("Other devices on this account kept taking its one connection."),
+                "managePath" to JsonPrimitive("/dashboard/devices"),
+            ),
+        )
+        val body = JsonObject(mapOf("success" to JsonPrimitive(true), "deviceNotice" to notice)).toString()
+        assertTrue("${validate("ConnectResponse", body)}", validate("ConnectResponse", body).isEmpty())
+        val decoded = NetworkModule.json.decodeFromString(serializer<ConnectResponse>(), body)
+        assertEquals("device_limit_conflict", decoded.deviceNotice?.code)
+        assertEquals("/dashboard/devices", decoded.deviceNotice?.managePath)
+        val partial = NetworkModule.json.decodeFromString(
+            serializer<ConnectResponse>(),
+            """{"success":true,"deviceNotice":{"code":"a_code_from_the_future","extra":1},"accountRestriction":{}}""",
+        )
+        assertNull(partial.deviceNotice?.message)
+        assertNull(partial.accountRestriction?.until)
     }
 
     @Test

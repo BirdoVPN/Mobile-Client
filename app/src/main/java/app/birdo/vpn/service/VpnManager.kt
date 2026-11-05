@@ -10,7 +10,9 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.PlayIntegrityManager
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.AccountRestriction
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.data.model.DeviceNotice
 import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.model.ServerNodeInfo
 import app.birdo.vpn.data.model.VpnServer
@@ -165,6 +167,28 @@ class VpnManager @Inject constructor(
      * the session is up, so nobody believes their traffic is disguised when
      * it is not. Set by each dial, cleared by a Disconnect.
      */
+    /**
+     * MR-2221: the restriction the last refused connect carried, for Home's
+     * "Ask for a review" action. Cleared by a connect that goes through.
+     */
+    private val _accountRestriction = MutableStateFlow<AccountRestriction?>(null)
+    val accountRestriction: StateFlow<AccountRestriction?> = _accountRestriction.asStateFlow()
+
+    /** When that restriction ends (epoch ms, 0 = none) and the sentence to show until then. */
+    private var restrictedUntilMs = 0L
+    private var restrictedMessage: String? = null
+
+    /**
+     * MR-2220: the server's notice on a successful connect that other devices
+     * kept taking the connection. Informational: the tunnel never waits on it.
+     */
+    private val _deviceNotice = MutableStateFlow<DeviceNotice?>(null)
+    val deviceNotice: StateFlow<DeviceNotice?> = _deviceNotice.asStateFlow()
+
+    fun dismissDeviceNotice() {
+        _deviceNotice.value = null
+    }
+
     private val _stealthNotice = MutableStateFlow<String?>(null)
     val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
 
@@ -912,9 +936,28 @@ class VpnManager @Inject constructor(
         serverMessage: String?,
         quotaExceeded: Boolean,
         refusalReason: String?,
+        restriction: AccountRestriction? = null,
     ): Pair<String, FailureKind> {
         val kind = FailureKind.forRefusal(quotaExceeded, refusalReason)
-        return if (kind == FailureKind.QUOTA_EXCEEDED) {
+        return if (kind == FailureKind.ACCOUNT_RESTRICTED) {
+            // MR-2221: the server's sentence, then when it ends in the user's
+            // own time. Remembered, so a tap before then is answered here.
+            val endMs = ConnectNotices.restrictionEndMs(restriction)
+            val text = (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG).let { base ->
+                if (endMs > 0L) {
+                    val shown = java.text.DateFormat
+                        .getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                        .format(java.util.Date(endMs))
+                    base + "\n\n" + context.getString(R.string.error_account_restricted_until, shown)
+                } else {
+                    base
+                }
+            }
+            _accountRestriction.value = restriction
+            restrictedUntilMs = endMs
+            restrictedMessage = text
+            text to kind
+        } else if (kind == FailureKind.QUOTA_EXCEEDED) {
             (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to kind
         } else {
             (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG) to kind
@@ -994,6 +1037,15 @@ class VpnManager @Inject constructor(
         if (allowLiveRebuild && fallbackReason == null && activeMultiHop == null && liveRebuildEligible(prior)) {
             return liveRebuildSingle(serverId, gen, prior)
         }
+        // MR-2221: a connect before the restriction's end is refused again, so
+        // it is not sent. Only from a dead session: a live one is never cut here.
+        if ((prior is VpnState.Disconnected || prior is VpnState.Error) &&
+            ConnectNotices.held(System.currentTimeMillis(), restrictedUntilMs)
+        ) {
+            val held = restrictedMessage ?: SessionCopy.BAD_SERVER_CONFIG
+            publishError(held, FailureKind.ACCOUNT_RESTRICTED)
+            return ApiResult.Error(held)
+        }
         if (!teardownLiveSession(prior, gen)) return ApiResult.Error(SUPERSEDED)
 
         enterConnecting(gen)
@@ -1054,7 +1106,9 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val (message, kind) = refusal(config.message, config.quotaExceeded, config.refusalReason)
+                    val (message, kind) = refusal(
+                        config.message, config.quotaExceeded, config.refusalReason, config.accountRestriction,
+                    )
                     if (!superseded(gen)) publishError(message, kind)
                     return ApiResult.Error(message)
                 }
@@ -1072,6 +1126,12 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
                 _stealthNotice.value = stealthNoticeFor(askedForStealth, config)
+                // The connect went through: no restriction stands, and a notice
+                // the server attached is shown without touching the tunnel.
+                _accountRestriction.value = null
+                restrictedUntilMs = 0L
+                restrictedMessage = null
+                _deviceNotice.value = config.deviceNotice?.takeIf { ConnectNotices.noticeText(it) != null }
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.
                 _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
@@ -2034,6 +2094,7 @@ class VpnManager @Inject constructor(
         _switching.value = false
         prefs.sessionShouldBeUp = false
         _stealthNotice.value = null
+        _deviceNotice.value = null
         // The not-armed warning describes the session the user just ended.
         // Cleared here, not only when the service's stop lands: Home must not
         // keep saying it over the user's own Disconnect.
@@ -2309,7 +2370,14 @@ class VpnManager @Inject constructor(
                 // The Free allowance's end is the server ending the session on
                 // purpose, like a revoke: the owner rule releases the block
                 // (FailureKind.QUOTA_EXCEEDED), here as on the heartbeat path.
-                if (attemptOwnsBlock || kind == FailureKind.QUOTA_EXCEEDED) releaseBlock()
+                // MR-2221: so is a restriction: it ends on its own at a stated
+                // time, and a device must not sit offline behind the kill switch
+                // for a refusal that no retry changes.
+                if (attemptOwnsBlock || kind == FailureKind.QUOTA_EXCEEDED ||
+                    kind == FailureKind.ACCOUNT_RESTRICTED
+                ) {
+                    releaseBlock()
+                }
             }
 
             // The budget is spent. Say so in the iOS words, release the

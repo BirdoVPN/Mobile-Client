@@ -96,6 +96,13 @@ enum class FailureKind(val terminal: Boolean) {
     /** Stealth Mode was requested and could not start. Fail-closed by design. */
     STEALTH_FAILED(true),
 
+    /**
+     * MR-2221: `account_restricted`, new free-plan connections paused until a
+     * stated time. Never re-dialled; the block is released like a plan
+     * decision, and the banner offers the appeal page.
+     */
+    ACCOUNT_RESTRICTED(true),
+
     /** Any other refusal: another 4xx, a local engine or integrity refusal, an incomplete Multi-Hop pair. */
     REFUSED(true),
 
@@ -150,6 +157,7 @@ enum class FailureKind(val terminal: Boolean) {
             return when {
                 quotaExceeded || reason == ConnectRefusalReason.QUOTA_EXCEEDED -> QUOTA_EXCEEDED
                 reason == ConnectRefusalReason.PLAN -> PLAN_REQUIRED
+                reason == ConnectRefusalReason.ACCOUNT_RESTRICTED -> ACCOUNT_RESTRICTED
                 else -> REFUSED
             }
         }

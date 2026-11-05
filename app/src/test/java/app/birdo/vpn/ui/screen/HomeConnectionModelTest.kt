@@ -85,6 +85,18 @@ class HomeConnectionModelTest {
     }
 
     @Test
+    fun `a restricted account is offered the appeal page only when the server gave a link of this site`() {
+        val error = VpnState.Error("paused", FailureKind.ACCOUNT_RESTRICTED)
+        val withLink = VpnUiState(
+            vpnState = error,
+            accountRestriction = app.birdo.vpn.data.model.AccountRestriction("2026-11-06T09:30:00Z", "/dashboard/devices"),
+        )
+        assertEquals(Remedy.ASK_REVIEW, homeRemedy(withLink))
+        assertNull(homeRemedy(VpnUiState(vpnState = error)))
+        assertNull(homeRemedy(withLink.copy(accountRestriction = withLink.accountRestriction?.copy(appealPath = "https://x.example/y"))))
+    }
+
+    @Test
     fun `one message banner, never two (A2-011)`() {
         val both = VpnUiState(vpnState = VpnState.Error("from the session"), connectError = "from the screen")
         assertEquals("from the screen", homeMessage(both))
@@ -98,6 +110,7 @@ class HomeConnectionModelTest {
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.PLAN_REQUIRED))
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.QUOTA_EXCEEDED))
         assertEquals(Remedy.UPDATE, remedyFor(FailureKind.UPDATE_REQUIRED))
+        assertEquals(Remedy.ASK_REVIEW, remedyFor(FailureKind.ACCOUNT_RESTRICTED))
         assertEquals(Remedy.CHOOSE_SERVER, remedyFor(FailureKind.NEVER_ESTABLISHED))
         // Fail-closed like Quantum, so the same way out (review of #463, P3-7).
         // …on the VPN Settings screen, where the toggle is (second review, N6).
