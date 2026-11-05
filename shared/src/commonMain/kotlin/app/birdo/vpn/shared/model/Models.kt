@@ -695,10 +695,10 @@ data class AccountRestriction(
     val appealPath: String? = null,
 )
 
-/** `$defs.ConnectResponse.deviceNotice`; `code` is `device_limit_conflict` today. */
+/** `$defs.ConnectResponse.deviceNotice`; the wire `code` is `device_limit_conflict` today. */
 @Serializable
 data class DeviceNotice(
-    val code: String? = null,
+    @SerialName("code") val kind: String? = null,
     val message: String? = null,
     val managePath: String? = null,
 )

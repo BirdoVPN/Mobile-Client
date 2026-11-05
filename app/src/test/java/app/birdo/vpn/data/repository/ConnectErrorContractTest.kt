@@ -425,7 +425,7 @@ class ConnectErrorContractTest {
         val body = JsonObject(mapOf("success" to JsonPrimitive(true), "deviceNotice" to notice)).toString()
         assertTrue("${validate("ConnectResponse", body)}", validate("ConnectResponse", body).isEmpty())
         val decoded = NetworkModule.json.decodeFromString(serializer<ConnectResponse>(), body)
-        assertEquals("device_limit_conflict", decoded.deviceNotice?.code)
+        assertEquals("device_limit_conflict", decoded.deviceNotice?.kind)
         assertEquals("/dashboard/devices", decoded.deviceNotice?.managePath)
         val partial = NetworkModule.json.decodeFromString(
             serializer<ConnectResponse>(),

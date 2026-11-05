@@ -68,21 +68,21 @@ struct AccountRestriction: Decodable, Equatable, Sendable {
 
 /// MR-2220: `$defs.ConnectResponse.deviceNotice`, on a SUCCESSFUL connect.
 struct DeviceNotice: Decodable, Equatable, Sendable {
-    let code: String?
+    let kind: String?
     let message: String?
     let managePath: String?
 
-    private enum CodingKeys: String, CodingKey { case code, message, managePath }
+    private enum CodingKeys: String, CodingKey { case kind = "code", message, managePath }
 
-    init(code: String?, message: String?, managePath: String?) {
-        self.code = code
+    init(kind: String?, message: String?, managePath: String?) {
+        self.kind = kind
         self.message = message
         self.managePath = managePath
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        code = (try? c.decodeIfPresent(String.self, forKey: .code)) ?? nil
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? nil
         message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil
         managePath = (try? c.decodeIfPresent(String.self, forKey: .managePath)) ?? nil
     }
