@@ -104,7 +104,8 @@ final class TermsNoticeTests: XCTestCase {
 
     func testABadEffectiveAtIsNotShown() {
         let bad = ["", "soon", "2099", "5 Dec 2099", "2099-01-01", "2099-01-01T00:00:00", "2099-01-01T00:00Z",
-                   " 2099-01-01T00:00:00Z", "2099-13-01T00:00:00Z", "2099-01-01 00:00:00Z"]
+                   " 2099-01-01T00:00:00Z", "2099-01-01T00:00:00Z\n", "2099-13-01T00:00:00Z",
+                   "2099-02-30T00:00:00Z", "2099-01-01 00:00:00Z"]
         for date in bad {
             XCTAssertEqual(TermsNotice.live([notice(effectiveAt: date)], at: Self.t0), [], date)
         }

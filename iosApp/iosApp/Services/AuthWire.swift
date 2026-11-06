@@ -56,9 +56,13 @@ struct TermsNotice: Sendable, Hashable {
     /// wait, and neither may keep a notice up after it has ended.
     static let tick: TimeInterval = 60
 
-    /// When the notice ends; nil unless `effectiveAt` is a full timestamp with
-    /// a zone, which is what `toISOString()` sends.
+    /// A full timestamp with a zone, which is what `toISOString()` sends. The
+    /// formatter alone also takes a leading space (Apple CI, Mobile #540).
+    private static let isoInstant = #"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})\z"#
+
+    /// When the notice ends; nil for a date this cannot read.
     var endDate: Date? {
+        guard effectiveAt.range(of: Self.isoInstant, options: .regularExpression) != nil else { return nil }
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: effectiveAt) ?? ISO8601DateFormatter().date(from: effectiveAt)
