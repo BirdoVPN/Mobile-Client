@@ -69,14 +69,14 @@ struct TermsNotice: Sendable, Hashable {
     }
 
     /// The site page behind "See every change"; nil shows the text with no link.
-    var link: URL? { SitePath.url(path) }
+    var link: URL? { path.flatMap { URL(string: "https://birdo.app" + $0) } }
 
     /// The entries to show at `now`, in the order sent. A bad date or a blank
     /// text is not shown.
     static func live(_ notices: [TermsNotice], at now: Date) -> [TermsNotice] {
         notices.filter { notice in
             guard let end = notice.endDate else { return false }
-            return end > now && !notice.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return end >= now
         }
     }
 
@@ -84,7 +84,7 @@ struct TermsNotice: Sendable, Hashable {
     /// is left to end.
     static func nextCheck(_ notices: [TermsNotice], at now: Date) -> TimeInterval? {
         guard let end = live(notices, at: now).compactMap(\.endDate).min() else { return nil }
-        return min(end.timeIntervalSince(now), tick)
+        return end.timeIntervalSince(now)
     }
 }
 
@@ -96,7 +96,7 @@ extension TermsNotice: Decodable {
         version = try c.decode(String.self, forKey: .version)
         text = try c.decode(String.self, forKey: .text)
         effectiveAt = try c.decode(String.self, forKey: .effectiveAt)
-        path = (try? c.decodeIfPresent(String.self, forKey: .path)) ?? nil
+        path = try c.decodeIfPresent(String.self, forKey: .path)
     }
 }
 
@@ -106,7 +106,7 @@ private struct TermsNoticeEntry: Decodable {
     let notice: TermsNotice?
 
     init(from decoder: Decoder) throws {
-        notice = try? TermsNotice(from: decoder)
+        notice = try TermsNotice(from: decoder)
     }
 }
 
@@ -169,7 +169,7 @@ extension UserProfile: Decodable {
         isAnonymousField = (try? c.decodeIfPresent(Bool.self, forKey: .isAnonymous)) ?? nil
         accountNumber = (try? c.decodeIfPresent(String.self, forKey: .accountNumber)) ?? nil
         // Absent when no notice applies; null or any other shape reads the same.
-        termsNotices = ((try? c.decodeIfPresent([TermsNoticeEntry].self, forKey: .termsNotices)) ?? [])
+        termsNotices = (try c.decodeIfPresent([TermsNoticeEntry].self, forKey: .termsNotices) ?? [])
             .compactMap(\.notice)
     }
 }
