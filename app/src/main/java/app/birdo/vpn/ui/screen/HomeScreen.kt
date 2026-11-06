@@ -6,8 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -45,8 +47,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.birdo.vpn.R
 import app.birdo.vpn.data.model.AppUpdateInfo
+import app.birdo.vpn.data.model.TermsNotice
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.perf.GlobePerf
 import app.birdo.vpn.perf.GlobePerfControls
@@ -101,6 +105,8 @@ fun HomeScreen(
     /** Opens a website page (the appeal and Devices pages of MR-2221 / MR-2220). */
     onOpenUrl: (String) -> Unit = {},
     onDismissDeviceNotice: () -> Unit = {},
+    /** The profile's terms-change notices (MR-2199), from AuthViewModel's user. */
+    termsNotices: List<TermsNotice> = emptyList(),
     /** Anonymous accounts are reminded, before signing out, that the account number is the only way back in. */
     isAnonymousAccount: Boolean = false,
 ) {
@@ -451,6 +457,8 @@ fun HomeScreen(
                             onDismiss = onDismissDeviceNotice,
                         )
                     }
+
+                    TermsNoticeBanners(termsNotices, onOpenUrl)
 
                     // ONE message banner (A2-011): a message of the Connect
                     // screen's own (dismissible), else the session's Error with
@@ -1239,6 +1247,8 @@ private fun HomeBanner(
     modifier: Modifier = Modifier,
     tone: BannerTone = BannerTone.Danger,
     action: BannerAction? = null,
+    /** Under the text: a long sentence beside the button is left a very narrow column. */
+    actionBelow: Boolean = false,
     onDismiss: (() -> Unit)? = null,
 ) {
     val (fg, bg) = when (tone) {
@@ -1261,17 +1271,13 @@ private fun HomeBanner(
         ) {
             Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(10.dp))
-            Text(
-                text = message,
-                color = fg,
-                fontSize = 13.sp,
-                modifier = Modifier.weight(1f),
-            )
-            if (action != null) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = message, color = fg, fontSize = 13.sp)
+                if (action != null && actionBelow) BannerActionButton(action, fg)
+            }
+            if (action != null && !actionBelow) {
                 Spacer(Modifier.width(6.dp))
-                TextButton(onClick = action.onClick) {
-                    Text(text = action.label, color = fg, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                }
+                BannerActionButton(action, fg)
             }
             if (onDismiss != null) {
                 // 48 dp: the minimum touch target, whatever the icon's size.
@@ -1284,6 +1290,52 @@ private fun HomeBanner(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun BannerActionButton(action: BannerAction, color: Color) {
+    TextButton(onClick = action.onClick) {
+        Text(text = action.label, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * MR-2199 (birdo-web #808): the terms-change notices the server names for this
+ * account, which is how an account with no address on file hears of a change.
+ * One line per entry, in the server's order, the text exactly as sent. Not an
+ * error and not dismissible: each goes by itself at its effective date, with
+ * the app left open and no new fetch ([TermsNotices]). Nothing is recorded.
+ *
+ * Collected only while the app is on screen, so the clock is read again the
+ * moment it comes back. Weighted, so two long sentences can never push Connect
+ * off a short screen: past the cap, or when the panel has no room, they scroll.
+ */
+@Composable
+private fun ColumnScope.TermsNoticeBanners(notices: List<TermsNotice>, onOpenUrl: (String) -> Unit) {
+    val shown by remember(notices) { TermsNotices.inForceOver(notices) }
+        .collectAsStateWithLifecycle(
+            initialValue = remember(notices) { TermsNotices.inForce(notices, System.currentTimeMillis()) },
+        )
+    if (shown.isEmpty()) return
+    Column(
+        modifier = Modifier
+            .weight(1f, fill = false)
+            .heightIn(max = 220.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        shown.forEach { notice ->
+            HomeBanner(
+                icon = Icons.Default.Info,
+                message = notice.text,
+                tone = BannerTone.Info,
+                action = TermsNotices.link(notice)?.let { url ->
+                    BannerAction(stringResource(R.string.banner_action_see_every_change)) { onOpenUrl(url) }
+                },
+                actionBelow = true,
+            )
         }
     }
 }
