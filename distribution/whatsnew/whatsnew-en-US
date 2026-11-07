@@ -2,6 +2,8 @@ Plan cards show the current device limits.
 
 If your account is paused, or other devices keep taking your connection, the app now explains why.
 
+Settings are shorter and simpler.
+
 The widget honours Show Server Location, and a copied account number is cleared from the clipboard after about a minute.
 
 A busy server no longer signs you out.
