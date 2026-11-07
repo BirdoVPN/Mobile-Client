@@ -2,7 +2,6 @@ package app.birdo.vpn.shared.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -197,48 +196,10 @@ data class UserProfile(
      * credential: never log it, never put it in a crash report.
      */
     val accountNumber: String? = null,
-    /**
-     * MR-2199 (birdo-web #808): `termsNotices`, absent when no notice applies.
-     * Raw [JsonElement], like [ClientConfigResponse.plans]: sign-in lands on
-     * this profile, so NO shape of the field may fail it. Read [termsNotices].
-     */
-    @SerialName("termsNotices") val termsNoticesJson: JsonElement? = null,
 ) {
-    /**
-     * The notices in the server's order, less any entry of another shape: two
-     * can be in force together, so a bad one must not hide a good one. Nothing
-     * for null, absence or anything but a list.
-     */
-    val termsNotices: List<TermsNotice>
-        get() = (termsNoticesJson as? JsonArray).orEmpty().mapNotNull(::termsNoticeOrNull)
-
     /** Leaves out [email] and [accountNumber]: either can carry an anonymous account's credential. */
     override fun toString(): String =
         "UserProfile(id=$id, accountType=$accountType, isAnonymous=$isAnonymous, hasPassword=$hasPassword, isSSO=$isSSO)"
-}
-
-/**
- * One entry of `/auth/me` `termsNotices`: an account with no address on file
- * gets no e-mail about a terms change, so the app says it instead. [text] is
- * shown as sent, and the entry goes at [effectiveAt].
- */
-data class TermsNotice(
-    val version: String,
-    val text: String,
-    val effectiveAt: String,
-    /** A site path; null when it was not a string, which costs the link, never the notice. */
-    val path: String?,
-)
-
-private fun termsNoticeOrNull(entry: JsonElement): TermsNotice? {
-    val fields = entry as? JsonObject ?: return null
-    fun string(key: String) = (fields[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
-    return TermsNotice(
-        version = string("version") ?: return null,
-        text = string("text") ?: return null,
-        effectiveAt = string("effectiveAt") ?: return null,
-        path = string("path"),
-    )
 }
 
 /**

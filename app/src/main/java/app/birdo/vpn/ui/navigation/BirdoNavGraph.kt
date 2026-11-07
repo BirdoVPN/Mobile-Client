@@ -620,7 +620,6 @@ fun BirdoNavGraph(
                         onViewPlans = openPlans,
                         onOpenUrl = { settingsViewModel.openUrl(it) },
                         onDismissDeviceNotice = { vpnViewModel.dismissDeviceNotice() },
-                        termsNotices = authState.user?.termsNotices.orEmpty(),
                     )
                 }
             }

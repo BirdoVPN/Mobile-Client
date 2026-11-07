@@ -294,8 +294,7 @@ targets:
       # verbatim) and their redacting descriptions, so CredentialDescriptionTests
       # can print the REAL structs. Foundation-only by design; VPNConnectionConfig
       # is in ConnectWire.swift and DeleteAccountBody in AccountDeletion.swift,
-      # both already listed. AuthWire.swift needs ConnectRefusal.swift (SitePath),
-      # also listed, for MR-2199's "See every change".
+      # both already listed.
       - path: iosApp/Services/AuthWire.swift
       - path: iosApp/Services/CredentialRedaction.swift
       - path: iosApp/Services/CredentialRedactingModels.swift
