@@ -43,17 +43,6 @@ struct SettingsView: View {
     /// MR-1094: why App Lock could not be turned on (no device passcode).
     @State private var appLockRefusal: String?
 
-    private var appLockDescription: String {
-        #if os(macOS)
-        return "Asks for Touch ID or your Mac's password before BirdoVPN shows anything, each "
-            + "time you open it or come back to it. The VPN keeps running while the app is locked."
-        #else
-        return "Asks for Face ID, Touch ID or your passcode before BirdoVPN shows anything, each "
-            + "time you open it or come back to it. Needs a device passcode. The VPN keeps "
-            + "running while the app is locked."
-        #endif
-    }
-
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
@@ -69,7 +58,6 @@ struct SettingsView: View {
                     SectionHeader("Connection")
                     SettingsToggleRow(icon: "wifi", iconColor: BirdoTheme.blue,
                                       title: "Auto-Connect",
-                                      description: "Connect to VPN on app startup",
                                       isOn: $settingsVM.autoConnect)
 
                     // The system-settings link lives here too. Splitting it into
@@ -79,7 +67,6 @@ struct SettingsView: View {
                     SectionHeader("Display")
                     SettingsLinkButton(icon: "bell.badge", iconColor: BirdoTheme.white60,
                                        title: "Notification Settings",
-                                       description: "Open system notification settings",
                                        trailing: "arrow.up.forward.square") {
                         SystemOpen.notificationSettings()
                     }
@@ -93,13 +80,13 @@ struct SettingsView: View {
                     // need no account.
                     SettingsLinkButton(icon: "checkmark.shield", iconColor: BirdoTheme.accent,
                                        title: "Privacy Policy",
-                                       description: "birdo.app/privacy",
+                                       destination: "birdo.app/privacy",
                                        trailing: "arrow.up.forward.square") {
                         if let url = URL(string: "https://birdo.app/privacy") { openURL(url) }
                     }
                     SettingsLinkButton(icon: "doc.text", iconColor: BirdoTheme.white60,
                                        title: "Terms of Service",
-                                       description: "birdo.app/terms",
+                                       destination: "birdo.app/terms",
                                        trailing: "arrow.up.forward.square") {
                         if let url = URL(string: "https://birdo.app/terms") { openURL(url) }
                     }
@@ -110,8 +97,7 @@ struct SettingsView: View {
                         AcknowledgementsView()
                     } label: {
                         SettingsLinkRow(icon: "doc.plaintext", iconColor: BirdoTheme.white60,
-                                        title: "Acknowledgements",
-                                        description: "Open-source software in this app")
+                                        title: "Acknowledgements")
                     }
                     .buttonStyle(PressScaleButtonStyle())
                     aboutCard
@@ -176,12 +162,10 @@ struct SettingsView: View {
         if customDnsAvailable {
             SettingsToggleRow(icon: "server.rack", iconColor: BirdoTheme.accent,
                               title: "Custom DNS Servers",
-                              description: "Use your own DNS servers instead of the VPN defaults",
                               isOn: $settingsVM.customDnsEnabled)
         } else {
             SettingsLockedRow(icon: "server.rack",
                               title: "Custom DNS Servers",
-                              description: "Use your own DNS servers instead of the VPN defaults",
                               action: routeToUpgrade)
         }
     }
@@ -222,14 +206,12 @@ struct SettingsView: View {
                 PortForwardView()
             } label: {
                 SettingsLinkRow(icon: "arrow.left.arrow.right", iconColor: BirdoTheme.blue,
-                                title: "Port Forwarding",
-                                description: "Expose ports through your VPN tunnel")
+                                title: "Port Forwarding")
             }
             .buttonStyle(PressScaleButtonStyle())
         } else {
             SettingsLockedRow(icon: "arrow.left.arrow.right",
                               title: "Port Forwarding",
-                              description: "Expose ports through your VPN tunnel",
                               action: routeToUpgrade)
         }
     }
@@ -290,7 +272,6 @@ struct SettingsView: View {
         SectionHeader("Privacy")
         SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.white60,
                           title: "App Lock",
-                          description: appLockDescription,
                           isOn: appLockBinding)
             .alert("App Lock needs a passcode",
                    isPresented: Binding(get: { appLockRefusal != nil },
@@ -304,27 +285,17 @@ struct SettingsView: View {
         // Switch keeps its T2 binding (`killSwitchToggleBinding`, never
         // `killSwitchEnabled`) and the confirm-before-disable dialog attached
         // to this screen's body.
-        // Wording: REMEDIATION-DECISIONS §2 (audit 2026-09-29, D-7 / D-3).
-        // The kill switch is armed once the tunnel is up and hands traffic
-        // back if the re-dial breaker trips (TunnelCircuitBreaker), so "block
-        // all traffic" overstated it, and so does "until it reconnects" on
-        // its own: the second sentence says the block is released (second-pass
-        // #5). It does NOT say "and tells you": with no on-demand rule armed
-        // the extension releases the block by itself, and the explanation
-        // (HomeView's breaker banner) appears only when the app next runs;
-        // there is no notification. The PQ key is derived between the app
-        // and the API and reaches the server over TLS that is not yet
-        // post-quantum, so "protects against future quantum computer attacks"
-        // overstated that. (The row allows four lines; that caveat lives on
-        // birdo.app and in the store text.)
+        // No description under either row (owner 2026-11-07). The kill
+        // switch's limits (REMEDIATION-DECISIONS §2, second-pass #5: the block
+        // is released when the re-dial breaker trips, and the app says so only
+        // when it next runs) and the PQ caveat (the key reaches the server
+        // over TLS that is not yet post-quantum) belong on birdo.app and in
+        // the store text. If a description ever returns, it must not claim more.
         SettingsToggleRow(icon: "checkmark.shield.fill", iconColor: BirdoTheme.green,
                           title: "Kill Switch",
-                          description: "If the tunnel drops unexpectedly, blocks traffic until it reconnects. "
-                            + "If reconnecting keeps failing, the app stops blocking.",
                           isOn: settingsVM.killSwitchToggleBinding)
         SettingsToggleRow(icon: "lock.fill", iconColor: BirdoTheme.accent,
                           title: "Quantum Protection",
-                          description: "Adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) to each connection.",
                           isOn: $settingsVM.quantumProtectionEnabled)
     }
 
@@ -339,8 +310,7 @@ struct SettingsView: View {
             VpnSettingsView()
         } label: {
             SettingsLinkRow(icon: "slider.horizontal.3", iconColor: BirdoTheme.blue,
-                            title: "VPN Settings",
-                            description: "Local network, port, and MTU")
+                            title: "VPN Settings")
         }
         .buttonStyle(PressScaleButtonStyle())
         customDnsRow
@@ -405,7 +375,10 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Rows (Android §1: card + 36pt icon chip + title/desc + control)
+// MARK: - Rows (Android §1: card + 36pt icon chip + title + control)
+//
+// A row is its title and its control, with no description of what it does
+// (owner 2026-11-07). VoiceOver reads the title, which names the setting.
 
 /// Whole-row toggle target announcing a single switch (Android §0.3) — the
 /// inner Toggle is a visual only; the surrounding Button handles the tap.
@@ -413,7 +386,6 @@ private struct SettingsToggleRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
     @Binding var isOn: Bool
 
     var body: some View {
@@ -425,7 +397,7 @@ private struct SettingsToggleRow: View {
             BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
                 HStack(spacing: 12) {
                     SettingsIconChip(icon: icon, color: iconColor)
-                    SettingsRowText(title: title, description: description)
+                    SettingsRowText(title: title)
                     Spacer(minLength: 8)
                     Toggle("", isOn: $isOn)
                         .labelsHidden()
@@ -444,18 +416,17 @@ private struct SettingsToggleRow: View {
     }
 }
 
-/// Navigation row: icon chip + title/desc + trailing chevron (18pt, faint).
+/// Navigation row: icon chip + title + trailing chevron (18pt, faint).
 private struct SettingsLinkRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
 
     var body: some View {
         BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
             HStack(spacing: 12) {
                 SettingsIconChip(icon: icon, color: iconColor)
-                SettingsRowText(title: title, description: description)
+                SettingsRowText(title: title)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 15, weight: .medium))
@@ -466,14 +437,15 @@ private struct SettingsLinkRow: View {
     }
 }
 
-/// Tappable link row: icon chip + title/desc + trailing icon (e.g. an
-/// "open in new" glyph for external/system destinations). Whole row is the
-/// button target.
+/// Tappable link row: icon chip + title + trailing icon (e.g. an "open in
+/// new" glyph for external/system destinations). Whole row is the button
+/// target. `destination` is the web address a policy link opens, not a
+/// description.
 private struct SettingsLinkButton: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    var destination: String? = nil
     let trailing: String
     let action: () -> Void
 
@@ -482,7 +454,7 @@ private struct SettingsLinkButton: View {
             BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
                 HStack(spacing: 12) {
                     SettingsIconChip(icon: icon, color: iconColor)
-                    SettingsRowText(title: title, description: description)
+                    SettingsRowText(title: title, detail: destination)
                     Spacer(minLength: 8)
                     Image(systemName: trailing)
                         .font(.system(size: 15, weight: .medium))
@@ -504,7 +476,6 @@ private struct SettingsLinkButton: View {
 private struct SettingsLockedRow: View {
     let icon: String
     let title: String
-    let description: String
     let action: () -> Void
 
     var body: some View {
@@ -512,7 +483,7 @@ private struct SettingsLockedRow: View {
             BirdoCard(cornerRadius: 16, horizontalPadding: 14, verticalPadding: 14) {
                 HStack(spacing: 12) {
                     SettingsIconChip(icon: icon, color: BirdoTheme.onSurfaceFaint)
-                    SettingsRowText(title: title, description: description)
+                    SettingsRowText(title: title)
                     Spacer(minLength: 8)
                     Image(systemName: "lock.fill")
                         .font(.system(size: 16))
@@ -552,19 +523,20 @@ private struct SettingsIconChip: View {
 
 private struct SettingsRowText: View {
     let title: String
-    let description: String
+    /// A policy link's web address; nil for every other row.
+    var detail: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(BirdoTheme.Fonts.labelLarge)
                 .foregroundStyle(BirdoTheme.onBackground)
-            Text(description)
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                // No line limit. This copy says what a switch does, and four
-                // lines cut App Lock's short on every phone.
-                .fixedSize(horizontal: false, vertical: true)
+            if let detail {
+                Text(detail)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .multilineTextAlignment(.leading)
     }

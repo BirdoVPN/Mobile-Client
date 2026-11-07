@@ -83,9 +83,27 @@ final class CredentialDescriptionTests: XCTestCase {
         let profile = UserProfile(id: "user-1", email: "user@example.com", name: "Alice",
                                   emailVerified: true, hasPassword: false, isSSO: false,
                                   accountType: "anonymous", isAnonymousField: true,
-                                  accountNumber: "123456789012345678901234", termsNotices: [])
+                                  accountNumber: "123456789012345678901234")
         assertNoSecret(profile)
         XCTAssertTrue(profile.description.contains("accountType: anonymous"), "UserProfile lost its type")
+    }
+
+    /// The app no longer shows terms-change notices (owner, 2026-11-07). A
+    /// server that still sends `termsNotices`, in any shape, must not fail
+    /// the profile or sign-in.
+    func testUserProfileDecodesWhateverTermsNoticesHolds() throws {
+        let shapes = [
+            #"[{"version":"2026-12","text":"Our terms change.","effectiveAt":"2026-12-06T00:00:00.000Z","path":"/terms"}]"#,
+            "[]",
+            "null",
+            #""not a list""#,
+            #"{"version":1}"#,
+        ]
+        for notices in shapes {
+            let body = #"{"id":"user-1","hasPassword":false,"termsNotices":"# + notices + "}"
+            let profile = try JSONDecoder().decode(UserProfile.self, from: Data(body.utf8))
+            XCTAssertEqual(profile.id, "user-1", "termsNotices=\(notices)")
+        }
     }
 
     // MARK: - Sign-in request bodies

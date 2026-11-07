@@ -49,8 +49,10 @@ import app.birdo.vpn.utils.InputValidator
 /**
  * Settings tab root, in the canonical section order (P1-parity "Settings names
  * and help text"): Appearance · Privacy & Security · Connection ·
- * Notifications · VPN · About. Every row says what it does (P1-010); iOS
- * explains every row and this screen used to explain three.
+ * Notifications · VPN · About. A row is its title and its control, with no
+ * description of what it does (owner 2026-11-07, replacing P1-010's help
+ * text). Text under a row is only a disclosure (crash reports) or a state
+ * (the split-tunnel count).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -138,9 +140,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Shield,
                     iconColor = BirdoGreen,
                     title = stringResource(R.string.settings_kill_switch),
-                    description = stringResource(R.string.settings_kill_switch_desc),
-                    // The caveat is the second sentence: never ellipsize it away.
-                    descriptionMaxLines = Int.MAX_VALUE,
                     checked = state.killSwitchEnabled,
                     onCheckedChange = { enabled ->
                         if (enabled) {
@@ -160,7 +159,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Lock,
                     iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_quantum_title),
-                    description = stringResource(R.string.settings_quantum_desc),
                     checked = state.quantumProtectionEnabled && quantumUnlocked,
                     onCheckedChange = onQuantumProtectionChange,
                     locked = !quantumUnlocked,
@@ -173,15 +171,12 @@ fun SettingsScreen(
                 // covers the screen and guards nothing else — no key is released
                 // by it, and the VPN (Auto-Connect included) runs behind it. A
                 // security name, a Security section and a green icon all implied
-                // otherwise. Neutral icon, and copy that says what it does. iOS
-                // made the same change after its own audit. The stored key is
-                // unchanged.
+                // otherwise. Neutral icon and a neutral name. iOS made the same
+                // change after its own audit. The stored key is unchanged.
                 SettingsToggle(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoColors.current.onSurfaceMuted,
                     title = stringResource(R.string.settings_hide_app_contents),
-                    description = stringResource(R.string.settings_hide_app_contents_desc),
-                    descriptionMaxLines = Int.MAX_VALUE,
                     checked = state.biometricLockEnabled,
                     onCheckedChange = onBiometricLockChange,
                 )
@@ -212,7 +207,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Wifi,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_auto_connect),
-                    description = stringResource(R.string.settings_auto_connect_desc),
                     checked = state.autoConnect,
                     onCheckedChange = onAutoConnectChange,
                     testTag = TestTags.AUTO_CONNECT_TOGGLE,
@@ -230,7 +224,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Notifications,
                     iconColor = BirdoYellow,
                     title = stringResource(R.string.settings_notifications),
-                    description = stringResource(R.string.settings_notifications_desc),
                     checked = state.notificationsEnabled,
                     onCheckedChange = onNotificationsChange,
                     testTag = TestTags.NOTIFICATIONS_TOGGLE,
@@ -243,7 +236,6 @@ fun SettingsScreen(
                         icon = Icons.Default.Language,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_notif_show_ip),
-                        description = stringResource(R.string.settings_notif_show_ip_desc),
                         checked = state.showIpInNotification,
                         onCheckedChange = onShowIpInNotificationChange,
                     )
@@ -254,7 +246,6 @@ fun SettingsScreen(
                         icon = Icons.Default.LocationOn,
                         iconColor = BirdoWhite60,
                         title = stringResource(R.string.settings_notif_show_location),
-                        description = stringResource(R.string.settings_notif_show_location_desc),
                         checked = state.showLocationInNotification,
                         onCheckedChange = onShowLocationInNotificationChange,
                     )
@@ -266,7 +257,6 @@ fun SettingsScreen(
                     icon = Icons.Default.NotificationsActive,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_notif_system),
-                    description = stringResource(R.string.settings_notif_system_desc),
                     onClick = onOpenNotificationSettings,
                     trailing = Icons.AutoMirrored.Filled.OpenInNew,
                 )
@@ -283,7 +273,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Tune,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_vpn_settings),
-                    description = stringResource(R.string.settings_vpn_settings_desc),
                     onClick = onOpenVpnSettings,
                 )
             }
@@ -293,7 +282,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Dns,
                     iconColor = BirdoAccent,
                     title = stringResource(R.string.vpn_settings_custom_dns),
-                    description = stringResource(R.string.settings_custom_dns_desc),
                     checked = state.customDnsEnabled,
                     onCheckedChange = onCustomDnsEnabledChange,
                 )
@@ -326,7 +314,6 @@ fun SettingsScreen(
                     icon = Icons.Default.SwapHoriz,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.settings_port_forward),
-                    description = stringResource(R.string.settings_port_forward_desc),
                     onClick = if (portForwardUnlocked) onOpenPortForward else onUpgradeRequired,
                     locked = !portForwardUnlocked,
                 )
@@ -338,7 +325,6 @@ fun SettingsScreen(
                     icon = Icons.AutoMirrored.Filled.CallSplit,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_split_tunnel),
-                    description = stringResource(R.string.settings_split_tunnel_desc),
                     checked = state.splitTunnelingEnabled,
                     onCheckedChange = onSplitTunnelingChange,
                 )
@@ -390,7 +376,6 @@ fun SettingsScreen(
                     icon = Icons.Default.Description,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_licenses),
-                    description = stringResource(R.string.settings_licenses_desc),
                     onClick = onOpenLicenses,
                 )
             }
@@ -543,12 +528,11 @@ private fun SettingsToggle(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    // Optional explanatory subtitle. Rendered only when present — most rows
-    // carry a self-explanatory title and no description.
+    // Only for a disclosure (what crash reports send): rows carry no
+    // description of what they do (owner 2026-11-07).
     description: String? = null,
-    // Two lines suit a hint. A row whose description is a DISCLOSURE (the kill
-    // switch's caveat, what crash reports send) passes Int.MAX_VALUE, so the
-    // part that matters is never cut to an ellipsis (second-pass #5 / #7).
+    // A disclosure passes Int.MAX_VALUE, so the part that matters is never
+    // cut to an ellipsis (second-pass #7).
     descriptionMaxLines: Int = 2,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -622,7 +606,7 @@ private fun SettingsLink(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    // Optional subtitle — rendered only when present (e.g. a dynamic count).
+    // Only for a state, such as the split-tunnel count (owner 2026-11-07).
     description: String? = null,
     onClick: () -> Unit,
     trailing: ImageVector = Icons.Default.ChevronRight,
