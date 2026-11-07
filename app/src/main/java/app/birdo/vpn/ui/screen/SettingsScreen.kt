@@ -51,9 +51,9 @@ import app.birdo.vpn.utils.InputValidator
  * and help text"): Appearance · Privacy & Security · Connection ·
  * Notifications · VPN · About. A row is its title and its control, with no
  * description of what it does (owner 2026-11-07, replacing P1-010's help
- * text). Text under a row is only a state (the split-tunnel count). Crash
- * Reports is its title too: what it sends is on the consent screen, where
- * the user opts in.
+ * text). Text under a row is only a state (the split-tunnel count) or Crash
+ * Reports' one line, the owner's wording; the full disclosure is on the
+ * consent screen, where the user opts in.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -186,13 +186,14 @@ fun SettingsScreen(
             item {
                 // Crash reports are OPT-IN (off by default). This is the "change
                 // it any time in Settings" the consent screen promises; flipping
-                // it starts or closes the SDK immediately (BirdoApp). Its title
-                // alone (owner 2026-11-07, as Desktop): what the reports send
-                // is on the consent screen (consent_crash_reports_desc).
+                // it starts or closes the SDK immediately (BirdoApp). One short
+                // line, the owner's (2026-11-07), as on Desktop; the full
+                // disclosure is the consent screen's consent_crash_reports_desc.
                 SettingsToggle(
                     icon = Icons.Default.BugReport,
                     iconColor = BirdoWhite60,
                     title = stringResource(R.string.settings_crash_reports),
+                    description = stringResource(R.string.settings_crash_reports_desc),
                     checked = state.crashReportsEnabled,
                     onCheckedChange = onCrashReportsChange,
                     testTag = TestTags.CRASH_REPORTS_TOGGLE,
@@ -527,9 +528,10 @@ private fun SettingIconChip(
 private fun SettingsToggle(
     icon: ImageVector,
     iconColor: Color,
-    // The row's only text: no toggle here carries a description (owner
-    // 2026-11-07).
     title: String,
+    // Crash Reports' one line only: rows carry no description of what they
+    // do (owner 2026-11-07). Never cut to an ellipsis.
+    description: String? = null,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     testTag: String? = null,
@@ -563,6 +565,9 @@ private fun SettingsToggle(
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = palette.onBackground, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                if (description != null) {
+                    Text(description, color = palette.onSurfaceMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 1.dp))
+                }
             }
             Spacer(Modifier.width(8.dp))
             if (locked) {

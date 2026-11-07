@@ -278,10 +278,11 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_system">System</string>
-    <!-- Crash reports: the Settings toggle is its title alone (owner
-         2026-11-07, as Desktop). What the reports send is said where the user
-         opts in: consent_crash_reports_desc. -->
+    <!-- Crash reports: one short line under the Settings toggle, the owner's
+         wording (2026-11-07), the same on Desktop. The full opt-in disclosure
+         is on the consent screen: consent_crash_reports_desc. -->
     <string name="settings_crash_reports">Crash Reports</string>
+    <string name="settings_crash_reports_desc">Sends crash and error reports to Sentry. Off by default.</string>
     <!-- Port forwarding -->
     <string name="port_forward_title">Port Forwarding</string>
     <string name="port_forward_info">Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.</string>
