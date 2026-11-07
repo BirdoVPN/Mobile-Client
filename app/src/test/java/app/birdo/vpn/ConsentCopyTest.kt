@@ -84,12 +84,28 @@ class ConsentCopyTest {
         assertEquals(crashReports, androidStrings["consent_crash_reports_desc"])
     }
 
+    /**
+     * Owner 2026-11-07 (as Desktop): the Settings toggle is its title alone.
+     * What the reports send is said once, where the user opts in (the
+     * consent text above, which still names error reports and Settings).
+     */
     @Test
-    fun `the Settings crash-report row discloses error reports too`() {
-        val settings = androidStrings["settings_crash_reports_desc"].orEmpty()
-        assertTrue(settings.contains("Crash and error reports"))
-        assertTrue(settings.contains("such as connecting or the kill switch fails"))
-        assertFalse("never \"only\": the reports are not crash details alone", settings.contains("only", ignoreCase = true))
+    fun `the Settings crash-report toggle is its title, the disclosure stays on the consent screen`() {
+        assertEquals("Crash Reports", androidStrings["settings_crash_reports"])
+        assertFalse(
+            "the Settings row's description string came back",
+            androidStrings.containsKey("settings_crash_reports_desc"),
+        )
+        val settings = source("app/src/main/java/app/birdo/vpn/ui/screen/SettingsScreen.kt")
+        val tag = settings.indexOf("testTag = TestTags.CRASH_REPORTS_TOGGLE")
+        assertTrue("the crash-report toggle is missing from SettingsScreen.kt", tag > 0)
+        val call = settings.substring(settings.lastIndexOf("SettingsToggle(", tag), tag)
+        assertTrue(call.contains("title = stringResource(R.string.settings_crash_reports)"))
+        assertFalse("the crash-report toggle carries text besides its title", call.contains("description"))
+
+        val consent = androidStrings["consent_crash_reports_desc"].orEmpty()
+        assertTrue(consent.contains("crash and error reports"))
+        assertTrue(consent.contains("Change it any time in Settings."))
     }
 
     @Test
