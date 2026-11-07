@@ -150,30 +150,33 @@ class PublicClaimsGuardTest {
     }
 
     /**
-     * Second-pass #5: each platform's kill-switch copy carries its caveat.
-     * Android's block is the app's own and holds while its VpnService runs
-     * (Always-on is not offered). iOS releases the block when the re-dial
-     * breaker trips, and tells the user only in-app the next time it runs, so
-     * the copy says "stops blocking" and never "tells you".
+     * Second-pass #5: the kill switch's caveat travels with the store text.
+     * Android's block is the app's own and holds while its VpnService runs.
+     * iOS releases the block when the re-dial breaker trips, and tells the
+     * user only in-app the next time it runs, so no copy says "tells you".
+     *
+     * The Settings rows carry no description since the owner's decision of
+     * 2026-11-07, so the caveat is pinned on the listings, and the in-app
+     * rows are pinned to make no claim at all.
      */
     @Test
     fun `kill switch copy carries each platform caveat`() {
-        // Raw resource text: aapt2 needs the apostrophe escaped as \'.
-        val androidCaveat = """Protection applies while BirdoVPN\'s VPN service is running."""
-        val strings = text("app/src/main/res/values/strings.xml")
-        assertTrue(
-            "settings_kill_switch_desc lost the Android caveat",
-            Regex("""<string name="settings_kill_switch_desc">[^<]*""").find(strings)?.value.orEmpty()
-                .contains(androidCaveat),
-        )
         val fdroid = text("fdroid/metadata/app.birdo.vpn.yml").replace(Regex("""\s+"""), " ")
         assertTrue(fdroid.contains("Protection applies while BirdoVPN's VPN service is running"))
+        val play = text("store-assets/listing/en-US/full-description.txt")
+        assertTrue(play.contains("Protection applies while BirdoVPN's VPN service is running"))
+
+        val strings = text("app/src/main/res/values/strings.xml")
+        assertFalse("a kill-switch description is back without its caveat", strings.contains("name=\"settings_kill_switch_desc\""))
 
         val ios = text("iosApp/iosApp/Views/SettingsView.swift")
-        assertTrue(ios.contains("\"If reconnecting keeps failing, the app stops blocking.\""))
         assertFalse(
             "the iOS app shows no notification when the breaker releases the block",
             literals(ios).any { it.contains("tells you", ignoreCase = true) },
+        )
+        assertFalse(
+            "an iOS kill-switch description is back without its caveat",
+            literals(ios).any { it.contains("blocks traffic", ignoreCase = true) },
         )
     }
 

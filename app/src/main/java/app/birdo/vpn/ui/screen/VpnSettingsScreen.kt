@@ -142,7 +142,6 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.VisibilityOff,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_stealth_title),
-                    description = stringResource(R.string.vpn_settings_stealth_desc),
                     // Locked only in the ON direction (StealthPolicy.toggleRow):
                     // a downgrade's stored ON can still be turned off.
                     checked = stealthRow.checked,
@@ -168,13 +167,13 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Shield,
                     iconColor = if (shield.enabled) BirdoGreen else palette.onSurfaceFaint,
                     title = stringResource(R.string.vpn_settings_birdoshield_title),
-                    description = stringResource(
-                        when {
-                            shield.unavailable -> R.string.vpn_settings_birdoshield_unavailable
-                            shield.overriddenByCustomDns -> R.string.vpn_settings_birdoshield_custom_dns
-                            else -> R.string.vpn_settings_birdoshield_desc
-                        },
-                    ),
+                    // Only why the switch cannot act; no description of what it
+                    // does (owner 2026-11-07).
+                    description = when {
+                        shield.unavailable -> stringResource(R.string.vpn_settings_birdoshield_unavailable)
+                        shield.overriddenByCustomDns -> stringResource(R.string.vpn_settings_birdoshield_custom_dns)
+                        else -> null
+                    },
                     checked = shield.checked,
                     onCheckedChange = onDnsFilteringChange,
                     enabled = shield.enabled,
@@ -190,6 +189,7 @@ fun VpnSettingsScreen(
                     icon = Icons.Default.Lan,
                     iconColor = BirdoBlue,
                     title = stringResource(R.string.vpn_settings_local_network),
+                    // A warning, not a description: kept (owner 2026-11-07).
                     description = stringResource(R.string.vpn_settings_local_network_desc),
                     checked = state.localNetworkSharing,
                     onCheckedChange = onLocalNetworkSharingChange,
@@ -243,22 +243,15 @@ fun VpnSettingsScreen(
                     contentPadding = PaddingValues(16.dp),
                 ) {
                     Column {
-                        Row(verticalAlignment = Alignment.Top) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Tune, contentDescription = null, tint = BirdoYellow, modifier = Modifier.size(22.dp))
                             Spacer(Modifier.width(14.dp))
-                            Column {
-                                Text(
-                                    stringResource(R.string.vpn_settings_mtu),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.onSurface,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Text(
-                                    stringResource(R.string.vpn_settings_mtu_desc),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = palette.onSurfaceMuted,
-                                )
-                            }
+                            Text(
+                                stringResource(R.string.vpn_settings_mtu),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = palette.onSurface,
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
                         Spacer(Modifier.height(12.dp))
 
@@ -356,7 +349,8 @@ private fun VpnToggle(
     icon: ImageVector,
     iconColor: Color,
     title: String,
-    // Optional explanatory subtitle. Rendered only when present.
+    // Only a warning or why the switch cannot act; rows carry no description
+    // of what they do (owner 2026-11-07).
     description: String? = null,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,

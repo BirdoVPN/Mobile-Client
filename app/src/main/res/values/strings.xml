@@ -93,8 +93,10 @@
     <string name="banner_action_choose_server">Choose server</string>
     <string name="banner_action_turn_off_stealth">Turn off Stealth</string>
     <string name="cd_dismiss_message">Dismiss message</string>
-    <!-- A1-027: the alerts that say the VPN stopped or needs the user are notifications. -->
-    <string name="home_notifications_off">Notifications are off, so BirdoVPN can\'t alert you when the VPN stops or needs you.</string>
+    <!-- A1-027: the alerts that say the VPN stopped or needs the user are
+         notifications. One line (owner 2026-11-07): the Turn on button beside
+         it is the point. -->
+    <string name="home_notifications_off">Notifications are off</string>
     <string name="home_notifications_turn_on">Turn on</string>
 
     <!-- Ongoing notification, alerts, tile (P1-parity-028: no glyph prefixes). -->
@@ -144,18 +146,10 @@
     <string name="profile_title">Profile</string>
     <string name="limit">Limit</string>
     <string name="settings_section_connection">Connection</string>
+    <!-- No description under the row (owner 2026-11-07). The kill switch's
+         limits (REMEDIATION-DECISIONS §2, second-pass #5) are stated on the
+         Play and F-Droid listings (PublicClaimsGuardTest). -->
     <string name="settings_kill_switch">Kill Switch</string>
-    <!-- REMEDIATION-DECISIONS §2 wording. What it does, and no more: the block
-         is the app's own, so it holds while BirdoVPN's VPN service is running
-         (audit 2026-09-29, D-7; the caveat is the corrected §2 one, second-pass
-         #5). Since the 2026-09-30 overhaul the app releases its own block when
-         reconnecting keeps failing (parity with iOS and Windows), and Android's
-         Always-on VPN IS supported (SUPPORTS_ALWAYS_ON=true, pinned by
-         ApiLevel36ContractTest), so the system-level block may be named.
-         The crash sentence is the live finding of 2026-09-30: after a crash
-         Android did not restart the service, and the app's own block died
-         with its process; only Android's lockdown survives that. -->
-    <string name="settings_kill_switch_desc">If the tunnel drops unexpectedly, blocks traffic until it reconnects. If reconnecting keeps failing, the app stops blocking. Protection applies while BirdoVPN\'s VPN service is running. If a crash or Android closes the app, nothing is blocked until it starts again; to stay blocked through that too, turn on Always-on VPN and Block connections without VPN in Android\'s VPN settings.</string>
     <string name="settings_kill_switch_disable_title">Disable kill switch?</string>
     <!-- D-7: this used to end "for a system-guaranteed block, enable Android's
          Always-on VPN with Block connections without VPN", advice for a setting
@@ -166,8 +160,6 @@
     <string name="settings_kill_switch_disable_confirm">Turn off anyway</string>
     <string name="settings_auto_connect">Auto-Connect</string>
     <string name="settings_notifications">Notifications</string>
-    <!-- A1-028 / P1-parity-012: what the toggle governs, now that something reads it. -->
-    <string name="settings_notifications_desc">Show a notice when the VPN disconnects. The ongoing notification while connected, and alerts that need your action, always show.</string>
     <string name="settings_notif_show_ip">Show IP Address</string>
     <string name="settings_notif_show_location">Show Server Location</string>
     <string name="settings_notif_system">Notification Settings</string>
@@ -248,8 +240,7 @@
     <string name="vpn_settings_section_security">Security</string>
     <string name="vpn_settings_stealth_title">Stealth Mode</string>
     <string name="vpn_settings_birdoshield_title">BirdoShield</string>
-    <string name="vpn_settings_birdoshield_desc">Blocks ads, trackers and malware domains at the VPN\'s DNS resolver.</string>
-    <!-- Shown instead of the description above when GET /api/client-config reports
+    <!-- Shown under the row when GET /api/client-config reports
          dnsFilteringAvailable:false. The user cannot act on this, so the copy does
          not ask them to; it says the preference survives. -->
     <string name="vpn_settings_birdoshield_unavailable">Not available on your account\'s server fleet yet. Your preference is kept and applies as soon as it is.</string>
@@ -359,7 +350,6 @@
 
     <!-- Open-source licences (MR-1686) -->
     <string name="settings_licenses">Open-source licences</string>
-    <string name="settings_licenses_desc">Third-party software in this app and its licences</string>
     <string name="licenses_title">Open-source licences</string>
     <string name="licenses_load_failed">The licences could not be loaded.</string>
 
@@ -533,27 +523,18 @@
     <string name="limit_refresh">Refresh usage</string>
     <string name="limit_refreshing">Updating…</string>
 
-    <!-- Settings: canonical section names and help text (P1-parity). -->
+    <!-- Settings: canonical section names (P1-parity). A row is its title and
+         its control: no description under it (owner 2026-11-07), only text
+         that is a warning, a state or a disclosure. -->
     <string name="settings_section_privacy_security">Privacy &amp; Security</string>
     <string name="settings_section_notifications">Notifications</string>
-    <string name="settings_quantum_desc">Adds a WireGuard pre-shared key derived with ML-KEM-1024 (BirdoPQ) to each connection.</string>
-    <!-- P1-011: the iOS wording, with the Android prompts. The feature covers
-         the screen and guards nothing else; never describe it as protection. -->
+    <!-- P1-011: the iOS name. The feature covers the screen and guards
+         nothing else; never describe it as protection. -->
     <string name="settings_hide_app_contents">Hide App Contents</string>
-    <string name="settings_hide_app_contents_desc">Covers the screen with your fingerprint, face or screen-lock prompt whenever you return to the app. Hides what is on screen only: it protects no data, and the VPN keeps running behind it, including Auto-Connect.</string>
-    <string name="settings_auto_connect_desc">Connect to VPN on app startup.</string>
-    <string name="settings_notif_show_ip_desc">Include the VPN server\'s IP address in the connection notification.</string>
-    <string name="settings_notif_show_location_desc">Include the server\'s location in the connection notification.</string>
-    <string name="settings_notif_system_desc">Open system notification settings</string>
-    <string name="settings_vpn_settings_desc">Stealth Mode, BirdoShield, local network, port and MTU</string>
-    <string name="settings_custom_dns_desc">Use your own DNS servers instead of the VPN defaults.</string>
-    <string name="settings_port_forward_desc">Expose ports through your VPN tunnel.</string>
-    <string name="settings_split_tunnel_desc">Choose apps that bypass the VPN.</string>
     <string name="settings_dns_invalid">Enter a valid IP address</string>
     <string name="settings_reset_notice">Your VPN settings were reset to safe defaults because they could not be verified. Check your kill switch, DNS and split tunneling choices.</string>
-    <string name="vpn_settings_stealth_desc">Wraps WireGuard in an encrypted transport for networks that block VPNs. Slower.</string>
-    <string name="vpn_settings_local_network_desc">Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN</string>
-    <string name="vpn_settings_mtu_desc">Packet size — lower values improve reliability on unstable networks</string>
+    <!-- A warning, so it stays when the other descriptions went (owner 2026-11-07). -->
+    <string name="vpn_settings_local_network_desc">While on, devices on your local network can reach this device.</string>
     <string name="split_tunnel_no_match">No apps match \"%1$s\"</string>
 
     <!-- Play paywall price states (A2-022): never a web GBP figure in a Play build. -->
@@ -562,7 +543,7 @@
 
     <!-- Asked once, at the first connect (A2-026). -->
     <string name="notif_explainer_title">Connection notifications</string>
-    <string name="notif_explainer_body">While the VPN runs, BirdoVPN shows its connection status in a notification, so you can see you are protected and disconnect from the notification shade.</string>
+    <string name="notif_explainer_body">BirdoVPN shows its status in a notification while it runs.</string>
     <string name="notif_explainer_allow">Continue</string>
 
     <!-- Rooted-device warning, shown after consent (A2-042). -->
