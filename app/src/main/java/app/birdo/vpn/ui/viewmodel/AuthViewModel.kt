@@ -36,6 +36,8 @@ enum class DeleteAccountField { PASSWORD, CODE }
 
 data class AuthUiState(
     val isLoading: Boolean = false,
+    /** The sign-up proof-of-work is running (MR-2152): the screen says "checking this device". */
+    val isCheckingDevice: Boolean = false,
     val isLoggedIn: Boolean = false,
     val error: String? = null,
     val user: UserProfile? = null,
@@ -542,7 +544,16 @@ class AuthViewModel @Inject constructor(
         if (authJob?.isActive == true) return
         authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-            when (val result = repository.registerAnonymous()) {
+            repository.signupPowProgress = { checking ->
+                _uiState.value = _uiState.value.copy(isCheckingDevice = checking)
+            }
+            val result = try {
+                repository.registerAnonymous()
+            } finally {
+                repository.signupPowProgress = null
+                _uiState.value = _uiState.value.copy(isCheckingDevice = false)
+            }
+            when (result) {
                 is ApiResult.Success -> {
                     val body = result.data
                     val minted = body.anonymousId?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
