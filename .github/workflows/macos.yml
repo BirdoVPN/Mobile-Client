@@ -63,7 +63,34 @@ env:
   MAC_DEPLOYMENT_TARGET: '14.0'
 
 jobs:
+  # ══════════════════════════════════════════════════════════════════════
+  # TAG-ON-MAIN GATE (register A-H09 / MR-2264 part b, A-M72; MA-CI-010,
+  # MA-MAC-002). A pushed mac-v* tag, or a dispatch that uploads to App Store Connect, used to do so from ANY commit.
+  # This job fails the run unless the commit being released is an ancestor of
+  # origin/main, BEFORE any job that builds, signs or uploads starts: build-macos, unit-tests and screenshots-macos (release-macos needs build-macos and unit-tests)
+  # `needs` it. Runs that do not release (a bare dispatch that only builds) pass
+  # through it with the check skipped, so they work as before. The tag ruleset
+  # (mac-v*) and environment reviewers are owner settings, not this file.
+  # ══════════════════════════════════════════════════════════════════════
+  tag-on-main:
+    name: Release commit must be on main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the ancestry check needs every ancestor of the commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the released commit to be an ancestor of origin/main
+        if: startsWith(github.ref, 'refs/tags/mac-v') || (github.event_name == 'workflow_dispatch' && inputs.upload_appstore)
+        run: bash .github/scripts/require-tag-on-main.sh "$GITHUB_SHA"
+
   build-macos:
+    needs: tag-on-main
     name: Build macOS App
     runs-on: macos-26
     timeout-minutes: 45
@@ -166,6 +193,7 @@ jobs:
   # exactly what a failure needs.
   # ==========================================================================
   screenshots-macos:
+    needs: tag-on-main
     name: Capture Mac App Store Screenshots
     runs-on: macos-26
     timeout-minutes: 60
@@ -406,6 +434,7 @@ jobs:
   # (ClientIdentityTests) are therefore not exercised here.
   # ==========================================================================
   unit-tests:
+    needs: tag-on-main
     name: Unit Tests (iOS Simulator)
     runs-on: macos-26
     timeout-minutes: 45
