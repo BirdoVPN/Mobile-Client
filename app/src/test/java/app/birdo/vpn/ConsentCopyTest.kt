@@ -84,12 +84,29 @@ class ConsentCopyTest {
         assertEquals(crashReports, androidStrings["consent_crash_reports_desc"])
     }
 
+    /**
+     * Owner 2026-11-07: the Settings toggle carries one short line in the
+     * owner's words, the same on Desktop. The full disclosure is said where
+     * the user opts in (the consent text above, which still names error
+     * reports and Settings). Second-pass #7: never "crash details only".
+     */
     @Test
-    fun `the Settings crash-report row discloses error reports too`() {
-        val settings = androidStrings["settings_crash_reports_desc"].orEmpty()
-        assertTrue(settings.contains("Crash and error reports"))
-        assertTrue(settings.contains("such as connecting or the kill switch fails"))
-        assertFalse("never \"only\": the reports are not crash details alone", settings.contains("only", ignoreCase = true))
+    fun `the Settings crash-report toggle carries one short line and the disclosure stays on the consent screen`() {
+        val line = "Sends crash and error reports to Sentry. Off by default."
+        assertEquals("Crash Reports", androidStrings["settings_crash_reports"])
+        assertEquals(line, androidStrings["settings_crash_reports_desc"])
+        assertFalse(line.contains("only", ignoreCase = true))
+
+        val settings = source("app/src/main/java/app/birdo/vpn/ui/screen/SettingsScreen.kt")
+        val tag = settings.indexOf("testTag = TestTags.CRASH_REPORTS_TOGGLE")
+        assertTrue("the crash-report toggle is missing from SettingsScreen.kt", tag > 0)
+        val call = settings.substring(settings.lastIndexOf("SettingsToggle(", tag), tag)
+        assertTrue(call.contains("title = stringResource(R.string.settings_crash_reports)"))
+        assertTrue(call.contains("description = stringResource(R.string.settings_crash_reports_desc)"))
+
+        val consent = androidStrings["consent_crash_reports_desc"].orEmpty()
+        assertTrue(consent.contains("crash and error reports"))
+        assertTrue(consent.contains("Change it any time in Settings."))
     }
 
     @Test

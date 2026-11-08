@@ -278,12 +278,11 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_theme_system">System</string>
-    <!-- Crash reports: the Settings half of the consent-screen opt-in. Same
-         facts as consent_crash_reports_desc (second-pass #7: FaultReporter
-         also sends error events when a feature fails, so never "crash
-         details only"). The row shows the whole text, never an ellipsis. -->
+    <!-- Crash reports: one short line under the Settings toggle, the owner's
+         wording (2026-11-07), the same on Desktop. The full opt-in disclosure
+         is on the consent screen: consent_crash_reports_desc. -->
     <string name="settings_crash_reports">Crash Reports</string>
-    <string name="settings_crash_reports_desc">Off by default. Crash and error reports: crashes, and errors when an app feature such as connecting or the kill switch fails, with the app and OS version and device model. No account details, IP address or browsing data.</string>
+    <string name="settings_crash_reports_desc">Sends crash and error reports to Sentry. Off by default.</string>
     <!-- Port forwarding -->
     <string name="port_forward_title">Port Forwarding</string>
     <string name="port_forward_info">Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.</string>
