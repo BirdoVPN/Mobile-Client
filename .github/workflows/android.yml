@@ -90,6 +90,32 @@ env:
   JAVA_DISTRIBUTION: 'temurin'
 
 jobs:
+  # ══════════════════════════════════════════════════════════════════════
+  # TAG-ON-MAIN GATE (register A-H09 / MR-2264 part b, A-M72; MA-CI-010,
+  # MA-MAC-002). A pushed android-v* tag, or a dispatch, used to sign and publish from ANY commit.
+  # This job fails the run unless the commit being released is an ancestor of
+  # origin/main, BEFORE any job that builds, signs or uploads starts: lint, test, native, pq-cpu-proof and release (draft-release, xray-source-release and play-upload need release)
+  # `needs` it. Runs that do not release (a push to main) pass
+  # through it with the check skipped, so they work as before. The tag ruleset
+  # (mac-v*) and environment reviewers are owner settings, not this file.
+  # ══════════════════════════════════════════════════════════════════════
+  tag-on-main:
+    name: Release commit must be on main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the ancestry check needs every ancestor of the commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the released commit to be an ancestor of origin/main
+        if: startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch'
+        run: bash .github/scripts/require-tag-on-main.sh "$GITHUB_SHA"
+
   # -- Release gates ----------------------------------------------------------
   # Nothing is published unless lint, the unit tests, the native crate gates and
   # the FEAT_SHA3 CPU proof pass on the exact commit being released. They run in
@@ -97,6 +123,7 @@ jobs:
   # uncached like everything in this file. Skipped on a plain main push, where
   # android-ci.yml has just run them.
   lint:
+    needs: tag-on-main
     name: 'Release gate: Lint'
     if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
@@ -135,6 +162,7 @@ jobs:
         run: ./gradlew lintDebug
 
   test:
+    needs: tag-on-main
     name: 'Release gate: Unit Tests'
     if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
@@ -166,6 +194,7 @@ jobs:
   # fmt/clippy/tests with pinned minimum counts, the PQ dependency graph, the
   # ISA gate's negative cases, and the QEMU run on a core without FEAT_SHA3.
   native:
+    needs: tag-on-main
     name: 'Release gate: Native crates'
     if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
@@ -179,6 +208,7 @@ jobs:
       - uses: ./.github/actions/native-gates
 
   pq-cpu-proof:
+    needs: tag-on-main
     name: 'Release gate: PQ KEM on a CPU without FEAT_SHA3 (QEMU)'
     if: ${{ startsWith(github.ref, 'refs/tags/android-v') || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
@@ -192,6 +222,7 @@ jobs:
       - uses: ./.github/actions/pq-cpu-proof
 
   release:
+    needs: tag-on-main
     name: Build Release APK
     runs-on: ubuntu-24.04
     timeout-minutes: 60
