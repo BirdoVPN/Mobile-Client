@@ -1,9 +1,9 @@
 package app.birdo.vpn.data.repository
 
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -13,7 +13,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.security.MessageDigest
-import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * MR-2152. The vectors below were produced by the SERVER's own code, not by
@@ -105,24 +104,21 @@ class SignupPowTest {
 
     @Test
     fun `cancelling the coroutine stops a solve that could not finish`() = runBlocking {
-        // 28 bits is about 268M hashes: many seconds even on a fast core.
+        // 28 bits is about 268M hashes: tens of seconds even on a fast core.
         val started = CompletableDeferred<Unit>()
-        val job = async(Dispatchers.Default, start = CoroutineStart.UNDISPATCHED) {
+        val job = launch(Dispatchers.Default) {
             started.complete(Unit)
             SignupPow.solve(vectors[0].token, SignupPow.MAX_SOLVABLE_BITS)
         }
         started.await()
+        delay(100)
+        assertTrue("finished before it was cancelled", job.isActive)
         val t0 = System.nanoTime()
-        // Uncancelled this runs for tens of seconds; the bound is loose on purpose (a cold JVM on a
-        // slow disk took 8 s to load the cancellation classes once), the point is that it STOPS.
+        // Loose bound on purpose; the point is that it STOPS well before it could have finished.
         withTimeout(25_000) { job.cancelAndJoin() }
         println("SIGNUP_POW_CANCEL stopped_after_ms=${(System.nanoTime() - t0) / 1_000_000}")
-        assertTrue(job.isCancelled)
-        try {
-            job.await()
-            fail("expected cancellation")
-        } catch (_: CancellationException) {
-        }
+        assertTrue("not cancelled", job.isCancelled)
+        assertTrue("not completed", job.isCompleted)
     }
 
     /** Prints hashes per second for this JVM; asserts only that it is not absurdly slow. */

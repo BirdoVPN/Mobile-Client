@@ -22,11 +22,18 @@ data class PowChallengeResponse(
     val challenge: String = "",
     val difficulty: Int = 0,
     val expiresInSeconds: Int = 0,
-)
+) {
+    /** Never prints [challenge]: with a nonce it is the proof a sign-up spends. */
+    override fun toString(): String =
+        "PowChallengeResponse(op=$op, difficulty=$difficulty, challenge=[REDACTED])"
+}
 
 /** What the server verifies: the token it issued and the nonce found for it. */
 @Serializable
-data class PowSolution(val challenge: String, val nonce: String)
+data class PowSolution(val challenge: String, val nonce: String) {
+    /** A solved challenge is spendable once: never printed. */
+    override fun toString(): String = "PowSolution(challenge=[REDACTED], nonce=[REDACTED])"
+}
 
 /**
  * Body for `POST /auth/register/anonymous`: device context plus the optional
