@@ -56,12 +56,39 @@ defaults:
     shell: bash
 
 jobs:
+  # ══════════════════════════════════════════════════════════════════════
+  # TAG-ON-MAIN GATE (register A-H09 / MR-2264 part b, A-M72; MA-CI-010,
+  # MA-MAC-002). A pushed android-v* tag (this workflow runs on them), or a dispatch that attaches to a release or uploads to TestFlight, used to do so from ANY commit.
+  # This job fails the run unless the commit being released is an ancestor of
+  # origin/main, BEFORE any job that builds, signs or uploads starts: build-ios and test-ios (publish-ios and release-ios need both)
+  # `needs` it. Runs that do not release (a bare branch-verification dispatch) pass
+  # through it with the check skipped, so they work as before. The tag ruleset
+  # (mac-v*) and environment reviewers are owner settings, not this file.
+  # ══════════════════════════════════════════════════════════════════════
+  tag-on-main:
+    name: Release commit must be on main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the ancestry check needs every ancestor of the commit.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the released commit to be an ancestor of origin/main
+        if: startsWith(github.ref, 'refs/tags/android-v') || (github.event_name == 'workflow_dispatch' && (inputs.release_tag != '' || inputs.upload_testflight))
+        run: bash .github/scripts/require-tag-on-main.sh "$GITHUB_SHA"
+
   # No Kotlin job: the app imports nothing from the KMP `shared` module, so
   # its BirdoShared framework is neither built nor linked (MR-1085). This
   # workflow needs no JDK and no Gradle.
 
   # -- Build iOS App (no signing) --------------------------------------
   build-ios:
+    needs: tag-on-main
     name: Build iOS App
     runs-on: macos-26
     timeout-minutes: 45
@@ -424,6 +451,7 @@ jobs:
 
   # -- iOS Simulator Tests ---------------------------------------------
   test-ios:
+    needs: tag-on-main
     name: iOS Simulator Tests
     runs-on: macos-26
     timeout-minutes: 45
