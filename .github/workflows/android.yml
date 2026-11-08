@@ -258,8 +258,8 @@ jobs:
       # engines just provisioned link (~181 MB). The
       # script refuses (and the release stops here, before signing) unless the
       # engines' build info, Xray's go.mod/go.sum at the pinned tag and every
-      # pinned hash agree. The asset goes into SHA256SUMS.txt (Sigstore- and
-      # GPG-signed below) and onto the release next to the APK; the in-app
+      # pinned hash agree. The asset goes into SHA256SUMS.txt (Sigstore-signed
+      # below) and onto the release next to the APK; the in-app
       # notices point at it by name.
       - name: Build the Xray corresponding-source asset
         run: |
@@ -502,70 +502,14 @@ jobs:
         run: |
           cosign sign-blob --yes --bundle "app/build/release-artifacts/SHA256SUMS.txt.sigstore" "app/build/release-artifacts/SHA256SUMS.txt"
 
-      # -- GPG detached signing (.asc) for sideload APK -----------------
-      # Parity with desktop Linux pipeline so users can verify a sideloaded
-      # APK using only `gpg --verify file.asc file` against the public key
-      # published at https://birdo.app/.well-known/birdo-release.asc.
-      # Required GitHub repository SECRETS:
-      #   ANDROID_GPG_PRIVATE_KEY  - ASCII-armoured private key block
-      #   ANDROID_GPG_PASSPHRASE   - passphrase for the private key
-      #   ANDROID_GPG_KEY_ID       - long key ID (e.g. ABCDEF0123456789)
-      - name: Detect GPG availability
-        id: gpg-detect
-        env:
-          GPG_KEY: ${{ secrets.ANDROID_GPG_PRIVATE_KEY }}
-          GPG_KID: ${{ secrets.ANDROID_GPG_KEY_ID }}
-        run: |
-          if [ -n "$GPG_KEY" ] && [ -n "$GPG_KID" ]; then
-            echo "HAS_GPG=true"  >> "$GITHUB_ENV"
-          else
-            echo "HAS_GPG=false" >> "$GITHUB_ENV"
-            echo "::warning::ANDROID_GPG_PRIVATE_KEY / ANDROID_GPG_KEY_ID not configured - skipping GPG signing"
-          fi
-
-      - name: Import GPG signing key
-        if: ${{ env.HAS_GPG == 'true' }}
-        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
-        with:
-          gpg_private_key: ${{ secrets.ANDROID_GPG_PRIVATE_KEY }}
-          passphrase:      ${{ secrets.ANDROID_GPG_PASSPHRASE }}
-
-      - name: GPG-sign release APK and AAB (detached .asc)
-        if: ${{ env.HAS_GPG == 'true' }}
-        env:
-          GPG_PASSPHRASE: ${{ secrets.ANDROID_GPG_PASSPHRASE }}
-          GPG_KEY_ID: ${{ secrets.ANDROID_GPG_KEY_ID }}
-        run: |
-          for apk in app/build/outputs/apk/release/*.apk app/build/outputs/bundle/release/*.aab; do
-            gpg --batch --yes --pinentry-mode loopback \
-                --passphrase "$GPG_PASSPHRASE" \
-                --local-user "$GPG_KEY_ID" \
-                --armor --detach-sign --output "${apk}.asc" "$apk"
-            echo "GPG-signed $(basename "$apk") -> $(basename "$apk").asc"
-          done
-
-      - name: GPG-sign SHA256SUMS (detached .asc)
-        if: ${{ env.HAS_GPG == 'true' }}
-        env:
-          GPG_PASSPHRASE: ${{ secrets.ANDROID_GPG_PASSPHRASE }}
-          GPG_KEY_ID: ${{ secrets.ANDROID_GPG_KEY_ID }}
-        run: |
-          SUMS="app/build/release-artifacts/SHA256SUMS.txt"
-          gpg --batch --yes --pinentry-mode loopback \
-              --passphrase "$GPG_PASSPHRASE" \
-              --local-user "$GPG_KEY_ID" \
-              --armor --detach-sign --output "${SUMS}.asc" "$SUMS"
-
       - name: Collect release artifacts
         run: |
           shopt -s nullglob
           for artifact in \
             app/build/outputs/apk/release/*.apk \
             app/build/outputs/apk/release/*.sigstore \
-            app/build/outputs/apk/release/*.asc \
             app/build/outputs/bundle/release/*.aab \
             app/build/outputs/bundle/release/*.sigstore \
-            app/build/outputs/bundle/release/*.asc \
             "$RUNNER_TEMP"/xray-source/xray-core-*-corresponding-source.tar.gz; do
             cp "$artifact" app/build/release-artifacts/
           done
@@ -610,7 +554,7 @@ jobs:
           retention-days: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 14 || 90 }}
 
   # -- GitHub Draft Release (sideload APK for phone install) ----------
-  # Publishes the signed release APK + sigstore bundle + GPG .asc + checksums
+  # Publishes the signed release APK + sigstore bundle + checksums
   # to a *draft* GitHub Release. Open the draft on github.com (or the GitHub
   # Mobile app) and tap the APK asset to install on your Android device.
   #
@@ -698,7 +642,6 @@ jobs:
 
             ### Verify (optional)
             - Sigstore: `cosign verify-blob --bundle <apk>.sigstore <apk>`
-            - GPG:      `gpg --verify <apk>.asc <apk>`  (key: https://birdo.app/.well-known/birdo-release.asc)
             - SHA256:   `sha256sum -c SHA256SUMS.txt`
 
             ### Source of the Stealth Mode engine (libxray.so)
@@ -725,13 +668,10 @@ jobs:
           files: |
             release-apk/*.apk
             release-apk/*.apk.sigstore
-            release-apk/*.apk.asc
             release-apk/*.aab
             release-apk/*.aab.sigstore
-            release-apk/*.aab.asc
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
-            release-apk/SHA256SUMS.txt.asc
             release-apk/xray-core-*-corresponding-source.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -830,13 +770,11 @@ jobs:
             - `README.txt`: every file's SHA-256 and licence, and how each engine was made (the upstream XTLS
               asset, or the Go toolchain, Android NDK revision and exact `go build` command).
 
-            `SHA256SUMS.txt` is the app release's checksum file (signed with Sigstore, and GPG when
-            configured); check this file with `sha256sum -c --ignore-missing SHA256SUMS.txt`.
+            `SHA256SUMS.txt` is the app release's checksum file (signed with Sigstore); check this file with `sha256sum -c --ignore-missing SHA256SUMS.txt`.
           files: |
             release-apk/xray-core-*-corresponding-source.tar.gz
             release-apk/SHA256SUMS.txt
             release-apk/SHA256SUMS.txt.sigstore
-            release-apk/SHA256SUMS.txt.asc
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
