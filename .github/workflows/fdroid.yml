@@ -90,7 +90,9 @@ jobs:
             exit 1
           }
           python3 -m venv "$HOME/fdroid-venv"
-          "$HOME/fdroid-venv/bin/pip" install --quiet --upgrade pip wheel
+          # pip and wheel are pinned too: this job holds the repo signing keystore,
+          # so the installer itself may not float (MR-2102).
+          "$HOME/fdroid-venv/bin/pip" install --quiet 'pip==25.3' 'wheel==0.45.1'
           # Pinned for reproducibility — bump deliberately after a workflow_dispatch
           # test (an unpinned latest can change the index format or break APK parsing).
           "$HOME/fdroid-venv/bin/pip" install --quiet 'fdroidserver==2.4.5'
