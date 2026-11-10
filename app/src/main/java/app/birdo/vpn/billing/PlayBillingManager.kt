@@ -631,7 +631,7 @@ class PlayBillingManager internal constructor(
      * completed while the app was dead ever reaches the server from here.
      */
     private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome =
-        reconcileLocked(announce)
+        gate.withLock { reconcileLocked(announce) }
 
     /**
      * The sweep itself. Callers must hold [gate]: two sweeps in flight would
