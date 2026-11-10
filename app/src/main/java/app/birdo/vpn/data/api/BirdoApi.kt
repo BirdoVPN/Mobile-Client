@@ -45,8 +45,18 @@ interface BirdoApi {
      */
     @POST("auth/register/anonymous")
     suspend fun registerAnonymous(
-        @Body request: DeviceInfoRequest,
+        @Body request: AnonymousRegisterRequest,
     ): Response<AnonymousLoginResponse>
+
+    /**
+     * A sign-up proof-of-work challenge for this network (MR-2152; birdo-web
+     * docs/SIGNUP-PROOF-OF-WORK.md). Public. Any failure (429, 503, offline) is
+     * answered by signing up without a proof: the server then decides.
+     */
+    @POST("auth/pow/challenge")
+    suspend fun powChallenge(
+        @Body request: PowChallengeRequest,
+    ): Response<PowChallengeResponse>
 
     /**
      * Native SSO handoff exchange. Swaps the web broker's single-use PKCE-bound

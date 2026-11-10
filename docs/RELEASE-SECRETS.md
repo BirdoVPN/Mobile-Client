@@ -9,8 +9,8 @@
 ## Android — APK release AND Play AAB
 
 Birdo VPN for Android ships two ways from the same `android-v*` tag: a **signed
-APK on the GitHub Release** (sideload, linked from the website, with a GPG
-`.asc` verifiable against `https://birdo.app/.well-known/birdo-release.asc`)
+APK on the GitHub Release** (sideload, linked from the website, verifiable with
+Sigstore and `SHA256SUMS.txt`)
 and a **signed AAB uploaded to Google Play** (`android.yml` → "Upload AAB to
 Google Play"; the release workflow uploads DIRECTLY to production — see
 `docs/PLAY-APP-SIGNING.md` and the whatsnew/versionCode chores there).
@@ -141,53 +141,3 @@ base64 -i AuthKey_ABC123XYZ.p8 -o api.b64
 | Provisioning profile         | 1 year   | Regenerate, update `APPLE_PROVISIONING_PROFILE`            |
 | App Store Connect API key    | No expiry; revoke on staff change |
 | Android keystore             | 25k days | **DO NOT EXPIRE** — keystore loss = fork the app           |
-
----
-
-## GPG release signing (the key is shared with Desktop)
-
-`android.yml` produces a `.asc` detached signature for the sideload APK with
-the same GPG release key the desktop repo uses for its Linux artefacts
-(`birdo-client-desktop/.github/workflows/release.yml`). The key-publication
-step below is what makes `gpg --verify` possible for users; the desktop-side
-usage is documented in that repo, not here.
-
-### One-time setup
-
-```bash
-# Generate a long-lived RSA-4096 release key (no expiry)
-gpg --full-generate-key
-# Choose: (1) RSA and RSA, 4096 bits, 0 = no expiry
-# Real name: BirdoVPN Release Signing Key
-# Email:     releases@birdo.app
-
-# Export the long key ID
-KEYID=$(gpg --list-secret-keys --keyid-format long releases@birdo.app \
-        | awk '/^sec/{print $2}' | cut -d'/' -f2)
-echo "$KEYID"
-
-# Export the private key (ASCII-armoured) for GitHub secret
-gpg --armor --export-secret-keys "$KEYID" > linux-release-private.asc
-
-# Export the public key for publication on https://birdo.app/.well-known/
-gpg --armor --export "$KEYID" > linux-release-public.asc
-```
-
-### GitHub secrets
-
-| Secret name                | Value                                              |
-| -------------------------- | -------------------------------------------------- |
-| `LINUX_GPG_PRIVATE_KEY`    | Contents of `linux-release-private.asc`            |
-| `LINUX_GPG_PASSPHRASE`     | The passphrase you set during `--full-generate-key` |
-| `LINUX_GPG_KEY_ID`         | Long key ID from `$KEYID` above                    |
-
-### Public-key publication
-
-Copy `linux-release-public.asc` to `birdo-web/public/.well-known/birdo-release.asc`
-and ship it in the next web release. Users can verify a download with:
-
-```bash
-curl -O https://birdo.app/.well-known/birdo-release.asc
-gpg --import birdo-release.asc
-gpg --verify birdo-vpn_1.2.0_amd64.deb.asc birdo-vpn_1.2.0_amd64.deb
-```
