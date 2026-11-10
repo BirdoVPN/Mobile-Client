@@ -22,6 +22,7 @@ import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -120,15 +121,34 @@ data class PlayBillingUiState(
  * on the web by owner decision.
  */
 @Singleton
-class PlayBillingManager @Inject constructor(
-    @param:ApplicationContext private val context: Context,
+class PlayBillingManager internal constructor(
     private val repository: BirdoRepository,
     private val tokenManager: TokenManager,
     /** Every notice this class raises is strings.xml copy (A2-031). */
     private val strings: StringLookup,
+    /** The test seam (A-M74): builds the one long-lived client around this listener. */
+    private val billingClientFactory: (PurchasesUpdatedListener) -> BillingClient,
+    dispatcher: CoroutineDispatcher,
+    private val railEnabled: Boolean,
 ) : PurchasesUpdatedListener {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** What Hilt uses: the real client, the real dispatcher, the real build flag. */
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        repository: BirdoRepository,
+        tokenManager: TokenManager,
+        strings: StringLookup,
+    ) : this(
+        repository = repository,
+        tokenManager = tokenManager,
+        strings = strings,
+        billingClientFactory = { listener -> buildPlayBillingClient(context, listener) },
+        dispatcher = Dispatchers.Default,
+        railEnabled = BuildConfig.IS_PLAY_BUILD,
+    )
+
+    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     private val _state = MutableStateFlow(PlayBillingUiState())
     val state: StateFlow<PlayBillingUiState> = _state.asStateFlow()
@@ -162,26 +182,7 @@ class PlayBillingManager @Inject constructor(
     @Volatile
     private var knownPurchases: List<Purchase> = emptyList()
 
-    private val billingClient: BillingClient by lazy {
-        BillingClient.newBuilder(context)
-            .setListener(this)
-            // Required since PBL 8: build() throws without it. Birdo sells no
-            // one-time products, but a subscription bought with a slow payment
-            // method still arrives PENDING and must be delivered to the listener
-            // rather than dropped.
-            .enablePendingPurchases(
-                PendingPurchasesParams.newBuilder()
-                    .enableOneTimeProducts()
-                    .enablePrepaidPlans()
-                    .build(),
-            )
-            // Let the library re-establish the service binding itself. Without
-            // it, one SERVICE_DISCONNECTED (a Play Store self-update, which
-            // happens silently and often) leaves the rail dead until the next
-            // cold start.
-            .enableAutoServiceReconnection()
-            .build()
-    }
+    private val billingClient: BillingClient by lazy { billingClientFactory(this) }
 
     // ── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -238,7 +239,7 @@ class PlayBillingManager @Inject constructor(
         scope.launch { reconcile(announce = false) }
     }
 
-    private val isRailEnabled: Boolean get() = BuildConfig.IS_PLAY_BUILD
+    private val isRailEnabled: Boolean get() = railEnabled
 
     // ── Products ────────────────────────────────────────────────────────────
 
@@ -274,7 +275,8 @@ class PlayBillingManager @Inject constructor(
         lastFailure = failure?.takeIf { _state.value.offers.isEmpty() }
         recomputeStorefront()
 
-        if (alsoReconcile) reconcile(announce = false)
+        // Already inside `gate`: the unlocked variant, or this would deadlock.
+        if (alsoReconcile) reconcileLocked(announce = false)
     }
 
     /** @return null on success, otherwise why the storefront is unavailable. */
@@ -628,7 +630,16 @@ class PlayBillingManager @Inject constructor(
      * StoreKit's `currentEntitlements` sweep, and the only way a purchase that
      * completed while the app was dead ever reaches the server from here.
      */
-    private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome {
+    private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome =
+        reconcileLocked(announce)
+
+    /**
+     * The sweep itself. Callers must hold [gate]: two sweeps in flight would
+     * present the same token to /link twice and race on [knownPurchases] and
+     * [lastRefusalText] (A-M74). [refreshInternal] already holds it and calls
+     * this directly; every other caller goes through [reconcile].
+     */
+    private suspend fun reconcileLocked(announce: Boolean): StoreRestoreOutcome {
         if (!isRailEnabled) return StoreRestoreOutcome.NothingToRestore
         if (connect() != null) {
             return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.PLAY_STORE_UNAVAILABLE.messageRes))
@@ -789,6 +800,30 @@ class PlayBillingManager @Inject constructor(
         const val TAG = "PlayBilling"
     }
 }
+
+/** The real client, built exactly as the class built it before the test seam. */
+internal fun buildPlayBillingClient(
+    context: Context,
+    listener: PurchasesUpdatedListener,
+): BillingClient =
+    BillingClient.newBuilder(context)
+        .setListener(listener)
+        // Required since PBL 8: build() throws without it. Birdo sells no
+        // one-time products, but a subscription bought with a slow payment
+        // method still arrives PENDING and must be delivered to the listener
+        // rather than dropped.
+        .enablePendingPurchases(
+            PendingPurchasesParams.newBuilder()
+                .enableOneTimeProducts()
+                .enablePrepaidPlans()
+                .build(),
+        )
+        // Let the library re-establish the service binding itself. Without
+        // it, one SERVICE_DISCONNECTED (a Play Store self-update, which
+        // happens silently and often) leaves the rail dead until the next
+        // cold start.
+        .enableAutoServiceReconnection()
+        .build()
 
 /** Map Play's `Purchase` onto the four facts the pure pipeline uses. */
 private fun Purchase.toIngestable() = IngestablePurchase(
