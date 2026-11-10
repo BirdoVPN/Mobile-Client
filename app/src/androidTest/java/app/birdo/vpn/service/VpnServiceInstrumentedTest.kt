@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -39,7 +38,9 @@ import org.junit.runner.RunWith
  * VpnManager hands it a real /connect answer. wg-go dials it, no handshake
  * can ever complete, and the handshake gate has to do its job.
  *
- * WHAT IS NOT HERE. "Handshake -> Protected" needs a live WireGuard responder
+ * WHAT IS NOT HERE. Revoked consent (the re-arm refused): `appops ... deny`
+ * does not make establish() fail on the CI image, so that branch stays in the
+ * JVM suite. And "Handshake -> Protected" needs a live WireGuard responder
  * (a second tun, which one app cannot hold); that half stays in
  * TransportProbeTest (decision) and BirdoVpnServiceLifecycleTest (publish).
  *
@@ -66,11 +67,14 @@ class VpnServiceInstrumentedTest {
     @After
     fun tearDown() {
         // Always leave the process with no tunnel, no block and no service,
-        // whatever the test did: the state is process-wide.
-        setVpnConsent(allowed = true)
+        // whatever the test did: the state is process-wide, and a STOP still
+        // queued on the service's executor would clear the NEXT test's config.
+        // So wait for the service to come up for the STOP and then go away,
+        // not merely for a state that may already read "idle" before it runs.
         send(BirdoVpnService.ACTION_STOP) { putExtra(BirdoVpnService.EXTRA_USER_INITIATED, true) }
-        await(15_000) { BirdoVpnService.currentState is VpnState.Disconnected && !BirdoVpnService.killSwitchActive }
-        await(10_000) { !BirdoVpnService.running }
+        await(5_000, pollMs = 2) { BirdoVpnService.running }
+        await(15_000) { !BirdoVpnService.running }
+        await(5_000) { BirdoVpnService.currentState is VpnState.Disconnected && !BirdoVpnService.killSwitchActive }
     }
 
     /**
@@ -160,23 +164,6 @@ class VpnServiceInstrumentedTest {
         assertTrue("Disconnect left the block up", await(10_000) { !BirdoVpnService.killSwitchActive })
     }
 
-    /**
-     * The re-arm cannot happen (consent revoked): the service must say so, not
-     * sit silent claiming a block that is not there.
-     */
-    @Test
-    fun blockRefusedWithoutConsentIsReportedNotSilent() {
-        setVpnConsent(allowed = false)
-        send(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK)
-        assertTrue(
-            "a refused kill-switch arm was not reported",
-            await(20_000) { BirdoVpnService.killSwitchNotArmedFlow.value != null },
-        )
-        assertFalse("killSwitchActive is true though establish() was refused", BirdoVpnService.killSwitchActive)
-        assertNotNull(BirdoVpnService.killSwitchNotArmedFlow.value)
-        assertFalse(BirdoVpnService.currentState is VpnState.Connected)
-    }
-
     // -- helpers ----------------------------------------------------------
 
     private fun send(action: String, extras: Intent.() -> Unit = {}) {
@@ -184,11 +171,11 @@ class VpnServiceInstrumentedTest {
         ContextCompat.startForegroundService(context, intent)
     }
 
-    private fun await(timeoutMs: Long, condition: () -> Boolean): Boolean {
+    private fun await(timeoutMs: Long, pollMs: Long = 50, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            Thread.sleep(50)
+            Thread.sleep(pollMs)
         }
         return condition()
     }
