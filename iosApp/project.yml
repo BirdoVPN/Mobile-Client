@@ -243,6 +243,9 @@ targets:
       # fields precisely so QuickSelectTests can pin it here. VpnViewModel.swift
       # (its only caller) cannot be compiled into this bundle.
       - path: iosApp/Services/QuickSelect.swift
+      # A-H15 / MR-2212: which relay the one automatic retry goes to.
+      # Foundation-only, pinned by RelayRetryTests.
+      - path: iosApp/Services/RelayRetry.swift
       # BirdoShield (D18) fleet gate. Foundation-only by design: "may the
       # toggle claim to work" is a pure function over the persisted preference
       # and the server's `dnsFilteringAvailable`, precisely so the
@@ -323,6 +326,9 @@ targets:
       # tunnel it just revoked), and the two-factor refusal classification.
       # Pinned by AccountDeletionTests; AuthViewModel cannot be compiled here.
       - path: iosApp/Services/AccountDeletion.swift
+      # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
+      # session. Foundation-only, pinned by SessionPersistenceTests.
+      - path: iosApp/Services/SessionPersistence.swift
       # LIVE-PORT53: the WireGuard port is no longer a setting. Foundation-only
       # by design: the migration of a saved "53" / custom port and the pinning
       # of an older build's tunnel profile are pure functions precisely so

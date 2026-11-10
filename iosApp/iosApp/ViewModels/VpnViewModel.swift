@@ -302,6 +302,14 @@ final class VpnViewModel: ObservableObject {
     /// otherwise re-open the very gap this closes.
     private var isTearingDownForRedial = false
 
+    /// A-H15 / MR-2212: the one automatic relay retry has been spent. Reset on
+    /// a user-initiated connect and on the first inbound bytes, so a failed
+    /// retry can never loop: at most one extra attempt per connect.
+    private var relayRetryUsed = false
+    /// Bumped by `disconnect()` so a retry waiting out its teardown stands down
+    /// when the user disconnects in that window.
+    private var relayRetryGeneration = 0
+
     /// REBUILD (#351): a live rebuild's revert has put the OLD peer back on the
     /// RUNNING session and the `.connected` that restore raises has not been
     /// consumed yet.
@@ -559,7 +567,10 @@ final class VpnViewModel: ObservableObject {
         guard TunnelDialGate.mayStartDial(isConnecting: isConnecting,
                                           isRebuildingLive: isRebuildingLive,
                                           isTearingDownForRedial: isTearingDownForRedial) else { return }
-        if userInitiated { clearCircuitBreaker() }
+        if userInitiated {
+            clearCircuitBreaker()
+            relayRetryUsed = false
+        }
         isConnecting = true
         error = nil
         // A fresh single-hop dial replaces any multi-hop session state. This is
@@ -631,6 +642,7 @@ final class VpnViewModel: ObservableObject {
     func disconnect() {
         // A user-initiated teardown wins over any pending settings blip.
         isReapplyingSettings = false
+        relayRetryGeneration &+= 1
         // Release the server-side peer (fire-and-forget DELETE): tearing down
         // only the local tunnel leaves the peer holding the user's connection
         // slot until server eviction.
@@ -916,6 +928,7 @@ final class VpnViewModel: ObservableObject {
                 // kill switch is armed, so the arm can never happen on top of a
                 // stale trip.
                 clearCircuitBreaker()
+                relayRetryUsed = false
                 let killSwitch = UserDefaults.standard.object(forKey: "kill_switch") as? Bool ?? true
                 vpnManager.applyKillSwitchFlag(killSwitch)
                 // applyKillSwitchFlag mutates the in-memory profile
@@ -962,6 +975,10 @@ final class VpnViewModel: ObservableObject {
             // appex is a separate process, so without this the user (and anyone
             // reading a bug report) sees only "it didn't work" for causes as
             // different as a rejected config and a crashed provider.
+            //
+            // A-H15 / MR-2212: before giving up, ONE automatic attempt on another
+            // relay in the same location.
+            if retryOnSiblingRelay() { return }
             if let reason = vpnManager.lastDisconnectReason {
                 error = "Tunnel failed: \(reason)"
             } else {
@@ -1784,6 +1801,38 @@ final class VpnViewModel: ObservableObject {
                 debugLog("[VpnViewModel] rebuild: key release failed: %@", error.localizedDescription)
             }
         }
+    }
+
+    /// A-H15 / MR-2212: the first handshake never completed. Make exactly one
+    /// automatic attempt on another online, plan-accessible relay in the same
+    /// location (`RelayRetry.sibling`; `/vpn/connect` takes `serverNodeId`).
+    /// Returns false, having changed nothing, when it does not apply (Multi-Hop,
+    /// retry already spent, no sibling), and the caller shows today's message.
+    ///
+    /// Same disconnect-first shape as `legacyRebuild` (#351): the teardown is
+    /// waited out behind `isTearingDownForRedial` so no second peer is minted
+    /// while the first tunnel is still going down.
+    private func retryOnSiblingRelay() -> Bool {
+        guard !relayRetryUsed, activeMultiHop == nil,
+              let failedId = connectedServerId ?? selectedServer?.id,
+              let next = RelayRetry.sibling(of: failedId, in: servers) else { return false }
+        relayRetryUsed = true
+        debugLog("[VpnViewModel] no handshake — one automatic retry on another relay in the same location")
+        let generation = relayRetryGeneration
+        isTearingDownForRedial = true
+        releaseServerSlot()
+        vpnManager.disconnect()
+        Task { [weak self] in
+            await self?.awaitTeardown()
+            guard let self else { return }
+            self.isTearingDownForRedial = false
+            // The user disconnected (or signed out) while we waited.
+            guard generation == self.relayRetryGeneration else { return }
+            self.resetSessionState()
+            self.selectedServer = next
+            self.connect(userInitiated: false)
+        }
+        return true
     }
 
     /// The pre-#159 rebuild: disconnect, WAIT for the teardown to land, redial.

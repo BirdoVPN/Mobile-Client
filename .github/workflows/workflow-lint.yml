@@ -56,3 +56,8 @@ jobs:
           python3 -m pip install --quiet --disable-pip-version-check --require-hashes --only-binary=:all: \
             --target "$RUNNER_TEMP/zizmor" -r "$RUNNER_TEMP/zizmor-requirements.txt"
           "$RUNNER_TEMP/zizmor/bin/zizmor" --persona regular --min-severity medium --format github .github
+
+      # The tag-on-main release gate (require-tag-on-main.sh) fails closed, so its
+      # own test must stay green: it builds throwaway git repos, needs no history.
+      - name: Release gate script test
+        run: bash .github/scripts/require-tag-on-main-test.sh

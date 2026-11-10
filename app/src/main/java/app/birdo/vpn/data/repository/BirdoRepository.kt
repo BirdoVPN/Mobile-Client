@@ -7,7 +7,10 @@ import app.birdo.vpn.billing.GooglePurchaseIntentResponse
 import app.birdo.vpn.billing.StoreErrorEnvelope
 import app.birdo.vpn.billing.StoreLinkOutcome
 import app.birdo.vpn.billing.StoreLinkRefusal
+import app.birdo.vpn.data.api.AnonymousRegisterRequest
 import app.birdo.vpn.data.api.BirdoApi
+import app.birdo.vpn.data.api.PowChallengeRequest
+import app.birdo.vpn.data.api.PowSolution
 import app.birdo.vpn.data.auth.DeviceInfoProvider
 import app.birdo.vpn.data.auth.TokenManager
 import app.birdo.vpn.data.model.*
@@ -24,6 +27,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import retrofit2.Response
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -192,6 +196,21 @@ class BirdoRepository @Inject constructor(
         internal const val CLIENT_CONFIG_PATH = "/api/client-config"
 
         private const val SERVER_CACHE_TTL_MS = 60_000L
+
+        /** `algorithm` of the only proof-of-work the server issues. */
+        private const val POW_ALGORITHM = "sha256-leading-zero-bits"
+
+        /** A fresh challenge lives at least this long (the server's default is 300 s). */
+        private const val POW_DEFAULT_LIFE_S = 300
+
+        /** Stop solving this long before the challenge expires: a nonce found later is refused as expired. */
+        private const val POW_EXPIRY_MARGIN_MS = 5_000L
+
+        /** One fresh challenge after a refusal, then one request without a proof. */
+        private const val POW_MAX_RETRIES = 2
+
+        /** `details.code` values after which a new challenge changes the answer (docs/SIGNUP-PROOF-OF-WORK.md section 4). */
+        private val POW_RETRY_CODES = setOf("pow_difficulty_raised", "pow_expired", "pow_replayed", "pow_invalid", "pow_required")
         /** Subscription is considered fresh for 30 seconds. */
         private const val SUBSCRIPTION_CACHE_TTL_MS = 30_000L
 
@@ -500,19 +519,79 @@ class BirdoRepository @Inject constructor(
             }
         }
 
-    /** Create a NEW anonymous account in-app and store its tokens. Same response
-     *  shape as loginAnonymous; the 24-digit ID is returned so the UI can tell
-     *  the user to save it. */
+    /**
+     * Told when the sign-up proof-of-work starts (true) and ends (false), so the
+     * sign-in screen can say "checking this device" while it runs. A property and
+     * not a parameter so [registerAnonymous]'s signature stays as it was. The
+     * caller clears it when it is done.
+     */
+    @Volatile
+    var signupPowProgress: ((checking: Boolean) -> Unit)? = null
+
+    /** The solver; a seam for tests, which cannot wait for 2^20 hashes. */
+    internal var powSolver: suspend (challenge: String, bits: Int) -> String = { c, b -> SignupPow.solve(c, b) }
+
+    /**
+     * A fresh sign-up challenge, solved. Null whenever there is nothing to send
+     * (endpoint failed, answer unusable, difficulty out of range, not solved
+     * before the challenge expires): the caller then signs up without a proof and
+     * the server decides. Only cancellation propagates.
+     */
+    private suspend fun fetchAndSolvePow(): PowSolution? {
+        val c = try {
+            val r = api.powChallenge(PowChallengeRequest("signup"))
+            if (r.isSuccessful) r.body() else null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        if (c.algorithm != POW_ALGORITHM || c.op != "signup" || c.challenge.isBlank() ||
+            c.challenge.length > SignupPow.MAX_CHALLENGE_LENGTH ||
+            c.difficulty !in SignupPow.MIN_BITS..SignupPow.MAX_SOLVABLE_BITS
+        ) return null
+        val lifeMs = (if (c.expiresInSeconds > 0) c.expiresInSeconds else POW_DEFAULT_LIFE_S) * 1000L
+        signupPowProgress?.invoke(true)
+        try {
+            val nonce = withTimeoutOrNull((lifeMs - POW_EXPIRY_MARGIN_MS).coerceAtLeast(POW_EXPIRY_MARGIN_MS)) {
+                powSolver(c.challenge, c.difficulty)
+            } ?: return null
+            return PowSolution(c.challenge, nonce)
+        } finally {
+            signupPowProgress?.invoke(false)
+        }
+    }
+
+    /**
+     * Create a NEW anonymous account in-app and store its tokens. Same response
+     * shape as loginAnonymous; the 24-digit ID is returned so the UI can tell
+     * the user to save it.
+     *
+     * MR-2152: the server issues and checks a sign-up proof-of-work, and an app
+     * that sends none lands in its stricter "legacy" tier. So a challenge is
+     * fetched and solved first (off the main thread, cancellable) and sent as
+     * `pow`. If the server answers that the proof is stale or used up
+     * (`pow_difficulty_raised`, `pow_expired`, `pow_replayed`, `pow_invalid`) or
+     * required, ONE fresh challenge is tried; if that is refused too, the sign-up
+     * is sent once without a proof, which is what the contract tells a slow phone
+     * to do. At most three requests, never a loop.
+     */
     suspend fun registerAnonymous(): ApiResult<AnonymousLoginResponse> =
-        guarded {
-            val device = deviceInfoProvider.current()
-            val response = api.registerAnonymous(DeviceInfoRequest(
+        guarded { registerAnonymousWithPow() }
+
+    private suspend fun registerAnonymousWithPow(): ApiResult<AnonymousLoginResponse> {
+        val device = deviceInfoProvider.current()
+        var pow = fetchAndSolvePow()
+        var retries = 0
+        while (true) {
+            val response = api.registerAnonymous(AnonymousRegisterRequest(
                 deviceId = device.deviceId,
                 deviceName = device.deviceName,
                 deviceType = device.deviceType,
                 platform = device.platform,
                 platformVersion = device.platformVersion,
                 appVersion = device.appVersion,
+                pow = pow,
             ))
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
@@ -520,11 +599,19 @@ class BirdoRepository @Inject constructor(
                 if (body.ok && tokens != null) {
                     storeSignInTokens(tokens.accessToken, tokens.refreshToken)
                 }
-                ApiResult.Success(body)
-            } else {
-                errorFrom(response, ErrorContext.ANONYMOUS_REGISTER, R.string.error_anon_register_failed)
+                return ApiResult.Success(body)
             }
+            val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+            val code = ApiErrorMapper.parseEnvelope(raw)?.code
+            if (code in POW_RETRY_CODES && retries < POW_MAX_RETRIES) {
+                retries++
+                // The last try goes without a proof: the server decides.
+                pow = if (retries < POW_MAX_RETRIES) fetchAndSolvePow() else null
+                continue
+            }
+            return errorFromBody(response, raw, ErrorContext.ANONYMOUS_REGISTER, R.string.error_anon_register_failed)
         }
+    }
 
     /**
      * Sign out: kill the session SERVER-side, then clear local state.
@@ -724,8 +811,11 @@ class BirdoRepository @Inject constructor(
     }
 
     /** Map a non-2xx response. `errorBody()` is one-shot, so it is read here and only here. */
-    private fun errorFrom(response: Response<*>, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error {
-        val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+    private fun errorFrom(response: Response<*>, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error =
+        errorFromBody(response, runCatching { response.errorBody()?.string() }.getOrNull(), context, fallback)
+
+    /** [errorFrom] for a caller that already read the one-shot body. */
+    private fun errorFromBody(response: Response<*>, raw: String?, context: ErrorContext, @StringRes fallback: Int): ApiResult.Error {
         val error = errors.fromResponse(response.code(), raw, context, fallback)
         val retryAfter = RetryAfter.forFailure(
             raw,
