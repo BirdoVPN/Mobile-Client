@@ -27,7 +27,7 @@ android_logger = "0.13"
 
 # Crypto primitives — HKDF + SHA-256 for the final PSK derivation
 sha2 = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 
 # Post-quantum primitive: ML-KEM-1024 (FIPS 203), the strongest standardised
