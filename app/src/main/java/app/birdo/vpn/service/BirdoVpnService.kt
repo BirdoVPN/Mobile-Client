@@ -696,9 +696,18 @@ class BirdoVpnService : VpnService() {
      * that arrived before it. Once onDestroy has shut the executor down there
      * is nothing left to transition; the rejection is expected and ignored.
      */
+    /** A-M75: every self-stop goes through this, see [StartTracker]. */
+    private val startTracker = StartTracker { id -> stopSelfResult(id) }
+
+    private fun stopSelfUnlessNewerStart() {
+        if (!startTracker.stopUnlessNewerStart()) {
+            Log.i(TAG, "Stop skipped: a newer start is pending")
+        }
+    }
+
     private fun serial(task: () -> Unit) {
         try {
-            tunnelExecutor.execute(task)
+            tunnelExecutor.execute(startTracker.bind(task))
         } catch (_: RejectedExecutionException) {
             Log.i(TAG, "Transition arrived after onDestroy — ignored")
         }
@@ -861,6 +870,7 @@ class BirdoVpnService : VpnService() {
     private fun displayState(): VpnState = entryPoint?.vpnManager()?.state?.value ?: currentState
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startTracker.record(startId)
         // Android's "Block connections without VPN" can be switched off (or on)
         // at any time, and the platform sends no start when it is. Read it on
         // every command, so the give-up copy never claims Android is still
@@ -956,7 +966,7 @@ class BirdoVpnService : VpnService() {
     private fun stopIfIdle() {
         if (currentState is VpnState.Disconnected && !killSwitchActive) {
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfUnlessNewerStart()
         }
     }
 
@@ -1026,7 +1036,7 @@ class BirdoVpnService : VpnService() {
             // first crashes the app ("did not then call startForeground").
             startForeground(VpnNotificationManager.NOTIFICATION_ID, buildCurrentNotification())
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfUnlessNewerStart()
             return START_NOT_STICKY
         }
 
@@ -1061,7 +1071,7 @@ class BirdoVpnService : VpnService() {
                 e,
             )
             notifManager.postAlert(VpnNotificationManager.stoppedUnexpectedlyAlert())
-            stopSelf()
+            stopSelfUnlessNewerStart()
             return START_NOT_STICKY
         }
 
@@ -1081,7 +1091,7 @@ class BirdoVpnService : VpnService() {
                     notifManager.postAlert(VpnNotificationManager.alertFor(shownState, false, false, false)
                         ?: VpnNotificationManager.stoppedUnexpectedlyAlert())
                     stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    stopSelfUnlessNewerStart()
                     return START_NOT_STICKY
                 }
             }
@@ -1168,7 +1178,7 @@ class BirdoVpnService : VpnService() {
             // come back after a process kill as a full block nobody asked
             // for, with no alert (REVIEW-AND-004).
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfUnlessNewerStart()
             return
         }
         // A spent budget keeps its intent: the process stays (foreground) for
@@ -1260,7 +1270,7 @@ class BirdoVpnService : VpnService() {
                 _connectedServerFlow.value = null
                 _connectedSinceFlow.value = 0L
                 stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                stopSelfUnlessNewerStart()
             } else {
                 // Error / Disconnected (mid recovery): block released, let
                 // VpnManager's recovery continue fail-open.
@@ -1277,7 +1287,7 @@ class BirdoVpnService : VpnService() {
             // Nothing is running — a stale push started us; don't park in a
             // fake foreground state.
             stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfUnlessNewerStart()
             return
         }
 
@@ -2986,7 +2996,7 @@ class BirdoVpnService : VpnService() {
             notifManager.postDisconnectedNotification()
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        stopSelfUnlessNewerStart()
     }
 
     /**
