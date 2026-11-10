@@ -94,6 +94,8 @@ fun LoginScreen(
     onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
     onSsoLogin: (provider: String) -> Unit = {},
     onCreateAnonymous: () -> Unit = {},
+    /** The sign-up proof-of-work is running (MR-2152): one status line under the create link. */
+    isCheckingDevice: Boolean = false,
     /** Non-null right after an in-app anonymous account was created: the minted
      *  24-digit ID, shown once and blocking until acknowledged. */
     pendingAnonymousId: String? = null,
@@ -750,6 +752,15 @@ fun LoginScreen(
                         }
                         .testTag(TestTags.LOGIN_ANONYMOUS_CREATE),
                 )
+                if (isCheckingDevice) {
+                    Text(
+                        text = stringResource(R.string.login_checking_device),
+                        fontSize = 12.sp,
+                        color = BirdoWhite40,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
+                }
             }
             AuthTab.Sso -> {
             // ── Continue with Google / GitHub (native SSO, no password) ──
