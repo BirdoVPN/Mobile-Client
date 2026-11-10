@@ -41,7 +41,7 @@ path = "src/bin/birdo-pq-smoke.rs"
 ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match the client side bit-for-bit.
-sha2 = "0.10"
+sha2 = "0.11"
 hkdf = "0.12"
 
 # Wire encoding.
