@@ -353,7 +353,8 @@ struct ProfileView: View {
         // status string; nil subscription reads as inactive.
         let isActive = (subscription?.status ?? "INACTIVE")
             .caseInsensitiveCompare("ACTIVE") == .orderedSame
-        let endsAt = Self.formatRenewalDate(subscription?.subscriptionEndsAt)
+        // MR-2260: a free plan never shows a date, and a past date is never shown.
+        let endsAt = Self.renewalDateToShow(plan: plan, raw: subscription?.subscriptionEndsAt)
 
         return BirdoCard(cornerRadius: 20, horizontalPadding: 18, verticalPadding: 18) {
             VStack(spacing: 14) {
@@ -370,7 +371,7 @@ struct ProfileView: View {
                         Text(BirdoTheme.planDisplayName(plan))
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(BirdoTheme.onBackground)
-                        Text(subscriptionStatusLine(isActive: isActive, endsAt: endsAt))
+                        Text(subscriptionStatusLine(isActive: isActive, endsAt: endsAt, isFree: plan.uppercased() == "RECON"))
                             .font(.system(size: 12))
                             .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     }
@@ -422,7 +423,7 @@ struct ProfileView: View {
         }
     }
 
-    private func subscriptionStatusLine(isActive: Bool, endsAt: String?) -> String {
+    private func subscriptionStatusLine(isActive: Bool, endsAt: String?, isFree: Bool) -> String {
         switch (endsAt, isActive) {
         case (let date?, true):
             return "Renews \(date)"
@@ -430,9 +431,9 @@ struct ProfileView: View {
             // Canceled / expiring: the date is when access ENDS — calling
             // that "Renews" would be a lie.
             return "Access until \(date)"
-        case (nil, true):
+        case (nil, true) where !isFree:
             return "Active subscription"
-        case (nil, false):
+        case (nil, _):
             return "Free tier — upgrade for premium"
         }
     }
@@ -736,10 +737,14 @@ struct ProfileView: View {
 
     /// ISO instant / plain date → "MMM d, yyyy" in the device timezone;
     /// nil / parse failure → nil (Android `formatRenewalDate`).
-    private static func formatRenewalDate(_ raw: String?) -> String? {
+    /// MR-2260: nil for the free (RECON) plan, which never renews, and for any
+    /// date already in the past (never "Renews" a day that has gone).
+    static func renewalDateToShow(plan: String, raw: String?, now: Date = Date()) -> String? {
+        if plan.uppercased() == "RECON" { return nil }
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return nil }
         guard let date = parseInstantOrDate(raw) else { return nil }
+        if date < Calendar.current.startOfDay(for: now) { return nil }
         let formatter = DateFormatter()
         // Fixed-format string ⇒ fixed locale + Gregorian calendar, or users on
         // non-Gregorian device calendars see a wrong date (twin of LimitView).

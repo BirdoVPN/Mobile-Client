@@ -461,7 +461,8 @@ private fun SubscriptionCard(
     val status = subscription?.status ?: "INACTIVE"
     val isActive = status.equals("ACTIVE", ignoreCase = true)
     val endsAtRaw = subscription?.subscriptionEndsAt
-    val endsAtFormatted = remember(endsAtRaw) { formatRenewalDate(endsAtRaw) }
+    // MR-2260: the free plan has no renewal, and a past date is never "Renews".
+    val endsAtFormatted = remember(plan, endsAtRaw) { renewalDateToShow(plan, endsAtRaw) }
 
     BirdoCard(
         modifier = Modifier.fillMaxWidth(),
@@ -499,7 +500,7 @@ private fun SubscriptionCard(
                             // Canceled / expiring: the date is when access ENDS,
                             // calling that "Renews" would be a lie.
                             endsAtFormatted != null -> stringResource(R.string.profile_access_until, endsAtFormatted)
-                            isActive -> stringResource(R.string.subscription_active)
+                            isActive && !plan.equals("RECON", ignoreCase = true) -> stringResource(R.string.subscription_active)
                             else -> stringResource(R.string.profile_free_plan_upsell)
                         },
                         color = palette.onSurfaceMuted,
@@ -719,22 +720,38 @@ private fun ProfileActionRow(
  */
 private val RENEWAL_DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d, yyyy")
 
-private fun formatRenewalDate(raw: String?): String? {
+/**
+ * The date the plan line may show, or null for none. MR-2260: the free (RECON)
+ * plan never renews, and the server keeps a calendar-month window on its row for
+ * bandwidth metering, so a free account must show no date at all. A date that is
+ * already behind us is never shown either ("Renews" a past day is a lie).
+ */
+internal fun renewalDateToShow(
+    plan: String,
+    raw: String?,
+    today: LocalDate = LocalDate.now(),
+): String? {
+    if (plan.equals("RECON", ignoreCase = true)) return null
+    val day = parseRenewalDay(raw) ?: return null
+    if (day.isBefore(today)) return null
+    return day.format(RENEWAL_DATE_FORMAT)
+}
+
+private fun parseRenewalDay(raw: String?): LocalDate? {
     val v = raw?.trim().orEmpty()
     if (v.isEmpty()) return null
     // 1. Already a plain date.
-    runCatching { return LocalDate.parse(v).format(RENEWAL_DATE_FORMAT) }
+    runCatching { return LocalDate.parse(v) }
     // 2. Offset / zoned date-time.
     runCatching {
         return OffsetDateTime.parse(v)
             .atZoneSameInstant(ZoneId.systemDefault())
             .toLocalDate()
-            .format(RENEWAL_DATE_FORMAT)
     }
     // 3. Trim trailing time portion as a fallback.
     val datePart = v.substringBefore('T')
     runCatching {
-        return LocalDate.parse(datePart).format(RENEWAL_DATE_FORMAT)
+        return LocalDate.parse(datePart)
     }
     return null
 }
