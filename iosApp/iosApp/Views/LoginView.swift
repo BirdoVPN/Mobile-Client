@@ -724,6 +724,17 @@ struct LoginView: View {
             .buttonStyle(PressScaleButtonStyle())
             .accessibilityLabel("Copy account number")
 
+            if authVM.createdIdNotStored {
+                // A-L24 / MR-2241: the keychain write failed twice. The number
+                // is the account's only credential -- say so plainly.
+                Text("Your account was created, but this device couldn't store it yet. Save this number now; we'll try again when you continue.")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.yellow)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("login_anonymous_not_stored")
+            }
+
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "exclamationmark.shield.fill")
                     .font(.system(size: 14))
