@@ -78,7 +78,7 @@ internal object SignupPow {
         val md = MessageDigest.getInstance("SHA-256")
         var i = 0L
         while (true) {
-            if (i and CANCEL_CHECK_MASK == 0L) currentCoroutineContext().ensureActive()
+            if ((i and CANCEL_CHECK_MASK) == 0L) currentCoroutineContext().ensureActive()
             // Write i in base 36 at the end of buf, then hash the used part.
             var n = i
             var end = buf.size
