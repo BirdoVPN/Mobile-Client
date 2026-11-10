@@ -23,12 +23,12 @@ class StartTrackerTest {
     @Test
     fun stopQueuedBeforeALaterStartDoesNotStopTheService() {
         val platform = FakePlatform()
-        val tracker = StartTracker(platform::stopSelfResult)
+        val tracker = StartTracker()
 
         // START(1) delivered, STOP(2) delivered and queued on the executor.
         platform.newestRequested = 1; tracker.record(1)
         platform.newestRequested = 2; tracker.record(2)
-        val queuedStop = tracker.bind { tracker.stopUnlessNewerStart() }
+        val queuedStop = tracker.bind { platform.stopSelfResult(tracker.stopId()) }
 
         // START(3) is requested (pending, maybe not yet delivered) before the stop runs.
         platform.newestRequested = 3
@@ -38,16 +38,16 @@ class StartTrackerTest {
 
         // Once START(3) is delivered and its own work ends, the stop is allowed.
         tracker.record(3)
-        tracker.bind { tracker.stopUnlessNewerStart() }()
+        tracker.bind { platform.stopSelfResult(tracker.stopId()) }()
         assertTrue(platform.stopped)
     }
 
     @Test
     fun stopRunsOnTheExecutorThreadWithItsOwnStartId() {
         val platform = FakePlatform()
-        val tracker = StartTracker(platform::stopSelfResult)
+        val tracker = StartTracker()
         platform.newestRequested = 1; tracker.record(1)
-        val queued = tracker.bind { tracker.stopUnlessNewerStart() }
+        val queued = tracker.bind { platform.stopSelfResult(tracker.stopId()) }
         platform.newestRequested = 2; tracker.record(2)
 
         val ex = Executors.newSingleThreadExecutor()
@@ -59,18 +59,18 @@ class StartTrackerTest {
     @Test
     fun plainStopWithNothingNewerStops() {
         val platform = FakePlatform()
-        val tracker = StartTracker(platform::stopSelfResult)
+        val tracker = StartTracker()
         platform.newestRequested = 1; tracker.record(1)
-        tracker.bind { assertTrue(tracker.stopUnlessNewerStart()) }()
+        tracker.bind { assertTrue(platform.stopSelfResult(tracker.stopId())) }()
         assertTrue(platform.stopped)
     }
 
     @Test
     fun synchronousStopOnTheMainThreadUsesTheLatestStart() {
         val platform = FakePlatform()
-        val tracker = StartTracker(platform::stopSelfResult)
+        val tracker = StartTracker()
         platform.newestRequested = 4; tracker.record(4)
-        assertTrue(tracker.stopUnlessNewerStart())
+        assertTrue(platform.stopSelfResult(tracker.stopId()))
         assertTrue(platform.stopped)
     }
 }

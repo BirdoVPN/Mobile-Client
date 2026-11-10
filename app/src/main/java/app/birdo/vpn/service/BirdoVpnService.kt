@@ -697,10 +697,10 @@ class BirdoVpnService : VpnService() {
      * is nothing left to transition; the rejection is expected and ignored.
      */
     /** A-M75: every self-stop goes through this, see [StartTracker]. */
-    private val startTracker = StartTracker { id -> stopSelfResult(id) }
+    private val startTracker = StartTracker()
 
     private fun stopSelfUnlessNewerStart() {
-        if (!startTracker.stopUnlessNewerStart()) {
+        if (!stopSelfResult(startTracker.stopId())) {
             Log.i(TAG, "Stop skipped: a newer start is pending")
         }
     }

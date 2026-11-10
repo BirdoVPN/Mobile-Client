@@ -14,10 +14,8 @@ package app.birdo.vpn.service
  * Every stop is therefore tied to the newest start the service had seen when
  * the work that decided to stop it was queued: a stop that runs later, on the
  * lifecycle executor, after another start arrived, is refused.
- *
- * @param stopSelfResult the service's `stopSelfResult`.
  */
-internal class StartTracker(private val stopSelfResult: (Int) -> Boolean) {
+internal class StartTracker {
 
     @Volatile private var latest = 0
     private val taskStartId = ThreadLocal<Int?>()
@@ -40,6 +38,6 @@ internal class StartTracker(private val stopSelfResult: (Int) -> Boolean) {
         }
     }
 
-    /** Stop the service unless a newer start exists. True when it was stopped. */
-    fun stopUnlessNewerStart(): Boolean = stopSelfResult(taskStartId.get() ?: latest)
+    /** The id to hand to `stopSelfResult`: the start the running task was queued under. */
+    fun stopId(): Int = taskStartId.get() ?: latest
 }
