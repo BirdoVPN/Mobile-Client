@@ -212,15 +212,40 @@ final class APIClient: @unchecked Sendable {
     /// Server rate limit: 3 creations per IP per hour.
     func registerAnonymous() async throws -> AnonymousRegistration {
         let device = await deviceContext()
-        let body = try encoder.encode(DeviceInfoBody(
-            deviceId: device.id,
-            deviceName: device.name,
-            platformVersion: device.osVersion,
-            appVersion: kBirdoClientVersion
-        ))
-        // MR-2220: a sign-up refused for the caller's country keeps its sentence.
-        let data = try await post(path: "/auth/register/anonymous", body: body, authenticated: false,
-                                  refusal: { status, data in RegistrationRefusedError.classify(status: status, body: data) })
+        // MR-2152: the server issues and checks a sign-up proof-of-work; a
+        // sign-up that sends none is judged by its stricter fallback tier. The
+        // policy (one fresh challenge after a refusal, then one request
+        // without a proof) is SignupPowFlow's.
+        let data: Data
+        do {
+            data = try await SignupPowFlow.register(
+                fetch: { [self] in try await fetchSignupChallenge() },
+                solve: { challenge, bits, deadline in
+                    try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
+                },
+                send: { [self] pow in
+                    let body = try encoder.encode(DeviceInfoBody(
+                        deviceId: device.id,
+                        deviceName: device.name,
+                        platformVersion: device.osVersion,
+                        appVersion: kBirdoClientVersion,
+                        pow: pow
+                    ))
+                    return try await post(path: "/auth/register/anonymous", body: body, authenticated: false,
+                                          refusal: { status, data in
+                        if let powRefusal = SignupPowRefusal.classify(status: status, body: data) { return powRefusal }
+                        // MR-2220: a sign-up refused for the caller's country keeps its sentence.
+                        return RegistrationRefusedError.classify(status: status, body: data)
+                    })
+                },
+                progress: { checking in await SignupPowStatus.shared.set(checking) }
+            )
+        } catch let refusal as SignupPowRefusal {
+            // The retries ran out: the server's own sentence, as any other refusal.
+            throw APIError.serverMessage(
+                refusal.message ?? "Could not create an anonymous account. Please try again.",
+                status: refusal.status)
+        }
         let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
         guard parsed.ok != false, let tokens = parsed.tokens, !tokens.accessToken.isEmpty else {
             // Client-minted: the response WAS 2xx, we just could not use it.
@@ -230,6 +255,21 @@ final class APIClient: @unchecked Sendable {
             anonymousId: parsed.anonymousId,
             tokens: TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
         )
+    }
+
+    /// A sign-up proof-of-work challenge for this network — `POST
+    /// /auth/pow/challenge {"op":"signup"}` (public). ANY failure (429, 503,
+    /// offline, an unreadable answer) is nil: the sign-up then goes out without
+    /// a proof and the server decides. Only cancellation propagates.
+    private func fetchSignupChallenge() async throws -> PowChallengeResponse? {
+        do {
+            let body = try encoder.encode(PowChallengeRequest())
+            let data = try await post(path: "/auth/pow/challenge", body: body, authenticated: false)
+            return try decoder.decode(PowChallengeResponse.self, from: data)
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            return nil
+        }
     }
 
     /// SSO handoff exchange — `POST /auth/native/exchange`. The `code` is the
