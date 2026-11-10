@@ -51,7 +51,7 @@ ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "z
 
 # PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
 sha2 = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 
 # Defence-in-depth: wipe shared secrets from RAM after derivation.
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
