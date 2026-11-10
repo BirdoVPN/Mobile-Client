@@ -42,7 +42,7 @@ ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "z
 
 # PSK derivation — must match the client side bit-for-bit.
 sha2 = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
 
 # Wire encoding.
 base64 = "0.22"
