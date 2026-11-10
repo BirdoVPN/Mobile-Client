@@ -8,6 +8,7 @@ import androidx.core.content.ContextCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.data.preferences.AppPreferences
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -55,8 +56,15 @@ class VpnServiceInstrumentedTest {
     private val context: Context
         get() = InstrumentationRegistry.getInstrumentation().targetContext
 
+    private var quantumBefore = true
+
     @Before
     fun grantConsent() {
+        // Quantum protection is ON by default, and the service refuses a
+        // connect whose config does not grant it. The fake peer grants nothing.
+        val prefs = AppPreferences(context)
+        quantumBefore = prefs.quantumProtectionEnabled
+        prefs.quantumProtectionEnabled = false
         setVpnConsent(allowed = true)
         assertNull(
             "VpnService.prepare must return null once ACTIVATE_VPN is allowed; the emulator would otherwise ask for consent",
@@ -75,6 +83,7 @@ class VpnServiceInstrumentedTest {
         await(5_000, pollMs = 2) { BirdoVpnService.running }
         await(15_000) { !BirdoVpnService.running }
         await(5_000) { BirdoVpnService.currentState is VpnState.Disconnected && !BirdoVpnService.killSwitchActive }
+        AppPreferences(context).quantumProtectionEnabled = quantumBefore
     }
 
     /**
