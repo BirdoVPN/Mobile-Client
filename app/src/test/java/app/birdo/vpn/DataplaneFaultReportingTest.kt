@@ -94,6 +94,9 @@ class DataplaneFaultReportingTest {
      * only asked for politely.
      */
     private val notDataPlaneFiles = mapOf(
+        "StartTracker.kt" to
+            "pure bookkeeping of the newest start id for stopSelfResult: no I/O, no catch, and a " +
+            "refused stop only leaves the service running for the start that is pending",
         "ConnectNotices.kt" to
             "pure parsing of the connect reply's accountRestriction and deviceNotice objects: " +
             "no I/O, no catch that changes protection (a bad value reads as absent)",

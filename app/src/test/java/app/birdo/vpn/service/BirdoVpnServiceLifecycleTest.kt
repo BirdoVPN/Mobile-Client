@@ -280,12 +280,12 @@ class BirdoVpnServiceLifecycleTest {
         BirdoVpnService::class.java.getDeclaredMethod("handleReleaseBlock").apply { isAccessible = true }.invoke(service)
         // REVIEW-AND-004: it used to stay foreground, and come back after a
         // process kill as a block nobody asked for.
-        verify(exactly = 1) { service.stopSelf() }
+        verify(exactly = 1) { service.stopSelfResult(any()) }
 
         every { prefs.sessionShouldBeUp } returns true
         BirdoVpnService::class.java.getDeclaredMethod("handleReleaseBlock").apply { isAccessible = true }.invoke(service)
         // A spent budget keeps the process for the cooldown's re-dial.
-        verify(exactly = 1) { service.stopSelf() }
+        verify(exactly = 1) { service.stopSelfResult(any()) }
     }
 
     @Test

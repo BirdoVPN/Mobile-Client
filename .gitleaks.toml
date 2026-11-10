@@ -91,4 +91,10 @@ regexes = [
   '''^birdo_pq_v1_keypair$''',
   '''^stale_anonymous_id_purged_v1$''',
   '''^a41f170a03fa25d9d39f23f344540b02336a5c893d97b1b837b9477f4b35bc7f$''',
+  # MR-2152: sign-up proof-of-work challenges minted by birdo-web's signup-pow.ts
+  # in node with the fake key "unit-test-fixture-not-a-real-key" (key id
+  # 70c42181) for SignupPowTests: signed tokens of a test key that no server
+  # holds, pinned so the Swift solver can be checked against the server's own
+  # first nonce. The same three are in Android's SignupPowTest.
+  '''p1\.70c42181\.signup\.\d+\.1767225900\.[0-9a-f]{32}\.[A-Za-z0-9_-]{43}''',
 ]
