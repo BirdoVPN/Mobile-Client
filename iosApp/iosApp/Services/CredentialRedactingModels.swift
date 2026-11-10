@@ -46,6 +46,34 @@ extension UserProfile: CredentialRedacting {
     }
 }
 
+// MARK: - Sign-up proof-of-work (MR-2152)
+
+extension PowChallengeResponse: CredentialRedacting {
+    /// With a nonce the challenge is the proof a sign-up spends: never printed.
+    var redactedFields: [(label: String, value: String)] {
+        [
+            ("op", Redaction.plain(op)),
+            ("difficulty", Redaction.plain(difficulty)),
+            ("challenge", Redaction.optional(challenge)),
+        ]
+    }
+}
+
+extension SignupPowRefusal: CredentialRedacting {
+    /// The server's refusal code and status: no secret, but its field is
+    /// named `code`, which the credential scan cannot tell from one.
+    var redactedFields: [(label: String, value: String)] {
+        [("status", "\(status)"), ("code", code)]
+    }
+}
+
+extension PowSolution: CredentialRedacting {
+    /// A solved challenge is spendable once.
+    var redactedFields: [(label: String, value: String)] {
+        [("challenge", Redaction.marker), ("nonce", Redaction.marker)]
+    }
+}
+
 // MARK: - Sign-in request bodies
 
 extension LoginBody: CredentialRedacting {

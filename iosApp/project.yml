@@ -299,6 +299,12 @@ targets:
       # is in ConnectWire.swift and DeleteAccountBody in AccountDeletion.swift,
       # both already listed.
       - path: iosApp/Services/AuthWire.swift
+      # MR-2152 (A-H11): the sign-up proof-of-work: wire models, the SHA-256
+      # solver, the refusal classification and the retry policy. Foundation +
+      # CryptoKit only by design, so SignupPowTests pins them against the
+      # server's own vectors here; APIClient.swift (its only caller) cannot be
+      # compiled into this bundle. AuthWire's DeviceInfoBody names PowSolution.
+      - path: iosApp/Services/SignupPow.swift
       - path: iosApp/Services/CredentialRedaction.swift
       - path: iosApp/Services/CredentialRedactingModels.swift
       # The live-rebuild snapshot holds the tunnel's private and pre-shared
