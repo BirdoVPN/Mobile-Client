@@ -19,6 +19,8 @@ import UIKit
 /// presents the save-your-ID step until `acknowledgeAnonymousId()` proceeds.
 struct LoginView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    /// MR-2152: the sign-up proof-of-work is running.
+    @ObservedObject private var powStatus = SignupPowStatus.shared
 
     /// Explicit init: the private @State properties below would otherwise
     /// make the synthesized memberwise init private, so `LoginView(isSheet:)`
@@ -383,6 +385,15 @@ struct LoginView: View {
                           })
                 .accessibilityIdentifier("login_anonymous_create")
                 .loginEntrance(entered, delay: 0.25)
+
+            if powStatus.isChecking {
+                Text("Checking this device…")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.white40)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("login_anonymous_checking_device")
+            }
 
             Text("No email, no personal details — the server mints a 24-digit account number.")
                 .font(BirdoTheme.Fonts.bodySmall)
