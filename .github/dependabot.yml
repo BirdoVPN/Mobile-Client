@@ -161,3 +161,56 @@ updates:
           - "*"
         exclude-patterns:
           - "github/codeql-action*"
+
+  # Rust crates (MA-CI-009, A-L41). Each crate has its own Cargo.lock and no
+  # shared workspace, so each directory needs its own entry. Same cadence,
+  # 7-day cooldown and labels as above; security updates are not delayed.
+  # One grouped minor+patch PR per crate per week; majors stay separate.
+  - package-ecosystem: "cargo"
+    directory: "/native/birdo-pq-ios"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "ios"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "cargo"
+    directory: "/native/birdo-pq-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "cargo"
+    directory: "/native/rosenpass-jni"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "android"
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # No "swift" entry: the only Package.swift is the vendored upstream
+  # iosApp/Vendor/wireguard-apple (WireGuardKit); it is updated by re-vendoring,
+  # not by Dependabot.

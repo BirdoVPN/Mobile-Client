@@ -409,28 +409,33 @@ enum class StoreLinkRefusal {
  */
 class PurchaseRefusalMemory(private val nowMs: () -> Long = System::currentTimeMillis) {
 
+    // Touched from concurrent Dispatchers.Default coroutines (resume, sign-in and
+    // restore sweeps, and the purchase listener), so every access takes [lock]. A
+    // monitor rather than a Mutex: nothing here suspends and the API stays plain.
+    private val lock = Any()
     private val terminal = mutableSetOf<String>()
     private val cooldownUntil = mutableMapOf<String, Long>()
 
-    fun record(purchaseToken: String, refusal: StoreLinkRefusal) {
+    fun record(purchaseToken: String, refusal: StoreLinkRefusal) = synchronized(lock) {
         if (refusal.isTerminal) {
             terminal += purchaseToken
         } else {
             cooldownUntil[purchaseToken] = nowMs() + COOLDOWN_MS
         }
+        Unit
     }
 
     /** True when re-presenting this token now would be pointless or abusive. */
-    fun shouldSkip(purchaseToken: String): Boolean {
-        if (purchaseToken in terminal) return true
-        val until = cooldownUntil[purchaseToken] ?: return false
-        if (nowMs() < until) return true
+    fun shouldSkip(purchaseToken: String): Boolean = synchronized(lock) {
+        if (purchaseToken in terminal) return@synchronized true
+        val until = cooldownUntil[purchaseToken] ?: return@synchronized false
+        if (nowMs() < until) return@synchronized true
         cooldownUntil.remove(purchaseToken)
-        return false
+        false
     }
 
     /** The user asked us to try again. Forget everything. */
-    fun clear() {
+    fun clear() = synchronized(lock) {
         terminal.clear()
         cooldownUntil.clear()
     }
