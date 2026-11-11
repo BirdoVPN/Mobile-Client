@@ -795,6 +795,49 @@ class BirdoVpnServiceLifecycleTest {
     }
 
     @Test
+    fun `a stop that lands while the status is being posted waits for the post, so nothing is posted after it`() {
+        every { prefs.killSwitchEnabled } returns false
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { tokens.isLoggedIn() } returns true
+        service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
+
+        val events = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val inPost = java.util.concurrent.CountDownLatch(1)
+        val releasePost = java.util.concurrent.CountDownLatch(1)
+        io.mockk.clearMocks(notifications, answers = false, recordedCalls = true)
+        every { notifications.update(any()) } answers {
+            events.add("post-start")
+            inPost.countDown()
+            releasePost.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            events.add("post-end")
+        }
+        every { service.stopForeground(any<Int>()) } answers { events.add("stop") }
+
+        val poster = Thread { renderStatusNotification() }
+        poster.start()
+        assertTrue("the post never started", inPost.await(3, java.util.concurrent.TimeUnit.SECONDS))
+
+        val leave = BirdoVpnService::class.java.getDeclaredMethod("leaveForeground")
+        leave.isAccessible = true
+        val leaver = Thread { leave.invoke(service) }
+        leaver.start()
+        // The stop must be parked behind the in-flight post.
+        leaver.join(300)
+        assertTrue("the stop did not wait for the post", leaver.isAlive)
+        assertFalse(events.contains("stop"))
+
+        releasePost.countDown()
+        poster.join(3_000)
+        leaver.join(3_000)
+        assertEquals(listOf("post-start", "post-end", "stop"), events.toList())
+
+        // And a render after the stop posts nothing.
+        renderStatusNotification()
+        assertEquals(1, events.count { it == "post-start" })
+    }
+
+    @Test
     fun `the status notification is still refreshed while the service is foreground`() {
         every { prefs.killSwitchEnabled } returns false
         every { prefs.hasAcceptedCurrentConsent } returns true
