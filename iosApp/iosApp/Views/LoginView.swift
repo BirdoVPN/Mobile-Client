@@ -343,13 +343,15 @@ struct LoginView: View {
                 .loginEntrance(entered, delay: 0.28)
 
             PrimaryButton("Sign in",
-                          loadingTitle: powStatus.isChecking ? "Checking this device…" : "Signing in…",
+                          loadingTitle: "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: isEmailFormValid,
                           action: submitEmailLogin)
                 .padding(.top, 28)
                 .accessibilityIdentifier("login_button")
                 .loginEntrance(entered, delay: 0.30)
+
+            powCheckingLine(identifier: "login_checking_device")
         }
     }
 
@@ -372,6 +374,21 @@ struct LoginView: View {
     /// per IP per hour, so on a shared address (App Review's, for one) it can
     /// fail through no fault of the user. The failure copy and the retry
     /// affordance below exist for exactly that case.
+    /// The one status line shown while a proof-of-work runs (sign-up MR-2152;
+    /// sign-in during a failed-sign-in spike A-M78). The anonymous tab shows it
+    /// once, under its create row, for both of its forms.
+    @ViewBuilder
+    private func powCheckingLine(identifier: String) -> some View {
+        if powStatus.isChecking {
+            Text("Checking this device…")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.white40)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+
     private var anonymousTab: some View {
         VStack(spacing: 0) {
             PrimaryButton("Create a new anonymous account",
@@ -386,14 +403,7 @@ struct LoginView: View {
                 .accessibilityIdentifier("login_anonymous_create")
                 .loginEntrance(entered, delay: 0.25)
 
-            if powStatus.isChecking {
-                Text("Checking this device…")
-                    .font(BirdoTheme.Fonts.bodySmall)
-                    .foregroundStyle(BirdoTheme.white40)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 8)
-                    .accessibilityIdentifier("login_anonymous_checking_device")
-            }
+            powCheckingLine(identifier: "login_anonymous_checking_device")
 
             Text("No email, no personal details — the server mints a 24-digit account number.")
                 .font(BirdoTheme.Fonts.bodySmall)
@@ -460,7 +470,7 @@ struct LoginView: View {
             // `login_connecting` "Signing in…" — the same words as the email
             // tab. PrimaryButton derives the VoiceOver label from these.
             PrimaryButton("Sign in",
-                          loadingTitle: powStatus.isChecking ? "Checking this device…" : "Signing in…",
+                          loadingTitle: "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: anonymousId.count == 24,
                           action: submitAnonymousLogin)
