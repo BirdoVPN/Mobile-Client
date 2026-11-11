@@ -359,6 +359,11 @@ class VpnViewModelTest {
         return vm
     }
 
+    /** A Connected session polls its counters forever, and runTest would wait out that loop. */
+    private fun endSession() {
+        state.value = VpnState.Disconnected
+    }
+
     private fun VpnViewModel.pick(id: String) = selectServer(uiState.value.servers.first { it.id == id })
 
     @Test
@@ -387,6 +392,7 @@ class VpnViewModelTest {
         assertEquals("a-1", applied)
         assertEquals(applied, vm.uiState.value.selectedServer?.id)
         assertEquals(applied, vm.uiState.value.servers.first { it.name == vm.uiState.value.selectedServer?.name }.id)
+        endSession()
     }
 
     @Test
@@ -398,6 +404,7 @@ class VpnViewModelTest {
 
         assertEquals("a-1", vm.uiState.value.selectedServer?.id)
         assertNull(vm.uiState.value.connectError)
+        endSession()
     }
 
     @Test
@@ -417,6 +424,7 @@ class VpnViewModelTest {
         // The newest pick wins and was applied.
         assertEquals("c-1", vm.uiState.value.selectedServer?.id)
         assertEquals("c-1", connectedId.value)
+        endSession()
     }
 
     @Test
