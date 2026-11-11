@@ -3199,7 +3199,9 @@ class VpnManagerTest {
             live++
             peak = maxOf(peak, live)
             try {
-                delay(5_000)
+                // Longer than the second dial's own 5 s teardown wait, so a
+                // dial that is left running overlaps the next one.
+                delay(20_000)
                 ApiResult.Success(makeConnectResponse())
             } finally {
                 live--
@@ -3210,7 +3212,7 @@ class VpnManagerTest {
             val first = async { vpnManager.connect("srv-1") }
             advanceTimeBy(2_500)
             val second = async { vpnManager.connect("srv-2") }
-            advanceTimeBy(30_000)
+            advanceTimeBy(40_000)
             runCurrent()
 
             assertEquals("two dials were alive at once", 1, peak)
