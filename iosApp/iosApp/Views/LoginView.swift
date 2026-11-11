@@ -343,7 +343,7 @@ struct LoginView: View {
                 .loginEntrance(entered, delay: 0.28)
 
             PrimaryButton("Sign in",
-                          loadingTitle: "Signing in…",
+                          loadingTitle: powStatus.isChecking ? "Checking this device…" : "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: isEmailFormValid,
                           action: submitEmailLogin)
@@ -460,7 +460,7 @@ struct LoginView: View {
             // `login_connecting` "Signing in…" — the same words as the email
             // tab. PrimaryButton derives the VoiceOver label from these.
             PrimaryButton("Sign in",
-                          loadingTitle: "Signing in…",
+                          loadingTitle: powStatus.isChecking ? "Checking this device…" : "Signing in…",
                           isLoading: authVM.isLoading,
                           isEnabled: anonymousId.count == 24,
                           action: submitAnonymousLogin)

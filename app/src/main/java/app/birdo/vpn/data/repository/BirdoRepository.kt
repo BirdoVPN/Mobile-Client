@@ -209,6 +209,9 @@ class BirdoRepository @Inject constructor(
         /** One fresh challenge after a refusal, then one request without a proof. */
         private const val POW_MAX_RETRIES = 2
 
+        /** `pow.op` of a sign-in refusal that asks for a proof (A-M78). */
+        internal const val LOGIN_POW_OP = "login"
+
         /** `details.code` values after which a new challenge changes the answer (docs/SIGNUP-PROOF-OF-WORK.md section 4). */
         private val POW_RETRY_CODES = setOf("pow_difficulty_raised", "pow_expired", "pow_replayed", "pow_invalid", "pow_required")
         /** Subscription is considered fresh for 30 seconds. */
@@ -273,16 +276,19 @@ class BirdoRepository @Inject constructor(
     suspend fun login(email: String, password: String): ApiResult<LoginResult> =
         guarded {
             val device = deviceInfoProvider.current()
-            val response = api.login(LoginRequest(
-                email = email,
-                password = password,
-                deviceId = device.deviceId,
-                deviceName = device.deviceName,
-                deviceType = device.deviceType,
-                platform = device.platform,
-                platformVersion = device.platformVersion,
-                appVersion = device.appVersion,
-            ))
+            val (response, rawError) = sendWithLoginProof { pow ->
+                api.login(LoginRequest(
+                    email = email,
+                    password = password,
+                    deviceId = device.deviceId,
+                    deviceName = device.deviceName,
+                    deviceType = device.deviceType,
+                    platform = device.platform,
+                    platformVersion = device.platformVersion,
+                    appVersion = device.appVersion,
+                    pow = pow,
+                ))
+            }
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
                 val result = body.toLoginResult()
@@ -294,7 +300,7 @@ class BirdoRepository @Inject constructor(
                 }
                 ApiResult.Success(result)
             } else {
-                errorFrom(response, ErrorContext.SIGN_IN, R.string.error_sign_in_failed)
+                errorFromBody(response, rawError, ErrorContext.SIGN_IN, R.string.error_sign_in_failed)
             }
         }
 
@@ -497,16 +503,19 @@ class BirdoRepository @Inject constructor(
     suspend fun loginAnonymous(anonymousId: String, password: String? = null): ApiResult<AnonymousLoginResponse> =
         guarded {
             val device = deviceInfoProvider.current()
-            val response = api.loginAnonymous(AnonymousLoginRequest(
-                anonymousId = anonymousId,
-                password = password,
-                deviceId = device.deviceId,
-                deviceName = device.deviceName,
-                deviceType = device.deviceType,
-                platform = device.platform,
-                platformVersion = device.platformVersion,
-                appVersion = device.appVersion,
-            ))
+            val (response, rawError) = sendWithLoginProof { pow ->
+                api.loginAnonymous(AnonymousLoginRequest(
+                    anonymousId = anonymousId,
+                    password = password,
+                    deviceId = device.deviceId,
+                    deviceName = device.deviceName,
+                    deviceType = device.deviceType,
+                    platform = device.platform,
+                    platformVersion = device.platformVersion,
+                    appVersion = device.appVersion,
+                    pow = pow,
+                ))
+            }
             if (response.isSuccessful && response.body() != null) {
                 val body = response.body()!!
                 val tokens = body.tokens
@@ -515,13 +524,13 @@ class BirdoRepository @Inject constructor(
                 }
                 ApiResult.Success(body)
             } else {
-                errorFrom(response, ErrorContext.ANONYMOUS_SIGN_IN, R.string.error_sign_in_failed)
+                errorFromBody(response, rawError, ErrorContext.ANONYMOUS_SIGN_IN, R.string.error_sign_in_failed)
             }
         }
 
     /**
-     * Told when the sign-up proof-of-work starts (true) and ends (false), so the
-     * sign-in screen can say "checking this device" while it runs. A property and
+     * Told when a proof-of-work (sign-up, or a sign-in answering a failed-sign-in
+     * spike) starts (true) and ends (false), so the sign-in screen can say "checking this device" while it runs. A property and
      * not a parameter so [registerAnonymous]'s signature stays as it was. The
      * caller clears it when it is done.
      */
@@ -532,21 +541,22 @@ class BirdoRepository @Inject constructor(
     internal var powSolver: suspend (challenge: String, bits: Int) -> String = { c, b -> SignupPow.solve(c, b) }
 
     /**
-     * A fresh sign-up challenge, solved. Null whenever there is nothing to send
+     * A fresh challenge for [op] (`signup`, or `login` during a sign-in spike),
+     * solved. Null whenever there is nothing to send
      * (endpoint failed, answer unusable, difficulty out of range, not solved
      * before the challenge expires): the caller then signs up without a proof and
      * the server decides. Only cancellation propagates.
      */
-    private suspend fun fetchAndSolvePow(): PowSolution? {
+    private suspend fun fetchAndSolvePow(op: String = "signup"): PowSolution? {
         val c = try {
-            val r = api.powChallenge(PowChallengeRequest("signup"))
+            val r = api.powChallenge(PowChallengeRequest(op))
             if (r.isSuccessful) r.body() else null
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             null
         } ?: return null
-        if (c.algorithm != POW_ALGORITHM || c.op != "signup" || c.challenge.isBlank() ||
+        if (c.algorithm != POW_ALGORITHM || c.op != op || c.challenge.isBlank() ||
             c.challenge.length > SignupPow.MAX_CHALLENGE_LENGTH ||
             c.difficulty !in SignupPow.MIN_BITS..SignupPow.MAX_SOLVABLE_BITS
         ) return null
@@ -560,6 +570,30 @@ class BirdoRepository @Inject constructor(
         } finally {
             signupPowProgress?.invoke(false)
         }
+    }
+
+    /**
+     * A sign-in request, sent once WITHOUT a proof and, only when the server
+     * answers 429 `pow_required` for the `login` operation (a failed-sign-in
+     * spike, birdo-web `LoginAbuseService`), once more WITH one (A-M78 /
+     * MR-2139). The challenge comes from the fixed `auth/pow/challenge` route
+     * and is solved by the sign-up solver. The second answer is final: never a
+     * loop. Nothing is solved for any other code or op, a missing `pow`, or a
+     * challenge the app will not attempt (the original refusal is then the
+     * answer). A cancel propagates before anything more is sent.
+     *
+     * Returns the final response and its error body, which can be read once.
+     */
+    private suspend fun <T> sendWithLoginProof(send: suspend (PowSolution?) -> Response<T>): Pair<Response<T>, String?> {
+        val first = send(null)
+        if (first.isSuccessful) return first to null
+        val raw = runCatching { first.errorBody()?.string() }.getOrNull()
+        if (first.code() != 429) return first to raw
+        val envelope = ApiErrorMapper.parseEnvelope(raw)
+        if (envelope?.code != "pow_required" || envelope.powOp != LOGIN_POW_OP) return first to raw
+        val proof = fetchAndSolvePow(LOGIN_POW_OP) ?: return first to raw
+        val second = send(proof)
+        return second to if (second.isSuccessful) null else runCatching { second.errorBody()?.string() }.getOrNull()
     }
 
     /**

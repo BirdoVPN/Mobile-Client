@@ -122,6 +122,9 @@ struct LoginBody: Encodable {
     let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
+    /// Only on the one retry that answers a sign-in spike's `pow_required`
+    /// (A-M78 / MR-2139); a nil `pow` is OMITTED from the JSON.
+    var pow: PowSolution? = nil
 }
 
 /// Body for `POST /auth/login/anonymous` — the 24-digit account ID plus
@@ -138,6 +141,9 @@ struct AnonymousLoginBody: Encodable {
     let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
+    /// Only on the one retry that answers a sign-in spike's `pow_required`
+    /// (A-M78 / MR-2139); a nil `pow` is OMITTED from the JSON.
+    var pow: PowSolution? = nil
 }
 
 /// Body for `POST /auth/register/anonymous` — device context plus the optional
