@@ -607,6 +607,7 @@
     </plurals>
     <string name="billing_nothing_to_restore">No Birdo subscription was found for this Google account. If you bought one with a different Google account, switch to it in the Play Store and try again.</string>
     <string name="billing_restore_running">A restore is already running.</string>
+    <string name="billing_restore_unreachable">Couldn\'t reach Google Play. Try again in a moment.</string>
     <string name="billing_pending">Your purchase is waiting for approval or payment. Birdo will unlock automatically once Google Play confirms it — you can close the app.</string>
     <string name="billing_unreadable_purchase">Google Play returned a purchase Birdo could not read. If you were charged, tap Restore Purchases.</string>
     <!-- %1$s is a plan name (plan_name_*), or billing_new_plan. Canonical
