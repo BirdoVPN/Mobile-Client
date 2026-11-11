@@ -871,10 +871,23 @@ class VpnManager @Inject constructor(
             // A dial that asks for another one from inside itself (nested) is
             // never joined: it would wait for its own end.
             val prev = dialJob
-            if (prev != null && prev.isActive && prev !== own) {
-                replacedDials.add(prev)
-                prev.cancel()
-                withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS + 5_000L) { prev.join() }
+            val handover = if (prev != null && prev.isActive && prev !== own) Job() else null
+            if (handover != null) {
+                // A placeholder holds dialJob while the old dial winds down, so
+                // nothing that watches it (a deferred settings reapply, the
+                // supervisor's checks) sees a gap with no dial in it and
+                // slips in between the two.
+                dialJob = handover
+                replacedDials.add(prev!!)
+                try {
+                    prev.cancel()
+                    withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS + 5_000L) { prev.join() }
+                } catch (t: Throwable) {
+                    // The caller went away while waiting: give the slot back.
+                    if (dialJob === handover) dialJob = prev
+                    handover.complete()
+                    throw t
+                }
             }
             scope.async { block() }.also { next ->
                 dialJob = next
@@ -882,6 +895,7 @@ class VpnManager @Inject constructor(
                 next.invokeOnCompletion {
                     _dialActive.value = dialJob?.isActive == true
                 }
+                handover?.complete()
             }
         }
         return try {
