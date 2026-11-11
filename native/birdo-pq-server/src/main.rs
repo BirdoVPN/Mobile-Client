@@ -2,9 +2,10 @@
 //!
 //! ## Purpose
 //!
-//! Each VPN backend node runs this binary (or links the same logic into the
-//! application server) on every `/connect` request that includes a
-//! `pq_client_public_key` field. It performs the ML-KEM-1024 encapsulation
+//! This binary is a CI-only interop and test helper; it is NOT deployed on VPN
+//! nodes (the production server encapsulates with `@noble/post-quantum`). It
+//! models what a server does on a `/connect` request that includes a
+//! `pq_client_public_key` field: it performs the ML-KEM-1024 encapsulation
 //! against the client's public key, derives the WireGuard PresharedKey with
 //! the same HKDF construction the Android client uses, and prints the
 //! resulting `(ciphertext, psk)` pair so the calling backend can:
