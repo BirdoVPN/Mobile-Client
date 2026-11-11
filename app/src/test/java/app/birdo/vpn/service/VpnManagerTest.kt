@@ -21,6 +21,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -3185,6 +3186,36 @@ class VpnManagerTest {
         vpnManager.connect("srv-2")
         // Stealth wanted again: today's path, as for any Stealth session.
         assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+        quiesce()
+    }
+
+    // ── A-M79: two dials never overlap ───────────────────────────────
+
+    @Test
+    fun `a second connect cancels and outwaits the first, so two dials are never alive at once`() = runTest {
+        var live = 0
+        var peak = 0
+        coEvery { repository.connectVpn(any(), any()) } coAnswers {
+            live++
+            peak = maxOf(peak, live)
+            try {
+                delay(5_000)
+                ApiResult.Success(makeConnectResponse())
+            } finally {
+                live--
+            }
+        }
+
+        val first = async { vpnManager.connect("srv-1") }
+        advanceTimeBy(2_500)
+        val second = async { vpnManager.connect("srv-2") }
+        advanceTimeBy(30_000)
+        runCurrent()
+
+        assertEquals("two dials were alive at once", 1, peak)
+        val firstResult = first.await()
+        assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+        assertTrue(second.await() is ApiResult.Success)
         quiesce()
     }
 }
