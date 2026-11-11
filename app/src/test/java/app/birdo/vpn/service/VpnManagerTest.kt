@@ -3223,4 +3223,74 @@ class VpnManagerTest {
             quiesce()
         }
     }
+
+    // ── A-M79: a dial cancelled after its /connect succeeded releases that session ──
+
+    /** A backend for a 1-device plan: a second concurrent session is refused until the first is released. */
+    private class OneDeviceBackend {
+        val active = mutableSetOf<String>()
+        val released = mutableListOf<String?>()
+        var minted = 0
+    }
+
+    private fun oneDeviceBackend(latencyMs: Long): OneDeviceBackend {
+        val backend = OneDeviceBackend()
+        coEvery { repository.connectVpn(any(), any()) } coAnswers {
+            if (backend.active.isNotEmpty()) {
+                ApiResult.Error("Device limit reached", 403)
+            } else {
+                val key = "key-${++backend.minted}"
+                backend.active += key // the server has the session the moment it accepts
+                delay(latencyMs) // ...and the answer takes this long to reach the phone
+                ApiResult.Success(makeConnectResponse().copy(keyId = key))
+            }
+        }
+        coEvery { repository.disconnectVpn(any()) } coAnswers {
+            backend.released += firstArg<String?>()
+            backend.active -= firstArg<String?>()
+            ApiResult.Success(Unit)
+        }
+        return backend
+    }
+
+    @Test
+    fun `free plan - a dial cancelled after its connect succeeded releases that session before the next connect`() = runTest {
+        val backend = oneDeviceBackend(latencyMs = 4_000)
+        try {
+            val first = async { vpnManager.connect("srv-1") }
+            advanceTimeBy(1_000) // the server has minted key-1; the answer is still on its way
+            val second = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(60_000)
+            runCurrent()
+
+            val firstResult = first.await()
+            assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+            val secondResult = second.await()
+            assertTrue("the next /connect was refused: $secondResult", secondResult is ApiResult.Success)
+            // Released exactly once, with ITS id, and never the new dial's.
+            assertEquals(listOf<String?>("key-1"), backend.released)
+            assertEquals(setOf("key-2"), backend.active)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `a dial cancelled while its connect never answers releases nothing`() = runTest {
+        coEvery { repository.connectVpn("srv-1", any()) } coAnswers { awaitCancellation() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse().copy(keyId = "key-2"))
+        try {
+            val first = async { vpnManager.connect("srv-1") }
+            advanceTimeBy(1_000)
+            val second = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(30_000)
+            runCurrent()
+
+            assertTrue(second.await() is ApiResult.Success)
+            first.await()
+            coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+        } finally {
+            quiesce()
+        }
+    }
 }
