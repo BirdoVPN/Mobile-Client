@@ -25,7 +25,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -67,6 +68,7 @@ class VpnViewModelTest {
         every { vpnManager.sessionExpired } returns sessionExpired
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
         every { vpnManager.connectedServerId } returns connectedId
+        every { vpnManager.dialActive } returns MutableStateFlow(false)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.stealthNotice } returns MutableStateFlow(null)
         every { vpnManager.accountRestriction } returns MutableStateFlow(null)
@@ -378,7 +380,9 @@ class VpnViewModelTest {
         assertEquals("a-1", vm.uiState.value.selectedServer?.id)
         delay(2_500)
         vm.pick("b-1")
-        advanceUntilIdle()
+        // Not advanceUntilIdle: a Connected session polls its counters forever.
+        advanceTimeBy(3_000)
+        runCurrent()
 
         val applied = connectedId.value
         assertEquals("a-1", applied)
