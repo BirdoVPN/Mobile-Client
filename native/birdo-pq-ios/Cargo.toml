@@ -5,10 +5,10 @@ edition = "2021"
 # ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
 # edition 2024 with rust-version = "1.85"; ctutils (under module-lattice and
 # hybrid-array) needs 1.87 from 0.4.3, and 0.4.4 is the RUSTSEC-2026-0385
-# fix. Declared here so an older toolchain fails with a message that names
-# the requirement instead of an edition error inside a dependency. See
+# fix; sha2 0.11 needs 1.88 (A-M76). Declared here so an older toolchain
+# fails with a message that names the requirement instead of an edition error inside a dependency. See
 # rust-toolchain.toml.
-rust-version = "1.87"
+rust-version = "1.88"
 publish = false
 description = "BirdoPQ v1 ML-KEM-1024 PSK derivation — C ABI for the iOS Swift client. Wire-format twin of rosenpass-jni and birdo_pq.rs (desktop)."
 license = "Apache-2.0"
@@ -50,8 +50,8 @@ crate-type = ["staticlib"]
 ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
-sha2 = "0.10"
-hkdf = "0.12"
+sha2 = "0.11"
+hkdf = "0.13"
 
 # Defence-in-depth: wipe shared secrets from RAM after derivation.
 zeroize = { version = "1.7", features = ["zeroize_derive"] }

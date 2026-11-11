@@ -5,10 +5,10 @@ edition = "2021"
 # ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
 # edition 2024 with rust-version = "1.85"; ctutils (under module-lattice and
 # hybrid-array) needs 1.87 from 0.4.3, and 0.4.4 is the RUSTSEC-2026-0385
-# fix. Declared here so an older toolchain fails with a message that names
-# the requirement instead of an edition error inside a dependency. See
+# fix; sha2 0.11 needs 1.88 (A-M76). Declared here so an older toolchain
+# fails with a message that names the requirement instead of an edition error inside a dependency. See
 # rust-toolchain.toml.
-rust-version = "1.87"
+rust-version = "1.88"
 publish = false
 description = "BirdoPQ post-quantum WireGuard PSK derivation — JNI bindings for the Birdo Android client."
 license = "Apache-2.0"
@@ -26,8 +26,8 @@ log = "0.4"
 android_logger = "0.13"
 
 # Crypto primitives — HKDF + SHA-256 for the final PSK derivation
-sha2 = "0.10"
-hkdf = "0.12"
+sha2 = "0.11"
+hkdf = "0.13"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 
 # Post-quantum primitive: ML-KEM-1024 (FIPS 203), the strongest standardised

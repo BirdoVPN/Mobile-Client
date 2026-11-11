@@ -261,6 +261,42 @@ mod tests {
         hex::decode(s).expect("fixture hex")
     }
 
+    /// A-M76: pins the exact SHA-256 / HKDF-SHA-256 outputs. The expected hex
+    /// was captured from the sha2 0.10 / hkdf 0.12 build and must not change
+    /// across the sha2 0.11 / hkdf 0.13 / digest 0.11 move. The same constants
+    /// are asserted in all three native crates (cross-implementation check).
+    #[test]
+    fn hash_stack_outputs_are_pinned() {
+        // SHA-256("abc"), FIPS 180-2 appendix B.1.
+        let digest = <Sha256 as sha2::Digest>::digest(b"abc");
+        assert_eq!(
+            hex::encode(digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        // RFC 5869 appendix A.1 (HKDF-SHA-256 test case 1).
+        let ikm = [0x0bu8; 22];
+        let salt: Vec<u8> = (0x00u8..=0x0c).collect();
+        let info: Vec<u8> = (0xf0u8..=0xf9).collect();
+        let mut okm = [0u8; 42];
+        Hkdf::<Sha256>::new(Some(&salt), &ikm)
+            .expand(&info, &mut okm)
+            .expect("length OK");
+        assert_eq!(
+            hex::encode(okm),
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+        );
+
+        // The crate's own derivation (BirdoPQ salt) on a fixed input.
+        let ss = [0x42u8; 32];
+        let nonce = [0x24u8; 32];
+        let psk: Vec<u8> = { hkdf_to_psk(&ss, &nonce).to_vec() };
+        assert_eq!(
+            hex::encode(psk),
+            "7b7fad70ecc0971d17b32a8409159faf20014e168e816c02b7739572a1fab11c"
+        );
+    }
+
     #[test]
     fn client_server_roundtrip_derives_identical_psk() {
         let kp = generate_keypair().expect("generate_keypair");
