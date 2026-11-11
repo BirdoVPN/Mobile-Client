@@ -1419,21 +1419,39 @@ class BirdoVpnService : VpnService() {
      */
     @Volatile private var statusNotificationLive = false
 
+    /**
+     * Makes "check live, then post" and "clear live, then stopForeground" one
+     * step each, so a post can never land between a stop's clear and its
+     * removal and orphan the notification. Posting inside the lock is fine:
+     * NotificationManager.notify is a non-blocking binder call. Nothing under
+     * it calls into StartTracker or the tunnel executor.
+     */
+    private val statusLock = Any()
+
     private fun enterForeground(id: Int, notification: android.app.Notification) {
-        statusNotificationLive = true
-        startForeground(id, notification)
+        synchronized(statusLock) {
+            statusNotificationLive = true
+            startForeground(id, notification)
+        }
     }
 
     private fun leaveForeground() {
-        statusNotificationLive = false
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        synchronized(statusLock) {
+            statusNotificationLive = false
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        }
     }
 
     /** Re-render the ongoing notification; [detail] replaces the setup progress text. */
     private fun updateNotification(detail: String? = notificationDetail) {
         notificationDetail = detail
         if (!statusNotificationLive) return
-        notifManager.update(buildCurrentNotification())
+        // Built outside the lock; only the check and the post are under it.
+        val notification = buildCurrentNotification()
+        synchronized(statusLock) {
+            if (!statusNotificationLive) return
+            notifManager.update(notification)
+        }
     }
 
     private fun startNotificationTicker() {
