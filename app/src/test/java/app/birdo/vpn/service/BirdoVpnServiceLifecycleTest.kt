@@ -760,6 +760,53 @@ class BirdoVpnServiceLifecycleTest {
         verify(exactly = 1) { notifications.cancelAlert() }
     }
 
+    // ── A-L51: no orphan status notification after a stop ────────────────
+
+    private fun renderStatusNotification() {
+        val render = BirdoVpnService::class.java.getDeclaredMethod("updateNotification", String::class.java)
+        render.isAccessible = true
+        render.invoke(service, null)
+    }
+
+    @Test
+    fun `a late state render after a user Disconnect does not re-post the status notification`() {
+        every { prefs.notificationsEnabled } returns true
+        every { prefs.killSwitchEnabled } returns false
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { tokens.isLoggedIn() } returns true
+        service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
+
+        val stop = BirdoVpnService::class.java.getDeclaredMethod(
+            "stopTunnel",
+            VpnState.Error::class.java,
+            Boolean::class.javaPrimitiveType,
+        )
+        stop.isAccessible = true
+        stop.invoke(service, null, true)
+        // The render collector (Main.immediate) sees the final Disconnected
+        // only after stopTunnel has called stopForeground.
+        io.mockk.clearMocks(notifications, answers = false, recordedCalls = true)
+        renderStatusNotification()
+
+        verify(exactly = 0) { notifications.update(any()) }
+        // A user Disconnect leaves no "Not connected" notice either.
+        verify(exactly = 0) { notifications.postDisconnectedNotification() }
+    }
+
+    @Test
+    fun `the status notification is still refreshed while the service is foreground`() {
+        every { prefs.killSwitchEnabled } returns false
+        every { prefs.hasAcceptedCurrentConsent } returns true
+        every { prefs.sessionShouldBeUp } returns true
+        every { tokens.isLoggedIn() } returns true
+        service.onStartCommand(intentWith(VpnService.SERVICE_INTERFACE), 0, 1)
+
+        renderStatusNotification()
+
+        verify(atLeast = 1) { notifications.update(any()) }
+    }
+
     @Test
     fun `the kill-switch alert and its key go out before the state the collector renders`() {
         arrangeTunnelStart(protectSucceeds = false)
