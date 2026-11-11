@@ -31,6 +31,7 @@ import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -459,6 +460,9 @@ class VpnManager @Inject constructor(
          * Bound on a live rebuild's swap: the service's probe window plus its
          * connect watchdog, so the service always reaches a verdict first.
          */
+        private const val INLINE_RELEASE_WAIT_MS = 5_000L
+        private const val LATE_ANSWER_WAIT_MS = 60_000L
+        private const val LATE_RELEASE_MS = 10_000L
         private const val LIVE_REBUILD_TIMEOUT_MS = LiveRebuildPolicy.PROBE_WINDOW_MS + 30_000L + 5_000L
         /** Bound on the server-side slot release at sign-out; local sign-out proceeds regardless. */
         private const val SIGN_OUT_RELEASE_TIMEOUT_MS = 10_000L
@@ -1131,18 +1135,20 @@ class VpnManager @Inject constructor(
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         // Asked once, and the same answer goes to the service with the config.
         val askedForStealth = stealthRequested()
-        val result = repository.connectVpn(
-            serverNodeId = serverId,
-            deviceName = deviceName,
-            stealthMode = askedForStealth,
-            fallbackReason = effectiveFallbackReason,
-            quantumProtection = prefs.quantumProtectionEnabled,
-            pqClientPublicKey = pqClientPublicKey,
-            integrityToken = integrityToken,
-            // BirdoShield (D18): read at dial time like stealth, so a flip while
-            // connected reaches the server on the reapply reconnect, not before.
-            dnsFiltering = shieldInEffect(),
-        )
+        val result = requestOrReleaseOnCancel({ r -> (r as? ApiResult.Success)?.data?.takeIf { it.success }?.keyId }) {
+            repository.connectVpn(
+                serverNodeId = serverId,
+                deviceName = deviceName,
+                stealthMode = askedForStealth,
+                fallbackReason = effectiveFallbackReason,
+                quantumProtection = prefs.quantumProtectionEnabled,
+                pqClientPublicKey = pqClientPublicKey,
+                integrityToken = integrityToken,
+                // BirdoShield (D18): read at dial time like stealth, so a flip while
+                // connected reaches the server on the reapply reconnect, not before.
+                dnsFiltering = shieldInEffect(),
+            )
+        }
 
         when (result) {
             is ApiResult.Success -> {
@@ -1242,18 +1248,20 @@ class VpnManager @Inject constructor(
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
         val askedForStealth = stealthRequested()
-        val result = repository.connectMultiHop(
-            entryNodeId = entryNodeId,
-            exitNodeId = exitNodeId,
-            deviceName = deviceName,
-            stealthMode = askedForStealth,
-            fallbackReason = effectiveFallbackReason,
-            quantumProtection = prefs.quantumProtectionEnabled,
-            pqClientPublicKey = pqClientPublicKey,
-            integrityToken = integrityToken,
-            // BirdoShield (D18) — the multi-hop twin of the single hop's flag.
-            dnsFiltering = shieldInEffect(),
-        )
+        val result = requestOrReleaseOnCancel({ r -> (r as? ApiResult.Success)?.data?.takeIf { it.success }?.keyId }) {
+            repository.connectMultiHop(
+                entryNodeId = entryNodeId,
+                exitNodeId = exitNodeId,
+                deviceName = deviceName,
+                stealthMode = askedForStealth,
+                fallbackReason = effectiveFallbackReason,
+                quantumProtection = prefs.quantumProtectionEnabled,
+                pqClientPublicKey = pqClientPublicKey,
+                integrityToken = integrityToken,
+                // BirdoShield (D18) — the multi-hop twin of the single hop's flag.
+                dnsFiltering = shieldInEffect(),
+            )
+        }
 
         when (result) {
             is ApiResult.Success -> {
@@ -2302,6 +2310,45 @@ class VpnManager @Inject constructor(
     }
 
     /** Best-effort release of one specific peer, off the caller's path. */
+    /**
+     * A-M79: a /connect that a newer dial cancels the caller of. The request
+     * runs in [scope], so the cancel does not abort it half-way; if the answer
+     * still arrives, the session it minted was never applied by anyone, and is
+     * released here, best-effort and off the new dial's path (bounded, never
+     * throws). A dial cancelled BEFORE the request went out calls nothing. A
+     * session this dial applied (it got the answer) is never touched: that
+     * path returns normally and the usual supersede branch owns it.
+     */
+    private suspend fun <R> requestOrReleaseOnCancel(keyOf: (R) -> String?, call: suspend () -> R): R {
+        val request = scope.async { call() }
+        try {
+            return request.await()
+        } catch (e: CancellationException) {
+            if (!request.isCancelled) {
+                // Inline first, bounded: the replacing dial joins this one, so
+                // a release that lands here is done before its /connect (a
+                // 1-device plan refuses a second session until it is).
+                val settled = withContext(NonCancellable) { releaseLateAnswer(request, keyOf, INLINE_RELEASE_WAIT_MS) }
+                if (!settled) scope.launch { releaseLateAnswer(request, keyOf, LATE_ANSWER_WAIT_MS) }
+            }
+            throw e
+        }
+    }
+
+    /** @return false when the answer had not arrived within [waitMs]; true once settled (released or nothing to release). */
+    private suspend fun <R> releaseLateAnswer(request: Deferred<R>, keyOf: (R) -> String?, waitMs: Long): Boolean =
+        withContext(NonCancellable) {
+            try {
+                val answer = withTimeoutOrNull(waitMs) { request.await() } ?: return@withContext false
+                val key = keyOf(answer)
+                if (key != null) withTimeoutOrNull(LATE_RELEASE_MS) { repository.disconnectVpn(key) }
+                true
+            } catch (_: Exception) {
+                // Best-effort: the heartbeat reaper is the backstop.
+                true
+            }
+        }
+
     private fun releasePeer(keyId: String?) {
         if (keyId == null) return
         if (sessionKeyId == keyId) sessionKeyId = null
