@@ -90,12 +90,22 @@ jobs:
             exit 1
           }
           python3 -m venv "$HOME/fdroid-venv"
-          # pip and wheel are pinned too: this job holds the repo signing keystore,
-          # so the installer itself may not float (MR-2102).
-          "$HOME/fdroid-venv/bin/pip" install --quiet 'pip==25.3' 'wheel==0.45.1'
-          # Pinned for reproducibility — bump deliberately after a workflow_dispatch
-          # test (an unpinned latest can change the index format or break APK parsing).
-          "$HOME/fdroid-venv/bin/pip" install --quiet 'fdroidserver==2.4.5'
+          # This job holds the repo signing keystore, so the installer and every
+          # package it pulls in are pinned by hash (MR-2102):
+          #  1. pip, wheel and setuptools (the build backend) from
+          #     requirements-build.txt, --require-hashes.
+          #  2. fdroidserver 2.4.5 and its full dependency closure from
+          #     requirements.txt, --require-hashes. fdroidserver, args, clint and
+          #     sdkmanager are sdists, so --no-build-isolation makes pip build them
+          #     with the hashed setuptools above rather than fetching unpinned
+          #     build requirements. --no-deps is NOT used: pip must see every
+          #     dependency in the file or it refuses the install.
+          # To bump fdroidserver (after a workflow_dispatch test), regenerate both
+          # files as described in .github/fdroid/requirements.txt.
+          "$HOME/fdroid-venv/bin/python" -m pip install --quiet --require-hashes \
+            -r .github/fdroid/requirements-build.txt
+          "$HOME/fdroid-venv/bin/python" -m pip install --quiet --require-hashes --no-build-isolation \
+            -r .github/fdroid/requirements.txt
           echo "$HOME/fdroid-venv/bin" >> "$GITHUB_PATH"
           "$HOME/fdroid-venv/bin/fdroid" --version
 
