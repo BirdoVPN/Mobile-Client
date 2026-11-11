@@ -26,7 +26,7 @@ log = "0.4"
 android_logger = "0.15"
 
 # Crypto primitives — HKDF + SHA-256 for the final PSK derivation
-sha2 = "0.11"
+sha2 = { version = "0.11", features = ["zeroize"] }
 hkdf = "0.13"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 

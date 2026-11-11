@@ -253,13 +253,18 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
 /// `psk = HKDF-SHA-256(IKM = ss, salt = HKDF_SALT, info = nonce)`, written
 /// into `psk`. False only if HKDF refuses the output length.
 ///
-/// MR-2112: `Hkdf::new` is `let (_, hkdf) = Self::extract(..)` (hkdf 0.12
-/// `src/lib.rs`), which drops the 32-byte PRK = HMAC(salt, ss) unwiped: it is
-/// a `GenericArray`, with no Drop. Extracting by hand keeps the PRK so it can
-/// be wiped. NOT wiped: the PRK-keyed HMAC state inside `Hkdf` itself. hmac
-/// 0.12 / sha2 0.10 have no zeroize support, and moving to hkdf 0.13 with
-/// sha2 0.11's `zeroize` feature is a dependency change the register leaves
-/// to a lead decision.
+/// MR-2112: `Hkdf::new` drops the 32-byte PRK = HMAC(salt, ss) unwiped: it is
+/// a plain `Array`, with no Drop. Extracting by hand keeps the PRK so it can
+/// be wiped. The PRK-keyed HMAC state inside `Hkdf` IS now wiped on drop: the
+/// `sha2` `zeroize` feature (sha2 0.11.1 `Cargo.toml:52`, `zeroize =
+/// ["digest/zeroize"]`) gives `Sha256VarCore` a zeroizing `Drop` and
+/// `ZeroizeOnDrop` (`src/block_api.rs:94-104`), and `hmac` 0.13 `HmacCore`
+/// holds exactly two such cores, `digest` and `opad_digest`
+/// (`src/block_api.rs:14-17`); `digest/zeroize` also enables
+/// `block-buffer/zeroize` (digest 0.11.3 `Cargo.toml` features), which wipes the
+/// buffered input on drop (block-buffer 0.12.1 `src/lib.rs:424-437`). hkdf
+/// 0.13 still drops the PRK unwiped (`Hkdf::new` is `let (_, hkdf) =
+/// Self::extract(..)`, `src/lib.rs:94-97`), so the by-hand extract stays.
 fn hkdf_to_psk(shared_secret: &[u8], nonce: &[u8], psk: &mut [u8]) -> bool {
     let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(HKDF_SALT), shared_secret);
     let ok = hk.expand(nonce, psk).is_ok();
