@@ -260,6 +260,17 @@ class VpnManager @Inject constructor(
 
     /** The dial in flight, owned by [scope] so a caller's cancellation cannot strand it (A1-011). */
     private var dialJob: Job? = null
+
+    /** Serialises the hand-over from one dial to the next in [runDial] (A-M79). */
+    private val dialStartLock = Mutex()
+
+    /** Dials [runDial] cancelled to make way for a newer one; their callers get SUPERSEDED. */
+    private val replacedDials: MutableSet<Job> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+
+    private val _dialActive = MutableStateFlow(false)
+
+    /** A dial is running (A-M79): the server picker is held while it is, see [dialInFlight]. */
+    val dialActive: StateFlow<Boolean> = _dialActive.asStateFlow()
     private var connectWatchdogJob: Job? = null
     private var reconnectJob: Job? = null
     private var cooldownJob: Job? = null
@@ -847,18 +858,47 @@ class VpnManager @Inject constructor(
      * strands this class in Connecting half-way through an API call.
      */
     private suspend fun <T> runDial(block: suspend () -> ApiResult<T>): ApiResult<T> {
-        val dial = scope.async { block() }
-        dialJob = dial
+        val own = currentCoroutineContext()[Job]
+        val dial = dialStartLock.withLock {
+            // A-M79: two dials must never be alive at once. The older one used
+            // to run on beside the newer, so a quick second pick had its tunnel
+            // work and its /connect interleaved with the first's, and the
+            // screen named a server the tunnel never moved to. Cancel it and
+            // WAIT for it to end before the next begins. The cancel is
+            // cooperative: every suspension in a dial is a safe point, and the
+            // one that is not (the service's live-rebuild swap) is shielded in
+            // [swapInService], so a cancel never strands a half-swapped peer.
+            // A dial that asks for another one from inside itself (nested) is
+            // never joined: it would wait for its own end.
+            val prev = dialJob
+            if (prev != null && prev.isActive && prev !== own) {
+                replacedDials.add(prev)
+                prev.cancel()
+                withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS + 5_000L) { prev.join() }
+            }
+            scope.async { block() }.also { next ->
+                dialJob = next
+                _dialActive.value = true
+                next.invokeOnCompletion {
+                    _dialActive.value = dialJob?.isActive == true
+                }
+            }
+        }
         return try {
             dial.await()
         } catch (e: CancellationException) {
-            // The DIAL was cancelled (the connect watchdog), not the caller: an
-            // outcome, and the watchdog has already published it.
-            if (dial.isCancelled && currentCoroutineContext().isActive) {
+            if (replacedDials.remove(dial) && currentCoroutineContext().isActive) {
+                // Replaced by a newer dial: the caller's outcome is "superseded", not a failure.
+                ApiResult.Error(SUPERSEDED)
+            } else if (dial.isCancelled && currentCoroutineContext().isActive) {
+                // The DIAL was cancelled (the connect watchdog), not the caller: an
+                // outcome, and the watchdog has already published it.
                 ApiResult.Error(SessionCopy.NO_TUNNEL)
             } else {
                 throw e
             }
+        } finally {
+            replacedDials.remove(dial)
         }
     }
 
@@ -1955,7 +1995,14 @@ class VpnManager @Inject constructor(
             sessionKeyId = oldKey
             return LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
         }
-        val event = withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS) { outcome.await() }
+        // Shielded from cancellation (A-M79): a newer dial cancels this one to
+        // make way, and a cancel here would strand the swap the service is
+        // running with this class's key and server bookkeeping never settled.
+        // Bounded by its own timeout, and the code after it never suspends
+        // before the commit, so the swap ends in a settled session either way.
+        val event = withContext(NonCancellable) {
+            withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS) { outcome.await() }
+        }
         if (event == null) {
             // The service's own connect watchdog has failed it closed by now.
             BirdoVpnService.forgetLiveRebuild(id)
@@ -2630,7 +2677,7 @@ class VpnManager @Inject constructor(
      * live rebuild inside one ([rebuildHold]). A switch riding the live tunnel
      * still shows Connected while its /connect is out.
      */
-    private fun dialInFlight(): Boolean = dialJob?.isActive == true || rebuildHold != null
+    fun dialInFlight(): Boolean = dialJob?.isActive == true || rebuildHold != null
 
     /**
      * Re-queue a reapply that found a dial in flight, instead of rebuilding
