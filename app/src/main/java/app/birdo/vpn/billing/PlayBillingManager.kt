@@ -26,6 +26,9 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -38,6 +41,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -641,18 +645,22 @@ class PlayBillingManager internal constructor(
      */
     private suspend fun reconcileLocked(announce: Boolean): StoreRestoreOutcome {
         if (!isRailEnabled) return StoreRestoreOutcome.NothingToRestore
-        if (connect() != null) {
+        val unreachable = StoreRestoreOutcome.Failed(strings.get(R.string.billing_restore_unreachable))
+        val connectFailure = playCall("connect") { connect() } ?: return unreachable
+        if (connectFailure.value != null) {
             return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.PLAY_STORE_UNAVAILABLE.messageRes))
         }
 
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.SUBS)
             .build()
-        val (result, purchases) = suspendCancellableCoroutine { cont ->
-            billingClient.queryPurchasesAsync(params) { billingResult, list ->
-                cont.resume(billingResult to list)
+        val (result, purchases) = playCall("queryPurchases") {
+            suspendCancellableCoroutine<Pair<BillingResult, List<Purchase>>> { cont ->
+                billingClient.queryPurchasesAsync(params) { billingResult, list ->
+                    cont.resume(billingResult to list)
+                }
             }
-        }
+        }?.value ?: return unreachable
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {
             log("queryPurchases failed: ${result.responseCode} ${result.debugMessage}")
             return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.QUERY_FAILED.messageRes))
@@ -777,9 +785,13 @@ class PlayBillingManager internal constructor(
         val params = AcknowledgePurchaseParams.newBuilder()
             .setPurchaseToken(purchaseToken)
             .build()
-        val result = suspendCancellableCoroutine { cont ->
-            billingClient.acknowledgePurchase(params) { cont.resume(it) }
-        }
+        // A hang here is a failed acknowledge (logged by the caller, retried by
+        // the next sweep, backstopped by the server), not a held gate.
+        val result = playCall("acknowledgePurchase") {
+            suspendCancellableCoroutine<BillingResult> { cont ->
+                billingClient.acknowledgePurchase(params) { cont.resume(it) }
+            }
+        }?.value ?: return false
         // ITEM_ALREADY_OWNED here means the server's own acknowledgement won the
         // race, which is a success, not a failure.
         return result.responseCode == BillingClient.BillingResponseCode.OK ||
@@ -796,8 +808,40 @@ class PlayBillingManager internal constructor(
         if (BuildConfig.DEBUG) Log.d(TAG, message)
     }
 
+    /** Result of a [playCall] that finished in time; boxed so a null value is not a timeout. */
+    private class Timed<T>(val value: T)
+
+    /**
+     * Runs one Google Play call under [PLAY_CALL_TIMEOUT_MS]. Used for every Play
+     * call made while holding [gate]: Play's callbacks can simply never arrive (a
+     * wedged Play Store, a service mid-reconnect), and without a deadline that
+     * call would hold [gate] forever and block every sweep, the storefront refresh
+     * and Restore (A-M74 item 16).
+     *
+     * @return null when the deadline expired (logged, non-fatal; the next trigger
+     * retries), otherwise the result. Real cancellation still propagates.
+     */
+    private suspend fun <T> playCall(what: String, block: suspend () -> T): Timed<T>? =
+        try {
+            withTimeout(PLAY_CALL_TIMEOUT_MS) { Timed(block()) }
+        } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            log("$what timed out after ${PLAY_CALL_TIMEOUT_MS} ms; releasing the gate")
+            null
+        }
+
     private companion object {
         const val TAG = "PlayBilling"
+
+        /**
+         * Deadline for one Play call under the gate. Longer than the storefront's
+         * 15 s [StorefrontState.LOAD_DEADLINE_MS] (which already bounds
+         * [refreshInternal]'s connect and product query as a whole) so a slow but
+         * working Play Store on a bad network is not cut off, short enough that
+         * Restore does not look frozen. One value for all calls: each is a single
+         * IPC round trip to the same Play service.
+         */
+        const val PLAY_CALL_TIMEOUT_MS: Long = 20_000L
     }
 }
 
