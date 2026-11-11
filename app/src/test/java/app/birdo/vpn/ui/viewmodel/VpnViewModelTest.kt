@@ -369,62 +369,71 @@ class VpnViewModelTest {
     @Test
     fun `a second pick seconds after the first, never applied by the tunnel, ends on the live server`() = runTest {
         val vm = connectedOn("c-1")
-        // A applies at once, as a live rebuild does: the tunnel is on A.
-        coEvery { vpnManager.connect("a-1", any()) } coAnswers {
-            connectedId.value = "a-1"
-            ApiResult.Success(app.birdo.vpn.data.model.ConnectResponse(success = true))
-        }
-        // B arrives 2.5 s later and is dropped by the manager: the tunnel stays on A.
-        coEvery { vpnManager.connect("b-1", any()) } coAnswers {
+        try {
+            // A applies at once, as a live rebuild does: the tunnel is on A.
+            coEvery { vpnManager.connect("a-1", any()) } coAnswers {
+                connectedId.value = "a-1"
+                ApiResult.Success(app.birdo.vpn.data.model.ConnectResponse(success = true))
+            }
+            // B arrives 2.5 s later and is dropped by the manager: the tunnel stays on A.
+            coEvery { vpnManager.connect("b-1", any()) } coAnswers {
+                delay(2_500)
+                ApiResult.Error(VpnManager.SUPERSEDED)
+            }
+
+            vm.pick("a-1")
+            assertEquals("a-1", vm.uiState.value.selectedServer?.id)
             delay(2_500)
-            ApiResult.Error(VpnManager.SUPERSEDED)
+            vm.pick("b-1")
+            // Not advanceUntilIdle: a Connected session polls its counters forever.
+            advanceTimeBy(3_000)
+            runCurrent()
+
+            val applied = connectedId.value
+            assertEquals("a-1", applied)
+            assertEquals(applied, vm.uiState.value.selectedServer?.id)
+            assertEquals(applied, vm.uiState.value.servers.first { it.name == vm.uiState.value.selectedServer?.name }.id)
+        } finally {
+            endSession()
         }
-
-        vm.pick("a-1")
-        assertEquals("a-1", vm.uiState.value.selectedServer?.id)
-        delay(2_500)
-        vm.pick("b-1")
-        // Not advanceUntilIdle: a Connected session polls its counters forever.
-        advanceTimeBy(3_000)
-        runCurrent()
-
-        val applied = connectedId.value
-        assertEquals("a-1", applied)
-        assertEquals(applied, vm.uiState.value.selectedServer?.id)
-        assertEquals(applied, vm.uiState.value.servers.first { it.name == vm.uiState.value.selectedServer?.name }.id)
-        endSession()
     }
 
     @Test
     fun `a superseded switch with no newer pick puts the selection back on the live server`() = runTest {
         val vm = connectedOn("a-1")
-        coEvery { vpnManager.connect("b-1", any()) } returns ApiResult.Error(VpnManager.SUPERSEDED)
+        try {
+            coEvery { vpnManager.connect("b-1", any()) } returns ApiResult.Error(VpnManager.SUPERSEDED)
 
-        vm.pick("b-1")
+            vm.pick("b-1")
 
-        assertEquals("a-1", vm.uiState.value.selectedServer?.id)
-        assertNull(vm.uiState.value.connectError)
-        endSession()
+            assertEquals("a-1", vm.uiState.value.selectedServer?.id)
+            assertNull(vm.uiState.value.connectError)
+        } finally {
+            endSession()
+        }
     }
 
     @Test
     fun `a newer pick that owns the selection keeps it when an older dial ends superseded`() = runTest {
         val vm = connectedOn("a-1")
-        val older = CompletableDeferred<ApiResult<app.birdo.vpn.data.model.ConnectResponse>>()
-        coEvery { vpnManager.connect("b-1", any()) } coAnswers { older.await() }
-        coEvery { vpnManager.connect("c-1", any()) } coAnswers {
-            connectedId.value = "c-1"
-            ApiResult.Success(app.birdo.vpn.data.model.ConnectResponse(success = true))
+        try {
+            val older = CompletableDeferred<ApiResult<app.birdo.vpn.data.model.ConnectResponse>>()
+            coEvery { vpnManager.connect("b-1", any()) } coAnswers { older.await() }
+            coEvery { vpnManager.connect("c-1", any()) } coAnswers {
+                connectedId.value = "c-1"
+                ApiResult.Success(app.birdo.vpn.data.model.ConnectResponse(success = true))
+            }
+
+            vm.pick("b-1")
+            vm.pick("c-1")
+            older.complete(ApiResult.Error(VpnManager.SUPERSEDED))
+
+            // The newest pick wins and was applied.
+            assertEquals("c-1", vm.uiState.value.selectedServer?.id)
+            assertEquals("c-1", connectedId.value)
+        } finally {
+            endSession()
         }
-
-        vm.pick("b-1")
-        vm.pick("c-1")
-        older.complete(ApiResult.Error(VpnManager.SUPERSEDED))
-
-        // The newest pick wins and was applied.
-        assertEquals("c-1", vm.uiState.value.selectedServer?.id)
-        assertEquals("c-1", connectedId.value)
-        endSession()
     }
 
     @Test

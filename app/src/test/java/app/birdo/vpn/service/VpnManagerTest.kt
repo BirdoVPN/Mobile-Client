@@ -3206,16 +3206,19 @@ class VpnManagerTest {
             }
         }
 
-        val first = async { vpnManager.connect("srv-1") }
-        advanceTimeBy(2_500)
-        val second = async { vpnManager.connect("srv-2") }
-        advanceTimeBy(30_000)
-        runCurrent()
+        try {
+            val first = async { vpnManager.connect("srv-1") }
+            advanceTimeBy(2_500)
+            val second = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(30_000)
+            runCurrent()
 
-        assertEquals("two dials were alive at once", 1, peak)
-        val firstResult = first.await()
-        assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
-        assertTrue(second.await() is ApiResult.Success)
-        quiesce()
+            assertEquals("two dials were alive at once", 1, peak)
+            val firstResult = first.await()
+            assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+            assertTrue(second.await() is ApiResult.Success)
+        } finally {
+            quiesce()
+        }
     }
 }
