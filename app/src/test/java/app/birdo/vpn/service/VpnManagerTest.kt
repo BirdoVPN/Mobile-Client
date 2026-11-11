@@ -3247,7 +3247,7 @@ class VpnManagerTest {
         }
         coEvery { repository.disconnectVpn(any()) } coAnswers {
             backend.released += firstArg<String?>()
-            backend.active -= firstArg<String?>()
+            backend.active.removeAll(listOfNotNull(firstArg<String?>()).toSet())
             ApiResult.Success(Unit)
         }
         return backend
