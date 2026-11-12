@@ -201,4 +201,33 @@ class HomeConnectionModelTest {
         assertEquals(ServerRowMarkers(null, null), serverRowMarkers(switchingMultiHop, true))
         assertEquals(ServerRowMarkers(null, null), serverRowMarkers(connected, true))
     }
+
+    // ── A-M79: the picker, and what the server card says ─────────────────
+
+    @Test
+    fun `the server picker is held while a dial is in flight, even over a Connected tunnel (A-M79)`() {
+        val connected = VpnUiState(vpnState = VpnState.Connected, selectedServer = amsterdam)
+        assertTrue(serverPickerEnabled(connected))
+        // A live switch rides the old tunnel: still Connected, isSwitching false, dial running.
+        val liveSwitch = connected.copy(dialInFlight = true)
+        assertFalse(homeConnection(liveSwitch).isSwitching)
+        assertFalse(serverPickerEnabled(liveSwitch))
+        // The existing holds are unchanged.
+        assertFalse(serverPickerEnabled(VpnUiState(vpnState = VpnState.Connecting)))
+        assertFalse(serverPickerEnabled(VpnUiState(vpnState = VpnState.Disconnecting)))
+    }
+
+    @Test
+    fun `an unapplied pick reads Switching, never as the protected server (A-M79)`() {
+        val pending = VpnUiState(
+            vpnState = VpnState.Connected, selectedServer = amsterdam, pendingSwitchServerId = "nl-1",
+            connectedServer = "Frankfurt-01", connectedServerId = "de-1",
+        )
+        assertEquals(ServerCardModel(name = amsterdam.name, switching = true, tunnelOn = "Frankfurt-01"), serverCardModel(pending))
+        // Applied: the pending marker is gone and the line names the same server.
+        val applied = pending.copy(pendingSwitchServerId = null, connectedServer = amsterdam.name, connectedServerId = "nl-1")
+        assertEquals(ServerCardModel(name = amsterdam.name, switching = false, tunnelOn = amsterdam.name), serverCardModel(applied))
+        // Nothing is claimed while the tunnel is not up.
+        assertNull(serverCardModel(applied.copy(vpnState = VpnState.Connecting)).tunnelOn)
+    }
 }

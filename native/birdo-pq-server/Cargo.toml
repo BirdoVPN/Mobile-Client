@@ -5,10 +5,10 @@ edition = "2021"
 # ml-kem and its chain (kem, sha3, keccak, hybrid-array, module-lattice) are
 # edition 2024 with rust-version = "1.85"; ctutils (under module-lattice and
 # hybrid-array) needs 1.87 from 0.4.3, and 0.4.4 is the RUSTSEC-2026-0385
-# fix. Declared here so an older toolchain fails with a message that names
-# the requirement instead of an edition error inside a dependency. See
+# fix; sha2 0.11 needs 1.88 (A-M76). Declared here so an older toolchain
+# fails with a message that names the requirement instead of an edition error inside a dependency. See
 # rust-toolchain.toml.
-rust-version = "1.87"
+rust-version = "1.88"
 publish = false
 description = "Server-side BirdoPQ v1 helper — encapsulates against a client ML-KEM-1024 public key and prints (ciphertext, psk)."
 license = "Apache-2.0"
@@ -38,14 +38,14 @@ path = "src/bin/birdo-pq-smoke.rs"
 # ml-kem does NOT remove the ARMv8.2 FEAT_SHA3 opcodes (it gates them on
 # getauxval(AT_HWCAP), which is a different and weaker claim), and why the pin
 # is exact -- is in native/rosenpass-jni/Cargo.toml. Do not let the two drift.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match the client side bit-for-bit.
-sha2 = "0.10"
-hkdf = "0.12"
+sha2 = { version = "0.11", features = ["zeroize"] }
+hkdf = "0.13"
 
 # Wire encoding.
-base64 = "0.22"
+base64 = "0.23"
 
 # Hex for the committed known-answer vectors. A normal dependency, not a dev
 # one, because birdo-pq-smoke is a real binary that CI runs under QEMU.
@@ -63,7 +63,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = 3
