@@ -235,7 +235,13 @@ struct ProfileView: View {
                 // it must be copyable (the display truncates; the clipboard
                 // gets the full id).
                 if authVM.isAnonymousAccount, let number = authVM.anonymousAccountNumber {
-                    accountNumberRow(number)
+                    // MR-1707: the server's mask has no reveal and no copy.
+                    if let tail = AnonNumberMask.lastDigits(number) {
+                        MaskedAccountNumberRow(lastDigits: tail)
+                    } else {
+                        accountNumberRow(number)
+                    }
+                    ReplaceNumberEntry()
                 }
 
                 connectionStatusRow
