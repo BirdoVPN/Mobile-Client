@@ -94,6 +94,8 @@ fun LoginScreen(
     onLoginAnonymous: (anonymousId: String, password: String?) -> Unit = { _, _ -> },
     onSsoLogin: (provider: String) -> Unit = {},
     onCreateAnonymous: () -> Unit = {},
+    /** The sign-up proof-of-work is running (MR-2152): one status line under the create link. */
+    isCheckingDevice: Boolean = false,
     /** Non-null right after an in-app anonymous account was created: the minted
      *  24-digit ID, shown once and blocking until acknowledged. */
     pendingAnonymousId: String? = null,
@@ -599,7 +601,7 @@ fun LoginScreen(
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            stringResource(R.string.login_connecting),
+                            stringResource(if (isCheckingDevice) R.string.login_checking_device else R.string.login_connecting),
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 14.sp,
                         )
@@ -724,7 +726,7 @@ fun LoginScreen(
                     if (isLoading) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
-                        Text(stringResource(R.string.login_connecting), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(stringResource(if (isCheckingDevice) R.string.login_checking_device else R.string.login_connecting), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     } else {
                         Text(stringResource(R.string.login_anonymous_submit), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     }
@@ -750,6 +752,15 @@ fun LoginScreen(
                         }
                         .testTag(TestTags.LOGIN_ANONYMOUS_CREATE),
                 )
+                if (isCheckingDevice) {
+                    Text(
+                        text = stringResource(R.string.login_checking_device),
+                        fontSize = 12.sp,
+                        color = BirdoWhite40,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    )
+                }
             }
             AuthTab.Sso -> {
             // ── Continue with Google / GitHub (native SSO, no password) ──

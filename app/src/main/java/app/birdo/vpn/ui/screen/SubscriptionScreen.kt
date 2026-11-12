@@ -136,7 +136,7 @@ private val plans = listOf(
         priceMonthly = R.string.subscription_price_operative_monthly,
         priceYearly = R.string.subscription_price_operative_yearly,
         features = listOf(
-            PlanFeature.Counted(R.plurals.subscription_feature_devices, 5),
+            PlanFeature.Counted(R.plurals.subscription_feature_devices, 3),
             PlanFeature.Plain(R.string.subscription_feature_all_locations),
             PlanFeature.Plain(R.string.subscription_feature_unlimited_bandwidth),
             PlanFeature.Plain(R.string.subscription_feature_wireguard),
@@ -159,7 +159,7 @@ private val plans = listOf(
         priceMonthly = R.string.subscription_price_sovereign_monthly,
         priceYearly = R.string.subscription_price_sovereign_yearly,
         features = listOf(
-            PlanFeature.Counted(R.plurals.subscription_feature_devices, 10),
+            PlanFeature.Counted(R.plurals.subscription_feature_devices, 5),
             PlanFeature.Plain(R.string.subscription_feature_all_locations),
             PlanFeature.Plain(R.string.subscription_feature_unlimited_bandwidth),
             PlanFeature.Plain(R.string.subscription_feature_wireguard),

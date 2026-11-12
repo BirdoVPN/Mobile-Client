@@ -6,7 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.AccountRestriction
 import app.birdo.vpn.data.model.ClientConfigResponse
+import app.birdo.vpn.data.model.DeviceNotice
 import app.birdo.vpn.data.model.PortForward
 import app.birdo.vpn.data.model.RedeemVoucherResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
@@ -43,6 +45,15 @@ data class VpnUiState(
     val connectedSince: Long = 0,
     val servers: List<VpnServer> = emptyList(),
     val selectedServer: VpnServer? = null,
+    /**
+     * A-M79: the server a live switch is moving to, from the pick until its
+     * dial ends. While set, [selectedServer] is the TARGET, not what the tunnel
+     * is on, and Home says "Switching…" instead of presenting it as the
+     * protected server. Null once the switch applied or was given up.
+     */
+    val pendingSwitchServerId: String? = null,
+    /** A-M79: a dial is running (VpnManager.dialActive); the server picker is held meanwhile. */
+    val dialInFlight: Boolean = false,
     val isLoadingServers: Boolean = false,
     /**
      * A message for the Connect screen that the session state does not carry
@@ -82,6 +93,10 @@ data class VpnUiState(
     val stealthChosen: Boolean = false,
     /** Asked for Stealth, connected without it for the plan (VpnManager.stealthNotice). */
     val stealthNotice: String? = null,
+    /** MR-2221: what the last refused connect said about a restricted account (VpnManager.accountRestriction). */
+    val accountRestriction: AccountRestriction? = null,
+    /** MR-2220: the server's notice on a successful connect (VpnManager.deviceNotice). */
+    val deviceNotice: DeviceNotice? = null,
     /** Whether the current connection uses any post-quantum PSK mechanism (bilateral OR server-provided). */
     val quantumActive: Boolean = false,
     /**
@@ -463,6 +478,11 @@ class VpnViewModel @Inject constructor(
     /** birdo-web PR #590: the Free allowance's grace window, from the heartbeat. */
     private fun startQuotaSync() {
         viewModelScope.launch {
+            vpnManager.dialActive.collect { active ->
+                _uiState.value = _uiState.value.copy(dialInFlight = active)
+            }
+        }
+        viewModelScope.launch {
             vpnManager.quotaGrace.collect { grace ->
                 _uiState.value = _uiState.value.copy(quotaGrace = grace)
             }
@@ -470,6 +490,16 @@ class VpnViewModel @Inject constructor(
         viewModelScope.launch {
             vpnManager.stealthNotice.collect { notice ->
                 _uiState.value = _uiState.value.copy(stealthNotice = notice)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.accountRestriction.collect { restriction ->
+                _uiState.value = _uiState.value.copy(accountRestriction = restriction)
+            }
+        }
+        viewModelScope.launch {
+            vpnManager.deviceNotice.collect { notice ->
+                _uiState.value = _uiState.value.copy(deviceNotice = notice)
             }
         }
     }
@@ -764,6 +794,11 @@ class VpnViewModel @Inject constructor(
         // rather than switch a live tunnel onto a node the backend will reject.
         if (!server.accessible) return
 
+        // A-M79: no pick lands while a dial is still running. The picker is
+        // disabled for it too; this is the same rule for a sheet that was
+        // already open when the dial began.
+        if (vpnManager.dialInFlight()) return
+
         val prev = _uiState.value.selectedServer
 
         // Live server switch: if already on the tunnel and a DIFFERENT node is
@@ -820,9 +855,16 @@ class VpnViewModel @Inject constructor(
 
         // Clear the refusal (and any stale connect error) once a selection is
         // actually accepted, so a banner cannot outlive the tap that caused it.
-        _uiState.value = _uiState.value.copy(selectedServer = server, connectError = null)
-        if (!onTunnel || prev?.id == server.id) return
+        val relabelOnly = !onTunnel || prev?.id == server.id
+        val seq = ++switchSeq
+        _uiState.value = _uiState.value.copy(
+            selectedServer = server,
+            connectError = null,
+            pendingSwitchServerId = if (relabelOnly) null else server.id,
+        )
+        if (relabelOnly) return
         if (!vpnManager.isVpnPermissionGranted()) {
+            _uiState.value = _uiState.value.copy(pendingSwitchServerId = null)
             requestPermissionFor(PendingDial.Switch(server))
             return
         }
@@ -832,10 +874,28 @@ class VpnViewModel @Inject constructor(
                 // except a live switch that did not happen (A1-034): that one
                 // kept the previous session, so say so and put the selection back.
                 val result = vpnManager.connect(server.id)
-                if (result is ApiResult.Error && result.message != VpnManager.SUPERSEDED) {
+                // A-M79: the screen names the server the tunnel is on once a
+                // dial ends. A newer pick owns the selection (its own dial
+                // settles it); otherwise this one does.
+                if (seq != switchSeq) return@launch
+                if (result is ApiResult.Success) {
+                    _uiState.value = _uiState.value.copy(selectedServer = server, pendingSwitchServerId = null)
+                } else if (result is ApiResult.Error && result.message == VpnManager.SUPERSEDED) {
+                    // Superseded by something that is not a newer pick (a
+                    // Disconnect, a sign-out, a system dial): back to the
+                    // server the tunnel is live on.
+                    _uiState.value = _uiState.value.copy(
+                        selectedServer = liveServer() ?: _uiState.value.selectedServer,
+                        pendingSwitchServerId = null,
+                    )
+                } else if (result is ApiResult.Error) {
+                    _uiState.value = _uiState.value.copy(pendingSwitchServerId = null)
                     when (vpnManager.state.value) {
                         is VpnState.Connected ->
-                            _uiState.value = _uiState.value.copy(selectedServer = prev, connectError = result.message)
+                            _uiState.value = _uiState.value.copy(
+                                selectedServer = liveServer() ?: prev,
+                                connectError = result.message,
+                            )
                         // Round 7: a switch the network cut short hands the session
                         // it was moving back to the supervisor, which waits for the
                         // network and re-dials prefs.lastServerId — not the server
@@ -853,9 +913,21 @@ class VpnViewModel @Inject constructor(
                 // app, and never show its text: an exception message is not
                 // copy (REVIEW-AND-006).
                 // A switch that threw before VpnManager could publish an Error.
-                _uiState.value = _uiState.value.copy(connectError = appContext.getString(R.string.vpn_switch_failed))
+                _uiState.value = _uiState.value.copy(
+                    connectError = appContext.getString(R.string.vpn_switch_failed),
+                    pendingSwitchServerId = null,
+                )
             }
         }
+    }
+
+    /** Bumped by every pick; the newest pick owns the selection when an older dial ends (A-M79). */
+    private var switchSeq = 0
+
+    /** The listed server the tunnel was dialled to (VpnManager.connectedServerId), or null. */
+    private fun liveServer(): VpnServer? {
+        val id = vpnManager.connectedServerId.value ?: return null
+        return _uiState.value.servers.firstOrNull { it.id == id }
     }
 
     // ── Favorites ────────────────────────────────────────────────
@@ -1046,6 +1118,9 @@ class VpnViewModel @Inject constructor(
     }
 
     fun getVpnPermissionIntent(): Intent? = vpnManager.getVpnPermissionIntent()
+
+    /** Home's dismiss on the device notice (MR-2220). */
+    fun dismissDeviceNotice() = vpnManager.dismissDeviceNotice()
 
     /** Home's dismiss affordance on its message banner (A2-012). */
     fun dismissConnectError() {

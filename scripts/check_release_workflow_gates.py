@@ -175,6 +175,7 @@ for name, output in [("apple-ci.yml", "apple"), ("codeql-swift.yml", "swift")]:
     if re.search(r"^\s+paths(-ignore)?:", on_block, re.M):
         fail(f"{name}: workflow-level paths filter under `on:`; move it into the `changes` job")
     jobs = jobs_of(text)
+    gated, twins = {}, {}
     if "changes" not in jobs or f"outputs.{output}" not in jobs["changes"]:
         fail(f"{name}: needs a `changes` job with output `{output}`")
     for job, block in jobs.items():
@@ -182,8 +183,25 @@ for name, output in [("apple-ci.yml", "apple"), ("codeql-swift.yml", "swift")]:
             continue
         if "changes" not in needs_of(block):
             fail(f"{name}: job {job} must need `changes`")
-        if f"needs.changes.outputs.{output} != 'false'" not in block or "!cancelled()" not in block:
+        if "!cancelled()" not in block:
+            fail(f"{name}: job {job} must say !cancelled()")
+        if f"needs.changes.outputs.{output} == 'false'" in block:
+            twins[job] = block  # same-name no-op, checked below
+        elif f"needs.changes.outputs.{output} != 'false'" in block:
+            gated[job] = block
+        else:
             fail(f"{name}: job {job} must run unless changes said '{output}' is 'false' (fail open)")
+
+    # Every gated job has exactly one no-op twin with the IDENTICAL name that
+    # runs only when it is skipped, so a check of that name always reports and
+    # can be required without blocking pull requests that skip it.
+    def job_name(block):
+        m = re.search(r"^    name: (.+?)\s*$", block, re.M)
+        return m.group(1) if m else None
+    gated_names = sorted(job_name(b) for b in gated.values())
+    twin_names = sorted(job_name(b) for b in twins.values())
+    if gated_names != twin_names or None in gated_names:
+        fail(f"{name}: every job gated on '{output}' needs a same-name no-op twin that runs when it is 'false' (gated {gated_names}, twins {twin_names})")
 
 if failures:
     for f in failures:

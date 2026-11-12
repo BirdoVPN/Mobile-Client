@@ -27,10 +27,9 @@ settings:
     # mistaken for, or silently ship as, a release.
     MARKETING_VERSION: "0.0.0-dev"
     CURRENT_PROJECT_VERSION: "0"
-    # "1" = iPhone only. An iPhone-only app still INSTALLS and runs on iPad in
-    # scaled compatibility mode, which is enough to test the packet tunnel on
-    # real hardware. Set to "1,2" only if you intend to ship native iPad layouts
-    # (App Review will then expect proper iPad UI).
+    # Project-level only. It does NOT make the app iPhone-only: `supportedDestinations`
+    # on the BirdoVPN target makes XcodeGen write "1,2" at target level, so the
+    # app has always been a native iPad app (UIDeviceFamily 1, 2 in the bundle).
     TARGETED_DEVICE_FAMILY: "1"
     # Team is KPUFGR98A5 (Phillip Bird), taken from BirdoVPN_App_Store_Profile.
     # Declared here so Xcode's automatic signing survives `xcodegen generate` —
@@ -244,6 +243,9 @@ targets:
       # fields precisely so QuickSelectTests can pin it here. VpnViewModel.swift
       # (its only caller) cannot be compiled into this bundle.
       - path: iosApp/Services/QuickSelect.swift
+      # A-H15 / MR-2212: which relay the one automatic retry goes to.
+      # Foundation-only, pinned by RelayRetryTests.
+      - path: iosApp/Services/RelayRetry.swift
       # BirdoShield (D18) fleet gate. Foundation-only by design: "may the
       # toggle claim to work" is a pure function over the persisted preference
       # and the server's `dnsFilteringAvailable`, precisely so the
@@ -297,6 +299,12 @@ targets:
       # is in ConnectWire.swift and DeleteAccountBody in AccountDeletion.swift,
       # both already listed.
       - path: iosApp/Services/AuthWire.swift
+      # MR-2152 (A-H11): the sign-up proof-of-work: wire models, the SHA-256
+      # solver, the refusal classification and the retry policy. Foundation +
+      # CryptoKit only by design, so SignupPowTests pins them against the
+      # server's own vectors here; APIClient.swift (its only caller) cannot be
+      # compiled into this bundle. AuthWire's DeviceInfoBody names PowSolution.
+      - path: iosApp/Services/SignupPow.swift
       - path: iosApp/Services/CredentialRedaction.swift
       - path: iosApp/Services/CredentialRedactingModels.swift
       # The live-rebuild snapshot holds the tunnel's private and pre-shared
@@ -318,6 +326,13 @@ targets:
       # tunnel it just revoked), and the two-factor refusal classification.
       # Pinned by AccountDeletionTests; AuthViewModel cannot be compiled here.
       - path: iosApp/Services/AccountDeletion.swift
+      # A-M38: the scaled typography tokens and their modifier. SwiftUI-only
+      # (no app types), pinned by DynamicTypeTests at .large and at the
+      # accessibility sizes.
+      - path: iosApp/Theme/BirdoTheme.swift
+      # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
+      # session. Foundation-only, pinned by SessionPersistenceTests.
+      - path: iosApp/Services/SessionPersistence.swift
       # LIVE-PORT53: the WireGuard port is no longer a setting. Foundation-only
       # by design: the migration of a saved "53" / custom port and the pinning
       # of an older build's tunnel profile are pure functions precisely so
@@ -395,6 +410,12 @@ targets:
       # WireGuardKit turns them into includedRoutes. Foundation-only, pinned by
       # TunnelRoutesTests; VPNManager (NetworkExtension) cannot be compiled here.
       - path: iosApp/Services/TunnelRoutes.swift
+      # Guideline 4: the arithmetic that keeps a Mac window below the menu bar.
+      # Compiled on every platform, though only the macOS app calls it, because
+      # this bundle's CI run is on the iOS Simulator. CoreGraphics geometry
+      # only, pinned by WindowFrameClampTests; MacWindow (AppKit, in
+      # BirdoVPNApp.swift) cannot be compiled into this bundle.
+      - path: iosApp/Platform/WindowFrameClamp.swift
       # MR-1729: host-only keychain items in a group the PacketTunnel extension
       # is not entitled to, and the lossless move of an older build's items.
       # Foundation-only by design (the keychain is behind KeychainGroupStore),

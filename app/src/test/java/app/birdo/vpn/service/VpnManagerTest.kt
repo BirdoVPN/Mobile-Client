@@ -21,6 +21,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1619,6 +1620,97 @@ class VpnManagerTest {
         coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
     }
 
+    /** MR-2221: the 454-character sentence, as the server writes it (past the usual 200-character limit). */
+    private val restrictedText = "New free-plan connections on this account are paused until the time below. " +
+        "Devices on it kept taking the connection from each other. If this wasn't you, set or change your password. " +
+        "If this is a mistake, ask for a review on the Devices page, and we will look at it as soon as we can. " +
+        "Connections you already have stay up until you disconnect them yourself, and nothing else changes."
+
+    private fun restrictedRefusal(until: String) = ApiResult.Success(
+        ConnectResponse(
+            success = false,
+            refusalReason = "account_restricted",
+            message = restrictedText,
+            accountRestriction = app.birdo.vpn.data.model.AccountRestriction(until, "/dashboard/devices"),
+        ),
+    )
+
+    @Test
+    fun `a restricted account is told why, with the end, and a manual connect still reaches the server`() = runTest {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns
+            "New connections resume tomorrow."
+        val until = java.time.Instant.now().plusSeconds(3_600).toString()
+        coEvery { repository.connectVpn(any(), any()) } returns restrictedRefusal(until)
+
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+
+        val error = vpnManager.state.value as VpnState.Error
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, error.kind)
+        assertTrue(error.message, error.message.startsWith(restrictedText))
+        assertTrue(error.message, error.message.endsWith("New connections resume tomorrow."))
+        assertEquals("/dashboard/devices", vpnManager.accountRestriction.value?.appealPath)
+
+        // The pause may have ended on the website, or the user may have changed
+        // account or plan: a tap is always sent, and the server answers afresh.
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a restricted refusal with no usable message says what it is, never blames the server config`() = runTest {
+        every { context.getString(R.string.error_account_restricted) } returns
+            app.birdo.vpn.testing.StringsXml.text("error_account_restricted")
+        for (message in listOf(null, "<html>blocked</html>")) {
+            coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
+                ConnectResponse(success = false, refusalReason = "account_restricted", message = message),
+            )
+            vpnManager.connect("srv-1")
+            advanceUntilIdle()
+            val error = vpnManager.state.value as VpnState.Error
+            assertEquals(FailureKind.ACCOUNT_RESTRICTED, error.kind)
+            assertEquals(app.birdo.vpn.testing.StringsXml.text("error_account_restricted"), error.message)
+        }
+    }
+
+    @Test
+    fun `a re-dial refused as account_restricted releases the kill switch block and never re-dials`() = runTest {
+        every { context.getString(R.string.error_account_restricted_until, *anyVararg()) } returns "x"
+        connectAndEstablish()
+        every { BirdoVpnService.killSwitchActive } returns true
+        probeAnswers(ApiResult.Error("Couldn't reach BirdoVPN.", 0))
+        coEvery { repository.connectVpn(any(), any()) } returns
+            restrictedRefusal(java.time.Instant.now().plusSeconds(3_600).toString())
+
+        tunnelDies()
+        advanceTimeBy(30 * 60_000L)
+
+        assertEquals(FailureKind.ACCOUNT_RESTRICTED, (vpnManager.state.value as VpnState.Error).kind)
+        assertTrue(BirdoVpnService.ACTION_RELEASE_BLOCK in dispatchedActions)
+        verify { prefs.sessionShouldBeUp = false }
+        coVerify(exactly = 2) { repository.connectVpn(any(), any()) }
+    }
+
+    @Test
+    fun `a device notice on a successful connect is kept for Home and cleared by Disconnect`() = runTest {
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(
+            makeConnectResponse().copy(
+                deviceNotice = app.birdo.vpn.data.model.DeviceNotice(
+                    "device_limit_conflict", "Other devices kept taking this connection.", "/dashboard/devices",
+                ),
+            ),
+        )
+
+        vpnManager.connect("srv-1")
+        advanceUntilIdle()
+
+        assertEquals("Other devices kept taking this connection.", vpnManager.deviceNotice.value?.message)
+        assertNull(vpnManager.accountRestriction.value)
+        vpnManager.dismissDeviceNotice()
+        assertNull(vpnManager.deviceNotice.value)
+    }
+
     @Test
     fun `a drained server is left for another one instead of re-dialled into a refusal`() = runTest {
         connectAndEstablish()
@@ -2723,8 +2815,11 @@ class VpnManagerTest {
         vpnManager.requestSettingsReapply()
         advanceTimeBy(5_000)
 
-        // A newer switch rides the live tunnel and its new peer answers.
+        // A newer switch rides the live tunnel and its new peer answers. The
+        // cancelled first switch's /connect is still out, so the takeover waits
+        // the bounded inline release window for its answer (A-M79).
         val newer = async { vpnManager.connect("srv-3") }
+        advanceTimeBy(6_000)
         runCurrent()
         BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
         runCurrent()
@@ -3095,5 +3190,205 @@ class VpnManagerTest {
         // Stealth wanted again: today's path, as for any Stealth session.
         assertFalse(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
         quiesce()
+    }
+
+    // ── A-M79: two dials never overlap ───────────────────────────────
+
+    @Test
+    fun `a second connect cancels and outwaits the first, so two dials are never alive at once`() = runTest {
+        // The /connect itself is not aborted by the cancel (its answer is still
+        // wanted, to release the session it minted), so what must never overlap
+        // is the DIALS: the first dial has ended before the second one's request.
+        lateinit var first: kotlinx.coroutines.Deferred<ApiResult<ConnectResponse>>
+        var firstEndedBeforeSecondRequest: Boolean? = null
+        coEvery { repository.connectVpn(any(), any()) } coAnswers {
+            if (firstArg<String>() == "srv-2") {
+                firstEndedBeforeSecondRequest = first.isCompleted
+                ApiResult.Success(makeConnectResponse().copy(keyId = "key-2"))
+            } else {
+                delay(20_000)
+                ApiResult.Success(makeConnectResponse())
+            }
+        }
+
+        try {
+            first = async { vpnManager.connect("srv-1") }
+            advanceTimeBy(2_500)
+            val second = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(40_000)
+            runCurrent()
+
+            assertEquals("the second dial's request went out while the first dial was alive", true, firstEndedBeforeSecondRequest)
+            val firstResult = first.await()
+            assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+            assertTrue(second.await() is ApiResult.Success)
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── A-M79: a dial cancelled after its /connect succeeded releases that session ──
+
+    /** A backend for a 1-device plan: a second concurrent session is refused until the first is released. */
+    private class OneDeviceBackend {
+        val active = mutableSetOf<String>()
+        val released = mutableListOf<String?>()
+        var minted = 0
+    }
+
+    private fun oneDeviceBackend(latencyMs: Long): OneDeviceBackend {
+        val backend = OneDeviceBackend()
+        coEvery { repository.connectVpn(any(), any()) } coAnswers {
+            if (backend.active.isNotEmpty()) {
+                ApiResult.Error("Device limit reached", 403)
+            } else {
+                val key = "key-${++backend.minted}"
+                backend.active += key // the server has the session the moment it accepts
+                delay(latencyMs) // ...and the answer takes this long to reach the phone
+                ApiResult.Success(makeConnectResponse().copy(keyId = key))
+            }
+        }
+        coEvery { repository.disconnectVpn(any()) } coAnswers {
+            backend.released += firstArg<String?>()
+            backend.active.removeAll(listOfNotNull(firstArg<String?>()).toSet())
+            ApiResult.Success(Unit)
+        }
+        return backend
+    }
+
+    @Test
+    fun `free plan - a dial cancelled after its connect succeeded releases that session before the next connect`() = runTest {
+        val backend = oneDeviceBackend(latencyMs = 4_000)
+        try {
+            val first = async { vpnManager.connect("srv-1") }
+            advanceTimeBy(1_000) // the server has minted key-1; the answer is still on its way
+            val second = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(60_000)
+            runCurrent()
+
+            val firstResult = first.await()
+            assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+            val secondResult = second.await()
+            assertTrue("the next /connect was refused: $secondResult", secondResult is ApiResult.Success)
+            // Released exactly once, with ITS id, and never the new dial's.
+            // (A keyless teardown call is the session's own and is not the point.)
+            assertEquals(listOf("key-1"), backend.released.filterNotNull())
+            assertEquals(setOf("key-2"), backend.active)
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `a dial cancelled while its connect never answers releases nothing`() = runTest {
+        coEvery { repository.connectVpn("srv-1", any()) } coAnswers { awaitCancellation() }
+        coEvery { repository.connectVpn("srv-2", any()) } returns ApiResult.Success(makeConnectResponse().copy(keyId = "key-2"))
+        try {
+            val first = async { vpnManager.connect("srv-1") }
+            advanceTimeBy(1_000)
+            val second = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(30_000)
+            runCurrent()
+
+            assertTrue(second.await() is ApiResult.Success)
+            first.await()
+            // No session id exists for the first dial, so none is released (a
+            // keyless teardown call is the session's own and is not the point).
+            coVerify(exactly = 0) { repository.disconnectVpn(match { it != null }) }
+        } finally {
+            quiesce()
+        }
+    }
+
+    // ── A-M79: a live rebuild mints a NEW key; a cancelled dial must not orphan it ──
+
+    /** A 1-device plan that lets a rebuild hold the old and the new key (2 at most), nothing more. */
+    private class RebuildBackend(val oldKey: String) {
+        val active = mutableSetOf(oldKey)
+        val released = mutableListOf<String?>()
+        var nextKey = 456
+        val minted = mutableListOf<String>()
+    }
+
+    private fun rebuildBackend(latencyMs: Long): RebuildBackend {
+        val backend = RebuildBackend("key-123")
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        } coAnswers {
+            val rebuildOf = arg<String?>(8)
+            if (backend.active.size >= 2) {
+                ApiResult.Error("Device limit reached", 403)
+            } else {
+                val key = "key-${backend.nextKey++}"
+                backend.active += key // the server has the new session the moment it accepts
+                backend.minted += key
+                delay(latencyMs) // ...and the answer takes this long to reach the phone
+                ApiResult.Success(makeConnectResponse().copy(keyId = key, deferredKeyId = rebuildOf))
+            }
+        }
+        coEvery { repository.disconnectVpn(any()) } coAnswers {
+            backend.released += firstArg<String?>()
+            backend.active.removeAll(listOfNotNull(firstArg<String?>()).toSet())
+            ApiResult.Success(Unit)
+        }
+        return backend
+    }
+
+    @Test
+    fun `a switch cancelled during its rebuild connect releases the NEW key once, never the old, and the next dial succeeds`() = runTest {
+        connectAndEstablish()
+        val backend = rebuildBackend(latencyMs = 4_000)
+        try {
+            val first = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(1_000) // the server has minted key-456; its answer is still on its way
+            val second = async { vpnManager.connect("srv-3") }
+            advanceTimeBy(30_000) // second's own rebuild answers, and its swap goes to the service
+            runCurrent()
+
+            // Before anything settles the second swap: only the orphan was released.
+            assertEquals(listOf("key-456"), backend.released.filterNotNull())
+            assertFalse("the old key was released by the cancel", "key-123" in backend.released)
+            BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+            runCurrent()
+
+            val firstResult = first.await()
+            assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+            val secondResult = second.await()
+            assertTrue("the next rebuild was refused: $secondResult", secondResult is ApiResult.Success)
+            // Exactly once with the orphan's id; the old key goes only by the usual post-swap release.
+            assertEquals(1, backend.released.count { it == "key-456" })
+            assertEquals(listOf("key-456", "key-123"), backend.released.filterNotNull())
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `a switch cancelled after its swap went to the service releases no key until the swap settles`() = runTest {
+        connectAndEstablish()
+        val backend = rebuildBackend(latencyMs = 0)
+        try {
+            val first = async { vpnManager.connect("srv-2") }
+            runCurrent() // answered; the swap is with the service, which has not answered
+            assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+            val second = async { vpnManager.connect("srv-3") }
+            advanceTimeBy(10_000)
+            runCurrent()
+
+            // The cancel waits out the shielded swap and touches no key meanwhile.
+            assertTrue(backend.released.filterNotNull().isEmpty())
+            BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+            // The second dial's own swap is never answered here: it times out.
+            advanceTimeBy(120_000)
+            runCurrent()
+            first.await()
+            second.await()
+        } finally {
+            quiesce()
+        }
     }
 }

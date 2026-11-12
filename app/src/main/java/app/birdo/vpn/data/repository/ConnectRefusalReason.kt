@@ -27,6 +27,13 @@ enum class ConnectRefusalReason(val wire: String) {
 
     /** The chosen server is missing or not ONLINE, or no server can be used right now. */
     SERVER_UNAVAILABLE("server_unavailable"),
+
+    /**
+     * MR-2221: new free-plan connections on the account are paused until
+     * `accountRestriction.until`. Final until then; the server's own message
+     * (longer than the usual 200 characters) is the one shown.
+     */
+    ACCOUNT_RESTRICTED("account_restricted"),
     ;
 
     companion object {

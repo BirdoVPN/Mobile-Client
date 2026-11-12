@@ -17,6 +17,17 @@ private fun redacted(secret: String?): String = if (secret == null) "null" else 
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
+/**
+ * What the server verifies for a proof-of-work: the token it issued and the nonce
+ * found for it (birdo-web docs/SIGNUP-PROOF-OF-WORK.md). Sent as `pow` on a
+ * sign-up and, only after a 429 `pow_required` for `login`, on a sign-in
+ * (A-M78 / MR-2139). A solved challenge is spendable once: never printed.
+ */
+@Serializable
+data class PowSolution(val challenge: String, val nonce: String) {
+    override fun toString(): String = "PowSolution(challenge=[REDACTED], nonce=[REDACTED])"
+}
+
 @Serializable
 data class LoginRequest(
     val email: String,
@@ -27,6 +38,8 @@ data class LoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
+    /** Set only on the one retry that answers a sign-in spike's `pow_required` (A-M78). */
+    val pow: PowSolution? = null,
 ) {
     /**
      * Leaves out [password], [email], [deviceId] and [deviceName], like
@@ -254,6 +267,8 @@ data class AnonymousLoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
+    /** Set only on the one retry that answers a sign-in spike's `pow_required` (A-M78). */
+    val pow: PowSolution? = null,
 ) {
     /**
      * Leaves out [anonymousId] (the account's only credential), [password]
@@ -688,6 +703,21 @@ data class ServerNodeInfo(
     val hostname: String = "",
 )
 
+/** `$defs.ConnectResponse.accountRestriction` (`until` ISO-8601, `appealPath` a site path). */
+@Serializable
+data class AccountRestriction(
+    val until: String? = null,
+    val appealPath: String? = null,
+)
+
+/** `$defs.ConnectResponse.deviceNotice`; the wire `code` is `device_limit_conflict` today. */
+@Serializable
+data class DeviceNotice(
+    @SerialName("code") val kind: String? = null,
+    val message: String? = null,
+    val managePath: String? = null,
+)
+
 /**
  * NOTE ON KEY MATERIAL LIFETIME:
  * The `privateKey`, `presharedKey`, and `rosenpassPublicKey` (BirdoPQ ciphertext)
@@ -785,6 +815,17 @@ data class ConnectResponse(
      * can never fail the decode; absent from older servers.
      */
     val refusalReason: String? = null,
+    /**
+     * MR-2221: with `refusalReason: "account_restricted"` only. New free-plan
+     * connections are paused until [AccountRestriction.until]. Every member is
+     * nullable, so a body missing a part still decodes.
+     */
+    val accountRestriction: AccountRestriction? = null,
+    /**
+     * MR-2220: on a SUCCESSFUL free-plan connect only, other devices kept
+     * taking the connection. Shown once; the connect went ahead.
+     */
+    val deviceNotice: DeviceNotice? = null,
 ) {
     /**
      * Never prints the key material (MR-1870): [config] (the wg-quick text,

@@ -19,6 +19,8 @@ import UIKit
 /// presents the save-your-ID step until `acknowledgeAnonymousId()` proceeds.
 struct LoginView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    /// MR-2152: the sign-up proof-of-work is running.
+    @ObservedObject private var powStatus = SignupPowStatus.shared
 
     /// Explicit init: the private @State properties below would otherwise
     /// make the synthesized memberwise init private, so `LoginView(isSheet:)`
@@ -74,6 +76,17 @@ struct LoginView: View {
                     .frame(maxWidth: .infinity, minHeight: geo.size.height)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                #if os(iOS)
+                // The number pad has no return key, and on a phone it covers
+                // Sign in, so the 24-digit field needs its own way out.
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { focusedField = nil }
+                            .accessibilityIdentifier("login_keyboard_done")
+                    }
+                }
+                #endif
             }
             .pixelCanvasTouchTrail(pixelModel)
         }
@@ -337,6 +350,8 @@ struct LoginView: View {
                 .padding(.top, 28)
                 .accessibilityIdentifier("login_button")
                 .loginEntrance(entered, delay: 0.30)
+
+            powCheckingLine(identifier: "login_checking_device")
         }
     }
 
@@ -359,6 +374,21 @@ struct LoginView: View {
     /// per IP per hour, so on a shared address (App Review's, for one) it can
     /// fail through no fault of the user. The failure copy and the retry
     /// affordance below exist for exactly that case.
+    /// The one status line shown while a proof-of-work runs (sign-up MR-2152;
+    /// sign-in during a failed-sign-in spike A-M78). The anonymous tab shows it
+    /// once, under its create row, for both of its forms.
+    @ViewBuilder
+    private func powCheckingLine(identifier: String) -> some View {
+        if powStatus.isChecking {
+            Text("Checking this device…")
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.white40)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
+                .accessibilityIdentifier(identifier)
+        }
+    }
+
     private var anonymousTab: some View {
         VStack(spacing: 0) {
             PrimaryButton("Create a new anonymous account",
@@ -372,6 +402,8 @@ struct LoginView: View {
                           })
                 .accessibilityIdentifier("login_anonymous_create")
                 .loginEntrance(entered, delay: 0.25)
+
+            powCheckingLine(identifier: "login_anonymous_checking_device")
 
             Text("No email, no personal details — the server mints a 24-digit account number.")
                 .font(BirdoTheme.Fonts.bodySmall)
@@ -712,6 +744,17 @@ struct LoginView: View {
             }
             .buttonStyle(PressScaleButtonStyle())
             .accessibilityLabel("Copy account number")
+
+            if authVM.createdIdNotStored {
+                // A-L24 / MR-2241: the keychain write failed twice. The number
+                // is the account's only credential -- say so plainly.
+                Text("Your account was created, but this device couldn't store it yet. Save this number now; we'll try again when you continue.")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.yellow)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("login_anonymous_not_stored")
+            }
 
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "exclamationmark.shield.fill")

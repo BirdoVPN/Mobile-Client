@@ -85,6 +85,18 @@ class HomeConnectionModelTest {
     }
 
     @Test
+    fun `a restricted account is offered the appeal page only when the server gave a link of this site`() {
+        val error = VpnState.Error("paused", FailureKind.ACCOUNT_RESTRICTED)
+        val withLink = VpnUiState(
+            vpnState = error,
+            accountRestriction = app.birdo.vpn.data.model.AccountRestriction("2026-11-06T09:30:00Z", "/dashboard/devices"),
+        )
+        assertEquals(Remedy.ASK_REVIEW, homeRemedy(withLink))
+        assertNull(homeRemedy(VpnUiState(vpnState = error)))
+        assertNull(homeRemedy(withLink.copy(accountRestriction = withLink.accountRestriction?.copy(appealPath = "https://x.example/y"))))
+    }
+
+    @Test
     fun `one message banner, never two (A2-011)`() {
         val both = VpnUiState(vpnState = VpnState.Error("from the session"), connectError = "from the screen")
         assertEquals("from the screen", homeMessage(both))
@@ -98,6 +110,7 @@ class HomeConnectionModelTest {
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.PLAN_REQUIRED))
         assertEquals(Remedy.VIEW_PLANS, remedyFor(FailureKind.QUOTA_EXCEEDED))
         assertEquals(Remedy.UPDATE, remedyFor(FailureKind.UPDATE_REQUIRED))
+        assertEquals(Remedy.ASK_REVIEW, remedyFor(FailureKind.ACCOUNT_RESTRICTED))
         assertEquals(Remedy.CHOOSE_SERVER, remedyFor(FailureKind.NEVER_ESTABLISHED))
         // Fail-closed like Quantum, so the same way out (review of #463, P3-7).
         // …on the VPN Settings screen, where the toggle is (second review, N6).
@@ -187,5 +200,34 @@ class HomeConnectionModelTest {
         val switchingMultiHop = VpnUiState(vpnState = VpnState.Connecting, switching = true, selectedServer = amsterdam)
         assertEquals(ServerRowMarkers(null, null), serverRowMarkers(switchingMultiHop, true))
         assertEquals(ServerRowMarkers(null, null), serverRowMarkers(connected, true))
+    }
+
+    // ── A-M79: the picker, and what the server card says ─────────────────
+
+    @Test
+    fun `the server picker is held while a dial is in flight, even over a Connected tunnel (A-M79)`() {
+        val connected = VpnUiState(vpnState = VpnState.Connected, selectedServer = amsterdam)
+        assertTrue(serverPickerEnabled(connected))
+        // A live switch rides the old tunnel: still Connected, isSwitching false, dial running.
+        val liveSwitch = connected.copy(dialInFlight = true)
+        assertFalse(homeConnection(liveSwitch).isSwitching)
+        assertFalse(serverPickerEnabled(liveSwitch))
+        // The existing holds are unchanged.
+        assertFalse(serverPickerEnabled(VpnUiState(vpnState = VpnState.Connecting)))
+        assertFalse(serverPickerEnabled(VpnUiState(vpnState = VpnState.Disconnecting)))
+    }
+
+    @Test
+    fun `an unapplied pick reads Switching, never as the protected server (A-M79)`() {
+        val pending = VpnUiState(
+            vpnState = VpnState.Connected, selectedServer = amsterdam, pendingSwitchServerId = "nl-1",
+            connectedServer = "Frankfurt-01", connectedServerId = "de-1",
+        )
+        assertEquals(ServerCardModel(name = amsterdam.name, switching = true, tunnelOn = "Frankfurt-01"), serverCardModel(pending))
+        // Applied: the pending marker is gone and the line names the same server.
+        val applied = pending.copy(pendingSwitchServerId = null, connectedServer = amsterdam.name, connectedServerId = "nl-1")
+        assertEquals(ServerCardModel(name = amsterdam.name, switching = false, tunnelOn = amsterdam.name), serverCardModel(applied))
+        // Nothing is claimed while the tunnel is not up.
+        assertNull(serverCardModel(applied.copy(vpnState = VpnState.Connecting)).tunnelOn)
     }
 }

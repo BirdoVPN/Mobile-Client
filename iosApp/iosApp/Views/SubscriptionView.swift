@@ -113,9 +113,7 @@ struct SubscriptionView: View {
                         style: .accent
                     )
 
-                    ForEach(PlanCardModel.catalog(freeCapGb: freeCapGb)) { plan in
-                        planCard(plan)
-                    }
+                    planCards
 
                     restoreRow
                     legalFootnote
@@ -123,6 +121,7 @@ struct SubscriptionView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
                 .padding(.bottom, 32)
+                .adaptiveColumn(BirdoTheme.Layout.wideColumn)
             }
         }
         .navigationTitle("Manage Subscription")
@@ -430,6 +429,33 @@ struct SubscriptionView: View {
 
     // MARK: - Plan cards
 
+    /// Three across when they fit (a landscape iPad, a wide Mac window), so the
+    /// plans can be compared at a glance. Stacked otherwise.
+    private var planCards: some View {
+        let plans = PlanCardModel.catalog(freeCapGb: freeCapGb)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(plans) { plan in
+                    planCard(plan)
+                        // idealWidth is what ViewThatFits measures. Without it a
+                        // card's ideal is its longest sentence on one line, and
+                        // the row never fits.
+                        .frame(minWidth: BirdoTheme.Layout.planCardMinWidth,
+                               idealWidth: BirdoTheme.Layout.planCardMinWidth,
+                               maxWidth: .infinity)
+                }
+            }
+            // The row is as tall as its tallest card, and every card fills it.
+            .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: 12) {
+                ForEach(plans) { plan in
+                    planCard(plan)
+                }
+            }
+        }
+    }
+
     private func planCard(_ plan: PlanCardModel) -> some View {
         let accent = BirdoTheme.planAccent(plan.slug)
         // Case-insensitive compare against the server slug; no snapshot means
@@ -494,7 +520,7 @@ struct SubscriptionView: View {
 
                 purchaseControl(plan, product: product, isCurrent: isCurrent)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .overlay {
             // Popular card swaps the glass hairline for a plan-accent border.
@@ -690,7 +716,7 @@ private struct PlanCardModel: Identifiable, Sendable {
             yearlyPrice: "£38/yr",
             isPopular: true,
             features: [
-                "5 device connections",
+                "3 device connections",
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",
@@ -710,7 +736,7 @@ private struct PlanCardModel: Identifiable, Sendable {
             yearlyPrice: "£99/yr",
             isPopular: false,
             features: [
-                "10 device connections",
+                "5 device connections",
                 "All server locations",
                 "Unlimited bandwidth",
                 "WireGuard® encryption",

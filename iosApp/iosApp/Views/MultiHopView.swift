@@ -72,6 +72,7 @@ struct MultiHopView: View {
                 }
                 .padding(.horizontal, BirdoTheme.Spacing.screenH)
                 .padding(.vertical, BirdoTheme.Spacing.screenV)
+                .adaptiveColumn()
             }
         }
         .navigationTitle("Multi-Hop")

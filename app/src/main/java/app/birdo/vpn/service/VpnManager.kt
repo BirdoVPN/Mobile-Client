@@ -10,12 +10,15 @@ import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.utils.FaultReporter
 import app.birdo.vpn.utils.PlayIntegrityManager
 import app.birdo.vpn.data.auth.TokenManager
+import app.birdo.vpn.data.model.AccountRestriction
 import app.birdo.vpn.data.model.ConnectResponse
+import app.birdo.vpn.data.model.DeviceNotice
 import app.birdo.vpn.data.model.MultiHopConnectResponse
 import app.birdo.vpn.data.model.ServerNodeInfo
 import app.birdo.vpn.data.model.VpnServer
 import app.birdo.vpn.data.network.NetworkMonitor
 import app.birdo.vpn.data.preferences.AppPreferences
+import app.birdo.vpn.data.repository.ApiErrorMapper
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
 import app.birdo.vpn.shared.model.TransportFallbackReason
@@ -28,13 +31,13 @@ import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -165,6 +168,24 @@ class VpnManager @Inject constructor(
      * the session is up, so nobody believes their traffic is disguised when
      * it is not. Set by each dial, cleared by a Disconnect.
      */
+    /**
+     * MR-2221: the restriction the last refused connect carried, for Home's
+     * "Ask for a review" action. Cleared by a connect that goes through.
+     */
+    private val _accountRestriction = MutableStateFlow<AccountRestriction?>(null)
+    val accountRestriction: StateFlow<AccountRestriction?> = _accountRestriction.asStateFlow()
+
+    /**
+     * MR-2220: the server's notice on a successful connect that other devices
+     * kept taking the connection. Informational: the tunnel never waits on it.
+     */
+    private val _deviceNotice = MutableStateFlow<DeviceNotice?>(null)
+    val deviceNotice: StateFlow<DeviceNotice?> = _deviceNotice.asStateFlow()
+
+    fun dismissDeviceNotice() {
+        _deviceNotice.value = null
+    }
+
     private val _stealthNotice = MutableStateFlow<String?>(null)
     val stealthNotice: StateFlow<String?> = _stealthNotice.asStateFlow()
 
@@ -239,6 +260,17 @@ class VpnManager @Inject constructor(
 
     /** The dial in flight, owned by [scope] so a caller's cancellation cannot strand it (A1-011). */
     private var dialJob: Job? = null
+
+    /** Serialises the hand-over from one dial to the next in [runDial] (A-M79). */
+    private val dialStartLock = Mutex()
+
+    /** Dials [runDial] cancelled to make way for a newer one; their callers get SUPERSEDED. */
+    private val replacedDials: MutableSet<Job> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+
+    private val _dialActive = MutableStateFlow(false)
+
+    /** A dial is running (A-M79): the server picker is held while it is, see [dialInFlight]. */
+    val dialActive: StateFlow<Boolean> = _dialActive.asStateFlow()
     private var connectWatchdogJob: Job? = null
     private var reconnectJob: Job? = null
     private var cooldownJob: Job? = null
@@ -427,6 +459,9 @@ class VpnManager @Inject constructor(
          * Bound on a live rebuild's swap: the service's probe window plus its
          * connect watchdog, so the service always reaches a verdict first.
          */
+        private const val INLINE_RELEASE_WAIT_MS = 5_000L
+        private const val LATE_ANSWER_WAIT_MS = 60_000L
+        private const val LATE_RELEASE_MS = 10_000L
         private const val LIVE_REBUILD_TIMEOUT_MS = LiveRebuildPolicy.PROBE_WINDOW_MS + 30_000L + 5_000L
         /** Bound on the server-side slot release at sign-out; local sign-out proceeds regardless. */
         private const val SIGN_OUT_RELEASE_TIMEOUT_MS = 10_000L
@@ -826,18 +861,61 @@ class VpnManager @Inject constructor(
      * strands this class in Connecting half-way through an API call.
      */
     private suspend fun <T> runDial(block: suspend () -> ApiResult<T>): ApiResult<T> {
-        val dial = scope.async { block() }
-        dialJob = dial
+        val own = currentCoroutineContext()[Job]
+        val dial = dialStartLock.withLock {
+            // A-M79: two dials must never be alive at once. The older one used
+            // to run on beside the newer, so a quick second pick had its tunnel
+            // work and its /connect interleaved with the first's, and the
+            // screen named a server the tunnel never moved to. Cancel it and
+            // WAIT for it to end before the next begins. The cancel is
+            // cooperative: every suspension in a dial is a safe point, and the
+            // one that is not (the service's live-rebuild swap) is shielded in
+            // [swapInService], so a cancel never strands a half-swapped peer.
+            // A dial that asks for another one from inside itself (nested) is
+            // never joined: it would wait for its own end.
+            val prev = dialJob
+            val handover = if (prev != null && prev.isActive && prev !== own) Job() else null
+            if (handover != null) {
+                // A placeholder holds dialJob while the old dial winds down, so
+                // nothing that watches it (a deferred settings reapply, the
+                // supervisor's checks) sees a gap with no dial in it and
+                // slips in between the two.
+                dialJob = handover
+                replacedDials.add(prev!!)
+                try {
+                    prev.cancel()
+                    withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS + 5_000L) { prev.join() }
+                } catch (t: Throwable) {
+                    // The caller went away while waiting: give the slot back.
+                    if (dialJob === handover) dialJob = prev
+                    handover.complete()
+                    throw t
+                }
+            }
+            scope.async { block() }.also { next ->
+                dialJob = next
+                _dialActive.value = true
+                next.invokeOnCompletion {
+                    _dialActive.value = dialJob?.isActive == true
+                }
+                handover?.complete()
+            }
+        }
         return try {
             dial.await()
         } catch (e: CancellationException) {
-            // The DIAL was cancelled (the connect watchdog), not the caller: an
-            // outcome, and the watchdog has already published it.
-            if (dial.isCancelled && currentCoroutineContext().isActive) {
+            if (replacedDials.remove(dial) && currentCoroutineContext().isActive) {
+                // Replaced by a newer dial: the caller's outcome is "superseded", not a failure.
+                ApiResult.Error(SUPERSEDED)
+            } else if (dial.isCancelled && currentCoroutineContext().isActive) {
+                // The DIAL was cancelled (the connect watchdog), not the caller: an
+                // outcome, and the watchdog has already published it.
                 ApiResult.Error(SessionCopy.NO_TUNNEL)
             } else {
                 throw e
             }
+        } finally {
+            replacedDials.remove(dial)
         }
     }
 
@@ -912,9 +990,31 @@ class VpnManager @Inject constructor(
         serverMessage: String?,
         quotaExceeded: Boolean,
         refusalReason: String?,
+        restriction: AccountRestriction? = null,
     ): Pair<String, FailureKind> {
         val kind = FailureKind.forRefusal(quotaExceeded, refusalReason)
-        return if (kind == FailureKind.QUOTA_EXCEEDED) {
+        return if (kind == FailureKind.ACCOUNT_RESTRICTED) {
+            // MR-2221: the server's sentence, then when it ends in the user's
+            // own time. A restriction can end before then (a review, an upgrade,
+            // another account), so a user tap always reaches the server; only
+            // automatic re-dials stop, by the terminal kind.
+            val endMs = ConnectNotices.restrictionEndMs(restriction)
+            val shownMessage = serverMessage
+                ?.takeIf { ApiErrorMapper.isPresentable(it, ApiErrorMapper.RESTRICTION_MAX_LENGTH) }?.trim()
+                ?: context.getString(R.string.error_account_restricted)
+            val text = shownMessage.let { base ->
+                if (endMs > 0L) {
+                    val shown = java.text.DateFormat
+                        .getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                        .format(java.util.Date(endMs))
+                    base + "\n\n" + context.getString(R.string.error_account_restricted_until, shown)
+                } else {
+                    base
+                }
+            }
+            _accountRestriction.value = restriction
+            text to kind
+        } else if (kind == FailureKind.QUOTA_EXCEEDED) {
             (serverMessage?.takeIf { it.isNotBlank() } ?: context.getString(R.string.session_quota_exceeded)) to kind
         } else {
             (serverMessage ?: SessionCopy.BAD_SERVER_CONFIG) to kind
@@ -1034,18 +1134,20 @@ class VpnManager @Inject constructor(
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         // Asked once, and the same answer goes to the service with the config.
         val askedForStealth = stealthRequested()
-        val result = repository.connectVpn(
-            serverNodeId = serverId,
-            deviceName = deviceName,
-            stealthMode = askedForStealth,
-            fallbackReason = effectiveFallbackReason,
-            quantumProtection = prefs.quantumProtectionEnabled,
-            pqClientPublicKey = pqClientPublicKey,
-            integrityToken = integrityToken,
-            // BirdoShield (D18): read at dial time like stealth, so a flip while
-            // connected reaches the server on the reapply reconnect, not before.
-            dnsFiltering = shieldInEffect(),
-        )
+        val result = requestOrReleaseOnCancel({ r -> (r as? ApiResult.Success)?.data?.takeIf { it.success }?.keyId }) {
+            repository.connectVpn(
+                serverNodeId = serverId,
+                deviceName = deviceName,
+                stealthMode = askedForStealth,
+                fallbackReason = effectiveFallbackReason,
+                quantumProtection = prefs.quantumProtectionEnabled,
+                pqClientPublicKey = pqClientPublicKey,
+                integrityToken = integrityToken,
+                // BirdoShield (D18): read at dial time like stealth, so a flip while
+                // connected reaches the server on the reapply reconnect, not before.
+                dnsFiltering = shieldInEffect(),
+            )
+        }
 
         when (result) {
             is ApiResult.Success -> {
@@ -1054,7 +1156,9 @@ class VpnManager @Inject constructor(
                     config.serverPublicKey == null || config.endpoint == null ||
                     config.assignedIp == null
                 ) {
-                    val (message, kind) = refusal(config.message, config.quotaExceeded, config.refusalReason)
+                    val (message, kind) = refusal(
+                        config.message, config.quotaExceeded, config.refusalReason, config.accountRestriction,
+                    )
                     if (!superseded(gen)) publishError(message, kind)
                     return ApiResult.Error(message)
                 }
@@ -1072,6 +1176,10 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
                 _stealthNotice.value = stealthNoticeFor(askedForStealth, config)
+                // The connect went through: no restriction stands, and a notice
+                // the server attached is shown without touching the tunnel.
+                _accountRestriction.value = null
+                _deviceNotice.value = config.deviceNotice?.takeIf { ConnectNotices.noticeText(it) != null }
                 // Don't set Connected here — the service publishes it once a
                 // WireGuard handshake is observed. We stay in Connecting.
                 _connectedServer.value = config.serverNode?.name ?: "Unknown Server"
@@ -1139,18 +1247,20 @@ class VpnManager @Inject constructor(
         if (superseded(gen)) return ApiResult.Error(SUPERSEDED)
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
         val askedForStealth = stealthRequested()
-        val result = repository.connectMultiHop(
-            entryNodeId = entryNodeId,
-            exitNodeId = exitNodeId,
-            deviceName = deviceName,
-            stealthMode = askedForStealth,
-            fallbackReason = effectiveFallbackReason,
-            quantumProtection = prefs.quantumProtectionEnabled,
-            pqClientPublicKey = pqClientPublicKey,
-            integrityToken = integrityToken,
-            // BirdoShield (D18) — the multi-hop twin of the single hop's flag.
-            dnsFiltering = shieldInEffect(),
-        )
+        val result = requestOrReleaseOnCancel({ r -> (r as? ApiResult.Success)?.data?.takeIf { it.success }?.keyId }) {
+            repository.connectMultiHop(
+                entryNodeId = entryNodeId,
+                exitNodeId = exitNodeId,
+                deviceName = deviceName,
+                stealthMode = askedForStealth,
+                fallbackReason = effectiveFallbackReason,
+                quantumProtection = prefs.quantumProtectionEnabled,
+                pqClientPublicKey = pqClientPublicKey,
+                integrityToken = integrityToken,
+                // BirdoShield (D18) — the multi-hop twin of the single hop's flag.
+                dnsFiltering = shieldInEffect(),
+            )
+        }
 
         when (result) {
             is ApiResult.Success -> {
@@ -1586,18 +1696,35 @@ class VpnManager @Inject constructor(
      * only time out — the API's 45 s callTimeout — while the device waited
      * dead. Null when cut short; the rebuild then takes today's path at once.
      */
-    private suspend fun <T> rebuildRequest(hold: RebuildHold, call: suspend () -> ApiResult<T>): ApiResult<T>? =
-        coroutineScope {
-            val request = async { call() }
-            hold.request = request
-            try {
-                request.await()
-            } catch (e: CancellationException) {
-                if (hold.cutShort && isActive) null else throw e
-            } finally {
-                hold.request = null
+    private suspend fun <T> rebuildRequest(
+        hold: RebuildHold,
+        oldKey: String,
+        newKeyOf: (T) -> String?,
+        call: suspend () -> ApiResult<T>,
+    ): ApiResult<T>? {
+        // In [scope], not a child of the dial (A-M79): a newer dial cancels
+        // this one, and the cancel must not lose the NEW key a rebuild mints.
+        val request = scope.async { call() }
+        hold.request = request
+        try {
+            return request.await()
+        } catch (e: CancellationException) {
+            if (hold.cutShort && currentCoroutineContext().isActive) return null
+            if (!request.isCancelled) {
+                // The dial was cancelled with the /connect still out or just
+                // answered: release the key it minted, NEVER the old key the
+                // tunnel is riding (a reply that names it is not released).
+                val keyOf: (ApiResult<T>) -> String? = { r ->
+                    (r as? ApiResult.Success)?.data?.let(newKeyOf)?.takeIf { it != oldKey }
+                }
+                val settled = withContext(NonCancellable) { releaseLateAnswer(request, keyOf, INLINE_RELEASE_WAIT_MS) }
+                if (!settled) scope.launch { releaseLateAnswer(request, keyOf, LATE_ANSWER_WAIT_MS) }
             }
+            throw e
+        } finally {
+            hold.request = null
         }
+    }
 
     /** Take the hold for a rebuild that is starting. */
     private fun holdFailuresForRebuild(): RebuildHold = RebuildHold().also { rebuildHold = it }
@@ -1733,7 +1860,7 @@ class VpnManager @Inject constructor(
             val result = if (pqRefusal != null || hold.cutShort) {
                 null
             } else {
-                rebuildRequest(hold) {
+                rebuildRequest(hold, oldKey, { c: ConnectResponse -> c.keyId.takeIf { c.success } }) {
                     repository.connectVpn(
                         serverNodeId = serverId,
                         deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
@@ -1805,7 +1932,7 @@ class VpnManager @Inject constructor(
             val result = if (pqRefusal != null || hold.cutShort) {
                 null
             } else {
-                rebuildRequest(hold) {
+                rebuildRequest(hold, oldKey, { c: MultiHopConnectResponse -> c.keyId.takeIf { c.success } }) {
                     repository.connectMultiHop(
                         entryNodeId = entryNodeId,
                         exitNodeId = exitNodeId,
@@ -1906,7 +2033,14 @@ class VpnManager @Inject constructor(
             sessionKeyId = oldKey
             return LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
         }
-        val event = withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS) { outcome.await() }
+        // Shielded from cancellation (A-M79): a newer dial cancels this one to
+        // make way, and a cancel here would strand the swap the service is
+        // running with this class's key and server bookkeeping never settled.
+        // Bounded by its own timeout, and the code after it never suspends
+        // before the commit, so the swap ends in a settled session either way.
+        val event = withContext(NonCancellable) {
+            withTimeoutOrNull(LIVE_REBUILD_TIMEOUT_MS) { outcome.await() }
+        }
         if (event == null) {
             // The service's own connect watchdog has failed it closed by now.
             BirdoVpnService.forgetLiveRebuild(id)
@@ -2034,6 +2168,7 @@ class VpnManager @Inject constructor(
         _switching.value = false
         prefs.sessionShouldBeUp = false
         _stealthNotice.value = null
+        _deviceNotice.value = null
         // The not-armed warning describes the session the user just ended.
         // Cleared here, not only when the service's stop lands: Home must not
         // keep saying it over the user's own Disconnect.
@@ -2191,6 +2326,45 @@ class VpnManager @Inject constructor(
     }
 
     /** Best-effort release of one specific peer, off the caller's path. */
+    /**
+     * A-M79: a /connect that a newer dial cancels the caller of. The request
+     * runs in [scope], so the cancel does not abort it half-way; if the answer
+     * still arrives, the session it minted was never applied by anyone, and is
+     * released here, best-effort and off the new dial's path (bounded, never
+     * throws). A dial cancelled BEFORE the request went out calls nothing. A
+     * session this dial applied (it got the answer) is never touched: that
+     * path returns normally and the usual supersede branch owns it.
+     */
+    private suspend fun <R> requestOrReleaseOnCancel(keyOf: (R) -> String?, call: suspend () -> R): R {
+        val request = scope.async { call() }
+        try {
+            return request.await()
+        } catch (e: CancellationException) {
+            if (!request.isCancelled) {
+                // Inline first, bounded: the replacing dial joins this one, so
+                // a release that lands here is done before its /connect (a
+                // 1-device plan refuses a second session until it is).
+                val settled = withContext(NonCancellable) { releaseLateAnswer(request, keyOf, INLINE_RELEASE_WAIT_MS) }
+                if (!settled) scope.launch { releaseLateAnswer(request, keyOf, LATE_ANSWER_WAIT_MS) }
+            }
+            throw e
+        }
+    }
+
+    /** @return false when the answer had not arrived within [waitMs]; true once settled (released or nothing to release). */
+    private suspend fun <R> releaseLateAnswer(request: Deferred<R>, keyOf: (R) -> String?, waitMs: Long): Boolean =
+        withContext(NonCancellable) {
+            try {
+                val answer = withTimeoutOrNull(waitMs) { request.await() } ?: return@withContext false
+                val key = keyOf(answer)
+                if (key != null) withTimeoutOrNull(LATE_RELEASE_MS) { repository.disconnectVpn(key) }
+                true
+            } catch (_: Exception) {
+                // Best-effort: the heartbeat reaper is the backstop.
+                true
+            }
+        }
+
     private fun releasePeer(keyId: String?) {
         if (keyId == null) return
         if (sessionKeyId == keyId) sessionKeyId = null
@@ -2309,7 +2483,14 @@ class VpnManager @Inject constructor(
                 // The Free allowance's end is the server ending the session on
                 // purpose, like a revoke: the owner rule releases the block
                 // (FailureKind.QUOTA_EXCEEDED), here as on the heartbeat path.
-                if (attemptOwnsBlock || kind == FailureKind.QUOTA_EXCEEDED) releaseBlock()
+                // MR-2221: so is a restriction: it ends on its own at a stated
+                // time, and a device must not sit offline behind the kill switch
+                // for a refusal that no retry changes.
+                if (attemptOwnsBlock || kind == FailureKind.QUOTA_EXCEEDED ||
+                    kind == FailureKind.ACCOUNT_RESTRICTED
+                ) {
+                    releaseBlock()
+                }
             }
 
             // The budget is spent. Say so in the iOS words, release the
@@ -2573,7 +2754,7 @@ class VpnManager @Inject constructor(
      * live rebuild inside one ([rebuildHold]). A switch riding the live tunnel
      * still shows Connected while its /connect is out.
      */
-    private fun dialInFlight(): Boolean = dialJob?.isActive == true || rebuildHold != null
+    fun dialInFlight(): Boolean = dialJob?.isActive == true || rebuildHold != null
 
     /**
      * Re-queue a reapply that found a dial in flight, instead of rebuilding

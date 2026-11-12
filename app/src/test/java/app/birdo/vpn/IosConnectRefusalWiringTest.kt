@@ -386,4 +386,18 @@ class IosConnectRefusalWiringTest {
         // The device cap has its own sentence and an unshowable one is dropped.
         assertFalse("$homePath still says refusals are never rephrased", "never rephrase" in source(homePath))
     }
+
+    // ── MR-2221: a manual connect after account_restricted still reaches the server ──
+
+    @Test
+    fun `a tap after an account_restricted refusal is sent, never answered from a stored hold`() {
+        // A restriction can end before its `until` (a review, an upgrade, another account), and
+        // only a connect clears what the app remembers: so connect() must not short-circuit on it.
+        assertFalse("$viewModelPath keeps a restriction hold", "restrictionHold" in viewModel)
+        assertFalse("$refusalPath keeps a restriction hold", "func holds(" in source(refusalPath))
+        val connectAt = viewModel.indexOf("func connect(userInitiated: Bool = true) {")
+        assertTrue("$viewModelPath: connect() not found", connectAt >= 0)
+        val body = viewModel.substring(connectAt, viewModel.indexOf("\n    func disconnect()", connectAt))
+        assertFalse("connect() reads the refusal before dialling", "connectRefusal" in body.substringBefore("api.getConnectConfig"))
+    }
 }

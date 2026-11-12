@@ -133,6 +133,7 @@ struct ConsentView: View {
                 .padding(.top, 48)
                 .padding(.bottom, 32)
             }
+            .topEdgeScrim()
         }
         .pixelCanvasTouchTrail(pixelModel)
     }

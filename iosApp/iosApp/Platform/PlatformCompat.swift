@@ -323,19 +323,16 @@ enum SystemOpen {
         }
     }
 
-    /// The app's own settings pane.
-    ///
-    /// iOS deep-links into Settings.app. macOS has no per-app settings pane at
-    /// all — an app's preferences live inside the app — so this opens the
-    /// system Network settings, which is where a user would go to inspect or
-    /// remove the VPN configuration.
-    static func appSettings() {
+    /// Where the system keeps this app's notification settings: the app's own
+    /// page in Settings.app on iOS, the Notifications pane of System Settings
+    /// on macOS, which has no per-app settings page.
+    static func notificationSettings() {
         #if os(iOS)
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
         }
         #elseif os(macOS)
-        if let url = URL(string: "x-apple.systempreferences:com.apple.Network-Settings.extension") {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
             NSWorkspace.shared.open(url)
         }
         #endif

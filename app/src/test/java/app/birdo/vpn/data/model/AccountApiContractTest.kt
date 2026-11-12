@@ -80,6 +80,25 @@ class AccountApiContractTest {
         assertEquals(number, accountNumberOf(noEmail))
     }
 
+    /**
+     * The app no longer shows terms-change notices (owner, 2026-11-07): they go
+     * by e-mail and on the website. A server that still sends `termsNotices`,
+     * in any shape, must not fail the profile or sign-in.
+     */
+    @Test
+    fun `a profile with termsNotices of any shape still decodes`() {
+        listOf(
+            """[{"version":"2026-12","text":"Our terms change on 6 December.","effectiveAt":"2026-12-06T00:00:00.000Z","path":"/terms"}]""",
+            "[]",
+            "null",
+            """"not a list"""",
+            """{"version":1}""",
+        ).forEach { notices ->
+            val user = profile("""{"id":"u1","email":"user@birdo.app","termsNotices":$notices}""")
+            assertEquals("termsNotices=$notices", "u1", user.id)
+        }
+    }
+
     /** The number is the account's only credential: a stray log of the profile must not carry it. */
     /**
      * REVIEW-AND2-010: the other classes that carry the number, and the

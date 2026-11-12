@@ -23,6 +23,7 @@ struct HomeView: View {
     @EnvironmentObject var settingsVM: SettingsViewModel
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var showLogoutConfirm = false
     /// Multi-Hop entry (spec §3.2 item 1). SOVEREIGN opens the flow; a lower
@@ -65,16 +66,7 @@ struct HomeView: View {
                            autoRotate: !vpnVM.isProtected)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                topBar
-
-                statusArea
-                    .padding(.top, 12)
-
-                Spacer(minLength: 0)
-
-                bottomPanel
-            }
+            homeContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Tab-root screens are transparent over the ONE app-root PixelCanvas.
@@ -100,12 +92,6 @@ struct HomeView: View {
         // `quota_exceeded` refusal), the same screen as the Limit tab's upgrade.
         .navigationDestination(isPresented: $showPlans) {
             SubscriptionView()
-        }
-        // Upsell snackbar for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy).
-        .overlay(alignment: .bottom) {
-            if let notice = multiHopUpsell {
-                multiHopUpsellSnackbar(notice)
-            }
         }
         .task(id: multiHopUpsell) {
             guard multiHopUpsell != nil else { return }
@@ -138,6 +124,41 @@ struct HomeView: View {
         )
     }
 
+    /// Top bar, status, then the bottom action panel pinned to the bottom.
+    private var stackedContent: some View {
+        VStack(spacing: 0) {
+            topBar
+
+            statusArea
+                .padding(.top, 12)
+
+            Spacer(minLength: 0)
+
+            bottomPanel
+        }
+    }
+
+    /// A-M38: at the default sizes this is the plain stack, exactly as before
+    /// (the globe stays draggable behind the empty middle). At accessibility
+    /// text sizes the panel alone outgrows the screen, so the stack goes into
+    /// a ScrollView. `minHeight` = the screen keeps the panel at the bottom
+    /// whenever everything fits; when it does not, the connect button is
+    /// reached by scrolling (the ScrollView ends on the panel).
+    @ViewBuilder
+    private var homeContent: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            GeometryReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    stackedContent
+                        .frame(minHeight: proxy.size.height)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+            }
+        } else {
+            stackedContent
+        }
+    }
+
     /// Signing out removes an anonymous account's number from this device
     /// (`LocalSignOut`), so the confirmation says to keep it, as Android's
     /// dialog does (`sign_out_anonymous_reminder`).
@@ -167,22 +188,28 @@ struct HomeView: View {
                 BirdoLogo.topBar
 
                 Text("BirdoVPN")
-                    .font(.system(size: 16, weight: .semibold))
+                    .birdoFont(16, weight: .semibold)
                     .foregroundStyle(BirdoTheme.onBackground)
                     .lineLimit(1)
 
                 Spacer(minLength: BirdoTheme.Spacing.md)
 
                 if let identity = accountIdentity {
-                    Text(identity)
-                        .font(BirdoTheme.Fonts.bodySmall)
-                        .foregroundStyle(BirdoTheme.onSurfaceFaint)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 120, alignment: .trailing)
-                        // Shows no account number since MR-1362; the app-switcher
-                        // cover (MR-1727) stays as a second line of defence.
-                        .accountNumberSnapshotCover()
+                    // The short form is for a phone, where "Anonymous account"
+                    // leaves "Anonymous ac…". An email has no short form, so the
+                    // last view in the list simply truncates.
+                    ViewThatFits(in: .horizontal) {
+                        Text(identity)
+                        Text(authVM.isAnonymousAccount ? "Anonymous" : identity)
+                    }
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 240, alignment: .trailing)
+                    // Shows no account number since MR-1362; the app-switcher
+                    // cover (MR-1727) stays as a second line of defence.
+                    .accountNumberSnapshotCover()
                 }
 
                 if isGuest {
@@ -193,7 +220,7 @@ struct HomeView: View {
                         authVM.requestSignIn(.generic)
                     } label: {
                         Text("Sign in")
-                            .font(.system(size: 13, weight: .semibold))
+                            .birdoFont(13, weight: .semibold)
                             .foregroundStyle(BirdoTheme.accent)
                             .padding(.horizontal, 14)
                             .frame(height: 34)
@@ -210,7 +237,7 @@ struct HomeView: View {
                         showLogoutConfirm = true
                     } label: {
                         Image(systemName: "rectangle.portrait.and.arrow.right")
-                            .font(.system(size: 17, weight: .medium))
+                            .birdoFont(17, weight: .medium)
                             .foregroundStyle(BirdoTheme.onSurfaceMuted)
                             .frame(width: 40, height: 40)
                             .background(Circle().fill(BirdoTheme.white05))
@@ -263,7 +290,7 @@ struct HomeView: View {
         return Button(action: handleMultiHopTap) {
             ZStack(alignment: .bottomTrailing) {
                 Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 18, weight: .semibold))
+                    .birdoFont(18, weight: .semibold)
                     .foregroundStyle(unlocked ? BirdoTheme.accent : BirdoTheme.white40)
                     .frame(width: 40, height: 40)
                     .background(
@@ -317,10 +344,10 @@ struct HomeView: View {
     private func multiHopUpsellSnackbar(_ notice: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "lock.fill")
-                .font(.system(size: 14))
+                .birdoFont(14)
                 .foregroundStyle(BirdoTheme.accentSoft)
             Text(notice)
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -333,8 +360,6 @@ struct HomeView: View {
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
                 .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
         )
-        .padding(.horizontal, BirdoTheme.Spacing.lg)
-        .padding(.bottom, BirdoTheme.Spacing.xl)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
@@ -494,11 +519,54 @@ struct HomeView: View {
                     }
                     .accessibilityIdentifier("home_refusal_view_plans")
                 }
+                // MR-2221: keyed on the reason; the link is the server's
+                // `appealPath` on birdo.app, nothing else.
+                if let appeal = vpnVM.connectRefusal?.appealURL,
+                   vpnVM.connectRefusal?.reason == .accountRestricted,
+                   vpnVM.error == vpnVM.connectRefusal?.message {
+                    Link("Ask for a review", destination: appeal)
+                        .birdoFont(14, weight: .semibold)
+                        .accessibilityIdentifier("home_refusal_appeal")
+                }
+            }
+
+            // MR-2220: the connection is up; this only tells the user why other
+            // devices keep losing theirs, and where to manage them.
+            if vpnVM.isConnected, let notice = vpnVM.deviceNotice, let text = notice.text {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(text)
+                        .birdoFont(13)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 16) {
+                        if let url = notice.manageURL {
+                            Link("Manage devices", destination: url)
+                                .birdoFont(13, weight: .semibold)
+                        }
+                        Button("Dismiss") { vpnVM.dismissDeviceNotice() }
+                            .birdoFont(13)
+                            .foregroundStyle(BirdoTheme.white60)
+                    }
+                }
+                .foregroundStyle(BirdoTheme.accentSoft)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: BirdoTheme.Radius.md, style: .continuous)
+                        .fill(BirdoTheme.accentBg)
+                )
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("home_device_notice")
             }
 
             if let advisory = vpnVM.updateAdvisory {
                 updateAdvisoryBanner(advisory)
                     .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // Upsell for a non-SOVEREIGN Multi-Hop tap (spec §3.2 copy). In the
+            // panel, not over it: as an overlay it sat on the Connect button.
+            if let notice = multiHopUpsell {
+                multiHopUpsellSnackbar(notice)
             }
 
             serverSelector
@@ -623,18 +691,18 @@ struct HomeView: View {
         let tint = advisory.required ? BirdoTheme.red : BirdoTheme.accentSoft
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: "arrow.up.circle")
-                .font(.system(size: 18))
+                .birdoFont(18)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
                 if advisory.required {
                     Text("Update required")
-                        .font(.system(size: 13, weight: .semibold))
+                        .birdoFont(13, weight: .semibold)
                 }
                 // Advice: the server's own words, verbatim — same rule the
                 // error banners follow. A refusal: client copy built from the
                 // server's versions (UpdateRequiredRefusal).
                 Text(advisory.message)
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 16) {
@@ -644,11 +712,11 @@ struct HomeView: View {
                     // right for desktop and a dead end here).
                     if let url = advisory.storeURL {
                         Link("Update", destination: url)
-                            .font(.system(size: 13, weight: .semibold))
+                            .birdoFont(13, weight: .semibold)
                     }
                     if !advisory.required {
                         Button("Dismiss") { vpnVM.dismissUpdateAdvisory() }
-                            .font(.system(size: 13))
+                            .birdoFont(13)
                             .foregroundStyle(BirdoTheme.white60)
                     }
                 }
@@ -677,9 +745,9 @@ struct HomeView: View {
     private var reapplyBanner: some View {
         HStack(spacing: 10) {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: 18))
+                .birdoFont(18)
             Text("Applying settings — reconnecting…")
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(BirdoTheme.accentSoft)
@@ -712,7 +780,7 @@ struct HomeView: View {
                             .strokeBorder(BirdoTheme.hairlineSoft, lineWidth: 1)
                         Text(vpnVM.activeMultiHop?.entry.flag
                             ?? vpnVM.selectedServer?.flag ?? "🌐")
-                            .font(.system(size: 22))
+                            .birdoFont(22)
                     }
                     .frame(width: 44, height: 44)
 
@@ -722,7 +790,7 @@ struct HomeView: View {
                             // route — `selectedServer` is whatever single node the
                             // user last browsed to and can be entirely unrelated.
                             Text("\(mh.entry.flag) \(mh.entry.name) → \(mh.exit.flag) \(mh.exit.name)")
-                                .font(.system(size: 15, weight: .semibold))
+                                .birdoFont(15, weight: .semibold)
                                 .foregroundStyle(BirdoTheme.onSurface)
                                 .lineLimit(1)
                             Text("Multi-Hop  ·  \(mh.route)")
@@ -734,7 +802,7 @@ struct HomeView: View {
                             // browse is the public location list, and the row
                             // must not pretend otherwise.
                             Text("Browse locations")
-                                .font(.system(size: 15, weight: .semibold))
+                                .birdoFont(15, weight: .semibold)
                                 .foregroundStyle(BirdoTheme.onSurface)
                                 .lineLimit(1)
                             Text(guestLocationsSubtitle)
@@ -743,7 +811,7 @@ struct HomeView: View {
                                 .lineLimit(1)
                         } else {
                             Text(vpnVM.selectedServer?.name ?? "Select Server")
-                                .font(.system(size: 15, weight: .semibold))
+                                .birdoFont(15, weight: .semibold)
                                 .foregroundStyle(BirdoTheme.onSurface)
                                 .lineLimit(1)
                             if let server = vpnVM.selectedServer {
@@ -760,7 +828,7 @@ struct HomeView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 17, weight: .medium))
+                        .birdoFont(17, weight: .medium)
                         .foregroundStyle(BirdoTheme.white40)
                         .accessibilityHidden(true)
                 }
@@ -823,10 +891,10 @@ struct HomeView: View {
                         .tint(.white)
                 } else {
                     Image(systemName: "power")
-                        .font(.system(size: 22, weight: .semibold))
+                        .birdoFont(22, weight: .semibold)
                 }
                 Text(ctaLabel)
-                    .font(.system(size: 16, weight: .semibold))
+                    .birdoFont(16, weight: .semibold)
             }
             .foregroundStyle(Color.white)
             .frame(maxWidth: .infinity, minHeight: 60)

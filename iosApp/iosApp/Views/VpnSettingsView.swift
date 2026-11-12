@@ -45,9 +45,10 @@ struct VpnSettingsView: View {
                         // default and on every plan. Android carries it under
                         // Security next to Stealth; iOS has no Stealth row (see
                         // the header note), so it leads the Network section. The
-                        // flag only rides the connect body — the description
-                        // says so — and a flip while connected takes the same
-                        // 1200 ms debounced reapply blip as Local Network Sharing.
+                        // flag only rides the connect body, and a flip while
+                        // connected takes the same 1200 ms debounced reapply
+                        // blip as Local Network Sharing. No description of what
+                        // it does (owner 2026-11-07); only why it cannot act.
                         // Disabled, not hidden, when the FLEET gate is off:
                         // there is nothing for the user to buy or change, so
                         // the row simply states why. Their stored preference is
@@ -63,13 +64,14 @@ struct VpnSettingsView: View {
                                      title: "BirdoShield",
                                      description: shield.unavailable
                                          ? BirdoShieldGate.unavailableReason
-                                         : "Blocks ads, trackers and malware domains at the VPN's DNS resolver.",
+                                         : nil,
                                      isOn: $settingsVM.dnsFilteringEnabled,
                                      isEnabled: shield.isEnabled,
                                      displayOn: shield.isOn)
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",
-                                     description: "Allow access to devices on your local network (printers, NAS, etc.) while connected to VPN",
+                                     // A warning, so it stays (owner 2026-11-07).
+                                     description: "While on, devices on your local network can reach this device.",
                                      isOn: $settingsVM.localNetworkSharing)
 
                         SectionHeader("WireGuard")
@@ -81,6 +83,7 @@ struct VpnSettingsView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
+                    .adaptiveColumn()
                 }
             }
         }
@@ -130,6 +133,7 @@ struct VpnSettingsView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(minHeight: 56)
+            .adaptiveColumn()
 
             Rectangle()
                 .fill(BirdoTheme.hairlineSoft)
@@ -176,21 +180,15 @@ struct VpnSettingsView: View {
     private var mtuCard: some View {
         BirdoCard(cornerRadius: 14) {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 20))
                         .foregroundStyle(BirdoTheme.yellow)
                         .frame(width: 24)
                         .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("WireGuard MTU")
-                            .font(BirdoTheme.Fonts.titleSmall)
-                            .foregroundStyle(BirdoTheme.onSurface)
-                        Text("Packet size — lower values improve reliability on unstable networks")
-                            .font(BirdoTheme.Fonts.bodySmall)
-                            .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Text("WireGuard MTU")
+                        .font(BirdoTheme.Fonts.titleSmall)
+                        .foregroundStyle(BirdoTheme.onSurface)
                 }
 
                 mtuAutoRow
@@ -329,7 +327,7 @@ struct VpnSettingsView: View {
     }
 }
 
-// MARK: - Rows (Android §2: card r14, plain 22pt icon, titleSmall + desc)
+// MARK: - Rows (Android §2: card r14, plain 22pt icon, titleSmall + note)
 
 /// Whole-row toggle target announcing a single switch — the inner Toggle is
 /// a visual only; the surrounding Button handles the tap (Android §0.3).
@@ -337,7 +335,9 @@ private struct VpnToggleRow: View {
     let icon: String
     let iconColor: Color
     let title: String
-    let description: String
+    /// Only a warning or why the switch cannot act; rows carry no
+    /// description of what they do (owner 2026-11-07).
+    let description: String?
     @Binding var isOn: Bool
     /// When false the row is inert: no tap, no toggle gesture, muted styling.
     /// Defaults to true so every existing call site is unchanged.
@@ -390,6 +390,7 @@ private struct VpnToggleRow: View {
                     Spacer(minLength: 8)
                     Toggle("", isOn: shownBinding)
                         .labelsHidden()
+                        .toggleStyle(.switch)
                         .tint(BirdoTheme.accent)
                         .allowsHitTesting(false)
                 }
@@ -408,17 +409,19 @@ private struct VpnToggleRow: View {
 
 private struct VpnRowText: View {
     let title: String
-    let description: String
+    let description: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(BirdoTheme.Fonts.titleSmall)
                 .foregroundStyle(BirdoTheme.onSurface)
-            Text(description)
-                .font(BirdoTheme.Fonts.bodySmall)
-                .foregroundStyle(BirdoTheme.onSurfaceMuted)
-                .lineLimit(3)
+            if let description {
+                Text(description)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .multilineTextAlignment(.leading)
     }

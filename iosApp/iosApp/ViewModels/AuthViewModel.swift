@@ -84,10 +84,16 @@ final class AuthViewModel: ObservableObject {
     private var pendingProvisionReason: SignInReason?
     /// The in-flight anonymous mint, retained so backing out can CANCEL it.
     private var provisioningTask: Task<Void, Never>?
+    /// The running email or anonymous sign-in. Backing out of the sheet cancels
+    /// it, which ends a sign-in proof-of-work (A-M78) without sending anything.
+    private var signInTask: Task<Void, Never>?
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
     @Published private(set) var anonymousCreateFailureStatus: Int?
+    /// MR-2220: the last anonymous create was refused for the caller's country.
+    /// Asking again changes nothing, so no "Try again".
+    private var anonymousCreateRefusedByCountry = false
     /// Single-flight flag for every auth submit (login / 2FA / anonymous /
     /// SSO). Double submits mint duplicate backend Session rows — guard on it.
     @Published var isLoading = false
@@ -115,6 +121,12 @@ final class AuthViewModel: ObservableObject {
     /// credential") and call `acknowledgeAnonymousId()` before the router
     /// proceeds to Home. Nil in every other state.
     @Published private(set) var createdAnonymousId: String?
+    /// A-L24: the account was minted but its session could not be written to
+    /// the keychain (even after one retry). The save-your-ID step shows a note.
+    @Published private(set) var createdIdNotStored = false
+    /// The minted session's tokens, held in memory only while
+    /// `createdIdNotStored`; never persisted anywhere but the keychain retry.
+    private var unstoredTokens: TokenPairData?
     /// Identity from `GET /auth/me`. Nil until hydration succeeds — login is
     /// never blocked on the profile call, so treat nil as "unknown", not
     /// "logged out". Drives `hasPassword` (delete dialog) and the anonymous
@@ -582,6 +594,8 @@ final class AuthViewModel: ObservableObject {
         // from a cold start.
         provisioningTask?.cancel()
         provisioningTask = nil
+        signInTask?.cancel()
+        signInTask = nil
         if isAutoProvisioning { isLoading = false }
         error = nil
         anonymousCreateFailureStatus = nil
@@ -620,7 +634,7 @@ final class AuthViewModel: ObservableObject {
         pendingAnonymousId = nil
         pendingContext = .emailLogin
 
-        Task { [weak self] in
+        signInTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await api.login(email: trimmedEmail, password: password)
@@ -639,6 +653,11 @@ final class AuthViewModel: ObservableObject {
                     challengeToken = challenge
                     requiresTwoFactor = true
                 }
+            } catch where Task.isCancelled {
+                // The user backed out during a sign-in proof-of-work: nothing
+                // was sent, nothing to say.
+                self.isLoading = false
+                return
             } catch {
                 // Count the attempt ONLY if the server actually weighed these
                 // credentials and said no. This used to be a blanket
@@ -743,7 +762,7 @@ final class AuthViewModel: ObservableObject {
         pendingAnonymousId = digits
         pendingContext = .anonymousLogin
 
-        Task { [weak self] in
+        signInTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await api.loginAnonymous(anonymousId: digits, password: sendPassword)
@@ -761,8 +780,12 @@ final class AuthViewModel: ObservableObject {
                     challengeToken = challenge
                     requiresTwoFactor = true
                 }
+            } catch where Task.isCancelled {
+                self.isLoading = false
+                return
             } catch {
-                self.error = mapAuthError(error, fallback: "Anonymous login failed")
+                self.error = Self.anonymousLoginMessage(
+                    mapAuthError(error, fallback: "Anonymous login failed"))
             }
             self.isLoading = false
         }
@@ -819,7 +842,20 @@ final class AuthViewModel: ObservableObject {
                     // completeAuthentication set. One of three mints per IP per
                     // hour has already been spent, so say so rather than
                     // spinning.
+                    //
+                    // A-L24 / MR-2241: when the server DID hand back the number,
+                    // do not discard it. Keep the tokens in memory only, show
+                    // the number in the save-your-ID step with a note, and retry
+                    // the keychain write when the user continues
+                    // (`acknowledgeAnonymousId`). Failing that, they hold the
+                    // number and can sign in with it.
                     isAutoProvisioning = false
+                    if let minted = registration.anonymousId {
+                        unstoredTokens = registration.tokens
+                        createdIdNotStored = true
+                        error = nil
+                        createdAnonymousId = minted
+                    }
                 }
             } catch {
                 // NOT mapAuthError: its 429 branch says "Too many attempts.
@@ -829,6 +865,15 @@ final class AuthViewModel: ObservableObject {
                 // On a shared App Review address that copy reads as a broken
                 // app. AnonymousCreateFailure says whose limit it is, how long
                 // it lasts, and that the app still works without an account.
+                if let refused = error as? RegistrationRefusedError {
+                    self.isAutoProvisioning = false
+                    self.anonymousCreateRefusedByCountry = true
+                    self.anonymousCreateFailureStatus = 403
+                    self.error = refused.message
+                    self.isLoading = false
+                    return
+                }
+                self.anonymousCreateRefusedByCountry = false
                 let status = Self.httpStatus(of: error)
                 // Hand the user back the ordinary sheet: the no-input path
                 // could not be delivered, and AnonymousCreateFailure's copy
@@ -849,13 +894,41 @@ final class AuthViewModel: ObservableObject {
     /// button. A 429 inside the rate-limit hour is not: retrying burns another
     /// attempt and fails again.
     var canRetryAnonymousCreate: Bool {
-        AnonymousCreateFailure.isImmediatelyRetryable(status: anonymousCreateFailureStatus)
+        !anonymousCreateRefusedByCountry
+            && AnonymousCreateFailure.isImmediatelyRetryable(status: anonymousCreateFailureStatus)
     }
 
     /// The user confirmed they saved the freshly-minted anonymous ID —
     /// proceed to Home.
     func acknowledgeAnonymousId() {
-        guard createdAnonymousId != nil else { return }
+        guard let minted = createdAnonymousId else { return }
+        if let tokens = unstoredTokens {
+            // A-L24: the mint's keychain write failed. Try again now; the user
+            // has had the number on screen the whole time.
+            let stored = SessionPersistence.saveWithRetry {
+                keychain.save(accessToken: tokens.accessToken,
+                              refreshToken: tokens.refreshToken,
+                              email: nil)
+            }
+            unstoredTokens = nil
+            createdIdNotStored = false
+            createdAnonymousId = nil
+            isAutoProvisioning = false
+            guard stored else {
+                error = "Your account was created, but this device could not store the session. Sign in with the account number you just saved."
+                return
+            }
+            AnonymousNumberRecord.recordSignIn(anonymous: true, number: minted, in: keychain)
+            keychain.setSignedInWithApple(false)
+            isLoggedIn = true
+            Task { [weak self] in
+                if let profile = try? await self?.api.fetchProfile() {
+                    self?.applyProfile(profile)
+                }
+                await self?.refreshStats()
+            }
+            return
+        }
         createdAnonymousId = nil
         isAutoProvisioning = false
         isLoggedIn = true
@@ -1028,6 +1101,8 @@ final class AuthViewModel: ObservableObject {
         challengeToken = nil
         twoFactorCode = ""
         createdAnonymousId = nil
+        unstoredTokens = nil
+        createdIdNotStored = false
         pendingEmail = nil
         pendingAnonymousId = nil
         pendingContext = .emailLogin
@@ -1235,9 +1310,13 @@ final class AuthViewModel: ObservableObject {
         knownAnonymousId: String?,
         context: AuthContext
     ) async -> Bool {
-        guard keychain.save(accessToken: tokens.accessToken,
-                            refreshToken: tokens.refreshToken,
-                            email: knownEmail) else {
+        // A-L24: one retry before giving up -- a failure here right after a mint
+        // orphans the account.
+        guard SessionPersistence.saveWithRetry({
+            keychain.save(accessToken: tokens.accessToken,
+                          refreshToken: tokens.refreshToken,
+                          email: knownEmail)
+        }) else {
             error = "Could not securely store your session. Please try again."
             return false
         }
@@ -1398,7 +1477,17 @@ final class AuthViewModel: ObservableObject {
     /// Map a login-path failure to user copy. Server text is sanitized first
     /// (blank / >200 chars / HTML / stack-trace fragments → fallback), then
     /// matched against the known-condition table.
+    /// The shared mapping speaks for the email form. This form has no email.
+    private static func anonymousLoginMessage(_ message: String) -> String {
+        message == "Invalid email or password"
+            ? "That account number or password isn't right"
+            : message
+    }
+
     private func mapAuthError(_ error: Error, fallback: String) -> String {
+        // MR-2220: the server's own sentence, with no "Login failed:" prefix and
+        // no substring re-mapping.
+        if let refused = error as? RegistrationRefusedError { return refused.message }
         // SSOService errors already carry their exact user-facing copy.
         if let sso = error as? SSOService.SSOError {
             return sso.errorDescription ?? fallback

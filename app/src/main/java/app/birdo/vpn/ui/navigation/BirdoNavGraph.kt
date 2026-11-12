@@ -527,6 +527,7 @@ fun BirdoNavGraph(
                         onForgotPassword = { settingsViewModel.openUrl(PASSWORD_RESET_URL) },
                         onSsoLogin = { provider -> authViewModel.startSso(provider, context) },
                         onCreateAnonymous = { authViewModel.registerAnonymous() },
+                        isCheckingDevice = authState.isCheckingDevice,
                         // Creating an anonymous account deliberately does NOT flip
                         // isLoggedIn, so this route stays put and shows the minted
                         // 24-digit ID until the user confirms saving it. It is the
@@ -618,6 +619,8 @@ fun BirdoNavGraph(
                         },
                         onDismissUpdate = { updateViewModel.dismiss() },
                         onViewPlans = openPlans,
+                        onOpenUrl = { settingsViewModel.openUrl(it) },
+                        onDismissDeviceNotice = { vpnViewModel.dismissDeviceNotice() },
                     )
                 }
             }

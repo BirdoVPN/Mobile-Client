@@ -2,6 +2,7 @@ package app.birdo.vpn.ui.screen
 
 import androidx.annotation.StringRes
 import app.birdo.vpn.R
+import app.birdo.vpn.service.ConnectNotices
 import app.birdo.vpn.service.FailureKind
 import app.birdo.vpn.service.SessionCopy
 import app.birdo.vpn.service.VpnState
@@ -78,6 +79,38 @@ internal fun serverRowMarkers(state: VpnUiState, multiHopArmed: Boolean): Server
     )
 }
 
+/**
+ * A-M79: whether Home's server picker can be opened. Held for a connect, a
+ * disconnect AND any dial still running: a live switch rides the old tunnel
+ * and shows Connected while its dial is out, so the connection state alone let
+ * a second pick land on top of the first.
+ */
+internal fun serverPickerEnabled(state: VpnUiState): Boolean {
+    val c = homeConnection(state)
+    return !c.isConnecting && !c.isDisconnecting && !state.dialInFlight
+}
+
+/**
+ * A-M79: what Home's server card says. [name] is the selection; [switching]
+ * is true while that selection is a target the tunnel has not applied (the
+ * card says "Switching…", never presents it as the protected server). The
+ * [tunnelOn] line is the name of the server the tunnel was actually applied
+ * to (VpnManager.connectedServer, the service's applied config), shown only
+ * while Home says Protected, so a phone check can read the truth on a release
+ * build, where logcat is stripped.
+ */
+internal data class ServerCardModel(val name: String?, val switching: Boolean, val tunnelOn: String?)
+
+internal fun serverCardModel(state: VpnUiState): ServerCardModel {
+    val c = homeConnection(state)
+    val server = state.selectedServer
+    return ServerCardModel(
+        name = server?.name,
+        switching = server != null && state.pendingSwitchServerId == server.id,
+        tunnelOn = state.connectedServer?.takeIf { c.isConnected },
+    )
+}
+
 internal enum class PillIcon { NONE, SYNC, ERROR, OFFLINE }
 
 internal data class PillModel(
@@ -146,6 +179,8 @@ internal enum class Remedy(@param:StringRes val label: Int) {
     VIEW_PLANS(R.string.banner_action_view_plans),
     UPDATE(R.string.update_action),
     CHOOSE_SERVER(R.string.banner_action_choose_server),
+    /** MR-2221: the website's review page for a restricted account (the server's `appealPath`). */
+    ASK_REVIEW(R.string.banner_action_ask_review),
 }
 
 /**
@@ -158,6 +193,7 @@ internal fun remedyFor(kind: FailureKind): Remedy? = when (kind) {
     // "…or turn off Stealth Mode in Settings": straight to the toggle.
     FailureKind.STEALTH_FAILED -> Remedy.OPEN_VPN_SETTINGS
     FailureKind.PLAN_REQUIRED, FailureKind.QUOTA_EXCEEDED -> Remedy.VIEW_PLANS
+    FailureKind.ACCOUNT_RESTRICTED -> Remedy.ASK_REVIEW
     FailureKind.UPDATE_REQUIRED -> Remedy.UPDATE
     // "…Try another location."
     FailureKind.NEVER_ESTABLISHED -> Remedy.CHOOSE_SERVER
@@ -191,5 +227,8 @@ internal fun homeRemedy(state: VpnUiState): Remedy? {
     if (state.connectError != null || killSwitchWarning(state) != null) return null
     val error = state.vpnState as? VpnState.Error ?: return null
     if (SessionCopy.isKillSwitchNotArmed(error.message)) return null
-    return remedyFor(error.kind)
+    val remedy = remedyFor(error.kind)
+    // No review button without a link of this site to open.
+    if (remedy == Remedy.ASK_REVIEW && ConnectNotices.siteUrl(state.accountRestriction?.appealPath) == null) return null
+    return remedy
 }

@@ -122,6 +122,9 @@ struct LoginBody: Encodable {
     let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
+    /// Only on the one retry that answers a sign-in spike's `pow_required`
+    /// (A-M78 / MR-2139); a nil `pow` is OMITTED from the JSON.
+    var pow: PowSolution? = nil
 }
 
 /// Body for `POST /auth/login/anonymous` — the 24-digit account ID plus
@@ -138,10 +141,15 @@ struct AnonymousLoginBody: Encodable {
     let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
+    /// Only on the one retry that answers a sign-in spike's `pow_required`
+    /// (A-M78 / MR-2139); a nil `pow` is OMITTED from the JSON.
+    var pow: PowSolution? = nil
 }
 
-/// Body for `POST /auth/register/anonymous` — device context only; the server
-/// mints the 24-digit anonymous ID.
+/// Body for `POST /auth/register/anonymous` — device context plus the optional
+/// solved sign-up proof-of-work (MR-2152); the server mints the 24-digit
+/// anonymous ID. A nil `pow` is OMITTED from the JSON (synthesized Encodable
+/// uses encodeIfPresent): the server then applies its fallback policy.
 struct DeviceInfoBody: Encodable {
     let deviceId: String
     let deviceName: String
@@ -149,6 +157,7 @@ struct DeviceInfoBody: Encodable {
     let platform = kPlatformWire
     let platformVersion: String
     let appVersion: String
+    var pow: PowSolution? = nil
 }
 
 struct TwoFactorBody: Encodable {

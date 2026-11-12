@@ -103,7 +103,13 @@ interface StringLookup {
  * [error] is usually a reason phrase, but the deletion routes put a code there
  * (`two_factor_required`, ACCOUNT-API-2026-10-01).
  */
-internal data class ErrorEnvelope(val message: String?, val code: String?, val error: String? = null)
+internal data class ErrorEnvelope(
+    val message: String?,
+    val code: String?,
+    val error: String? = null,
+    /** `details.pow.op` when the server names one (`login` or `signup`); null when the refusal carries no `pow` member. */
+    val powOp: String? = null,
+)
 
 /**
  * THE one place an API failure becomes words on the screen.
@@ -141,6 +147,11 @@ class ApiErrorMapper(private val strings: StringLookup) {
             serverCode == ConnectErrorCode.PSK_DELIVERY_UNAVAILABLE ->
                 FailureReason.SERVER_UNAVAILABLE to strings.get(R.string.error_secure_setup_unavailable)
             serverCode.retryable -> FailureReason.SERVER_UNAVAILABLE.withText()
+            // MR-2220: new accounts are not accepted from this country. Told by
+            // the typed `details.code` on a 403, never by wording, and shown as
+            // the server wrote it. No other 403 takes this branch.
+            isCountryRefusal(status, envelope, context) ->
+                FailureReason.REFUSED to envelope!!.message!!.trim()
             else -> when (context) {
                 ErrorContext.SIGN_IN, ErrorContext.ANONYMOUS_SIGN_IN ->
                     signIn(status, server, anonymous = context == ErrorContext.ANONYMOUS_SIGN_IN)
@@ -152,6 +163,11 @@ class ApiErrorMapper(private val strings: StringLookup) {
         }
         return ApiResult.Error(message, status, reason, serverCode = serverCode)
     }
+
+    private fun isCountryRefusal(status: Int, envelope: ErrorEnvelope?, context: ErrorContext): Boolean =
+        status == 403 && envelope?.code == CODE_REGISTRATION_COUNTRY_NOT_ALLOWED &&
+            (context == ErrorContext.ANONYMOUS_REGISTER || context == ErrorContext.SIGN_IN) &&
+            envelope.message?.let { isPresentable(it, REGISTRATION_REFUSAL_MAX_LENGTH) } == true
 
     /**
      * A call that threw. Classified by exception TYPE, never by its message:
@@ -213,6 +229,14 @@ class ApiErrorMapper(private val strings: StringLookup) {
             reason == null && serverMessage != null &&
                 serverMessage.trim().startsWith("Device limit reached", ignoreCase = true) ->
                 FailureReason.DEVICE_LIMIT to textFor(FailureReason.DEVICE_LIMIT)
+            // MR-2221: the restriction's sentence is about 450 characters and says
+            // what to do, so for this reason alone the ceiling is higher. Every
+            // other rule of isPresentable still applies.
+            reason == ConnectRefusalReason.ACCOUNT_RESTRICTED ->
+                FailureReason.REFUSED to (
+                    serverMessage?.takeIf { isPresentable(it, RESTRICTION_MAX_LENGTH) }?.trim()
+                        ?: strings.get(R.string.error_account_restricted)
+                    )
             serverMessage != null && isPresentable(serverMessage) ->
                 FailureReason.REFUSED to serverMessage.trim()
             else -> FailureReason.UNEXPECTED to strings.get(R.string.error_connect_failed)
@@ -355,6 +379,13 @@ class ApiErrorMapper(private val strings: StringLookup) {
     internal companion object {
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
+        /** `details.code` of the 403 a sign-up from a country that is not accepted gets (birdo-web registration gate). */
+        private const val CODE_REGISTRATION_COUNTRY_NOT_ALLOWED = "registration_country_not_allowed"
+        private const val REGISTRATION_REFUSAL_MAX_LENGTH = 500
+
+        /** The longest `account_restricted` message shown whole (the server's is about 454). */
+        const val RESTRICTION_MAX_LENGTH = 1000
+
         /** The deletion routes' `error` codes for an account with 2FA (ACCOUNT-API-2026-10-01, item 85). */
         private const val ERROR_TWO_FACTOR_REQUIRED = "two_factor_required"
         private const val ERROR_TWO_FACTOR_INVALID = "two_factor_invalid"
@@ -388,13 +419,14 @@ class ApiErrorMapper(private val strings: StringLookup) {
             }
             val code = ((root["details"] as? JsonObject)?.get("code") as? JsonPrimitive)?.contentOrNull
             val error = (root["error"] as? JsonPrimitive)?.contentOrNull
-            return ErrorEnvelope(message, code, error)
+            val powOp = (((root["details"] as? JsonObject)?.get("pow") as? JsonObject)?.get("op") as? JsonPrimitive)?.contentOrNull
+            return ErrorEnvelope(message, code, error, powOp)
         }
 
         /** Whether a server sentence can be shown as-is. */
-        fun isPresentable(text: String): Boolean {
+        fun isPresentable(text: String, maxLength: Int = 200): Boolean {
             val t = text.trim()
-            if (t.isEmpty() || t.length > 200) return false
+            if (t.isEmpty() || t.length > maxLength) return false
             if (t.startsWith("{") || t.startsWith("[") || '<' in t) return false
             if ("Exception" in t || "\tat " in t || "stackTrace" in t) return false
             return t.lowercase().trimEnd('.') !in reasonPhrases

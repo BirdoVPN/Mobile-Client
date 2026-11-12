@@ -157,15 +157,28 @@ final class APIClient: @unchecked Sendable {
         // JSON-token route for bundled clients (gated on X-Desktop-Client, which
         // this session sets globally). Mirrors Android `BirdoApi.login`.
         let device = await deviceContext()
-        let body = try encoder.encode(LoginBody(
-            email: email,
-            password: password,
-            deviceId: device.id,
-            deviceName: device.name,
-            platformVersion: device.osVersion,
-            appVersion: kBirdoClientVersion
-        ))
-        let data = try await post(path: "/auth/login/desktop", body: body, authenticated: false)
+        // A-M78 / MR-2139: sent once without a proof; only a 429 `pow_required`
+        // for op `login` (a failed-sign-in spike) is answered, once, with one.
+        let data = try await SignupPowFlow.login(
+            fetch: { [self] in try await fetchPowChallenge(op: SignupPowFlow.loginOp) },
+            solve: { challenge, bits, deadline in
+                try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
+            },
+            send: { [self] pow in
+                let body = try encoder.encode(LoginBody(
+                    email: email,
+                    password: password,
+                    deviceId: device.id,
+                    deviceName: device.name,
+                    platformVersion: device.osVersion,
+                    appVersion: kBirdoClientVersion,
+                    pow: pow
+                ))
+                return try await post(path: "/auth/login/desktop", body: body, authenticated: false,
+                                      refusal: Self.loginPowRefusal)
+            },
+            progress: { checking in await SignupPowStatus.shared.set(checking) }
+        )
         return try parseAuthResponse(data)
     }
 
@@ -193,15 +206,27 @@ final class APIClient: @unchecked Sendable {
     /// `LoginResult` return.
     func loginAnonymous(anonymousId: String, password: String?) async throws -> LoginResult {
         let device = await deviceContext()
-        let body = try encoder.encode(AnonymousLoginBody(
-            anonymousId: anonymousId,
-            password: password,
-            deviceId: device.id,
-            deviceName: device.name,
-            platformVersion: device.osVersion,
-            appVersion: kBirdoClientVersion
-        ))
-        let data = try await post(path: "/auth/login/anonymous", body: body, authenticated: false)
+        // A-M78 / MR-2139: the same one-retry proof as `login`.
+        let data = try await SignupPowFlow.login(
+            fetch: { [self] in try await fetchPowChallenge(op: SignupPowFlow.loginOp) },
+            solve: { challenge, bits, deadline in
+                try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
+            },
+            send: { [self] pow in
+                let body = try encoder.encode(AnonymousLoginBody(
+                    anonymousId: anonymousId,
+                    password: password,
+                    deviceId: device.id,
+                    deviceName: device.name,
+                    platformVersion: device.osVersion,
+                    appVersion: kBirdoClientVersion,
+                    pow: pow
+                ))
+                return try await post(path: "/auth/login/anonymous", body: body, authenticated: false,
+                                      refusal: Self.loginPowRefusal)
+            },
+            progress: { checking in await SignupPowStatus.shared.set(checking) }
+        )
         return try parseAuthResponse(data)
     }
 
@@ -212,13 +237,40 @@ final class APIClient: @unchecked Sendable {
     /// Server rate limit: 3 creations per IP per hour.
     func registerAnonymous() async throws -> AnonymousRegistration {
         let device = await deviceContext()
-        let body = try encoder.encode(DeviceInfoBody(
-            deviceId: device.id,
-            deviceName: device.name,
-            platformVersion: device.osVersion,
-            appVersion: kBirdoClientVersion
-        ))
-        let data = try await post(path: "/auth/register/anonymous", body: body, authenticated: false)
+        // MR-2152: the server issues and checks a sign-up proof-of-work; a
+        // sign-up that sends none is judged by its stricter fallback tier. The
+        // policy (one fresh challenge after a refusal, then one request
+        // without a proof) is SignupPowFlow's.
+        let data: Data
+        do {
+            data = try await SignupPowFlow.register(
+                fetch: { [self] in try await fetchPowChallenge(op: SignupPowFlow.signupOp) },
+                solve: { challenge, bits, deadline in
+                    try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
+                },
+                send: { [self] pow in
+                    let body = try encoder.encode(DeviceInfoBody(
+                        deviceId: device.id,
+                        deviceName: device.name,
+                        platformVersion: device.osVersion,
+                        appVersion: kBirdoClientVersion,
+                        pow: pow
+                    ))
+                    return try await post(path: "/auth/register/anonymous", body: body, authenticated: false,
+                                          refusal: { status, data in
+                        if let powRefusal = SignupPowRefusal.classify(status: status, body: data) { return powRefusal }
+                        // MR-2220: a sign-up refused for the caller's country keeps its sentence.
+                        return RegistrationRefusedError.classify(status: status, body: data)
+                    })
+                },
+                progress: { checking in await SignupPowStatus.shared.set(checking) }
+            )
+        } catch let refusal as SignupPowRefusal {
+            // The retries ran out: the server's own sentence, as any other refusal.
+            throw APIError.serverMessage(
+                refusal.message ?? "Could not create an anonymous account. Please try again.",
+                status: refusal.status)
+        }
         let parsed = try decoder.decode(AuthTokensResponse.self, from: data)
         guard parsed.ok != false, let tokens = parsed.tokens, !tokens.accessToken.isEmpty else {
             // Client-minted: the response WAS 2xx, we just could not use it.
@@ -228,6 +280,32 @@ final class APIClient: @unchecked Sendable {
             anonymousId: parsed.anonymousId,
             tokens: TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
         )
+    }
+
+    /// The `refusal:` hook of a sign-in request: a 429 `pow_required` for op
+    /// `login` becomes `LoginPowRefusal` (carrying the error the request would
+    /// have thrown), which `SignupPowFlow.login` answers once. Anything else is
+    /// nil and takes the ordinary mapping.
+    private static func loginPowRefusal(status: Int, data: Data) -> Error? {
+        guard LoginPowRefusal.matches(status: status, body: data) else { return nil }
+        return LoginPowRefusal(original: Self.error(status: status, body: data))
+    }
+
+    /// A proof-of-work challenge for this network: `POST /auth/pow/challenge
+    /// {"op":"signup"}` or `{"op":"login"}` (public; the path is this fixed
+    /// constant, never one a response names). ANY failure (429, 503, offline,
+    /// an unreadable answer) is nil: the sign-up then goes out without a proof
+    /// and the server decides, and a sign-in keeps the refusal it had. Only
+    /// cancellation propagates.
+    private func fetchPowChallenge(op: String) async throws -> PowChallengeResponse? {
+        do {
+            let body = try encoder.encode(PowChallengeRequest(op: op))
+            let data = try await post(path: "/auth/pow/challenge", body: body, authenticated: false)
+            return try decoder.decode(PowChallengeResponse.self, from: data)
+        } catch {
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            return nil
+        }
     }
 
     /// SSO handoff exchange — `POST /auth/native/exchange`. The `code` is the
@@ -273,7 +351,8 @@ final class APIClient: @unchecked Sendable {
             platformVersion: device.osVersion,
             appVersion: kBirdoClientVersion
         ))
-        let data = try await post(path: "/auth/apple/native", body: body, authenticated: false)
+        let data = try await post(path: "/auth/apple/native", body: body, authenticated: false,
+                                  refusal: { status, data in RegistrationRefusedError.classify(status: status, body: data) })
         return try parseAuthResponse(data)
     }
 
@@ -615,7 +694,8 @@ final class APIClient: @unchecked Sendable {
             throw ConnectRefusedError.classify(
                 message: envelope.message,
                 refusalReason: envelope.refusalReason,
-                quotaExceeded: envelope.quotaExceeded ?? false
+                quotaExceeded: envelope.quotaExceeded ?? false,
+                accountRestriction: envelope.accountRestriction
             )
         }
         return try decoder.decode(VPNConnectionConfig.self, from: data)
@@ -963,8 +1043,10 @@ final class APIClient: @unchecked Sendable {
         try await performRequest(method: "GET", path: path, body: nil, authenticated: true)
     }
 
-    private func post(path: String, body: Data?, authenticated: Bool) async throws -> Data {
-        try await performRequest(method: "POST", path: path, body: body, authenticated: authenticated)
+    private func post(path: String, body: Data?, authenticated: Bool,
+                      refusal: ((Int, Data) -> Error?)? = nil) async throws -> Data {
+        try await performRequest(method: "POST", path: path, body: body, authenticated: authenticated,
+                                 refusal: refusal)
     }
 
     private func performRequest(

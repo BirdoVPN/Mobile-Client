@@ -315,7 +315,7 @@ final class VPNManager: @unchecked Sendable {
             deleteSharedSecret(account: "wg_private_key")
             deleteSharedSecret(account: "wg_preshared_key")
             deleteSharedSecret(account: Self.heartbeatTokenAccount)
-            throw error
+            throw (error as NSError).domain.hasPrefix("NE") ? VPNManagerError.setupRefused : error
         }
     }
 
@@ -1051,6 +1051,10 @@ enum VPNManagerError: Error, LocalizedError {
     /// The previous peer is still what the adapter runs; the caller restores
     /// its snapshot. Carries the extension's payload-free reason only.
     case reconfigureRefused(String)
+    /// NetworkExtension refused to save or start the VPN. Its own text is
+    /// written for developers ("IPC failed", "permission denied"), and declining
+    /// the system's VPN prompt lands here too.
+    case setupRefused
 
     var errorDescription: String? {
         switch self {
@@ -1066,6 +1070,9 @@ enum VPNManagerError: Error, LocalizedError {
             return "No active VPN session to update."
         case .reconfigureRefused(let why):
             return "Couldn't switch the tunnel in place (\(why))."
+        case .setupRefused:
+            return "BirdoVPN couldn't set up its VPN on this device. If you were asked to allow "
+                + "a VPN configuration, choose Allow, then try again."
         }
     }
 }

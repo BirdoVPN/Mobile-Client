@@ -374,9 +374,51 @@
             "plan",
             "quota_exceeded",
             "server_capacity",
-            "server_unavailable"
+            "server_unavailable",
+            "account_restricted"
           ],
-          "description": "Why the connect was refused (with success:false), machine-readable: key the client screen on this, never on message wording. device_limit: the device cap of the plan is reached (device screen or upgrade; a retry changes nothing). plan: the server, or every server, is outside the plan (upgrade, or pick an included server). quota_exceeded: the free data allowance is used up (always with quotaExceeded:true). server_capacity: the chosen server is full (pick another). server_unavailable: the chosen server is missing or not ONLINE, or none can be used now (pick another, or retry later). Absent on a success, on a rebuild refusal (rebuildRefused) and on other failures. Older servers never send it: treat an absent or unknown value as a refusal without one and show message."
+          "description": "Why the connect was refused (with success:false), machine-readable: key the client screen on this, never on message wording. device_limit: the device cap of the plan is reached (device screen or upgrade; a retry changes nothing). plan: the server, or every server, is outside the plan (upgrade, or pick an included server). quota_exceeded: the free data allowance is used up (always with quotaExceeded:true). server_capacity: the chosen server is full (pick another). server_unavailable: the chosen server is missing or not ONLINE, or none can be used now (pick another, or retry later). account_restricted: new free-plan connections on this account are paused after a device-limit conflict continued past a notice (always with accountRestriction; do not retry before accountRestriction.until; the live tunnel is not cut). Absent on a success, on a rebuild refusal (rebuildRefused) and on other failures. Older servers never send it: treat an absent or unknown value as a refusal without one and show message."
+        },
+        "accountRestriction": {
+          "type": "object",
+          "properties": {
+            "until": {
+              "type": "string"
+            },
+            "appealPath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "until",
+            "appealPath"
+          ],
+          "additionalProperties": true,
+          "description": "With refusalReason account_restricted only: until is when new free-plan connections are allowed again (ISO-8601, server time; it ends on its own), appealPath the page on the website where the user can ask for a review. Show both with message; do not retry before until."
+        },
+        "deviceNotice": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "device_limit_conflict"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "managePath": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "managePath"
+          ],
+          "additionalProperties": true,
+          "description": "On a SUCCESSFUL free-plan connect while a device-limit notice is in force: other devices on the account kept taking its one connection. The connect went ahead. Show message once and offer managePath (the Devices page on the website). Never sent with success:false. Ignoring it loses nothing."
         }
       },
       "required": [
@@ -409,13 +451,14 @@
     },
     "ConnectRefusal": {
       "type": "string",
-      "description": "ConnectResponse.refusalReason values (success:false; MR-139). device_limit: device cap reached. plan: outside the plan. quota_exceeded: free allowance used up. server_capacity: the server is full. server_unavailable: the server is missing or not ONLINE, or none is usable now. Full semantics: CONNECT_REFUSALS in vpn.service.ts. Treat an unknown value as absent.",
+      "description": "ConnectResponse.refusalReason values (success:false; MR-139). device_limit: device cap reached. plan: outside the plan. quota_exceeded: free allowance used up. server_capacity: the server is full. server_unavailable: the server is missing or not ONLINE, or none is usable now. account_restricted: new free-plan connections paused for 24 h after a device-limit conflict (see accountRestriction). Full semantics: CONNECT_REFUSALS in vpn.service.ts. Treat an unknown value as absent.",
       "enum": [
         "device_limit",
         "plan",
         "quota_exceeded",
         "server_capacity",
-        "server_unavailable"
+        "server_unavailable",
+        "account_restricted"
       ]
     },
     "HeartbeatResponse": {

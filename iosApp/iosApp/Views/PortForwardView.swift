@@ -56,6 +56,7 @@ struct PortForwardView: View {
                 .padding(.bottom, 32)
                 .animation(BirdoTheme.Motion.easeStandard(BirdoTheme.Motion.quick),
                            value: vpnVM.portForwardError)
+                .adaptiveColumn()
             }
         }
         .navigationTitle("Port Forwarding")
