@@ -37,7 +37,9 @@
 # in .github/scripts/classify-changes.sh, which holds the list the filter used
 # to) whether there is Swift to scan; when there is not, "Analyze (swift)" is
 # skipped, and a skipped job counts as passing. Do not rename that job: it is
-# the name branch protection lists once it is made required.
+# the name branch protection lists once it is made required. A same-name twin
+# (`analyze-skipped`) runs only when `swift` is 'false', so exactly one job of
+# that name always reports.
 #
 # WHERE THE TIME WENT (run 37057051350, 31.6 min, 23.4 of them in the traced
 # xcodebuild): ~8 min in "Resolve Package Graph" for the one LOCAL Swift
@@ -207,7 +209,7 @@ jobs:
 
       # ── the scan ──────────────────────────────────────────────────────────
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: swift
           build-mode: manual
@@ -240,6 +242,19 @@ jobs:
             ONLY_ACTIVE_ARCH=NO
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: '/language:swift'
+
+  # Same-name twin of the job above (MR-2060): runs exactly when that one does
+  # not, so a check called "Analyze (swift)" always reports -- success here
+  # when no Swift or scan-config path changed. The two `if:` are mutually exclusive.
+  analyze-skipped:
+    name: Analyze (swift)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.swift == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "No swift changes in this change; nothing to run."

@@ -84,6 +84,9 @@ final class AuthViewModel: ObservableObject {
     private var pendingProvisionReason: SignInReason?
     /// The in-flight anonymous mint, retained so backing out can CANCEL it.
     private var provisioningTask: Task<Void, Never>?
+    /// The running email or anonymous sign-in. Backing out of the sheet cancels
+    /// it, which ends a sign-in proof-of-work (A-M78) without sending anything.
+    private var signInTask: Task<Void, Never>?
     /// HTTP status of the last failed anonymous-account creation, or nil.
     /// Drives whether a "Try again" button is worth offering (a 429 inside the
     /// rate-limit hour is not — see AnonymousCreateFailure).
@@ -591,6 +594,8 @@ final class AuthViewModel: ObservableObject {
         // from a cold start.
         provisioningTask?.cancel()
         provisioningTask = nil
+        signInTask?.cancel()
+        signInTask = nil
         if isAutoProvisioning { isLoading = false }
         error = nil
         anonymousCreateFailureStatus = nil
@@ -629,7 +634,7 @@ final class AuthViewModel: ObservableObject {
         pendingAnonymousId = nil
         pendingContext = .emailLogin
 
-        Task { [weak self] in
+        signInTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await api.login(email: trimmedEmail, password: password)
@@ -648,6 +653,11 @@ final class AuthViewModel: ObservableObject {
                     challengeToken = challenge
                     requiresTwoFactor = true
                 }
+            } catch where Task.isCancelled {
+                // The user backed out during a sign-in proof-of-work: nothing
+                // was sent, nothing to say.
+                self.isLoading = false
+                return
             } catch {
                 // Count the attempt ONLY if the server actually weighed these
                 // credentials and said no. This used to be a blanket
@@ -752,7 +762,7 @@ final class AuthViewModel: ObservableObject {
         pendingAnonymousId = digits
         pendingContext = .anonymousLogin
 
-        Task { [weak self] in
+        signInTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await api.loginAnonymous(anonymousId: digits, password: sendPassword)
@@ -770,6 +780,9 @@ final class AuthViewModel: ObservableObject {
                     challengeToken = challenge
                     requiresTwoFactor = true
                 }
+            } catch where Task.isCancelled {
+                self.isLoading = false
+                return
             } catch {
                 self.error = Self.anonymousLoginMessage(
                     mapAuthError(error, fallback: "Anonymous login failed"))

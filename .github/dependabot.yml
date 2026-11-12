@@ -181,6 +181,16 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
+    # sha2 / hkdf / digest majors change the post-quantum derivation inputs:
+    # they move together, in lockstep with birdo-pq-server and Desktop, with
+    # the KAT fixtures re-run (register A-M76, docs/audits/MASTER-AUDIT-2026-11-08).
+    ignore:
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "hkdf"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "digest"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "cargo"
     directory: "/native/birdo-pq-server"
     schedule:
@@ -195,6 +205,16 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
+    # sha2 / hkdf / digest majors change the post-quantum derivation inputs:
+    # they move together, in lockstep with birdo-pq-server and Desktop, with
+    # the KAT fixtures re-run (register A-M76, docs/audits/MASTER-AUDIT-2026-11-08).
+    ignore:
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "hkdf"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "digest"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "cargo"
     directory: "/native/rosenpass-jni"
     schedule:
@@ -210,6 +230,16 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
+    # sha2 / hkdf / digest majors change the post-quantum derivation inputs:
+    # they move together, in lockstep with birdo-pq-server and Desktop, with
+    # the KAT fixtures re-run (register A-M76, docs/audits/MASTER-AUDIT-2026-11-08).
+    ignore:
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "hkdf"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "digest"
+        update-types: ["version-update:semver-major"]
 
   # No "swift" entry: the only Package.swift is the vendored upstream
   # iosApp/Vendor/wireguard-apple (WireGuardKit); it is updated by re-vendoring,

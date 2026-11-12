@@ -601,7 +601,7 @@ fun LoginScreen(
                         )
                         Spacer(Modifier.width(10.dp))
                         Text(
-                            stringResource(R.string.login_connecting),
+                            stringResource(if (isCheckingDevice) R.string.login_checking_device else R.string.login_connecting),
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 14.sp,
                         )
@@ -726,7 +726,7 @@ fun LoginScreen(
                     if (isLoading) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp))
-                        Text(stringResource(R.string.login_connecting), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(stringResource(if (isCheckingDevice) R.string.login_checking_device else R.string.login_connecting), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     } else {
                         Text(stringResource(R.string.login_anonymous_submit), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     }
