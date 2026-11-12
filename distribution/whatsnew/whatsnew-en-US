@@ -1,5 +1,5 @@
-Switching servers quickly is more reliable.
+After switching servers, the app shows the server you are actually connected to.
 
-On the free plan, Profile no longer shows a renewal date.
+Disconnecting no longer leaves a "Not connected" notification behind.
 
-Creating an anonymous account now includes a short device check.
+Restoring purchases no longer gets stuck when Google Play is slow to answer.
