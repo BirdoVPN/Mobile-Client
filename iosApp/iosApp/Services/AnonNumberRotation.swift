@@ -253,6 +253,10 @@ struct RotationFlow: Equatable {
     /// Confirm requests sent in this flow. Once one was sent, the server may
     /// already have swapped the number (Desktop #417).
     private(set) var confirmsSent = 0
+    /// Whether the confirm now in flight is a retry: an EARLIER one was sent
+    /// first (Desktop #417's `retry = confirmSent.current`). Only a retry can
+    /// find a swap an earlier lost answer hid.
+    private(set) var confirmIsRetry = false
 
     var canContinueFromShowNew: Bool { step == .showNew && saved && newNumber != nil }
 
@@ -286,13 +290,16 @@ struct RotationFlow: Equatable {
     }
 
     /// Call when a confirm request is about to be sent.
-    mutating func confirmSent() { confirmsSent += 1 }
+    mutating func confirmSent() {
+        confirmIsRetry = confirmsSent >= 1
+        confirmsSent += 1
+    }
 
-    /// After a SENT confirm, a 401 (verdict, expired guard, ended session)
+    /// On a RETRY (an earlier confirm was sent), a 401 (verdict, expired guard, ended session)
     /// or a 409 `rotation_not_pending` may mean the server already switched to
     /// the new number and revoked the old session.
     private func mayHaveCommitted(_ failure: RotationFailure) -> Bool {
-        guard confirmsSent >= 1 else { return false }
+        guard confirmIsRetry else { return false }
         switch failure {
         case .refusal(.notPending), .refusal(.proofRejected), .refusal(.sessionExpired), .sessionEnded:
             return true
@@ -322,7 +329,11 @@ struct RotationFlow: Equatable {
             // stays in memory and the user retries on step 3.
             step = .confirm
         }
-        notice = Self.noticeFor(failure, atConfirm: true)
+        // The first confirm's own 401 is a definitive answer: the session ended.
+        switch failure {
+        case .refusal(.proofRejected), .refusal(.sessionExpired): notice = .sessionEnded
+        default: notice = Self.noticeFor(failure, atConfirm: true)
+        }
     }
 
     /// The server swapped the number. `storedLocally == false` keeps the new
@@ -343,6 +354,7 @@ struct RotationFlow: Equatable {
         step = .prove
         storedLocally = true
         confirmsSent = 0
+        confirmIsRetry = false
     }
 
     static func noticeFor(_ failure: RotationFailure, atConfirm: Bool) -> Notice {

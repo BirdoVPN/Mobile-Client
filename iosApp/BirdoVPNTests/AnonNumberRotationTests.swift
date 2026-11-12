@@ -159,11 +159,35 @@ final class AnonNumberRotationTests: XCTestCase {
         XCTAssertEqual(f.notice, .expired)
     }
 
-    func testALaterConfirmThatIsRefusedMeansTheNumberMayBeActive() {
-        for refusal in [RotationFailure.refusal(.notPending), .refusal(.proofRejected), .sessionEnded] {
+    func testTheFirstConfirmsOwn409RestartsAndIsNotMaybeActive() {
+        var f = atConfirm()
+        f.confirmSent()
+        f.confirmFailed(.refusal(.notPending))
+        XCTAssertEqual(f.step, .prove)
+        XCTAssertEqual(f.notice, .expired)
+        XCTAssertNil(f.newNumber)
+    }
+
+    func testTheFirstConfirmsOwn401IsASessionEndedErrorNotMaybeActive() {
+        for refusal in [RotationFailure.refusal(.proofRejected), .refusal(.sessionExpired), .sessionEnded] {
             var f = atConfirm()
             f.confirmSent()
             f.confirmFailed(refusal)
+            XCTAssertEqual(f.step, .confirm, "\(refusal)")
+            XCTAssertEqual(f.notice, .sessionEnded)
+            XCTAssertEqual(f.newNumber, newNumber)
+        }
+    }
+
+    func testARetryAfterALostFirstConfirmThatIsRefusedMeansTheNumberMayBeActive() {
+        for refusal in [RotationFailure.refusal(.notPending), .refusal(.proofRejected), .refusal(.sessionExpired), .sessionEnded] {
+            var f = atConfirm()
+            f.confirmSent()
+            f.confirmFailed(.network)               // the first answer was lost
+            XCTAssertEqual(f.step, .confirm)
+            f.confirmSent()
+            XCTAssertTrue(f.confirmIsRetry)
+            f.confirmFailed(refusal)                // the retry is refused
             XCTAssertEqual(f.step, .maybeCommitted, "\(refusal)")
             XCTAssertEqual(f.notice, .maybeActive)
             XCTAssertEqual(f.newNumber, newNumber, "the new number stays visible")
