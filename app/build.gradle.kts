@@ -250,6 +250,11 @@ configure<com.android.build.api.dsl.ApplicationExtension> {
 
         // Frame-timing HUD flag (see perfOverlay above).
         buildConfigField("boolean", "PERF_OVERLAY", "$perfOverlay")
+
+        // MR-1707: the "Replace number" entry point (two-phase anonymous number
+        // replacement). Ships DARK: turned on together with the server's
+        // ANON_NUMBER_ROTATION once the iOS keychain and number_changed follow-ups land.
+        buildConfigField("boolean", "ANON_NUMBER_ROTATION", "false")
     }
 
     signingConfigs {

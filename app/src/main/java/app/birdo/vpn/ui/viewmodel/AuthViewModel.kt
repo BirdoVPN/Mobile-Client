@@ -257,6 +257,20 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Re-read the profile into [AuthUiState.user] (MR-1707): after the anonymous
+     * number was replaced, the card must show the new last four, and nothing
+     * here may keep the old number. A failure keeps the session as it is.
+     */
+    fun refreshProfile() {
+        viewModelScope.launch {
+            val result = repository.getProfile()
+            if (result is ApiResult.Success) {
+                _uiState.value = _uiState.value.copy(user = result.data)
+            }
+        }
+    }
+
     fun login(email: String, password: String) {
         val trimmedEmail = email.trim()
         if (!InputValidator.isValidEmail(trimmedEmail)) {

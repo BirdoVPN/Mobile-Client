@@ -48,6 +48,18 @@ interface BirdoApi {
         @Body request: AnonymousRegisterRequest,
     ): Response<AnonymousLoginResponse>
 
+    /** MR-1707 phase 1: step-up, then the NEW number (shown once). Changes nothing yet. */
+    @POST("auth/anonymous/rotate-number/prepare")
+    suspend fun rotateNumberPrepare(
+        @Body request: app.birdo.vpn.data.repository.RotatePrepareRequest,
+    ): Response<app.birdo.vpn.data.repository.RotatePrepareResponse>
+
+    /** MR-1707 phase 2: the re-typed new number commits it and returns this device's fresh tokens. */
+    @POST("auth/anonymous/rotate-number/confirm")
+    suspend fun rotateNumberConfirm(
+        @Body request: app.birdo.vpn.data.repository.RotateConfirmRequest,
+    ): Response<app.birdo.vpn.data.repository.RotateConfirmResponse>
+
     /**
      * A sign-up proof-of-work challenge for this network (MR-2152; birdo-web
      * docs/SIGNUP-PROOF-OF-WORK.md). Public. Any failure (429, 503, offline) is
