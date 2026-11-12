@@ -45,7 +45,7 @@ sha2 = { version = "0.11", features = ["zeroize"] }
 hkdf = "0.13"
 
 # Wire encoding.
-base64 = "0.22"
+base64 = "0.23"
 
 # Hex for the committed known-answer vectors. A normal dependency, not a dev
 # one, because birdo-pq-smoke is a real binary that CI runs under QEMU.
