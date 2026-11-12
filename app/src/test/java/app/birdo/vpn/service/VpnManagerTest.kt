@@ -2815,8 +2815,11 @@ class VpnManagerTest {
         vpnManager.requestSettingsReapply()
         advanceTimeBy(5_000)
 
-        // A newer switch rides the live tunnel and its new peer answers.
+        // A newer switch rides the live tunnel and its new peer answers. The
+        // cancelled first switch's /connect is still out, so the takeover waits
+        // the bounded inline release window for its answer (A-M79).
         val newer = async { vpnManager.connect("srv-3") }
+        advanceTimeBy(6_000)
         runCurrent()
         BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
         runCurrent()
