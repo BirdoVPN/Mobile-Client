@@ -118,6 +118,12 @@ final class AuthViewModel: ObservableObject {
     /// credential") and call `acknowledgeAnonymousId()` before the router
     /// proceeds to Home. Nil in every other state.
     @Published private(set) var createdAnonymousId: String?
+    /// A-L24: the account was minted but its session could not be written to
+    /// the keychain (even after one retry). The save-your-ID step shows a note.
+    @Published private(set) var createdIdNotStored = false
+    /// The minted session's tokens, held in memory only while
+    /// `createdIdNotStored`; never persisted anywhere but the keychain retry.
+    private var unstoredTokens: TokenPairData?
     /// Identity from `GET /auth/me`. Nil until hydration succeeds — login is
     /// never blocked on the profile call, so treat nil as "unknown", not
     /// "logged out". Drives `hasPassword` (delete dialog) and the anonymous
@@ -823,7 +829,20 @@ final class AuthViewModel: ObservableObject {
                     // completeAuthentication set. One of three mints per IP per
                     // hour has already been spent, so say so rather than
                     // spinning.
+                    //
+                    // A-L24 / MR-2241: when the server DID hand back the number,
+                    // do not discard it. Keep the tokens in memory only, show
+                    // the number in the save-your-ID step with a note, and retry
+                    // the keychain write when the user continues
+                    // (`acknowledgeAnonymousId`). Failing that, they hold the
+                    // number and can sign in with it.
                     isAutoProvisioning = false
+                    if let minted = registration.anonymousId {
+                        unstoredTokens = registration.tokens
+                        createdIdNotStored = true
+                        error = nil
+                        createdAnonymousId = minted
+                    }
                 }
             } catch {
                 // NOT mapAuthError: its 429 branch says "Too many attempts.
@@ -869,7 +888,34 @@ final class AuthViewModel: ObservableObject {
     /// The user confirmed they saved the freshly-minted anonymous ID —
     /// proceed to Home.
     func acknowledgeAnonymousId() {
-        guard createdAnonymousId != nil else { return }
+        guard let minted = createdAnonymousId else { return }
+        if let tokens = unstoredTokens {
+            // A-L24: the mint's keychain write failed. Try again now; the user
+            // has had the number on screen the whole time.
+            let stored = SessionPersistence.saveWithRetry {
+                keychain.save(accessToken: tokens.accessToken,
+                              refreshToken: tokens.refreshToken,
+                              email: nil)
+            }
+            unstoredTokens = nil
+            createdIdNotStored = false
+            createdAnonymousId = nil
+            isAutoProvisioning = false
+            guard stored else {
+                error = "Your account was created, but this device could not store the session. Sign in with the account number you just saved."
+                return
+            }
+            AnonymousNumberRecord.recordSignIn(anonymous: true, number: minted, in: keychain)
+            keychain.setSignedInWithApple(false)
+            isLoggedIn = true
+            Task { [weak self] in
+                if let profile = try? await self?.api.fetchProfile() {
+                    self?.applyProfile(profile)
+                }
+                await self?.refreshStats()
+            }
+            return
+        }
         createdAnonymousId = nil
         isAutoProvisioning = false
         isLoggedIn = true
@@ -1042,6 +1088,8 @@ final class AuthViewModel: ObservableObject {
         challengeToken = nil
         twoFactorCode = ""
         createdAnonymousId = nil
+        unstoredTokens = nil
+        createdIdNotStored = false
         pendingEmail = nil
         pendingAnonymousId = nil
         pendingContext = .emailLogin
@@ -1249,9 +1297,13 @@ final class AuthViewModel: ObservableObject {
         knownAnonymousId: String?,
         context: AuthContext
     ) async -> Bool {
-        guard keychain.save(accessToken: tokens.accessToken,
-                            refreshToken: tokens.refreshToken,
-                            email: knownEmail) else {
+        // A-L24: one retry before giving up -- a failure here right after a mint
+        // orphans the account.
+        guard SessionPersistence.saveWithRetry({
+            keychain.save(accessToken: tokens.accessToken,
+                          refreshToken: tokens.refreshToken,
+                          email: knownEmail)
+        }) else {
             error = "Could not securely store your session. Please try again."
             return false
         }

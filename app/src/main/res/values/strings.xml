@@ -449,6 +449,7 @@
          offer "keep using the app without an account". -->
     <string name="error_anon_register_device_limit">This device has created too many anonymous accounts in the past 24 hours, so this one was refused. Switching networks will not help: the limit is per device and clears on its own after 24 hours. You can sign in with an existing account instead.</string>
     <string name="error_anon_register_network_limit">Too many anonymous accounts have been created from this network in the past hour, so this one was refused. Try again in about an hour, or sign in with an existing account.</string>
+    <string name="login_checking_device">Checking this device…</string>
     <string name="error_anon_register_failed">Could not create an anonymous account. Please try again.</string>
     <string name="error_incorrect_password">Incorrect password</string>
     <string name="error_delete_failed">Account deletion failed. Please try again.</string>
@@ -606,6 +607,7 @@
     </plurals>
     <string name="billing_nothing_to_restore">No Birdo subscription was found for this Google account. If you bought one with a different Google account, switch to it in the Play Store and try again.</string>
     <string name="billing_restore_running">A restore is already running.</string>
+    <string name="billing_restore_unreachable">Couldn\'t reach Google Play. Try again in a moment.</string>
     <string name="billing_pending">Your purchase is waiting for approval or payment. Birdo will unlock automatically once Google Play confirms it — you can close the app.</string>
     <string name="billing_unreadable_purchase">Google Play returned a purchase Birdo could not read. If you were charged, tap Restore Purchases.</string>
     <!-- %1$s is a plan name (plan_name_*), or billing_new_plan. Canonical

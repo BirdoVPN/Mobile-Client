@@ -22,9 +22,13 @@ import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -37,6 +41,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -120,15 +125,34 @@ data class PlayBillingUiState(
  * on the web by owner decision.
  */
 @Singleton
-class PlayBillingManager @Inject constructor(
-    @param:ApplicationContext private val context: Context,
+class PlayBillingManager internal constructor(
     private val repository: BirdoRepository,
     private val tokenManager: TokenManager,
     /** Every notice this class raises is strings.xml copy (A2-031). */
     private val strings: StringLookup,
+    /** The test seam (A-M74): builds the one long-lived client around this listener. */
+    private val billingClientFactory: (PurchasesUpdatedListener) -> BillingClient,
+    dispatcher: CoroutineDispatcher,
+    private val railEnabled: Boolean,
 ) : PurchasesUpdatedListener {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** What Hilt uses: the real client, the real dispatcher, the real build flag. */
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        repository: BirdoRepository,
+        tokenManager: TokenManager,
+        strings: StringLookup,
+    ) : this(
+        repository = repository,
+        tokenManager = tokenManager,
+        strings = strings,
+        billingClientFactory = { listener -> buildPlayBillingClient(context, listener) },
+        dispatcher = Dispatchers.Default,
+        railEnabled = BuildConfig.IS_PLAY_BUILD,
+    )
+
+    private val scope = CoroutineScope(SupervisorJob() + dispatcher)
 
     private val _state = MutableStateFlow(PlayBillingUiState())
     val state: StateFlow<PlayBillingUiState> = _state.asStateFlow()
@@ -162,26 +186,7 @@ class PlayBillingManager @Inject constructor(
     @Volatile
     private var knownPurchases: List<Purchase> = emptyList()
 
-    private val billingClient: BillingClient by lazy {
-        BillingClient.newBuilder(context)
-            .setListener(this)
-            // Required since PBL 8: build() throws without it. Birdo sells no
-            // one-time products, but a subscription bought with a slow payment
-            // method still arrives PENDING and must be delivered to the listener
-            // rather than dropped.
-            .enablePendingPurchases(
-                PendingPurchasesParams.newBuilder()
-                    .enableOneTimeProducts()
-                    .enablePrepaidPlans()
-                    .build(),
-            )
-            // Let the library re-establish the service binding itself. Without
-            // it, one SERVICE_DISCONNECTED (a Play Store self-update, which
-            // happens silently and often) leaves the rail dead until the next
-            // cold start.
-            .enableAutoServiceReconnection()
-            .build()
-    }
+    private val billingClient: BillingClient by lazy { billingClientFactory(this) }
 
     // ── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -238,7 +243,7 @@ class PlayBillingManager @Inject constructor(
         scope.launch { reconcile(announce = false) }
     }
 
-    private val isRailEnabled: Boolean get() = BuildConfig.IS_PLAY_BUILD
+    private val isRailEnabled: Boolean get() = railEnabled
 
     // ── Products ────────────────────────────────────────────────────────────
 
@@ -274,7 +279,8 @@ class PlayBillingManager @Inject constructor(
         lastFailure = failure?.takeIf { _state.value.offers.isEmpty() }
         recomputeStorefront()
 
-        if (alsoReconcile) reconcile(announce = false)
+        // Already inside `gate`: the unlocked variant, or this would deadlock.
+        if (alsoReconcile) reconcileLocked(announce = false)
     }
 
     /** @return null on success, otherwise why the storefront is unavailable. */
@@ -628,20 +634,33 @@ class PlayBillingManager @Inject constructor(
      * StoreKit's `currentEntitlements` sweep, and the only way a purchase that
      * completed while the app was dead ever reaches the server from here.
      */
-    private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome {
+    private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome =
+        gate.withLock { reconcileLocked(announce) }
+
+    /**
+     * The sweep itself. Callers must hold [gate]: two sweeps in flight would
+     * present the same token to /link twice and race on [knownPurchases] and
+     * [lastRefusalText] (A-M74). [refreshInternal] already holds it and calls
+     * this directly; every other caller goes through [reconcile].
+     */
+    private suspend fun reconcileLocked(announce: Boolean): StoreRestoreOutcome {
         if (!isRailEnabled) return StoreRestoreOutcome.NothingToRestore
-        if (connect() != null) {
+        val unreachable = StoreRestoreOutcome.Failed(strings.get(R.string.billing_restore_unreachable))
+        val connectFailure = playCall("connect") { connect() } ?: return unreachable
+        if (connectFailure.value != null) {
             return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.PLAY_STORE_UNAVAILABLE.messageRes))
         }
 
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.SUBS)
             .build()
-        val (result, purchases) = suspendCancellableCoroutine { cont ->
-            billingClient.queryPurchasesAsync(params) { billingResult, list ->
-                cont.resume(billingResult to list)
+        val (result, purchases) = playCall("queryPurchases") {
+            suspendCancellableCoroutine<Pair<BillingResult, List<Purchase>>> { cont ->
+                billingClient.queryPurchasesAsync(params) { billingResult, list ->
+                    cont.resume(billingResult to list)
+                }
             }
-        }
+        }?.value ?: return unreachable
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {
             log("queryPurchases failed: ${result.responseCode} ${result.debugMessage}")
             return StoreRestoreOutcome.Failed(strings.get(StorefrontFailure.QUERY_FAILED.messageRes))
@@ -766,9 +785,13 @@ class PlayBillingManager @Inject constructor(
         val params = AcknowledgePurchaseParams.newBuilder()
             .setPurchaseToken(purchaseToken)
             .build()
-        val result = suspendCancellableCoroutine { cont ->
-            billingClient.acknowledgePurchase(params) { cont.resume(it) }
-        }
+        // A hang here is a failed acknowledge (logged by the caller, retried by
+        // the next sweep, backstopped by the server), not a held gate.
+        val result = playCall("acknowledgePurchase") {
+            suspendCancellableCoroutine<BillingResult> { cont ->
+                billingClient.acknowledgePurchase(params) { cont.resume(it) }
+            }
+        }?.value ?: return false
         // ITEM_ALREADY_OWNED here means the server's own acknowledgement won the
         // race, which is a success, not a failure.
         return result.responseCode == BillingClient.BillingResponseCode.OK ||
@@ -785,10 +808,66 @@ class PlayBillingManager @Inject constructor(
         if (BuildConfig.DEBUG) Log.d(TAG, message)
     }
 
+    /** Result of a [playCall] that finished in time; boxed so a null value is not a timeout. */
+    private class Timed<T>(val value: T)
+
+    /**
+     * Runs one Google Play call under [PLAY_CALL_TIMEOUT_MS]. Used for every Play
+     * call made while holding [gate]: Play's callbacks can simply never arrive (a
+     * wedged Play Store, a service mid-reconnect), and without a deadline that
+     * call would hold [gate] forever and block every sweep, the storefront refresh
+     * and Restore (A-M74 item 16).
+     *
+     * @return null when the deadline expired (logged, non-fatal; the next trigger
+     * retries), otherwise the result. Real cancellation still propagates.
+     */
+    private suspend fun <T> playCall(what: String, block: suspend () -> T): Timed<T>? =
+        try {
+            withTimeout(PLAY_CALL_TIMEOUT_MS) { Timed(block()) }
+        } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            log("$what timed out after ${PLAY_CALL_TIMEOUT_MS} ms; releasing the gate")
+            null
+        }
+
     private companion object {
         const val TAG = "PlayBilling"
+
+        /**
+         * Deadline for one Play call under the gate. Longer than the storefront's
+         * 15 s [StorefrontState.LOAD_DEADLINE_MS] (which already bounds
+         * [refreshInternal]'s connect and product query as a whole) so a slow but
+         * working Play Store on a bad network is not cut off, short enough that
+         * Restore does not look frozen. One value for all calls: each is a single
+         * IPC round trip to the same Play service.
+         */
+        const val PLAY_CALL_TIMEOUT_MS: Long = 20_000L
     }
 }
+
+/** The real client, built exactly as the class built it before the test seam. */
+internal fun buildPlayBillingClient(
+    context: Context,
+    listener: PurchasesUpdatedListener,
+): BillingClient =
+    BillingClient.newBuilder(context)
+        .setListener(listener)
+        // Required since PBL 8: build() throws without it. Birdo sells no
+        // one-time products, but a subscription bought with a slow payment
+        // method still arrives PENDING and must be delivered to the listener
+        // rather than dropped.
+        .enablePendingPurchases(
+            PendingPurchasesParams.newBuilder()
+                .enableOneTimeProducts()
+                .enablePrepaidPlans()
+                .build(),
+        )
+        // Let the library re-establish the service binding itself. Without
+        // it, one SERVICE_DISCONNECTED (a Play Store self-update, which
+        // happens silently and often) leaves the rail dead until the next
+        // cold start.
+        .enableAutoServiceReconnection()
+        .build()
 
 /** Map Play's `Purchase` onto the four facts the pure pipeline uses. */
 private fun Purchase.toIngestable() = IngestablePurchase(

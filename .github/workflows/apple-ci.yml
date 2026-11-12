@@ -17,7 +17,9 @@ name: Apple CI
 # Apple jobs have anything to test (`apple` in
 # .github/scripts/classify-changes.sh, which holds the path list the filter
 # used to); when they do not, both are skipped, and a skipped job counts as
-# passing. The job NAMES "iOS simulator tests" and "macOS build (unsigned)" are
+# passing. Each also has a same-name twin (`ios-skipped`, `macos-skipped`) that
+# runs only when `apple` is 'false', so exactly one job of each name always
+# reports. The job NAMES "iOS simulator tests" and "macOS build (unsigned)" are
 # what branch protection lists once they are made required; do not rename them.
 
 on:
@@ -219,6 +221,19 @@ jobs:
       - name: Assert the test bundle actually ran
         run: bash scripts/check_xctest_suites_ran.sh "$RUNNER_TEMP/iostest.log" iosApp/BirdoVPNTests
 
+  # Same-name twin of the job above (MR-2060): runs exactly when that one does
+  # not, so a check called "iOS simulator tests" always reports -- success here
+  # when no Apple path changed. The two `if:` are mutually exclusive.
+  ios-skipped:
+    name: iOS simulator tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.apple == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "No apple changes in this change; nothing to run."
+
   macos:
     name: macOS build (unsigned)
     needs: changes
@@ -308,3 +323,16 @@ jobs:
         if: ${{ failure() }}
         run: |
           grep -iE "error|warning: .*deprecated" "$RUNNER_TEMP/build.log" | tail -40 || echo "(none)"
+
+  # Same-name twin of the job above (MR-2060): runs exactly when that one does
+  # not, so a check called "macOS build (unsigned)" always reports -- success here
+  # when no Apple path changed. The two `if:` are mutually exclusive.
+  macos-skipped:
+    name: macOS build (unsigned)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.apple == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "No apple changes in this change; nothing to run."
