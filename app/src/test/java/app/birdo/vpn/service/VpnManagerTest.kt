@@ -3316,7 +3316,7 @@ class VpnManagerTest {
                 dnsFiltering = any(), rebuildOf = any(),
             )
         } coAnswers {
-            val rebuildOf = lastArg<String?>()
+            val rebuildOf = arg<String?>(8)
             if (backend.active.size >= 2) {
                 ApiResult.Error("Device limit reached", 403)
             } else {
@@ -3379,10 +3379,8 @@ class VpnManagerTest {
             // The cancel waits out the shielded swap and touches no key meanwhile.
             assertTrue(backend.released.filterNotNull().isEmpty())
             BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
-            advanceTimeBy(10_000)
-            runCurrent()
-            BirdoVpnService.completeLiveRebuild(2L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
-            advanceTimeBy(10_000)
+            // The second dial's own swap is never answered here: it times out.
+            advanceTimeBy(120_000)
             runCurrent()
             first.await()
             second.await()
