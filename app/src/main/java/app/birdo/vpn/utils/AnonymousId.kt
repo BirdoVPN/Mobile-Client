@@ -79,6 +79,10 @@ fun isAnonymousUser(user: UserProfile?): Boolean {
  */
 fun accountNumberOf(user: UserProfile?): String? {
     if (user == null || !isAnonymousUser(user)) return null
+    // A masked number (MR-1707, ANON_NUMBER_MASKING) is NOT a number: its digit
+    // filter would read as a 4-digit credential with a reveal and a copy button,
+    // and the synthetic email behind it is masked too. Null: nothing to reveal.
+    if (isMaskedAccountNumber(user.accountNumber)) return null
     return user.accountNumber?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
         ?: anonymousAccountNumber(user.email)
 }

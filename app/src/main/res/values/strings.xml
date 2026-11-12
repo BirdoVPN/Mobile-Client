@@ -789,4 +789,33 @@
          no longer a setting (the "53" preset and custom ports never connected). -->
     <string name="vpn_settings_port_fixed">BirdoVPN servers accept WireGuard on port 51820 only, so there is no port to choose.</string>
     <!-- ════ end AND-FIX-2 ════ -->
+    <!-- MR-1707: masked anonymous number and the two-phase "Replace number" flow -->
+    <string name="account_number_masked_note">Shown once at sign-up or when you replace it. Replace it if you lost it.</string>
+    <string name="replace_number_action">Replace account number</string>
+    <string name="replace_number_title">Replace account number</string>
+    <string name="replace_number_proof_body">Enter your current account number to get a new one. Nothing changes until you confirm the new number.</string>
+    <string name="replace_number_current_label">Current account number</string>
+    <string name="replace_number_password_label">Password</string>
+    <string name="replace_number_2fa_label">Two-factor code (if turned on)</string>
+    <string name="replace_number_get_new">Get a new number</string>
+    <string name="replace_number_save_body">This is your new account number. It is shown only now. Write it down or copy it somewhere safe.</string>
+    <string name="replace_number_copy">Copy number</string>
+    <string name="replace_number_saved_check">I\'ve saved it</string>
+    <string name="replace_number_continue">Continue</string>
+    <string name="replace_number_confirm_body">Type the new number again to replace the old one. Every other device will be signed out.</string>
+    <string name="replace_number_retype_label">New account number</string>
+    <string name="replace_number_confirm">Replace number</string>
+    <string name="replace_number_show_again">Show the number again</string>
+    <string name="replace_number_cancel">Cancel</string>
+    <string name="replace_number_close">Done</string>
+    <string name="replace_number_done">Your account number has been replaced. Every other device was signed out and the old number no longer works.</string>
+    <string name="replace_number_err_disabled">Replacing the account number is not available yet.</string>
+    <string name="replace_number_err_proof">That did not check out. Check your current number, password and code, then try again.</string>
+    <string name="replace_number_err_session">Your session ended. Sign in again to replace the number.</string>
+    <string name="replace_number_err_not_pending">The new number expired or was never prepared. Start again.</string>
+    <string name="replace_number_err_account_changed">The account changed in the meantime. Start again.</string>
+    <string name="replace_number_err_mismatch">That is not the new number. Check it against the one you saved.</string>
+    <string name="replace_number_err_too_many">Too many attempts. Please try again later.</string>
+    <string name="replace_number_err_rejected">The number could not be replaced. Please try again.</string>
+    <string name="replace_number_err_network">No answer from the server. Your new number is still here: try Replace number again.</string>
 </resources>

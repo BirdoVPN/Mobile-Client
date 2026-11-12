@@ -1203,6 +1203,51 @@ class BirdoRepository @Inject constructor(
     suspend fun deletePortForward(id: String): ApiResult<Unit> =
         withAutoRefreshNoBody(R.string.error_delete_port_forward) { api.deletePortForward(id) }
 
+    // ── MR-1707: replace the anonymous account number ────────────
+    //
+    // Neither call goes through [withAutoRefresh]: a 401 here is usually the
+    // handler's verdict on the proof (`rotation_proof_invalid`), and refreshing
+    // for it spends a single-use refresh token on a healthy session. Only a
+    // bare 401 refreshes, once (see [sendRotationCall]). Neither number is
+    // ever logged or kept here.
+
+    suspend fun rotateNumberPrepare(
+        currentNumber: String,
+        password: String?,
+        twoFactorCode: String?,
+    ): RotationResult<RotatePrepareResponse> {
+        val body = RotatePrepareRequest(currentNumber, password?.takeIf { it.isNotEmpty() }, twoFactorCode?.takeIf { it.isNotEmpty() })
+        return sendRotationCall(tokenManager.getAccessToken(), { refreshToken(it) }) { api.rotateNumberPrepare(body) }
+    }
+
+    /** On success the response's fresh tokens are stored here, like a sign-in's. */
+    suspend fun rotateNumberConfirm(newNumber: String): RotationResult<Unit> {
+        val device = deviceInfoProvider.current()
+        val body = RotateConfirmRequest(
+            newNumber = newNumber,
+            deviceId = device.deviceId,
+            deviceName = device.deviceName,
+            deviceType = device.deviceType,
+            platform = device.platform,
+            platformVersion = device.platformVersion,
+            appVersion = device.appVersion,
+        )
+        return when (val r = sendRotationCall(tokenManager.getAccessToken(), { refreshToken(it) }) { api.rotateNumberConfirm(body) }) {
+            is RotationResult.Refused -> r
+            is RotationResult.Ok -> {
+                val tokens = r.data.tokens
+                if (!r.data.ok || tokens == null || tokens.accessToken.isBlank()) {
+                    // A 200 with nothing usable in it: report it as an unanswered call so
+                    // the flow keeps the number and the user can retry.
+                    RotationResult.Refused(RotationFailure.NETWORK)
+                } else {
+                    storeSignInTokens(tokens.accessToken, tokens.refreshToken)
+                    RotationResult.Ok(Unit)
+                }
+            }
+        }
+    }
+
     // ── Google Play store rail ───────────────────────────────────
     //
     // SUBSCRIPTIONS ONLY, by owner decision: vouchers and one-time purchases

@@ -104,6 +104,9 @@ import app.birdo.vpn.utils.formatAnonymousId
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.utils.isAnonymousUser
 import app.birdo.vpn.utils.maskAnonymousId
+import app.birdo.vpn.utils.maskedAccountNumberDisplay
+import app.birdo.vpn.utils.maskedAccountTailOf
+import app.birdo.vpn.utils.replaceNumberEntryVisible
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
@@ -145,6 +148,8 @@ fun ProfileScreen(
     isPlayBuild: Boolean = BuildConfig.IS_PLAY_BUILD,
     /** Anonymous accounts are reminded, before signing out, to keep the account number. */
     isAnonymousAccount: Boolean = false,
+    /** MR-1707: the number was replaced and fresh tokens are stored; reload the profile. */
+    onAccountNumberReplaced: () -> Unit = {},
 ) {
     var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
     var showVoucherDialog by rememberSaveable { mutableStateOf(false) }
@@ -164,6 +169,7 @@ fun ProfileScreen(
             subscription = subscription,
             isConnected = isConnected,
             publicIp = publicIp,
+            onAccountNumberReplaced = onAccountNumberReplaced,
         )
 
         SubscriptionCard(subscription = subscription, onManage = onSubscription)
@@ -279,6 +285,7 @@ private fun ProfileIdentityCard(
     subscription: SubscriptionStatus?,
     isConnected: Boolean,
     publicIp: String?,
+    onAccountNumberReplaced: () -> Unit = {},
 ) {
     val palette = BirdoColors.current
     val rawEmail = user?.email ?: ""
@@ -287,6 +294,10 @@ private fun ProfileIdentityCard(
     // one only inside the synthetic `anon_<number>@anonymous.local` email.
     val isAnon = isAnonymousUser(user)
     val accountNumber = accountNumberOf(user)
+    // MR-1707: a number the server sent masked (ANON_NUMBER_MASKING) shows its
+    // last four and nothing else: no reveal, no copy. Null for a whole number.
+    val maskedTail = maskedAccountTailOf(user)
+    var showReplaceNumber by rememberSaveable { mutableStateOf(false) }
     val displayName = when {
         !user?.name.isNullOrBlank() -> user.name!!
         isAnon -> stringResource(R.string.account_anonymous)
@@ -396,6 +407,41 @@ private fun ProfileIdentityCard(
                         modifier = Modifier.padding(8.dp).size(18.dp),
                     )
                 }
+            } else if (maskedTail != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(palette.surfaceRaised)
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.login_anonymous_id_label).uppercase(),
+                        color = palette.onSurfaceFaint,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = maskedAccountNumberDisplay(maskedTail),
+                        color = palette.onBackground,
+                        fontSize = 14.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(top = 1.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.account_number_masked_note),
+                        color = palette.onSurfaceMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+
+            // MR-1707: ships dark (BuildConfig.ANON_NUMBER_ROTATION, default false).
+            if (replaceNumberEntryVisible(user)) {
+                TextButton(onClick = { showReplaceNumber = true }) {
+                    Text(stringResource(R.string.replace_number_action), color = palette.accent)
+                }
             }
 
             Row(
@@ -440,6 +486,14 @@ private fun ProfileIdentityCard(
                 )
             }
         }
+    }
+
+    if (showReplaceNumber && replaceNumberEntryVisible(user)) {
+        ReplaceNumberSheet(
+            hasPassword = user?.hasPassword == true,
+            onReplaced = onAccountNumberReplaced,
+            onDismiss = { showReplaceNumber = false },
+        )
     }
 }
 
