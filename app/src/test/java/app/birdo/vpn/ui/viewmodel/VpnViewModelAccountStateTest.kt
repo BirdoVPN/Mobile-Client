@@ -68,6 +68,7 @@ class VpnViewModelAccountStateTest {
         every { vpnManager.state } returns MutableStateFlow(VpnState.Disconnected)
         every { vpnManager.connectedServer } returns MutableStateFlow(null)
         every { vpnManager.connectedServerId } returns MutableStateFlow(null)
+        every { vpnManager.dialActive } returns MutableStateFlow(false)
         every { vpnManager.quotaGrace } returns MutableStateFlow(null)
         every { vpnManager.stealthNotice } returns MutableStateFlow(null)
         every { vpnManager.accountRestriction } returns MutableStateFlow(null)
