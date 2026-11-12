@@ -15,7 +15,7 @@
 #
 #   "structurally impossible" / "removes the C/asm path entirely"
 #       The premise the migration was requested on. It does not hold.
-#       ml-kem 0.3.2 -> sha3 0.11 -> keccak 0.2.2 ships
+#       ml-kem 0.3.4 -> sha3 0.11 -> keccak 0.2.2 ships
 #       src/backends/aarch64_sha3.rs, and a DEFAULT aarch64 build contains the
 #       same four ARMv8.2 FEAT_SHA3 mnemonics PQClean's keccak2x/feat.S did:
 #       64 instructions, eor3=10, rax1=5, xar=24, bcax=25. What changed is that

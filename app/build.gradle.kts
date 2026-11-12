@@ -1113,7 +1113,7 @@ dependencies {
     // and the redirect closes the tab, instead of leaving a stray browser tab.
     implementation("androidx.browser:browser:1.10.0")
     // Crash Reporting
-    implementation("io.sentry:sentry-android:8.61.1")
+    implementation("io.sentry:sentry-android:8.62.0")
 
     // ── Glance (Home Screen Widget) ──────────────────────────────
     implementation("androidx.glance:glance-appwidget:1.1.1")
@@ -1136,7 +1136,7 @@ dependencies {
     // MultiHopConnectRequest bytes against contract/vpn-protocol.schema.json
     // (Draft 2020-12, vendored byte-for-byte from birdo-web). Test-only; the
     // app never validates JSON Schema at runtime.
-    testImplementation("com.networknt:json-schema-validator:3.0.7")
+    testImplementation("com.networknt:json-schema-validator:3.0.9")
     // MR-937: the Hide App Contents cover is proved against real windows, on
     // the JVM so PR CI runs it (androidTest does not run there): a Compose
     // dialog opened under the cover must not exist while it is up. Test-only.

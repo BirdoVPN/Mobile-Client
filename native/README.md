@@ -122,7 +122,7 @@ short version, in the order the facts actually go:
   RUSTSEC-2026-0161 (`pqcrypto-mlkem`), -0162 (`pqcrypto-traits`), -0163
   (`pqcrypto-internals`). RUSTSEC-2026-0161's own remediation text says
   "Users should migrate to the `ml-kem` crate."
-- **What the swap did NOT do.** It did not remove the opcodes. `ml-kem 0.3.2 →
+- **What the swap did NOT do.** It did not remove the opcodes. `ml-kem 0.3.4 →
   sha3 0.11 → keccak 0.2.2` ships `src/backends/aarch64_sha3.rs`, adapted from
   the same XKCP/K12 `KeccakP-1600-ARMv8Asha3.S` PQClean vendored, and a DEFAULT
   aarch64 build contains the same four mnemonics: 64 instructions, `eor3`=10,
