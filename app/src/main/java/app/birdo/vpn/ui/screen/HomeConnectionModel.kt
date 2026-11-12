@@ -94,20 +94,16 @@ internal fun serverPickerEnabled(state: VpnUiState): Boolean {
  * A-M79: what Home's server card says. [name] is the selection; [switching]
  * is true while that selection is a target the tunnel has not applied (the
  * card says "Switching…", never presents it as the protected server). The
- * [tunnelOn] line is the name of the server the tunnel was actually applied
- * to (VpnManager.connectedServer, the service's applied config), shown only
- * while Home says Protected, so a phone check can read the truth on a release
- * build, where logcat is stripped.
+ * card is the single statement of the server; there is no second "tunnel on"
+ * line (A-L52: it lagged one switch behind the card).
  */
-internal data class ServerCardModel(val name: String?, val switching: Boolean, val tunnelOn: String?)
+internal data class ServerCardModel(val name: String?, val switching: Boolean)
 
 internal fun serverCardModel(state: VpnUiState): ServerCardModel {
-    val c = homeConnection(state)
     val server = state.selectedServer
     return ServerCardModel(
         name = server?.name,
         switching = server != null && state.pendingSwitchServerId == server.id,
-        tunnelOn = state.connectedServer?.takeIf { c.isConnected },
     )
 }
 
