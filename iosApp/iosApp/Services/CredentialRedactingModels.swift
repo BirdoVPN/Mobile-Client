@@ -231,3 +231,48 @@ extension AccountIdentity.Resolved: CredentialRedacting {
         [("isAnonymous", "\(isAnonymous)"), ("accountNumber", Redaction.optional(accountNumber))]
     }
 }
+
+// MARK: - Anonymous number replacement (MR-1707)
+
+extension RotatePrepareBody: CredentialRedacting {
+    /// The current number, the password and the 2FA code are all proofs.
+    var redactedFields: [(label: String, value: String)] {
+        [
+            ("currentNumber", Redaction.marker),
+            ("password", Redaction.optional(password)),
+            ("twoFactorCode", Redaction.optional(twoFactorCode)),
+        ]
+    }
+}
+
+extension RotatePrepareResponse: CredentialRedacting {
+    /// The NEW number is the account's only credential.
+    var redactedFields: [(label: String, value: String)] {
+        [("newNumber", Redaction.marker), ("expiresInSeconds", Redaction.plain(expiresInSeconds))]
+    }
+}
+
+extension RotateConfirmBody: CredentialRedacting {
+    /// Leaves out the device identifiers, like every sign-in body.
+    var redactedFields: [(label: String, value: String)] {
+        [("newNumber", Redaction.marker), ("platform", platform), ("appVersion", appVersion)]
+    }
+}
+
+extension RotateConfirmResponse: CredentialRedacting {
+    var redactedFields: [(label: String, value: String)] {
+        [("ok", Redaction.plain(ok)), ("tokens", Redaction.optional(tokens?.accessToken))]
+    }
+}
+
+extension RotationFlow: CredentialRedacting {
+    /// `newNumber` is held in memory between the steps and never printed.
+    var redactedFields: [(label: String, value: String)] {
+        [
+            ("step", "\(step)"),
+            ("newNumber", Redaction.optional(newNumber)),
+            ("saved", "\(saved)"),
+            ("notice", Redaction.plain(notice)),
+        ]
+    }
+}

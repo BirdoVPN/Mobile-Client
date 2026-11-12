@@ -157,15 +157,28 @@ final class APIClient: @unchecked Sendable {
         // JSON-token route for bundled clients (gated on X-Desktop-Client, which
         // this session sets globally). Mirrors Android `BirdoApi.login`.
         let device = await deviceContext()
-        let body = try encoder.encode(LoginBody(
-            email: email,
-            password: password,
-            deviceId: device.id,
-            deviceName: device.name,
-            platformVersion: device.osVersion,
-            appVersion: kBirdoClientVersion
-        ))
-        let data = try await post(path: "/auth/login/desktop", body: body, authenticated: false)
+        // A-M78 / MR-2139: sent once without a proof; only a 429 `pow_required`
+        // for op `login` (a failed-sign-in spike) is answered, once, with one.
+        let data = try await SignupPowFlow.login(
+            fetch: { [self] in try await fetchPowChallenge(op: SignupPowFlow.loginOp) },
+            solve: { challenge, bits, deadline in
+                try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
+            },
+            send: { [self] pow in
+                let body = try encoder.encode(LoginBody(
+                    email: email,
+                    password: password,
+                    deviceId: device.id,
+                    deviceName: device.name,
+                    platformVersion: device.osVersion,
+                    appVersion: kBirdoClientVersion,
+                    pow: pow
+                ))
+                return try await post(path: "/auth/login/desktop", body: body, authenticated: false,
+                                      refusal: Self.loginPowRefusal)
+            },
+            progress: { checking in await SignupPowStatus.shared.set(checking) }
+        )
         return try parseAuthResponse(data)
     }
 
@@ -193,15 +206,27 @@ final class APIClient: @unchecked Sendable {
     /// `LoginResult` return.
     func loginAnonymous(anonymousId: String, password: String?) async throws -> LoginResult {
         let device = await deviceContext()
-        let body = try encoder.encode(AnonymousLoginBody(
-            anonymousId: anonymousId,
-            password: password,
-            deviceId: device.id,
-            deviceName: device.name,
-            platformVersion: device.osVersion,
-            appVersion: kBirdoClientVersion
-        ))
-        let data = try await post(path: "/auth/login/anonymous", body: body, authenticated: false)
+        // A-M78 / MR-2139: the same one-retry proof as `login`.
+        let data = try await SignupPowFlow.login(
+            fetch: { [self] in try await fetchPowChallenge(op: SignupPowFlow.loginOp) },
+            solve: { challenge, bits, deadline in
+                try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
+            },
+            send: { [self] pow in
+                let body = try encoder.encode(AnonymousLoginBody(
+                    anonymousId: anonymousId,
+                    password: password,
+                    deviceId: device.id,
+                    deviceName: device.name,
+                    platformVersion: device.osVersion,
+                    appVersion: kBirdoClientVersion,
+                    pow: pow
+                ))
+                return try await post(path: "/auth/login/anonymous", body: body, authenticated: false,
+                                      refusal: Self.loginPowRefusal)
+            },
+            progress: { checking in await SignupPowStatus.shared.set(checking) }
+        )
         return try parseAuthResponse(data)
     }
 
@@ -219,7 +244,7 @@ final class APIClient: @unchecked Sendable {
         let data: Data
         do {
             data = try await SignupPowFlow.register(
-                fetch: { [self] in try await fetchSignupChallenge() },
+                fetch: { [self] in try await fetchPowChallenge(op: SignupPowFlow.signupOp) },
                 solve: { challenge, bits, deadline in
                     try await SignupPow.solve(challenge: challenge, bits: bits, deadline: deadline)
                 },
@@ -257,13 +282,24 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
-    /// A sign-up proof-of-work challenge for this network — `POST
-    /// /auth/pow/challenge {"op":"signup"}` (public). ANY failure (429, 503,
-    /// offline, an unreadable answer) is nil: the sign-up then goes out without
-    /// a proof and the server decides. Only cancellation propagates.
-    private func fetchSignupChallenge() async throws -> PowChallengeResponse? {
+    /// The `refusal:` hook of a sign-in request: a 429 `pow_required` for op
+    /// `login` becomes `LoginPowRefusal` (carrying the error the request would
+    /// have thrown), which `SignupPowFlow.login` answers once. Anything else is
+    /// nil and takes the ordinary mapping.
+    private static func loginPowRefusal(status: Int, data: Data) -> Error? {
+        guard LoginPowRefusal.matches(status: status, body: data) else { return nil }
+        return LoginPowRefusal(original: Self.error(status: status, body: data))
+    }
+
+    /// A proof-of-work challenge for this network: `POST /auth/pow/challenge
+    /// {"op":"signup"}` or `{"op":"login"}` (public; the path is this fixed
+    /// constant, never one a response names). ANY failure (429, 503, offline,
+    /// an unreadable answer) is nil: the sign-up then goes out without a proof
+    /// and the server decides, and a sign-in keeps the refusal it had. Only
+    /// cancellation propagates.
+    private func fetchPowChallenge(op: String) async throws -> PowChallengeResponse? {
         do {
-            let body = try encoder.encode(PowChallengeRequest())
+            let body = try encoder.encode(PowChallengeRequest(op: op))
             let data = try await post(path: "/auth/pow/challenge", body: body, authenticated: false)
             return try decoder.decode(PowChallengeResponse.self, from: data)
         } catch {
@@ -1746,5 +1782,77 @@ struct AppleLinkResult: Decodable, Sendable, Equatable {
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
         expiresAt = try c.decodeIfPresent(String.self, forKey: .expiresAt)
         duplicateBilling = try c.decodeIfPresent(AppleDuplicateBilling.self, forKey: .duplicateBilling)
+    }
+}
+
+// MARK: - Anonymous number replacement (MR-1707)
+
+/// `POST /auth/anonymous/rotate-number/{prepare,confirm}` (birdo-web #850).
+/// Both answer 401 from TWO places, like account deletion: the JWT guard (an
+/// expired access token, bare "Unauthorized") and the handler (a wrong proof,
+/// `rotation_proof_invalid`). Each wrong proof counts against the server's 5
+/// per 15 minutes, so the generic refresh-and-retry must not run for the
+/// handler's 401: `AnonNumberRotationWire.classify401` tells them apart and
+/// only the bare one refreshes once and sends once more.
+extension APIClient {
+    /// Step 1: prove the current number (and the password / 2FA code the
+    /// account has); the server holds a new number pending for ten minutes and
+    /// returns it ONCE. Changes nothing on the account.
+    func rotateNumberPrepare(currentNumber: String,
+                             password: String?,
+                             twoFactorCode: String?) async throws -> RotatePrepareResponse {
+        let body = try encoder.encode(RotatePrepareBody(currentNumber: currentNumber,
+                                                        password: password,
+                                                        twoFactorCode: twoFactorCode))
+        let data = try await sendRotation(path: "/auth/anonymous/rotate-number/prepare",
+                                          body: body, step: .prepare)
+        return try decoder.decode(RotatePrepareResponse.self, from: data)
+    }
+
+    /// Step 2: the whole new number, re-typed. On success the old number is
+    /// dead, every other session is signed out, and the answer carries this
+    /// session's fresh tokens. The caller stores them with the new number
+    /// (`AnonNumberRotationCommit`); nothing is written here.
+    func rotateNumberConfirm(newNumber: String) async throws -> TokenPairData {
+        let device = await deviceContext()
+        let body = try encoder.encode(RotateConfirmBody(newNumber: newNumber,
+                                                        deviceId: device.id,
+                                                        deviceName: device.name,
+                                                        platformVersion: device.osVersion,
+                                                        appVersion: kBirdoClientVersion))
+        let data = try await sendRotation(path: "/auth/anonymous/rotate-number/confirm",
+                                          body: body, step: .confirm)
+        let parsed = try decoder.decode(RotateConfirmResponse.self, from: data)
+        guard parsed.ok != false, let tokens = parsed.tokens,
+              !tokens.accessToken.isEmpty, !tokens.refreshToken.isEmpty else {
+            // The swap may have happened: never claim success, never retry blind.
+            throw APIError.serverMessage("Unexpected server response (no tokens)", status: nil)
+        }
+        return TokenPairData(accessToken: tokens.accessToken, refreshToken: tokens.refreshToken)
+    }
+
+    private func sendRotation(path: String, body: Data,
+                              step: AnonNumberRotationWire.Step) async throws -> Data {
+        func send() async throws -> Data {
+            try await performRequest(
+                method: "POST", path: path, body: body, authenticated: true,
+                // The 401 is judged here, by `refusal`, not by the generic path.
+                refreshOn401: false,
+                refusal: { status, data in
+                    AnonNumberRotationWire.classify(status: status, body: data, step: step)
+                })
+        }
+        do {
+            return try await send()
+        } catch RotationRefusal.sessionExpired {
+            try await refreshActor.refresh { [weak self] in
+                try await self?.refreshTokens()
+            }
+            do {
+                return try await send()
+            } catch RotationRefusal.sessionExpired {
+                throw APIError.unauthorized
+            }
+        }
     }
 }

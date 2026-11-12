@@ -59,7 +59,7 @@ cd "$ROOT"
 # 2026. Every bump is a crypto change: re-run the KAT (`kat_vs_noble`), the
 # install-base guard (`stored_pqclean_dk_loads_and_derives_same_psk`) and the
 # ISA gate before touching this.
-ML_KEM_VERSION="0.3.2"
+ML_KEM_VERSION="0.3.4"
 EXPECTED_FEATURES="alloc getrandom zeroize"
 DEV_ONLY_FEATURE="hazmat"
 FORBIDDEN_CRATES=(pqcrypto-mlkem pqcrypto-traits pqcrypto-internals)
@@ -231,6 +231,20 @@ else
         FAILED=1
     else
         echo "  ok: $CARGO_CONFIG: --cfg $KECCAK_CFG set for all $android_targets Android targets"
+    fi
+fi
+
+# The twin: sha2 0.11 picks its SHA-256 backend with a cfg too
+# (`sha2_backend="soft"`, sha2 src/sha256.rs:2). Without it librosenpass_jni.so
+# carries aarch64 SHA-256 and x86 SHA-NI code that the ISA gate rejects (A-M76).
+SHA2_CFG='sha2_backend="soft"'
+if [ -f "$CARGO_CONFIG" ]; then
+    sha2_sites=$(grep -cE "^rustflags[[:space:]]*=.*$SHA2_CFG" "$CARGO_CONFIG" || true)
+    if [ "$android_targets" -eq 0 ] || [ "$sha2_sites" -ne "$android_targets" ]; then
+        echo "::error::$CARGO_CONFIG: found $sha2_sites occurrence(s) of --cfg $SHA2_CFG for $android_targets Android target section(s). EVERY shipped ABI must set it, or that ABI links sha2's hardware SHA-256 backend and the ISA gate fails." >&2
+        FAILED=1
+    else
+        echo "  ok: $CARGO_CONFIG: --cfg $SHA2_CFG set for all $android_targets Android targets"
     fi
 fi
 

@@ -258,28 +258,104 @@ enum BirdoTheme {
 
     // MARK: - Typography (system font, Android type scale)
 
+    /// Every token scales with the user's Dynamic Type setting (A-M38) and
+    /// is EXACTLY the old point size at the default `.large` category.
+    /// Use `.font(BirdoTheme.Fonts.x)` (scaled overload below) or, for a
+    /// one-off size, `.birdoFont(13, weight: .semibold)`.
     enum Fonts {
-        static let displayLarge   = Font.system(size: 36, weight: .bold)
-        static let displayMedium  = Font.system(size: 30, weight: .bold)
-        static let headlineLarge  = Font.system(size: 26, weight: .bold)
-        static let headlineMedium = Font.system(size: 20, weight: .semibold)
-        static let titleLarge     = Font.system(size: 18, weight: .semibold)
-        static let titleMedium    = Font.system(size: 16, weight: .medium)
-        static let titleSmall     = Font.system(size: 14, weight: .medium)
-        static let bodyLarge      = Font.system(size: 16)
-        static let bodyMedium     = Font.system(size: 14)
-        static let bodySmall      = Font.system(size: 12)
-        static let labelLarge     = Font.system(size: 14, weight: .semibold)
-        static let labelMedium    = Font.system(size: 12, weight: .medium)
-        static let labelSmall     = Font.system(size: 10, weight: .medium)
+        static let displayLarge   = BirdoFontToken(size: 36, weight: .bold)
+        static let displayMedium  = BirdoFontToken(size: 30, weight: .bold)
+        static let headlineLarge  = BirdoFontToken(size: 26, weight: .bold)
+        static let headlineMedium = BirdoFontToken(size: 20, weight: .semibold)
+        static let titleLarge     = BirdoFontToken(size: 18, weight: .semibold)
+        static let titleMedium    = BirdoFontToken(size: 16, weight: .medium)
+        static let titleSmall     = BirdoFontToken(size: 14, weight: .medium)
+        static let bodyLarge      = BirdoFontToken(size: 16)
+        static let bodyMedium     = BirdoFontToken(size: 14)
+        static let bodySmall      = BirdoFontToken(size: 12)
+        static let labelLarge     = BirdoFontToken(size: 14, weight: .semibold)
+        static let labelMedium    = BirdoFontToken(size: 12, weight: .medium)
+        static let labelSmall     = BirdoFontToken(size: 10, weight: .medium)
         /// Section headers: uppercase + `.tracking(1.5)`, color `white60`.
-        static let sectionHeader  = Font.system(size: 11, weight: .semibold)
+        static let sectionHeader  = BirdoFontToken(size: 11, weight: .semibold)
         /// Stat tile value — pair with `.monospacedDigit()`.
-        static let statValue      = Font.system(size: 12, weight: .semibold)
+        static let statValue      = BirdoFontToken(size: 12, weight: .semibold)
         /// Stat tile caption: uppercase + tracked, color `white55`.
-        static let statCaption    = Font.system(size: 9, weight: .medium)
+        static let statCaption    = BirdoFontToken(size: 9, weight: .medium)
         /// Monospace (anonymous account number, IPs).
-        static let mono           = Font.system(size: 14, design: .monospaced)
+        static let mono           = BirdoFontToken(size: 14, design: .monospaced)
+    }
+}
+
+/// A point size that follows Dynamic Type. `size` is the size at the default
+/// `.large` category; `textStyle` picks the scaling curve (the system text
+/// style whose default size is nearest), as `Font.custom(_:size:relativeTo:)`
+/// does for a custom font.
+struct BirdoFontToken: Equatable {
+    let size: CGFloat
+    let weight: Font.Weight
+    let design: Font.Design
+    let textStyle: Font.TextStyle
+
+    init(size: CGFloat,
+         weight: Font.Weight = .regular,
+         design: Font.Design = .default,
+         relativeTo textStyle: Font.TextStyle? = nil) {
+        self.size = size
+        self.weight = weight
+        self.design = design
+        self.textStyle = textStyle ?? Self.nearestTextStyle(for: size)
+    }
+
+    /// The system text style whose default (`.large`) size is nearest.
+    static func nearestTextStyle(for size: CGFloat) -> Font.TextStyle {
+        switch size {
+        case ..<11.5:  return .caption2   // 11
+        case ..<12.5:  return .caption    // 12
+        case ..<14:    return .footnote   // 13
+        case ..<15.5:  return .subheadline // 15 (14 rounds here)
+        case ..<16.5:  return .callout    // 16
+        case ..<19:    return .body       // 17
+        case ..<21:    return .title3     // 20
+        case ..<25:    return .title2     // 22
+        case ..<31:    return .title      // 28
+        default:       return .largeTitle // 34
+        }
+    }
+}
+
+/// Applies a `BirdoFontToken`, scaled by the Dynamic Type environment.
+/// `@ScaledMetric` reads the environment, so this follows both the system
+/// setting and an `.environment(\.dynamicTypeSize, ...)` override.
+struct BirdoScaledFont: ViewModifier {
+    private let token: BirdoFontToken
+    @ScaledMetric private var scaledSize: CGFloat
+
+    init(_ token: BirdoFontToken) {
+        self.token = token
+        _scaledSize = ScaledMetric(wrappedValue: token.size,
+                                   relativeTo: token.textStyle)
+    }
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: scaledSize,
+                             weight: token.weight,
+                             design: token.design))
+    }
+}
+
+extension View {
+    /// Scaled font from a theme token. Overload of `font(_:)`, so existing
+    /// `.font(BirdoTheme.Fonts.bodySmall)` call sites scale unchanged.
+    func font(_ token: BirdoFontToken) -> some View {
+        modifier(BirdoScaledFont(token))
+    }
+
+    /// Scaled font for a one-off size (the size at the default category).
+    func birdoFont(_ size: CGFloat,
+                   weight: Font.Weight = .regular,
+                   design: Font.Design = .default) -> some View {
+        modifier(BirdoScaledFont(BirdoFontToken(size: size, weight: weight, design: design)))
     }
 }
 

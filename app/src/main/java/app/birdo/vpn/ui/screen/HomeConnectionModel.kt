@@ -79,6 +79,34 @@ internal fun serverRowMarkers(state: VpnUiState, multiHopArmed: Boolean): Server
     )
 }
 
+/**
+ * A-M79: whether Home's server picker can be opened. Held for a connect, a
+ * disconnect AND any dial still running: a live switch rides the old tunnel
+ * and shows Connected while its dial is out, so the connection state alone let
+ * a second pick land on top of the first.
+ */
+internal fun serverPickerEnabled(state: VpnUiState): Boolean {
+    val c = homeConnection(state)
+    return !c.isConnecting && !c.isDisconnecting && !state.dialInFlight
+}
+
+/**
+ * A-M79: what Home's server card says. [name] is the selection; [switching]
+ * is true while that selection is a target the tunnel has not applied (the
+ * card says "Switching…", never presents it as the protected server). The
+ * card is the single statement of the server; there is no second "tunnel on"
+ * line (A-L52: it lagged one switch behind the card).
+ */
+internal data class ServerCardModel(val name: String?, val switching: Boolean)
+
+internal fun serverCardModel(state: VpnUiState): ServerCardModel {
+    val server = state.selectedServer
+    return ServerCardModel(
+        name = server?.name,
+        switching = server != null && state.pendingSwitchServerId == server.id,
+    )
+}
+
 internal enum class PillIcon { NONE, SYNC, ERROR, OFFLINE }
 
 internal data class PillModel(

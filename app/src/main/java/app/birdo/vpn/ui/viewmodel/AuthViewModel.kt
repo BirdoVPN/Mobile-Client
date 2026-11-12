@@ -36,7 +36,7 @@ enum class DeleteAccountField { PASSWORD, CODE }
 
 data class AuthUiState(
     val isLoading: Boolean = false,
-    /** The sign-up proof-of-work is running (MR-2152): the screen says "checking this device". */
+    /** A proof-of-work is running (sign-up MR-2152; sign-in during a spike A-M78): the screen says "checking this device". */
     val isCheckingDevice: Boolean = false,
     val isLoggedIn: Boolean = false,
     val error: String? = null,
@@ -257,6 +257,20 @@ class AuthViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Re-read the profile into [AuthUiState.user] (MR-1707): after the anonymous
+     * number was replaced, the card must show the new last four, and nothing
+     * here may keep the old number. A failure keeps the session as it is.
+     */
+    fun refreshProfile() {
+        viewModelScope.launch {
+            val result = repository.getProfile()
+            if (result is ApiResult.Success) {
+                _uiState.value = _uiState.value.copy(user = result.data)
+            }
+        }
+    }
+
     fun login(email: String, password: String) {
         val trimmedEmail = email.trim()
         if (!InputValidator.isValidEmail(trimmedEmail)) {
@@ -274,7 +288,7 @@ class AuthViewModel @Inject constructor(
         if (authJob?.isActive == true) return
         authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-            when (val result = repository.login(trimmedEmail, password)) {
+            when (val result = withPowProgress { repository.login(trimmedEmail, password) }) {
                 is ApiResult.Success -> {
                     when (val loginResult = result.data) {
                         // FIX C-2: Handle 2FA challenge from backend
@@ -298,6 +312,23 @@ class AuthViewModel @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Runs a repository call that may solve a proof-of-work, showing "checking
+     * this device" while it does. The status is cleared however the call ends,
+     * a cancel included.
+     */
+    private suspend fun <T> withPowProgress(call: suspend () -> T): T {
+        repository.signupPowProgress = { checking ->
+            _uiState.value = _uiState.value.copy(isCheckingDevice = checking)
+        }
+        return try {
+            call()
+        } finally {
+            repository.signupPowProgress = null
+            _uiState.value = _uiState.value.copy(isCheckingDevice = false)
         }
     }
 
@@ -489,7 +520,7 @@ class AuthViewModel @Inject constructor(
                 )
                 return@launch
             }
-            when (val result = repository.loginAnonymous(cleanId, password?.takeIf { it.isNotBlank() })) {
+            when (val result = withPowProgress { repository.loginAnonymous(cleanId, password?.takeIf { it.isNotBlank() }) }) {
                 is ApiResult.Success -> {
                     val data = result.data
                     if (data.requiresTwoFactor && data.challengeToken != null) {
@@ -544,15 +575,7 @@ class AuthViewModel @Inject constructor(
         if (authJob?.isActive == true) return
         authJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
-            repository.signupPowProgress = { checking ->
-                _uiState.value = _uiState.value.copy(isCheckingDevice = checking)
-            }
-            val result = try {
-                repository.registerAnonymous()
-            } finally {
-                repository.signupPowProgress = null
-                _uiState.value = _uiState.value.copy(isCheckingDevice = false)
-            }
+            val result = withPowProgress { repository.registerAnonymous() }
             when (result) {
                 is ApiResult.Success -> {
                     val body = result.data

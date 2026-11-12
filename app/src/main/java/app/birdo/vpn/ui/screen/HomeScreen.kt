@@ -491,7 +491,7 @@ fun HomeScreen(
                     } else {
                         ServerSelector(
                             state = state,
-                            enabled = !isConnecting && !isDisconnecting,
+                            enabled = serverPickerEnabled(state),
                             onClick = {
                                 if (state.servers.isNotEmpty()) {
                                     showServerSheet = true
@@ -1375,6 +1375,7 @@ private fun UpdateBanner(
 @Composable
 private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> Unit) {
     val server = state.selectedServer
+    val card = serverCardModel(state)
     BirdoCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -1411,7 +1412,9 @@ private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> U
                 )
                 if (server != null) {
                     Text(
-                        text = server.city.ifBlank { server.country },
+                        // A-M79: a pick the tunnel has not applied is "Switching…",
+                        // not a place the user is already protected in.
+                        text = if (card.switching) stringResource(R.string.cta_switching) else server.city.ifBlank { server.country },
                         color = BirdoWhite60,
                         fontSize = 12.sp,
                         maxLines = 1,

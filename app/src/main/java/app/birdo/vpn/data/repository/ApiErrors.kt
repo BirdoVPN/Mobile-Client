@@ -103,7 +103,13 @@ interface StringLookup {
  * [error] is usually a reason phrase, but the deletion routes put a code there
  * (`two_factor_required`, ACCOUNT-API-2026-10-01).
  */
-internal data class ErrorEnvelope(val message: String?, val code: String?, val error: String? = null)
+internal data class ErrorEnvelope(
+    val message: String?,
+    val code: String?,
+    val error: String? = null,
+    /** `details.pow.op` when the server names one (`login` or `signup`); null when the refusal carries no `pow` member. */
+    val powOp: String? = null,
+)
 
 /**
  * THE one place an API failure becomes words on the screen.
@@ -413,7 +419,8 @@ class ApiErrorMapper(private val strings: StringLookup) {
             }
             val code = ((root["details"] as? JsonObject)?.get("code") as? JsonPrimitive)?.contentOrNull
             val error = (root["error"] as? JsonPrimitive)?.contentOrNull
-            return ErrorEnvelope(message, code, error)
+            val powOp = (((root["details"] as? JsonObject)?.get("pow") as? JsonObject)?.get("op") as? JsonPrimitive)?.contentOrNull
+            return ErrorEnvelope(message, code, error, powOp)
         }
 
         /** Whether a server sentence can be shown as-is. */
