@@ -492,9 +492,13 @@ private fun ProfileIdentityCard(
         }
     }
 
-    if (showReplaceNumber && replaceNumberEntryVisible(user)) {
+    // A local non-null val: the sheet only shows for a signed-in anonymous
+    // account, and `user?.` after the visibility check was a useless null
+    // check (CodeQL java/useless-null-check, alert #46).
+    val replaceUser = user
+    if (showReplaceNumber && replaceUser != null && replaceNumberEntryVisible(replaceUser)) {
         ReplaceNumberSheet(
-            hasPassword = user?.hasPassword == true,
+            hasPassword = replaceUser.hasPassword == true,
             onReplaced = onAccountNumberReplaced,
             onDismiss = { showReplaceNumber = false },
             onSignInAgain = { showReplaceNumber = false; onSignInAgain() },
