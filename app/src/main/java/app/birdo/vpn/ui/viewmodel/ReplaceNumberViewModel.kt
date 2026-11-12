@@ -122,23 +122,27 @@ class ReplaceNumberFlow(private val gateway: RotationGateway) {
             return
         }
         _state.value = _state.value.copy(busy = true, failure = null, retryAfterMs = null)
+        // Whether an EARLIER confirm had already gone out (a retry after a lost or
+        // unanswered one). The first confirm's own definitive answer is believed.
+        val retry = confirmSent
         confirmSent = true
         when (val r = gateway.confirm(String(held))) {
             is RotationResult.Ok -> {
                 wipe()
                 _state.value = ReplaceNumberState(step = ReplaceStep.DONE)
             }
-            is RotationResult.Refused -> refused(r)
+            is RotationResult.Refused -> refused(r, retry)
         }
     }
 
-    private fun refused(r: RotationResult.Refused) {
+    private fun refused(r: RotationResult.Refused, retry: Boolean = false) {
         val s = _state.value
-        // After a confirm went out, a 401 or a 409 may mean it DID commit and only
-        // its answer was lost (the old tokens are revoked, the pending entry is
-        // consumed). Do not restart as if nothing changed: the user would type the
-        // old number, which no longer works. Keep step 3 and the number.
-        if (confirmSent && s.step == ReplaceStep.CONFIRM && newNumber != null && r.failure in AMBIGUOUS_AFTER_CONFIRM) {
+        // On a RETRY (an earlier confirm went out unanswered), a 401 or a 409 may mean
+        // that one DID commit and only its answer was lost (the old tokens are revoked,
+        // the pending entry is consumed). Do not restart as if nothing changed: the user
+        // would type the old number, which no longer works. Keep step 3 and the number.
+        // The first confirm's own 409/401 is definitive and takes the normal path.
+        if (retry && s.step == ReplaceStep.CONFIRM && newNumber != null && r.failure in AMBIGUOUS_AFTER_CONFIRM) {
             _state.value = s.copy(busy = false, failure = r.failure, retryAfterMs = r.retryAfterMs, maybeCommitted = true)
             return
         }

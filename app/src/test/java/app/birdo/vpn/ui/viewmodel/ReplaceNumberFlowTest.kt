@@ -98,16 +98,27 @@ class ReplaceNumberFlowTest {
     }
 
     @Test
-    fun `a 401 or 409 answering the first confirm is also ambiguous, it was sent`() = runTest {
-        for (f in listOf(RotationFailure.SESSION_EXPIRED, RotationFailure.NOT_PENDING)) {
-            val gw = Fake()
-            val flow = ReplaceNumberFlow(gw)
-            toConfirm(flow)
-            gw.confirmAnswer = refused(f)
-            flow.confirm(fresh)
-            assertTrue(flow.state.value.maybeCommitted)
-            assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
-        }
+    fun `the first confirm's own definitive 409 or 401 is believed and is not maybe-committed`() = runTest {
+        // 409 not pending: the pending number expired, nothing committed. Restart at step 1.
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.NOT_PENDING)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertEquals(RotationFailure.NOT_PENDING, flow.state.value.failure)
+        assertFalse(flow.state.value.maybeCommitted)
+        assertFalse(flow.holdsNumber())
+
+        // An expired session on the first confirm: the session-ended error, on step 3, not maybe-active.
+        val gw2 = Fake()
+        val flow2 = ReplaceNumberFlow(gw2)
+        toConfirm(flow2)
+        gw2.confirmAnswer = refused(RotationFailure.SESSION_EXPIRED)
+        flow2.confirm(fresh)
+        assertEquals(RotationFailure.SESSION_EXPIRED, flow2.state.value.failure)
+        assertFalse(flow2.state.value.maybeCommitted)
+        assertEquals(ReplaceStep.CONFIRM, flow2.state.value.step)
     }
 
     @Test
