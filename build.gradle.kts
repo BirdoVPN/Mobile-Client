@@ -40,7 +40,7 @@ plugins {
     // accepts it; the Analyze (java-kotlin) check is the proof.
     // KSP 2.3.x is versioned independently of Kotlin (KSP2); 2.3.10+ handles the
     // Kotlin 2.4 default module names.
-    id("com.google.devtools.ksp") version "2.3.12" apply false
+    id("com.google.devtools.ksp") version "2.3.13" apply false
     // BASELINE PROFILE -- 1.5.x IS THE FLOOR ON THIS TOOLCHAIN, and the
     // version is not a matter of taste. The plugin hard-checks the AGP version
     // it was built against:
