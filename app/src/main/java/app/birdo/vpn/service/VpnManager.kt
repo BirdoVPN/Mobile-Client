@@ -1725,7 +1725,6 @@ class VpnManager @Inject constructor(
             hold.request = null
         }
     }
-        }
 
     /** Take the hold for a rebuild that is starting. */
     private fun holdFailuresForRebuild(): RebuildHold = RebuildHold().also { rebuildHold = it }
