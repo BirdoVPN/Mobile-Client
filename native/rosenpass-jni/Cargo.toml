@@ -116,7 +116,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #               crypto path, which is worse.
 #   hazmat    — dev-dependencies ONLY, for encapsulate_deterministic() in the
 #               KAT test. Never in a shipped build.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # getauxval(AT_HWCAP / AT_HWCAP2) for nativeCpuFeatures(): the kernel's own
 # statement of which optional ISA extensions this CPU has. Read-only, one
@@ -133,7 +133,7 @@ base64 = "0.22"
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = "z"
