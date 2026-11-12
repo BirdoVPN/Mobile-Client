@@ -38,8 +38,6 @@ object TestTags {
     const val CANCEL_CONNECT_BUTTON = "cancel_connect_button"
     const val VPN_STATUS = "vpn_status"
     const val SERVER_SELECTOR = "server_selector"
-    /** A-M79: the line naming the server the tunnel is applied to. */
-    const val TUNNEL_SERVER = "tunnel_server"
 
     // Settings
     const val KILL_SWITCH_TOGGLE = "kill_switch_toggle"
