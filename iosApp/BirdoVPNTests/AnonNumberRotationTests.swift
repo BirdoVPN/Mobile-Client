@@ -151,9 +151,9 @@ final class AnonNumberRotationTests: XCTestCase {
         XCTAssertEqual(f.notice, .disabled)
     }
 
-    func testA409OnTheFirstConfirmStillRestartsAtStepOne() {
+    func testA409BeforeAnyConfirmWasSentRestartsAtStepOne() {
         var f = atConfirm()
-        f.confirmSent()
+        XCTAssertEqual(f.confirmsSent, 0)
         f.confirmFailed(.refusal(.notPending))
         XCTAssertEqual(f.step, .prove)
         XCTAssertEqual(f.notice, .expired)
@@ -163,13 +163,10 @@ final class AnonNumberRotationTests: XCTestCase {
         for refusal in [RotationFailure.refusal(.notPending), .refusal(.proofRejected), .sessionEnded] {
             var f = atConfirm()
             f.confirmSent()
-            f.confirmFailed(.network)               // the first answer was lost
-            XCTAssertEqual(f.step, .confirm)
-            f.confirmSent()
-            f.confirmFailed(refusal)                // the retry is refused
+            f.confirmFailed(refusal)
             XCTAssertEqual(f.step, .maybeCommitted, "\(refusal)")
             XCTAssertEqual(f.notice, .maybeActive)
-            XCTAssertNil(f.newNumber)
+            XCTAssertEqual(f.newNumber, newNumber, "the new number stays visible")
         }
         XCTAssertEqual(RotationFlow.Notice.maybeActive.message,
                        "Your new number may already be active. Sign in with the new number you saved.")

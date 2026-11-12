@@ -250,8 +250,8 @@ struct RotationFlow: Equatable {
     var notice: Notice?
     /// After `done`: false when the new session could not be stored locally.
     var storedLocally = true
-    /// Confirm requests sent in this flow. From the second on, a lost answer
-    /// earlier can hide a swap the server already committed.
+    /// Confirm requests sent in this flow. Once one was sent, the server may
+    /// already have swapped the number (Desktop #417).
     private(set) var confirmsSent = 0
 
     var canContinueFromShowNew: Bool { step == .showNew && saved && newNumber != nil }
@@ -288,12 +288,11 @@ struct RotationFlow: Equatable {
     /// Call when a confirm request is about to be sent.
     mutating func confirmSent() { confirmsSent += 1 }
 
-    /// With an EARLIER confirm in this flow (this answer is for the second or
-    /// later one), a 401 (verdict, expired guard, ended session)
+    /// After a SENT confirm, a 401 (verdict, expired guard, ended session)
     /// or a 409 `rotation_not_pending` may mean the server already switched to
     /// the new number and revoked the old session.
     private func mayHaveCommitted(_ failure: RotationFailure) -> Bool {
-        guard confirmsSent >= 2 else { return false }
+        guard confirmsSent >= 1 else { return false }
         switch failure {
         case .refusal(.notPending), .refusal(.proofRejected), .refusal(.sessionExpired), .sessionEnded:
             return true
@@ -306,9 +305,8 @@ struct RotationFlow: Equatable {
         if mayHaveCommitted(failure) {
             // Not a restart: the user holds the new number and must sign in
             // with it. Nothing more is sent from this session.
+            // The new number stays visible: it is the way back in.
             step = .maybeCommitted
-            newNumber = nil
-            saved = false
             notice = .maybeActive
             return
         }

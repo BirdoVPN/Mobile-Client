@@ -270,6 +270,14 @@ struct ReplaceNumberSheet: View {
     // A confirm was sent and the answers since say the session is gone.
     private var maybeCommittedStep: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let number = model.flow.newNumber {
+                Text(AccountNumberText.grouped(number))
+                    .font(BirdoTheme.Fonts.mono)
+                    .foregroundStyle(BirdoTheme.onBackground)
+                    .textSelection(.enabled)
+                    .accountNumberSnapshotCover()
+            }
+            PrimaryButton("Close", variant: .ghost) { dismiss() }
             PrimaryButton("Sign in again") {
                 Task {
                     await vpnVM.disconnectForSignOut()
