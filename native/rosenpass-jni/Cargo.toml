@@ -23,7 +23,7 @@ jni = { version = "0.21", default-features = false }
 
 # Logging into Android logcat from Rust
 log = "0.4"
-android_logger = "0.13"
+android_logger = "0.15"
 
 # Crypto primitives — HKDF + SHA-256 for the final PSK derivation
 sha2 = { version = "0.11", features = ["zeroize"] }
