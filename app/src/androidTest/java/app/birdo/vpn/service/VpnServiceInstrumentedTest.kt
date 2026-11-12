@@ -93,11 +93,6 @@ class VpnServiceInstrumentedTest {
      * at no instant may the state read Connected: nothing claims Protected
      * without a handshake.
      */
-    // Not run on the CI emulator: across three runs the real service never reached a connecting
-    // state here for emulator-specific reasons (a queued STOP, the quantum gate, then a plain
-    // Disconnected). No-handshake gating stays covered by the JVM TransportProbeTest and
-    // BirdoVpnServiceLifecycleTest; the kill-switch hold/reconnect test below runs here.
-    @Ignore("emulator cannot drive a connect to Connecting; covered by JVM TransportProbeTest")
     @Test
     fun noHandshakeIsNeverProtected() {
         val scope = CoroutineScope(Dispatchers.Default)
@@ -147,6 +142,7 @@ class VpnServiceInstrumentedTest {
             "no connecting state after the start (state=${BirdoVpnService.currentState})",
             await(15_000) { BirdoVpnService.currentState.isConnectingPhase },
         )
+        assertTrue("the service is not running in the foreground after a start", BirdoVpnService.running)
 
         send(BirdoVpnService.ACTION_KILL_SWITCH_BLOCK)
         assertTrue("the kill switch block never came up", await(15_000) { BirdoVpnService.killSwitchActive })
