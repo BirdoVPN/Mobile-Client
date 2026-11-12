@@ -253,13 +253,18 @@ pub unsafe extern "C" fn birdo_pq_derive_psk(
 /// `psk = HKDF-SHA-256(IKM = ss, salt = HKDF_SALT, info = nonce)`, written
 /// into `psk`. False only if HKDF refuses the output length.
 ///
-/// MR-2112: `Hkdf::new` is `let (_, hkdf) = Self::extract(..)` (hkdf 0.12
-/// `src/lib.rs`), which drops the 32-byte PRK = HMAC(salt, ss) unwiped: it is
-/// a `GenericArray`, with no Drop. Extracting by hand keeps the PRK so it can
-/// be wiped. NOT wiped: the PRK-keyed HMAC state inside `Hkdf` itself. hmac
-/// 0.12 / sha2 0.10 have no zeroize support, and moving to hkdf 0.13 with
-/// sha2 0.11's `zeroize` feature is a dependency change the register leaves
-/// to a lead decision.
+/// MR-2112: `Hkdf::new` drops the 32-byte PRK = HMAC(salt, ss) unwiped: it is
+/// a plain `Array`, with no Drop. Extracting by hand keeps the PRK so it can
+/// be wiped. The PRK-keyed HMAC state inside `Hkdf` IS now wiped on drop: the
+/// `sha2` `zeroize` feature (sha2 0.11.1 `Cargo.toml:52`, `zeroize =
+/// ["digest/zeroize"]`) gives `Sha256VarCore` a zeroizing `Drop` and
+/// `ZeroizeOnDrop` (`src/block_api.rs:94-104`), and `hmac` 0.13 `HmacCore`
+/// holds exactly two such cores, `digest` and `opad_digest`
+/// (`src/block_api.rs:14-17`); `digest/zeroize` also enables
+/// `block-buffer/zeroize` (digest 0.11.3 `Cargo.toml` features), which wipes the
+/// buffered input on drop (block-buffer 0.12.1 `src/lib.rs:424-437`). hkdf
+/// 0.13 still drops the PRK unwiped (`Hkdf::new` is `let (_, hkdf) =
+/// Self::extract(..)`, `src/lib.rs:94-97`), so the by-hand extract stays.
 fn hkdf_to_psk(shared_secret: &[u8], nonce: &[u8], psk: &mut [u8]) -> bool {
     let (mut prk, hk) = Hkdf::<Sha256>::extract(Some(HKDF_SALT), shared_secret);
     let ok = hk.expand(nonce, psk).is_ok();
@@ -402,6 +407,46 @@ mod tests {
 
     fn unhex(s: &str) -> Vec<u8> {
         hex::decode(s).expect("fixture hex")
+    }
+
+    /// A-M76: pins the exact SHA-256 / HKDF-SHA-256 outputs. The expected hex
+    /// was captured from the sha2 0.10 / hkdf 0.12 build and must not change
+    /// across the sha2 0.11 / hkdf 0.13 / digest 0.11 move. The same constants
+    /// are asserted in all three native crates (cross-implementation check).
+    #[test]
+    fn hash_stack_outputs_are_pinned() {
+        // SHA-256("abc"), FIPS 180-2 appendix B.1.
+        let digest = <Sha256 as sha2::Digest>::digest(b"abc");
+        assert_eq!(
+            hex::encode(digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        // RFC 5869 appendix A.1 (HKDF-SHA-256 test case 1).
+        let ikm = [0x0bu8; 22];
+        let salt: Vec<u8> = (0x00u8..=0x0c).collect();
+        let info: Vec<u8> = (0xf0u8..=0xf9).collect();
+        let mut okm = [0u8; 42];
+        Hkdf::<Sha256>::new(Some(&salt), &ikm)
+            .expand(&info, &mut okm)
+            .expect("length OK");
+        assert_eq!(
+            hex::encode(okm),
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+        );
+
+        // The crate's own derivation (BirdoPQ salt) on a fixed input.
+        let ss = [0x42u8; 32];
+        let nonce = [0x24u8; 32];
+        let psk: Vec<u8> = {
+            let mut p = vec![0u8; BIRDO_PQ_PSK_LEN];
+            assert!(hkdf_to_psk(&ss, &nonce, &mut p));
+            p
+        };
+        assert_eq!(
+            hex::encode(psk),
+            "7b7fad70ecc0971d17b32a8409159faf20014e168e816c02b7739572a1fab11c"
+        );
     }
 
     fn psk_via_c_abi(sk: &[u8], ct: &[u8], nonce: &[u8]) -> Result<Vec<u8>, i32> {
