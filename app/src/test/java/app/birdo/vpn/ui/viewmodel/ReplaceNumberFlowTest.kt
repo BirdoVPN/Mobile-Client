@@ -79,7 +79,6 @@ class ReplaceNumberFlowTest {
             RotationFailure.SESSION_EXPIRED,
             RotationFailure.PROOF_INVALID,
             RotationFailure.NOT_PENDING,
-            RotationFailure.ACCOUNT_CHANGED,
         )
         for (f in ambiguous) {
             val gw = Fake()
@@ -128,6 +127,18 @@ class ReplaceNumberFlowTest {
         flow2.confirm("333333333333333333333333")
         assertEquals(0, gw2.confirmCalls)
         assertFalse(flow2.state.value.maybeCommitted)
+    }
+
+    @Test
+    fun `a 409 account changed after a sent confirm still restarts, the swap did not happen`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.ACCOUNT_CHANGED)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertFalse(flow.state.value.maybeCommitted)
+        assertFalse(flow.holdsNumber())
     }
 
     @Test

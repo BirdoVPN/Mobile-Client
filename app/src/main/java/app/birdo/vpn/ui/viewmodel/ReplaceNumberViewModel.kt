@@ -173,7 +173,6 @@ class ReplaceNumberFlow(private val gateway: RotationGateway) {
             RotationFailure.SESSION_EXPIRED,
             RotationFailure.PROOF_INVALID,
             RotationFailure.NOT_PENDING,
-            RotationFailure.ACCOUNT_CHANGED,
         )
     }
 }

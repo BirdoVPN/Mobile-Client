@@ -197,12 +197,12 @@ fun ReplaceNumberSheet(
                         } else {
                             Text(stringResource(R.string.replace_number_confirm_body), style = MaterialTheme.typography.bodySmall, color = BirdoWhite60)
                         }
-                        OutlinedTextField(
+                        if (!state.maybeCommitted) OutlinedTextField(
                             value = retyped,
                             onValueChange = { retyped = it.filter { c -> c.isDigit() || c == ' ' }.take(40) },
                             label = { Text(stringResource(R.string.replace_number_retype_label)) },
                             singleLine = true,
-                            enabled = !state.busy && !state.maybeCommitted,
+                            enabled = !state.busy,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                             visualTransformation = PasswordVisualTransformation(),
                             modifier = Modifier.fillMaxWidth(),
@@ -245,7 +245,10 @@ fun ReplaceNumberSheet(
                     enabled = state.savedAcknowledged,
                     colors = ButtonDefaults.buttonColors(containerColor = BirdoGreen, contentColor = Color.Black),
                 ) { Text(stringResource(R.string.replace_number_continue), fontWeight = FontWeight.SemiBold) }
-                ReplaceStep.CONFIRM -> Button(
+                ReplaceStep.CONFIRM -> if (state.maybeCommitted) Button(
+                    onClick = { retyped = ""; viewModel.clear(); onSignInAgain() },
+                    colors = ButtonDefaults.buttonColors(containerColor = BirdoGreen, contentColor = Color.Black),
+                ) { Text(stringResource(R.string.replace_number_sign_in_again), fontWeight = FontWeight.SemiBold) } else Button(
                     onClick = { viewModel.confirm(retyped) },
                     enabled = !state.busy && !state.maybeCommitted && retyped.count { it.isDigit() } >= 24,
                     colors = ButtonDefaults.buttonColors(containerColor = BirdoGreen, contentColor = Color.Black),
@@ -260,8 +263,8 @@ fun ReplaceNumberSheet(
             when (state.step) {
                 ReplaceStep.DONE -> Unit
                 ReplaceStep.CONFIRM -> if (state.maybeCommitted) {
-                    TextButton(onClick = { retyped = ""; viewModel.clear(); onSignInAgain() }) {
-                        Text(stringResource(R.string.replace_number_sign_in_again), color = BirdoGreen)
+                    TextButton(onClick = { retyped = ""; viewModel.clear(); onDismiss() }) {
+                        Text(stringResource(R.string.replace_number_close), color = BirdoWhite60)
                     }
                 } else {
                     TextButton(onClick = { retyped = ""; viewModel.showNumberAgain() }, enabled = !state.busy) {
