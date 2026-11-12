@@ -6,6 +6,7 @@ import UIKit
 
 /// A-M38 (MA-IOS-006): the theme's font tokens follow Dynamic Type and are
 /// exactly the old fixed point sizes at the default `.large` category.
+@MainActor
 final class DynamicTypeTests: XCTestCase {
 
     /// Every named token with the point size it had before (`.system(size:)`).
