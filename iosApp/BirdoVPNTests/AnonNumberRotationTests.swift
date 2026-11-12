@@ -151,6 +151,40 @@ final class AnonNumberRotationTests: XCTestCase {
         XCTAssertEqual(f.notice, .disabled)
     }
 
+    func testA409OnTheFirstConfirmStillRestartsAtStepOne() {
+        var f = atConfirm()
+        f.confirmSent()
+        f.confirmFailed(.refusal(.notPending))
+        XCTAssertEqual(f.step, .prove)
+        XCTAssertEqual(f.notice, .expired)
+    }
+
+    func testALaterConfirmThatIsRefusedMeansTheNumberMayBeActive() {
+        for refusal in [RotationFailure.refusal(.notPending), .refusal(.proofRejected), .sessionEnded] {
+            var f = atConfirm()
+            f.confirmSent()
+            f.confirmFailed(.network)               // the first answer was lost
+            XCTAssertEqual(f.step, .confirm)
+            f.confirmSent()
+            f.confirmFailed(refusal)                // the retry is refused
+            XCTAssertEqual(f.step, .maybeCommitted, "\(refusal)")
+            XCTAssertEqual(f.notice, .maybeActive)
+            XCTAssertNil(f.newNumber)
+        }
+        XCTAssertEqual(RotationFlow.Notice.maybeActive.message,
+                       "Your new number may already be active. Sign in with the new number you saved.")
+    }
+
+    func testALaterMismatchOrNetworkErrorStillStaysOnStepThree() {
+        var f = atConfirm()
+        f.confirmSent()
+        f.confirmFailed(.network)
+        f.confirmSent()
+        f.confirmFailed(.refusal(.mismatch))
+        XCTAssertEqual(f.step, .confirm)
+        XCTAssertEqual(f.newNumber, newNumber)
+    }
+
     func testAMismatchStaysOnStepThree() {
         var f = atConfirm()
         f.confirmFailed(.refusal(.mismatch))

@@ -215,7 +215,12 @@ enum RotationFailure: Equatable {
 /// The three steps of the replacement and the screen state between them.
 /// Pure: the model calls the API and feeds the outcome in.
 struct RotationFlow: Equatable {
-    enum Step: Equatable { case prove, showNew, confirm, done }
+    enum Step: Equatable {
+        case prove, showNew, confirm, done
+        /// A confirm was sent and a later answer says the session or the
+        /// pending number is gone: the swap may already have happened.
+        case maybeCommitted
+    }
 
     enum Notice: Equatable {
         case disabled
@@ -229,6 +234,8 @@ struct RotationFlow: Equatable {
         /// 409: start again.
         case expired
         case accountChanged
+        /// A 401 or a 409 `rotation_not_pending` after a confirm was sent.
+        case maybeActive
         /// Confirm succeeded on the server but this device could not keep the
         /// new session: the number is shown again, sign in with it.
         case storeFailed
@@ -243,6 +250,9 @@ struct RotationFlow: Equatable {
     var notice: Notice?
     /// After `done`: false when the new session could not be stored locally.
     var storedLocally = true
+    /// Confirm requests sent in this flow. From the second on, a lost answer
+    /// earlier can hide a swap the server already committed.
+    private(set) var confirmsSent = 0
 
     var canContinueFromShowNew: Bool { step == .showNew && saved && newNumber != nil }
 
@@ -275,7 +285,33 @@ struct RotationFlow: Equatable {
         notice = Self.noticeFor(failure, atConfirm: false)
     }
 
+    /// Call when a confirm request is about to be sent.
+    mutating func confirmSent() { confirmsSent += 1 }
+
+    /// With an EARLIER confirm in this flow (this answer is for the second or
+    /// later one), a 401 (verdict, expired guard, ended session)
+    /// or a 409 `rotation_not_pending` may mean the server already switched to
+    /// the new number and revoked the old session.
+    private func mayHaveCommitted(_ failure: RotationFailure) -> Bool {
+        guard confirmsSent >= 2 else { return false }
+        switch failure {
+        case .refusal(.notPending), .refusal(.proofRejected), .refusal(.sessionExpired), .sessionEnded:
+            return true
+        default:
+            return false
+        }
+    }
+
     mutating func confirmFailed(_ failure: RotationFailure) {
+        if mayHaveCommitted(failure) {
+            // Not a restart: the user holds the new number and must sign in
+            // with it. Nothing more is sent from this session.
+            step = .maybeCommitted
+            newNumber = nil
+            saved = false
+            notice = .maybeActive
+            return
+        }
         switch failure {
         case .refusal(.notPending), .refusal(.accountChanged), .refusal(.disabled):
             // The pending number is gone (or the switch went off): the number in
@@ -308,6 +344,7 @@ struct RotationFlow: Equatable {
         notice = nil
         step = .prove
         storedLocally = true
+        confirmsSent = 0
     }
 
     static func noticeFor(_ failure: RotationFailure, atConfirm: Bool) -> Notice {
@@ -341,6 +378,8 @@ extension RotationFlow.Notice {
         case .mismatch: return "That is not the new number. Check it and try again."
         case .expired: return "The new number expired or was never prepared. Start again."
         case .accountChanged: return "The account changed since the number was prepared. Start again."
+        case .maybeActive:
+            return "Your new number may already be active. Sign in with the new number you saved."
         case .storeFailed:
             return "Your number was replaced, but this device could not save the new session. "
                 + "Save the new number below and sign in with it."

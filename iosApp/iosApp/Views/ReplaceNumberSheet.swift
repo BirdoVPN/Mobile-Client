@@ -50,6 +50,7 @@ struct MaskedAccountNumberRow: View {
 /// The Profile entry point. Renders nothing while the client flag is OFF.
 struct ReplaceNumberEntry: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @EnvironmentObject var vpnVM: VpnViewModel
     @State private var showSheet = false
 
     var body: some View {
@@ -60,7 +61,7 @@ struct ReplaceNumberEntry: View {
                 .padding(.leading, 14)
                 .padding(.vertical, 6)
                 .sheet(isPresented: $showSheet) {
-                    ReplaceNumberSheet().environmentObject(authVM)
+                    ReplaceNumberSheet().environmentObject(authVM).environmentObject(vpnVM)
                 }
         }
     }
@@ -128,6 +129,7 @@ final class ReplaceNumberModel: ObservableObject {
         }
         isBusy = true
         defer { isBusy = false }
+        flow.confirmSent()
         do {
             let tokens = try await api.rotateNumberConfirm(newNumber: typed)
             let stored = AnonNumberRotationCommit.commit(newNumber: typed,
@@ -161,6 +163,7 @@ final class ReplaceNumberModel: ObservableObject {
 
 struct ReplaceNumberSheet: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @EnvironmentObject var vpnVM: VpnViewModel
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = ReplaceNumberModel()
 
@@ -180,6 +183,7 @@ struct ReplaceNumberSheet: View {
                 case .showNew: showNewStep
                 case .confirm: confirmStep
                 case .done: doneStep
+                case .maybeCommitted: maybeCommittedStep
                 }
             }
             .padding(20)
@@ -260,6 +264,20 @@ struct ReplaceNumberSheet: View {
             }
             PrimaryButton("Show the number again", variant: .secondary) { model.backToShowNew() }
             PrimaryButton("Cancel", variant: .ghost) { dismiss() }
+        }
+    }
+
+    // A confirm was sent and the answers since say the session is gone.
+    private var maybeCommittedStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            PrimaryButton("Sign in again") {
+                Task {
+                    await vpnVM.disconnectForSignOut()
+                    authVM.logout()
+                    model.clear()
+                    dismiss()
+                }
+            }
         }
     }
 
