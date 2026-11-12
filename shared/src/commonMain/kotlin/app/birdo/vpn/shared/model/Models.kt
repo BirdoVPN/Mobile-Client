@@ -17,6 +17,17 @@ private fun redacted(secret: String?): String = if (secret == null) "null" else 
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
 
+/**
+ * What the server verifies for a proof-of-work: the token it issued and the nonce
+ * found for it (birdo-web docs/SIGNUP-PROOF-OF-WORK.md). Sent as `pow` on a
+ * sign-up and, only after a 429 `pow_required` for `login`, on a sign-in
+ * (A-M78 / MR-2139). A solved challenge is spendable once: never printed.
+ */
+@Serializable
+data class PowSolution(val challenge: String, val nonce: String) {
+    override fun toString(): String = "PowSolution(challenge=[REDACTED], nonce=[REDACTED])"
+}
+
 @Serializable
 data class LoginRequest(
     val email: String,
@@ -27,6 +38,8 @@ data class LoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
+    /** Set only on the one retry that answers a sign-in spike's `pow_required` (A-M78). */
+    val pow: PowSolution? = null,
 ) {
     /**
      * Leaves out [password], [email], [deviceId] and [deviceName], like
@@ -254,6 +267,8 @@ data class AnonymousLoginRequest(
     val platform: String? = null,
     val platformVersion: String? = null,
     val appVersion: String? = null,
+    /** Set only on the one retry that answers a sign-in spike's `pow_required` (A-M78). */
+    val pow: PowSolution? = null,
 ) {
     /**
      * Leaves out [anonymousId] (the account's only credential), [password]

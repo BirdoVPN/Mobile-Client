@@ -18,13 +18,19 @@ import CryptoKit
 //
 // Sign in with Apple (`POST /auth/apple/native`) does NOT carry a proof: the
 // server judges a first Apple sign-in in its own `idp` tier. Only the anonymous
-// sign-up sends one.
+// sign-up sends one, and a password or anonymous sign-in during a failed-sign-in
+// spike (A-M78 / MR-2139: 429 `pow_required`, `pow.op` `login`; `SignupPowFlow.login`).
 
 // MARK: - Wire models
 
-/// Body of `POST /auth/pow/challenge`.
+/// Body of `POST /auth/pow/challenge`: `signup`, or `login` for a sign-in
+/// that the server asked a proof of (A-M78 / MR-2139).
 struct PowChallengeRequest: Encodable, Sendable {
-    let op = "signup"
+    let op: String
+
+    init(op: String = SignupPowFlow.signupOp) {
+        self.op = op
+    }
 }
 
 /// `200` answer of `POST /auth/pow/challenge`. `challenge` is opaque and goes
@@ -72,6 +78,29 @@ struct SignupPowRefusal: Error, Equatable, Sendable {
               let code = details["code"] as? String,
               retryCodes.contains(code) else { return nil }
         return SignupPowRefusal(status: status, code: code, message: root["message"] as? String)
+    }
+}
+
+/// A sign-in refusal that asks for a proof (A-M78 / MR-2139): 429 whose
+/// `details.code` is `pow_required` AND whose `details.pow.op` is `login` (a
+/// failed-sign-in spike, birdo-web `LoginAbuseService.admit`). Thrown from the
+/// `refusal:` hook of the sign-in request and caught by `SignupPowFlow.login`;
+/// `original` is the error the request would have thrown without the hook, and
+/// is what the user sees whenever no proof can be had.
+struct LoginPowRefusal: Error, Sendable {
+    let original: Error
+
+    /// Whether a response is that refusal. Told by `details`, never by wording:
+    /// no other status, code or op (a sign-up `pow_required`, a missing `pow`,
+    /// `pow_invalid`, `pow_expired`, `pow_rate_limited`) is answered with a solve.
+    static func matches(status: Int, body: Data) -> Bool {
+        guard status == 429,
+              let root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              let details = root["details"] as? [String: Any],
+              details["code"] as? String == "pow_required",
+              let pow = details["pow"] as? [String: Any],
+              pow["op"] as? String == SignupPowFlow.loginOp else { return false }
+        return true
     }
 }
 
@@ -169,6 +198,10 @@ enum SignupPow {
 /// challenge expires) is "send without a proof". Only cancellation propagates
 /// out of the proof steps.
 enum SignupPowFlow {
+    /// `op` of a sign-up challenge.
+    static let signupOp = "signup"
+    /// `op` of a sign-in challenge (a failed-sign-in spike).
+    static let loginOp = "login"
     /// One fresh challenge after a refusal, then one request without a proof.
     static let maxRetries = 2
     /// Stop solving this long before the challenge expires: a nonce found later
@@ -183,10 +216,10 @@ enum SignupPowFlow {
     /// A nonce, or nil when `deadline` passed first.
     typealias Solve = @Sendable (_ challenge: String, _ bits: Int, _ deadline: Date) async throws -> String?
 
-    /// Whether this app will attempt the challenge the server issued.
-    static func isSolvable(_ c: PowChallengeResponse) -> Bool {
+    /// Whether this app will attempt the challenge the server issued for `op`.
+    static func isSolvable(_ c: PowChallengeResponse, op: String = signupOp) -> Bool {
         guard c.algorithm == SignupPow.algorithm,
-              c.op == "signup",
+              c.op == op,
               let challenge = c.challenge, !challenge.isEmpty,
               challenge.utf8.count <= SignupPow.maxChallengeLength,
               let bits = c.difficulty,
@@ -194,11 +227,12 @@ enum SignupPowFlow {
         return true
     }
 
-    /// A fresh challenge, solved; nil when there is nothing to send.
+    /// A fresh challenge for `op`, solved; nil when there is nothing to send.
     static func obtain(fetch: Fetch, solve: Solve,
                        progress: @Sendable (Bool) async -> Void,
-                       now: @Sendable () -> Date) async throws -> PowSolution? {
-        guard let c = try await fetch(), isSolvable(c),
+                       now: @Sendable () -> Date,
+                       op: String = signupOp) async throws -> PowSolution? {
+        guard let c = try await fetch(), isSolvable(c, op: op),
               let challenge = c.challenge, let bits = c.difficulty else { return nil }
         let life = (c.expiresInSeconds ?? 0) > 0 ? (c.expiresInSeconds ?? defaultLifeSeconds) : defaultLifeSeconds
         let budget = max(life - expiryMarginSeconds, expiryMarginSeconds)
@@ -215,6 +249,35 @@ enum SignupPowFlow {
         await progress(false)
         guard let nonce else { return nil }
         return PowSolution(challenge: challenge, nonce: nonce)
+    }
+
+    /// Run a sign-in (A-M78 / MR-2139). `send` performs the request with the
+    /// given proof and throws `LoginPowRefusal` for a 429 `pow_required` naming
+    /// op `login`; every other error propagates untouched and nothing is solved
+    /// for it. The request goes out once WITHOUT a proof; only that refusal
+    /// fetches a `login` challenge, solves it and sends ONCE more WITH it. That
+    /// second answer is final: never a loop. A challenge that cannot be fetched
+    /// or that this app will not solve leaves the ORIGINAL refusal as the
+    /// answer. A cancel during the solve throws `CancellationError` before
+    /// anything more is sent.
+    static func login<T: Sendable>(
+        fetch: Fetch,
+        solve: Solve,
+        send: @Sendable (PowSolution?) async throws -> T,
+        progress: @Sendable (Bool) async -> Void,
+        now: @Sendable () -> Date = { Date() }
+    ) async throws -> T {
+        do {
+            return try await send(nil)
+        } catch let asked as LoginPowRefusal {
+            guard let proof = try await obtain(fetch: fetch, solve: solve, progress: progress, now: now,
+                                               op: loginOp) else { throw asked.original }
+            do {
+                return try await send(proof)
+            } catch let again as LoginPowRefusal {
+                throw again.original
+            }
+        }
     }
 
     /// Run the sign-up. `send` performs the register request with the given

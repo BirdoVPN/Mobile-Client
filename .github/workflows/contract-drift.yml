@@ -1,0 +1,78 @@
+name: Contract drift
+
+# The VPN connect contract (vpn-protocol.schema.json) is a byte copy in four
+# repos: birdo-web, birdo-shared, Desktop-Client and Mobile-Client (A-M33 /
+# MA-VPN-012). birdo-web and birdo-shared are PRIVATE, so a public runner cannot
+# read them without a token and this job adds none. It checks what it can:
+#
+#   1. the vendored copy against its pin (contract/CONTRACT.sha256). A change to the
+#      contract must update the pin in the same PR, on purpose.
+#   2. the vendored copy against the Desktop-Client copy on its main branch, fetched
+#      from raw.githubusercontent.com (public, no token). Fails on any byte
+#      difference and prints both sha256s.
+#
+# The comparison against birdo-web main is done by birdo-web's local CI, which
+# can read both public clients. A contract change therefore lands in birdo-web
+# first, then in both clients; until the second client merges, this job is red
+# on a PR that changes the contract. That is deliberate.
+
+on:
+  pull_request:
+    paths:
+      - 'contract/**'
+      - '.github/workflows/contract-drift.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'contract/**'
+      - '.github/workflows/contract-drift.yml'
+  schedule:
+    - cron: '41 6 * * 1'   # weekly, Monday 06:41 UTC - catches the other client moving ahead
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  contract-drift:
+    name: Vendored contract matches its pin and Desktop-Client
+    # Forks get no scheduled runs.
+    if: github.event_name != 'schedule' || github.repository == 'BirdoVPN/Mobile-Client'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Vendored copy matches its CONTRACT.sha256 pin
+        working-directory: contract
+        run: |
+          sha256sum vpn-protocol.schema.json
+          sha256sum -c CONTRACT.sha256 || {
+            echo "::error::vpn-protocol.schema.json changed without updating CONTRACT.sha256. Re-vendor from birdo-web and update the pin in the same PR."
+            exit 1
+          }
+
+      - name: Vendored copy matches Desktop-Client main
+        env:
+          PEER_URL: https://raw.githubusercontent.com/BirdoVPN/Desktop-Client/main/src-tauri/contract/vpn-protocol.schema.json
+        run: |
+          curl -fsSL --retry 3 --max-time 60 -o "$RUNNER_TEMP/peer.json" "$PEER_URL"
+          own=$(sha256sum "contract/vpn-protocol.schema.json" | cut -d' ' -f1)
+          peer=$(sha256sum "$RUNNER_TEMP/peer.json" | cut -d' ' -f1)
+          echo "this repo : $own"
+          echo "Desktop-Client main : $peer"
+          if [ "$own" != "$peer" ]; then
+            echo "::error::The vendored connect contract differs from Desktop-Client main. Change birdo-web first, then re-vendor into BOTH clients."
+            exit 1
+          fi
