@@ -59,7 +59,7 @@ cd "$ROOT"
 # 2026. Every bump is a crypto change: re-run the KAT (`kat_vs_noble`), the
 # install-base guard (`stored_pqclean_dk_loads_and_derives_same_psk`) and the
 # ISA gate before touching this.
-ML_KEM_VERSION="0.3.2"
+ML_KEM_VERSION="0.3.4"
 EXPECTED_FEATURES="alloc getrandom zeroize"
 DEV_ONLY_FEATURE="hazmat"
 FORBIDDEN_CRATES=(pqcrypto-mlkem pqcrypto-traits pqcrypto-internals)
