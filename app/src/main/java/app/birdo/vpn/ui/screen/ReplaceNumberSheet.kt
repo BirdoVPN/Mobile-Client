@@ -88,6 +88,8 @@ fun ReplaceNumberSheet(
     hasPassword: Boolean,
     onReplaced: () -> Unit,
     onDismiss: () -> Unit,
+    /** Sign out locally and open sign-in: offered when the replacement may already be active. */
+    onSignInAgain: () -> Unit = {},
     viewModel: ReplaceNumberViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -183,13 +185,24 @@ fun ReplaceNumberSheet(
                         }
                     }
                     ReplaceStep.CONFIRM -> {
-                        Text(stringResource(R.string.replace_number_confirm_body), style = MaterialTheme.typography.bodySmall, color = BirdoWhite60)
+                        if (state.maybeCommitted) {
+                            // The new number is still in memory: keep it in view, it is what they sign in with.
+                            Text(
+                                text = formatAnonymousId(viewModel.newNumberDigits()),
+                                color = BirdoWhite80,
+                                fontSize = 16.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            Text(stringResource(R.string.replace_number_confirm_body), style = MaterialTheme.typography.bodySmall, color = BirdoWhite60)
+                        }
                         OutlinedTextField(
                             value = retyped,
                             onValueChange = { retyped = it.filter { c -> c.isDigit() || c == ' ' }.take(40) },
                             label = { Text(stringResource(R.string.replace_number_retype_label)) },
                             singleLine = true,
-                            enabled = !state.busy,
+                            enabled = !state.busy && !state.maybeCommitted,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                             visualTransformation = PasswordVisualTransformation(),
                             modifier = Modifier.fillMaxWidth(),
@@ -205,7 +218,9 @@ fun ReplaceNumberSheet(
                 state.failure?.let { failure ->
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        stringResource(replaceNumberFailureText(failure)),
+                        stringResource(
+                            if (state.maybeCommitted) R.string.replace_number_maybe_committed else replaceNumberFailureText(failure),
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = BirdoRed,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
@@ -232,7 +247,7 @@ fun ReplaceNumberSheet(
                 ) { Text(stringResource(R.string.replace_number_continue), fontWeight = FontWeight.SemiBold) }
                 ReplaceStep.CONFIRM -> Button(
                     onClick = { viewModel.confirm(retyped) },
-                    enabled = !state.busy && retyped.count { it.isDigit() } >= 24,
+                    enabled = !state.busy && !state.maybeCommitted && retyped.count { it.isDigit() } >= 24,
                     colors = ButtonDefaults.buttonColors(containerColor = BirdoGreen, contentColor = Color.Black),
                 ) { SheetButtonLabel(state.busy, R.string.replace_number_confirm) }
                 ReplaceStep.DONE -> Button(
@@ -244,8 +259,14 @@ fun ReplaceNumberSheet(
         dismissButton = {
             when (state.step) {
                 ReplaceStep.DONE -> Unit
-                ReplaceStep.CONFIRM -> TextButton(onClick = { retyped = ""; viewModel.showNumberAgain() }, enabled = !state.busy) {
-                    Text(stringResource(R.string.replace_number_show_again), color = BirdoWhite60)
+                ReplaceStep.CONFIRM -> if (state.maybeCommitted) {
+                    TextButton(onClick = { retyped = ""; viewModel.clear(); onSignInAgain() }) {
+                        Text(stringResource(R.string.replace_number_sign_in_again), color = BirdoGreen)
+                    }
+                } else {
+                    TextButton(onClick = { retyped = ""; viewModel.showNumberAgain() }, enabled = !state.busy) {
+                        Text(stringResource(R.string.replace_number_show_again), color = BirdoWhite60)
+                    }
                 }
                 else -> TextButton(onClick = { viewModel.clear(); onDismiss() }, enabled = !state.busy) {
                     Text(stringResource(R.string.replace_number_cancel), color = BirdoWhite60)

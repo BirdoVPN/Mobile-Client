@@ -817,5 +817,7 @@
     <string name="replace_number_err_mismatch">That is not the new number. Check it against the one you saved.</string>
     <string name="replace_number_err_too_many">Too many attempts. Please try again later.</string>
     <string name="replace_number_err_rejected">The number could not be replaced. Please try again.</string>
+    <string name="replace_number_maybe_committed">Your new number may already be active. Sign in with the new number you saved.</string>
+    <string name="replace_number_sign_in_again">Sign in again</string>
     <string name="replace_number_err_network">No answer from the server. Your new number is still here: try Replace number again.</string>
 </resources>

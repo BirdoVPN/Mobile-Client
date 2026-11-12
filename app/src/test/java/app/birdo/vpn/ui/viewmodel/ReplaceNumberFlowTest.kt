@@ -74,17 +74,60 @@ class ReplaceNumberFlowTest {
     }
 
     @Test
-    fun `a 409 not pending or account changed restarts at step one and drops the number`() = runTest {
-        for (f in listOf(RotationFailure.NOT_PENDING, RotationFailure.ACCOUNT_CHANGED)) {
+    fun `after a lost confirm, a later 401 or 409 keeps step three with the number and says it may be active`() = runTest {
+        val ambiguous = listOf(
+            RotationFailure.SESSION_EXPIRED,
+            RotationFailure.PROOF_INVALID,
+            RotationFailure.NOT_PENDING,
+            RotationFailure.ACCOUNT_CHANGED,
+        )
+        for (f in ambiguous) {
+            val gw = Fake()
+            val flow = ReplaceNumberFlow(gw)
+            toConfirm(flow)
+            gw.confirmAnswer = refused(RotationFailure.NETWORK)
+            flow.confirm(fresh)
+            assertFalse(flow.state.value.maybeCommitted)
+            gw.confirmAnswer = refused(f)
+            flow.confirm(fresh)
+            assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+            assertTrue("$f", flow.state.value.maybeCommitted)
+            assertEquals(f, flow.state.value.failure)
+            assertTrue("the new number stays in memory", flow.holdsNumber())
+            assertEquals(fresh, flow.newNumberDigits())
+        }
+    }
+
+    @Test
+    fun `a 401 or 409 answering the first confirm is also ambiguous, it was sent`() = runTest {
+        for (f in listOf(RotationFailure.SESSION_EXPIRED, RotationFailure.NOT_PENDING)) {
             val gw = Fake()
             val flow = ReplaceNumberFlow(gw)
             toConfirm(flow)
             gw.confirmAnswer = refused(f)
             flow.confirm(fresh)
-            assertEquals(ReplaceStep.PROOF, flow.state.value.step)
-            assertEquals(f, flow.state.value.failure)
-            assertFalse(flow.holdsNumber())
+            assertTrue(flow.state.value.maybeCommitted)
+            assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
         }
+    }
+
+    @Test
+    fun `a 409 before any confirm was sent still restarts at step one`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        gw.prepareAnswer = refused(RotationFailure.NOT_PENDING)
+        flow.prepare(current, null, null)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertFalse(flow.state.value.maybeCommitted)
+        assertEquals(RotationFailure.NOT_PENDING, flow.state.value.failure)
+
+        // A local mismatch sends nothing, so it does not arm the new state either.
+        val gw2 = Fake()
+        val flow2 = ReplaceNumberFlow(gw2)
+        toConfirm(flow2)
+        flow2.confirm("333333333333333333333333")
+        assertEquals(0, gw2.confirmCalls)
+        assertFalse(flow2.state.value.maybeCommitted)
     }
 
     @Test

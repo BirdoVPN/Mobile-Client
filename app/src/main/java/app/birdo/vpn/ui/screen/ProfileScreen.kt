@@ -150,6 +150,8 @@ fun ProfileScreen(
     isAnonymousAccount: Boolean = false,
     /** MR-1707: the number was replaced and fresh tokens are stored; reload the profile. */
     onAccountNumberReplaced: () -> Unit = {},
+    /** MR-1707: the replacement may already be active; sign out locally and open sign-in. */
+    onSignInAgain: () -> Unit = {},
 ) {
     var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
     var showVoucherDialog by rememberSaveable { mutableStateOf(false) }
@@ -170,6 +172,7 @@ fun ProfileScreen(
             isConnected = isConnected,
             publicIp = publicIp,
             onAccountNumberReplaced = onAccountNumberReplaced,
+            onSignInAgain = onSignInAgain,
         )
 
         SubscriptionCard(subscription = subscription, onManage = onSubscription)
@@ -286,6 +289,7 @@ private fun ProfileIdentityCard(
     isConnected: Boolean,
     publicIp: String?,
     onAccountNumberReplaced: () -> Unit = {},
+    onSignInAgain: () -> Unit = {},
 ) {
     val palette = BirdoColors.current
     val rawEmail = user?.email ?: ""
@@ -493,6 +497,7 @@ private fun ProfileIdentityCard(
             hasPassword = user?.hasPassword == true,
             onReplaced = onAccountNumberReplaced,
             onDismiss = { showReplaceNumber = false },
+            onSignInAgain = { showReplaceNumber = false; onSignInAgain() },
         )
     }
 }

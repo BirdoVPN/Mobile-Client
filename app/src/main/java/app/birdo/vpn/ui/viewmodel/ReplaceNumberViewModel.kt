@@ -28,6 +28,13 @@ data class ReplaceNumberState(
     val retryAfterMs: Long? = null,
     /** The "saved it" box of step 2. Unticked on every arrival. */
     val savedAcknowledged: Boolean = false,
+    /**
+     * A confirm was sent in this flow and the answer since says the pending number
+     * is gone or the session ended: the swap may already have happened with the
+     * response lost. The flow stays on CONFIRM with the number still held, and the
+     * sheet offers "Sign in again" instead of a silent restart.
+     */
+    val maybeCommitted: Boolean = false,
 )
 
 /** The two calls the flow needs: [BirdoRepository] in the app, a fake in tests. */
@@ -58,6 +65,9 @@ class ReplaceNumberFlow(private val gateway: RotationGateway) {
     val state: StateFlow<ReplaceNumberState> = _state.asStateFlow()
 
     private var newNumber: CharArray? = null
+
+    /** Whether a confirm request has gone out in this flow. */
+    private var confirmSent = false
 
     /** The held new number as digits, for the step that shows it; empty when none. */
     fun newNumberDigits(): String = newNumber?.let { String(it) } ?: ""
@@ -112,6 +122,7 @@ class ReplaceNumberFlow(private val gateway: RotationGateway) {
             return
         }
         _state.value = _state.value.copy(busy = true, failure = null, retryAfterMs = null)
+        confirmSent = true
         when (val r = gateway.confirm(String(held))) {
             is RotationResult.Ok -> {
                 wipe()
@@ -123,6 +134,14 @@ class ReplaceNumberFlow(private val gateway: RotationGateway) {
 
     private fun refused(r: RotationResult.Refused) {
         val s = _state.value
+        // After a confirm went out, a 401 or a 409 may mean it DID commit and only
+        // its answer was lost (the old tokens are revoked, the pending entry is
+        // consumed). Do not restart as if nothing changed: the user would type the
+        // old number, which no longer works. Keep step 3 and the number.
+        if (confirmSent && s.step == ReplaceStep.CONFIRM && newNumber != null && r.failure in AMBIGUOUS_AFTER_CONFIRM) {
+            _state.value = s.copy(busy = false, failure = r.failure, retryAfterMs = r.retryAfterMs, maybeCommitted = true)
+            return
+        }
         when (r.failure) {
             // Start again: the pending number is gone (or never was) server-side.
             RotationFailure.NOT_PENDING,
@@ -146,6 +165,16 @@ class ReplaceNumberFlow(private val gateway: RotationGateway) {
     private fun wipe() {
         newNumber?.fill('0')
         newNumber = null
+        confirmSent = false
+    }
+
+    private companion object {
+        val AMBIGUOUS_AFTER_CONFIRM = setOf(
+            RotationFailure.SESSION_EXPIRED,
+            RotationFailure.PROOF_INVALID,
+            RotationFailure.NOT_PENDING,
+            RotationFailure.ACCOUNT_CHANGED,
+        )
     }
 }
 
