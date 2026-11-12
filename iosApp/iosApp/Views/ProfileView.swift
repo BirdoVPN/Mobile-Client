@@ -174,16 +174,16 @@ struct ProfileView: View {
                     ZStack {
                         Circle().fill(BirdoTheme.accentA(0.14)).frame(width: 44, height: 44)
                         Image(systemName: "person.crop.circle")
-                            .font(.system(size: 22))
+                            .birdoFont(22)
                             .foregroundStyle(BirdoTheme.accent)
                     }
                     .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Not signed in")
-                            .font(.system(size: 18, weight: .semibold))
+                            .birdoFont(18, weight: .semibold)
                             .foregroundStyle(BirdoTheme.onBackground)
                         Text("Using BirdoVPN without an account")
-                            .font(.system(size: 13))
+                            .birdoFont(13)
                             .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     }
                 }
@@ -194,7 +194,7 @@ struct ProfileView: View {
                      + "WireGuard key and hold a connection slot. Settings, VPN "
                      + "settings, the locations list and the policies below all "
                      + "work without one.")
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -217,12 +217,12 @@ struct ProfileView: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(displayName)
-                            .font(.system(size: 18, weight: .semibold))
+                            .birdoFont(18, weight: .semibold)
                             .foregroundStyle(BirdoTheme.onBackground)
                             .lineLimit(1)
                         if !authVM.isAnonymousAccount, let email = authVM.userEmail, !email.isEmpty {
                             Text(email)
-                                .font(.system(size: 13))
+                                .birdoFont(13)
                                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                                 .lineLimit(1)
                         }
@@ -264,7 +264,7 @@ struct ProfileView: View {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("ACCOUNT NUMBER")
-                            .font(.system(size: 10, weight: .semibold))
+                            .birdoFont(10, weight: .semibold)
                             .foregroundStyle(BirdoTheme.onSurfaceFaint)
                         // Two lines, not a cut: the user copies it out by hand.
                         Text(shownAccountNumber(number))
@@ -275,7 +275,7 @@ struct ProfileView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "doc.on.doc")
-                        .font(.system(size: 18))
+                        .birdoFont(18)
                         .foregroundStyle(BirdoTheme.accent)
                         .padding(8)
                 }
@@ -300,7 +300,7 @@ struct ProfileView: View {
                 }
             } label: {
                 Image(systemName: accountNumberShown ? "eye.slash" : "eye")
-                    .font(.system(size: 16))
+                    .birdoFont(16)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .padding(8)
             }
@@ -323,16 +323,16 @@ struct ProfileView: View {
                 .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 1) {
                 Text(connectionStatus)
-                    .font(.system(size: 13, weight: .semibold))
+                    .birdoFont(13, weight: .semibold)
                     .foregroundStyle(BirdoTheme.onBackground)
                 Text(connectionDetail)
-                    .font(.system(size: 11))
+                    .birdoFont(11)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Image(systemName: "shield")
-                .font(.system(size: 20))
+                .birdoFont(20)
                 .foregroundStyle(vpnVM.isProtected ? BirdoTheme.green : BirdoTheme.onSurfaceFaint)
         }
         .padding(.horizontal, 14)
@@ -364,15 +364,15 @@ struct ProfileView: View {
                         .frame(width: 48, height: 48)
                         .overlay(
                             Image(systemName: "star")
-                                .font(.system(size: 22, weight: .medium))
+                                .birdoFont(22, weight: .medium)
                                 .foregroundStyle(.white)
                         )
                     VStack(alignment: .leading, spacing: 2) {
                         Text(BirdoTheme.planDisplayName(plan))
-                            .font(.system(size: 16, weight: .semibold))
+                            .birdoFont(16, weight: .semibold)
                             .foregroundStyle(BirdoTheme.onBackground)
                         Text(subscriptionStatusLine(isActive: isActive, endsAt: endsAt, isFree: plan.uppercased() == "RECON"))
-                            .font(.system(size: 12))
+                            .birdoFont(12)
                             .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -402,12 +402,12 @@ struct ProfileView: View {
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "creditcard")
-                            .font(.system(size: 18))
+                            .birdoFont(18)
                         Text(isActive ? "Manage subscription" : "Upgrade plan")
-                            .font(.system(size: 14, weight: .semibold))
+                            .birdoFont(14, weight: .semibold)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 14, weight: .semibold))
+                            .birdoFont(14, weight: .semibold)
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -440,7 +440,7 @@ struct ProfileView: View {
 
     private func statusPill(active: Bool) -> some View {
         Text(active ? "ACTIVE" : "INACTIVE")
-            .font(.system(size: 12, weight: .bold))
+            .birdoFont(12, weight: .bold)
             .foregroundStyle(active ? BirdoTheme.green : BirdoTheme.onSurfaceMuted)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
@@ -451,7 +451,7 @@ struct ProfileView: View {
 
     private func benefitChip(_ label: String) -> some View {
         Text(label)
-            .font(.system(size: 11, weight: .medium))
+            .birdoFont(11, weight: .medium)
             .foregroundStyle(BirdoTheme.onSurfaceMuted)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -508,7 +508,7 @@ struct ProfileView: View {
                     Button("Manage App Store subscription") {
                         SystemOpen.manageSubscriptions()
                     }
-                    .font(.system(size: 13, weight: .semibold))
+                    .birdoFont(13, weight: .semibold)
                     .foregroundStyle(BirdoTheme.accent)
                     .buttonStyle(.plain)
                     .frame(minHeight: 44) // touch target
@@ -719,7 +719,7 @@ struct ProfileView: View {
 
     private var copiedToast: some View {
         Text("Account number copied")
-            .font(.system(size: 13, weight: .medium))
+            .birdoFont(13, weight: .medium)
             .foregroundStyle(BirdoTheme.onSurface)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -805,16 +805,16 @@ private struct ProfileActionRow: View {
                         )
                         .overlay(
                             Image(systemName: icon)
-                                .font(.system(size: 18))
+                                .birdoFont(18)
                                 .foregroundStyle(destructive ? BirdoTheme.red : BirdoTheme.accent)
                         )
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)
-                            .font(.system(size: 14, weight: .semibold))
+                            .birdoFont(14, weight: .semibold)
                             .foregroundStyle(destructive ? BirdoTheme.red : BirdoTheme.onBackground)
                         if let subtitle {
                             Text(subtitle)
-                                .font(.system(size: 12))
+                                .birdoFont(12)
                                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.leading)
@@ -822,7 +822,7 @@ private struct ProfileActionRow: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
+                        .birdoFont(14, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 }
             }

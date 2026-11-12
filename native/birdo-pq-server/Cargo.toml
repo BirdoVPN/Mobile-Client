@@ -38,14 +38,14 @@ path = "src/bin/birdo-pq-smoke.rs"
 # ml-kem does NOT remove the ARMv8.2 FEAT_SHA3 opcodes (it gates them on
 # getauxval(AT_HWCAP), which is a different and weaker claim), and why the pin
 # is exact -- is in native/rosenpass-jni/Cargo.toml. Do not let the two drift.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match the client side bit-for-bit.
 sha2 = { version = "0.11", features = ["zeroize"] }
 hkdf = "0.13"
 
 # Wire encoding.
-base64 = "0.22"
+base64 = "0.23"
 
 # Hex for the committed known-answer vectors. A normal dependency, not a dev
 # one, because birdo-pq-smoke is a real binary that CI runs under QEMU.
@@ -63,7 +63,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = 3

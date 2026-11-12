@@ -22,14 +22,14 @@ wireguard-go (golang.zx2c4.com/wireguard), built into WireGuardKit's libwg-go
     3-Clause (text below, "The Go Authors").
 
 BirdoPQ native library (BirdoPQNative)
-  Rust crates under the Apache License 2.0: block-buffer 0.10.4 and 0.12.1,
-    cfg-if 1.0.4, cmov 0.5.4, cpufeatures 0.2.17 and 0.3.1, crypto-common 0.1.7
-    and 0.2.2, ctutils 0.4.4, digest 0.10.7 and 0.11.3, getrandom 0.4.3, hkdf
-    0.12.4, hmac 0.12.1, hybrid-array 0.4.15, keccak 0.2.2, kem 0.3.0, libc
-    0.2.186, ml-kem 0.3.2, module-lattice 0.2.3, num-traits 0.2.19, rand_core
-    0.10.1, sha2 0.10.9, sha3 0.11.0, typenum 1.20.0, zeroize 1.8.2, and the
-    Rust standard library (each is dual-licensed MIT OR Apache-2.0 and is used
-    under Apache-2.0)
+  Rust crates under the Apache License 2.0: block-buffer 0.12.1, cfg-if 1.0.4,
+    cmov 0.5.4, const-oid 0.10.2, cpufeatures 0.3.1, crypto-common 0.2.2,
+    ctutils 0.4.8, digest 0.11.3, getrandom 0.4.3, hkdf 0.13.0, hmac 0.13.0,
+    hybrid-array 0.4.15, keccak 0.2.2, kem 0.3.0, libc 0.2.186, ml-kem 0.3.4,
+    module-lattice 0.2.4, num-traits 0.2.19, rand_core 0.10.1, sha2 0.11.1,
+    sha3 0.12.0, shake 0.1.0, sponge-cursor 0.1.0, typenum 1.20.0, zeroize
+    1.8.2, and the Rust standard library (each is dual-licensed MIT OR
+    Apache-2.0 and is used under Apache-2.0)
   Rust crates under the MIT licence: generic-array 0.14.7 (notice below)
   Rust crates under the BSD 3-Clause licence: subtle 2.6.1 (notice below)
 

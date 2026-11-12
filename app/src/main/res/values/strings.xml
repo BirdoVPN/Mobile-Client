@@ -85,7 +85,6 @@
     <string name="disconnecting">Disconnecting…</string>
     <string name="cta_switching">Switching…</string>
     <!-- A-M79: the server the tunnel is applied to, under the server card while Protected. -->
-    <string name="home_tunnel_on">Tunnel on %1$s</string>
     <!-- A1-010: the way out of a connect that is taking too long. -->
     <string name="cancel_connect">Cancel</string>
     <string name="banner_action_open_settings">Open Settings</string>
