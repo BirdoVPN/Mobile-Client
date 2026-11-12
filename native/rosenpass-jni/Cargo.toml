@@ -129,7 +129,7 @@ libc = "0.2"
 hex = "0.4"
 # Only the KAT test re-parses the JSON fixtures; nothing on the wire is
 # base64-encoded in Rust (the Kotlin bridge does that).
-base64 = "0.22"
+base64 = "0.23"
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
