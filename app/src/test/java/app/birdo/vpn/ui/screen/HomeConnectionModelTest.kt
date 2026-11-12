@@ -223,11 +223,11 @@ class HomeConnectionModelTest {
             vpnState = VpnState.Connected, selectedServer = amsterdam, pendingSwitchServerId = "nl-1",
             connectedServer = "Frankfurt-01", connectedServerId = "de-1",
         )
-        assertEquals(ServerCardModel(name = amsterdam.name, switching = true, tunnelOn = "Frankfurt-01"), serverCardModel(pending))
-        // Applied: the pending marker is gone and the line names the same server.
+        assertEquals(ServerCardModel(name = amsterdam.name, switching = true), serverCardModel(pending))
+        // Applied: the pending marker is gone and the card still names it.
         val applied = pending.copy(pendingSwitchServerId = null, connectedServer = amsterdam.name, connectedServerId = "nl-1")
-        assertEquals(ServerCardModel(name = amsterdam.name, switching = false, tunnelOn = amsterdam.name), serverCardModel(applied))
-        // Nothing is claimed while the tunnel is not up.
-        assertNull(serverCardModel(applied.copy(vpnState = VpnState.Connecting)).tunnelOn)
+        assertEquals(ServerCardModel(name = amsterdam.name, switching = false), serverCardModel(applied))
+        // A-L52: the card is the selection, also while a pick is pending after a switch.
+        assertEquals(amsterdam.name, serverCardModel(pending).name)
     }
 }

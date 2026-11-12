@@ -23,7 +23,7 @@ jni = { version = "0.21", default-features = false }
 
 # Logging into Android logcat from Rust
 log = "0.4"
-android_logger = "0.13"
+android_logger = "0.15"
 
 # Crypto primitives — HKDF + SHA-256 for the final PSK derivation
 sha2 = { version = "0.11", features = ["zeroize"] }
@@ -54,7 +54,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #    instructions (eor3/rax1/xar/bcax in pqclean/common/keccak2x/feat.S) with
 #    a compile-time-only selection — the estate's own note recorded the gate
 #    as a literal `if true`. A DEFAULT aarch64 build of ml-kem contains the
-#    SAME FOUR MNEMONICS: ml-kem 0.3.2 -> sha3 0.11 -> keccak 0.2.2 ships
+#    SAME FOUR MNEMONICS: ml-kem 0.3.4 -> sha3 0.11 -> keccak 0.2.2 ships
 #    src/backends/aarch64_sha3.rs, adapted from the same XKCP/K12
 #    KeccakP-1600-ARMv8Asha3.S PQClean vendored. Measured: 64 instructions,
 #    eor3=10, rax1=5, xar=24, bcax=25.
@@ -90,7 +90,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #    ml-kem is pre-1.0 and fast-moving: 0.3.0 removed the Kem struct and
 #    KemCore trait; the FIPS 203 input validations did not exist until April
 #    2026; DecapsulationKey's Zeroize was wrong until May 2026; and its
-#    changelog permits MSRV bumps in patch releases. Hence `=0.3.2`. Treat any
+#    changelog permits MSRV bumps in patch releases. Hence `=0.3.4`. Treat any
 #    bump as a crypto change: re-run the KAT (handshake.rs `kat_vs_noble`),
 #    the install-base guard (`stored_pqclean_dk_loads_and_derives_same_psk`)
 #    and the ISA gate before merging.
@@ -116,7 +116,7 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 #               crypto path, which is worse.
 #   hazmat    — dev-dependencies ONLY, for encapsulate_deterministic() in the
 #               KAT test. Never in a shipped build.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # getauxval(AT_HWCAP / AT_HWCAP2) for nativeCpuFeatures(): the kernel's own
 # statement of which optional ISA extensions this CPU has. Read-only, one
@@ -129,11 +129,11 @@ libc = "0.2"
 hex = "0.4"
 # Only the KAT test re-parses the JSON fixtures; nothing on the wire is
 # base64-encoded in Rust (the Kotlin bridge does that).
-base64 = "0.22"
+base64 = "0.23"
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = "z"

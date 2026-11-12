@@ -329,7 +329,7 @@ struct SettingsView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Settings")
-                        .font(.system(size: 17, weight: .semibold))
+                        .birdoFont(17, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurface)
                         .accessibilityAddTraits(.isHeader)
                     Text("App preferences & account")
@@ -358,7 +358,7 @@ struct SettingsView: View {
                 BirdoLogo(.boxed(size: 44, cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 2) {
                     Text("BirdoVPN")
-                        .font(.system(size: 15, weight: .semibold))
+                        .birdoFont(15, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurface)
                     Text("Version \(appVersion)")
                         .font(BirdoTheme.Fonts.bodySmall)
@@ -366,7 +366,7 @@ struct SettingsView: View {
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 20))
+                    .birdoFont(20)
                     .foregroundStyle(BirdoTheme.accent)
                     .accessibilityHidden(true)
             }
@@ -429,7 +429,7 @@ private struct SettingsLinkRow: View {
                 SettingsRowText(title: title)
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .medium))
+                    .birdoFont(15, weight: .medium)
                     .foregroundStyle(BirdoTheme.onSurfaceFaint)
                     .accessibilityHidden(true)
             }
@@ -457,7 +457,7 @@ private struct SettingsLinkButton: View {
                     SettingsRowText(title: title, detail: destination)
                     Spacer(minLength: 8)
                     Image(systemName: trailing)
-                        .font(.system(size: 15, weight: .medium))
+                        .birdoFont(15, weight: .medium)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                         .accessibilityHidden(true)
                 }
@@ -486,7 +486,7 @@ private struct SettingsLockedRow: View {
                     SettingsRowText(title: title)
                     Spacer(minLength: 8)
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 16))
+                        .birdoFont(16)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 }
             }
@@ -506,7 +506,7 @@ private struct SettingsIconChip: View {
 
     var body: some View {
         Image(systemName: icon)
-            .font(.system(size: 16))
+            .birdoFont(16)
             .foregroundStyle(color)
             .frame(width: 36, height: 36)
             .background(

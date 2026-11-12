@@ -21,7 +21,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 # Same KEM the Android and desktop clients use -- RustCrypto's pure-Rust
-# ml-kem, exact-pinned at =0.3.2 in all three. The full decision record (why
+# ml-kem, exact-pinned at =0.3.4 in all three. The full decision record (why
 # pqcrypto-mlkem was left, why this does NOT remove the FEAT_SHA3 opcodes, and
 # why the pin is a crypto decision) is in native/rosenpass-jni/Cargo.toml; do
 # not let the two drift.
@@ -32,7 +32,7 @@ crate-type = ["staticlib"]
 # which was true for that window and stale after it (MR-976). The feature
 # sets differ on purpose: the desktop asks for ["alloc", "zeroize"] and no
 # getrandom feature, and pins its own feature set in
-# scripts/ci/check-pq-features.sh. If one client moves off =0.3.2, move all
+# scripts/ci/check-pq-features.sh. If one client moves off =0.3.4, move all
 # three in the same window.
 #
 # Apple-side note, and it differs from Android on purpose. keccak's aarch64
@@ -47,7 +47,7 @@ crate-type = ["staticlib"]
 # WITHOUT the sysctl check that gates them (which is what a
 # -C target-feature=+sha3 build produces). It also asserts every slice exports
 # birdo_pq_impl_name.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
 sha2 = { version = "0.11", features = ["zeroize"] }
@@ -61,7 +61,7 @@ hex = "0.4"
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = "z"

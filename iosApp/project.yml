@@ -326,6 +326,10 @@ targets:
       # tunnel it just revoked), and the two-factor refusal classification.
       # Pinned by AccountDeletionTests; AuthViewModel cannot be compiled here.
       - path: iosApp/Services/AccountDeletion.swift
+      # A-M38: the scaled typography tokens and their modifier. SwiftUI-only
+      # (no app types), pinned by DynamicTypeTests at .large and at the
+      # accessibility sizes.
+      - path: iosApp/Theme/BirdoTheme.swift
       # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
       # session. Foundation-only, pinned by SessionPersistenceTests.
       - path: iosApp/Services/SessionPersistence.swift

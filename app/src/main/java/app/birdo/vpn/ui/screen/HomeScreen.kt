@@ -1421,17 +1421,6 @@ private fun ServerSelector(state: VpnUiState, enabled: Boolean, onClick: () -> U
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                // A-M79: the server the tunnel is really on, in words that survive R8.
-                if (card.tunnelOn != null && !card.switching) {
-                    Text(
-                        text = stringResource(R.string.home_tunnel_on, card.tunnelOn),
-                        color = BirdoWhite40,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.testTag(TestTags.TUNNEL_SERVER),
-                    )
-                }
             }
             Icon(
                 Icons.Default.ChevronRight,

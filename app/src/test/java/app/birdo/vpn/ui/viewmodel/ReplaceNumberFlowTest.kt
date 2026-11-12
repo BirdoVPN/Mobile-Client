@@ -1,0 +1,252 @@
+package app.birdo.vpn.ui.viewmodel
+
+import app.birdo.vpn.data.repository.RotatePrepareResponse
+import app.birdo.vpn.data.repository.RotationFailure
+import app.birdo.vpn.data.repository.RotationResult
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** MR-1707: where each answer takes the user. */
+class ReplaceNumberFlowTest {
+
+    private val current = "111111111111111111111111"
+    private val fresh = "222222222222222222222222"
+
+    private class Fake : RotationGateway {
+        var prepareAnswer: RotationResult<RotatePrepareResponse> =
+            RotationResult.Ok(RotatePrepareResponse(ok = true, newNumber = "222222222222222222222222", expiresInSeconds = 600))
+        var confirmAnswer: RotationResult<Unit> = RotationResult.Ok(Unit)
+        var prepareCalls = 0
+        var confirmCalls = 0
+        var lastPrepareCurrent: String? = null
+        override suspend fun prepare(currentNumber: String, password: String?, twoFactorCode: String?): RotationResult<RotatePrepareResponse> {
+            prepareCalls++
+            lastPrepareCurrent = currentNumber
+            return prepareAnswer
+        }
+        override suspend fun confirm(newNumber: String): RotationResult<Unit> {
+            confirmCalls++
+            return confirmAnswer
+        }
+    }
+
+    private fun refused(f: RotationFailure) = RotationResult.Refused(f)
+
+    private suspend fun toConfirm(flow: ReplaceNumberFlow) {
+        flow.prepare(current, null, null)
+        flow.setSavedAcknowledged(true)
+        flow.continueToConfirm()
+    }
+
+    @Test
+    fun `the happy path walks proof, save, confirm, done and drops the number`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        flow.prepare("1111 1111 1111 1111 1111 1111", null, null)
+        assertEquals("separators are stripped", current, gw.lastPrepareCurrent)
+        assertEquals(ReplaceStep.SAVE, flow.state.value.step)
+        assertEquals(fresh, flow.newNumberDigits())
+        flow.setSavedAcknowledged(true)
+        flow.continueToConfirm()
+        assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.DONE, flow.state.value.step)
+        assertFalse("the number is dropped once it is replaced", flow.holdsNumber())
+    }
+
+    @Test
+    fun `the saved box starts unticked and gates the way on`() = runTest {
+        val flow = ReplaceNumberFlow(Fake())
+        flow.prepare(current, null, null)
+        assertFalse(flow.state.value.savedAcknowledged)
+        flow.continueToConfirm()
+        assertEquals("cannot continue unticked", ReplaceStep.SAVE, flow.state.value.step)
+        flow.setSavedAcknowledged(true)
+        flow.continueToConfirm()
+        assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+        flow.showNumberAgain()
+        assertEquals(ReplaceStep.SAVE, flow.state.value.step)
+        assertFalse("unticked again on every arrival", flow.state.value.savedAcknowledged)
+    }
+
+    @Test
+    fun `after a lost confirm, a later 401 or 409 keeps step three with the number and says it may be active`() = runTest {
+        val ambiguous = listOf(
+            RotationFailure.SESSION_EXPIRED,
+            RotationFailure.PROOF_INVALID,
+            RotationFailure.NOT_PENDING,
+        )
+        for (f in ambiguous) {
+            val gw = Fake()
+            val flow = ReplaceNumberFlow(gw)
+            toConfirm(flow)
+            gw.confirmAnswer = refused(RotationFailure.NETWORK)
+            flow.confirm(fresh)
+            assertFalse(flow.state.value.maybeCommitted)
+            gw.confirmAnswer = refused(f)
+            flow.confirm(fresh)
+            assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+            assertTrue("$f", flow.state.value.maybeCommitted)
+            assertEquals(f, flow.state.value.failure)
+            assertTrue("the new number stays in memory", flow.holdsNumber())
+            assertEquals(fresh, flow.newNumberDigits())
+        }
+    }
+
+    @Test
+    fun `the first confirm's own definitive 409 or 401 is believed and is not maybe-committed`() = runTest {
+        // 409 not pending: the pending number expired, nothing committed. Restart at step 1.
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.NOT_PENDING)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertEquals(RotationFailure.NOT_PENDING, flow.state.value.failure)
+        assertFalse(flow.state.value.maybeCommitted)
+        assertFalse(flow.holdsNumber())
+
+        // An expired session on the first confirm: the session-ended error, on step 3, not maybe-active.
+        val gw2 = Fake()
+        val flow2 = ReplaceNumberFlow(gw2)
+        toConfirm(flow2)
+        gw2.confirmAnswer = refused(RotationFailure.SESSION_EXPIRED)
+        flow2.confirm(fresh)
+        assertEquals(RotationFailure.SESSION_EXPIRED, flow2.state.value.failure)
+        assertFalse(flow2.state.value.maybeCommitted)
+        assertEquals(ReplaceStep.CONFIRM, flow2.state.value.step)
+    }
+
+    @Test
+    fun `a 409 before any confirm was sent still restarts at step one`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        gw.prepareAnswer = refused(RotationFailure.NOT_PENDING)
+        flow.prepare(current, null, null)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertFalse(flow.state.value.maybeCommitted)
+        assertEquals(RotationFailure.NOT_PENDING, flow.state.value.failure)
+
+        // A local mismatch sends nothing, so it does not arm the new state either.
+        val gw2 = Fake()
+        val flow2 = ReplaceNumberFlow(gw2)
+        toConfirm(flow2)
+        flow2.confirm("333333333333333333333333")
+        assertEquals(0, gw2.confirmCalls)
+        assertFalse(flow2.state.value.maybeCommitted)
+    }
+
+    @Test
+    fun `a 409 account changed after a sent confirm still restarts, the swap did not happen`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.ACCOUNT_CHANGED)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertFalse(flow.state.value.maybeCommitted)
+        assertFalse(flow.holdsNumber())
+    }
+
+    @Test
+    fun `a 403 disabled lands on step one`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        gw.prepareAnswer = refused(RotationFailure.DISABLED)
+        flow.prepare(current, null, null)
+        assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+        assertEquals(RotationFailure.DISABLED, flow.state.value.failure)
+    }
+
+    @Test
+    fun `a 400 mismatch from the server stays on step three with the number held`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.MISMATCH)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+        assertEquals(RotationFailure.MISMATCH, flow.state.value.failure)
+        assertTrue(flow.holdsNumber())
+    }
+
+    @Test
+    fun `a wrong re-typed number is caught locally without spending a server attempt`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        flow.confirm("333333333333333333333333")
+        assertEquals(0, gw.confirmCalls)
+        assertEquals(RotationFailure.MISMATCH, flow.state.value.failure)
+        assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+    }
+
+    @Test
+    fun `a lost confirm keeps step three and the number, and a retry is allowed`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.NETWORK)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+        assertEquals(RotationFailure.NETWORK, flow.state.value.failure)
+        assertFalse(flow.state.value.busy)
+        assertTrue("the number is still in memory", flow.holdsNumber())
+        assertEquals(fresh, flow.newNumberDigits())
+
+        gw.confirmAnswer = RotationResult.Ok(Unit)
+        flow.confirm(fresh)
+        assertEquals(2, gw.confirmCalls)
+        assertEquals(ReplaceStep.DONE, flow.state.value.step)
+    }
+
+    @Test
+    fun `a handler 401, a 429 and other refusals are shown where the user is`() = runTest {
+        val shown = listOf(
+            RotationFailure.PROOF_INVALID,
+            RotationFailure.TOO_MANY,
+            RotationFailure.REJECTED,
+            RotationFailure.SESSION_EXPIRED,
+        )
+        for (f in shown) {
+            val gw = Fake()
+            val flow = ReplaceNumberFlow(gw)
+            gw.prepareAnswer = refused(f)
+            flow.prepare(current, null, null)
+            assertEquals(ReplaceStep.PROOF, flow.state.value.step)
+            assertEquals(f, flow.state.value.failure)
+            assertFalse(flow.state.value.busy)
+        }
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        toConfirm(flow)
+        gw.confirmAnswer = refused(RotationFailure.TOO_MANY)
+        flow.confirm(fresh)
+        assertEquals(ReplaceStep.CONFIRM, flow.state.value.step)
+        assertTrue(flow.holdsNumber())
+    }
+
+    @Test
+    fun `dismissing clears the number and the state`() = runTest {
+        val flow = ReplaceNumberFlow(Fake())
+        toConfirm(flow)
+        flow.clear()
+        assertFalse(flow.holdsNumber())
+        assertEquals("", flow.newNumberDigits())
+        assertEquals(ReplaceNumberState(), flow.state.value)
+    }
+
+    @Test
+    fun `an empty new number from the server is refused`() = runTest {
+        val gw = Fake()
+        val flow = ReplaceNumberFlow(gw)
+        gw.prepareAnswer = RotationResult.Ok(RotatePrepareResponse(ok = true, newNumber = "", expiresInSeconds = 600))
+        flow.prepare(current, null, null)
+        assertEquals(RotationFailure.REJECTED, flow.state.value.failure)
+        assertFalse(flow.holdsNumber())
+    }
+}
