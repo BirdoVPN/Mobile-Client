@@ -3193,29 +3193,29 @@ class VpnManagerTest {
 
     @Test
     fun `a second connect cancels and outwaits the first, so two dials are never alive at once`() = runTest {
-        var live = 0
-        var peak = 0
+        // The /connect itself is not aborted by the cancel (its answer is still
+        // wanted, to release the session it minted), so what must never overlap
+        // is the DIALS: the first dial has ended before the second one's request.
+        lateinit var first: kotlinx.coroutines.Deferred<ApiResult<ConnectResponse>>
+        var firstEndedBeforeSecondRequest: Boolean? = null
         coEvery { repository.connectVpn(any(), any()) } coAnswers {
-            live++
-            peak = maxOf(peak, live)
-            try {
-                // Longer than the second dial's own 5 s teardown wait, so a
-                // dial that is left running overlaps the next one.
+            if (firstArg<String>() == "srv-2") {
+                firstEndedBeforeSecondRequest = first.isCompleted
+                ApiResult.Success(makeConnectResponse().copy(keyId = "key-2"))
+            } else {
                 delay(20_000)
                 ApiResult.Success(makeConnectResponse())
-            } finally {
-                live--
             }
         }
 
         try {
-            val first = async { vpnManager.connect("srv-1") }
+            first = async { vpnManager.connect("srv-1") }
             advanceTimeBy(2_500)
             val second = async { vpnManager.connect("srv-2") }
             advanceTimeBy(40_000)
             runCurrent()
 
-            assertEquals("two dials were alive at once", 1, peak)
+            assertEquals("the second dial's request went out while the first dial was alive", true, firstEndedBeforeSecondRequest)
             val firstResult = first.await()
             assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
             assertTrue(second.await() is ApiResult.Success)
@@ -3268,7 +3268,8 @@ class VpnManagerTest {
             val secondResult = second.await()
             assertTrue("the next /connect was refused: $secondResult", secondResult is ApiResult.Success)
             // Released exactly once, with ITS id, and never the new dial's.
-            assertEquals(listOf<String?>("key-1"), backend.released)
+            // (A keyless teardown call is the session's own and is not the point.)
+            assertEquals(listOf("key-1"), backend.released.filterNotNull())
             assertEquals(setOf("key-2"), backend.active)
         } finally {
             quiesce()
