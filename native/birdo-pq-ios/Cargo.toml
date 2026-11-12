@@ -47,7 +47,7 @@ crate-type = ["staticlib"]
 # WITHOUT the sysctl check that gates them (which is what a
 # -C target-feature=+sha3 build produces). It also asserts every slice exports
 # birdo_pq_impl_name.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom"] }
 
 # PSK derivation — must match all other BirdoPQ implementations bit-for-bit.
 sha2 = { version = "0.11", features = ["zeroize"] }
@@ -61,7 +61,7 @@ hex = "0.4"
 # `hazmat` un-hides EncapsulationKey::encapsulate_deterministic, which the
 # cross-implementation KAT needs to reproduce the server's exact ciphertext
 # from the fixture's encapsulation randomness. Test profiles only.
-ml-kem = { version = "=0.3.2", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
+ml-kem = { version = "=0.3.4", default-features = false, features = ["alloc", "zeroize", "getrandom", "hazmat"] }
 
 [profile.release]
 opt-level = "z"
