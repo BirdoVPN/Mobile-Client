@@ -1,5 +1,3 @@
-After switching servers, the app shows the server you are actually connected to.
+Signing in now includes a short device check when needed.
 
-Disconnecting no longer leaves a "Not connected" notification behind.
-
-Restoring purchases no longer gets stuck when Google Play is slow to answer.
+Security and stability updates.
