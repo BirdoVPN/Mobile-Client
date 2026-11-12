@@ -3296,4 +3296,98 @@ class VpnManagerTest {
             quiesce()
         }
     }
+
+    // ── A-M79: a live rebuild mints a NEW key; a cancelled dial must not orphan it ──
+
+    /** A 1-device plan that lets a rebuild hold the old and the new key (2 at most), nothing more. */
+    private class RebuildBackend(val oldKey: String) {
+        val active = mutableSetOf(oldKey)
+        val released = mutableListOf<String?>()
+        var nextKey = 456
+        val minted = mutableListOf<String>()
+    }
+
+    private fun rebuildBackend(latencyMs: Long): RebuildBackend {
+        val backend = RebuildBackend("key-123")
+        coEvery {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(), fallbackReason = any(),
+                quantumProtection = any(), pqClientPublicKey = any(), integrityToken = any(),
+                dnsFiltering = any(), rebuildOf = any(),
+            )
+        } coAnswers {
+            val rebuildOf = lastArg<String?>()
+            if (backend.active.size >= 2) {
+                ApiResult.Error("Device limit reached", 403)
+            } else {
+                val key = "key-${backend.nextKey++}"
+                backend.active += key // the server has the new session the moment it accepts
+                backend.minted += key
+                delay(latencyMs) // ...and the answer takes this long to reach the phone
+                ApiResult.Success(makeConnectResponse().copy(keyId = key, deferredKeyId = rebuildOf))
+            }
+        }
+        coEvery { repository.disconnectVpn(any()) } coAnswers {
+            backend.released += firstArg<String?>()
+            backend.active.removeAll(listOfNotNull(firstArg<String?>()).toSet())
+            ApiResult.Success(Unit)
+        }
+        return backend
+    }
+
+    @Test
+    fun `a switch cancelled during its rebuild connect releases the NEW key once, never the old, and the next dial succeeds`() = runTest {
+        connectAndEstablish()
+        val backend = rebuildBackend(latencyMs = 4_000)
+        try {
+            val first = async { vpnManager.connect("srv-2") }
+            advanceTimeBy(1_000) // the server has minted key-456; its answer is still on its way
+            val second = async { vpnManager.connect("srv-3") }
+            advanceTimeBy(30_000) // second's own rebuild answers, and its swap goes to the service
+            runCurrent()
+
+            // Before anything settles the second swap: only the orphan was released.
+            assertEquals(listOf("key-456"), backend.released.filterNotNull())
+            assertFalse("the old key was released by the cancel", "key-123" in backend.released)
+            BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+            runCurrent()
+
+            val firstResult = first.await()
+            assertTrue(firstResult is ApiResult.Error && firstResult.message == VpnManager.SUPERSEDED)
+            val secondResult = second.await()
+            assertTrue("the next rebuild was refused: $secondResult", secondResult is ApiResult.Success)
+            // Exactly once with the orphan's id; the old key goes only by the usual post-swap release.
+            assertEquals(1, backend.released.count { it == "key-456" })
+            assertEquals(listOf("key-456", "key-123"), backend.released.filterNotNull())
+        } finally {
+            quiesce()
+        }
+    }
+
+    @Test
+    fun `a switch cancelled after its swap went to the service releases no key until the swap settles`() = runTest {
+        connectAndEstablish()
+        val backend = rebuildBackend(latencyMs = 0)
+        try {
+            val first = async { vpnManager.connect("srv-2") }
+            runCurrent() // answered; the swap is with the service, which has not answered
+            assertTrue(BirdoVpnService.ACTION_LIVE_REBUILD in dispatchedActions)
+            val second = async { vpnManager.connect("srv-3") }
+            advanceTimeBy(10_000)
+            runCurrent()
+
+            // The cancel waits out the shielded swap and touches no key meanwhile.
+            assertTrue(backend.released.filterNotNull().isEmpty())
+            BirdoVpnService.completeLiveRebuild(1L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+            advanceTimeBy(10_000)
+            runCurrent()
+            BirdoVpnService.completeLiveRebuild(2L, LiveRebuildPolicy.Event.NEW_PEER_HANDSHAKED)
+            advanceTimeBy(10_000)
+            runCurrent()
+            first.await()
+            second.await()
+        } finally {
+            quiesce()
+        }
+    }
 }
