@@ -28,12 +28,8 @@ data class PowChallengeResponse(
         "PowChallengeResponse(op=$op, difficulty=$difficulty, challenge=[REDACTED])"
 }
 
-/** What the server verifies: the token it issued and the nonce found for it. */
-@Serializable
-data class PowSolution(val challenge: String, val nonce: String) {
-    /** A solved challenge is spendable once: never printed. */
-    override fun toString(): String = "PowSolution(challenge=[REDACTED], nonce=[REDACTED])"
-}
+/** What the server verifies: the token it issued and the nonce found for it. Lives in :shared so the sign-in bodies can carry it. */
+typealias PowSolution = app.birdo.vpn.shared.model.PowSolution
 
 /**
  * Body for `POST /auth/register/anonymous`: device context plus the optional
