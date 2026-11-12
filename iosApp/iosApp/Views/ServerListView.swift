@@ -201,7 +201,7 @@ struct ServerListView: View {
             HStack(spacing: BirdoTheme.Spacing.sm) {
                 Button(action: { dismiss() }) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
+                        .birdoFont(18, weight: .semibold)
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
                         .background(Circle().fill(BirdoTheme.white05))
@@ -213,7 +213,7 @@ struct ServerListView: View {
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(isGuest ? "Locations" : "Servers")
-                        .font(.system(size: 17, weight: .semibold))
+                        .birdoFont(17, weight: .semibold)
                         .foregroundStyle(.white)
                         .accessibilityAddTraits(.isHeader)
                     // Filtered count, not the total — Android parity (§4.1).
@@ -233,7 +233,7 @@ struct ServerListView: View {
                     }
                 }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 17, weight: .medium))
+                        .birdoFont(17, weight: .medium)
                         .foregroundStyle(BirdoTheme.onSurfaceMuted)
                         .frame(width: 40, height: 40)
                         .background(Circle().fill(BirdoTheme.white05))
@@ -261,7 +261,7 @@ struct ServerListView: View {
     private var searchField: some View {
         HStack(spacing: BirdoTheme.Spacing.sm) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 18))
+                .birdoFont(18)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
 
             TextField(
@@ -271,7 +271,7 @@ struct ServerListView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(BirdoTheme.white40)
             )
-            .font(.system(size: 14))
+            .birdoFont(14)
             .foregroundStyle(.white)
             .tint(BirdoTheme.accentSoft)
             .autocorrectionDisabled()
@@ -281,7 +281,7 @@ struct ServerListView: View {
             if !searchQuery.isEmpty {
                 Button(action: { searchQuery = "" }) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .medium))
+                        .birdoFont(14, weight: .medium)
                         .foregroundStyle(BirdoTheme.white40)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
@@ -322,7 +322,7 @@ struct ServerListView: View {
                         }
                     } label: {
                         Text(pillLabel(for: filter))
-                            .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+                            .birdoFont(12, weight: isActive ? .semibold : .medium)
                             .foregroundStyle(isActive ? BirdoTheme.accent : BirdoTheme.onSurfaceMuted)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
@@ -481,7 +481,7 @@ struct ServerListView: View {
     private var guestBanner: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle")
-                .font(.system(size: 14))
+                .birdoFont(14)
                 .foregroundStyle(BirdoTheme.accentSoft)
                 .accessibilityHidden(true)
             Text("Browsing the network. Set up a free anonymous account to use it \u{2014} no email, no password.")
@@ -543,10 +543,10 @@ struct ServerListView: View {
     private func upsellSnackbar(_ notice: String) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "lock.fill")
-                .font(.system(size: 14))
+                .birdoFont(14)
                 .foregroundStyle(BirdoTheme.accentSoft)
             Text(notice)
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -584,12 +584,12 @@ private struct PublicLocationRow: View {
         Button(action: onTap) {
             HStack(spacing: 12) {
                 Text(location.flag)
-                    .font(.system(size: 24))
+                    .birdoFont(24)
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(location.city.isEmpty ? location.countryName : location.city)
-                        .font(.system(size: 15, weight: .semibold))
+                        .birdoFont(15, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurface)
                         .lineLimit(1)
                     Text(subtitle)
@@ -600,7 +600,7 @@ private struct PublicLocationRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text("Set up")
-                    .font(.system(size: 12, weight: .semibold))
+                    .birdoFont(12, weight: .semibold)
                     .foregroundStyle(BirdoTheme.accent)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
@@ -663,7 +663,7 @@ private struct ServerRow: View {
         HStack(spacing: 0) {
             // Flag badge
             Text(server.flag)
-                .font(.system(size: 20))
+                .birdoFont(20)
                 .frame(width: 40, height: 40)
                 .background(
                     RoundedRectangle(cornerRadius: BirdoTheme.Radius.sm, style: .continuous)
@@ -677,13 +677,13 @@ private struct ServerRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(server.name)
-                        .font(.system(size: 14, weight: .semibold))
+                        .birdoFont(14, weight: .semibold)
                         .foregroundStyle(isSelectable ? Color.white : BirdoTheme.onSurfaceFaint)
                         .lineLimit(1)
 
                     if isSwitching {
                         Text("Switching…")
-                            .font(.system(size: 11, weight: .semibold))
+                            .birdoFont(11, weight: .semibold)
                             .foregroundStyle(BirdoTheme.accentSoft)
                             .accessibilityLabel("Switching to this server")
                     } else if isConnected {
@@ -709,13 +709,13 @@ private struct ServerRow: View {
 
                     if server.isHighSpeed {
                         Image(systemName: "bolt.fill")
-                            .font(.system(size: 10))
+                            .birdoFont(10)
                             .foregroundStyle(BirdoTheme.onSurfaceFaint)
                             .accessibilityLabel("High-speed server")
                     }
                     if server.isPortForwarding {
                         Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 10))
+                            .birdoFont(10)
                             .foregroundStyle(BirdoTheme.onSurfaceFaint)
                             .accessibilityLabel("Supports port forwarding")
                     }
@@ -730,7 +730,7 @@ private struct ServerRow: View {
             // only thing this column has left to say.
             if !server.isOnline {
                 Text("Offline")
-                    .font(.system(size: 12, weight: .medium))
+                    .birdoFont(12, weight: .medium)
                     .foregroundStyle(BirdoTheme.white40)
             }
 
@@ -742,7 +742,7 @@ private struct ServerRow: View {
                 onToggleFavorite()
             } label: {
                 Image(systemName: isFavorite ? "star.fill" : "star")
-                    .font(.system(size: 18))
+                    .birdoFont(18)
                     .foregroundStyle(isFavorite ? BirdoTheme.yellowLight : BirdoTheme.onSurfaceFaint)
                     .symbolEffect(.bounce, value: isFavorite)
                     .frame(width: 36, height: 36)
@@ -864,20 +864,20 @@ private struct ServersEmptyState: View {
                     .fill(BirdoTheme.surfaceRaised)
                     .frame(width: 64, height: 64)
                 Image(systemName: "server.rack")
-                    .font(.system(size: 28))
+                    .birdoFont(28)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
             }
             .accessibilityHidden(true)
 
             Text(title)
-                .font(.system(size: 16, weight: .semibold))
+                .birdoFont(16, weight: .semibold)
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
                 .padding(.top, BirdoTheme.Spacing.lg)
 
             if let description {
                 Text(description)
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .multilineTextAlignment(.center)
                     .padding(.top, 6)
