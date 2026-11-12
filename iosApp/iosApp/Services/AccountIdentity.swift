@@ -69,6 +69,10 @@ enum AccountIdentity {
     /// grouped "1234 5678 …" rendering); nil when nothing usable is left.
     private static func digits(_ raw: String?) -> String? {
         guard let raw else { return nil }
+        // MR-1707: the server's mask (`ANON_NUMBER_MASKING`) is kept as it
+        // came. Stripped to its digits it would read as a four-digit "number".
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if AnonNumberMask.isMasked(trimmed) { return trimmed }
         let only = raw.filter { $0.isASCII && $0.isNumber }
         return only.isEmpty ? nil : only
     }

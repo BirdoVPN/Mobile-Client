@@ -333,6 +333,10 @@ targets:
       # A-L24 / MR-2241: the keychain write's single retry for a freshly minted
       # session. Foundation-only, pinned by SessionPersistenceTests.
       - path: iosApp/Services/SessionPersistence.swift
+      # MR-1707: the masked anonymous number, the 401 / refusal classification
+      # and the step machine of the replace-number flow. Foundation-only, pinned
+      # by AnonNumberRotationTests.
+      - path: iosApp/Services/AnonNumberRotation.swift
       # LIVE-PORT53: the WireGuard port is no longer a setting. Foundation-only
       # by design: the migration of a saved "53" / custom port and the pinning
       # of an older build's tunnel profile are pure functions precisely so

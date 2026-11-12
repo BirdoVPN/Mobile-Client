@@ -183,7 +183,8 @@ enum AnonymousNumberRecord {
     /// shown as this account's (`/auth/me` fills it in, `recordProfile`). Any
     /// other sign-in drops it.
     static func recordSignIn(anonymous: Bool, number: String?, in store: any InstallIdentityStore) {
-        if anonymous, let number {
+        // MR-1707: a mask is never stored as the number.
+        if anonymous, let number = AnonNumberMask.storable(number) {
             store.saveAnonymousId(number)
         } else {
             store.clearAnonymousId()
@@ -198,7 +199,9 @@ enum AnonymousNumberRecord {
             store.clearAnonymousId()
             return
         }
-        if let number { store.saveAnonymousId(number) }
+        // MR-1707: a masked answer (`ANON_NUMBER_MASKING`) leaves the stored
+        // number as it was; asterisks never overwrite it.
+        if let number = AnonNumberMask.storable(number) { store.saveAnonymousId(number) }
     }
 
     /// The UserDefaults flag of `purgeStaleOnLaunch`.
