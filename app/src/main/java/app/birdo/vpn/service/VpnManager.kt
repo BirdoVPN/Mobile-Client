@@ -38,7 +38,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -1697,17 +1696,35 @@ class VpnManager @Inject constructor(
      * only time out — the API's 45 s callTimeout — while the device waited
      * dead. Null when cut short; the rebuild then takes today's path at once.
      */
-    private suspend fun <T> rebuildRequest(hold: RebuildHold, call: suspend () -> ApiResult<T>): ApiResult<T>? =
-        coroutineScope {
-            val request = async { call() }
-            hold.request = request
-            try {
-                request.await()
-            } catch (e: CancellationException) {
-                if (hold.cutShort && isActive) null else throw e
-            } finally {
-                hold.request = null
+    private suspend fun <T> rebuildRequest(
+        hold: RebuildHold,
+        oldKey: String,
+        newKeyOf: (T) -> String?,
+        call: suspend () -> ApiResult<T>,
+    ): ApiResult<T>? {
+        // In [scope], not a child of the dial (A-M79): a newer dial cancels
+        // this one, and the cancel must not lose the NEW key a rebuild mints.
+        val request = scope.async { call() }
+        hold.request = request
+        try {
+            return request.await()
+        } catch (e: CancellationException) {
+            if (hold.cutShort && currentCoroutineContext().isActive) return null
+            if (!request.isCancelled) {
+                // The dial was cancelled with the /connect still out or just
+                // answered: release the key it minted, NEVER the old key the
+                // tunnel is riding (a reply that names it is not released).
+                val keyOf: (ApiResult<T>) -> String? = { r ->
+                    (r as? ApiResult.Success)?.data?.let(newKeyOf)?.takeIf { it != oldKey }
+                }
+                val settled = withContext(NonCancellable) { releaseLateAnswer(request, keyOf, INLINE_RELEASE_WAIT_MS) }
+                if (!settled) scope.launch { releaseLateAnswer(request, keyOf, LATE_ANSWER_WAIT_MS) }
             }
+            throw e
+        } finally {
+            hold.request = null
+        }
+    }
         }
 
     /** Take the hold for a rebuild that is starting. */
@@ -1844,7 +1861,7 @@ class VpnManager @Inject constructor(
             val result = if (pqRefusal != null || hold.cutShort) {
                 null
             } else {
-                rebuildRequest(hold) {
+                rebuildRequest(hold, oldKey, { c: ConnectResponse -> c.keyId.takeIf { c.success } }) {
                     repository.connectVpn(
                         serverNodeId = serverId,
                         deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
@@ -1916,7 +1933,7 @@ class VpnManager @Inject constructor(
             val result = if (pqRefusal != null || hold.cutShort) {
                 null
             } else {
-                rebuildRequest(hold) {
+                rebuildRequest(hold, oldKey, { c: MultiHopConnectResponse -> c.keyId.takeIf { c.success } }) {
                     repository.connectMultiHop(
                         entryNodeId = entryNodeId,
                         exitNodeId = exitNodeId,
