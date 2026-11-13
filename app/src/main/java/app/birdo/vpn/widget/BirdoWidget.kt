@@ -210,8 +210,11 @@ class WidgetToggleAction : ActionCallback {
                 // unlock. Drop the tunnel / release the fail-closed block only
                 // from an unlocked device, as the notification action does.
                 QuickToggle.Action.DISCONNECT ->
-                    if (WidgetLockGate.refusesDisconnect(isDeviceLocked(context))) {
+                    if (isDeviceLocked(context)) {
+                        // The tile asks for the unlock; the widget cannot, so it
+                        // opens the app, which brings up the system unlock.
                         Log.i("BirdoWidget", "Widget disconnect refused: the device is locked")
+                        openApp(context)
                     } else {
                         manager.requestDisconnect()
                     }
@@ -254,7 +257,8 @@ class WidgetToggleAction : ActionCallback {
     }
 
     private fun isDeviceLocked(context: Context): Boolean =
-        (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked == true
+        // Fail closed: no KeyguardManager means the lock state is unknown.
+        (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked != false
 
     private fun openApp(context: Context) {
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -373,14 +377,4 @@ private fun BirdoWidgetContent(
  */
 class BirdoWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = BirdoWidget()
-}
-
-/**
- * F-968-01: the widget's DISCONNECT (which also releases the kill-switch
- * block) needs the device unlocked. The Quick Settings tile prompts for the
- * unlock and then runs; a widget has no Activity to prompt from, so it
- * refuses until the user unlocks. CONNECT stays ungated, as on the tile.
- */
-object WidgetLockGate {
-    fun refusesDisconnect(deviceLocked: Boolean): Boolean = deviceLocked
 }
