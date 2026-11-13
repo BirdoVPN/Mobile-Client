@@ -66,7 +66,7 @@ class F968LockAndSignerTest {
     fun `play app signing cert is the documented app signing line, not the upload key`() {
         assertTrue(play != upload)
         val doc = repoFile("docs/PLAY-APP-SIGNING.md").readText()
-        val section = doc.substringAfter("App signing key certificate").substringBefore("Upload key certificate")
+        val section = doc.substringAfter("### App signing key certificate").substringBefore("### Upload key certificate")
         assertTrue(section.contains(play))
     }
 
