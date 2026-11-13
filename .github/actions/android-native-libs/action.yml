@@ -13,6 +13,8 @@ runs:
     # The runner image sets ANDROID_NDK_HOME. Each step below falls back to
     # the versioned ANDROID_NDK_LATEST_HOME itself (no GITHUB_ENV write), so a
     # script never fails later with a bare "not set".
+    - uses: ./.github/actions/setup-android-ndk
+
     - name: Check the Android NDK
       shell: bash
       run: |
