@@ -1,5 +1,6 @@
 package app.birdo.vpn.widget
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.util.Log
@@ -204,7 +205,16 @@ class WidgetToggleAction : ActionCallback {
                 joinsResume = manager.claimTapForResume(),
             )
             when (action) {
-                QuickToggle.Action.DISCONNECT -> manager.requestDisconnect()
+                // F-968-01: a widget can sit on the lock screen or a launcher
+                // shown over it, and (unlike the tile) cannot ask for an
+                // unlock. Drop the tunnel / release the fail-closed block only
+                // from an unlocked device, as the notification action does.
+                QuickToggle.Action.DISCONNECT ->
+                    if (WidgetLockGate.refusesDisconnect(isDeviceLocked(context))) {
+                        Log.i("BirdoWidget", "Widget disconnect refused: the device is locked")
+                    } else {
+                        manager.requestDisconnect()
+                    }
                 QuickToggle.Action.OPEN_APP -> openApp(context)
                 QuickToggle.Action.NONE -> Unit
                 QuickToggle.Action.CONNECT -> {
@@ -242,6 +252,9 @@ class WidgetToggleAction : ActionCallback {
             openApp(context)
         }
     }
+
+    private fun isDeviceLocked(context: Context): Boolean =
+        (context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager)?.isDeviceLocked == true
 
     private fun openApp(context: Context) {
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -360,4 +373,14 @@ private fun BirdoWidgetContent(
  */
 class BirdoWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = BirdoWidget()
+}
+
+/**
+ * F-968-01: the widget's DISCONNECT (which also releases the kill-switch
+ * block) needs the device unlocked. The Quick Settings tile prompts for the
+ * unlock and then runs; a widget has no Activity to prompt from, so it
+ * refuses until the user unlocks. CONNECT stays ungated, as on the tile.
+ */
+object WidgetLockGate {
+    fun refusesDisconnect(deviceLocked: Boolean): Boolean = deviceLocked
 }

@@ -107,7 +107,10 @@ fun LoginScreen(
     var twoFactorCode by remember { mutableStateOf("") }
     // Which auth method the standard (non-2FA) form shows: Email or Anonymous.
     var activeTab by rememberSaveable { mutableStateOf(AuthTab.Email) }
-    var anonId by rememberSaveable { mutableStateOf("") }
+    // F-968-02: the 24-digit account number is the account's only credential,
+    // so it is plain `remember` (never written to the saved-instance Bundle),
+    // like the passwords above.
+    var anonId by remember { mutableStateOf("") }
     var anonPassword by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     // Offer to save what was just submitted, the way a browser does on a form

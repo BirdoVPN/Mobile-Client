@@ -241,13 +241,13 @@ object RootDetector {
     private fun isInstalledFromPlayStore(context: Context): Boolean {
         return try {
             val pm = context.packageManager
-            val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                pm.getInstallSourceInfo(context.packageName).installingPackageName
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val source = pm.getInstallSourceInfo(context.packageName)
+                isPlayInstall(source.installingPackageName, source.initiatingPackageName, Build.VERSION.SDK_INT)
             } else {
                 @Suppress("DEPRECATION")
-                pm.getInstallerPackageName(context.packageName)
+                isPlayInstall(pm.getInstallerPackageName(context.packageName), null, Build.VERSION.SDK_INT)
             }
-            installer == "com.android.vending" || installer == "com.google.android.feedback"
         } catch (_: Exception) {
             false
         }
@@ -269,23 +269,46 @@ object RootDetector {
             .chunked(2)
             .joinToString(":")
 
+    /**
+     * F-968-04: which certificate stands for the signer NOW. The history is
+     * ordered oldest first, so after a key rotation element 0 is the retired
+     * key and the current signer is the LAST entry. With several signers the
+     * existing behaviour (first of apkContentsSigners) is unchanged.
+     */
+    internal fun selectCurrentSignerCert(
+        multipleSigners: Boolean,
+        contentsSigners: List<ByteArray>?,
+        history: List<ByteArray>?,
+    ): ByteArray? =
+        if (multipleSigners) contentsSigners?.firstOrNull() else history?.lastOrNull()
+
+    /**
+     * F-968-03: installer-of-record alone is spoofable
+     * (`adb install -i com.android.vending`). From API 30 the OS also records
+     * WHO ran the install (initiatingPackageName); `adb` shows up there as the
+     * shell, not as the Play Store. Both must name Play. Below API 30 only the
+     * installer is available.
+     */
+    internal fun isPlayInstall(installer: String?, initiator: String?, sdkInt: Int): Boolean {
+        val play = setOf("com.android.vending", "com.google.android.feedback")
+        if (installer !in play) return false
+        return sdkInt < Build.VERSION_CODES.R || initiator in play
+    }
+
     private fun currentSigningFingerprint(context: Context): String? {
         return try {
             val signingInfo = context.packageManager
                 .getPackageInfo(context.packageName, GET_SIGNING_CERTIFICATES)
                 .signingInfo ?: return null
 
-            val signatures = if (signingInfo.hasMultipleSigners()) {
-                signingInfo.apkContentsSigners
-            } else {
-                signingInfo.signingCertificateHistory
-            }
+            val certBytes = selectCurrentSignerCert(
+                multipleSigners = signingInfo.hasMultipleSigners(),
+                contentsSigners = signingInfo.apkContentsSigners?.map { it.toByteArray() },
+                history = signingInfo.signingCertificateHistory?.map { it.toByteArray() },
+            ) ?: return null
 
-            if (signatures.isNullOrEmpty()) return null
-
-            val md = MessageDigest.getInstance("SHA-256")
-            signatures[0].toByteArray()
-                .let { md.digest(it) }
+            MessageDigest.getInstance("SHA-256")
+                .digest(certBytes)
                 .joinToString(":") { "%02X".format(it) }
         } catch (_: Exception) {
             null
