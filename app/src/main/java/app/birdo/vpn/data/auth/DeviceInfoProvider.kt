@@ -111,24 +111,18 @@ class DeviceInfoProvider @Inject constructor(
     fun resetDeviceIdentity(): String = mintDeviceId()
 
     /**
-     * PRIVACY: delete this install's persisted ML-KEM-1024 (BirdoPQ) keypair,
-     * so the next connect generates a fresh one.
+     * PRIVACY: drop any in-flight ML-KEM-1024 (BirdoPQ) pair and delete what an
+     * older build persisted. Since MR-703 / MR-1742 the keypair is made per
+     * connect and never stored, so there is no per-install key to rotate any
+     * more (the old one used to present the same 1,568-byte value on every
+     * connect, a stable identifier joining accounts the user believes are
+     * unrelated: audit 2026-09-29, D-15 / C-8). This is the hygiene that stays.
      *
-     * The client public key rides every /connect body. It used to be minted
-     * once per install and never rotated, so every account ever used on this
-     * handset presented the same 1,568-byte value to the API and to the
-     * Cloudflare edge in front of it — a stable identifier that joins
-     * anonymous accounts the user believes are unrelated, and undoes the
-     * deviceId rotation above (audit 2026-09-29, D-15 / C-8).
-     *
-     * Called on sign-out AND on account deletion. Unlike the deviceId, this key
-     * carries no server-side state to strand: the backend does not store it
-     * (it is only used to encapsulate the per-connect PSK), so rotating it
-     * costs one keygen on the next connect and nothing else. iOS already does
-     * the same (AuthViewModel.completeLocalLogout).
+     * Called on sign-out AND on account deletion; the Keystore deletes run off
+     * this thread. iOS does the same (AuthViewModel.completeLocalLogout).
      */
     fun forgetPostQuantumKeypair() {
-        BirdoPqManager.resetPersistedKeypair(context)
+        BirdoPqManager.discardKeypair(context)
     }
 
     /** Mint and persist a fresh random device id. `commit`, not `apply`: the

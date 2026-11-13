@@ -103,10 +103,10 @@ class DataplaneFaultReportingTest {
         "VpnNotificationManager.kt" to
             "builds and posts notifications; its one catch is a failed notification post, " +
             "which changes nothing about whether traffic is protected",
-        "BirdoPqKeyStore.kt" to
-            "PQ key persistence. Both catches recover locally (keep on-disk state / delete " +
-            "partial state) and the PQ VERDICT that results is reported by BirdoPqManager, " +
-            "so reporting here would double-count one outcome",
+        "BirdoPqLegacyPurge.kt" to
+            "deletes the keypair files and Keystore keys builds before per-connect PQ keys left " +
+            "(MR-703). Its catches only keep a failed delete from throwing; it decides nothing about " +
+            "protection, and the PQ VERDICT is reported by BirdoPqManager",
         "MultiHopPolicy.kt" to
             "a pure decision table: no Android, no coroutines, no I/O, and nothing to catch. " +
             "It returns what SHOULD happen; every caller reports what DID. Reporting here " +
@@ -1053,11 +1053,9 @@ class DataplaneFaultReportingTest {
                 "pq_derive_no_result",
                 "pq_derived_psk_wrong_size",
                 "pq_generate_keypair_threw",
-                "pq_keypair_persist_failed",
-                // MR-2117 / MR-2121: a decapsulation with a pair other than
-                // the uploaded one, and a stored pair whose halves disagree.
+                // MR-2117 / MR-703: a decapsulation with no pair from this
+                // connect's upload (nothing is stored to fall back to).
                 "pq_keypair_not_the_uploaded_one",
-                "pq_stored_public_key_mismatch_rekeyed",
             ),
         )
     }

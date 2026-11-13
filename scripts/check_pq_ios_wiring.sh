@@ -47,7 +47,12 @@ HEADER="native/birdo-pq-ios/include/birdo_pq_ios.h"
 #   birdo_pq_secret_key_len    BIRDO_PQ_*_LEN macros, which Swift imports
 #   birdo_pq_ciphertext_len    directly as constants. They exist for callers
 #   birdo_pq_psk_len           that link the library without the header.
+#   birdo_pq_stored_key_usable  LEGACY (MR-703 / MR-1742): it judged a PERSISTED
+#                              key, and no key is persisted any more. The export
+#                              stays in the library until the native crate
+#                              cleanup (C3) removes it; Swift no longer calls it.
 TEST_ONLY=(
+    birdo_pq_stored_key_usable
     birdo_pq_test_encapsulate
     birdo_pq_public_key_len
     birdo_pq_secret_key_len

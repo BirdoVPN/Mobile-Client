@@ -316,10 +316,15 @@ final class AuthViewModel: ObservableObject {
         self.api = api
         self.keychain = keychain
 
-        // MR-1729: move the app's own items (tokens, ids, the BirdoPQ key) out
-        // of the group the PacketTunnel extension can read, before anything
-        // below reads them. Lossless and idempotent: whatever cannot move now
-        // stays readable where it is and moves on a later launch.
+        // MR-703 / MR-1742: delete the legacy BirdoPQ keypair item BEFORE the
+        // migration below, which would otherwise re-write it into the host
+        // group on every launch (`HostKeychainItem.allCases`). Idempotent.
+        BirdoPQManager.shared.purgeLegacyKeypair()
+
+        // MR-1729: move the app's own items (tokens, ids) out of the group the
+        // PacketTunnel extension can read, before anything below reads them.
+        // Lossless and idempotent: whatever cannot move now stays readable
+        // where it is and moves on a later launch.
         keychain.migrateHostOnlyItems()
 
         // MR-1726: a fresh install signs out the session a previous install
@@ -1086,8 +1091,8 @@ final class AuthViewModel: ObservableObject {
         // belt-and-braces generation guard for writes that already read it.
         let api = self.api
         Task { await api.invalidateSession() }
-        // AUDIT-C1: drop the persisted ML-KEM-1024 client identity so the
-        // next user gets a fresh PQ keypair instead of inheriting this one.
+        // MR-703: wipe any in-flight per-connect ML-KEM-1024 pair and delete the
+        // legacy Keychain item an older build kept (no key is stored any more).
         BirdoPQManager.shared.resetPersistedKeypair()
         // Audit 2026-09-29, D-13: the persisted VPN profile must not keep this
         // session's heartbeat credentials (token reference, legacy token, key
