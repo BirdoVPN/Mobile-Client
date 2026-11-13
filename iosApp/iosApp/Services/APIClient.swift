@@ -287,6 +287,8 @@ final class APIClient: @unchecked Sendable {
     /// have thrown), which `SignupPowFlow.login` answers once. Anything else is
     /// nil and takes the ordinary mapping.
     private static func loginPowRefusal(status: Int, data: Data) -> Error? {
+        // MR-2210: an unverified e-mail keeps its own sentence.
+        if let unverified = EmailNotVerifiedError.classify(status: status, body: data) { return unverified }
         guard LoginPowRefusal.matches(status: status, body: data) else { return nil }
         return LoginPowRefusal(original: Self.error(status: status, body: data))
     }
