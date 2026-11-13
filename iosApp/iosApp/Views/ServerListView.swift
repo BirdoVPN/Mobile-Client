@@ -268,7 +268,7 @@ struct ServerListView: View {
                 "",
                 text: $searchQuery,
                 prompt: Text(isGuest ? "Search locations…" : "Search servers…")
-                    .birdoFont(14)
+                    .font(.subheadline)
                     .foregroundStyle(BirdoTheme.white40)
             )
             .birdoFont(14)
