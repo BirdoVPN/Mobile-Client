@@ -18,6 +18,8 @@ class PurchaseTokenToStringTest {
     fun `the link request prints no purchase token`() {
         val printed = GooglePlayLinkRequest(purchaseToken = token).toString()
         assertFalse("GooglePlayLinkRequest printed the purchase token", printed.contains(token))
+        val withOrigin = GooglePlayLinkRequest(purchaseToken = token, origin = StoreLinkOrigin.RESTORE.wire).toString()
+        assertFalse("GooglePlayLinkRequest with an origin printed the purchase token", withOrigin.contains(token))
     }
 
     @Test
@@ -27,6 +29,7 @@ class PurchaseTokenToStringTest {
             state = IngestablePurchase.State.PURCHASED,
             isAcknowledged = false,
             productIds = listOf("birdo_operative_monthly"),
+            isBound = true,
         ).toString()
         assertFalse("IngestablePurchase printed the purchase token", printed.contains(token))
         // Still useful in a log: the purchase's state and products survive.

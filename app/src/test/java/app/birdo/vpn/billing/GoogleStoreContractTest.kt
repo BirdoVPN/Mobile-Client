@@ -4,6 +4,7 @@ import app.birdo.vpn.data.api.BirdoApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -91,6 +92,83 @@ class GoogleStoreContractTest {
         )
         assertEquals("OPERATIVE", decoded.plan)
         assertNull(decoded.duplicateBilling)
+        assertNull(decoded.expiresAt)
+        // A server older than F-967-02/-05 sends neither: null, never false.
+        assertNull(decoded.entitled)
+        assertNull(decoded.needsRestore)
+    }
+
+    // ── F-967-02 / F-967-05, through THE wire serializer ────────────────────
+
+    @Test
+    fun `the link request carries its origin, and without one it is the old body`() {
+        val wire = app.birdo.vpn.di.NetworkModule.json
+        assertEquals(
+            """{"purchaseToken":"opaque-token","origin":"restore"}""",
+            wire.encodeToString(
+                serializer<GooglePlayLinkRequest>(),
+                GooglePlayLinkRequest(purchaseToken = "opaque-token", origin = StoreLinkOrigin.RESTORE.wire),
+            ),
+        )
+        assertEquals(
+            """{"purchaseToken":"opaque-token","origin":"auto"}""",
+            wire.encodeToString(
+                serializer<GooglePlayLinkRequest>(),
+                GooglePlayLinkRequest(purchaseToken = "opaque-token", origin = StoreLinkOrigin.AUTO.wire),
+            ),
+        )
+        // The re-send to a server that predates `origin` must be the exact old
+        // body: an explicit "origin":null would be refused just the same.
+        assertEquals(
+            """{"purchaseToken":"opaque-token"}""",
+            wire.encodeToString(serializer<GooglePlayLinkRequest>(), GooglePlayLinkRequest(purchaseToken = "opaque-token")),
+        )
+    }
+
+    @Test
+    fun `the link response reads entitled and needsRestore`() {
+        val wire = app.birdo.vpn.di.NetworkModule.json
+        val expired = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":true,"plan":"OPERATIVE","state":"EXPIRED","expiresAt":null,"entitled":false}""",
+        )
+        assertEquals(false, expired.entitled)
+        val active = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":true,"plan":"OPERATIVE","state":"ACTIVE","entitled":true}""",
+        )
+        assertEquals(true, active.entitled)
+        val restoreOnly = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":false,"needsRestore":true}""",
+        )
+        assertEquals(true, restoreOnly.needsRestore)
+    }
+
+    /**
+     * The needsRestore answer exactly as the server sends it (#615 review):
+     * explicit nulls where it has no value. `plan` and `state` are non-null
+     * with a default in [GooglePlayLinkResponse], so this body decodes only
+     * because THE wire serializer coerces a null into the default
+     * (`coerceInputValues`). Pinned, so dropping that flag fails here and not
+     * on a customer's Restore.
+     */
+    @Test
+    fun `the needsRestore answer decodes with the server's explicit nulls`() {
+        val wire = app.birdo.vpn.di.NetworkModule.json
+        assertTrue(
+            "NetworkModule.json must coerce an explicit null into the field default",
+            wire.configuration.coerceInputValues,
+        )
+        val decoded = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":false,"entitled":false,"needsRestore":true,"plan":null,"state":null,"expiresAt":null}""",
+        )
+        assertFalse(decoded.linked)
+        assertEquals(false, decoded.entitled)
+        assertEquals(true, decoded.needsRestore)
+        assertEquals("", decoded.plan)
+        assertEquals("", decoded.state)
         assertNull(decoded.expiresAt)
     }
 
