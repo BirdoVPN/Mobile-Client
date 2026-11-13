@@ -22,9 +22,9 @@ struct ErrorBanner: View {
             if let icon {
                 HStack(spacing: 10) {
                     Image(systemName: icon)
-                        .font(.system(size: 18))
+                        .birdoFont(18)
                     Text(message)
-                        .font(.system(size: 13))
+                        .birdoFont(13)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .foregroundStyle(BirdoTheme.red)

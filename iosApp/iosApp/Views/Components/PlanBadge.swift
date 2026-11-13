@@ -19,10 +19,10 @@ struct PlanBadge: View {
         HStack(spacing: 4) {
             if locked {
                 Image(systemName: "lock.fill")
-                    .font(.system(size: 9, weight: .bold))
+                    .birdoFont(9, weight: .bold)
             }
             Text(plan.uppercased())
-                .font(.system(size: 12, weight: .bold))
+                .birdoFont(12, weight: .bold)
                 .lineLimit(1)
         }
         .foregroundStyle(.white)

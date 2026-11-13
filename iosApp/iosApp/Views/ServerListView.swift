@@ -268,7 +268,7 @@ struct ServerListView: View {
                 "",
                 text: $searchQuery,
                 prompt: Text(isGuest ? "Search locations…" : "Search servers…")
-                    .font(.system(size: 14))
+                    .font(.subheadline)
                     .foregroundStyle(BirdoTheme.white40)
             )
             .birdoFont(14)
@@ -291,7 +291,7 @@ struct ServerListView: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 48)
+        .frame(minHeight: 48)
         .background(
             RoundedRectangle(cornerRadius: BirdoTheme.Radius.sub, style: .continuous)
                 .fill(BirdoTheme.glassInput)

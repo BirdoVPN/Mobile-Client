@@ -353,9 +353,9 @@ struct ContentView: View {
     private var offlineBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.slash")
-                .font(.system(size: 15, weight: .semibold))
+                .birdoFont(15, weight: .semibold)
             Text("No internet connection")
-                .font(.system(size: 13, weight: .medium))
+                .birdoFont(13, weight: .medium)
         }
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity)

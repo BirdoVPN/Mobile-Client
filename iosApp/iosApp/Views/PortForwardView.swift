@@ -98,7 +98,7 @@ struct PortForwardView: View {
             BirdoCard(cornerRadius: BirdoTheme.Radius.md) {
                 HStack(spacing: 12) {
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 20))
+                        .birdoFont(20)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Sovereign feature")
@@ -114,7 +114,7 @@ struct PortForwardView: View {
                     }
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .semibold))
+                        .birdoFont(14, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,7 +129,7 @@ struct PortForwardView: View {
     private var infoNote: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "info.circle")
-                .font(.system(size: 18))
+                .birdoFont(18)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .accessibilityHidden(true)
             Text("Forward external ports on your VPN server to a local port on your device. Useful for hosting services behind the VPN.")
@@ -246,7 +246,7 @@ struct PortForwardView: View {
         BirdoCard(cornerRadius: BirdoTheme.Radius.md, verticalPadding: 10) {
             HStack(spacing: 12) {
                 Image(systemName: "arrow.left.arrow.right")
-                    .font(.system(size: 20))
+                    .birdoFont(20)
                     .foregroundStyle(BirdoTheme.green)
                     .accessibilityHidden(true)
 
@@ -286,7 +286,7 @@ struct PortForwardView: View {
                     showDeleteConfirm = true
                 } label: {
                     Image(systemName: "trash")
-                        .font(.system(size: 18))
+                        .birdoFont(18)
                         .foregroundStyle(BirdoTheme.red)
                         .frame(width: 44, height: 44)
                 }

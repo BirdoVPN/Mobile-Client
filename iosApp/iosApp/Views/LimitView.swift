@@ -92,17 +92,17 @@ struct LimitView: View {
                         .frame(width: 34, height: 34)
                         .overlay(
                             Image(systemName: "person.crop.circle.badge.questionmark")
-                                .font(.system(size: 17))
+                                .birdoFont(17)
                                 .foregroundStyle(BirdoTheme.accent)
                         )
                     Text("Sign in to see your usage")
-                        .font(.system(size: 15, weight: .semibold))
+                        .birdoFont(15, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
                 Text("Data usage is tied to an account, so there is nothing to show "
                      + "yet. You can still read the plan comparison, change every "
                      + "setting and browse locations without one.")
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -131,12 +131,12 @@ struct LimitView: View {
                 .accessibilityAddTraits(.isHeader)
             HStack(alignment: .center) {
                 Text(isGuest ? "No account" : BirdoTheme.planDisplayName(vpnVM.currentPlan))
-                    .font(.system(size: 22, weight: .bold))
+                    .birdoFont(22, weight: .bold)
                     .foregroundStyle(BirdoTheme.onSurface)
                 Spacer()
                 if stats != nil && !isGuest {
                     Text(hasCap ? "\(Self.wholeGb(limitGb)) GB / month" : "Unlimited")
-                        .font(.system(size: 12, weight: .semibold))
+                        .birdoFont(12, weight: .semibold)
                         .foregroundStyle(BirdoTheme.accent)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -171,7 +171,7 @@ struct LimitView: View {
                 .tint(BirdoTheme.accent)
                 .scaleEffect(1.3)
             Text("Loading your usage…")
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
         }
         .padding(.vertical, 48)
@@ -184,14 +184,14 @@ struct LimitView: View {
                 .frame(width: 56, height: 56)
                 .overlay(
                     Image(systemName: "speedometer")
-                        .font(.system(size: 30))
+                        .birdoFont(30)
                         .foregroundStyle(BirdoTheme.accent)
                 )
             Text("Unlimited data")
-                .font(.system(size: 18, weight: .semibold))
+                .birdoFont(18, weight: .semibold)
                 .foregroundStyle(BirdoTheme.onSurface)
             Text("Your plan has no data cap — use as much as you like.")
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .multilineTextAlignment(.center)
         }
@@ -218,7 +218,7 @@ struct LimitView: View {
                     .fill(isFresh ? BirdoTheme.accent : BirdoTheme.onSurfaceFaint)
                     .frame(width: 7, height: 7)
                 Text(freshnessText(neverSynced: neverSynced, isFresh: isFresh))
-                    .font(.system(size: 12))
+                    .birdoFont(12)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
             }
 
@@ -228,9 +228,9 @@ struct LimitView: View {
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 16))
+                        .birdoFont(16)
                     Text("Refresh usage")
-                        .font(.system(size: 13, weight: .semibold))
+                        .birdoFont(13, weight: .semibold)
                 }
                 .foregroundStyle(BirdoTheme.accent)
                 .padding(.horizontal, 16)
@@ -257,7 +257,7 @@ struct LimitView: View {
             }
 
             Text("Counts uploads and downloads · Updates about every minute")
-                .font(.system(size: 11))
+                .birdoFont(11)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
@@ -280,11 +280,11 @@ struct LimitView: View {
     private func statCell(_ label: String, _ value: String, _ valueColor: Color) -> some View {
         VStack(spacing: 3) {
             Text(label.uppercased())
-                .font(.system(size: 10, weight: .semibold))
+                .birdoFont(10, weight: .semibold)
                 .tracking(1.2)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
             Text(value)
-                .font(.system(size: 15, weight: .semibold))
+                .birdoFont(15, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(valueColor)
         }
@@ -362,15 +362,15 @@ struct LimitView: View {
                         .frame(width: 34, height: 34)
                         .overlay(
                             Image(systemName: "bolt.fill")
-                                .font(.system(size: 19))
+                                .birdoFont(19)
                                 .foregroundStyle(BirdoTheme.accent)
                         )
                     Text(fraction >= 0.9 ? "You're almost out of data" : "Need more data?")
-                        .font(.system(size: 15, weight: .semibold))
+                        .birdoFont(15, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
                 Text(upgradeBody)
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .lineSpacing(5)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 PrimaryButton(upgradeCtaTitle,
@@ -382,7 +382,7 @@ struct LimitView: View {
                 if canPurchaseInApp {
                     Text("Opens Birdo's plans, where Operative and Sovereign are available as "
                          + "auto-renewing App Store subscriptions.")
-                        .font(.system(size: 11))
+                        .birdoFont(11)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -522,10 +522,10 @@ private struct SpeedDialGauge: View {
             // Centre readout: the number is the hero, the unit line supports it.
             VStack(spacing: 2) {
                 Text(usedLabel)
-                    .font(.system(size: 40, weight: .bold, design: .monospaced))
+                    .birdoFont(40, weight: .bold, design: .monospaced)
                     .foregroundStyle(BirdoTheme.onSurface)
                 Text(limitLabel)
-                    .font(.system(size: 13))
+                    .birdoFont(13)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
             }
         }
@@ -533,7 +533,7 @@ private struct SpeedDialGauge: View {
         .overlay(alignment: .bottom) {
             // Percentage sits in the bottom gap of the arc.
             Text(percentLabel)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .birdoFont(13, weight: .semibold, design: .monospaced)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .padding(.bottom, 2)
         }

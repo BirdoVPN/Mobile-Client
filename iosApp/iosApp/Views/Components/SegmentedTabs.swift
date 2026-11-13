@@ -49,7 +49,7 @@ struct SegmentedTabs: View {
             selection = index
         } label: {
             Text(items[index])
-                .font(.system(size: 13, weight: selected && style == .accent ? .semibold : .medium))
+                .birdoFont(13, weight: selected && style == .accent ? .semibold : .medium)
                 .foregroundStyle(segmentText(selected))
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, minHeight: 40)

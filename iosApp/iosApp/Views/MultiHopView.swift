@@ -125,7 +125,7 @@ struct MultiHopView: View {
         )
 
         Image(systemName: "arrow.down")
-            .font(.system(size: 18, weight: .semibold))
+            .birdoFont(18, weight: .semibold)
             .foregroundColor(BirdoTheme.white40)
             .accessibilityHidden(true)
 
@@ -192,7 +192,7 @@ struct MultiHopView: View {
                         .fill(BirdoTheme.white05)
                         .frame(width: 64, height: 64)
                     Image(systemName: "lock.fill")
-                        .font(.system(size: 24))
+                        .birdoFont(24)
                         .foregroundColor(BirdoTheme.onSurfaceMuted)
                 }
                 .accessibilityHidden(true)
@@ -246,7 +246,7 @@ struct MultiHopView: View {
                         .foregroundColor(BirdoTheme.accent)
                         .accessibilityHidden(true)
                     Text(label.uppercased())
-                        .font(.system(size: 12, weight: .bold))
+                        .birdoFont(12, weight: .bold)
                         .tracking(1)
                         .foregroundColor(BirdoTheme.accent)
                     Spacer()
