@@ -15,6 +15,15 @@ from the code that enforces the wire contract — class-validator on
 `POST /vpn/multi-hop/connect` — and pinned by `protocol-schema.spec.ts`, so a
 backend contract change cannot merge without regenerating it.
 
+**Version (MR-197 / MR-1754).** The schema carries `x-contractVersion` (also
+`_status.contractVersion`), and `contract/CONTRACT_VERSION` repeats it. The app
+sends it as `X-Birdo-Contract` on every request (`data/api/ContractVersion.kt`,
+`AuthInterceptor`; iOS `ClientIdentity.contractVersion`, `APIClient`), and
+`ContractVersionTest` fails when the schema, the file and both constants
+disagree. When you re-vendor, update the pin (`CONTRACT.sha256`), the version
+file and both constants together. The weekly drift job that compares against
+birdo-web needs a read token the owner has not created yet and is not in place.
+
 **Never edit this copy.** Refresh it from birdo-web `main`:
 
 ```sh

@@ -12,6 +12,7 @@ import javax.inject.Singleton
  * OkHttp interceptor that adds auth headers to every request.
  * - User-Agent: Birdo-Android/<version> (Android)
  * - X-Desktop-Client: birdo-android (on POST requests)
+ * - X-Birdo-Contract: <CONTRACT_VERSION> (the connect contract this build speaks)
  * - Authorization: Bearer <token> (when logged in, API host only)
  */
 @Singleton
@@ -26,6 +27,11 @@ class AuthInterceptor @Inject constructor(
 
         // Identify this client on all requests — backend auth guards may check it
         builder.header("X-Desktop-Client", "birdo-android")
+
+        // MR-197 / MR-1754: the contract version this build was written against
+        // (contract/CONTRACT_VERSION). The backend counts connects by it, and by
+        // nothing else; it changes no behaviour. On every request, both hosts.
+        builder.header("X-Birdo-Contract", CONTRACT_VERSION)
 
         // Add auth token if available — TokenManager is now non-suspend,
         // no runBlocking needed (was blocking OkHttp dispatcher threads).
