@@ -1107,7 +1107,20 @@ final class VpnViewModel: ObservableObject {
             // next failure knows it is the third, not the first) or a trip whose
             // cooldown has lapsed, which is spent state: drop it so the next
             // failure starts a clean streak.
-            if record.trippedAt != nil { store.clear() }
+            if record.trippedAt != nil {
+                // The extension stopped its liveness loop when it tripped and
+                // holds the dead tunnel in place. If the cooldown lapses while
+                // that tunnel is still up and no fail-open ran, clearing the
+                // record alone leaves the device blocked while Home says
+                // Protected -- so finish the fail-open first. Not clearing on a
+                // failed attempt keeps it retried next tick.
+                if isConnected, failOpenAppliedFor != record {
+                    guard vpnManager.failOpenAndStop() else { return }
+                    releaseServerSlot()
+                    resetSessionState()
+                }
+                store.clear()
+            }
             breakerTrip = nil
             failOpenAppliedFor = nil
             return
