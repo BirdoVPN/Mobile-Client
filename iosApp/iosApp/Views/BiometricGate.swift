@@ -319,7 +319,7 @@ private struct LockOverlay: View {
             Color.black.ignoresSafeArea()
             VStack(spacing: 24) {
                 Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 64, weight: .light))
+                    .birdoFont(64, weight: .light)
                     .foregroundStyle(.white)
                 Text("BirdoVPN")
                     .font(.title2.bold())

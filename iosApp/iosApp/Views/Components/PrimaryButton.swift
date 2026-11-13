@@ -62,10 +62,10 @@ struct PrimaryButton: View {
                         .scaleEffect(0.8)
                 } else if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 18, weight: .semibold))
+                        .birdoFont(18, weight: .semibold)
                 }
                 Text(isLoading ? (loadingTitle ?? title) : title)
-                    .font(.system(size: fontSize, weight: .semibold))
+                    .birdoFont(fontSize, weight: .semibold)
                     .lineLimit(1)
             }
             .foregroundStyle(active ? contentColor : BirdoTheme.white40)

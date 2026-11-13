@@ -47,18 +47,18 @@ struct ConsentView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     Image(systemName: "shield.fill")
-                        .font(.system(size: 64))
+                        .birdoFont(64)
                         .foregroundStyle(BirdoTheme.accent)
                         .accessibilityLabel("Privacy")
 
                     Text("Your Privacy Matters")
-                        .font(.system(size: 24, weight: .bold))
+                        .birdoFont(24, weight: .bold)
                         .foregroundStyle(BirdoTheme.onBackground)
                         .multilineTextAlignment(.center)
                         .padding(.top, 16)
 
                     Text(subtitle)
-                        .font(.system(size: 14))
+                        .birdoFont(14)
                         .foregroundStyle(BirdoTheme.white60)
                         .multilineTextAlignment(.center)
                         .lineSpacing(4)
@@ -81,7 +81,7 @@ struct ConsentView: View {
 
                         // The Terms' minimum age, stated where the account is created.
                         Text("You must be 18 or over to use BirdoVPN.")
-                            .font(.system(size: 13, weight: .semibold))
+                            .birdoFont(13, weight: .semibold)
                             .foregroundStyle(BirdoTheme.white60)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
@@ -101,7 +101,7 @@ struct ConsentView: View {
 
                     // What "I Agree & Continue" means, next to the button.
                     Text("By tapping \"I Agree & Continue\" you accept the Terms of Service and the Privacy Policy.")
-                        .font(.system(size: 12))
+                        .birdoFont(12)
                         .foregroundStyle(BirdoTheme.white60)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
@@ -121,7 +121,7 @@ struct ConsentView: View {
                                 + "accepting. The location list comes from Birdo's servers, so "
                                 + "it loads only after you accept, and accepting is required to "
                                 + "create or sign in to an account.")
-                        .font(.system(size: 12))
+                        .birdoFont(12)
                         .foregroundStyle(BirdoTheme.white40)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
@@ -196,7 +196,7 @@ struct ConsentView: View {
             if let url = URL(string: address) { openURL(url) }
         } label: {
             Text(title)
-                .font(.system(size: 14))
+                .birdoFont(14)
                 .underline()
                 .foregroundStyle(BirdoTheme.accent)
                 .frame(minHeight: 44) // touch target
@@ -207,10 +207,10 @@ struct ConsentView: View {
     private func consentItem(title: String, description: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 15, weight: .semibold))
+                .birdoFont(15, weight: .semibold)
                 .foregroundStyle(BirdoTheme.onBackground)
             Text(description)
-                .font(.system(size: 13))
+                .birdoFont(13)
                 .foregroundStyle(BirdoTheme.white60)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
@@ -222,7 +222,7 @@ struct ConsentView: View {
     private var deferButton: some View {
         Button(action: defer_) {
             Text(isSheet ? "Not now" : "Not now — look around first")
-                .font(.system(size: 14))
+                .birdoFont(14)
                 .foregroundStyle(BirdoTheme.white60)
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .overlay(

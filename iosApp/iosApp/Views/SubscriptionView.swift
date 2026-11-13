@@ -93,7 +93,7 @@ struct SubscriptionView: View {
                     }
 
                     Text("Plans & features")
-                        .font(.system(size: 16, weight: .bold))
+                        .birdoFont(16, weight: .bold)
                         .foregroundStyle(BirdoTheme.onSurface)
                         .padding(.top, 8)
                         .accessibilityAddTraits(.isHeader)
@@ -167,14 +167,14 @@ struct SubscriptionView: View {
                             .fill(accent.opacity(0.15))
                             .frame(width: 44, height: 44)
                         Image(systemName: "crown.fill")
-                            .font(.system(size: 22))
+                            .birdoFont(22)
                             .foregroundStyle(accent)
                     }
                     .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(sub.plan.uppercased())
-                            .font(.system(size: 16, weight: .bold))
+                            .birdoFont(16, weight: .bold)
                             .foregroundStyle(BirdoTheme.onSurface)
                             .lineLimit(1)
                         Text(isActive ? "Active subscription" : "Inactive")
@@ -203,11 +203,11 @@ struct SubscriptionView: View {
     private func heroMetric(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
+                .birdoFont(12, weight: .semibold)
                 .tracking(1)
                 .foregroundStyle(BirdoTheme.white60)
             Text(value)
-                .font(.system(size: 14, weight: .bold))
+                .birdoFont(14, weight: .bold)
                 .monospacedDigit()
                 .foregroundStyle(BirdoTheme.onSurface)
         }
@@ -233,11 +233,11 @@ struct SubscriptionView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
                     Image(systemName: "cart.badge.questionmark")
-                        .font(.system(size: 18))
+                        .birdoFont(18)
                         .foregroundStyle(BirdoTheme.yellow)
                         .accessibilityHidden(true)
                     Text("Purchasing is unavailable")
-                        .font(.system(size: 15, weight: .semibold))
+                        .birdoFont(15, weight: .semibold)
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
                 Text(reason)
@@ -272,7 +272,7 @@ struct SubscriptionView: View {
         return BirdoCard(horizontalPadding: 14, verticalPadding: 14) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 16))
+                    .birdoFont(16)
                     .foregroundStyle(tint)
                     .accessibilityHidden(true)
                 Text(notice.text)
@@ -284,7 +284,7 @@ struct SubscriptionView: View {
                     store.notice = nil
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
+                        .birdoFont(12, weight: .bold)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 }
                 .buttonStyle(.plain)
@@ -303,11 +303,11 @@ struct SubscriptionView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
                     Image(systemName: "creditcard.trianglebadge.exclamationmark")
-                        .font(.system(size: 18))
+                        .birdoFont(18)
                         .foregroundStyle(BirdoTheme.yellow)
                         .accessibilityHidden(true)
                     Text("You are being billed twice")
-                        .font(.system(size: 15, weight: .bold))
+                        .birdoFont(15, weight: .bold)
                         .foregroundStyle(BirdoTheme.onSurface)
                 }
                 Text(duplicate.message)
@@ -346,7 +346,7 @@ struct SubscriptionView: View {
         BirdoCard(horizontalPadding: 16, verticalPadding: 16) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: "info.circle.fill")
-                    .font(.system(size: 16))
+                    .birdoFont(16)
                     .foregroundStyle(BirdoTheme.blue)
                     .accessibilityHidden(true)
                 Text("Your plan is already active on this account. If you bought it outside the App Store, manage it where you bought it: subscribing here would bill you twice.")
@@ -380,7 +380,7 @@ struct SubscriptionView: View {
             .accessibilityIdentifier("subscription_restore")
 
             Text("Already subscribed on this Apple ID? Restore brings it back to this Birdo account.")
-                .font(.system(size: 11))
+                .birdoFont(11)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -395,7 +395,7 @@ struct SubscriptionView: View {
     private var legalFootnote: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("About these subscriptions")
-                .font(.system(size: 12, weight: .semibold))
+                .birdoFont(12, weight: .semibold)
                 .foregroundStyle(BirdoTheme.white60)
 
             Text("Operative and Sovereign are auto-renewing subscriptions. Payment is charged to "
@@ -404,7 +404,7 @@ struct SubscriptionView: View {
                  + "before the end of the current period, and your Apple Account is charged for "
                  + "renewal within 24 hours of the period ending. You can manage or cancel it in "
                  + "your Apple Account settings at any time.")
-                .font(.system(size: 11))
+                .birdoFont(11)
                 .lineSpacing(3)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -420,7 +420,7 @@ struct SubscriptionView: View {
                     SystemOpen.manageSubscriptions()
                 }
             }
-            .font(.system(size: 11, weight: .semibold))
+            .birdoFont(11, weight: .semibold)
             .foregroundStyle(BirdoTheme.accent)
             .buttonStyle(.plain)
         }
@@ -470,7 +470,7 @@ struct SubscriptionView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text(plan.name)
-                                .font(.system(size: 16, weight: .bold))
+                                .birdoFont(16, weight: .bold)
                                 .foregroundStyle(BirdoTheme.onSurface)
                             if plan.isPopular {
                                 planChip("POPULAR", color: accent)
@@ -487,7 +487,7 @@ struct SubscriptionView: View {
                     Spacer(minLength: 8)
 
                     Text(priceLabel(for: plan, product: product))
-                        .font(.system(size: 18, weight: .bold))
+                        .birdoFont(18, weight: .bold)
                         .foregroundStyle(plan.slug == "RECON"
                                          ? BirdoTheme.white60
                                          : BirdoTheme.onSurface)
@@ -497,7 +497,7 @@ struct SubscriptionView: View {
                 // the features below it are part of a paid subscription.
                 if plan.slug != "RECON" {
                     Text("Included with a paid \(plan.name) subscription:")
-                        .font(.system(size: 11, weight: .semibold))
+                        .birdoFont(11, weight: .semibold)
                         .tracking(0.4)
                         .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 }
@@ -506,7 +506,7 @@ struct SubscriptionView: View {
                     ForEach(plan.features, id: \.self) { feature in
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .semibold))
+                                .birdoFont(12, weight: .semibold)
                                 .foregroundStyle(accent)
                                 .frame(width: 16)
                                 .accessibilityHidden(true)
@@ -557,7 +557,7 @@ struct SubscriptionView: View {
             // Paid on another rail: no Subscribe, no "change plan". The card
             // at the top of the screen says why.
             Text("Your current plan is managed where you bought it.")
-                .font(.system(size: 12))
+                .birdoFont(12)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .padding(.top, 4)
         } else if isCurrent {
@@ -565,11 +565,11 @@ struct SubscriptionView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(BirdoTheme.green)
                 Text("This is your current plan")
-                    .font(.system(size: 13, weight: .semibold))
+                    .birdoFont(13, weight: .semibold)
                     .foregroundStyle(BirdoTheme.onSurface)
                 Spacer(minLength: 0)
                 Button("Manage") { SystemOpen.manageSubscriptions() }
-                    .font(.system(size: 13, weight: .semibold))
+                    .birdoFont(13, weight: .semibold)
                     .foregroundStyle(BirdoTheme.accent)
                     .buttonStyle(.plain)
             }
@@ -593,7 +593,7 @@ struct SubscriptionView: View {
                 .accessibilityIdentifier("subscribe_\(product.id)")
 
                 Text(period.renewalSentence + " Cancel any time in your Apple Account settings.")
-                    .font(.system(size: 11))
+                    .birdoFont(11)
                     .foregroundStyle(BirdoTheme.onSurfaceFaint)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -614,7 +614,7 @@ struct SubscriptionView: View {
                     .controlSize(.small)
                     .tint(BirdoTheme.onSurfaceFaint)
                 Text("Checking the App Store for prices…")
-                    .font(.system(size: 12))
+                    .birdoFont(12)
                     .foregroundStyle(BirdoTheme.onSurfaceFaint)
             }
             .padding(.top, 4)
@@ -623,7 +623,7 @@ struct SubscriptionView: View {
             // The fetch has FINISHED and this product did not resolve. Say
             // exactly that rather than rendering a dead button.
             Text("Not available to purchase in the app right now.")
-                .font(.system(size: 12))
+                .birdoFont(12)
                 .foregroundStyle(BirdoTheme.onSurfaceFaint)
                 .padding(.top, 4)
         }
@@ -631,7 +631,7 @@ struct SubscriptionView: View {
 
     private func planChip(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 10, weight: .bold))
+            .birdoFont(10, weight: .bold)
             .foregroundStyle(color)
             .padding(.horizontal, 6)
             .padding(.vertical, 3)

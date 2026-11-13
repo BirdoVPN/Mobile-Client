@@ -43,7 +43,7 @@ struct AcknowledgementsView: View {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         ForEach(paragraphs.indices, id: \.self) { index in
                             Text(paragraphs[index])
-                                .font(.system(size: 12, design: .monospaced))
+                                .birdoFont(12, design: .monospaced)
                                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
@@ -76,7 +76,7 @@ struct AcknowledgementsView: View {
                             .fill(BirdoTheme.white05)
                             .frame(width: 40, height: 40)
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
+                            .birdoFont(17, weight: .semibold)
                             .foregroundStyle(BirdoTheme.onSurface)
                     }
                     .frame(width: 48, height: 48)
@@ -86,7 +86,7 @@ struct AcknowledgementsView: View {
                 .accessibilityLabel("Back")
 
                 Text("Acknowledgements")
-                    .font(.system(size: 17, weight: .semibold))
+                    .birdoFont(17, weight: .semibold)
                     .foregroundStyle(BirdoTheme.onSurface)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)

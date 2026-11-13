@@ -62,7 +62,7 @@ struct BirdoConfirmDialog<Extra: View>: View {
 
             VStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 36))
+                    .birdoFont(36)
                     .foregroundStyle(iconColor)
                 Text(title)
                     .font(BirdoTheme.Fonts.titleLarge)
@@ -121,7 +121,7 @@ struct BirdoConfirmDialog<Extra: View>: View {
                         .scaleEffect(0.7)
                 }
                 Text(confirmLabel)
-                    .font(.system(size: 14, weight: .medium))
+                    .birdoFont(14, weight: .medium)
             }
             .foregroundStyle(confirmIsDestructive ? BirdoTheme.red : .black)
             .frame(maxWidth: .infinity, minHeight: 40)
@@ -147,7 +147,7 @@ struct BirdoConfirmDialog<Extra: View>: View {
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 14, weight: .medium))
+                .birdoFont(14, weight: .medium)
                 .foregroundStyle(textColor)
                 .frame(maxWidth: .infinity, minHeight: 40)
                 .background(

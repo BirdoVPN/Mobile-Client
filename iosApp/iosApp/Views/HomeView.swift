@@ -223,7 +223,7 @@ struct HomeView: View {
                             .birdoFont(13, weight: .semibold)
                             .foregroundStyle(BirdoTheme.accent)
                             .padding(.horizontal, 14)
-                            .frame(height: 34)
+                            .frame(minHeight: 34)
                             .background(Capsule().fill(BirdoTheme.accentA(0.16)))
                             .overlay(Capsule().strokeBorder(BirdoTheme.accentA(0.45), lineWidth: 1))
                     }
@@ -312,7 +312,7 @@ struct HomeView: View {
                     ZStack {
                         Circle().fill(Color.black.opacity(0.6))
                         Image(systemName: "lock.fill")
-                            .font(.system(size: 8, weight: .bold))
+                            .birdoFont(8, weight: .bold)
                             .foregroundStyle(.white)
                     }
                     .frame(width: 14, height: 14)
