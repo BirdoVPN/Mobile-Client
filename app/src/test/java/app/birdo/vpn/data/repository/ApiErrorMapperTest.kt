@@ -344,6 +344,21 @@ class ApiErrorMapperTest {
         assertEquals(text("error_anon_register_failed"), register(403, bare).message)
     }
 
+    private val unverifiedBody = """{"statusCode":403,"message":"Please verify your email address before signing in.","details":{"code":"email_not_verified"}}"""
+
+    @Test
+    fun `an unverified e-mail sign-in is told by details code, with the server sentence or the app's own`() {
+        val e = register(403, unverifiedBody, ErrorContext.SIGN_IN)
+        assertEquals("Please verify your email address before signing in.", e.message)
+        assertEquals(FailureReason.REFUSED, e.reason)
+        // No usable sentence: the app's own words, never the generic sign-in failure.
+        val bare = unverifiedBody.replace(Regex("\"message\":\"[^\"]*\""), "\"message\":\"Forbidden\"")
+        assertEquals(text("error_email_not_verified"), register(403, bare, ErrorContext.SIGN_IN).message)
+        // Another status, another route, or another code is not this refusal.
+        assertEquals(general(403, unverifiedBody).message, mapper.fromResponse(403, unverifiedBody, ErrorContext.GENERAL, R.string.error_load_servers).message)
+        assertTrue(register(401, unverifiedBody, ErrorContext.SIGN_IN).message != e.message)
+    }
+
     @Test
     fun `presentable rejects bodies, reason phrases and stack traces`() {
         assertTrue(ApiErrorMapper.isPresentable("Port 8080 is already forwarded."))
