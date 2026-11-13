@@ -198,9 +198,13 @@ fun BirdoNavGraph(
 
     // Signed out, for any reason (the button, a deletion, a dead session):
     // drop the previous account's servers, plan and selection so the next
-    // account on this device never sees them (A2-003).
+    // account on this device never sees them (A2-003), and the billing rail's
+    // refusal memory, purchase list and banners with them (F-967-10).
     LaunchedEffect(authState.isLoggedIn) {
-        if (!authState.isLoggedIn) vpnViewModel.resetForSignOut()
+        if (!authState.isLoggedIn) {
+            vpnViewModel.resetForSignOut()
+            billingViewModel.onSignedOut()
+        }
     }
 
     // The server accepted an entitlement: re-read the plan snapshot AND the

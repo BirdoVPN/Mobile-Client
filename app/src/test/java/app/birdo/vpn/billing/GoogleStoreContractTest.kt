@@ -92,6 +92,56 @@ class GoogleStoreContractTest {
         assertEquals("OPERATIVE", decoded.plan)
         assertNull(decoded.duplicateBilling)
         assertNull(decoded.expiresAt)
+        // A server older than F-967-02/-05 sends neither: null, never false.
+        assertNull(decoded.entitled)
+        assertNull(decoded.needsRestore)
+    }
+
+    // ── F-967-02 / F-967-05, through THE wire serializer ────────────────────
+
+    @Test
+    fun `the link request carries its origin, and without one it is the old body`() {
+        val wire = app.birdo.vpn.di.NetworkModule.json
+        assertEquals(
+            """{"purchaseToken":"opaque-token","origin":"restore"}""",
+            wire.encodeToString(
+                serializer<GooglePlayLinkRequest>(),
+                GooglePlayLinkRequest(purchaseToken = "opaque-token", origin = StoreLinkOrigin.RESTORE.wire),
+            ),
+        )
+        assertEquals(
+            """{"purchaseToken":"opaque-token","origin":"auto"}""",
+            wire.encodeToString(
+                serializer<GooglePlayLinkRequest>(),
+                GooglePlayLinkRequest(purchaseToken = "opaque-token", origin = StoreLinkOrigin.AUTO.wire),
+            ),
+        )
+        // The re-send to a server that predates `origin` must be the exact old
+        // body: an explicit "origin":null would be refused just the same.
+        assertEquals(
+            """{"purchaseToken":"opaque-token"}""",
+            wire.encodeToString(serializer<GooglePlayLinkRequest>(), GooglePlayLinkRequest(purchaseToken = "opaque-token")),
+        )
+    }
+
+    @Test
+    fun `the link response reads entitled and needsRestore`() {
+        val wire = app.birdo.vpn.di.NetworkModule.json
+        val expired = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":true,"plan":"OPERATIVE","state":"EXPIRED","expiresAt":null,"entitled":false}""",
+        )
+        assertEquals(false, expired.entitled)
+        val active = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":true,"plan":"OPERATIVE","state":"ACTIVE","entitled":true}""",
+        )
+        assertEquals(true, active.entitled)
+        val restoreOnly = wire.decodeFromString(
+            serializer<GooglePlayLinkResponse>(),
+            """{"linked":false,"needsRestore":true}""",
+        )
+        assertEquals(true, restoreOnly.needsRestore)
     }
 
     /**

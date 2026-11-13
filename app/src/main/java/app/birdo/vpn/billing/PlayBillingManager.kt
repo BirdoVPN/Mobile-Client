@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import app.birdo.vpn.BuildConfig
 import app.birdo.vpn.R
 import app.birdo.vpn.data.auth.TokenManager
@@ -24,6 +25,7 @@ import com.android.billingclient.api.QueryPurchasesParams
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
@@ -168,7 +170,7 @@ class PlayBillingManager internal constructor(
     private val refusals = PurchaseRefusalMemory()
 
     private val ingestor = PurchaseIngestor(
-        link = { token -> repository.linkGooglePurchase(token) },
+        link = { token, origin -> repository.linkGooglePurchase(token, origin) },
         acknowledge = { token -> acknowledge(token) },
         isSignedIn = { tokenManager.isLoggedIn() },
         strings = strings,
@@ -228,7 +230,7 @@ class PlayBillingManager internal constructor(
         )
         if (!due) return
         lastReconcileAt = now
-        scope.launch { reconcile(announce = false) }
+        scope.launch { reconcile(announce = false, origin = StoreLinkOrigin.AUTO) }
     }
 
     /** Products only, plus a reconcile. Called when the purchase screen opens. */
@@ -236,11 +238,40 @@ class PlayBillingManager internal constructor(
 
     /**
      * A session has appeared (sign-in, or an anonymous account being minted).
-     * This is the moment a purchase made while signed out can finally be bound.
+     * This is the moment a purchase made while signed out can finally be bound,
+     * if it names this account: an unbound one waits for Restore (F-967-02).
      */
     fun onSignedIn() {
         if (!isRailEnabled) return
-        scope.launch { reconcile(announce = false) }
+        scope.launch { reconcile(announce = false, origin = StoreLinkOrigin.AUTO) }
+    }
+
+    /**
+     * The session ended: the Sign out button, an account deletion, or a session
+     * that died (F-967-10). Everything learned for the previous account goes,
+     * so the next account on this device starts as a fresh install would: the
+     * refusal memory (or a 409 for the old account would silence a re-link for
+     * the new one), the cross-grade list, and the per-account banners.
+     *
+     * Under [gate], like every other writer of this state: a sweep in flight
+     * finishes first and its results are then cleared, rather than landing on
+     * top of the clear. UNDISPATCHED so the clear joins the gate's queue in
+     * call order, ahead of the sweep a following sign-in starts.
+     */
+    fun onSignedOut() {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            gate.withLock { forgetAccountLocked() }
+        }
+    }
+
+    /** Callers hold [gate]. The catalogue is not per-account and stays. */
+    private fun forgetAccountLocked() {
+        knownPurchases = emptyList()
+        ingestor.forgetRefusals()
+        lastRefusalText = null
+        _state.update {
+            it.copy(ownsBirdoSubscription = false, notice = null, duplicateBilling = null)
+        }
     }
 
     private val isRailEnabled: Boolean get() = railEnabled
@@ -280,7 +311,7 @@ class PlayBillingManager internal constructor(
         recomputeStorefront()
 
         // Already inside `gate`: the unlocked variant, or this would deadlock.
-        if (alsoReconcile) reconcileLocked(announce = false)
+        if (alsoReconcile) reconcileLocked(announce = false, origin = StoreLinkOrigin.AUTO)
     }
 
     /** @return null on success, otherwise why the storefront is unavailable. */
@@ -535,8 +566,12 @@ class PlayBillingManager internal constructor(
      * of that case is the ITEM_ALREADY_OWNED reconcile path, not a doomed flow.
      * A monthly-to-yearly move inside ONE subscription id is a base-plan change
      * and needs no replacement params at all.
+     *
+     * Internal so a test can see that sign-out empties the list it reads
+     * (F-967-10) without driving a real billing flow.
      */
-    private fun oldSubscriptionProductId(target: PurchasableOffer): String? =
+    @VisibleForTesting
+    internal fun oldSubscriptionProductId(target: PurchasableOffer): String? =
         knownPurchases
             .asSequence()
             .filter { it.purchaseState == Purchase.PurchaseState.PURCHASED }
@@ -587,7 +622,10 @@ class PlayBillingManager internal constructor(
      */
     private fun reconcileAfterAlreadyOwned() {
         scope.launch {
-            if (reconcile(announce = true) is StoreRestoreOutcome.NothingToRestore) {
+            // AUTO: the user tapped Subscribe, not Restore. An unbound purchase
+            // is therefore not presented (F-967-02), and the sweep comes back
+            // NothingToRestore, whose copy below already points at Restore.
+            if (reconcile(announce = true, origin = StoreLinkOrigin.AUTO) is StoreRestoreOutcome.NothingToRestore) {
                 _state.update {
                     it.copy(notice = StoreNotice.info(strings.get(R.string.billing_already_owned_unseen)))
                 }
@@ -599,17 +637,24 @@ class PlayBillingManager internal constructor(
     override fun onPurchasesUpdated(result: BillingResult, purchases: MutableList<Purchase>?) {
         when (result.responseCode) {
             BillingClient.BillingResponseCode.OK -> {
-                val list = purchases.orEmpty()
-                if (list.any { p ->
-                        p.purchaseState == Purchase.PurchaseState.PURCHASED &&
-                            p.products.any { BirdoPlayProduct.fromProductId(it) != null }
-                    }
-                ) {
+                // Only Birdo products, as the reconcile sweep does (F-967-09).
+                // Anything else is ignored quietly: presenting it would only
+                // earn a 409 and an alarming notice about a purchase that is
+                // not ours.
+                val list = purchases.orEmpty().filter { it.isBirdoProduct() }
+                if (list.any { it.purchaseState == Purchase.PurchaseState.PURCHASED }) {
                     _state.update { it.copy(ownsBirdoSubscription = true) }
                 }
                 scope.launch {
                     var accepted = false
-                    list.forEach { if (ingestAndReport(it, announce = true)) accepted = true }
+                    list.forEach {
+                        // AUTO: a purchase this app launched names the account
+                        // (launchFlow sets the obfuscatedAccountId); one that
+                        // does not was made outside the app and waits for the
+                        // Restore tap (F-967-02).
+                        val outcome = ingestAndReport(it, announce = true, origin = StoreLinkOrigin.AUTO)
+                        if (outcome is IngestOutcome.Accepted) accepted = true
+                    }
                     _state.update { it.copy(purchasingProductId = null) }
                     if (accepted) _entitlementChanged.tryEmit(Unit)
                 }
@@ -634,16 +679,20 @@ class PlayBillingManager internal constructor(
      * StoreKit's `currentEntitlements` sweep, and the only way a purchase that
      * completed while the app was dead ever reaches the server from here.
      */
-    private suspend fun reconcile(announce: Boolean): StoreRestoreOutcome =
-        gate.withLock { reconcileLocked(announce) }
+    private suspend fun reconcile(announce: Boolean, origin: StoreLinkOrigin): StoreRestoreOutcome =
+        gate.withLock { reconcileLocked(announce, origin) }
 
     /**
      * The sweep itself. Callers must hold [gate]: two sweeps in flight would
      * present the same token to /link twice and race on [knownPurchases] and
      * [lastRefusalText] (A-M74). [refreshInternal] already holds it and calls
      * this directly; every other caller goes through [reconcile].
+     *
+     * [origin] is [StoreLinkOrigin.RESTORE] from [restorePurchases] only. Every
+     * automatic sweep passes AUTO, which leaves unbound purchases for that tap
+     * (F-967-02).
      */
-    private suspend fun reconcileLocked(announce: Boolean): StoreRestoreOutcome {
+    private suspend fun reconcileLocked(announce: Boolean, origin: StoreLinkOrigin): StoreRestoreOutcome {
         if (!isRailEnabled) return StoreRestoreOutcome.NothingToRestore
         val unreachable = StoreRestoreOutcome.Failed(strings.get(R.string.billing_restore_unreachable))
         val connectFailure = playCall("connect") { connect() } ?: return unreachable
@@ -669,25 +718,34 @@ class PlayBillingManager internal constructor(
         knownPurchases = purchases
         // Only purchases of a product we recognise. Play can return a purchase
         // from an id we no longer sell; presenting it just earns a 409.
-        val ours = purchases.filter { p -> p.products.any { BirdoPlayProduct.fromProductId(it) != null } }
+        val ours = purchases.filter { it.isBirdoProduct() }
         _state.update { st ->
             st.copy(ownsBirdoSubscription = ours.any { it.purchaseState == Purchase.PurchaseState.PURCHASED })
         }
         if (ours.isEmpty()) return StoreRestoreOutcome.NothingToRestore
 
         var linked = 0
+        var refused = 0
         var firstRefusal: String? = null
         ours.forEach { purchase ->
-            if (ingestAndReport(purchase, announce = announce)) {
-                linked++
-            } else if (firstRefusal == null) {
-                firstRefusal = lastRefusalText
+            when (ingestAndReport(purchase, announce = announce, origin = origin)) {
+                is IngestOutcome.Accepted -> linked++
+                // Left for the Restore tap (F-967-02), or linked with nothing to
+                // grant (F-967-05). Neither is a refusal to report.
+                IngestOutcome.NeedsRestore, IngestOutcome.NotEntitled -> Unit
+                else -> {
+                    refused++
+                    if (firstRefusal == null) firstRefusal = lastRefusalText
+                }
             }
         }
         if (linked > 0) {
             _entitlementChanged.tryEmit(Unit)
             return StoreRestoreOutcome.Restored(linked)
         }
+        // Nothing was refused, only skipped or not entitled: for the user that
+        // is "no active Birdo subscription here", the existing neutral answer.
+        if (refused == 0) return StoreRestoreOutcome.NothingToRestore
         return StoreRestoreOutcome.Refused(
             firstRefusal ?: strings.get(StoreLinkRefusal.TRANSIENT.fallbackMessageRes),
         )
@@ -710,7 +768,9 @@ class PlayBillingManager internal constructor(
         // signed in to the right account. Forget every suppression.
         ingestor.forgetRefusals()
         val outcome = try {
-            reconcile(announce = false)
+            // The one RESTORE origin: an explicit tap, so an unbound purchase
+            // is presented here and nowhere else (F-967-02).
+            reconcile(announce = false, origin = StoreLinkOrigin.RESTORE)
         } finally {
             _state.update { it.copy(isRestoring = false) }
         }
@@ -729,9 +789,13 @@ class PlayBillingManager internal constructor(
     @Volatile
     private var lastRefusalText: String? = null
 
-    /** @return true when the server accepted the entitlement. */
-    private suspend fun ingestAndReport(purchase: Purchase, announce: Boolean): Boolean {
-        val outcome = ingestor.ingest(purchase.toIngestable())
+    /** @return what happened; [IngestOutcome.Accepted] means the server granted the entitlement. */
+    private suspend fun ingestAndReport(
+        purchase: Purchase,
+        announce: Boolean,
+        origin: StoreLinkOrigin,
+    ): IngestOutcome {
+        val outcome = ingestor.ingest(purchase.toIngestable(), origin)
         when (outcome) {
             is IngestOutcome.Accepted -> {
                 lastRefusalText = null
@@ -751,13 +815,11 @@ class PlayBillingManager internal constructor(
                         duplicateBilling = outcome.duplicateBilling ?: st.duplicateBilling,
                     )
                 }
-                return true
             }
 
             is IngestOutcome.Pending -> {
                 lastRefusalText = outcome.message
                 _state.update { it.copy(notice = StoreNotice.info(outcome.message)) }
-                return false
             }
 
             is IngestOutcome.Rejected -> {
@@ -769,11 +831,26 @@ class PlayBillingManager internal constructor(
                         else StoreNotice.info(outcome.message),
                     )
                 }
-                return false
             }
 
-            IngestOutcome.Skipped -> return false
+            IngestOutcome.Skipped -> Unit
+
+            // F-967-02: left for the Restore tap. No notice: strings.xml has no
+            // neutral "tap Restore to add your Play subscription" sentence yet,
+            // and an error here would be untrue. The already-owned path says
+            // "tap Restore Purchases" through its NothingToRestore copy.
+            IngestOutcome.NeedsRestore -> Unit
+
+            // F-967-05: linked, nothing granted. Never the "now active" success.
+            // Where the user is waiting on an answer, the existing neutral
+            // "no Birdo subscription found" line; a background sweep says nothing.
+            IngestOutcome.NotEntitled -> if (announce) {
+                _state.update {
+                    it.copy(notice = StoreNotice.info(strings.get(R.string.billing_nothing_to_restore)))
+                }
+            }
         }
+        return outcome
     }
 
     /**
@@ -869,7 +946,7 @@ internal fun buildPlayBillingClient(
         .enableAutoServiceReconnection()
         .build()
 
-/** Map Play's `Purchase` onto the four facts the pure pipeline uses. */
+/** Map Play's `Purchase` onto the facts the pure pipeline uses. */
 private fun Purchase.toIngestable() = IngestablePurchase(
     purchaseToken = purchaseToken,
     state = when (purchaseState) {
@@ -879,7 +956,18 @@ private fun Purchase.toIngestable() = IngestablePurchase(
     },
     isAcknowledged = isAcknowledged,
     productIds = products,
+    // Play echoes the obfuscatedAccountId launchFlow set; null when the
+    // purchase was made without one (F-967-02).
+    isBound = !accountIdentifiers?.obfuscatedAccountId.isNullOrBlank(),
 )
+
+/**
+ * A purchase of a product Birdo sells. Play can hand back purchases of an id we
+ * no longer sell; presenting one only earns a 409. The ONE filter both the
+ * reconcile sweep and the purchase listener apply (F-967-09).
+ */
+private fun Purchase.isBirdoProduct(): Boolean =
+    products.any { BirdoPlayProduct.fromProductId(it) != null }
 
 /** The shortest gap between two foreground reconciles. */
 internal const val RESUME_RECONCILE_INTERVAL_MS = 60_000L

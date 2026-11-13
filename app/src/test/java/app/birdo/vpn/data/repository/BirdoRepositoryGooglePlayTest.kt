@@ -1,5 +1,8 @@
 package app.birdo.vpn.data.repository
 
+import app.birdo.vpn.billing.GooglePlayLinkRequest
+import app.birdo.vpn.billing.GooglePlayLinkResponse
+import app.birdo.vpn.billing.StoreLinkOrigin
 import app.birdo.vpn.billing.StoreLinkOutcome
 import app.birdo.vpn.billing.StoreLinkRefusal
 import app.birdo.vpn.data.api.BirdoApi
@@ -79,7 +82,7 @@ class BirdoRepositoryGooglePlayTest {
             ),
         )
 
-        val outcome = repository.linkGooglePurchase("tok_not_found")
+        val outcome = repository.linkGooglePurchase("tok_not_found", StoreLinkOrigin.AUTO)
 
         assertTrue("expected a refusal, got $outcome", outcome is StoreLinkOutcome.Refused)
         // The whole point: the refresh path must not have been entered.
@@ -98,7 +101,7 @@ class BirdoRepositoryGooglePlayTest {
             401, errorBody("""{"statusCode":401,"message":"Unauthorized"}"""),
         )
 
-        repository.linkGooglePurchase("tok_expired_session")
+        repository.linkGooglePurchase("tok_expired_session", StoreLinkOrigin.AUTO)
 
         coVerify(atLeast = 1) { api.refreshToken(any()) }
     }
@@ -115,7 +118,7 @@ class BirdoRepositoryGooglePlayTest {
             ),
         )
 
-        val outcome = repository.linkGooglePurchase("tok_already_linked")
+        val outcome = repository.linkGooglePurchase("tok_already_linked", StoreLinkOrigin.AUTO)
 
         assertTrue(outcome is StoreLinkOutcome.Refused)
         assertEquals(
@@ -139,7 +142,7 @@ class BirdoRepositoryGooglePlayTest {
             ),
         )
 
-        val outcome = repository.linkGooglePurchase("tok_google_down")
+        val outcome = repository.linkGooglePurchase("tok_google_down", StoreLinkOrigin.AUTO)
 
         assertTrue(outcome is StoreLinkOutcome.Refused)
         assertNotEquals(
@@ -148,5 +151,67 @@ class BirdoRepositoryGooglePlayTest {
             (outcome as StoreLinkOutcome.Refused).refusal,
         )
         coVerify(exactly = 0) { api.refreshToken(any()) }
+    }
+
+    // ── F-967-02: the origin, and a server that predates it ─────────
+
+    private val granted = GooglePlayLinkResponse(linked = true, plan = "OPERATIVE", state = "ACTIVE")
+
+    @Test
+    fun `the origin goes on the wire`() = runTest {
+        val sent = mutableListOf<GooglePlayLinkRequest>()
+        coEvery { api.linkGooglePurchase(capture(sent)) } returns Response.success(granted)
+
+        repository.linkGooglePurchase("tok_restore", StoreLinkOrigin.RESTORE)
+        repository.linkGooglePurchase("tok_auto", StoreLinkOrigin.AUTO)
+
+        assertEquals(listOf("restore", "auto"), sent.map { it.origin })
+    }
+
+    @Test
+    fun `an uncoded 400 from a server that predates origin is re-sent once, without it`() = runTest {
+        // The live GooglePlayLinkDto declares only purchaseToken and the global
+        // ValidationPipe runs forbidNonWhitelisted: an unknown key is a 400
+        // with no details.code. Without the re-send, every /link would fail
+        // until the web half is deployed.
+        val sent = mutableListOf<GooglePlayLinkRequest>()
+        coEvery { api.linkGooglePurchase(capture(sent)) } returnsMany listOf(
+            Response.error(
+                400,
+                errorBody("""{"statusCode":400,"message":"property origin should not exist","error":"Bad Request"}"""),
+            ),
+            Response.success(granted),
+        )
+
+        val outcome = repository.linkGooglePurchase("tok_old_server", StoreLinkOrigin.AUTO)
+
+        assertTrue("expected the re-sent request to be accepted, got $outcome", outcome is StoreLinkOutcome.Accepted)
+        assertEquals(listOf("auto", null), sent.map { it.origin })
+        assertEquals("tok_old_server", sent[1].purchaseToken)
+        coVerify(exactly = 0) { api.refreshToken(any()) }
+    }
+
+    @Test
+    fun `a 400 that still fails without origin is reported, not re-sent forever`() = runTest {
+        coEvery { api.linkGooglePurchase(any()) } returns Response.error(
+            400, errorBody("""{"statusCode":400,"message":"Bad Request"}"""),
+        )
+
+        val outcome = repository.linkGooglePurchase("tok_bad_request", StoreLinkOrigin.AUTO)
+
+        assertTrue(outcome is StoreLinkOutcome.Refused)
+        coVerify(exactly = 2) { api.linkGooglePurchase(any()) }
+    }
+
+    @Test
+    fun `a CODED 400 is the server's answer and is not re-sent`() = runTest {
+        coEvery { api.linkGooglePurchase(any()) } returns Response.error(
+            400,
+            errorBody("""{"statusCode":400,"message":"No.","details":{"code":"STORE_SOMETHING_SPECIFIC"}}"""),
+        )
+
+        repository.linkGooglePurchase("tok_coded_400", StoreLinkOrigin.AUTO)
+
+        coVerify(exactly = 1) { api.linkGooglePurchase(any()) }
     }
 }
