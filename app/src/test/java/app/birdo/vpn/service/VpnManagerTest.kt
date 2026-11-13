@@ -77,6 +77,9 @@ class VpnManagerTest {
      */
     private val transportBlocked = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
 
+    /** The service's count of finished stops, per test for the same reason. */
+    private val stopsCompleted = MutableStateFlow(0L)
+
     /** Home-screen widget re-renders VpnManager asked for (REVIEW-AND-012). */
     private var widgetRefreshes = 0
     private val stringExtras = mutableMapOf<String, String?>()
@@ -136,6 +139,7 @@ class VpnManagerTest {
         every { BirdoVpnService.killSwitchActive } returns false
         every { BirdoVpnService.setConfig(any()) } just Runs
         every { BirdoVpnService.transportBlockedFlow } returns transportBlocked
+        every { BirdoVpnService.stopsCompleted } returns stopsCompleted
 
         // Mock VpnService.prepare() - returns null when permission is granted
         mockkStatic(VpnService::class)
@@ -3052,6 +3056,109 @@ class VpnManagerTest {
         gate.complete(ApiResult.Success(Unit))
         runCurrent()
         assertTrue(signOut.isCompleted)
+    }
+
+    // ── A Disconnecting with nothing left to stop (1.4.40 on an S25) ─────
+    //
+    // Disconnect, sign out, sign in: Home said "Disconnecting…" with Connect
+    // disabled until a force-stop. The sign-out's STOP reached a service with
+    // nothing up, whose state went Disconnected → Disconnecting → Disconnected
+    // on the tunnel executor. The collector (on Main) resumes after that round
+    // trip, StateFlow hands it an unchanged value, and it sees nothing — which
+    // is what serviceStateFlow staying put models here.
+
+    /** Repro step 1: a session, ended by a Disconnect the service confirmed. */
+    private suspend fun TestScope.connectThenDisconnect() {
+        connectAndEstablish()
+        vpnManager.disconnect()
+        serviceEmits(VpnState.Disconnected)
+        runCurrent()
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+    }
+
+    @Test
+    fun `sign-out after a Disconnect ends Disconnected, not stuck on Disconnecting with Connect disabled`() = runTest {
+        connectThenDisconnect()
+
+        vpnManager.disconnectForSignOut()
+        // The service ran the STOP; its state never changed, its stop count did.
+        stopsCompleted.value++
+        runCurrent()
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        // The tile acts on this state too: on Disconnecting every tap was ignored.
+        assertEquals(
+            QuickToggle.Action.CONNECT,
+            QuickToggle.decide(
+                state = vpnManager.state.value,
+                killSwitchActive = false,
+                signedIn = true,
+                vpnPermissionGranted = true,
+                consentAccepted = true,
+                joinsResume = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `deleting the account with nothing up ends Disconnected, and Login shows no still-connected strip`() = runTest {
+        // The second 1.4.40 repro: never connected, Profile → Delete Account.
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        // The service ran the STOP; its state never changed, its stop count did.
+        stopsCompleted.value++
+        runCurrent()
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        // Disconnecting read "Your VPN is still connected." on the sign-in screen.
+        assertNull(app.birdo.vpn.ui.navigation.loginVpnStripText(vpnManager.state.value, blocking = false))
+        // The server removed the peer with the account: nothing to release.
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+    }
+
+    @Test
+    fun `a Disconnecting whose STOP never reaches the service ends within the watchdog bound`() = runTest {
+        connectThenDisconnect()
+        // Android refuses the start (a background start): no service runs, so
+        // nothing is published and no stop is counted.
+        every { BirdoVpnService.running } returns false
+        every { context.startForegroundService(any()) } throws IllegalStateException("startForegroundService() not allowed")
+
+        vpnManager.disconnectForSignOut()
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+
+        advanceTimeBy(15_001) // DISCONNECT_STUCK_TIMEOUT_MS
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        assertNull(vpnManager.connectedServer.value)
+    }
+
+    @Test
+    fun `a Disconnect of a live tunnel still waits for the service, and nothing cuts its teardown short`() = runTest {
+        connectAndEstablish()
+
+        vpnManager.disconnect()
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+
+        // A count from some earlier stop: the service still reports the live
+        // tunnel, so Disconnecting holds.
+        stopsCompleted.value++
+        runCurrent()
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+        // The tunnel is still coming down: no verdict inside the bound.
+        advanceTimeBy(14_000)
+        assertEquals(VpnState.Disconnecting, vpnManager.state.value)
+
+        serviceEmits(VpnState.Disconnected)
+        stopsCompleted.value++
+        runCurrent()
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        // The watchdog, when its time comes, finds nothing to end.
+        advanceTimeBy(2_000)
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
     }
 
     // ── P2-2: the not-armed warning ends with the user's Disconnect ──────
