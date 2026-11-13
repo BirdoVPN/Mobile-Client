@@ -272,6 +272,8 @@ class VpnManager @Inject constructor(
     /** A dial is running (A-M79): the server picker is held while it is, see [dialInFlight]. */
     val dialActive: StateFlow<Boolean> = _dialActive.asStateFlow()
     private var connectWatchdogJob: Job? = null
+    /** Bounds the Disconnecting of a teardown; see [armDisconnectWatchdog]. */
+    private var disconnectWatchdogJob: Job? = null
     private var reconnectJob: Job? = null
     private var cooldownJob: Job? = null
 
@@ -430,7 +432,10 @@ class VpnManager @Inject constructor(
          * verdict kicks off.
          */
         private const val CONNECT_SERVICE_TIMEOUT_MS = 60_000L
-        /** Max time (ms) before we force Disconnecting → Disconnected if service is stuck */
+        /**
+         * Max time (ms) before we force Disconnecting → Disconnected if service
+         * is stuck. Also the bound of [armDisconnectWatchdog]'s timer.
+         */
         private const val DISCONNECT_STUCK_TIMEOUT_MS = 15_000L
         /**
          * Heartbeat interval. The backend reaps a WireGuard key after 5
@@ -544,6 +549,32 @@ class VpnManager @Inject constructor(
                         FaultReporter.PATH_CONNECT,
                         "manager_state_collector_threw",
                         "VpnManager state collector threw while applying a service state",
+                        e,
+                    )
+                }
+            }
+        }
+
+        // A stop the service finished. Its final state reaches the collector
+        // above as a rule, but not when it equals the state that collector
+        // last saw: a STOP to a service with nothing up (after a Disconnect,
+        // during a dial's API phase) goes Disconnected → Disconnecting →
+        // Disconnected on the tunnel executor, StateFlow conflates the round
+        // trip, and the Disconnecting tearDownTunnel published waited for an
+        // emission that never came — Home stuck on "Disconnecting…" with
+        // Connect disabled after a sign-out (1.4.40). The count is never
+        // conflated away, so the service's state is applied here instead.
+        scope.launch {
+            BirdoVpnService.stopsCompleted.drop(1).collect {
+                try {
+                    if (_state.value is VpnState.Disconnecting) applyStateWithGuards(BirdoVpnService.currentState)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FaultReporter.report(
+                        FaultReporter.PATH_CONNECT,
+                        "manager_stop_collector_threw",
+                        "VpnManager threw while applying the state after a finished stop",
                         e,
                     )
                 }
@@ -2232,6 +2263,7 @@ class VpnManager @Inject constructor(
     ) {
         _state.value = VpnState.Disconnecting
         transitionStartTime = System.currentTimeMillis()
+        armDisconnectWatchdog(reason?.let { VpnState.Error(it, reasonKind) } ?: VpnState.Disconnected)
         activeMultiHop = null
         _connectedServerId.value = null
 
@@ -2261,7 +2293,31 @@ class VpnManager @Inject constructor(
         if (releasePeer) repository.disconnectVpn(key)
 
         // Don't set Disconnected here — the service sets it after the tunnel is
-        // actually stopped, and the state collector picks it up.
+        // actually stopped, and the state collector (or, when that state did
+        // not change, the stop-count collector) picks it up.
+    }
+
+    /**
+     * A TIMER on the Disconnecting [tearDownTunnel] publishes, for a STOP the
+     * service never carries out: a dispatch Android refused, a service that
+     * died first. Nothing else would ever end it: the safety net in
+     * [applyStateWithGuards] runs only when the service publishes, and
+     * [disconnect] cancels the connect watchdog. Ends in [stopped], what the
+     * STOP would have ended in: Disconnected (the safety net's answer), or
+     * the stop's reason. Not in an Error the service still holds: a new one
+     * would already have reached this class (Errors always propagate), so
+     * one still unseen is from before the STOP. The session's peer went
+     * with the STOP either way.
+     */
+    private fun armDisconnectWatchdog(stopped: VpnState) {
+        disconnectWatchdogJob?.cancel()
+        disconnectWatchdogJob = scope.launch {
+            delay(DISCONNECT_STUCK_TIMEOUT_MS)
+            if (_state.value !is VpnState.Disconnecting) return@launch
+            _state.value = stopped
+            _connectedServer.value = null
+            _connectedSince.value = 0L
+        }
     }
 
     /**
@@ -2276,6 +2332,8 @@ class VpnManager @Inject constructor(
     private suspend fun switchTeardown(forceBlock: Boolean = false) {
         _state.value = VpnState.Disconnecting
         transitionStartTime = System.currentTimeMillis()
+        // This Disconnecting is the rebuild's, bounded by its own wait.
+        disconnectWatchdogJob?.cancel()
 
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_SWITCH_TEARDOWN
