@@ -3101,6 +3101,25 @@ class VpnManagerTest {
     }
 
     @Test
+    fun `deleting the account with nothing up ends Disconnected, and Login shows no still-connected strip`() = runTest {
+        // The second 1.4.40 repro: never connected, Profile → Delete Account.
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+
+        vpnManager.onAccountDeleted()
+        runCurrent()
+        assertEquals(BirdoVpnService.ACTION_STOP, dispatchedActions.last())
+        // The service ran the STOP; its state never changed, its stop count did.
+        stopsCompleted.value++
+        runCurrent()
+
+        assertEquals(VpnState.Disconnected, vpnManager.state.value)
+        // Disconnecting read "Your VPN is still connected." on the sign-in screen.
+        assertNull(app.birdo.vpn.ui.navigation.loginVpnStripText(vpnManager.state.value, blocking = false))
+        // The server removed the peer with the account: nothing to release.
+        coVerify(exactly = 0) { repository.disconnectVpn(any()) }
+    }
+
+    @Test
     fun `a Disconnecting whose STOP never reaches the service ends within the watchdog bound`() = runTest {
         connectThenDisconnect()
         // Android refuses the start (a background start): no service runs, so
