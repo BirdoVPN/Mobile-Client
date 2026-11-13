@@ -19,6 +19,17 @@ final class ClientIdentityTests: XCTestCase {
         #endif
     }
 
+    /// MR-197 / MR-1754: the contract version is a plain MAJOR.MINOR.PATCH, the
+    /// only thing the backend's `X-Birdo-Contract` counter accepts as a label
+    /// (anything else is filed as `invalid`). That it equals
+    /// `contract/CONTRACT_VERSION` is pinned by `ContractVersionTest` (Android
+    /// CI, which can read the repo), since this bundle cannot.
+    func testContractVersionIsSemver() {
+        let parts = ClientIdentity.contractVersion.split(separator: ".")
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertTrue(parts.allSatisfy { Int($0) != nil })
+    }
+
     /// The version-unknown placeholder must survive verbatim: the backend
     /// recognises `0.0.0-unknown` as "unknown, allow" rather than "ancient".
     func testUnknownVersionPlaceholderIsPassedThroughVerbatim() {

@@ -106,6 +106,8 @@ final class APIClient: @unchecked Sendable {
         config.httpAdditionalHeaders = [
             "User-Agent": ClientIdentity.userAgent(version: kBirdoClientVersion),
             "X-Desktop-Client": ClientIdentity.clientHeaderValue,
+            // MR-197 / MR-1754: the contract version this build speaks.
+            "X-Birdo-Contract": ClientIdentity.contractVersion,
         ]
         // SEC: Disable HTTP cookies + URL cache so auth headers and JSON
         // bodies aren't persisted to disk between launches.

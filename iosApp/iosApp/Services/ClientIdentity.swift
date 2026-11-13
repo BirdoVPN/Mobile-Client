@@ -34,6 +34,12 @@ enum ClientIdentity {
     static let clientHeaderValue = "birdo-ios"
     #endif
 
+    /// The client<->backend contract version this build was written against
+    /// (`contract/CONTRACT_VERSION`; MR-197 / MR-1754). Sent as
+    /// `X-Birdo-Contract`; the backend counts connects by it and by nothing
+    /// else. A test pins it to the vendored file.
+    static let contractVersion = "1.0.0"
+
     /// `Birdo-iOS/1.4.32 (iOS)` on iOS, `Birdo-macOS/1.4.32 (macOS)` on a Mac.
     static func userAgent(version: String) -> String {
         "Birdo-\(platformToken)/\(version) (\(platformToken))"
