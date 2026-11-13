@@ -744,8 +744,11 @@ class VpnViewModel @Inject constructor(
      * Fetch the BirdoShield fleet gate from the public client-config endpoint.
      *
      * Failure is silent BY DESIGN: [nextDnsFilteringAvailable] keeps the current
-     * value (initially `null` = unknown = available), so an unreachable web app
-     * leaves the toggle usable instead of greying out a feature that works.
+     * value, so a blip never flips a gate a fetch already reported. Unknown
+     * (`null`, before any fetch answered) HIDES the BirdoShield row, exactly like
+     * `false` (owner 2026-11-13): the row shows only once a fetch said the gate
+     * is on. The dial reads the same last-known answer, persisted in
+     * [AppPreferences.dnsFilteringGateOn].
      *
      * The same response carries the free plan's cap for the paywall (MR-1980,
      * [nextFreePlanCapGb]) and the plan-gating table (MR-1517), which the
