@@ -1,4 +1,5 @@
 import CommonCrypto
+import Network
 import NetworkExtension
 import Security
 import WireGuardKit
@@ -285,6 +286,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             // Stamp the start time before the heartbeat begins, so the liveness
             // grace window is measured from when the tunnel actually came up.
             self.tunnelStartedAt = Date()
+            self.startPathMonitor()
             self.breakerNodeId = breakerNode
             if let keyId = heartbeatKeyId, !keyId.isEmpty,
                let token = heartbeatToken, !token.isEmpty {
@@ -307,6 +309,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // finding #2: tear the heartbeat down first so no request outlives the
         // tunnel (and so a cancelTunnelWithError re-entry can't double-start).
         stopHeartbeat()
+        pathMonitor?.cancel()
+        pathMonitor = nil
         tunnelStartedAt = nil
         adapter.stop { [weak self] error in
             if let error {
@@ -509,6 +513,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 // heartbeat below. The heartbeat cannot detect a dead tunnel: its
                 // URLSession rides the live tunnel, so the one condition worth
                 // detecting is exactly the condition that disables the detector.
+                // Battery: while the tunnel is idle one read every third tick
+                // (30 s) is enough; traffic flowing keeps the 10 s cadence.
+                if !liveness.busy && ticks % 3 != 0 && liveness.rx >= 0 {
+                    if ticks % beatEvery == 0 {
+                        await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
+                    }
+                    continue
+                }
                 await self.checkDataPlaneLiveness(&liveness, keyId: keyId, token: token,
                                                   clientVersion: clientVersion)
                 if Task.isCancelled { return }
@@ -734,7 +746,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let (next, verdict) = DeadTunnelDetector.assess(
             prev: liveness, sample: sample,
             now: ProcessInfo.processInfo.systemUptime,
-            wall: Date().timeIntervalSince1970)
+            wall: Date().timeIntervalSince1970,
+            pathStableFor: pathStableFor())
         liveness = next
 
         // CLASSIFY, don't just count (P1 requirement 2). "Never handshaked" is
@@ -744,35 +757,69 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         // 180 s window since start has passed (the host's handshake arm owns the
         // first seconds). A handshake that existed and went quiet is the
         // NAT-rebind / node-restart shape, where re-dialling usually works.
-        let base: TunnelFailureKind
         switch verdict {
         case .alive, .skippedAfterSuspend:
             return
         case .neverHandshook:
             guard Date().timeIntervalSince(connectedAt) > Self.maxHandshakeAge else { return }
-            base = .neverEstablished
         case .unanswered, .stalled:
-            base = .diedAfterHandshake
+            break
         }
 
         // MR-1623: before re-dialling, ask the server why. A key it no longer
         // knows can never be re-dialled; a node it reports offline will not
-        // come back by dialling the same node. Fail-open on no answer.
+        // come back by dialling the same node. Fail-open on no answer (the
+        // probe's session rides the tunnel, so on a dead path it is .unknown).
         let outcome = await probeDeadKey(keyId: keyId, token: token, clientVersion: clientVersion)
         if Task.isCancelled { return }
-        let kind = DeadTunnelProbe.failureKind(base: base, outcome: outcome)
-        os_log("Data plane dead: %{public}@, server says %{public}@ -> %{public}@",
+        let decision = DeadTunnelProbe.decision(verdict: verdict, outcome: outcome)
+        os_log("Data plane dead: %{public}@, server says %{public}@",
                log: log, type: .error,
-               String(describing: verdict), String(describing: outcome), kind.rawValue)
+               String(describing: verdict), String(describing: outcome))
         // Tell the app: the host shows this as "Tunnel failed: <reason>".
         if let reason = DeadTunnelProbe.reason(for: outcome) { recordFailure(reason) }
-        handleDataPlaneFailure(kind, error: kind == .revoked
-            ? TunnelError.connectionRevoked
-            : NSError(
-                domain: "app.birdo.vpn.tunnel",
-                code: -1001,
-                userInfo: [NSLocalizedDescriptionKey: "The VPN connection stopped responding."]
-            ))
+        let stopped = NSError(
+            domain: "app.birdo.vpn.tunnel",
+            code: -1001,
+            userInfo: [NSLocalizedDescriptionKey: "The VPN connection stopped responding."]
+        )
+        switch decision {
+        case .charge(let kind):
+            handleDataPlaneFailure(kind, error: kind == .revoked ? TunnelError.connectionRevoked : stopped)
+        case .redialOnly:
+            // Cancel WITHOUT recording: the on-demand rule (or the user) re-dials,
+            // and this can never trip the breaker.
+            stopHeartbeat()
+            cancelTunnelWithError(stopped)
+        }
+    }
+
+    // MARK: - Path stability (MR-1622)
+
+    private let pathLock = NSLock()
+    private var _pathSince: Date?
+    private var pathMonitor: NWPathMonitor?
+
+    /// Seconds the network path has been satisfied and unchanged (0 when down
+    /// or not yet known). Read by the liveness loop.
+    private func pathStableFor() -> TimeInterval {
+        pathLock.lock(); defer { pathLock.unlock() }
+        guard let since = _pathSince else { return 0 }
+        return Date().timeIntervalSince(since)
+    }
+
+    private func startPathMonitor() {
+        pathMonitor?.cancel()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.pathLock.lock()
+            // Any change restarts the clock; an unsatisfied path clears it.
+            self._pathSince = path.status == .satisfied ? Date() : nil
+            self.pathLock.unlock()
+        }
+        monitor.start(queue: DispatchQueue(label: "app.birdo.vpn.pathmonitor"))
+        pathMonitor = monitor
     }
 
     /// Sum `rx_bytes=` / `tx_bytes=` lines from the wg-go UAPI dump.

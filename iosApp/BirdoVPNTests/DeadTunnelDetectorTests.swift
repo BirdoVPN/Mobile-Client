@@ -134,12 +134,74 @@ final class DeadTunnelDetectorTests: XCTestCase {
         XCTAssertEqual(P.classify(statusCode: 200, json: [:]), .unknown)
     }
 
-    func testProbeDecidesWhichBudgetTheFailureSpends() {
+    func testOnlyHardEvidenceChargesTheBreaker() {
         typealias P = DeadTunnelProbe
-        XCTAssertEqual(P.failureKind(base: .diedAfterHandshake, outcome: .keyRevoked), .revoked)
-        XCTAssertEqual(P.failureKind(base: .diedAfterHandshake, outcome: .serverOffline), .neverEstablished)
-        XCTAssertEqual(P.failureKind(base: .diedAfterHandshake, outcome: .keyValid), .diedAfterHandshake)
-        XCTAssertEqual(P.failureKind(base: .neverEstablished, outcome: .unknown), .neverEstablished)
+        XCTAssertEqual(P.decision(verdict: .unanswered, outcome: .keyRevoked), .charge(.revoked))
+        XCTAssertEqual(P.decision(verdict: .stalled, outcome: .keyValid), .charge(.diedAfterHandshake))
+        XCTAssertEqual(P.decision(verdict: .stalled, outcome: .unknown), .charge(.diedAfterHandshake))
+        XCTAssertEqual(P.decision(verdict: .neverHandshook, outcome: .unknown), .charge(.neverEstablished))
+        // The FAST rule re-dials but never spends the budget (handover, portal).
+        XCTAssertEqual(P.decision(verdict: .unanswered, outcome: .unknown), .redialOnly)
+        XCTAssertEqual(P.decision(verdict: .unanswered, outcome: .keyValid), .redialOnly)
+        // A node-status flap cannot trip it either.
+        XCTAssertEqual(P.decision(verdict: .stalled, outcome: .serverOffline), .redialOnly)
+    }
+
+    // MARK: - Path changes and deep sleep
+
+    func testAHandoverNeverCountsAsUnanswered() {
+        var state = D.Liveness()
+        var up: TimeInterval = 1000
+        var wall: TimeInterval = 1_700_000_000
+        var verdicts: [D.Verdict] = []
+        // wg-go resends a 148-byte handshake every 5 s: tx grows, rx is flat.
+        for i in 0..<8 {
+            up += D.checkInterval; wall += D.checkInterval
+            let (n, v) = D.assess(prev: state,
+                                  sample: D.Sample(rx: 100, tx: Int64(100 + i * 296), handshakeAge: 30),
+                                  now: up, wall: wall,
+                                  pathStableFor: 5) // path changed 5 s ago, every tick
+            state = n; verdicts.append(v)
+        }
+        XCTAssertFalse(verdicts.contains(.unanswered))
+    }
+
+    func testAStablePathStillFiresTheFastRule() {
+        var state = D.Liveness()
+        var up: TimeInterval = 1000
+        var wall: TimeInterval = 1_700_000_000
+        var last = D.Verdict.alive
+        for i in 0..<5 {
+            up += D.checkInterval; wall += D.checkInterval
+            let (n, v) = D.assess(prev: state,
+                                  sample: D.Sample(rx: 100, tx: Int64(100 + i * 5000), handshakeAge: 30),
+                                  now: up, wall: wall, pathStableFor: 600)
+            state = n; last = v
+        }
+        XCTAssertEqual(last, .unanswered)
+    }
+
+    func testStaleHandshakeRightAfterASleepIsHeldForTwoTicks() {
+        // Slept 10 minutes: the handshake is 600 s old only because the CPU was off.
+        let v = run([(100, 100, 30), (100, 100, 600), (100, 100, 601), (100, 100, 602), (100, 100, 603)],
+                    sleepBefore: [1: 600])
+        XCTAssertEqual(v[1], .skippedAfterSuspend)
+        XCTAssertEqual(v[2], .alive)       // held
+        XCTAssertEqual(v[3], .stalled)     // still stale after the hold: now believed
+    }
+
+    func testAFreshHandshakeAfterASleepIsAlive() {
+        let v = run([(100, 100, 30), (100, 100, 600), (300, 200, 4), (300, 200, 14)], sleepBefore: [1: 600])
+        XCTAssertEqual(v, [.alive, .skippedAfterSuspend, .alive, .alive])
+    }
+
+    func testIdleTunnelIsNotBusyAndTrafficIs() {
+        var state = D.Liveness()
+        (state, _) = D.assess(prev: state, sample: D.Sample(rx: 1, tx: 1, handshakeAge: 5), now: 1010, wall: 10)
+        (state, _) = D.assess(prev: state, sample: D.Sample(rx: 1, tx: 33, handshakeAge: 15), now: 1020, wall: 20)
+        XCTAssertFalse(state.busy)
+        (state, _) = D.assess(prev: state, sample: D.Sample(rx: 900, tx: 800, handshakeAge: 25), now: 1030, wall: 30)
+        XCTAssertTrue(state.busy)
     }
 
     func testProbeReasonsAreShortLabels() {

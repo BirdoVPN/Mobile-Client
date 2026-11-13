@@ -57,7 +57,20 @@ enum DeadTunnelDetector {
         /// Wall-clock and monotonic stamps of the previous check, for `suspended`.
         var lastWall: TimeInterval?
         var lastUptime: TimeInterval?
+        /// Checks still to be skipped before a `.stalled` verdict is believed
+        /// (set after a deep sleep: the handshake is old because the CPU was off).
+        var holdTicks: Int = 0
+        /// Whether the last reading saw traffic (rx advanced or tx beyond the
+        /// keepalive allowance). The provider checks less often while idle.
+        var busy: Bool = false
     }
+
+    /// Ticks a `.stalled` verdict is held after a deep sleep.
+    static let suspendHoldTicks = 2
+    /// Path must have been satisfied and unchanged this long before the FAST
+    /// rule may count: a Wi-Fi/cellular handover or a captive portal makes
+    /// wg-go resend handshakes (tx grows) while nothing can come back.
+    static let pathStableRequired: TimeInterval = 20
 
     enum Verdict: Equatable, Sendable {
         case alive
@@ -97,17 +110,20 @@ enum DeadTunnelDetector {
     static func assess(prev: Liveness,
                        sample: Sample?,
                        now: TimeInterval,
-                       wall: TimeInterval) -> (Liveness, Verdict) {
+                       wall: TimeInterval,
+                       pathStableFor: TimeInterval = .infinity) -> (Liveness, Verdict) {
         let gap = suspended(prev: prev, wall: wall, uptime: now)
         var stamped = prev
         stamped.lastWall = wall
         stamped.lastUptime = now
+        stamped.holdTicks = max(0, prev.holdTicks - 1)
 
         if gap > suspendGap {
             var baseline = Liveness()
             if let sample { baseline.rx = sample.rx; baseline.tx = sample.tx }
             baseline.lastWall = wall
             baseline.lastUptime = now
+            baseline.holdTicks = suspendHoldTicks
             return (baseline, .skippedAfterSuspend)
         }
         guard let sample, let age = sample.handshakeAge else {
@@ -126,15 +142,26 @@ enum DeadTunnelDetector {
             unansweredSince = prev.unansweredSince
         }
 
+        // A path that changed (or is down) within the window voids the FAST rule
+        // and restarts its clock: the unanswered sends are the handover, not a
+        // dead peer.
+        let pathStable = pathStableFor >= pathStableRequired
+        let unanswered = pathStable ? unansweredSince : nil
+        let busy = rxAdvanced || txGrowth > keepaliveAllowance
+
         var next = stamped
+        next.busy = busy
         next.rx = sample.rx
         next.tx = sample.tx
-        next.unansweredSince = unansweredSince
+        next.unansweredSince = unanswered
 
-        if let since = unansweredSince, now - since >= fastDead {
+        if let since = unanswered, now - since >= fastDead {
             return (next, .unanswered)
         }
-        if age > stallThreshold { return (next, .stalled) }
+        // After a deep sleep, hold the backstop for a couple of ticks: wg-go
+        // re-handshakes on the next packet it sends, which it has not had the
+        // chance to do yet.
+        if age > stallThreshold && stamped.holdTicks == 0 { return (next, .stalled) }
         return (next, .alive)
     }
 
@@ -195,14 +222,28 @@ enum DeadTunnelProbe {
         return .unknown
     }
 
-    /// Which breaker budget the failure is charged to. A revoked key can never
-    /// recover by re-dialling; a down node will not come back by re-dialling the
-    /// same node, so the user is steered to a different one (small budget).
-    static func failureKind(base: TunnelFailureKind, outcome: Outcome) -> TunnelFailureKind {
-        switch outcome {
-        case .keyRevoked:    return .revoked
-        case .serverOffline: return .neverEstablished
-        case .keyValid, .unknown: return base
+    /// What the extension does about a dead tunnel.
+    enum Decision: Equatable, Sendable {
+        /// Re-dial and charge this kind to the breaker (can trip it).
+        case charge(TunnelFailureKind)
+        /// Re-dial, but never touch the trip budget. A tunnel that stays dead
+        /// is still bounded: the fresh session never handshakes, and the
+        /// `neverEstablished` window then charges.
+        case redialOnly
+    }
+
+    /// Only evidence that re-dialling cannot help charges the breaker: a key
+    /// the server revoked, a handshake that went 180 s stale, a tunnel that
+    /// never handshook. The FAST 20 s rule and a node reported offline are
+    /// transient shapes (handover, captive portal, status flap), so they
+    /// re-dial without spending the budget.
+    static func decision(verdict: DeadTunnelDetector.Verdict, outcome: Outcome) -> Decision {
+        if outcome == .keyRevoked { return .charge(.revoked) }
+        if outcome == .serverOffline { return .redialOnly }
+        switch verdict {
+        case .stalled:        return .charge(.diedAfterHandshake)
+        case .neverHandshook: return .charge(.neverEstablished)
+        default:              return .redialOnly
         }
     }
 
