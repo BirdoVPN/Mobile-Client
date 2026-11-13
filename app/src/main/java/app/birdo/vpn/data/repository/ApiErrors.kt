@@ -152,6 +152,12 @@ class ApiErrorMapper(private val strings: StringLookup) {
             // the server wrote it. No other 403 takes this branch.
             isCountryRefusal(status, envelope, context) ->
                 FailureReason.REFUSED to envelope!!.message!!.trim()
+            // MR-2210: the password was right but the e-mail address was never
+            // verified. Same rule: the typed code on a 403, the server's
+            // sentence when it is presentable, else the app's own words.
+            isEmailNotVerified(status, envelope, context) ->
+                FailureReason.REFUSED to
+                    (server ?: strings.get(R.string.error_email_not_verified))
             else -> when (context) {
                 ErrorContext.SIGN_IN, ErrorContext.ANONYMOUS_SIGN_IN ->
                     signIn(status, server, anonymous = context == ErrorContext.ANONYMOUS_SIGN_IN)
@@ -168,6 +174,10 @@ class ApiErrorMapper(private val strings: StringLookup) {
         status == 403 && envelope?.code == CODE_REGISTRATION_COUNTRY_NOT_ALLOWED &&
             (context == ErrorContext.ANONYMOUS_REGISTER || context == ErrorContext.SIGN_IN) &&
             envelope.message?.let { isPresentable(it, REGISTRATION_REFUSAL_MAX_LENGTH) } == true
+
+    private fun isEmailNotVerified(status: Int, envelope: ErrorEnvelope?, context: ErrorContext): Boolean =
+        status == 403 && envelope?.code == CODE_EMAIL_NOT_VERIFIED &&
+            (context == ErrorContext.SIGN_IN || context == ErrorContext.TWO_FACTOR)
 
     /**
      * A call that threw. Classified by exception TYPE, never by its message:
@@ -381,6 +391,9 @@ class ApiErrorMapper(private val strings: StringLookup) {
 
         /** `details.code` of the 403 a sign-up from a country that is not accepted gets (birdo-web registration gate). */
         private const val CODE_REGISTRATION_COUNTRY_NOT_ALLOWED = "registration_country_not_allowed"
+
+        /** `details.code` of the 403 a sign-in on a never-verified e-mail account gets (MR-2210). */
+        private const val CODE_EMAIL_NOT_VERIFIED = "email_not_verified"
         private const val REGISTRATION_REFUSAL_MAX_LENGTH = 500
 
         /** The longest `account_restricted` message shown whole (the server's is about 454). */

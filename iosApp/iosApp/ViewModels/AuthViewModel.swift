@@ -1488,6 +1488,7 @@ final class AuthViewModel: ObservableObject {
         // MR-2220: the server's own sentence, with no "Login failed:" prefix and
         // no substring re-mapping.
         if let refused = error as? RegistrationRefusedError { return refused.message }
+        if let unverified = error as? EmailNotVerifiedError { return unverified.message }
         // SSOService errors already carry their exact user-facing copy.
         if let sso = error as? SSOService.SSOError {
             return sso.errorDescription ?? fallback

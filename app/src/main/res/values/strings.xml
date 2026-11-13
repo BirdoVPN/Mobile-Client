@@ -451,6 +451,7 @@
     <string name="error_anon_register_device_limit">This device has created too many anonymous accounts in the past 24 hours, so this one was refused. Switching networks will not help: the limit is per device and clears on its own after 24 hours. You can sign in with an existing account instead.</string>
     <string name="error_anon_register_network_limit">Too many anonymous accounts have been created from this network in the past hour, so this one was refused. Try again in about an hour, or sign in with an existing account.</string>
     <string name="login_checking_device">Checking this device…</string>
+    <string name="error_email_not_verified">Please verify your email address first. Open birdo.app/verify-email to get a new link.</string>
     <string name="error_anon_register_failed">Could not create an anonymous account. Please try again.</string>
     <string name="error_incorrect_password">Incorrect password</string>
     <string name="error_delete_failed">Account deletion failed. Please try again.</string>
