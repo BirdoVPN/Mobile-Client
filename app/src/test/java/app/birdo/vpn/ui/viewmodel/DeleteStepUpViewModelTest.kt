@@ -247,6 +247,39 @@ class DeleteStepUpViewModelTest {
         assertNull(state.deleteEmailCodeSentTo)
     }
 
+    // ── Not enforced yet: the factor is optional ────────────────
+
+    @Test
+    fun `before the server enforces it, an SSO user with no code still deletes`() = runTest {
+        val vm = viewModelFor(sso)
+        coEvery { repository.deletionPreflight() } returns ApiResult.Success(
+            DeletionPreflightResponse(success = true, stepUp = DeletionStepUp(listOf("email_code"), enforced = false)),
+        )
+        vm.loadDeletionPreflight()
+        assertTrue(vm.uiState.value.deleteRequiresEmailCode)
+        assertFalse(vm.uiState.value.deleteStepUpEnforced)
+        coEvery { repository.deleteAccount(null, null, null, null) } returns deleted
+
+        vm.deleteAccount("")
+
+        coVerify(exactly = 1) { repository.deleteAccount(null, null, null, null) }
+        assertTrue(vm.uiState.value.accountDeleted)
+    }
+
+    @Test
+    fun `when the preflight says enforced, an empty number is refused here`() = runTest {
+        val vm = viewModelFor(anon)
+        coEvery { repository.deletionPreflight() } returns ApiResult.Success(
+            DeletionPreflightResponse(success = true, stepUp = DeletionStepUp(listOf("account_number"), enforced = true)),
+        )
+        vm.loadDeletionPreflight()
+
+        vm.deleteAccount("")
+
+        assertEquals(DeleteAccountField.ACCOUNT_NUMBER, vm.uiState.value.deleteErrorField)
+        coVerify(exactly = 0) { repository.deleteAccount(any(), any(), any(), any()) }
+    }
+
     // ── The old paths still work (MR-922 / MR-928) ──────────────
 
     @Test

@@ -164,6 +164,10 @@ final class AuthViewModel: ObservableObject {
     /// MR-179: the server asks an SSO account for the code it e-mails. The
     /// user taps "Email me a code" (`sendDeletionCode`) and types it.
     @Published private(set) var deleteRequiresEmailCode = false
+    /// MR-179: the server refuses a deletion without the step-up (preflight
+    /// `enforced`, or a `*_required` refusal). Until then the factor is OPTIONAL:
+    /// a user whose code e-mail fails can still delete, as before.
+    private var deleteStepUpEnforced = false
     @Published var deleteEmailCode = "" {
         didSet {
             if oldValue != deleteEmailCode && deleteError != nil { deleteError = nil }
@@ -250,6 +254,7 @@ final class AuthViewModel: ObservableObject {
             self.deletionPreflight = result
             // MR-179: ask for what the account will be asked for BEFORE the
             // first attempt. An older backend sends no `stepUp`: nothing new.
+            if result?.stepUp?.enforced == true { self.deleteStepUpEnforced = true }
             if result?.stepUp?.needsAccountNumber == true { self.deleteRequiresAccountNumber = true }
             if result?.stepUp?.needsEmailCode == true { self.deleteRequiresEmailCode = true }
         }
@@ -1213,19 +1218,26 @@ final class AuthViewModel: ObservableObject {
         // MR-179: a whole number / code, or nothing is sent.
         var accountNumber: String?
         if deleteRequiresAccountNumber {
-            guard AccountDeletion.isCompleteAccountNumber(deleteAccountNumber) else {
-                deleteError = "The account number is 24 digits."
-                return
+            let typed = AccountDeletion.digitsOnly(deleteAccountNumber)
+            // Optional until the server enforces it, but never half a number.
+            if deleteStepUpEnforced || !typed.isEmpty {
+                guard AccountDeletion.isCompleteAccountNumber(deleteAccountNumber) else {
+                    deleteError = "The account number is 24 digits."
+                    return
+                }
+                accountNumber = typed
             }
-            accountNumber = AccountDeletion.digitsOnly(deleteAccountNumber)
         }
         var emailCode: String?
         if deleteRequiresEmailCode {
-            guard AccountDeletion.isCompleteEmailCode(deleteEmailCode) else {
-                deleteError = "The code is 6 digits."
-                return
+            let typed = AccountDeletion.digitsOnly(deleteEmailCode)
+            if deleteStepUpEnforced || !typed.isEmpty {
+                guard AccountDeletion.isCompleteEmailCode(deleteEmailCode) else {
+                    deleteError = "The code is 6 digits."
+                    return
+                }
+                emailCode = typed
             }
-            emailCode = AccountDeletion.digitsOnly(deleteEmailCode)
         }
         isDeleting = true
         deleteError = nil
@@ -1261,6 +1273,7 @@ final class AuthViewModel: ObservableObject {
                 // MR-179: the step-up. The first ask for a factor is not an
                 // error (its field appears); a wrong one says so.
                 case .accountNumberRequired:
+                    deleteStepUpEnforced = true
                     deleteRequiresAccountNumber = true
                     deleteError = accountNumber == nil
                         ? nil
@@ -1269,6 +1282,7 @@ final class AuthViewModel: ObservableObject {
                     deleteRequiresAccountNumber = true
                     deleteError = "That account number is not the number of this account."
                 case .emailCodeRequired:
+                    deleteStepUpEnforced = true
                     deleteRequiresEmailCode = true
                     deleteError = emailCode == nil
                         ? nil
@@ -1302,6 +1316,7 @@ final class AuthViewModel: ObservableObject {
         deleteRequiresAccountNumber = false
         deleteAccountNumber = ""
         deleteRequiresEmailCode = false
+        deleteStepUpEnforced = false
         deleteEmailCode = ""
         deleteEmailCodeSentTo = nil
         deleteError = nil
@@ -1320,7 +1335,10 @@ final class AuthViewModel: ObservableObject {
     ///   note, and the NEXT tap deletes without the code. Proceeding straight
     ///   after a cancel would turn "cancel" into "delete".
     private func runAppleReauthStepIfNeeded() async -> Bool {
-        guard offersAppleReauthForDeletion, !deletionAppleStepDone else { return true }
+        // MR-179: also when the preflight says `apple_reauth`, so a refusal
+        // cannot loop on an account the device-side heuristic does not know.
+        let needsApple = offersAppleReauthForDeletion || deletionPreflight?.stepUp?.needsAppleReauth == true
+        guard needsApple, !deletionAppleStepDone else { return true }
         deletionAppleStepDone = true
         do {
             if let proof = try await AppleSignInService.shared.proofForAccountDeletion() {

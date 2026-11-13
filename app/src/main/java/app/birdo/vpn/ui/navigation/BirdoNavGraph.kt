@@ -664,6 +664,7 @@ fun BirdoNavGraph(
                         },
                         deleteRequiresAccountNumber = authState.deleteRequiresAccountNumber,
                         deleteRequiresEmailCode = authState.deleteRequiresEmailCode,
+                        deleteStepUpEnforced = authState.deleteStepUpEnforced,
                         deleteEmailCodeSent = authState.deleteEmailCodeSent,
                         deleteEmailCodeSentTo = authState.deleteEmailCodeSentTo,
                         isSendingDeleteCode = authState.isSendingDeleteCode,

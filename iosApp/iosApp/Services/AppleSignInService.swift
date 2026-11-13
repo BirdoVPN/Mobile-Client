@@ -145,22 +145,12 @@ final class AppleSignInService: NSObject {
         return code
     }
 
-    /// What a Sign in with Apple re-authentication for an account deletion
-    /// yields (MR-179): the `authorizationCode` for token revocation, and the
-    /// identity token plus the RAW nonce that prove a fresh Apple sign-in to
-    /// the backend (`apple_reauth`, an Apple account with no e-mail address).
-    struct DeletionProof: Equatable, Sendable {
-        let authorizationCode: String
-        let identityToken: String?
-        let nonce: String
-    }
-
     /// Like `authorizationCodeForAccountDeletion`, with a nonce (HASHED to
     /// Apple, RAW to the backend, as at sign-in) and the identity token too.
     /// Nothing is sent to Birdo from here.
     ///
     /// - Returns: nil when the user cancelled Apple's sheet.
-    func proofForAccountDeletion() async throws -> DeletionProof? {
+    func proofForAccountDeletion() async throws -> DeletionAppleProof? {
         let rawNonce = Self.randomNonce()
         let request = ASAuthorizationAppleIDProvider().createRequest()
         request.nonce = Self.sha256(rawNonce)
@@ -184,7 +174,7 @@ final class AppleSignInService: NSObject {
             throw AppleSignInError.noAuthorizationCode
         }
         let token = credential.identityToken.flatMap { String(data: $0, encoding: .utf8) }
-        return DeletionProof(authorizationCode: code, identityToken: token, nonce: rawNonce)
+        return DeletionAppleProof(authorizationCode: code, identityToken: token, nonce: rawNonce)
     }
 
     // MARK: - Nonce

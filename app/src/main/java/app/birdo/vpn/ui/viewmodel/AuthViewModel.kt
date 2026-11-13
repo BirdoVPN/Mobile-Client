@@ -76,6 +76,12 @@ data class AuthUiState(
      * `email_code_invalid`). The user taps "Send code" first.
      */
     val deleteRequiresEmailCode: Boolean = false,
+    /**
+     * MR-179: the server refuses a deletion without the step-up (the preflight's
+     * `enforced`, or a `*_required` refusal). Until then the number / code is
+     * OPTIONAL, so a user whose code e-mail fails can still delete, as before.
+     */
+    val deleteStepUpEnforced: Boolean = false,
     /** MR-179: a code was e-mailed; the masked address it went to, possibly blank. */
     val deleteEmailCodeSentTo: String? = null,
     val deleteEmailCodeSent: Boolean = false,
@@ -687,7 +693,11 @@ class AuthViewModel @Inject constructor(
         }
         // MR-179: a whole 24-digit number / 6-digit code, or nothing is sent.
         val number = accountNumber?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
-        if (_uiState.value.deleteRequiresAccountNumber && (number == null || number.length != ACCOUNT_NUMBER_LENGTH)) {
+        val enforced = _uiState.value.deleteStepUpEnforced
+        // Optional until enforced, but never half a number.
+        if (_uiState.value.deleteRequiresAccountNumber && (enforced || number != null) &&
+            (number == null || number.length != ACCOUNT_NUMBER_LENGTH)
+        ) {
             _uiState.value = _uiState.value.copy(
                 deleteAccountError = strings.get(R.string.delete_dialog_account_number_format),
                 deleteErrorField = DeleteAccountField.ACCOUNT_NUMBER,
@@ -695,7 +705,9 @@ class AuthViewModel @Inject constructor(
             return
         }
         val mailed = emailCode?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
-        if (_uiState.value.deleteRequiresEmailCode && (mailed == null || mailed.length != EMAIL_CODE_LENGTH)) {
+        if (_uiState.value.deleteRequiresEmailCode && (enforced || mailed != null) &&
+            (mailed == null || mailed.length != EMAIL_CODE_LENGTH)
+        ) {
             _uiState.value = _uiState.value.copy(
                 deleteAccountError = strings.get(R.string.delete_dialog_email_code_format),
                 deleteErrorField = DeleteAccountField.EMAIL_CODE,
@@ -737,6 +749,8 @@ class AuthViewModel @Inject constructor(
                             result.reason == FailureReason.ACCOUNT_NUMBER_INVALID,
                         deleteRequiresEmailCode = _uiState.value.deleteRequiresEmailCode || asksForMail ||
                             result.reason == FailureReason.EMAIL_CODE_INVALID,
+                        // A `*_required` refusal means the server enforces it.
+                        deleteStepUpEnforced = _uiState.value.deleteStepUpEnforced || asksForNumber || asksForMail,
                         deleteAccountError = if (asksForCode || asksForNumber || asksForMail) null else result.message,
                         deleteErrorField = when (result.reason) {
                             FailureReason.INVALID_CREDENTIALS -> DeleteAccountField.PASSWORD
@@ -770,6 +784,7 @@ class AuthViewModel @Inject constructor(
                 val stepUp = result.data.stepUp
                 _uiState.value = _uiState.value.copy(
                     deletionPreflight = result.data,
+                    deleteStepUpEnforced = _uiState.value.deleteStepUpEnforced || stepUp?.enforced == true,
                     deleteRequiresAccountNumber = _uiState.value.deleteRequiresAccountNumber ||
                         stepUp?.needsAccountNumber == true,
                     deleteRequiresEmailCode = _uiState.value.deleteRequiresEmailCode ||
@@ -815,6 +830,7 @@ class AuthViewModel @Inject constructor(
             deleteRequiresTwoFactor = false,
             deleteRequiresAccountNumber = false,
             deleteRequiresEmailCode = false,
+            deleteStepUpEnforced = false,
             deleteEmailCodeSent = false,
             deleteEmailCodeSentTo = null,
             isSendingDeleteCode = false,

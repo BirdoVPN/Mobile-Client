@@ -135,6 +135,7 @@ fun ProfileScreen(
     /** MR-179: the server wants the anonymous account's 24-digit number / the e-mailed code. */
     deleteRequiresAccountNumber: Boolean = false,
     deleteRequiresEmailCode: Boolean = false,
+    deleteStepUpEnforced: Boolean = false,
     deleteEmailCodeSent: Boolean = false,
     deleteEmailCodeSentTo: String? = null,
     isSendingDeleteCode: Boolean = false,
@@ -264,6 +265,7 @@ fun ProfileScreen(
             requiresTwoFactor = deleteRequiresTwoFactor,
             requiresAccountNumber = deleteRequiresAccountNumber,
             requiresEmailCode = deleteRequiresEmailCode,
+            stepUpEnforced = deleteStepUpEnforced,
             emailCodeSent = deleteEmailCodeSent,
             emailCodeSentTo = deleteEmailCodeSentTo,
             isSendingCode = isSendingDeleteCode,
@@ -844,6 +846,7 @@ private fun DeleteAccountDialog(
     requiresTwoFactor: Boolean,
     requiresAccountNumber: Boolean,
     requiresEmailCode: Boolean,
+    stepUpEnforced: Boolean,
     emailCodeSent: Boolean,
     emailCodeSentTo: String?,
     isSendingCode: Boolean,
@@ -1086,14 +1089,16 @@ private fun DeleteAccountDialog(
                     onConfirm(
                         password,
                         twoFactorCode.takeIf { requiresTwoFactor },
-                        accountNumber.takeIf { requiresAccountNumber },
-                        emailCode.takeIf { requiresEmailCode },
+                        accountNumber.takeIf { requiresAccountNumber && it.isNotEmpty() },
+                        emailCode.takeIf { requiresEmailCode && it.isNotEmpty() },
                     )
                 },
                 enabled = (!requiresPassword || password.isNotBlank()) &&
                     (!requiresTwoFactor || is2faCodeComplete(twoFactorCode)) &&
-                    (!requiresAccountNumber || accountNumber.length == ACCOUNT_NUMBER_LENGTH) &&
-                    (!requiresEmailCode || emailCode.length == EMAIL_CODE_LENGTH) &&
+                    (!requiresAccountNumber || accountNumber.length == ACCOUNT_NUMBER_LENGTH ||
+                        (!stepUpEnforced && accountNumber.isEmpty())) &&
+                    (!requiresEmailCode || emailCode.length == EMAIL_CODE_LENGTH ||
+                        (!stepUpEnforced && emailCode.isEmpty())) &&
                     !isDeletingAccount,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = BirdoRed,

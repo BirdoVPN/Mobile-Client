@@ -53,10 +53,6 @@ enum AccountDeletion {
         return email.hasSuffix("@appleid.local") || email.hasSuffix("@privaterelay.appleid.com")
     }
 
-    /// Client-side completeness gate for the deletion dialog's code field —
-    /// the same rule as the login 2FA step (the server is authoritative): a
-    /// 6-digit TOTP, or a hex backup code in 4-character groups, dashes
-    /// optional.
     /// MR-179 (owner 2026-11-13): the digits of what the user typed, so a
     /// grouped or pasted account number ("1234 5678 ...") or e-mailed code
     /// reaches the server as plain digits.
@@ -74,6 +70,10 @@ enum AccountDeletion {
         digitsOnly(text).count == 6
     }
 
+    /// Client-side completeness gate for the deletion dialog's code field —
+    /// the same rule as the login 2FA step (the server is authoritative): a
+    /// 6-digit TOTP, or a hex backup code in 4-character groups, dashes
+    /// optional.
     static func isCompleteTwoFactorCode(_ code: String) -> Bool {
         let c = code.trimmingCharacters(in: .whitespaces)
         if c.range(of: #"^\d{6}$"#, options: .regularExpression) != nil { return true }
@@ -198,4 +198,15 @@ struct DeletionStepUp: Decodable, Sendable, Equatable {
 /// `POST /api/v1/gdpr/delete/code` reply: the masked address the code went to.
 struct DeletionCodeSent: Decodable, Sendable, Equatable {
     let sentTo: String?
+}
+
+/// What a Sign in with Apple re-authentication for an account deletion yields
+/// (MR-179): the `authorizationCode` for token revocation, and the identity
+/// token plus the RAW nonce that prove a fresh Apple sign-in to the backend
+/// (`apple_reauth`). Lives here, Foundation-only, so the test bundle compiles
+/// it with its redaction (AppleSignInService.swift is not in that bundle).
+struct DeletionAppleProof: Equatable, Sendable {
+    let authorizationCode: String
+    let identityToken: String?
+    let nonce: String
 }
