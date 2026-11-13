@@ -29,6 +29,7 @@ struct HomeView: View {
     /// Multi-Hop entry (spec §3.2 item 1). SOVEREIGN opens the flow; a lower
     /// plan gets the upsell snackbar instead.
     @State private var showMultiHop = false
+    @State private var lastAnnouncedPhase: ConnectionPhase = .disconnected
     @State private var multiHopUpsell: String?
     /// MR-139: the plans, pushed from the refusal banner when the server
     /// refused the connect for the plan or the Free allowance.
@@ -103,10 +104,17 @@ struct HomeView: View {
         .sensoryFeedback(.warning, trigger: disconnectHapticTick)
         // MR-1620: speak every connection state change (VoiceOver users cannot
         // see the pill change). The pure mapping is ConnectionPhase.announcement.
-        .onChange(of: vpnVM.connectionPhase) { old, new in
-            if let text = ConnectionPhase.announcement(from: old, to: new) {
+        // Debounced 1.5 s: a `.reasserting` flap that settles back must not
+        // speak "Reconnecting" then "Protected" again; the task restarts on
+        // every change and compares with what was last SPOKEN.
+        .task(id: vpnVM.connectionPhase) {
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
+            let now = vpnVM.connectionPhase
+            if let text = ConnectionPhase.announcement(from: lastAnnouncedPhase, to: now) {
                 AccessibilityAnnouncer.post(text)
             }
+            lastAnnouncedPhase = now
         }
         // Android parity: a Confirm haptic the moment the state becomes
         // Connected (not when the user taps — when the tunnel actually is up,

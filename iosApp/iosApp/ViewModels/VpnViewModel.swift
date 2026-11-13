@@ -1218,7 +1218,10 @@ final class VpnViewModel: ObservableObject {
             // first inbound bytes (the stats timer and the handshake arm below
             // sample them). A repeated `.connected`, or the end of a reassert,
             // is the same session and keeps its proof.
-            if !isConnected { resetHandshakeProof() }
+            // Leaving `.reasserting` (isReconnecting) is a new proof window too:
+            // "Protected" must wait for a handshake after the re-dial, not
+            // ride the proof the previous path earned.
+            if !isConnected || isReconnecting { resetHandshakeProof() }
             isConnected = true
             isConnecting = false
             isReconnecting = false
