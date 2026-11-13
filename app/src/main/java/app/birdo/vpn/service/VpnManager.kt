@@ -2263,7 +2263,7 @@ class VpnManager @Inject constructor(
     ) {
         _state.value = VpnState.Disconnecting
         transitionStartTime = System.currentTimeMillis()
-        armDisconnectWatchdog(reason?.let { VpnState.Error(it, reasonKind) } ?: VpnState.Disconnected)
+        armDisconnectWatchdog(reason, reasonKind)
         activeMultiHop = null
         _connectedServerId.value = null
 
@@ -2302,21 +2302,21 @@ class VpnManager @Inject constructor(
      * service never carries out: a dispatch Android refused, a service that
      * died first. Nothing else would ever end it: the safety net in
      * [applyStateWithGuards] runs only when the service publishes, and
-     * [disconnect] cancels the connect watchdog. Ends in [stopped], what the
-     * STOP would have ended in: Disconnected (the safety net's answer), or
-     * the stop's reason. Not in an Error the service still holds: a new one
-     * would already have reached this class (Errors always propagate), so
-     * one still unseen is from before the STOP. The session's peer went
-     * with the STOP either way.
+     * [disconnect] cancels the connect watchdog. Ends in what the STOP would
+     * have ended in: the stop's [reason], or Disconnected (the safety net's
+     * answer). Not in an Error the service still holds: a new one would
+     * already have reached this class (Errors always propagate), so one
+     * still unseen is from before the STOP. The session's peer went with the
+     * STOP either way.
      */
-    private fun armDisconnectWatchdog(stopped: VpnState) {
+    private fun armDisconnectWatchdog(reason: String?, reasonKind: FailureKind) {
         disconnectWatchdogJob?.cancel()
         disconnectWatchdogJob = scope.launch {
             delay(DISCONNECT_STUCK_TIMEOUT_MS)
             if (_state.value !is VpnState.Disconnecting) return@launch
-            _state.value = stopped
             _connectedServer.value = null
             _connectedSince.value = 0L
+            if (reason != null) publishError(reason, reasonKind) else _state.value = VpnState.Disconnected
         }
     }
 
