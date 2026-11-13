@@ -663,7 +663,16 @@ fun BirdoNavGraph(
                             vpnViewModel.disconnectForSignOut { authViewModel.logout() }
                         },
                         onOpenUrl = { settingsViewModel.openUrl(it) },
-                        onDeleteAccount = { password, code -> authViewModel.deleteAccount(password, code) },
+                        onDeleteAccount = { password, code, number, mailed ->
+                            authViewModel.deleteAccount(password, code, number, mailed)
+                        },
+                        deleteRequiresAccountNumber = authState.deleteRequiresAccountNumber,
+                        deleteRequiresEmailCode = authState.deleteRequiresEmailCode,
+                        deleteStepUpEnforced = authState.deleteStepUpEnforced,
+                        deleteEmailCodeSent = authState.deleteEmailCodeSent,
+                        deleteEmailCodeSentTo = authState.deleteEmailCodeSentTo,
+                        isSendingDeleteCode = authState.isSendingDeleteCode,
+                        onSendDeletionCode = { authViewModel.sendDeletionCode() },
                         isDeletingAccount = authState.isDeletingAccount,
                         deleteAccountError = authState.deleteAccountError,
                         deleteErrorField = authState.deleteErrorField,

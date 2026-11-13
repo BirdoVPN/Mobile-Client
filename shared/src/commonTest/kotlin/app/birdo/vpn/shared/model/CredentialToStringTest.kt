@@ -132,6 +132,15 @@ class CredentialToStringTest {
     }
 
     @Test
+    fun deleteAccountRequestPrintsNoAccountNumberOrEmailedCode() {
+        val printed = DeleteAccountRequest(accountNumber = "123456789012345678901234", emailCode = "654321").toString()
+        assertTrue(!printed.contains("123456789012345678901234"), "DeleteAccountRequest printed the account number")
+        assertTrue(!printed.contains("654321"), "DeleteAccountRequest printed the emailed code")
+        assertTrue(printed.contains("accountNumber=[REDACTED]"), "DeleteAccountRequest hides that a number was sent")
+        assertTrue(printed.contains("emailCode=[REDACTED]"), "DeleteAccountRequest hides that a code was sent")
+    }
+
+    @Test
     fun voucherRequestPrintsNoCode() {
         assertNoSecret(RedeemVoucherRequest(code = "voucher-code-pqr").toString())
     }
