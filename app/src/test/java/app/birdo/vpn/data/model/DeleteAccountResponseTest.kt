@@ -30,6 +30,37 @@ class DeleteAccountResponseTest {
         assertTrue(r.storeSubscriptionsStillBilling.isEmpty())
     }
 
+    /** MR-179: the preflight's `stepUp`, and the new request fields, through the app's own Json. */
+    @Test
+    fun `the preflight carries the step-up factors, and an older server's has none`() {
+        val withStepUp = json.decodeFromString(
+            serializer<DeletionPreflightResponse>(),
+            """{"success":true,"storeSubscriptionsStillBilling":[],"webSubscriptionWillBeCancelled":false,"stepUp":{"factors":["account_number","two_factor"],"enforced":true}}""",
+        )
+        assertEquals(listOf("account_number", "two_factor"), withStepUp.stepUp?.factors)
+        assertTrue(withStepUp.stepUp!!.enforced)
+        assertTrue(withStepUp.stepUp!!.needsAccountNumber)
+        assertFalse(withStepUp.stepUp!!.needsEmailCode)
+
+        val old = json.decodeFromString(serializer<DeletionPreflightResponse>(), """{"success":true}""")
+        assertEquals(null, old.stepUp)
+    }
+
+    @Test
+    fun `the request omits a factor that was not sent and carries the ones that were`() {
+        val none = json.encodeToString(serializer<DeleteAccountRequest>(), DeleteAccountRequest(password = "pw"))
+        assertEquals("""{"password":"pw"}""", none)
+        val number = json.encodeToString(serializer<DeleteAccountRequest>(), DeleteAccountRequest(accountNumber = "123"))
+        assertEquals("""{"accountNumber":"123"}""", number)
+        val code = json.encodeToString(serializer<DeleteAccountRequest>(), DeleteAccountRequest(emailCode = "654321"))
+        assertEquals("""{"emailCode":"654321"}""", code)
+        val sent = json.decodeFromString(
+            serializer<DeletionCodeResponse>(),
+            """{"success":true,"sentTo":"o***@example.com","expiresInMinutes":10}""",
+        )
+        assertEquals("o***@example.com", sent.sentTo)
+    }
+
     @Test
     fun `an explicit null is treated as none`() {
         val r = decode("""{"success":true,"storeSubscriptionsStillBilling":null}""")

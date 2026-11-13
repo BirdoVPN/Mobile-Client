@@ -538,10 +538,19 @@ struct ProfileView: View {
                             localDeleteError = nil
                         }
                 }
+                if authVM.deleteRequiresAccountNumber {
+                    accountNumberStep
+                        .padding(.top, requiresPassword ? 12 : 0)
+                }
+                if authVM.deleteRequiresEmailCode {
+                    emailCodeStep
+                        .padding(.top, (requiresPassword || authVM.deleteRequiresAccountNumber) ? 12 : 0)
+                }
                 if authVM.deleteRequiresTwoFactor {
                     twoFactorStep
                         .padding(.top, requiresPassword ? 12 : 0)
-                } else if !requiresPassword, let err = authVM.deleteError {
+                } else if !requiresPassword, !authVM.deleteRequiresAccountNumber,
+                          !authVM.deleteRequiresEmailCode, let err = authVM.deleteError {
                     Text(err)
                         .font(BirdoTheme.Fonts.bodySmall)
                         .foregroundStyle(BirdoTheme.red)
@@ -571,6 +580,79 @@ struct ProfileView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 12)
         }
+    }
+
+    /// MR-179: an anonymous account re-enters its 24-digit number. Shown from
+    /// the preflight, or once the server answered `account_number_required`.
+    private var accountNumberStep: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            BirdoTextField("Account number",
+                           placeholder: "24 digits",
+                           text: $authVM.deleteAccountNumber,
+                           isSecure: true,
+                           error: authVM.deleteError,
+                           keyboardType: .numberPad,
+                           monospaced: true)
+                .disabled(authVM.isDeleting)
+                .accessibilityIdentifier("delete_account_number_field")
+                .onChange(of: authVM.deleteAccountNumber) { _, newValue in
+                    let filtered = String(AccountDeletion.digitsOnly(newValue).prefix(24))
+                    if filtered != newValue { authVM.deleteAccountNumber = filtered }
+                }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// MR-179: an SSO account asks for a code first, then types it.
+    private var emailCodeStep: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let sentTo = authVM.deleteEmailCodeSentTo {
+                Text(sentTo.isEmpty
+                     ? "We emailed a code to your account address. It works once for 10 minutes."
+                     : "We emailed a code to \(sentTo). It works once for 10 minutes.")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurface)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Enter the code we emailed you to delete your account.")
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurface)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button(authVM.deleteEmailCodeSentTo == nil ? "Email me a code" : "Send a new code") {
+                authVM.sendDeletionCode()
+            }
+            .birdoFont(13, weight: .semibold)
+            .foregroundStyle(BirdoTheme.accent)
+            .buttonStyle(.plain)
+            .frame(minHeight: 44) // touch target
+            .disabled(authVM.isDeleting || authVM.isSendingDeleteCode)
+            .accessibilityIdentifier("delete_send_code_button")
+            if authVM.deleteEmailCodeSentTo == nil, let err = authVM.deleteError {
+                // A send that was refused (3 an hour, mail down) has no code
+                // field to carry its message yet.
+                Text(err)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if authVM.deleteEmailCodeSentTo != nil {
+                BirdoTextField("Emailed code",
+                               placeholder: "123456",
+                               text: $authVM.deleteEmailCode,
+                               error: authVM.deleteRequiresAccountNumber ? nil : authVM.deleteError,
+                               keyboardType: .numberPad,
+                               textContentType: .oneTimeCode,
+                               monospaced: true)
+                    .disabled(authVM.isDeleting)
+                    .accessibilityIdentifier("delete_email_code_field")
+                    .onChange(of: authVM.deleteEmailCode) { _, newValue in
+                        let filtered = String(AccountDeletion.digitsOnly(newValue).prefix(6))
+                        if filtered != newValue { authVM.deleteEmailCode = filtered }
+                    }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Owner item 85: the server answered `two_factor_required`. The code is

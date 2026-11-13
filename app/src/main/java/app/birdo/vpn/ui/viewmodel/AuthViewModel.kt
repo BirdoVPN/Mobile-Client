@@ -32,7 +32,11 @@ import java.time.Instant
 import javax.inject.Inject
 
 /** The field of the deletion dialog an error is about (REVIEW-AND2-008). */
-enum class DeleteAccountField { PASSWORD, CODE }
+enum class DeleteAccountField { PASSWORD, CODE, ACCOUNT_NUMBER, EMAIL_CODE }
+
+/** MR-179: an anonymous account number is 24 digits; the e-mailed deletion code is 6. */
+internal const val ACCOUNT_NUMBER_LENGTH = 24
+internal const val EMAIL_CODE_LENGTH = 6
 
 data class AuthUiState(
     val isLoading: Boolean = false,
@@ -60,6 +64,22 @@ data class AuthUiState(
      * stays open and asks for it; cleared when the dialog closes.
      */
     val deleteRequiresTwoFactor: Boolean = false,
+    /**
+     * MR-179: the server asks an anonymous account for its 24-digit number
+     * before it deletes it (the deletion preflight's `account_number`, or a 403
+     * `account_number_required` / `account_number_invalid`).
+     */
+    val deleteRequiresAccountNumber: Boolean = false,
+    /**
+     * MR-179: the server asks an SSO account for the code it e-mails (the
+     * preflight's `email_code`, or a 403 `email_code_required` /
+     * `email_code_invalid`). The user taps "Send code" first.
+     */
+    val deleteRequiresEmailCode: Boolean = false,
+    /** MR-179: a code was e-mailed; the masked address it went to, possibly blank. */
+    val deleteEmailCodeSentTo: String? = null,
+    val deleteEmailCodeSent: Boolean = false,
+    val isSendingDeleteCode: Boolean = false,
     /**
      * A deletion just succeeded. The graph confirms it once on the Login
      * screen (A2-029): an irreversible erasure that ends in a silent jump to
@@ -111,6 +131,8 @@ data class AuthUiState(
         "requiresTwoFactor=$requiresTwoFactor",
         "isDeletingAccount=$isDeletingAccount",
         "deleteRequiresTwoFactor=$deleteRequiresTwoFactor",
+        "deleteRequiresAccountNumber=$deleteRequiresAccountNumber",
+        "deleteRequiresEmailCode=$deleteRequiresEmailCode",
         "accountDeleted=$accountDeleted",
         "pendingAnonymousId=${if (pendingAnonymousId != null) "[REDACTED]" else "null"}",
         "sessionExpired=$sessionExpired",
@@ -639,7 +661,12 @@ class AuthViewModel @Inject constructor(
      * rejected the blank value). Gate on `hasPassword`, matching the UI
      * (ProfileScreen `requiresPassword = user?.hasPassword ?: true`) and iOS.
      */
-    fun deleteAccount(password: String, twoFactorCode: String? = null) {
+    fun deleteAccount(
+        password: String,
+        twoFactorCode: String? = null,
+        accountNumber: String? = null,
+        emailCode: String? = null,
+    ) {
         val requiresPassword = _uiState.value.user?.hasPassword ?: true
         if (requiresPassword && !InputValidator.isValidPassword(password)) {
             _uiState.value = _uiState.value.copy(
@@ -658,13 +685,30 @@ class AuthViewModel @Inject constructor(
             )
             return
         }
+        // MR-179: a whole 24-digit number / 6-digit code, or nothing is sent.
+        val number = accountNumber?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
+        if (_uiState.value.deleteRequiresAccountNumber && (number == null || number.length != ACCOUNT_NUMBER_LENGTH)) {
+            _uiState.value = _uiState.value.copy(
+                deleteAccountError = strings.get(R.string.delete_dialog_account_number_format),
+                deleteErrorField = DeleteAccountField.ACCOUNT_NUMBER,
+            )
+            return
+        }
+        val mailed = emailCode?.filter { it.isDigit() }?.takeIf { it.isNotEmpty() }
+        if (_uiState.value.deleteRequiresEmailCode && (mailed == null || mailed.length != EMAIL_CODE_LENGTH)) {
+            _uiState.value = _uiState.value.copy(
+                deleteAccountError = strings.get(R.string.delete_dialog_email_code_format),
+                deleteErrorField = DeleteAccountField.EMAIL_CODE,
+            )
+            return
+        }
         // Send null for password-less accounts so the backend takes the
         // session-authenticated path rather than a blank-password comparison.
         val submitted: String? = if (requiresPassword) password else password.ifBlank { null }
 
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null, deleteErrorField = null)
-            when (val result = repository.deleteAccount(submitted, code)) {
+            when (val result = repository.deleteAccount(submitted, code, number, mailed)) {
                 is ApiResult.Success -> {
                     _uiState.value = AuthUiState(
                         isLoggedIn = false,
@@ -680,14 +724,25 @@ class AuthViewModel @Inject constructor(
                     // with the canonical wrong-code sentence; nothing is torn
                     // down until the server confirms (accountDeleted above).
                     val asksForCode = result.reason == FailureReason.TWO_FACTOR_REQUIRED
+                    // MR-179: the first refusal of a missing factor is a request
+                    // for it, like the 2FA code: the field appears with no error
+                    // line. A wrong one keeps its field up with the sentence.
+                    val asksForNumber = result.reason == FailureReason.ACCOUNT_NUMBER_REQUIRED
+                    val asksForMail = result.reason == FailureReason.EMAIL_CODE_REQUIRED
                     _uiState.value = _uiState.value.copy(
                         isDeletingAccount = false,
                         deleteRequiresTwoFactor = _uiState.value.deleteRequiresTwoFactor || asksForCode ||
                             result.reason == FailureReason.INVALID_CODE,
-                        deleteAccountError = if (asksForCode) null else result.message,
+                        deleteRequiresAccountNumber = _uiState.value.deleteRequiresAccountNumber || asksForNumber ||
+                            result.reason == FailureReason.ACCOUNT_NUMBER_INVALID,
+                        deleteRequiresEmailCode = _uiState.value.deleteRequiresEmailCode || asksForMail ||
+                            result.reason == FailureReason.EMAIL_CODE_INVALID,
+                        deleteAccountError = if (asksForCode || asksForNumber || asksForMail) null else result.message,
                         deleteErrorField = when (result.reason) {
                             FailureReason.INVALID_CREDENTIALS -> DeleteAccountField.PASSWORD
                             FailureReason.INVALID_CODE -> DeleteAccountField.CODE
+                            FailureReason.ACCOUNT_NUMBER_INVALID -> DeleteAccountField.ACCOUNT_NUMBER
+                            FailureReason.EMAIL_CODE_INVALID -> DeleteAccountField.EMAIL_CODE
                             else -> null
                         },
                     )
@@ -710,7 +765,44 @@ class AuthViewModel @Inject constructor(
         deletionPreflightJob = viewModelScope.launch {
             val result = repository.deletionPreflight()
             if (result is ApiResult.Success) {
-                _uiState.value = _uiState.value.copy(deletionPreflight = result.data)
+                // MR-179: ask for what this account will be asked for BEFORE the
+                // first attempt, so the dialog shows the right fields up front.
+                val stepUp = result.data.stepUp
+                _uiState.value = _uiState.value.copy(
+                    deletionPreflight = result.data,
+                    deleteRequiresAccountNumber = _uiState.value.deleteRequiresAccountNumber ||
+                        stepUp?.needsAccountNumber == true,
+                    deleteRequiresEmailCode = _uiState.value.deleteRequiresEmailCode ||
+                        stepUp?.needsEmailCode == true,
+                )
+            }
+        }
+    }
+
+    /**
+     * MR-179: e-mail the deletion code to an SSO account. The dialog shows the
+     * masked address it went to. 429 (3 an hour) and 503 show the mapped copy
+     * on the code field; nothing else changes.
+     */
+    fun sendDeletionCode() {
+        if (_uiState.value.isSendingDeleteCode) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(
+                isSendingDeleteCode = true,
+                deleteAccountError = null,
+                deleteErrorField = null,
+            )
+            when (val result = repository.sendDeletionCode()) {
+                is ApiResult.Success -> _uiState.value = _uiState.value.copy(
+                    isSendingDeleteCode = false,
+                    deleteEmailCodeSent = true,
+                    deleteEmailCodeSentTo = result.data.sentTo,
+                )
+                is ApiResult.Error -> _uiState.value = _uiState.value.copy(
+                    isSendingDeleteCode = false,
+                    deleteAccountError = result.message,
+                    deleteErrorField = DeleteAccountField.EMAIL_CODE,
+                )
             }
         }
     }
@@ -721,6 +813,11 @@ class AuthViewModel @Inject constructor(
             deleteAccountError = null,
             deleteErrorField = null,
             deleteRequiresTwoFactor = false,
+            deleteRequiresAccountNumber = false,
+            deleteRequiresEmailCode = false,
+            deleteEmailCodeSent = false,
+            deleteEmailCodeSentTo = null,
+            isSendingDeleteCode = false,
         )
     }
 

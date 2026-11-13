@@ -415,7 +415,11 @@ final class APIClient: @unchecked Sendable {
     @discardableResult
     func deleteAccount(password: String?,
                        twoFactorCode: String? = nil,
-                       appleAuthorizationCode: String? = nil) async throws -> [StoreSubscriptionStillBilling] {
+                       appleAuthorizationCode: String? = nil,
+                       accountNumber: String? = nil,
+                       emailCode: String? = nil,
+                       appleIdentityToken: String? = nil,
+                       appleNonce: String? = nil) async throws -> [StoreSubscriptionStillBilling] {
         // AUDIT-M-DRIFT: there is no `/auth/account` route. Erasure lives on the
         // GDPR controller at `@Controller('api/v1/gdpr')` + `@Delete('delete')`.
         // api.birdo.app proxies to Nest verbatim (no `uri strip_prefix /api` in
@@ -441,7 +445,11 @@ final class APIClient: @unchecked Sendable {
         let body = try encoder.encode(
             DeleteAccountBody(password: password,
                               twoFactorCode: twoFactorCode,
-                              appleAuthorizationCode: appleAuthorizationCode)
+                              appleAuthorizationCode: appleAuthorizationCode,
+                              accountNumber: accountNumber,
+                              emailCode: emailCode,
+                              appleIdentityToken: appleIdentityToken,
+                              appleNonce: appleNonce)
         )
         let response = try await performRequest(
             method: "DELETE",
@@ -476,6 +484,14 @@ final class APIClient: @unchecked Sendable {
     func deletionPreflight() async throws -> DeletionPreflight {
         let data = try await get(path: "/api/v1/gdpr/delete/preflight")
         return try decoder.decode(DeletionPreflight.self, from: data)
+    }
+
+    /// MR-179: e-mail the one-time deletion code to an SSO account (no
+    /// password, no 2FA): `POST /api/v1/gdpr/delete/code`, no body. 429 past
+    /// 3 sends an hour, 503 when the mail could not be sent.
+    func sendDeletionCode() async throws -> DeletionCodeSent {
+        let data = try await post(path: "/api/v1/gdpr/delete/code", body: nil, authenticated: true)
+        return (try? decoder.decode(DeletionCodeSent.self, from: data)) ?? DeletionCodeSent(sentTo: nil)
     }
 
     // MARK: - Servers
@@ -1706,6 +1722,9 @@ struct StoreSubscriptionStillBilling: Decodable, Sendable, Equatable {
 struct DeletionPreflight: Decodable, Sendable, Equatable {
     let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
     let webSubscriptionWillBeCancelled: Bool?
+    /// MR-179: what this account is asked for before a deletion; nil from a
+    /// backend older than birdo-web #766.
+    let stepUp: DeletionStepUp?
 
     /// Store subscriptions that will KEEP BILLING after the deletion.
     var stillBilling: [StoreSubscriptionStillBilling] { storeSubscriptionsStillBilling ?? [] }

@@ -57,6 +57,14 @@ enum class FailureReason {
     CHALLENGE_EXPIRED,
     /** Delete: the account has 2FA and the request carried no code (item 85). */
     TWO_FACTOR_REQUIRED,
+    /** Delete (MR-179): an anonymous account must re-enter its 24-digit number. */
+    ACCOUNT_NUMBER_REQUIRED,
+    /** Delete (MR-179): the number typed is not this account's. */
+    ACCOUNT_NUMBER_INVALID,
+    /** Delete (MR-179): an SSO account must enter the code e-mailed to it. */
+    EMAIL_CODE_REQUIRED,
+    /** Delete (MR-179): the e-mailed code is wrong, spent or expired. */
+    EMAIL_CODE_INVALID,
     /** A refusal the server explained in its own words (see [ApiErrorMapper]). */
     REFUSED,
     /** A response we could not make sense of. */
@@ -341,6 +349,13 @@ class ApiErrorMapper(private val strings: StringLookup) {
         return when {
             error == ERROR_TWO_FACTOR_REQUIRED -> FailureReason.TWO_FACTOR_REQUIRED.withText()
             error == ERROR_TWO_FACTOR_INVALID -> FailureReason.INVALID_CODE.withText()
+            // MR-179: the step-up refusals, by `error`. Not the message: an
+            // older server's wording differs, and a 429 `too_many_attempts`
+            // falls through to RATE_LIMITED below.
+            error == ERROR_ACCOUNT_NUMBER_REQUIRED -> FailureReason.ACCOUNT_NUMBER_REQUIRED.withText()
+            error == ERROR_ACCOUNT_NUMBER_INVALID -> FailureReason.ACCOUNT_NUMBER_INVALID.withText()
+            error == ERROR_EMAIL_CODE_REQUIRED -> FailureReason.EMAIL_CODE_REQUIRED.withText()
+            error == ERROR_EMAIL_CODE_INVALID -> FailureReason.EMAIL_CODE_INVALID.withText()
             (status == 401 || status == 403) && "password" in lower ->
                 FailureReason.INVALID_CREDENTIALS to strings.get(R.string.error_incorrect_password)
             status == 401 -> FailureReason.SESSION_EXPIRED.withText()
@@ -372,6 +387,10 @@ class ApiErrorMapper(private val strings: StringLookup) {
             FailureReason.INVALID_CODE -> R.string.error_invalid_code
             FailureReason.CHALLENGE_EXPIRED -> R.string.error_challenge_expired
             FailureReason.TWO_FACTOR_REQUIRED -> R.string.delete_dialog_2fa_required
+            FailureReason.ACCOUNT_NUMBER_REQUIRED -> R.string.delete_dialog_account_number_required
+            FailureReason.ACCOUNT_NUMBER_INVALID -> R.string.delete_dialog_account_number_invalid
+            FailureReason.EMAIL_CODE_REQUIRED -> R.string.delete_dialog_email_code_required
+            FailureReason.EMAIL_CODE_INVALID -> R.string.delete_dialog_email_code_invalid
             FailureReason.REFUSED, FailureReason.UNEXPECTED -> R.string.error_unexpected
         },
     )
@@ -389,6 +408,12 @@ class ApiErrorMapper(private val strings: StringLookup) {
         /** The deletion routes' `error` codes for an account with 2FA (ACCOUNT-API-2026-10-01, item 85). */
         private const val ERROR_TWO_FACTOR_REQUIRED = "two_factor_required"
         private const val ERROR_TWO_FACTOR_INVALID = "two_factor_invalid"
+
+        /** MR-179: the step-up `error` codes (birdo-web deletion-step-up.ts). */
+        private const val ERROR_ACCOUNT_NUMBER_REQUIRED = "account_number_required"
+        private const val ERROR_ACCOUNT_NUMBER_INVALID = "account_number_invalid"
+        private const val ERROR_EMAIL_CODE_REQUIRED = "email_code_required"
+        private const val ERROR_EMAIL_CODE_INVALID = "email_code_invalid"
 
         /**
          * Nest's default messages are the HTTP reason phrase ("Bad Request",

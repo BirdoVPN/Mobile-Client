@@ -468,11 +468,53 @@ data class DeleteAccountRequest(
      * defaults), so a server older than that API never sees the key.
      */
     val twoFactorCode: String? = null,
+    /**
+     * MR-179 (owner 2026-11-13): the 24-digit account number an anonymous
+     * account re-enters before it is deleted. Omitted when null.
+     */
+    val accountNumber: String? = null,
+    /**
+     * MR-179: the 6-digit code e-mailed by `POST api/v1/gdpr/delete/code` to an
+     * SSO account with no 2FA. Omitted when null.
+     */
+    val emailCode: String? = null,
 ) {
-    /** Never prints [password] or [twoFactorCode], only whether each was sent (MR-1870). */
+    /**
+     * Never prints [password], [twoFactorCode], [accountNumber] or [emailCode],
+     * only whether each was sent (MR-1870).
+     */
     override fun toString(): String =
-        "DeleteAccountRequest(password=${redacted(password)}, twoFactorCode=${redacted(twoFactorCode)})"
+        "DeleteAccountRequest(password=${redacted(password)}, twoFactorCode=${redacted(twoFactorCode)}, " +
+            "accountNumber=${redacted(accountNumber)}, emailCode=${redacted(emailCode)})"
 }
+
+/**
+ * MR-179: what `GET api/v1/gdpr/delete/preflight` says this account is asked
+ * for before a deletion. [factors] are the server's tokens: `password`,
+ * `account_number`, `email_code`, `apple_reauth` (iOS only), `two_factor`.
+ * [enforced] is whether the server refuses a deletion that lacks them.
+ */
+@Serializable
+data class DeletionStepUp(
+    val factors: List<String> = emptyList(),
+    val enforced: Boolean = false,
+) {
+    val needsAccountNumber: Boolean get() = FACTOR_ACCOUNT_NUMBER in factors
+    val needsEmailCode: Boolean get() = FACTOR_EMAIL_CODE in factors
+
+    companion object {
+        const val FACTOR_ACCOUNT_NUMBER = "account_number"
+        const val FACTOR_EMAIL_CODE = "email_code"
+    }
+}
+
+/** `POST api/v1/gdpr/delete/code`: the code was e-mailed to [sentTo], a masked address. */
+@Serializable
+data class DeletionCodeResponse(
+    val success: Boolean = false,
+    val sentTo: String? = null,
+    val expiresInMinutes: Int? = null,
+)
 
 @Serializable
 data class DeleteAccountResponse(
@@ -508,6 +550,8 @@ data class DeletionPreflightResponse(
     val storeSubscriptionsStillBilling: List<StoreSubscriptionStillBilling> = emptyList(),
     /** A web (Polar) subscription is billing and the deletion will cancel it. */
     val webSubscriptionWillBeCancelled: Boolean = false,
+    /** MR-179: what the account is asked for. Null from a server older than #766. */
+    val stepUp: DeletionStepUp? = null,
 )
 
 /** One entry of [DeleteAccountResponse.storeSubscriptionsStillBilling]. Every field optional. */
