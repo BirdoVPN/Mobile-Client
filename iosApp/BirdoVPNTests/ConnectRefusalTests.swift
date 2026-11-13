@@ -338,4 +338,17 @@ final class ConnectRefusalTests: XCTestCase {
         XCTAssertNil(RegistrationRefusedError.classify(status: 403, body: bare))
         XCTAssertNil(RegistrationRefusedError.classify(status: 403, body: Data("<html>".utf8)))
     }
+
+    func testTheUnverifiedEmailRefusalIsToldByDetailsCodeOn403Only() {
+        let sentence = "Please verify your email address before signing in."
+        let body = Data(#"{"statusCode":403,"message":"\#(sentence)","details":{"code":"email_not_verified"}}"#.utf8)
+        XCTAssertEqual(EmailNotVerifiedError.classify(status: 403, body: body)?.message, sentence)
+        // No usable sentence: the app's own words.
+        let bare = Data(#"{"statusCode":403,"message":"Forbidden","details":{"code":"email_not_verified"}}"#.utf8)
+        XCTAssertEqual(EmailNotVerifiedError.classify(status: 403, body: bare)?.message, EmailNotVerifiedError.fallbackMessage)
+        // Another status, another code, or a bare 403: not this refusal.
+        XCTAssertNil(EmailNotVerifiedError.classify(status: 401, body: body))
+        XCTAssertNil(EmailNotVerifiedError.classify(status: 403, body: Data(#"{"message":"Forbidden"}"#.utf8)))
+        XCTAssertNil(EmailNotVerifiedError.classify(status: 403, body: Data(#"{"details":{"code":"registration_country_not_allowed"}}"#.utf8)))
+    }
 }
