@@ -156,12 +156,14 @@ struct BirdoVPNApp: App {
             item.selected.iconColor = accent
             item.selected.titleTextAttributes = [
                 .foregroundColor: accent,
-                .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+                .font: UIFontMetrics(forTextStyle: .caption2)
+                    .scaledFont(for: UIFont.systemFont(ofSize: 11, weight: .semibold)),
             ]
             item.normal.iconColor = muted
             item.normal.titleTextAttributes = [
                 .foregroundColor: muted,
-                .font: UIFont.systemFont(ofSize: 11, weight: .medium),
+                .font: UIFontMetrics(forTextStyle: .caption2)
+                    .scaledFont(for: UIFont.systemFont(ofSize: 11, weight: .medium)),
             ]
         }
 

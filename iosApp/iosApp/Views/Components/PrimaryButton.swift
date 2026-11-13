@@ -66,7 +66,9 @@ struct PrimaryButton: View {
                 }
                 Text(isLoading ? (loadingTitle ?? title) : title)
                     .birdoFont(fontSize, weight: .semibold)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .multilineTextAlignment(.center)
             }
             .foregroundStyle(active ? contentColor : BirdoTheme.white40)
             .frame(maxWidth: .infinity, minHeight: height)

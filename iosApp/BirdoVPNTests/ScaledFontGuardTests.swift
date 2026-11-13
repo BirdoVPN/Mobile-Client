@@ -17,15 +17,28 @@ final class ScaledFontGuardTests: XCTestCase {
         }
         let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
             .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" && $0.lastPathComponent != "BirdoTheme.swift" } ?? []
+            .filter { $0.pathExtension == "swift" } ?? []
         XCTAssertFalse(files.isEmpty)
 
+        // Whole-file, multi-line patterns: `.system(size:`, `systemFont(ofSize:`,
+        // any `ofSize:` and a `.custom(... fixedSize:)`. The ONE exemption is the
+        // builder in BirdoTheme.swift (`system(size: scaledSize`), removed from
+        // that file's text before matching -- not the whole file.
+        let patterns = [#"system\(\s*size:"#, #"ofSize:"#, #"\.custom\([^)]*fixedSize:"#]
+        let regexes = try patterns.map { try NSRegularExpression(pattern: $0, options: [.dotMatchesLineSeparators]) }
         var offenders: [String] = []
         for file in files {
-            let text = try String(contentsOf: file, encoding: .utf8)
-            for (i, line) in text.components(separatedBy: "\n").enumerated()
-            where line.contains(".font(.system(size:") {
-                offenders.append("\(file.lastPathComponent):\(i + 1)")
+            var text = try String(contentsOf: file, encoding: .utf8)
+            if file.lastPathComponent == "BirdoTheme.swift" {
+                text = text.replacingOccurrences(of: "system(size: scaledSize", with: "")
+            }
+            let range = NSRange(text.startIndex..., in: text)
+            for re in regexes {
+                for m in re.matches(in: text, range: range) {
+                    let line = text.prefix(m.range.location).filter { $0 == "
+" }.count + 1
+                    offenders.append("\(file.lastPathComponent):\(line)")
+                }
             }
         }
         XCTAssertTrue(offenders.isEmpty,
