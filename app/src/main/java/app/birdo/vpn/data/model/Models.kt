@@ -43,6 +43,9 @@ typealias StoreSubscriptionStillBilling = app.birdo.vpn.shared.model.StoreSubscr
 typealias DeletionPreflightResponse = app.birdo.vpn.shared.model.DeletionPreflightResponse
 typealias DeletionStepUp = app.birdo.vpn.shared.model.DeletionStepUp
 typealias DeletionCodeResponse = app.birdo.vpn.shared.model.DeletionCodeResponse
+typealias PendingChange = app.birdo.vpn.shared.model.PendingChange
+typealias PendingChangesResponse = app.birdo.vpn.shared.model.PendingChangesResponse
+typealias CancelPendingChangeResponse = app.birdo.vpn.shared.model.CancelPendingChangeResponse
 
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 typealias VpnServer = app.birdo.vpn.shared.model.VpnServer
