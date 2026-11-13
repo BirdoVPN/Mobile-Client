@@ -1,6 +1,7 @@
 package app.birdo.vpn.service
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import androidx.annotation.VisibleForTesting
@@ -12,7 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Coordinates BirdoPQ v1 post-quantum WireGuard PSK derivation.
@@ -91,38 +91,47 @@ object BirdoPqManager {
     @Volatile
     private var currentPsk: ByteArray? = null
 
+    /** One connect's pair, keyed by the public key it uploaded. */
+    private class Pending(val keypair: RosenpassNative.StaticKeypair, val atMs: Long)
+
     /**
-     * The exact keypair whose public key [getClientPublicKeyB64] last uploaded,
-     * handed to the next [tryDecapsulate] exactly once. THE ONLY HOLDER of an
-     * ML-KEM secret key (MR-703 / MR-1742): there is no stored copy to fall
-     * back to, so a decapsulation without it fails closed instead of deriving
-     * a PSK the server cannot match (MR-2117).
+     * The pairs whose public keys were uploaded and whose decapsulation has not
+     * happened yet, BY THE UPLOADED PUBLIC KEY (MR-703 / MR-1742). THE ONLY
+     * HOLDER of an ML-KEM secret key: there is no stored copy to fall back to,
+     * so a decapsulation without its pair fails closed instead of deriving a
+     * PSK the server cannot match (MR-2117).
      *
-     * It holds the secret key, so whoever clears it zeroes it:
-     * [tryDecapsulate]'s finally, [stop], [discardKeypair], and the next
-     * upload replacing it.
+     * Keyed, not a single slot, because two generations overlap: a new dial
+     * uploads its pair while the OLD generation's teardown is still to run.
+     * [performKeyExchange] and [stop] are handed the public key of THEIR
+     * generation and touch only that pair, so a stale generation can never
+     * consume or wipe a newer one's. (The key is public; it travels in the
+     * service intent's extras.)
+     *
+     * Whoever ends a pair's life wipes its secret: [performKeyExchange]'s
+     * finally, [stop] with its key, [discardKeypair] (all of them), and the
+     * backstops in [prunePending].
      */
-    private val handOff = AtomicReference<RosenpassNative.StaticKeypair?>(null)
+    private val pending = LinkedHashMap<String, Pending>()
 
-    /** When the pair in [handOff] was uploaded, by [nowMs]. Guarded with it. */
-    @Volatile
-    private var handOffAtMs = 0L
-
-    /** The clock behind [handOffAtMs]; tests move it. */
+    /**
+     * The monotonic clock behind the backstop (never the wall clock, which a
+     * user or the network can step). Tests move it. Only read while a pair is
+     * pending.
+     */
     @Volatile
     @VisibleForTesting
-    internal var nowMs: () -> Long = { System.currentTimeMillis() }
+    internal var elapsedMs: () -> Long = { SystemClock.elapsedRealtime() }
 
     /**
-     * How long an unconsumed pair may sit before [stop] wipes it. A [stop] from
-     * the TEARDOWN of an older generation arrives after the newer generation's
-     * dial has uploaded its pair (the new dial waits for the old teardown, then
-     * uploads, then the old service's cleanup runs): wiping unconditionally
-     * would delete the secret of the connect that is about to decapsulate. A
-     * pair that fresh belongs to a live dial; an abandoned one is older than
-     * this and goes on the next [stop], upload, or sign-out.
+     * BACKSTOP ONLY. A pair is normally ended by its own generation's
+     * decapsulation or [stop]; one whose dial died before the service ever
+     * heard of it (so nothing will name its key again) would otherwise sit in
+     * memory until the next upload or sign-out. Five minutes is longer than any
+     * dial; the cap bounds how many such pairs can pile up.
      */
-    private const val PENDING_PAIR_MAX_AGE_MS = 60_000L
+    private const val PENDING_PAIR_MAX_AGE_MS = 5 * 60_000L
+    private const val PENDING_PAIR_MAX_COUNT = 4
 
     /** Runs the sign-out purge off the caller's thread (Keystore deletes block). Tests run it inline. */
     @Volatile
@@ -161,13 +170,20 @@ object BirdoPqManager {
     suspend fun getClientPublicKeyB64(context: Context): String? = withContext(Dispatchers.IO) {
         purgeLegacyKeypair(context)
         val kp = generateKeypair(context) ?: return@withContext null
-        // MR-2123: its secret key is zeroed when the hand-off is consumed or
-        // cleared, instead of being left to the garbage collector.
-        synchronized(handOff) {
-            replaceHandOff(kp)
-            handOffAtMs = nowMs()
+        val publicKeyB64 = Base64.encodeToString(kp.publicKey, Base64.NO_WRAP)
+        synchronized(pending) {
+            prunePending()
+            // MR-2123: its secret key is zeroed when it is consumed or cleared,
+            // instead of being left to the garbage collector.
+            pending.remove(publicKeyB64)?.keypair?.secretKey?.fill(0)
+            pending[publicKeyB64] = Pending(kp, elapsedMs())
+            // Bounded: the oldest unconsumed pair goes first.
+            while (pending.size > PENDING_PAIR_MAX_COUNT) {
+                val oldest = pending.keys.first()
+                pending.remove(oldest)?.keypair?.secretKey?.fill(0)
+            }
         }
-        Base64.encodeToString(kp.publicKey, Base64.NO_WRAP)
+        publicKeyB64
     }
 
     /**
@@ -178,12 +194,20 @@ object BirdoPqManager {
      * (`quantumEnabled`): the ciphertext (in the `rosenpassPublicKey` field)
      * and the nonce (in `rosenpassEndpoint`) are decapsulated with the secret
      * key of the pair this connect uploaded, which is wiped on the way out.
-     * Anything less fails closed (`null`): a
+     * [uploadedPk] is the public key THIS generation's connect uploaded (the
+     * value [getClientPublicKeyB64] returned): only that pair is taken, so a
+     * request can never decapsulate with, or consume, another request's pair.
+     * Null, or a key with no pending pair, fails closed. Anything less fails
+     * closed (`null`): a
      * classical PSK would not match the peer the server configured with the
      * derived one.
      */
-    suspend fun performKeyExchange(context: Context, config: ConnectResponse): String? = withContext(Dispatchers.IO) {
-        val bilateralPsk = tryDecapsulate(context, config)
+    suspend fun performKeyExchange(
+        context: Context,
+        config: ConnectResponse,
+        uploadedPk: String?,
+    ): String? = withContext(Dispatchers.IO) {
+        val bilateralPsk = tryDecapsulate(context, config, uploadedPk)
         if (bilateralPsk != null) {
             // Zero the prior PSK before swapping (defence-in-depth).
             currentPsk?.fill(0)
@@ -208,31 +232,59 @@ object BirdoPqManager {
     }
 
     /**
-     * Stops PQ protection and zeroes the derived PSK. A hand-off no
-     * decapsulation consumed is wiped too, UNLESS it is younger than
-     * [PENDING_PAIR_MAX_AGE_MS]: a stale generation's teardown must never wipe
-     * the pair a newer dial just uploaded (see the constant).
+     * Stops PQ protection and zeroes the derived PSK, and wipes the ONE pending
+     * pair whose public key is [uploadedPk] (the generation being torn down).
+     * A null or unknown key wipes no pair: a stale generation's teardown, which
+     * runs after a newer dial uploaded its own pair, must never reach it.
      */
-    fun stop() {
+    fun stop(uploadedPk: String? = null) {
         Log.i(TAG, "stopping BirdoPQ PSK manager")
         currentPsk?.fill(0)
         currentPsk = null
-        synchronized(handOff) {
-            if (handOff.get() != null && nowMs() - handOffAtMs >= PENDING_PAIR_MAX_AGE_MS) replaceHandOff(null)
+        synchronized(pending) {
+            if (uploadedPk != null) pending.remove(uploadedPk)?.keypair?.secretKey?.fill(0)
+            prunePending()
         }
         _modeFlow.value = Mode.DISABLED
     }
 
     /**
-     * Sign-out and account deletion: drop any in-flight pair and make sure no
+     * Wipes the ONE pending pair named by [uploadedPk], and nothing else: not
+     * the derived PSK, not the mode, no other pair. For a request that ends
+     * before its decapsulation (a rebuild that is superseded or refused).
+     */
+    fun discardPending(uploadedPk: String?) {
+        if (uploadedPk == null) return
+        synchronized(pending) { pending.remove(uploadedPk)?.keypair?.secretKey?.fill(0) }
+    }
+
+    /**
+     * Sign-out and account deletion: wipe EVERY pending pair and make sure no
      * legacy key file survives (the purge runs again, not only once per
      * process, because this is the hygiene the user asked for).
      */
     fun discardKeypair(context: Context) {
-        synchronized(handOff) { replaceHandOff(null) }
+        synchronized(pending) {
+            pending.values.forEach { it.keypair.secretKey.fill(0) }
+            pending.clear()
+        }
         val purge = legacyPurgeFactory(context)
         // The Keystore deletes can block: off the caller's (sign-out) thread.
         purgeExecutor(Runnable { runCatching { purge.purge() } })
+    }
+
+    /** Wipes pairs past the backstop. Caller holds the [pending] lock. */
+    private fun prunePending() {
+        if (pending.isEmpty()) return
+        val now = elapsedMs()
+        val it = pending.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (now - e.value.atMs >= PENDING_PAIR_MAX_AGE_MS) {
+                e.value.keypair.secretKey.fill(0)
+                it.remove()
+            }
+        }
     }
 
     /**
@@ -245,12 +297,6 @@ object BirdoPqManager {
         if (!legacyPurged.compareAndSet(false, true)) return
         runCatching { legacyPurgeFactory(context).purge() }
             .onFailure { legacyPurged.set(false); Log.w(TAG, "legacy PQ key purge failed", it) }
-    }
-
-    /** Swaps the hand-off and zeroes the secret key of the pair it replaced. */
-    private fun replaceHandOff(next: RosenpassNative.StaticKeypair?) {
-        val previous = handOff.getAndSet(next)
-        if (previous != null && previous !== next) previous.secretKey.fill(0)
     }
 
     // ── BirdoPQ v1 decapsulation ───────────────────────────────────────────
@@ -269,10 +315,10 @@ object BirdoPqManager {
      * bail out cleanly so a misconfigured peer is never masked by a silent
      * downgrade.
      */
-    private suspend fun tryDecapsulate(context: Context, config: ConnectResponse): ByteArray? {
+    private suspend fun tryDecapsulate(context: Context, config: ConnectResponse, uploadedPk: String?): ByteArray? {
         // MR-2117: take the hand-off before anything can return, so every
         // exit below (the by-design nulls included) zeroes it.
-        val handedOff = handOff.getAndSet(null)
+        val handedOff = uploadedPk?.let { key -> synchronized(pending) { pending.remove(key)?.keypair } }
         try {
             return decapsulate(context, config, handedOff)
         } finally {
@@ -282,8 +328,9 @@ object BirdoPqManager {
 
     /**
      * [tryDecapsulate]'s body. [handedOff] is the pair whose public key this
-     * connect uploaded, or null when there is none (consumed, or cleared by
-     * [stop]): with no stored copy to fall back to, that fails closed.
+     * generation uploaded, or null when there is none (consumed, or wiped by
+     * [stop] or the backstop): with no stored copy to fall back to, that fails
+     * closed.
      */
     private suspend fun decapsulate(
         context: Context,

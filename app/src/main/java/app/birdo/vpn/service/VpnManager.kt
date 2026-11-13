@@ -1172,7 +1172,7 @@ class VpnManager @Inject constructor(
                     return ApiResult.Error(SUPERSEDED)
                 }
 
-                if (!startServiceFor(config, gen, askedForStealth)) {
+                if (!startServiceFor(config, gen, askedForStealth, pqClientPublicKey)) {
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
                 _stealthNotice.value = stealthNoticeFor(askedForStealth, config)
@@ -1339,7 +1339,7 @@ class VpnManager @Inject constructor(
                 // FAILED cold-start multi-hop connect can't arm a futile
                 // auto-reconnect storm.
                 activeMultiHop = entryNodeId to exitNodeId
-                if (!startServiceFor(config.toConnectResponse(), gen, askedForStealth)) {
+                if (!startServiceFor(config.toConnectResponse(), gen, askedForStealth, pqClientPublicKey)) {
                     return ApiResult.Error(SessionCopy.ENGINE_FAILED)
                 }
                 _stealthNotice.value = stealthNoticeFor(askedForStealth, config.toConnectResponse())
@@ -1413,10 +1413,18 @@ class VpnManager @Inject constructor(
      * is (re)started rapidly during a server switch: a recoverable error
      * instead of a crash.
      */
-    private fun startServiceFor(config: ConnectResponse, gen: Long, askedForStealth: Boolean): Boolean {
+    private fun startServiceFor(
+        config: ConnectResponse,
+        gen: Long,
+        askedForStealth: Boolean,
+        pqUploadedKey: String?,
+    ): Boolean {
         BirdoVpnService.setConfig(config)
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_START
+            // The public key THIS dial uploaded: the service decapsulates and
+            // wipes only that pair (MR-703).
+            pqUploadedKey?.let { putExtra(BirdoVpnService.EXTRA_PQ_UPLOADED_KEY, it) }
             putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
             putExtra(BirdoVpnService.EXTRA_STEALTH_REQUESTED, askedForStealth)
             putExtra(BirdoVpnService.EXTRA_SPLIT_TUNNEL_ENABLED, prefs.splitTunnelingEnabled)
@@ -1891,7 +1899,7 @@ class VpnManager @Inject constructor(
                     config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
                 else -> {
                     hold.swapping = true
-                    swapInService(config, gen, oldKey)
+                    swapInService(config, gen, oldKey, pqKey)
                 }
             }
         } catch (t: Throwable) {
@@ -1967,7 +1975,7 @@ class VpnManager @Inject constructor(
                     config.assignedIp == null -> LiveRebuildPolicy.Event.FAILED_BEFORE_SWAP
                 else -> {
                     hold.swapping = true
-                    swapInService(config.toConnectResponse(), gen, oldKey)
+                    swapInService(config.toConnectResponse(), gen, oldKey, pqKey)
                 }
             }
         } catch (t: Throwable) {
@@ -2005,7 +2013,12 @@ class VpnManager @Inject constructor(
      * once the service publishes Connected, the heartbeat must name it — the
      * old one is only deferred, and its reply would be "evicted".
      */
-    private suspend fun swapInService(config: ConnectResponse, gen: Long, oldKey: String): LiveRebuildPolicy.Event {
+    private suspend fun swapInService(
+        config: ConnectResponse,
+        gen: Long,
+        oldKey: String,
+        pqUploadedKey: String?,
+    ): LiveRebuildPolicy.Event {
         val id = ++liveRebuildCounter
         val outcome = BirdoVpnService.expectLiveRebuild(id)
         BirdoVpnService.setRebuildConfig(config)
@@ -2013,6 +2026,7 @@ class VpnManager @Inject constructor(
         val intent = Intent(context, BirdoVpnService::class.java).apply {
             action = BirdoVpnService.ACTION_LIVE_REBUILD
             putExtra(BirdoVpnService.EXTRA_REBUILD_ID, id)
+            pqUploadedKey?.let { putExtra(BirdoVpnService.EXTRA_PQ_UPLOADED_KEY, it) }
             putExtra(BirdoVpnService.EXTRA_KILL_SWITCH, prefs.killSwitchEnabled)
             // A live rebuild never asks for Stealth (its /connect sends
             // stealthMode = false; Stealth is not rebuilt in place).
