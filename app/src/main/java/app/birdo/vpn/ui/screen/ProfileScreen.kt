@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +62,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
@@ -85,6 +87,7 @@ import app.birdo.vpn.billing.PlaySubscriptionLinks
 import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.SubscriptionStatus
 import app.birdo.vpn.data.model.UserProfile
+import app.birdo.vpn.data.repository.PendingDeletion
 import app.birdo.vpn.ui.components.BirdoAlertDialog
 import app.birdo.vpn.ui.components.BirdoCard
 import app.birdo.vpn.ui.theme.BirdoBrand
@@ -109,10 +112,13 @@ import app.birdo.vpn.utils.maskAnonymousId
 import app.birdo.vpn.utils.maskedAccountNumberDisplay
 import app.birdo.vpn.utils.maskedAccountTailOf
 import app.birdo.vpn.utils.replaceNumberEntryVisible
+import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 /**
  * Profile screen — top-level destination. Identity, subscription, and all
@@ -151,6 +157,22 @@ fun ProfileScreen(
     // loading or after a failure, when the dialog keeps its static warning).
     deletionPreflight: DeletionPreflightResponse? = null,
     onDeleteDialogOpened: () -> Unit = {},
+    /**
+     * MR-179 hold fallback (birdo-web #883): (password, two-factor code) for
+     * "Delete in 24 hours", offered only while the preflight says
+     * `holdAvailable`.
+     */
+    onRequestDeletionHold: (String, String?) -> Unit = { _, _ -> },
+    /** One-shot: the hold was filed; the dialog closes and [onDeletionHoldShown] acknowledges it. */
+    deletionHoldFiled: Boolean = false,
+    onDeletionHoldShown: () -> Unit = {},
+    /** The account's deletion on hold, shown at the top with Cancel; null for none. */
+    pendingDeletion: PendingDeletion? = null,
+    isCancellingPendingDeletion: Boolean = false,
+    pendingDeletionError: String? = null,
+    onCancelPendingDeletion: () -> Unit = {},
+    /** Re-read the hold: when the screen opens and every time the app resumes onto it. */
+    onRefreshPendingDeletion: () -> Unit = {},
     // Google Play build: hide the "Manage on web" row, which links out to the
     // billing dashboard (external-purchase steering), and the "Redeem voucher"
     // row, since vouchers are sold only on the web (LR22, showsVoucherEntry).
@@ -167,6 +189,26 @@ fun ProfileScreen(
     var showVoucherDialog by rememberSaveable { mutableStateOf(false) }
     var showSignOutConfirm by rememberSaveable { mutableStateOf(false) }
 
+    // MR-179: the hold is read when the screen opens and whenever the app
+    // comes back to it (ON_RESUME is also delivered on first composition).
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val refreshPendingDeletion by androidx.compose.runtime.rememberUpdatedState(onRefreshPendingDeletion)
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refreshPendingDeletion()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // A filed hold is not a deletion: the dialog closes, the banner says when.
+    LaunchedEffect(deletionHoldFiled) {
+        if (deletionHoldFiled) {
+            showDeleteDialog = false
+            onClearDeleteError()
+            onDeletionHoldShown()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -176,6 +218,15 @@ fun ProfileScreen(
             .padding(horizontal = 20.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        if (pendingDeletion != null) {
+            PendingDeletionBanner(
+                pending = pendingDeletion,
+                isCancelling = isCancellingPendingDeletion,
+                error = pendingDeletionError,
+                onCancel = onCancelPendingDeletion,
+            )
+        }
+
         ProfileIdentityCard(
             user = user,
             subscription = subscription,
@@ -271,6 +322,9 @@ fun ProfileScreen(
             isSendingCode = isSendingDeleteCode,
             onSendCode = onSendDeletionCode,
             preflight = deletionPreflight,
+            // MR-179: an anonymous account is told it is the lost number.
+            holdForLostNumber = isAnonymousAccount || deletionPreflight?.stepUp?.needsAccountNumber == true,
+            onRequestHold = onRequestDeletionHold,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
             errorField = deleteErrorField,
@@ -837,6 +891,83 @@ private fun parseRenewalDay(raw: String?): LocalDate? {
 }
 
 /**
+ * MR-179 hold fallback: the deletion dialog offers "Delete in 24 hours" only
+ * when the preflight said `holdAvailable: true`. Loading, failed, an older
+ * server (no field): not offered.
+ */
+internal fun offersDeletionHold(preflight: DeletionPreflightResponse?): Boolean =
+    preflight?.stepUp?.holdAvailable == true
+
+/** When a held deletion takes effect, in the device's zone and locale (date and time). */
+internal fun pendingDeletionWhen(
+    applyAfter: Instant,
+    zone: ZoneId = ZoneId.systemDefault(),
+    locale: Locale = Locale.getDefault(),
+): String =
+    DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+        .withLocale(locale)
+        .format(applyAfter.atZone(zone))
+
+/**
+ * MR-179: the account's deletion on hold. It is not deleted yet: this says
+ * when it will be and cancels it. An assertive live region, like the other
+ * warnings: it appears when the screen opens or the app resumes.
+ */
+@Composable
+private fun PendingDeletionBanner(
+    pending: PendingDeletion,
+    isCancelling: Boolean,
+    error: String?,
+    onCancel: () -> Unit,
+) {
+    val palette = BirdoColors.current
+    val whenText = remember(pending.applyAfter) { pendingDeletionWhen(pending.applyAfter) }
+    BirdoCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 20.dp,
+        surface = palette.surface,
+        border = SolidColor(BirdoRed),
+        contentPadding = PaddingValues(18.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = BirdoRed, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    stringResource(R.string.profile_pending_deletion_body, whenText),
+                    color = palette.onBackground,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { liveRegion = LiveRegionMode.Assertive },
+                )
+            }
+            if (error != null) {
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = BirdoRed,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+            Button(
+                onClick = onCancel,
+                enabled = !isCancelling,
+                colors = ButtonDefaults.buttonColors(containerColor = BirdoGreen, contentColor = Color.White),
+            ) {
+                Text(
+                    stringResource(
+                        if (isCancelling) R.string.profile_pending_deletion_cancelling
+                        else R.string.profile_pending_deletion_cancel,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/**
  * Confirmation dialog requiring password re-entry before account deletion,
  * and the account's 2FA code when the server asks for it (item 85).
  */
@@ -852,6 +983,8 @@ private fun DeleteAccountDialog(
     isSendingCode: Boolean,
     onSendCode: () -> Unit,
     preflight: DeletionPreflightResponse?,
+    holdForLostNumber: Boolean,
+    onRequestHold: (password: String, twoFactorCode: String?) -> Unit,
     isDeletingAccount: Boolean,
     error: String?,
     errorField: DeleteAccountField?,
@@ -1080,6 +1213,32 @@ private fun DeleteAccountDialog(
                         color = BirdoRed,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
+                }
+                if (offersDeletionHold(preflight)) {
+                    // MR-179 hold fallback (birdo-web #883): without the number
+                    // (or the e-mailed code), deletion waits 24 hours instead.
+                    // The password and 2FA code are still sent where asked for.
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        stringResource(R.string.delete_dialog_hold_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite60,
+                    )
+                    TextButton(
+                        onClick = { onRequestHold(password, twoFactorCode.takeIf { requiresTwoFactor }) },
+                        enabled = (!requiresPassword || password.isNotBlank()) &&
+                            (!requiresTwoFactor || is2faCodeComplete(twoFactorCode)) &&
+                            !isDeletingAccount,
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            stringResource(
+                                if (holdForLostNumber) R.string.delete_dialog_hold_button
+                                else R.string.delete_dialog_hold_button_other,
+                            ),
+                            color = BirdoRed,
+                        )
+                    }
                 }
             }
         },

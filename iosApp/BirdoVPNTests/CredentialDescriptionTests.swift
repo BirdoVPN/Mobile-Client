@@ -179,6 +179,13 @@ final class CredentialDescriptionTests: XCTestCase {
                       "DeleteAccountBody hides that a code was sent")
     }
 
+    /// MR-179 hold fallback: the method shows; the password and code riding with it do not.
+    func testDeletionHoldBodyPrintsTheMethodButNoCredential() {
+        let hold = DeleteAccountBody(password: "hunter2-password", twoFactorCode: "otp-424242", stepUpMethod: "hold")
+        assertNoSecret(hold)
+        XCTAssertTrue(hold.description.contains("stepUpMethod: hold"), "DeleteAccountBody hides which method was asked for")
+    }
+
     // MARK: - App Store purchases
 
     func testStoreModelsPrintNoTransactionOrAccountToken() throws {

@@ -169,4 +169,120 @@ final class AccountDeletionTests: XCTestCase {
         XCTAssertFalse(AccountDeletion.isCompleteTwoFactorCode(""))
         XCTAssertFalse(AccountDeletion.isCompleteTwoFactorCode("abcd"))
     }
+
+    // MARK: - MR-179: the 24-hour hold (birdo-web #883)
+
+    private let applyAfter = "2026-11-14T12:00:00.000Z"
+    private var applyAfterDate: Date { Date(timeIntervalSince1970: 1_794_657_600) } // 2026-11-14T12:00:00Z
+
+    private func success(_ status: Int, _ json: String) -> DeletionHold.SuccessKind {
+        DeletionHold.classifySuccess(status: status, body: Data(json.utf8))
+    }
+
+    private func conflict(_ status: Int, _ json: String) -> DeletionHoldRefusal? {
+        DeletionHold.classifyConflict(status: status, body: Data(json.utf8))
+    }
+
+    func testHoldRequestSendsTheMethodWithThePasswordAndCode() throws {
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: "hunter2", twoFactorCode: "123456", stepUpMethod: "hold")),
+                       ["password": "hunter2", "twoFactorCode": "123456", "stepUpMethod": "hold"])
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, stepUpMethod: DeletionHold.method)),
+                       ["stepUpMethod": "hold"])
+        // Not asked for: not sent.
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil)), [:])
+    }
+
+    func testHoldIsOfferedOnlyWhenThePreflightSaysSo() throws {
+        let on = try JSONDecoder().decode(
+            DeletionStepUp.self,
+            from: Data(#"{"factors":["account_number"],"enforced":true,"holdAvailable":true}"#.utf8))
+        XCTAssertEqual(on.holdAvailable, true)
+        let off = try JSONDecoder().decode(
+            DeletionStepUp.self, from: Data(#"{"factors":["account_number"],"enforced":false,"holdAvailable":false}"#.utf8))
+        XCTAssertEqual(off.holdAvailable, false)
+        // An older backend: missing means false (`== true` is the gate).
+        let old = try JSONDecoder().decode(DeletionStepUp.self, from: Data(#"{"factors":["account_number"],"enforced":true}"#.utf8))
+        XCTAssertNil(old.holdAvailable)
+        XCTAssertFalse(old.holdAvailable == true)
+    }
+
+    /// 202 `change_pending` is a hold, NOT a deletion; a hold that cannot be
+    /// read is never a success either.
+    func testA202IsAHoldNeverADeletion() {
+        let held = #"{"success":true,"pending":true,"code":"change_pending","message":"x","stepUp":{"methods":["hold"],"pendingChangeId":"p1","applyAfter":"2026-11-14T12:00:00.000Z"}}"#
+        XCTAssertEqual(success(202, held), .held(PendingDeletion(id: "p1", applyAfter: applyAfterDate)))
+        // The markers alone are enough, whatever the status.
+        XCTAssertEqual(success(200, held), .held(PendingDeletion(id: "p1", applyAfter: applyAfterDate)))
+        XCTAssertEqual(success(202, #"{"success":true,"pending":true,"stepUp":["hold"]}"#), .unreadableHold)
+        XCTAssertEqual(success(202, #"{"success":true,"pending":true,"stepUp":{"pendingChangeId":"","applyAfter":"2026-11-14T12:00:00Z"}}"#), .unreadableHold)
+        XCTAssertEqual(success(202, #"{"pending":true,"stepUp":{"pendingChangeId":"p1","applyAfter":"tomorrow"}}"#), .unreadableHold)
+        XCTAssertEqual(success(202, ""), .unreadableHold)
+        XCTAssertEqual(success(202, "<html>"), .unreadableHold)
+        // A 200 erasure stays a deletion, as before.
+        XCTAssertEqual(success(200, #"{"success":true,"deletedItems":3,"storeSubscriptionsStillBilling":[]}"#), .deletion)
+    }
+
+    func testA409NamesTheHoldThatAlreadyWaitsOrSaysItIsUnavailable() {
+        let p0 = PendingDeletion(id: "p0", applyAfter: applyAfterDate)
+        XCTAssertEqual(conflict(409, #"{"statusCode":409,"error":"change_already_pending","message":"x","stepUp":{"methods":["hold"],"pendingChangeId":"p0","applyAfter":"2026-11-14T12:00:00.000Z"}}"#),
+                       .alreadyPending(p0))
+        XCTAssertEqual(conflict(409, #"{"error":"change_already_pending","details":{"stepUp":{"pendingChangeId":"p0","applyAfter":"2026-11-14T12:00:00Z"}}}"#),
+                       .alreadyPending(p0))
+        // The exception filter passes only `details`: no stepUp on the wire.
+        XCTAssertEqual(conflict(409, #"{"statusCode":409,"message":"A deletion is already on hold.","error":"change_already_pending","timestamp":"t","path":"/api/v1/gdpr/delete"}"#),
+                       .alreadyPending(nil))
+        XCTAssertEqual(conflict(409, #"{"error":"hold_unavailable","message":"Deleting in 24 hours is not available right now."}"#),
+                       .unavailable(message: "Deleting in 24 hours is not available right now."))
+        XCTAssertEqual(conflict(409, #"{"error":"hold_unavailable"}"#), .unavailable(message: nil))
+        XCTAssertNil(conflict(409, #"{"error":"Conflict","message":"x"}"#))
+        XCTAssertNil(conflict(403, #"{"error":"change_already_pending"}"#))
+        XCTAssertNil(conflict(409, "not json"))
+    }
+
+    /// On 401 / 403 / 429 `stepUp` is an ARRAY of factors: the refusal is
+    /// still classified by its code, and no array is ever read as a hold.
+    func testTheRefusalsStepUpArrayIsNeverAHold() {
+        XCTAssertEqual(classify(403, #"{"statusCode":403,"error":"two_factor_required","message":"x","stepUp":["password","two_factor"]}"#),
+                       .twoFactorRequired)
+        XCTAssertEqual(classify(403, #"{"error":"two_factor_invalid","stepUp":["two_factor"]}"#), .twoFactorInvalid)
+        XCTAssertNil(classify(429, #"{"error":"too_many_attempts","stepUp":["account_number"]}"#))
+        XCTAssertNil(classify(403, #"{"error":"step_up_no_factor","message":"x","stepUp":[]}"#))
+        XCTAssertNil(DeletionHold.pending(fromStepUp: ["account_number", "two_factor"]))
+        XCTAssertNil(DeletionHold.pending(fromStepUp: nil))
+        XCTAssertNil(DeletionHold.pending(fromStepUp: ["pendingChangeId": 7, "applyAfter": "2026-11-14T12:00:00Z"] as [String: Any]))
+        XCTAssertNil(conflict(403, #"{"error":"two_factor_required","stepUp":["two_factor"]}"#))
+    }
+
+    func testThePendingChangesListYieldsTheAccountDeletion() {
+        let list = #"{"pendingChanges":[{"id":"e1","action":"email_change","description":"x","applyAfter":"2026-11-14T10:00:00.000Z","createdAt":"t"},{"id":"p1","action":"account_delete","description":"delete the account","applyAfter":"2026-11-14T12:00:00.000Z","createdAt":"t"}]}"#
+        XCTAssertEqual(DeletionHold.accountDeletion(inPendingChanges: Data(list.utf8)),
+                       .some(PendingDeletion(id: "p1", applyAfter: applyAfterDate)))
+        // None on hold: known to be none.
+        XCTAssertEqual(DeletionHold.accountDeletion(inPendingChanges: Data(#"{"pendingChanges":[]}"#.utf8)), .some(nil))
+        // Not the list at all: unknown (the banner keeps what it shows).
+        XCTAssertTrue(DeletionHold.accountDeletion(inPendingChanges: Data("<html>".utf8)) == nil)
+        XCTAssertTrue(DeletionHold.accountDeletion(inPendingChanges: Data(#"{"error":"x"}"#.utf8)) == nil)
+    }
+
+    func testInstantsParseWithOrWithoutFractionsAndOffsets() {
+        XCTAssertEqual(DeletionHold.parseInstant("2026-11-14T12:00:00.000Z"), applyAfterDate)
+        XCTAssertEqual(DeletionHold.parseInstant("2026-11-14T12:00:00Z"), applyAfterDate)
+        XCTAssertEqual(DeletionHold.parseInstant("2026-11-14T13:00:00+01:00"), applyAfterDate)
+        XCTAssertNil(DeletionHold.parseInstant("tomorrow"))
+        XCTAssertNil(DeletionHold.parseInstant(""))
+    }
+
+    /// The banner says when, in the device's zone.
+    func testTheBannerShowsApplyAfterInTheDevicesZone() throws {
+        let berlin = DeletionHold.bannerText(applyAfter: applyAfterDate,
+                                             timeZone: try XCTUnwrap(TimeZone(identifier: "Europe/Berlin")),
+                                             locale: Locale(identifier: "en_GB"))
+        XCTAssertTrue(berlin.hasPrefix("Your account will be deleted on "), berlin)
+        XCTAssertTrue(berlin.contains("13:00"), berlin)
+        XCTAssertTrue(berlin.contains("2026"), berlin)
+        let utc = DeletionHold.bannerText(applyAfter: applyAfterDate,
+                                          timeZone: try XCTUnwrap(TimeZone(identifier: "UTC")),
+                                          locale: Locale(identifier: "en_GB"))
+        XCTAssertTrue(utc.contains("12:00"), utc)
+    }
 }

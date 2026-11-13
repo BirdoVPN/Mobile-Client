@@ -163,6 +163,8 @@ extension DeleteAccountBody: CredentialRedacting {
             ("emailCode", Redaction.optional(emailCode)),
             ("appleIdentityToken", Redaction.optional(appleIdentityToken)),
             ("appleNonce", Redaction.optional(appleNonce)),
+            // MR-179 hold fallback: the method is not a secret.
+            ("stepUpMethod", Redaction.plain(stepUpMethod)),
         ]
     }
 }

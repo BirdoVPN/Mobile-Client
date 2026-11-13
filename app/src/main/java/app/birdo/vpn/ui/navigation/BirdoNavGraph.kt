@@ -681,6 +681,15 @@ fun BirdoNavGraph(
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                         deletionPreflight = authState.deletionPreflight,
                         onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
+                        // MR-179 hold fallback: no sign-out, no teardown.
+                        onRequestDeletionHold = { password, code -> authViewModel.requestDeletionHold(password, code) },
+                        deletionHoldFiled = authState.deletionHoldFiled,
+                        onDeletionHoldShown = { authViewModel.onDeletionHoldShown() },
+                        pendingDeletion = authState.pendingDeletion,
+                        isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
+                        pendingDeletionError = authState.pendingDeletionError,
+                        onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
+                        onRefreshPendingDeletion = { authViewModel.refreshPendingDeletion() },
                     )
                 }
             }

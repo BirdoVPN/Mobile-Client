@@ -453,7 +453,7 @@ final class APIClient: @unchecked Sendable {
                               appleIdentityToken: appleIdentityToken,
                               appleNonce: appleNonce)
         )
-        let response = try await performRequest(
+        let answer = try await performRequestAnswer(
             method: "DELETE",
             path: "/api/v1/gdpr/delete",
             body: body,
@@ -464,6 +464,14 @@ final class APIClient: @unchecked Sendable {
             // mapping would throw away with the body.
             refusal: { status, data in DeletionRefusal.classify(status: status, body: data) }
         )
+        let response = answer.data
+        // MR-179: a 202 hold is never a deletion, whatever asked for it: no
+        // identity reset, no sign-out. The caller shows the hold.
+        switch DeletionHold.classifySuccess(status: answer.status, body: response) {
+        case .deletion: break
+        case .held(let pending): throw DeletionHoldRefusal.alreadyPending(pending)
+        case .unreadableHold: throw DeletionHoldRefusal.alreadyPending(nil)
+        }
         // PRIVACY: only after the erasure actually succeeded (performRequest
         // throws otherwise, so a failed delete leaves the identity alone and the
         // account stays usable). The deviceId would otherwise survive and link
@@ -475,6 +483,84 @@ final class APIClient: @unchecked Sendable {
         // it into a thrown error. It simply means "nothing to report".
         return (try? decoder.decode(DeleteAccountResult.self, from: response))?
             .storeSubscriptionsStillBilling ?? []
+    }
+
+    /// MR-179 hold fallback (birdo-web #883): "Delete in 24 hours", for a user
+    /// who cannot present the step-up factor (a lost account number). Same
+    /// route, method and refusals as `deleteAccount`, with
+    /// `stepUpMethod: "hold"`; the password and 2FA code still go where the
+    /// account has them.
+    ///
+    /// - Returns: `.held` for 202 `change_pending` and for 409
+    ///   `change_already_pending` (the hold that already waits): NOT a
+    ///   deletion, nothing local changes. `.deletedNow` only when the server
+    ///   deleted at once (the step-up off), after the same identity reset as
+    ///   `deleteAccount`.
+    /// - Throws: `DeletionRefusal` (2FA), `DeletionHoldRefusal` (409
+    ///   `hold_unavailable`, or an already-pending hold the body does not
+    ///   name), or the generic errors. A 202 whose hold cannot be read throws
+    ///   `DeletionHoldRefusal.alreadyPending(nil)`: never a success.
+    func requestDeletionHold(password: String?, twoFactorCode: String?) async throws -> DeletionHoldOutcome {
+        let body = try encoder.encode(
+            DeleteAccountBody(password: password, twoFactorCode: twoFactorCode, stepUpMethod: DeletionHold.method)
+        )
+        let answer: (data: Data, status: Int)
+        do {
+            answer = try await performRequestAnswer(
+                method: "DELETE",
+                path: "/api/v1/gdpr/delete",
+                body: body,
+                authenticated: true,
+                refreshOn401: true,
+                refusal: { status, data -> Error? in
+                    // The proof refusals first (their `stepUp` is an array),
+                    // then the hold's own 409s (an object, or nothing on the wire).
+                    if let refusal = DeletionRefusal.classify(status: status, body: data) { return refusal }
+                    return DeletionHold.classifyConflict(status: status, body: data)
+                }
+            )
+        } catch DeletionHoldRefusal.alreadyPending(let pending?) {
+            return .held(pending, alreadyPending: true)
+        }
+        switch DeletionHold.classifySuccess(status: answer.status, body: answer.data) {
+        case .held(let pending):
+            return .held(pending, alreadyPending: false)
+        case .unreadableHold:
+            throw DeletionHoldRefusal.alreadyPending(nil)
+        case .deletion:
+            resetDeviceIdentity()
+            let stillBilling = (try? decoder.decode(DeleteAccountResult.self, from: answer.data))?
+                .storeSubscriptionsStillBilling ?? []
+            return .deletedNow(stillBilling: stillBilling)
+        }
+    }
+
+    /// MR-179: the account's deletion on hold (`GET /auth/pending-changes`,
+    /// birdo-web step-up.controller.ts), or nil when there is none. Throws
+    /// when the answer is not the list, so the caller keeps what it shows.
+    func pendingDeletion() async throws -> PendingDeletion? {
+        let data = try await get(path: "/auth/pending-changes")
+        guard let listed = DeletionHold.accountDeletion(inPendingChanges: data) else {
+            throw APIError.invalidResponse
+        }
+        return listed
+    }
+
+    /// MR-179: cancel a held change (`POST /auth/pending-changes/:id/cancel`,
+    /// no body, no step-up). True when this call cancelled it; false for 404
+    /// `pending_change_not_found`: already gone, the caller reads the list again.
+    func cancelPendingChange(id: String) async throws -> Bool {
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? id
+        do {
+            _ = try await post(path: "/auth/pending-changes/\(escaped)/cancel", body: nil, authenticated: true,
+                               refusal: { status, _ -> Error? in
+                                   if status == 404 { return PendingChangeGone() }
+                                   return nil
+                               })
+            return true
+        } catch is PendingChangeGone {
+            return false
+        }
     }
 
     /// What deleting the account will and will not stop: the App Store /
@@ -1073,6 +1159,23 @@ final class APIClient: @unchecked Sendable {
         body: Data?,
         authenticated: Bool,
         contentType: String = "application/json",
+        refreshOn401: Bool = true,
+        structuredErrors: Bool = false,
+        refusal: ((Int, Data) -> Error?)? = nil
+    ) async throws -> Data {
+        try await performRequestAnswer(method: method, path: path, body: body, authenticated: authenticated,
+                                       contentType: contentType, refreshOn401: refreshOn401,
+                                       structuredErrors: structuredErrors, refusal: refusal).data
+    }
+
+    /// `performRequest` with the final 2xx status too. MR-179: account
+    /// deletion tells a 202 hold from a 200 erasure by it.
+    private func performRequestAnswer(
+        method: String,
+        path: String,
+        body: Data?,
+        authenticated: Bool,
+        contentType: String = "application/json",
         /// Set false for endpoints where 401 is a BUSINESS refusal rather than an
         /// expired access token (e.g. GDPR erasure's password re-confirmation).
         /// Refresh-and-retry there wastes a token rotation and replaces the
@@ -1094,7 +1197,7 @@ final class APIClient: @unchecked Sendable {
         /// thrown as-is. Only account deletion passes one (owner item 85: its
         /// `two_factor_required` / `two_factor_invalid` codes).
         refusal: ((Int, Data) -> Error?)? = nil
-    ) async throws -> Data {
+    ) async throws -> (data: Data, status: Int) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw APIError.invalidURL
         }
@@ -1183,14 +1286,14 @@ final class APIClient: @unchecked Sendable {
                 throw Self.error(status: retryHttp.statusCode, body: retryData,
                                  structured: structuredErrors)
             }
-            return retryData
+            return (retryData, retryHttp.statusCode)
         }
 
         guard (200...299).contains(http.statusCode) else {
             if let refused = refusal?(http.statusCode, data) { throw refused }
             throw Self.error(status: http.statusCode, body: data, structured: structuredErrors)
         }
-        return data
+        return (data, http.statusCode)
     }
 
     /// Surface the backend's own refusal text ("Port forwarding requires a
@@ -1703,6 +1806,19 @@ private struct DeviceIdentity: Sendable {
 private struct DeleteAccountResult: Decodable {
     let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
 }
+
+/// MR-179: what `requestDeletionHold` answered, when it was not a refusal.
+enum DeletionHoldOutcome: Equatable, Sendable {
+    /// 202 `change_pending`, or 409 `change_already_pending` (`alreadyPending`).
+    /// NOT a deletion: no sign-out, no tunnel teardown, no keychain wipe.
+    case held(PendingDeletion, alreadyPending: Bool)
+    /// The server deleted the account at once (the step-up off): finish the
+    /// deletion as `deleteAccount` does.
+    case deletedNow(stillBilling: [StoreSubscriptionStillBilling])
+}
+
+/// 404 `pending_change_not_found` on a cancel: the hold is already gone.
+private struct PendingChangeGone: Error {}
 
 /// A store subscription the server reports as still billing after an account
 /// deletion. Every field optional: the backend field is new, and a missing

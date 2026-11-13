@@ -197,6 +197,9 @@ class BirdoRepository @Inject constructor(
 
         private const val SERVER_CACHE_TTL_MS = 60_000L
 
+        /** The status [deleteAccount] reports when the server held the deletion instead (MR-179). */
+        internal const val HTTP_ACCEPTED = 202
+
         /** `algorithm` of the only proof-of-work the server issues. */
         private const val POW_ALGORITHM = "sha256-leading-zero-bits"
 
@@ -721,34 +724,131 @@ class BirdoRepository @Inject constructor(
         twoFactorCode: String? = null,
         accountNumber: String? = null,
         emailCode: String? = null,
-    ): ApiResult<DeleteAccountResponse> {
-        val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
-            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode), AroundTunnel)
-        }
-        if (result is ApiResult.Success) {
-            // Clear local state — account no longer exists on the server.
-            // Bump the generation to fence any in-flight refresh (finding #6),
-            // and invalidate BOTH caches so the next account on this device can
-            // never briefly read the deleted account's plan (finding #15) — the
-            // server cache was already cleared, the subscription cache was not.
-            synchronized(sessionLock) {
-                sessionGeneration.incrementAndGet()
-                tokenManager.clearAll()
+    ): ApiResult<DeleteAccountResponse> =
+        when (val result = sendDeletion(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode))) {
+            is ApiResult.Error -> result
+            is ApiResult.Success -> when (val answer = result.data) {
+                is DeletionHoldResult.DeletedNow -> ApiResult.Success(answer.response)
+                // MR-179: a 202 hold is never a deletion, whatever asked for
+                // it. Nothing local was cleared; the caller re-reads the holds.
+                is DeletionHoldResult.Held -> errors.unexpected().copy(code = HTTP_ACCEPTED)
             }
-            invalidateServerCache()
-            invalidateSubscriptionCache()
-            // PRIVACY: the deviceId would otherwise survive the deletion and
-            // link the NEXT account registered on this handset to the one just
-            // erased. Mint a fresh random identity so the erased account's
-            // device fingerprint dies with it. (Since P1-dk-ssaid-device-linkage
-            // the id is already random rather than SSAID-derived, so this is now
-            // a rotation of a value nothing can recompute, not an escape from
-            // one that can.)
-            deviceInfoProvider.resetDeviceIdentity()
-            // Same reasoning for the ML-KEM keypair (audit D-15).
-            forgetPostQuantumKeypair()
         }
-        return result
+
+    /**
+     * MR-179 hold fallback (birdo-web #883): ask the server to delete the
+     * account in 24 hours, for a user who cannot present the step-up factor
+     * (a lost account number). Same route, method and body as [deleteAccount],
+     * with `stepUpMethod: "hold"`; the password and 2FA code still go where
+     * the account has them.
+     *
+     * A [DeletionHoldResult.Held] (202 `change_pending`, or 409
+     * `change_already_pending`) clears NOTHING: the account, the session, the
+     * tokens and the tunnel stay as they are. Only [DeletionHoldResult.DeletedNow]
+     * (a server with the step-up off deletes at once) clears what a deletion
+     * clears. Every refusal comes back as the mapped error, as for [deleteAccount].
+     */
+    suspend fun requestDeletionHold(password: String?, twoFactorCode: String? = null): ApiResult<DeletionHoldResult> =
+        sendDeletion(
+            DeleteAccountRequest(password = password, twoFactorCode = twoFactorCode, stepUpMethod = DeletionHoldWire.METHOD_HOLD),
+        )
+
+    /**
+     * One `DELETE api/v1/gdpr/delete`, classified by STATUS as well as body:
+     * a 2xx is a deletion only when it is not the hold's 202. A hold whose
+     * `stepUp` cannot be read is an error (never a success, never a deletion).
+     * The local clean-up of a confirmed deletion runs here, once.
+     */
+    private suspend fun sendDeletion(request: DeleteAccountRequest): ApiResult<DeletionHoldResult> {
+        val response = when (val sent = send { api.deleteAccount(request, AroundTunnel) }) {
+            is Sent.Failed -> return sent.error
+            is Sent.Answered -> sent.response
+        }
+        if (response.isSuccessful) {
+            val body = response.body()
+            if (DeletionHoldWire.isHoldAnswer(response.code(), body)) {
+                val held = DeletionHoldWire.holdOf(body?.stepUp)
+                    ?: return errors.unexpected().copy(code = response.code())
+                return ApiResult.Success(DeletionHoldResult.Held(held, alreadyPending = false))
+            }
+            body ?: return errors.unexpected()
+            clearAfterErasure()
+            return ApiResult.Success(DeletionHoldResult.DeletedNow(body))
+        }
+        val raw = runCatching { response.errorBody()?.string() }.getOrNull()
+        if (response.code() == 409 &&
+            DeletionHoldWire.errorCodeOf(raw) == DeletionHoldWire.ERROR_CHANGE_ALREADY_PENDING
+        ) {
+            // The hold that already waits: from the body when it names it,
+            // else from the list (the API's exception filter passes only
+            // `details` through, so the contract's `stepUp` may not arrive).
+            val held = DeletionHoldWire.holdOfErrorBody(raw)
+                ?: when (val listed = pendingDeletion()) {
+                    is ApiResult.Success -> listed.data
+                    is ApiResult.Error -> null
+                }
+            if (held != null) return ApiResult.Success(DeletionHoldResult.Held(held, alreadyPending = true))
+        }
+        return errorFromBody(response, raw, ErrorContext.DELETE_ACCOUNT, R.string.error_delete_failed)
+    }
+
+    /**
+     * MR-179: the account was erased by a deletion hold that ran out (the
+     * 24-hour sweep), found out from the session dying after `applyAfter`.
+     * Clears what a confirmed deletion clears.
+     */
+    fun forgetErasedAccount() = clearAfterErasure()
+
+    private fun clearAfterErasure() {
+        // Clear local state — account no longer exists on the server.
+        // Bump the generation to fence any in-flight refresh (finding #6),
+        // and invalidate BOTH caches so the next account on this device can
+        // never briefly read the deleted account's plan (finding #15) — the
+        // server cache was already cleared, the subscription cache was not.
+        synchronized(sessionLock) {
+            sessionGeneration.incrementAndGet()
+            tokenManager.clearAll()
+        }
+        invalidateServerCache()
+        invalidateSubscriptionCache()
+        // PRIVACY: the deviceId would otherwise survive the deletion and
+        // link the NEXT account registered on this handset to the one just
+        // erased. Mint a fresh random identity so the erased account's
+        // device fingerprint dies with it. (Since P1-dk-ssaid-device-linkage
+        // the id is already random rather than SSAID-derived, so this is now
+        // a rotation of a value nothing can recompute, not an escape from
+        // one that can.)
+        deviceInfoProvider.resetDeviceIdentity()
+        // Same reasoning for the ML-KEM keypair (audit D-15).
+        forgetPostQuantumKeypair()
+    }
+
+    /**
+     * MR-179: the account's deletion on hold, from `GET auth/pending-changes`,
+     * or null when there is none. Read only.
+     */
+    suspend fun pendingDeletion(): ApiResult<PendingDeletion?> =
+        when (val result = withAutoRefresh(R.string.error_unexpected) { api.pendingChanges() }) {
+            is ApiResult.Error -> result
+            is ApiResult.Success -> ApiResult.Success(DeletionHoldWire.accountDeletionIn(result.data.pendingChanges))
+        }
+
+    /**
+     * MR-179: cancel a held change. Success(true) when this call cancelled it,
+     * Success(false) for 404 `pending_change_not_found` (already applied,
+     * cancelled elsewhere or expired: the caller re-reads the list). Cancelling
+     * keeps the account as it is, so it needs no step-up.
+     */
+    suspend fun cancelPendingChange(id: String): ApiResult<Boolean> {
+        val response = when (val sent = send { api.cancelPendingChange(id) }) {
+            is Sent.Failed -> return sent.error
+            is Sent.Answered -> sent.response
+        }
+        return when {
+            response.isSuccessful -> ApiResult.Success(true)
+            response.code() == 404 -> ApiResult.Success(false)
+            else -> errorFrom(response, ErrorContext.GENERAL, R.string.error_unexpected)
+        }
     }
 
     /**

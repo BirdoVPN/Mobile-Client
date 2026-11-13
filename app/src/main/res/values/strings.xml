@@ -752,6 +752,18 @@
     <string name="delete_dialog_email_code_resend">Send a new code</string>
     <string name="delete_dialog_email_code_sent">We emailed a code to %1$s. It works once for 10 minutes.</string>
     <string name="delete_dialog_email_code_sent_unknown">We emailed a code to your account address. It works once for 10 minutes.</string>
+    <!-- MR-179 hold fallback (birdo-web #883): offered only while the deletion
+         preflight says holdAvailable. The first button is for an anonymous
+         account (it has a number to lose); the second for any other. A hold
+         is not a deletion: the account is deleted at applyAfter unless the
+         hold is cancelled. %1$s is the local date and time. -->
+    <string name="delete_dialog_hold_button">Delete in 24 hours (I lost my account number)</string>
+    <string name="delete_dialog_hold_button_other">Delete in 24 hours instead</string>
+    <string name="delete_dialog_hold_note">The deletion then waits 24 hours, and you can cancel it until then.</string>
+    <string name="delete_hold_failed">Nothing was deleted. Please try again.</string>
+    <string name="profile_pending_deletion_body">Your account will be deleted on %1$s.</string>
+    <string name="profile_pending_deletion_cancel">Cancel deletion</string>
+    <string name="profile_pending_deletion_cancelling">Cancelling…</string>
     <!-- ════ end AND-UI-B ════ -->
 
     <!-- ════ AND-VPN-B (Android connection engine, phase B, 2026-10-01) ════
