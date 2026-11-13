@@ -490,18 +490,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private func startHeartbeat(keyId: String, token: String, clientVersion: String) {
         heartbeatLock.lock()
         heartbeatTask?.cancel()
-        let interval = Self.heartbeatInterval
+        // MR-1622: the loop ticks at the liveness cadence (10 s, Android's
+        // `TunnelMonitor.CHECK_INTERVAL_MS`); the network heartbeat still goes
+        // out every `heartbeatInterval` (30 s), i.e. every third tick.
+        let tick = DeadTunnelDetector.checkInterval
+        let beatEvery = max(1, Int((Self.heartbeatInterval / tick).rounded()))
         heartbeatTask = Task { [weak self] in
+            // Fresh per start: a swapped peer or a new session starts with no
+            // previous reading, so a stale rx/tx baseline can never misjudge it.
+            var liveness = DeadTunnelDetector.Liveness()
+            var ticks = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(tick * 1_000_000_000))
                 if Task.isCancelled { return }
                 guard let self else { return }
+                ticks += 1
                 // Data-plane liveness FIRST, and independently of the network
                 // heartbeat below. The heartbeat cannot detect a dead tunnel: its
                 // URLSession rides the live tunnel, so the one condition worth
                 // detecting is exactly the condition that disables the detector.
-                await self.checkDataPlaneLiveness()
-                await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
+                await self.checkDataPlaneLiveness(&liveness, keyId: keyId, token: token,
+                                                  clientVersion: clientVersion)
+                if Task.isCancelled { return }
+                if ticks % beatEvery == 0 {
+                    await self.sendHeartbeat(keyId: keyId, token: token, clientVersion: clientVersion)
+                }
             }
         }
         heartbeatLock.unlock()
@@ -518,18 +531,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// else (network error, 401 from a stale token, 5xx, decode surprise) is
     /// logged and swallowed so the tunnel survives.
     private func sendHeartbeat(keyId: String, token: String, clientVersion: String) async {
-        guard let encodedKeyId = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "/vpn/heartbeat/\(encodedKeyId)", relativeTo: Self.apiBaseURL),
-              url.scheme?.lowercased() == "https" else {
+        guard let request = makeHeartbeatRequest(keyId: keyId, token: token,
+                                                 clientVersion: clientVersion, timeout: nil) else {
             return
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        // Same pair as the host APIClient (ClientIdentity): a Mac names itself.
-        request.setValue(ClientIdentity.clientHeaderValue, forHTTPHeaderField: "X-Desktop-Client")
-        request.setValue(ClientIdentity.userAgent(version: clientVersion), forHTTPHeaderField: "User-Agent")
 
         let data: Data
         let response: URLResponse
@@ -564,6 +569,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             // Routed through the breaker so it can never become an unbounded
             // teardown ↔ on-demand-re-dial loop — see `handleDataPlaneFailure`.
             handleDataPlaneFailure(.revoked, error: TunnelError.connectionRevoked)
+        }
+    }
+
+    /// The heartbeat request, shared by the periodic beat and the MR-1623 probe
+    /// so the two can never disagree about what the server is asked.
+    private func makeHeartbeatRequest(keyId: String, token: String, clientVersion: String,
+                                      timeout: TimeInterval?) -> URLRequest? {
+        guard let encodedKeyId = keyId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "/vpn/heartbeat/\(encodedKeyId)", relativeTo: Self.apiBaseURL),
+              url.scheme?.lowercased() == "https" else {
+            return nil
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        if let timeout { request.timeoutInterval = timeout }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // Same pair as the host APIClient (ClientIdentity): a Mac names itself.
+        request.setValue(ClientIdentity.clientHeaderValue, forHTTPHeaderField: "X-Desktop-Client")
+        request.setValue(ClientIdentity.userAgent(version: clientVersion), forHTTPHeaderField: "User-Agent")
+        return request
+    }
+
+    /// MR-1623: ask the server why the tunnel died, about the key we were just
+    /// using. Best-effort, bounded by `DeadTunnelProbe.timeout`, fail-open.
+    private func probeDeadKey(keyId: String, token: String, clientVersion: String) async -> DeadTunnelProbe.Outcome {
+        guard let request = makeHeartbeatRequest(keyId: keyId, token: token,
+                                                 clientVersion: clientVersion,
+                                                 timeout: DeadTunnelProbe.timeout) else {
+            return .unknown
+        }
+        do {
+            let (data, response) = try await heartbeatSession.data(for: request)
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return DeadTunnelProbe.classify(statusCode: (response as? HTTPURLResponse)?.statusCode,
+                                            json: json)
+        } catch {
+            return .unknown
         }
     }
 
@@ -671,7 +714,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// Windows requires two independent death signals and Android watches
     /// handshake age; iOS had neither. Handshake age is the signal available here
     /// without new API, entitlements or background modes.
-    private func checkDataPlaneLiveness() async {
+    private func checkDataPlaneLiveness(_ liveness: inout DeadTunnelDetector.Liveness,
+                                        keyId: String, token: String,
+                                        clientVersion: String) async {
         guard let connectedAt = tunnelStartedAt,
               Date().timeIntervalSince(connectedAt) > Self.livenessGrace else { return }
 
@@ -682,36 +727,52 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         }
         guard let uapi else { return }
 
-        // `last_handshake_time_sec` is absolute unix seconds, per peer. Take the
-        // most recent across peers: any live peer means the data plane works.
-        var newest: Int64 = 0
-        for line in uapi.split(separator: "\n") where line.hasPrefix("last_handshake_time_sec=") {
-            let value = Int64(line.dropFirst("last_handshake_time_sec=".count)) ?? 0
-            newest = max(newest, value)
+        // MR-1622: the same two rules as Android's TunnelMonitor (see
+        // DeadTunnelDetector) on a 10 s tick, instead of the single 180 s
+        // handshake-age rule on a 30 s tick.
+        let sample = DeadTunnelDetector.parseSample(uapi: uapi, nowEpoch: Date().timeIntervalSince1970)
+        let (next, verdict) = DeadTunnelDetector.assess(
+            prev: liveness, sample: sample,
+            now: ProcessInfo.processInfo.systemUptime,
+            wall: Date().timeIntervalSince1970)
+        liveness = next
+
+        // CLASSIFY, don't just count (P1 requirement 2). "Never handshaked" is
+        // the tunnel that came up and never established -- re-dialling the same
+        // endpoint is nearly worthless, so it gets a small budget and the user
+        // is steered to a different location. It is only dead once the old
+        // 180 s window since start has passed (the host's handshake arm owns the
+        // first seconds). A handshake that existed and went quiet is the
+        // NAT-rebind / node-restart shape, where re-dialling usually works.
+        let base: TunnelFailureKind
+        switch verdict {
+        case .alive, .skippedAfterSuspend:
+            return
+        case .neverHandshook:
+            guard Date().timeIntervalSince(connectedAt) > Self.maxHandshakeAge else { return }
+            base = .neverEstablished
+        case .unanswered, .stalled:
+            base = .diedAfterHandshake
         }
 
-        // Zero means "never handshaked". Past the grace window that is itself a
-        // failure — the tunnel came up and never established.
-        let age = newest == 0
-            ? Date().timeIntervalSince(connectedAt)
-            : Date().timeIntervalSince1970 - Double(newest)
-
-        if age > Self.maxHandshakeAge {
-            // CLASSIFY, don't just count (P1 requirement 2). `newest == 0` means
-            // the tunnel came up and never handshaked at all — re-dialling the
-            // same endpoint is nearly worthless, so it gets a small budget and
-            // the user is steered to a different location. A handshake that
-            // existed and went stale is the NAT-rebind / node-restart shape,
-            // where re-dialling usually works, so it gets the largest budget.
-            let kind: TunnelFailureKind = (newest == 0) ? .neverEstablished : .diedAfterHandshake
-            os_log("Data plane dead: last handshake %{public}.0fs ago (%{public}@)",
-                   log: log, type: .error, age, kind.rawValue)
-            handleDataPlaneFailure(kind, error: NSError(
+        // MR-1623: before re-dialling, ask the server why. A key it no longer
+        // knows can never be re-dialled; a node it reports offline will not
+        // come back by dialling the same node. Fail-open on no answer.
+        let outcome = await probeDeadKey(keyId: keyId, token: token, clientVersion: clientVersion)
+        if Task.isCancelled { return }
+        let kind = DeadTunnelProbe.failureKind(base: base, outcome: outcome)
+        os_log("Data plane dead: %{public}@, server says %{public}@ -> %{public}@",
+               log: log, type: .error,
+               String(describing: verdict), String(describing: outcome), kind.rawValue)
+        // Tell the app: the host shows this as "Tunnel failed: <reason>".
+        if let reason = DeadTunnelProbe.reason(for: outcome) { recordFailure(reason) }
+        handleDataPlaneFailure(kind, error: kind == .revoked
+            ? TunnelError.connectionRevoked
+            : NSError(
                 domain: "app.birdo.vpn.tunnel",
                 code: -1001,
                 userInfo: [NSLocalizedDescriptionKey: "The VPN connection stopped responding."]
             ))
-        }
     }
 
     /// Sum `rx_bytes=` / `tx_bytes=` lines from the wg-go UAPI dump.

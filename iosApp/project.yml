@@ -404,6 +404,8 @@ targets:
       # (inbound bytes), as on Android. Foundation-only by design, pinned by
       # TunnelProofTests; VpnViewModel and the views cannot be compiled here.
       - path: iosApp/Services/TunnelProof.swift
+      # MR-1622/1623: dead-tunnel detector + old-key probe classification.
+      - path: iosApp/Services/DeadTunnelDetector.swift
       # MR-1728: the kill switch's protocol flags, APNs and device-communication
       # exemptions included. Foundation-only by design, pinned by
       # KillSwitchProfileTests; VPNManager (NetworkExtension) cannot be compiled
@@ -506,6 +508,10 @@ targets:
       # memory ceiling.
       - path: iosApp/Services/TunnelCircuitBreaker.swift
       - path: iosApp/Services/TunnelBreakerStore.swift
+      # MR-1622/1623: the dead-tunnel rules (10 s tick, 20 s unanswered, 180 s
+      # backstop) and the old-key probe's classification. The extension runs
+      # them; Foundation-only so DeadTunnelDetectorTests pins them on CI.
+      - path: iosApp/Services/DeadTunnelDetector.swift
       # Owner item 96: the heartbeat sends the SAME User-Agent and
       # X-Desktop-Client as the host APIClient, so a Mac names itself macOS on
       # both. Foundation-only, so it adds nothing to the extension's footprint.
