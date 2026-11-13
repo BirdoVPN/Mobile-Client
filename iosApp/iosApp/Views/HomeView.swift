@@ -29,6 +29,7 @@ struct HomeView: View {
     /// Multi-Hop entry (spec §3.2 item 1). SOVEREIGN opens the flow; a lower
     /// plan gets the upsell snackbar instead.
     @State private var showMultiHop = false
+    @State private var lastAnnouncedPhase: ConnectionPhase = .disconnected
     @State private var multiHopUpsell: String?
     /// MR-139: the plans, pushed from the refusal banner when the server
     /// refused the connect for the plan or the Free allowance.
@@ -101,6 +102,20 @@ struct HomeView: View {
         }
         .sensoryFeedback(.impact(weight: .heavy), trigger: connectHapticTick)
         .sensoryFeedback(.warning, trigger: disconnectHapticTick)
+        // MR-1620: speak every connection state change (VoiceOver users cannot
+        // see the pill change). The pure mapping is ConnectionPhase.announcement.
+        // Debounced 1.5 s: a `.reasserting` flap that settles back must not
+        // speak "Reconnecting" then "Protected" again; the task restarts on
+        // every change and compares with what was last SPOKEN.
+        .task(id: vpnVM.connectionPhase) {
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
+            let now = vpnVM.connectionPhase
+            if let text = ConnectionPhase.announcement(from: lastAnnouncedPhase, to: now) {
+                AccessibilityAnnouncer.post(text)
+            }
+            lastAnnouncedPhase = now
+        }
         // Android parity: a Confirm haptic the moment the state becomes
         // Connected (not when the user taps — when the tunnel actually is up,
         // i.e. a handshake is proven: MR-974).
@@ -382,6 +397,9 @@ struct HomeView: View {
         // Not "Not signed in": nothing needs signing in to any more, and the
         // status line is one of the surfaces a reviewer reads.
         if isGuest && vpnVM.tunnelPhase == .disconnected { return "Not connected" }
+        // MR-1621: a tunnel that was up and is being re-dialled must not keep
+        // reading "Protected" -- it is not carrying traffic.
+        if vpnVM.connectionPhase == .reconnecting { return ConnectionPhase.reconnectingLabel }
         switch vpnVM.tunnelPhase {
         case .protected:
             return vpnVM.activeMultiHop != nil ? "Protected · Multi-Hop" : "Protected"
@@ -393,7 +411,7 @@ struct HomeView: View {
     }
 
     private var statusTone: StatusBadgePill.Tone {
-        if vpnVM.isSwitching { return .warning }
+        if vpnVM.isSwitching || vpnVM.connectionPhase == .reconnecting { return .warning }
         switch vpnVM.tunnelPhase {
         case .protected: return .success
         case .connecting: return .warning
@@ -402,7 +420,7 @@ struct HomeView: View {
     }
 
     private var statusIcon: String? {
-        if vpnVM.isSwitching { return "arrow.triangle.2.circlepath" }
+        if vpnVM.isSwitching || vpnVM.connectionPhase == .reconnecting { return "arrow.triangle.2.circlepath" }
         switch vpnVM.tunnelPhase {
         case .protected: return nil // pulse dot instead
         case .connecting: return "arrow.triangle.2.circlepath"
@@ -416,7 +434,8 @@ struct HomeView: View {
                 StatusBadgePill(statusText,
                                 tone: statusTone,
                                 icon: statusIcon,
-                                pulse: vpnVM.isProtected && !vpnVM.isSwitching)
+                                pulse: vpnVM.isProtected && !vpnVM.isSwitching
+                                    && vpnVM.connectionPhase != .reconnecting)
                     // Recreate the pill per state: the crossfade replaces
                     // Android's AnimatedContent, and a fresh PulsingDot replays
                     // its finite 3-burst on every re-entry into Connected.
@@ -861,6 +880,7 @@ struct HomeView: View {
         // A live switch is a busy state — the button must not offer
         // "Disconnect" over a half-torn-down tunnel mid-switch.
         if vpnVM.isSwitching { return .busy }
+        if vpnVM.connectionPhase == .reconnecting { return .busy }
         if vpnVM.isConnected { return .connected }
         if vpnVM.isConnecting { return .busy }
         return .idle
@@ -868,6 +888,7 @@ struct HomeView: View {
 
     private var ctaLabel: String {
         if vpnVM.isSwitching { return "Switching…" }
+        if vpnVM.connectionPhase == .reconnecting { return ConnectionPhase.reconnectingLabel }
         // Say what the tap will actually do. A guest tapping "Connect" gets a
         // sign-in sheet, and a button that hides that is the kind of thing App
         // Review calls misleading.
