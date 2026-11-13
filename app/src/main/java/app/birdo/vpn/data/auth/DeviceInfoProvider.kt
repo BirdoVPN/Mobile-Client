@@ -128,7 +128,7 @@ class DeviceInfoProvider @Inject constructor(
      * the same (AuthViewModel.completeLocalLogout).
      */
     fun forgetPostQuantumKeypair() {
-        BirdoPqManager.resetPersistedKeypair(context)
+        BirdoPqManager.discardKeypair(context)
     }
 
     /** Mint and persist a fresh random device id. `commit`, not `apply`: the

@@ -188,12 +188,11 @@ object RosenpassNative {
     external fun nativeCpuFeatures(): LongArray?
 
     /**
-     * Generates a long-lived ML-KEM-1024 keypair.
+     * Generates an ML-KEM-1024 keypair (one per connect).
      *
      * @return 2-element array `[publicKey (~1568 B), secretKey (~3168 B)]`.
-     *         Caller MUST persist via [BirdoPqKeyStore] (sealed under an
-     *         Android Keystore key) and zeroize the in-memory secret key copy after
-     *         writing it to encrypted storage.
+     *         The caller keeps the secret key in memory only, for one connect
+     *         (MR-703), and zeroizes it after the decapsulation.
      * @throws RuntimeException if the underlying KEM call fails.
      */
     @JvmStatic
@@ -259,10 +258,9 @@ object RosenpassNative {
     // ── Idiomatic Kotlin wrappers ──────────────────────────────────────────
 
     /**
-     * Long-lived ML-KEM-1024 keypair. The secret key half is sensitive
-     * material — callers MUST persist via [BirdoPqKeyStore] (sealed under
-     * an Android Keystore key) and zeroize the in-memory copy as soon as it's
-     * been handed to the native derive call.
+     * ML-KEM-1024 keypair for ONE connect. The secret key half is sensitive
+     * material: it is never persisted (MR-703), and callers zeroize it as soon
+     * as it has been handed to the native derive call.
      */
     data class StaticKeypair(val publicKey: ByteArray, val secretKey: ByteArray) {
         override fun equals(other: Any?): Boolean {

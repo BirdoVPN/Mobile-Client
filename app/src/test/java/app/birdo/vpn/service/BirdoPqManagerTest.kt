@@ -2,9 +2,6 @@ package app.birdo.vpn.service
 
 import android.content.Context
 import app.birdo.vpn.data.model.ConnectResponse
-import app.birdo.vpn.security.AesGcmSealer
-import app.birdo.vpn.security.FlakyKeySource
-import app.birdo.vpn.security.LegacyLeftover
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
@@ -16,6 +13,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -26,7 +24,8 @@ import java.nio.file.Files
 import java.security.MessageDigest
 
 /**
- * Pure-JVM unit tests for [BirdoPqManager] (BirdoPQ v1).
+ * Pure-JVM unit tests for [BirdoPqManager] (BirdoPQ v1, one keypair per connect:
+ * MR-703 / MR-1742).
  *
  * The native lib isn't loaded in the host JVM. The state tests below need
  * nothing else; the key-handling tests stand in a FAKE KEM for
@@ -41,15 +40,9 @@ class BirdoPqManagerTest {
 
     private lateinit var filesDir: File
     private lateinit var context: Context
-    private lateinit var store: BirdoPqKeyStore
-    private val keystore = FlakyKeySource()
     private var keygens = 0
     private val generated = mutableListOf<RosenpassNative.StaticKeypair>()
-
-    private object NoLegacy : LegacyLeftover {
-        override fun present(): Boolean = false
-        override fun discard() {}
-    }
+    private var purges = 0
 
     @Before
     fun setup() {
@@ -58,11 +51,7 @@ class BirdoPqManagerTest {
 
     @After
     fun tearDown() {
-        if (::context.isInitialized) {
-            BirdoPqManager.resetPersistedKeypair(context)
-            useKeyStore(null)
-            filesDir.deleteRecursively()
-        }
+        if (::context.isInitialized) filesDir.deleteRecursively()
         BirdoPqManager.stop()
         unmockkAll()
     }
@@ -100,7 +89,6 @@ class BirdoPqManagerTest {
         mockkObject(RosenpassNative)
         every { RosenpassNative.verifyIntegrity(any()) } returns true
         every { RosenpassNative.isLoaded } returns true
-        every { RosenpassNative.storedKeyUsable(any()) } returns true
         every { RosenpassNative.generateKeypair() } answers { fakeKeypair() }
         every { RosenpassNative.deriveSharedPsk(any(), any(), any()) } answers {
             clientPsk(firstArg(), secondArg(), thirdArg())
@@ -115,17 +103,14 @@ class BirdoPqManagerTest {
             java.util.Base64.getDecoder().decode(firstArg<String>())
         }
 
-        store = BirdoPqKeyStore(context, AesGcmSealer(keystore), NoLegacy)
-        useKeyStore(store)
-        // Process-wide object: start from nothing whatever ran before.
-        BirdoPqManager.resetPersistedKeypair(context)
-    }
-
-    /** The manager's store is private and built from a Context; swap it for a JVM one. */
-    private fun useKeyStore(store: BirdoPqKeyStore?) {
-        BirdoPqManager::class.java.getDeclaredField("keyStore").apply {
+        // The Keystore does not exist on the JVM; count the purges instead. Every
+        // test starts with the once-per-process latch open.
+        BirdoPqManager.legacyPurgeFactory = {
+            BirdoPqLegacyPurge(File(filesDir, BirdoPqLegacyPurge.DIR_NAME)) { purges++ }
+        }
+        BirdoPqManager::class.java.getDeclaredField("legacyPurged").apply {
             isAccessible = true
-            set(null, store)
+            (get(BirdoPqManager) as java.util.concurrent.atomic.AtomicBoolean).set(false)
         }
     }
 
@@ -133,6 +118,7 @@ class BirdoPqManagerTest {
     private val nonce = ByteArray(32) { 0x2a }
 
     private fun b64(bytes: ByteArray) = java.util.Base64.getEncoder().encodeToString(bytes)
+    private fun unb64(s: String?) = java.util.Base64.getDecoder().decode(s)
 
     private fun response() = ConnectResponse(
         success = true,
@@ -172,38 +158,62 @@ class BirdoPqManagerTest {
         assertEquals(32, RosenpassNative.PSK_BYTES)
     }
 
-    // ── MR-2117: the uploaded pair is the decapsulating pair ──────────────
+    // ── One keypair per connect (MR-703 / MR-1742) ───────────────────────
 
-    /**
-     * THE regression test. With a store that cannot persist (a broken
-     * Keystore), the decapsulation used to re-read the keypair, find none,
-     * and GENERATE a second one: the server encapsulated to pk_A, the client
-     * decapsulated with sk_B, and the PSKs differed. On a device that is a
-     * WireGuard handshake that never completes, on every BirdoPQ connect.
-     */
+    /** The decapsulation uses exactly the pair whose public key was uploaded (MR-2117). */
     @Test
-    fun `the decapsulation uses the uploaded pair even when the store cannot keep it`() = runTest {
+    fun `the decapsulation uses the uploaded pair`() = runTest {
         installFakeKem()
-        keystore.failing = true
 
-        val uploaded = java.util.Base64.getDecoder().decode(BirdoPqManager.getClientPublicKeyB64(context))
+        val uploaded = unb64(BirdoPqManager.getClientPublicKeyB64(context))
         val psk = BirdoPqManager.performKeyExchange(context, response())
 
         assertNotNull("a bilateral PSK must be derived", psk)
         assertArrayEquals(
             "the client must derive the PSK the server derived for the UPLOADED key",
             serverPsk(uploaded, ciphertext, nonce),
-            java.util.Base64.getDecoder().decode(psk),
+            unb64(psk),
         )
         assertEquals(BirdoPqManager.Mode.BILATERAL, BirdoPqManager.modeFlow.value)
         assertEquals("one keypair for one connect", 1, keygens)
+    }
+
+    /** Two connects never share a key: the property this change exists for. */
+    @Test
+    fun `every connect uploads a different public key`() = runTest {
+        installFakeKem()
+
+        val first = BirdoPqManager.getClientPublicKeyB64(context)
+        assertNotNull(BirdoPqManager.performKeyExchange(context, response()))
+        val second = BirdoPqManager.getClientPublicKeyB64(context)
+        val psk = BirdoPqManager.performKeyExchange(context, response())
+
+        assertNotEquals("a new connect must not reuse the last connect's key", first, second)
+        assertEquals("one generation per connect", 2, keygens)
+        assertArrayEquals(serverPsk(unb64(second), ciphertext, nonce), unb64(psk))
+    }
+
+    /**
+     * No second decapsulation: the secret was consumed by the first. Without a
+     * stored copy the second call has nothing to decapsulate with and fails
+     * closed instead of deriving some other pair's PSK.
+     */
+    @Test
+    fun `a decapsulation without a fresh upload fails closed`() = runTest {
+        installFakeKem()
+
+        BirdoPqManager.getClientPublicKeyB64(context)
+        assertNotNull(BirdoPqManager.performKeyExchange(context, response()))
+
+        assertNull(BirdoPqManager.performKeyExchange(context, response()))
+        assertEquals(BirdoPqManager.Mode.DISABLED, BirdoPqManager.modeFlow.value)
+        assertEquals("no key was minted behind the caller's back", 1, keygens)
     }
 
     /** MR-2123: the handed-off secret key does not outlive the decapsulation. */
     @Test
     fun `the handed-off secret key is zeroed once the decapsulation is done`() = runTest {
         installFakeKem()
-        keystore.failing = true
 
         BirdoPqManager.getClientPublicKeyB64(context)
         val uploadedSecret = generated.first().secretKey
@@ -211,6 +221,19 @@ class BirdoPqManagerTest {
 
         assertNotNull(BirdoPqManager.performKeyExchange(context, response()))
         assertTrue("the uploaded pair's secret key is still in memory", uploadedSecret.all { it == 0.toByte() })
+    }
+
+    /** A decapsulation that fails (a bad ciphertext) still wipes the secret. */
+    @Test
+    fun `the secret key is zeroed when the decapsulation is refused`() = runTest {
+        installFakeKem()
+
+        BirdoPqManager.getClientPublicKeyB64(context)
+        val uploadedSecret = generated.first().secretKey
+
+        val bad = response().copy(rosenpassPublicKey = b64(ByteArray(16)))
+        assertNull(BirdoPqManager.performKeyExchange(context, bad))
+        assertTrue(uploadedSecret.all { it == 0.toByte() })
     }
 
     /** MR-2123: a connect that never reaches the decapsulation leaves nothing behind either. */
@@ -225,97 +248,81 @@ class BirdoPqManagerTest {
         assertTrue("stop() must zero the unconsumed secret key", uploadedSecret.all { it == 0.toByte() })
     }
 
-    /**
-     * With the hand-off gone (here: cleared by stop()), the store is the only
-     * source, and an unpersistable store yields a NEW pair. Its PSK cannot be
-     * the server's, so the derivation is refused where the cause is known
-     * instead of surfacing as a dead tunnel.
-     */
+    /** A second upload replaces the first, which is wiped: only the newest pair is ever live. */
     @Test
-    fun `a pair other than the uploaded one is refused, not decapsulated`() = runTest {
+    fun `a new upload zeroes the pair it replaces`() = runTest {
         installFakeKem()
-        keystore.failing = true
+
+        BirdoPqManager.getClientPublicKeyB64(context)
+        val abandoned = generated.first().secretKey
+        val second = unb64(BirdoPqManager.getClientPublicKeyB64(context))
+
+        assertTrue("the abandoned connect's secret is still in memory", abandoned.all { it == 0.toByte() })
+        assertArrayEquals(serverPsk(second, ciphertext, nonce), unb64(BirdoPqManager.performKeyExchange(context, response())))
+    }
+
+    /** With stop() having cleared the hand-off there is nothing to derive with. */
+    @Test
+    fun `after stop the connect is refused, not decapsulated with another pair`() = runTest {
+        installFakeKem()
 
         BirdoPqManager.getClientPublicKeyB64(context)
         BirdoPqManager.stop()
 
         assertNull(BirdoPqManager.performKeyExchange(context, response()))
         assertEquals(BirdoPqManager.Mode.DISABLED, BirdoPqManager.modeFlow.value)
-    }
-
-    @Test
-    fun `with a working store the uploaded pair is the persisted one and is reused`() = runTest {
-        installFakeKem()
-
-        val first = BirdoPqManager.getClientPublicKeyB64(context)
-        assertNotNull(BirdoPqManager.performKeyExchange(context, response()))
-        val second = BirdoPqManager.getClientPublicKeyB64(context)
-        val psk = BirdoPqManager.performKeyExchange(context, response())
-
-        assertEquals("the install keeps one keypair", first, second)
         assertEquals(1, keygens)
-        assertArrayEquals(
-            serverPsk(java.util.Base64.getDecoder().decode(second), ciphertext, nonce),
-            java.util.Base64.getDecoder().decode(psk),
-        )
-    }
-
-    // ── MR-2121: the stored public key must be the one inside the secret key ──
-
-    /**
-     * Port of desktop `read_keypair_rejects_public_key_that_disagrees_with_secret_key`.
-     * The secret key is valid and passes FIPS 203 7.3 on its own (the fake
-     * says so), so only comparing the two halves can catch this. Before the
-     * fix the wrong public key was uploaded on every connect, and every
-     * BirdoPQ connect failed until sign-out.
-     */
-    @Test
-    fun `a stored pair whose public key disagrees with its secret key is discarded and re-keyed`() = runTest {
-        installFakeKem()
-        val good = fakeKeypair()
-        val wrongPk = good.publicKey.copyOf().also { it[0] = (it[0].toInt() xor 0x01).toByte() }
-        store.save(RosenpassNative.StaticKeypair(wrongPk, good.secretKey.copyOf()))
-
-        val uploaded = java.util.Base64.getDecoder().decode(BirdoPqManager.getClientPublicKeyB64(context))
-
-        assertFalse("the disagreeing public key must not be uploaded", uploaded.contentEquals(wrongPk))
-        assertEquals("re-keyed: one more keypair generated", 2, keygens)
-        assertArrayEquals(generated.last().publicKey, uploaded)
-        // The replacement is on disk and its halves agree.
-        val reread = store.load()
-        assertNotNull(reread)
-        assertArrayEquals(uploaded, reread!!.publicKey)
-        assertArrayEquals(
-            uploaded,
-            reread.secretKey.copyOfRange(EK_OFFSET, EK_OFFSET + RosenpassNative.PUBLIC_KEY_BYTES),
-        )
-        // And it decapsulates to the server's PSK.
-        val psk = BirdoPqManager.performKeyExchange(context, response())
-        assertArrayEquals(serverPsk(uploaded, ciphertext, nonce), java.util.Base64.getDecoder().decode(psk))
     }
 
     @Test
-    fun `a stored public key of the wrong length is discarded and re-keyed`() = runTest {
+    fun `a PQ engine that is not loaded supplies no key`() = runTest {
         installFakeKem()
-        val good = fakeKeypair()
-        store.save(RosenpassNative.StaticKeypair(good.publicKey.copyOf(100), good.secretKey.copyOf()))
-
-        val uploaded = java.util.Base64.getDecoder().decode(BirdoPqManager.getClientPublicKeyB64(context))
-
-        assertEquals(RosenpassNative.PUBLIC_KEY_BYTES, uploaded.size)
-        assertEquals(2, keygens)
-    }
-
-    @Test
-    fun `a stored pair whose halves agree is used as is`() = runTest {
-        installFakeKem()
-        val good = fakeKeypair()
-        store.save(RosenpassNative.StaticKeypair(good.publicKey.copyOf(), good.secretKey.copyOf()))
-
-        val uploaded = java.util.Base64.getDecoder().decode(BirdoPqManager.getClientPublicKeyB64(context))
-
-        assertArrayEquals(good.publicKey, uploaded)
+        every { RosenpassNative.isLoaded } returns false
+        assertNull(BirdoPqManager.getClientPublicKeyB64(context))
         verify(exactly = 0) { RosenpassNative.generateKeypair() }
+    }
+
+    // ── The legacy item is deleted, not adopted ──────────────────────────
+
+    @Test
+    fun `the first connect purges the legacy key once per process`() = runTest {
+        installFakeKem()
+
+        BirdoPqManager.getClientPublicKeyB64(context)
+        val afterFirst = purges
+        assertEquals("both Keystore keys", BirdoPqLegacyPurge.KEYSTORE_ALIASES.size, afterFirst)
+        BirdoPqManager.getClientPublicKeyB64(context)
+        assertEquals("the second connect does not purge again", afterFirst, purges)
+    }
+
+    @Test
+    fun `a key file an older build left is deleted and never read`() = runTest {
+        installFakeKem()
+        val dir = File(filesDir, "rosenpass").apply { mkdirs() }
+        val planted = File(dir, "static.sk.v2").apply { writeBytes(ByteArray(3200) { 7 }) }
+        File(dir, "static.pk").writeBytes(ByteArray(1568) { 7 })
+
+        val uploaded = unb64(BirdoPqManager.getClientPublicKeyB64(context))
+
+        assertFalse("the legacy secret key is still on disk", planted.exists())
+        assertFalse("the legacy directory is gone", dir.exists())
+        assertNotEquals("the legacy public key was adopted", 7.toByte(), uploaded[0])
+    }
+
+    @Test
+    fun `sign-out purges again and drops an in-flight pair`() = runTest {
+        installFakeKem()
+        BirdoPqManager.getClientPublicKeyB64(context)
+        val inFlight = generated.first().secretKey
+        val before = purges
+        // A file written after the once-per-process purge (a downgrade).
+        File(filesDir, "rosenpass").apply { mkdirs() }.let { File(it, "static.sk.v2").writeBytes(ByteArray(10)) }
+
+        BirdoPqManager.discardKeypair(context)
+
+        assertTrue("sign-out left the connect's secret key in memory", inFlight.all { it == 0.toByte() })
+        assertTrue("sign-out left a legacy key file", !File(filesDir, "rosenpass/static.sk.v2").exists())
+        assertEquals("the Keystore keys are deleted again too", before + BirdoPqLegacyPurge.KEYSTORE_ALIASES.size, purges)
     }
 
     private companion object {
