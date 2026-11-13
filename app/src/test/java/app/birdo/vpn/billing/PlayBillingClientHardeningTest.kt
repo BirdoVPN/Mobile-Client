@@ -245,6 +245,50 @@ class PlayBillingClientHardeningTest {
         assertEquals(2, rig.links.size)
     }
 
+    /**
+     * #615 review, M1: the same race through the PURCHASE LISTENER, whose link
+     * did not take the gate. The old account's 409 landed after the clear: its
+     * notice stayed up and its refusal silenced the next account's link.
+     */
+    @Test
+    fun `sign-out during an in-flight listener link leaves no refusal or notice behind`() = runTest {
+        val rig = rig(owned = listOf(purchase("tok-a")), server = { otherAccount }, linkMs = 100)
+
+        rig.manager.onPurchasesUpdated(ok, mutableListOf(purchase("tok-a")))
+        advanceTimeBy(50)
+        runCurrent()
+        assertEquals("the listener's link is in flight", 1, rig.links.size)
+
+        rig.manager.onSignedOut()
+        advanceUntilIdle()
+        assertNull("the old account's refusal notice outlived sign-out", rig.manager.state.value.notice)
+
+        rig.manager.onSignedIn()
+        advanceUntilIdle()
+        assertEquals("the old account's refusal silenced the next account", 2, rig.links.size)
+    }
+
+    @Test
+    fun `sign-out during an in-flight listener link drops the old account's banner and success`() = runTest {
+        val duplicate = DuplicateBillingNotice(otherSource = "POLAR", message = "paying twice")
+        val rig = rig(owned = emptyList(), server = { answer(duplicate = duplicate) }, linkMs = 100)
+
+        rig.manager.onPurchasesUpdated(ok, mutableListOf(purchase("tok-a")))
+        advanceTimeBy(50)
+        runCurrent()
+        assertEquals("the listener's link is in flight", 1, rig.links.size)
+
+        rig.manager.onSignedOut()
+        advanceUntilIdle()
+
+        rig.manager.state.value.let {
+            assertNull("the old account's duplicate-billing banner outlived sign-out", it.duplicateBilling)
+            assertNull("the old account's success notice outlived sign-out", it.notice)
+            assertFalse(it.ownsBirdoSubscription)
+            assertNull(it.purchasingProductId)
+        }
+    }
+
     // ── F-967-05: entitled = false is not a purchase ─────────────────────────
 
     @Test

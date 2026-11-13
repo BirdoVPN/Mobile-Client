@@ -253,10 +253,11 @@ class PlayBillingManager internal constructor(
      * refusal memory (or a 409 for the old account would silence a re-link for
      * the new one), the cross-grade list, and the per-account banners.
      *
-     * Under [gate], like every other writer of this state: a sweep in flight
-     * finishes first and its results are then cleared, rather than landing on
-     * top of the clear. UNDISPATCHED so the clear joins the gate's queue in
-     * call order, ahead of the sweep a following sign-in starts.
+     * Under [gate], like every other writer of this state (the sweeps and the
+     * purchase listener's links): one in flight finishes first and its results
+     * are then cleared, rather than landing on top of the clear. UNDISPATCHED
+     * so the clear joins the gate's queue in call order, ahead of the sweep a
+     * following sign-in starts.
      */
     fun onSignedOut() {
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -646,14 +647,23 @@ class PlayBillingManager internal constructor(
                     _state.update { it.copy(ownsBirdoSubscription = true) }
                 }
                 scope.launch {
-                    var accepted = false
-                    list.forEach {
-                        // AUTO: a purchase this app launched names the account
-                        // (launchFlow sets the obfuscatedAccountId); one that
-                        // does not was made outside the app and waits for the
-                        // Restore tap (F-967-02).
-                        val outcome = ingestAndReport(it, announce = true, origin = StoreLinkOrigin.AUTO)
-                        if (outcome is IngestOutcome.Accepted) accepted = true
+                    // Under [gate], like the sweeps and onSignedOut (#615 review,
+                    // M1). A sign-out that lands while this link is in flight
+                    // waits for it and then clears what it left (a refusal, a
+                    // notice, a banner), instead of the old account's answer
+                    // landing on top of the clear a moment later. It also keeps
+                    // a sweep from presenting the same token at the same time.
+                    val accepted = list.isNotEmpty() && gate.withLock {
+                        var any = false
+                        list.forEach {
+                            // AUTO: a purchase this app launched names the account
+                            // (launchFlow sets the obfuscatedAccountId); one that
+                            // does not was made outside the app and waits for the
+                            // Restore tap (F-967-02).
+                            val outcome = ingestAndReport(it, announce = true, origin = StoreLinkOrigin.AUTO)
+                            if (outcome is IngestOutcome.Accepted) any = true
+                        }
+                        any
                     }
                     _state.update { it.copy(purchasingProductId = null) }
                     if (accepted) _entitlementChanged.tryEmit(Unit)
