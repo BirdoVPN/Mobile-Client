@@ -54,6 +54,18 @@ Privacy Policy: https://birdo.app/privacy
 Birdo Terms of Service: https://birdo.app/terms
 """
 
+# MR-2259 (owner 2026-11-13): the iOS kill-switch limit lives in the App Store
+# description (and on the website), not in the app. iOS only: the sentence rests
+# on iosApp/iosApp/Services/VPNManager.swift (includeAllNetworks) and
+# TunnelCircuitBreaker.swift / VPNManager.failOpenAndStop() (the block is
+# released when automatic reconnects keep failing). The marker makes the append
+# idempotent.
+KILL_SWITCH_MARKER = "the kill switch uses the system's includeAllNetworks setting"
+KILL_SWITCH_NOTE = """
+
+On iPhone and iPad, the kill switch uses the system's includeAllNetworks setting; if reconnecting keeps failing, the app releases the block, so traffic can leave outside the VPN until you reconnect.
+"""
+
 # Audit 2026-09-29 (D-5 / B-15): the previous answers told App Review that
 # account data was stored "on servers under our control in the United
 # Kingdom" (it is hosted by Hetzner in Germany), that "No VPN usage data is
@@ -219,10 +231,16 @@ def handle(asc: Asc, app, want_platform: str, mode: str) -> None:
             locale = loc["attributes"]["locale"]
             desc = loc["attributes"].get("description") or ""
             has = EULA_MARKER in desc
-            print(f"  [{vs}] description {locale}: {len(desc)} chars, EULA link present = {has}")
-            if has or mode != "apply":
+            has_ks = KILL_SWITCH_MARKER in desc
+            want_ks = want_platform == "IOS" and not has_ks
+            print(f"  [{vs}] description {locale}: {len(desc)} chars, EULA link present = {has}, kill-switch note present = {has_ks or want_platform != 'IOS'}")
+            if (has and not want_ks) or mode != "apply":
                 continue
-            new = desc.rstrip() + EULA_BLOCK
+            new = desc.rstrip()
+            if not has:
+                new += EULA_BLOCK
+            if want_ks:
+                new = new.rstrip() + KILL_SWITCH_NOTE
             if len(new) > 4000:
                 print(f"    SKIP {locale}: would exceed the 4000-char description limit ({len(new)})")
                 continue
