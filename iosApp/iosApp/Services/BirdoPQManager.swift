@@ -225,6 +225,13 @@ final class BirdoPQManager: @unchecked Sendable {
         queue.sync { currentMode = .disabled }
     }
 
+    /// Delete the legacy host-only Keychain item now (idempotent), on `queue`.
+    /// Called at launch BEFORE `migrateHostOnlyItems()` so the migration never
+    /// re-writes the old secret key into the host group.
+    func purgeLegacyKeypair() {
+        queue.sync { purgeLegacyKeypairOnQueue() }
+    }
+
     /// Sign-out and account deletion: wipe an in-flight pair and make sure the
     /// legacy Keychain item is gone (the purge runs again here, not only once
     /// per process, because this is the hygiene the user asked for). The name

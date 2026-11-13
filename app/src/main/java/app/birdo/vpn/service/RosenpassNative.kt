@@ -199,7 +199,9 @@ object RosenpassNative {
     external fun nativeGenerateKeypair(): Array<ByteArray>
 
     /**
-     * Is a persisted ML-KEM secret key still loadable by the native KEM?
+     * UNUSED by the app since MR-703 (no key is persisted); the export stays
+     * until the native crate cleanup. Is a persisted ML-KEM secret key still
+     * loadable by the native KEM?
      *
      * `ml-kem` enforces FIPS 203 §7.3 (the 3168-byte expanded decapsulation
      * key embeds `H(ek)`, which is recomputed on load and compared) where the
@@ -293,7 +295,7 @@ object RosenpassNative {
     }
 
     /**
-     * Safe wrapper around [nativeStoredKeyUsable]. Returns false when the
+     * UNUSED since MR-703 (nothing is persisted). Safe wrapper around [nativeStoredKeyUsable]. Returns false when the
      * native library is not loaded or the call throws, because the caller's
      * reaction either way is to discard the stored key and re-key — which is
      * always safe, just occasionally wasteful.

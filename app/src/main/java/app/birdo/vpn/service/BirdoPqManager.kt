@@ -104,6 +104,31 @@ object BirdoPqManager {
      */
     private val handOff = AtomicReference<RosenpassNative.StaticKeypair?>(null)
 
+    /** When the pair in [handOff] was uploaded, by [nowMs]. Guarded with it. */
+    @Volatile
+    private var handOffAtMs = 0L
+
+    /** The clock behind [handOffAtMs]; tests move it. */
+    @Volatile
+    @VisibleForTesting
+    internal var nowMs: () -> Long = { System.currentTimeMillis() }
+
+    /**
+     * How long an unconsumed pair may sit before [stop] wipes it. A [stop] from
+     * the TEARDOWN of an older generation arrives after the newer generation's
+     * dial has uploaded its pair (the new dial waits for the old teardown, then
+     * uploads, then the old service's cleanup runs): wiping unconditionally
+     * would delete the secret of the connect that is about to decapsulate. A
+     * pair that fresh belongs to a live dial; an abandoned one is older than
+     * this and goes on the next [stop], upload, or sign-out.
+     */
+    private const val PENDING_PAIR_MAX_AGE_MS = 60_000L
+
+    /** Runs the sign-out purge off the caller's thread (Keystore deletes block). Tests run it inline. */
+    @Volatile
+    @VisibleForTesting
+    internal var purgeExecutor: (Runnable) -> Unit = { r -> Thread(r, "pq-legacy-purge").apply { isDaemon = true }.start() }
+
     /** Legacy key files and Keystore keys are purged once per process. */
     private val legacyPurged = AtomicBoolean(false)
 
@@ -138,7 +163,10 @@ object BirdoPqManager {
         val kp = generateKeypair(context) ?: return@withContext null
         // MR-2123: its secret key is zeroed when the hand-off is consumed or
         // cleared, instead of being left to the garbage collector.
-        replaceHandOff(kp)
+        synchronized(handOff) {
+            replaceHandOff(kp)
+            handOffAtMs = nowMs()
+        }
         Base64.encodeToString(kp.publicKey, Base64.NO_WRAP)
     }
 
@@ -180,15 +208,18 @@ object BirdoPqManager {
     }
 
     /**
-     * Stops PQ protection and zeroes all sensitive key material in process
-     * memory, including a hand-off no decapsulation consumed.
+     * Stops PQ protection and zeroes the derived PSK. A hand-off no
+     * decapsulation consumed is wiped too, UNLESS it is younger than
+     * [PENDING_PAIR_MAX_AGE_MS]: a stale generation's teardown must never wipe
+     * the pair a newer dial just uploaded (see the constant).
      */
     fun stop() {
         Log.i(TAG, "stopping BirdoPQ PSK manager")
         currentPsk?.fill(0)
         currentPsk = null
-        // An unconsumed hand-off still holds the ML-KEM secret key.
-        replaceHandOff(null)
+        synchronized(handOff) {
+            if (handOff.get() != null && nowMs() - handOffAtMs >= PENDING_PAIR_MAX_AGE_MS) replaceHandOff(null)
+        }
         _modeFlow.value = Mode.DISABLED
     }
 
@@ -198,8 +229,10 @@ object BirdoPqManager {
      * process, because this is the hygiene the user asked for).
      */
     fun discardKeypair(context: Context) {
-        replaceHandOff(null)
-        legacyPurgeFactory(context).purge()
+        synchronized(handOff) { replaceHandOff(null) }
+        val purge = legacyPurgeFactory(context)
+        // The Keystore deletes can block: off the caller's (sign-out) thread.
+        purgeExecutor(Runnable { runCatching { purge.purge() } })
     }
 
     /**

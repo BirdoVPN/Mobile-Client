@@ -32,10 +32,12 @@ import java.io.File
 internal class BirdoPqLegacyPurge @VisibleForTesting internal constructor(
     private val dir: File,
     private val deleteKeystoreAlias: (String) -> Unit,
+    private val deleteKeysetPrefs: () -> Unit = {},
 ) {
     constructor(context: Context) : this(
         File(context.applicationContext.filesDir, DIR_NAME),
         { alias -> AndroidKeystoreKeySource(alias).destroy() },
+        { context.applicationContext.deleteSharedPreferences(LEGACY_KEYSET_PREFS) },
     )
 
     /** Returns how many files were deleted. */
@@ -55,6 +57,11 @@ internal class BirdoPqLegacyPurge @VisibleForTesting internal constructor(
             runCatching { deleteKeystoreAlias(alias) }
                 .onFailure { Log.w(TAG, "legacy PQ Keystore key $alias was not deleted", it) }
         }
+        // The Tink keyset prefs the pre-1.4.28 EncryptedFile kept beside its
+        // master key (wrapped by the key just deleted). The app had no other
+        // EncryptedFile; an upgrade from 1.4.27 or older would leave it behind.
+        runCatching { deleteKeysetPrefs() }
+            .onFailure { Log.w(TAG, "legacy PQ keyset prefs were not deleted", it) }
         if (deleted > 0) Log.i(TAG, "deleted $deleted legacy BirdoPQ key file(s) (per-connect keys)")
         return deleted
     }
@@ -63,6 +70,7 @@ internal class BirdoPqLegacyPurge @VisibleForTesting internal constructor(
         private const val TAG = "BirdoPqLegacyPurge"
         internal const val DIR_NAME = "rosenpass"
         private const val KEY_FILE_PREFIX = "static."
+        private const val LEGACY_KEYSET_PREFS = "__androidx_security_crypto_encrypted_file_pref__"
         internal val KEYSTORE_ALIASES = listOf("birdo_rosenpass_sk_v2", "birdo_rosenpass_master")
     }
 }

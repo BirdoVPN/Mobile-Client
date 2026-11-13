@@ -524,12 +524,12 @@ final class APIClient: @unchecked Sendable {
     /// echoes the key when the deferral was honoured. A backend that predates
     /// the fields 400s them by name — see `APIError.isRebuildFieldRejection`.
     func getConnectConfig(serverId: String, rebuildOf currentKeyId: String? = nil) async throws -> VPNConnectionConfig {
-        // AUDIT-C1: attach the persistent ML-KEM-1024 client public key so the
+        // AUDIT-C1: attach a per-connect ML-KEM-1024 client public key so the
         // server can encapsulate against it and ship the ciphertext back in
-        // `rosenpassPublicKey` for true bilateral PQ PSK derivation.
-        // The Swift `BirdoPQManager` lazy-generates + persists the keypair on
-        // first call; if the call returns nil we proceed without PQ rather
-        // than block the connect.
+        // `rosenpassPublicKey` for true bilateral PQ PSK derivation (MR-703:
+        // `BirdoPQManager` makes a NEW keypair on each call and keeps only its
+        // in-memory hand-off; nothing is persisted). If the call returns nil we
+        // proceed without PQ rather than block the connect.
         // Post-quantum protection is ON by default; user can disable it via the
         // Quantum Protection toggle. Read the raw stored value so an absent key
         // (fresh install) defaults true regardless of view-model init order.

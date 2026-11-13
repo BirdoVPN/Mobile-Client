@@ -43,6 +43,7 @@ class BirdoPqManagerTest {
     private var keygens = 0
     private val generated = mutableListOf<RosenpassNative.StaticKeypair>()
     private var purges = 0
+    private var clock = 0L
 
     @Before
     fun setup() {
@@ -108,6 +109,9 @@ class BirdoPqManagerTest {
         BirdoPqManager.legacyPurgeFactory = {
             BirdoPqLegacyPurge(File(filesDir, BirdoPqLegacyPurge.DIR_NAME)) { purges++ }
         }
+        BirdoPqManager.purgeExecutor = { it.run() }
+        clock = 1_000L
+        BirdoPqManager.nowMs = { clock }
         BirdoPqManager::class.java.getDeclaredField("legacyPurged").apply {
             isAccessible = true
             (get(BirdoPqManager) as java.util.concurrent.atomic.AtomicBoolean).set(false)
@@ -238,12 +242,13 @@ class BirdoPqManagerTest {
 
     /** MR-2123: a connect that never reaches the decapsulation leaves nothing behind either. */
     @Test
-    fun `stop zeroes a hand-off that was never consumed`() = runTest {
+    fun `stop zeroes a hand-off that was never consumed once it is stale`() = runTest {
         installFakeKem()
 
         BirdoPqManager.getClientPublicKeyB64(context)
         val uploadedSecret = generated.first().secretKey
 
+        clock += 120_000L
         BirdoPqManager.stop()
         assertTrue("stop() must zero the unconsumed secret key", uploadedSecret.all { it == 0.toByte() })
     }
@@ -261,12 +266,44 @@ class BirdoPqManagerTest {
         assertArrayEquals(serverPsk(second, ciphertext, nonce), unb64(BirdoPqManager.performKeyExchange(context, response())))
     }
 
-    /** With stop() having cleared the hand-off there is nothing to derive with. */
+    /**
+     * THE review race: the new dial uploads its pair, then the OLD generation's
+     * teardown calls stop(). The fresh pair must survive and decapsulate.
+     */
     @Test
-    fun `after stop the connect is refused, not decapsulated with another pair`() = runTest {
+    fun `a stale teardown's stop does not wipe the pair a newer dial just uploaded`() = runTest {
+        installFakeKem()
+
+        val uploadedA = unb64(BirdoPqManager.getClientPublicKeyB64(context))
+        clock += 5_000L // the old teardown arrives seconds later
+        BirdoPqManager.stop()
+
+        val psk = BirdoPqManager.performKeyExchange(context, response())
+        assertNotNull("the newer pair was wiped by a stale stop()", psk)
+        assertArrayEquals(serverPsk(uploadedA, ciphertext, nonce), unb64(psk))
+    }
+
+    /** An abandoned connect's pair does not sit in memory for ever: stop() wipes it once it is old. */
+    @Test
+    fun `stop wipes a pair nobody consumed once it is stale`() = runTest {
         installFakeKem()
 
         BirdoPqManager.getClientPublicKeyB64(context)
+        val abandoned = generated.first().secretKey
+        clock += 120_000L
+        BirdoPqManager.stop()
+
+        assertTrue(abandoned.all { it == 0.toByte() })
+        assertNull(BirdoPqManager.performKeyExchange(context, response()))
+    }
+
+    /** With a stale hand-off cleared by stop() there is nothing to derive with. */
+    @Test
+    fun `after a stale stop the connect is refused, not decapsulated with another pair`() = runTest {
+        installFakeKem()
+
+        BirdoPqManager.getClientPublicKeyB64(context)
+        clock += 120_000L
         BirdoPqManager.stop()
 
         assertNull(BirdoPqManager.performKeyExchange(context, response()))
