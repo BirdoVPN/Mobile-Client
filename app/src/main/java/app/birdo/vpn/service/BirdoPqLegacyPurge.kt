@@ -31,13 +31,15 @@ import java.io.File
  */
 internal class BirdoPqLegacyPurge @VisibleForTesting internal constructor(
     private val dir: File,
-    private val deleteKeystoreAlias: (String) -> Unit,
+    // Before the alias deleter, so a trailing lambda at a call site still
+    // binds to deleteKeystoreAlias (as the last parameter it captured them).
     private val deleteKeysetPrefs: () -> Unit = {},
+    private val deleteKeystoreAlias: (String) -> Unit,
 ) {
     constructor(context: Context) : this(
         File(context.applicationContext.filesDir, DIR_NAME),
-        { alias -> AndroidKeystoreKeySource(alias).destroy() },
         { context.applicationContext.deleteSharedPreferences(LEGACY_KEYSET_PREFS) },
+        { alias -> AndroidKeystoreKeySource(alias).destroy() },
     )
 
     /** Returns how many files were deleted. */

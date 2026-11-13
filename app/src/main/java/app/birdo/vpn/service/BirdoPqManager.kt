@@ -109,8 +109,10 @@ object BirdoPqManager {
      * service intent's extras.)
      *
      * Whoever ends a pair's life wipes its secret: [performKeyExchange]'s
-     * finally, [stop] with its key, [discardKeypair] (all of them), and the
-     * backstops in [prunePending].
+     * finally, [stop] with its key, [discardPending] (a dial or rebuild that
+     * never handed its pair to the service: refused, superseded, a Disconnect
+     * while connecting), [discardKeypair] (all of them), and the backstops in
+     * [prunePending].
      */
     private val pending = LinkedHashMap<String, Pending>()
 
@@ -125,10 +127,11 @@ object BirdoPqManager {
 
     /**
      * BACKSTOP ONLY. A pair is normally ended by its own generation's
-     * decapsulation or [stop]; one whose dial died before the service ever
-     * heard of it (so nothing will name its key again) would otherwise sit in
-     * memory until the next upload or sign-out. Five minutes is longer than any
-     * dial; the cap bounds how many such pairs can pile up.
+     * decapsulation or [stop], or by its dial's [discardPending] when the
+     * service never heard of it. One that slips past all of them (a process
+     * path that names its key nowhere) would otherwise sit in memory until the
+     * next upload or sign-out. Five minutes is longer than any dial; the cap
+     * bounds how many such pairs can pile up.
      */
     private const val PENDING_PAIR_MAX_AGE_MS = 5 * 60_000L
     private const val PENDING_PAIR_MAX_COUNT = 4

@@ -301,6 +301,26 @@ class BirdoPqManagerTest {
         assertNull(BirdoPqManager.performKeyExchange(context, response(), a))
     }
 
+    /**
+     * The user disconnects while connecting: the service's teardown of the
+     * CURRENT generation names its own key and wipes the pair at once (no
+     * grace period), so the decapsulation still to run finds nothing and
+     * fails closed.
+     */
+    @Test
+    fun `a disconnect while connecting wipes the pair at once`() = runTest {
+        installFakeKem()
+
+        val a = upload()
+        val secret = generated.first().secretKey
+
+        BirdoPqManager.stop(a) // the current generation's own teardown, no clock advance
+
+        assertTrue("the connecting generation's secret survived its disconnect", secret.all { it == 0.toByte() })
+        assertNull(BirdoPqManager.performKeyExchange(context, response(), a))
+        assertEquals(BirdoPqManager.Mode.DISABLED, BirdoPqManager.modeFlow.value)
+    }
+
     @Test
     fun `a mismatched key never wipes`() = runTest {
         installFakeKem()
