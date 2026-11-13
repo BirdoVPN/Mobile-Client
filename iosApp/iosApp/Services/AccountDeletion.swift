@@ -53,6 +53,23 @@ enum AccountDeletion {
         return email.hasSuffix("@appleid.local") || email.hasSuffix("@privaterelay.appleid.com")
     }
 
+    /// MR-179 (owner 2026-11-13): the digits of what the user typed, so a
+    /// grouped or pasted account number ("1234 5678 ...") or e-mailed code
+    /// reaches the server as plain digits.
+    static func digitsOnly(_ text: String) -> String {
+        String(text.filter { $0.isASCII && $0.isNumber })
+    }
+
+    /// An anonymous account number is 24 digits.
+    static func isCompleteAccountNumber(_ text: String) -> Bool {
+        digitsOnly(text).count == 24
+    }
+
+    /// The code `POST /api/v1/gdpr/delete/code` e-mails is 6 digits.
+    static func isCompleteEmailCode(_ text: String) -> Bool {
+        digitsOnly(text).count == 6
+    }
+
     /// Client-side completeness gate for the deletion dialog's code field —
     /// the same rule as the login 2FA step (the server is authoritative): a
     /// 6-digit TOTP, or a hex backup code in 4-character groups, dashes
@@ -80,11 +97,29 @@ struct DeleteAccountBody: Encodable, Equatable {
     /// Owner item 97: a fresh Sign in with Apple `authorizationCode`, so the
     /// backend can revoke the app's Apple tokens with the account.
     let appleAuthorizationCode: String?
+    /// MR-179: the 24-digit number an anonymous account re-enters (digits only).
+    let accountNumber: String?
+    /// MR-179: the 6-digit code e-mailed to an SSO account with no 2FA.
+    let emailCode: String?
+    /// MR-179: a fresh Sign in with Apple identity token (and the raw nonce it
+    /// was requested with) for an Apple account that has no e-mail address.
+    let appleIdentityToken: String?
+    let appleNonce: String?
 
-    init(password: String?, twoFactorCode: String? = nil, appleAuthorizationCode: String? = nil) {
+    init(password: String?,
+         twoFactorCode: String? = nil,
+         appleAuthorizationCode: String? = nil,
+         accountNumber: String? = nil,
+         emailCode: String? = nil,
+         appleIdentityToken: String? = nil,
+         appleNonce: String? = nil) {
         self.password = Self.nonBlank(password)
         self.twoFactorCode = Self.nonBlank(twoFactorCode)
         self.appleAuthorizationCode = Self.nonBlank(appleAuthorizationCode)
+        self.accountNumber = Self.nonBlank(accountNumber.map(AccountDeletion.digitsOnly))
+        self.emailCode = Self.nonBlank(emailCode.map(AccountDeletion.digitsOnly))
+        self.appleIdentityToken = Self.nonBlank(appleIdentityToken)
+        self.appleNonce = Self.nonBlank(appleNonce)
     }
 
     private static func nonBlank(_ value: String?) -> String? {
@@ -107,6 +142,14 @@ struct DeleteAccountBody: Encodable, Equatable {
 enum DeletionRefusal: Error, Equatable, Sendable {
     case twoFactorRequired
     case twoFactorInvalid
+    /// MR-179: the deletion step-up (birdo-web deletion-step-up.ts). Nothing
+    /// was deleted; the dialog asks for, or says it was wrong, the proof.
+    case accountNumberRequired
+    case accountNumberInvalid
+    case emailCodeRequired
+    case emailCodeInvalid
+    case appleReauthRequired
+    case appleReauthInvalid
 
     static func classify(status: Int, body: Data) -> DeletionRefusal? {
         // Any 4xx: the contract says 403, but a 401 carrying the same code is
@@ -126,9 +169,44 @@ enum DeletionRefusal: Error, Equatable, Sendable {
             switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
             case "two_factor_required": return .twoFactorRequired
             case "two_factor_invalid": return .twoFactorInvalid
+            case "account_number_required": return .accountNumberRequired
+            case "account_number_invalid": return .accountNumberInvalid
+            case "email_code_required": return .emailCodeRequired
+            case "email_code_invalid": return .emailCodeInvalid
+            case "apple_reauth_required": return .appleReauthRequired
+            case "apple_reauth_invalid": return .appleReauthInvalid
             default: continue
             }
         }
         return nil
     }
+}
+
+/// `stepUp` of `GET /api/v1/gdpr/delete/preflight` (MR-179): the server's
+/// factor tokens for this account (`password`, `account_number`, `email_code`,
+/// `apple_reauth`, `two_factor`) and whether it refuses a deletion without
+/// them. Every field optional: an older backend sends none.
+struct DeletionStepUp: Decodable, Sendable, Equatable {
+    let factors: [String]?
+    let enforced: Bool?
+
+    var needsAccountNumber: Bool { factors?.contains("account_number") ?? false }
+    var needsEmailCode: Bool { factors?.contains("email_code") ?? false }
+    var needsAppleReauth: Bool { factors?.contains("apple_reauth") ?? false }
+}
+
+/// `POST /api/v1/gdpr/delete/code` reply: the masked address the code went to.
+struct DeletionCodeSent: Decodable, Sendable, Equatable {
+    let sentTo: String?
+}
+
+/// What a Sign in with Apple re-authentication for an account deletion yields
+/// (MR-179): the `authorizationCode` for token revocation, and the identity
+/// token plus the RAW nonce that prove a fresh Apple sign-in to the backend
+/// (`apple_reauth`). Lives here, Foundation-only, so the test bundle compiles
+/// it with its redaction (AppleSignInService.swift is not in that bundle).
+struct DeletionAppleProof: Equatable, Sendable {
+    let authorizationCode: String
+    let identityToken: String?
+    let nonce: String
 }

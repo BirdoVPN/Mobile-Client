@@ -738,6 +738,20 @@
          server's own sentence for 403 two_factor_required. A wrong code reads
          error_invalid_code, as at sign-in. -->
     <string name="delete_dialog_2fa_required">Enter your two-factor code to delete your account.</string>
+    <!-- MR-179 (owner 2026-11-13): a fresh re-auth before deletion. The server
+         sends an `error` code; these are the app's own sentences for it. -->
+    <string name="delete_dialog_account_number_required">Enter your 24-digit account number to delete your account.</string>
+    <string name="delete_dialog_account_number_invalid">That account number is not the number of this account.</string>
+    <string name="delete_dialog_account_number_format">The account number is 24 digits.</string>
+    <string name="delete_dialog_account_number_label">Account number</string>
+    <string name="delete_dialog_email_code_required">Enter the code we emailed you to delete your account.</string>
+    <string name="delete_dialog_email_code_invalid">That code is not valid or has expired. Request a new code.</string>
+    <string name="delete_dialog_email_code_format">The code is 6 digits.</string>
+    <string name="delete_dialog_email_code_label">Emailed code</string>
+    <string name="delete_dialog_email_code_send">Email me a code</string>
+    <string name="delete_dialog_email_code_resend">Send a new code</string>
+    <string name="delete_dialog_email_code_sent">We emailed a code to %1$s. It works once for 10 minutes.</string>
+    <string name="delete_dialog_email_code_sent_unknown">We emailed a code to your account address. It works once for 10 minutes.</string>
     <!-- ════ end AND-UI-B ════ -->
 
     <!-- ════ AND-VPN-B (Android connection engine, phase B, 2026-10-01) ════

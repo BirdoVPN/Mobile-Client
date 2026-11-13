@@ -41,6 +41,8 @@ typealias DeleteAccountRequest = app.birdo.vpn.shared.model.DeleteAccountRequest
 typealias DeleteAccountResponse = app.birdo.vpn.shared.model.DeleteAccountResponse
 typealias StoreSubscriptionStillBilling = app.birdo.vpn.shared.model.StoreSubscriptionStillBilling
 typealias DeletionPreflightResponse = app.birdo.vpn.shared.model.DeletionPreflightResponse
+typealias DeletionStepUp = app.birdo.vpn.shared.model.DeletionStepUp
+typealias DeletionCodeResponse = app.birdo.vpn.shared.model.DeletionCodeResponse
 
 // ─── VPN Servers ─────────────────────────────────────────────────────────────
 typealias VpnServer = app.birdo.vpn.shared.model.VpnServer

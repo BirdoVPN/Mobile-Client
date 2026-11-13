@@ -95,7 +95,9 @@ import app.birdo.vpn.ui.theme.BirdoSurface
 import app.birdo.vpn.ui.theme.BirdoWhite60
 import app.birdo.vpn.ui.theme.BirdoWhite80
 import app.birdo.vpn.ui.components.SignOutConfirmDialog
+import app.birdo.vpn.ui.viewmodel.ACCOUNT_NUMBER_LENGTH
 import app.birdo.vpn.ui.viewmodel.DeleteAccountField
+import app.birdo.vpn.ui.viewmodel.EMAIL_CODE_LENGTH
 import app.birdo.vpn.ui.viewmodel.VoucherResult
 import app.birdo.vpn.utils.accountNumberOf
 import app.birdo.vpn.utils.copySensitiveToClipboard
@@ -129,7 +131,15 @@ fun ProfileScreen(
     onLogout: () -> Unit,
     onOpenUrl: (String) -> Unit = {},
     /** (password, two-factor code): the code only once the server asked for it. */
-    onDeleteAccount: (String, String?) -> Unit = { _, _ -> },
+    onDeleteAccount: (String, String?, String?, String?) -> Unit = { _, _, _, _ -> },
+    /** MR-179: the server wants the anonymous account's 24-digit number / the e-mailed code. */
+    deleteRequiresAccountNumber: Boolean = false,
+    deleteRequiresEmailCode: Boolean = false,
+    deleteStepUpEnforced: Boolean = false,
+    deleteEmailCodeSent: Boolean = false,
+    deleteEmailCodeSentTo: String? = null,
+    isSendingDeleteCode: Boolean = false,
+    onSendDeletionCode: () -> Unit = {},
     isDeletingAccount: Boolean = false,
     deleteAccountError: String? = null,
     /** The field [deleteAccountError] is about, or null for neither (REVIEW-AND2-008). */
@@ -253,6 +263,13 @@ fun ProfileScreen(
             // keeping Delete disabled until a non-blank password was typed.
             requiresPassword = user?.hasPassword ?: true,
             requiresTwoFactor = deleteRequiresTwoFactor,
+            requiresAccountNumber = deleteRequiresAccountNumber,
+            requiresEmailCode = deleteRequiresEmailCode,
+            stepUpEnforced = deleteStepUpEnforced,
+            emailCodeSent = deleteEmailCodeSent,
+            emailCodeSentTo = deleteEmailCodeSentTo,
+            isSendingCode = isSendingDeleteCode,
+            onSendCode = onSendDeletionCode,
             preflight = deletionPreflight,
             isDeletingAccount = isDeletingAccount,
             error = deleteAccountError,
@@ -827,15 +844,25 @@ private fun parseRenewalDay(raw: String?): LocalDate? {
 private fun DeleteAccountDialog(
     requiresPassword: Boolean,
     requiresTwoFactor: Boolean,
+    requiresAccountNumber: Boolean,
+    requiresEmailCode: Boolean,
+    stepUpEnforced: Boolean,
+    emailCodeSent: Boolean,
+    emailCodeSentTo: String?,
+    isSendingCode: Boolean,
+    onSendCode: () -> Unit,
     preflight: DeletionPreflightResponse?,
     isDeletingAccount: Boolean,
     error: String?,
     errorField: DeleteAccountField?,
-    onConfirm: (password: String, twoFactorCode: String?) -> Unit,
+    onConfirm: (password: String, twoFactorCode: String?, accountNumber: String?, emailCode: String?) -> Unit,
     onDismiss: () -> Unit,
     onManageStoreSubscription: () -> Unit,
 ) {
     var password by remember { mutableStateOf("") }
+    // MR-179: not saved across process death either, like the password.
+    var accountNumber by remember { mutableStateOf("") }
+    var emailCode by remember { mutableStateOf("") }
     // Not saved across process death either: a one-time code, like the password.
     var twoFactorCode by remember { mutableStateOf("") }
     val codeFocus = remember { FocusRequester() }
@@ -935,6 +962,71 @@ private fun DeleteAccountDialog(
                         ),
                     )
                 }
+                if (requiresAccountNumber) {
+                    // MR-179: an anonymous account re-enters its 24-digit number.
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = accountNumber,
+                        onValueChange = { accountNumber = it.filter { c -> c.isDigit() }.take(ACCOUNT_NUMBER_LENGTH) },
+                        label = { Text(stringResource(R.string.delete_dialog_account_number_label)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        enabled = !isDeletingAccount,
+                        isError = errorField == DeleteAccountField.ACCOUNT_NUMBER,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BirdoRed,
+                            cursorColor = BirdoWhite80,
+                            focusedLabelColor = BirdoRed,
+                        ),
+                    )
+                }
+                if (requiresEmailCode) {
+                    // MR-179: an SSO account asks for a code first, then types it.
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        if (emailCodeSent) {
+                            if (emailCodeSentTo.isNullOrBlank()) stringResource(R.string.delete_dialog_email_code_sent_unknown)
+                            else stringResource(R.string.delete_dialog_email_code_sent, emailCodeSentTo)
+                        } else {
+                            stringResource(R.string.delete_dialog_email_code_required)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                    TextButton(
+                        onClick = onSendCode,
+                        enabled = !isSendingCode && !isDeletingAccount,
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                    ) {
+                        Text(
+                            stringResource(
+                                if (emailCodeSent) R.string.delete_dialog_email_code_resend
+                                else R.string.delete_dialog_email_code_send,
+                            ),
+                            color = BirdoGreen,
+                        )
+                    }
+                    if (emailCodeSent) {
+                        OutlinedTextField(
+                            value = emailCode,
+                            onValueChange = { emailCode = it.filter { c -> c.isDigit() }.take(EMAIL_CODE_LENGTH) },
+                            label = { Text(stringResource(R.string.delete_dialog_email_code_label)) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            singleLine = true,
+                            enabled = !isDeletingAccount,
+                            isError = errorField == DeleteAccountField.EMAIL_CODE,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = BirdoRed,
+                                cursorColor = BirdoWhite80,
+                                focusedLabelColor = BirdoRed,
+                            ),
+                        )
+                    }
+                }
                 if (requiresTwoFactor) {
                     // REVIEW-AND2-009: the field is appended below the store
                     // warning, out of sight on a small phone with the keyboard
@@ -993,9 +1085,20 @@ private fun DeleteAccountDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(password, twoFactorCode.takeIf { requiresTwoFactor }) },
+                onClick = {
+                    onConfirm(
+                        password,
+                        twoFactorCode.takeIf { requiresTwoFactor },
+                        accountNumber.takeIf { requiresAccountNumber && it.isNotEmpty() },
+                        emailCode.takeIf { requiresEmailCode && it.isNotEmpty() },
+                    )
+                },
                 enabled = (!requiresPassword || password.isNotBlank()) &&
                     (!requiresTwoFactor || is2faCodeComplete(twoFactorCode)) &&
+                    (!requiresAccountNumber || accountNumber.length == ACCOUNT_NUMBER_LENGTH ||
+                        (!stepUpEnforced && accountNumber.isEmpty())) &&
+                    (!requiresEmailCode || emailCode.length == EMAIL_CODE_LENGTH ||
+                        (!stepUpEnforced && emailCode.isEmpty())) &&
                     !isDeletingAccount,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = BirdoRed,

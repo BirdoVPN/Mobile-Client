@@ -716,9 +716,14 @@ class BirdoRepository @Inject constructor(
      * sign-in prompt for an account that no longer existed. The VPN is still
      * torn down only after this succeeds (A2-005).
      */
-    suspend fun deleteAccount(password: String?, twoFactorCode: String? = null): ApiResult<DeleteAccountResponse> {
+    suspend fun deleteAccount(
+        password: String?,
+        twoFactorCode: String? = null,
+        accountNumber: String? = null,
+        emailCode: String? = null,
+    ): ApiResult<DeleteAccountResponse> {
         val result = withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) {
-            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode), AroundTunnel)
+            api.deleteAccount(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode), AroundTunnel)
         }
         if (result is ApiResult.Success) {
             // Clear local state — account no longer exists on the server.
@@ -753,6 +758,14 @@ class BirdoRepository @Inject constructor(
      */
     suspend fun deletionPreflight(): ApiResult<DeletionPreflightResponse> =
         withAutoRefresh(R.string.error_unexpected) { api.deletionPreflight() }
+
+    /**
+     * MR-179: e-mail the one-time deletion code to an SSO account (no password,
+     * no 2FA). The refusals (429 past 3 an hour, 503 not sent) map under
+     * [ErrorContext.DELETE_ACCOUNT].
+     */
+    suspend fun sendDeletionCode(): ApiResult<DeletionCodeResponse> =
+        withAutoRefresh(R.string.error_delete_failed, ErrorContext.DELETE_ACCOUNT) { api.sendDeletionCode() }
 
     /** Never lets a keystore/file error turn a sign-out or deletion into a failure. */
     private fun forgetPostQuantumKeypair() {
