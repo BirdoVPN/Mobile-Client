@@ -67,6 +67,19 @@ final class VpnViewModel: ObservableObject {
     /// True while a settings "blip" reconnect is in flight — Home shows
     /// "Applying settings — reconnecting…" off this.
     @Published private(set) var isReapplyingSettings = false
+    /// MR-1621: true while the tunnel that WAS up is being re-dialled (iOS
+    /// `.reasserting`, or a `.connecting` that follows a live session).
+    /// Home reads "Reconnecting…" off this instead of "Protected" / "Connecting…".
+    @Published private(set) var isReconnecting = false
+
+    /// MR-1620 / MR-1621: the single named state behind the status pill and the
+    /// VoiceOver announcements. Pure mapping lives in `ConnectionPhase`.
+    var connectionPhase: ConnectionPhase {
+        ConnectionPhase.resolve(tunnel: tunnelPhase,
+                                isSwitching: isSwitching,
+                                isReconnecting: isReconnecting,
+                                hasError: error != nil)
+    }
 
     // MARK: - Servers
     @Published var servers: [ServerInfo] = []
@@ -1208,6 +1221,7 @@ final class VpnViewModel: ObservableObject {
             if !isConnected { resetHandshakeProof() }
             isConnected = true
             isConnecting = false
+            isReconnecting = false
             isReapplyingSettings = false
             // MR-1948: a tunnel is up, so the server's earlier "not yet" is spent.
             autoDialNotBefore = nil
@@ -1241,7 +1255,13 @@ final class VpnViewModel: ObservableObject {
             }
             startStatsTimer()
             startHeartbeat()
-        case .connecting, .reasserting:
+        case .reasserting:
+            isConnecting = true
+            isReconnecting = true
+        case .connecting:
+            // A connect that begins while a session was live is a re-dial, not
+            // a first connect (isConnected is still true across `.reasserting`).
+            isReconnecting = isConnected
             isConnecting = true
         case .disconnected, .invalid:
             // An OS-initiated drop carries the extension's failure reason. Show
@@ -1260,6 +1280,7 @@ final class VpnViewModel: ObservableObject {
             }
             isConnected = false
             isConnecting = false
+            isReconnecting = false
             resetHandshakeProof()
             quantumActive = false
             connectedSince = nil
@@ -1308,6 +1329,7 @@ final class VpnViewModel: ObservableObject {
         deviceNotice = nil
         isConnected = false
         isConnecting = false
+        isReconnecting = false
         resetHandshakeProof()
         quantumActive = false
         connectedSince = nil
