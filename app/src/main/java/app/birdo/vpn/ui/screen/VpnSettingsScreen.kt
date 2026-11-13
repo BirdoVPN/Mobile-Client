@@ -45,6 +45,13 @@ internal data class BirdoShieldRowState(
     val checked: Boolean,
     val enabled: Boolean,
     val unavailable: Boolean,
+    /**
+     * Whether the row is composed at all. Owner decision 2026-11-13: while the
+     * FLEET gate is off the row is HIDDEN, not shown with a "not available"
+     * reason, so a feature the account cannot use is not advertised. It comes
+     * back by itself if the gate is ever turned on.
+     */
+    val visible: Boolean = !unavailable,
     /** Custom DNS replaces the filtering resolver, so the switch would do nothing (A1-024). */
     val overriddenByCustomDns: Boolean = false,
 )
@@ -78,6 +85,7 @@ internal fun birdoShieldRowState(
         checked = dnsFilteringEnabled && !unavailable && !overridden,
         enabled = !unavailable && !overridden,
         unavailable = unavailable,
+        visible = !unavailable,
         overriddenByCustomDns = overridden,
     )
 }
@@ -151,34 +159,36 @@ fun VpnSettingsScreen(
                 )
             }
 
-            item {
-                // BirdoShield (D18): per-device DNS filtering, OFF by default and
-                // available on every plan (no lock affordance — it is not a paid
-                // feature, so no upgrade route). The flag only travels on the
-                // connect body; a flip while connected goes through the same
-                // apply-on-change reconnect as Stealth (SettingsViewModel).
-                //
-                // Disabled, not locked, when the FLEET gate is off: there is
-                // nothing for the user to buy or change, so the row simply
-                // states why. Their stored preference is untouched and returns
-                // on its own when the gate comes back.
-                val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable, state.customDnsEnabled)
-                VpnToggle(
-                    icon = Icons.Default.Shield,
-                    iconColor = if (shield.enabled) BirdoGreen else palette.onSurfaceFaint,
-                    title = stringResource(R.string.vpn_settings_birdoshield_title),
+            // BirdoShield (D18): per-device DNS filtering, OFF by default and
+            // available on every plan (no lock affordance — it is not a paid
+            // feature, so no upgrade route). The flag only travels on the
+            // connect body; a flip while connected goes through the same
+            // apply-on-change reconnect as Stealth (SettingsViewModel).
+            //
+            // Hidden when the FLEET gate is off (owner 2026-11-13): there is
+            // nothing for the user to buy or change, and a row that only says
+            // "not available" advertises a feature the account cannot use.
+            // Their stored preference is untouched and the row returns on
+            // its own when the gate comes back.
+            val shield = birdoShieldRowState(state.dnsFilteringEnabled, dnsFilteringAvailable, state.customDnsEnabled)
+            if (shield.visible) {
+                item {
+                    VpnToggle(
+                        icon = Icons.Default.Shield,
+                        iconColor = if (shield.enabled) BirdoGreen else palette.onSurfaceFaint,
+                        title = stringResource(R.string.vpn_settings_birdoshield_title),
                     // Only why the switch cannot act; no description of what it
                     // does (owner 2026-11-07).
-                    description = when {
-                        shield.unavailable -> stringResource(R.string.vpn_settings_birdoshield_unavailable)
-                        shield.overriddenByCustomDns -> stringResource(R.string.vpn_settings_birdoshield_custom_dns)
-                        else -> null
-                    },
-                    checked = shield.checked,
-                    onCheckedChange = onDnsFilteringChange,
-                    enabled = shield.enabled,
-                    testTag = "vpn_settings_birdoshield",
-                )
+                        description = when {
+                            shield.overriddenByCustomDns -> stringResource(R.string.vpn_settings_birdoshield_custom_dns)
+                            else -> null
+                        },
+                        checked = shield.checked,
+                        onCheckedChange = onDnsFilteringChange,
+                        enabled = shield.enabled,
+                        testTag = "vpn_settings_birdoshield",
+                    )
+                }
             }
 
             // ── Network Section ──────────────────────────────────

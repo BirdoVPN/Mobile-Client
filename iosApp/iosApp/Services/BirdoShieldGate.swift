@@ -208,12 +208,15 @@ enum BirdoShieldGate {
     /// subtitle it shows all have to agree about whether the feature can do
     /// anything. Deriving them separately at three call sites is how a row ends
     /// up reading ON while greyed out.
+    ///
+    /// Owner decision 2026-11-13: while the FLEET gate is off the row is HIDDEN
+    /// (`isVisible == false`), not shown with a "not available" reason. It
+    /// returns by itself if the gate is ever turned on.
     struct Row: Equatable {
         let isOn: Bool
         let isEnabled: Bool
-        /// True when the row should show the "not available yet" reason instead
-        /// of the normal description.
-        let unavailable: Bool
+        /// False while the fleet gate is explicitly off: the row is not shown.
+        let isVisible: Bool
     }
 
     /// - Parameters:
@@ -239,17 +242,7 @@ enum BirdoShieldGate {
         return Row(
             isOn: preference && !unavailable,
             isEnabled: !unavailable,
-            unavailable: unavailable
+            isVisible: !unavailable
         )
     }
-
-    /// The subtitle shown while the gate is down.
-    ///
-    /// The user cannot act on this, so the copy does not ask them to; it says
-    /// the preference survives. Kept here beside the rule so the three clients'
-    /// wording stays comparable in review (Android:
-    /// `R.string.vpn_settings_birdoshield_unavailable`).
-    static let unavailableReason =
-        "Not available on your account's server fleet yet. "
-        + "Your preference is kept and applies as soon as it is."
 }

@@ -17,14 +17,14 @@ final class BirdoShieldGateTests: XCTestCase {
 
     // MARK: - The row
 
-    func testGateOffDisablesTheRowAndReadsOff() {
+    func testGateOffHidesTheRowAndReadsOff() {
         // Preference is ON — the user turned BirdoShield on while the gate was
         // up. It must still read OFF now.
         let row = BirdoShieldGate.row(preference: true, available: false)
 
         XCTAssertFalse(row.isOn, "the row must not read ON while the server ignores the flag")
         XCTAssertFalse(row.isEnabled, "the row must not be switchable")
-        XCTAssertTrue(row.unavailable, "the row must explain why")
+        XCTAssertFalse(row.isVisible, "the row is hidden while the fleet gate is off (owner 2026-11-13)")
     }
 
     /// The gate never clears the user's choice: `row` is pure and cannot write,
@@ -36,17 +36,17 @@ final class BirdoShieldGateTests: XCTestCase {
         let restored = BirdoShieldGate.row(preference: stored, available: true)
         XCTAssertTrue(restored.isOn, "the user's own choice returns with the gate")
         XCTAssertTrue(restored.isEnabled)
-        XCTAssertFalse(restored.unavailable)
+        XCTAssertTrue(restored.isVisible, "the row comes back with the gate")
     }
 
     func testGateOnFollowsThePreference() {
         XCTAssertEqual(
             BirdoShieldGate.row(preference: true, available: true),
-            BirdoShieldGate.Row(isOn: true, isEnabled: true, unavailable: false)
+            BirdoShieldGate.Row(isOn: true, isEnabled: true, isVisible: true)
         )
         XCTAssertEqual(
             BirdoShieldGate.row(preference: false, available: true),
-            BirdoShieldGate.Row(isOn: false, isEnabled: true, unavailable: false)
+            BirdoShieldGate.Row(isOn: false, isEnabled: true, isVisible: true)
         )
     }
 
@@ -59,7 +59,7 @@ final class BirdoShieldGateTests: XCTestCase {
         let row = BirdoShieldGate.row(preference: true, available: nil)
         XCTAssertTrue(row.isOn, "unknown must not read as off")
         XCTAssertTrue(row.isEnabled)
-        XCTAssertFalse(row.unavailable, "and must not show the unavailable reason")
+        XCTAssertTrue(row.isVisible, "and must not hide the row")
     }
 
     // MARK: - The wire shape
@@ -98,17 +98,5 @@ final class BirdoShieldGateTests: XCTestCase {
             BirdoShieldGate.row(preference: true, available: cfg.dnsFilteringAvailable).isEnabled,
             "the decoded gate must drive the row"
         )
-    }
-
-    // MARK: - The copy
-
-    /// The reason must not ask the user to do anything — there is nothing they
-    /// can do — and must say the preference survives, which is the only part
-    /// they can act on (by leaving it alone).
-    func testTheUnavailableReasonPromisesThePreferenceIsKept() {
-        let reason = BirdoShieldGate.unavailableReason
-        XCTAssertTrue(reason.contains("Not available"))
-        XCTAssertTrue(reason.contains("preference is kept"),
-                      "the copy must promise the choice survives: \(reason)")
     }
 }

@@ -50,14 +50,25 @@ class BirdoShieldAvailabilityTest {
     // ── 1. The row ───────────────────────────────────────────────
 
     @Test
-    fun `gate off disables the row, shows the reason and reads OFF`() {
+    fun `gate off hides the row, and it reads OFF and cannot be switched`() {
         // Persisted preference is ON — the user turned BirdoShield on while the
         // gate was up. It must still read OFF now.
         val row = birdoShieldRowState(dnsFilteringEnabled = true, dnsFilteringAvailable = false)
 
         assertFalse("row must not read ON while the server ignores the flag", row.checked)
         assertFalse("row must not be switchable", row.enabled)
-        assertTrue("row must explain why", row.unavailable)
+        assertTrue("the fleet gate is off", row.unavailable)
+        // Owner 2026-11-13: hidden outright, not shown with a reason.
+        assertFalse("row must not be shown while the fleet gate is off", row.visible)
+    }
+
+    @Test
+    fun `the row is visible when the gate is on or not known yet`() {
+        assertTrue(birdoShieldRowState(dnsFilteringEnabled = false, dnsFilteringAvailable = true).visible)
+        // Unknown counts as available, so a cold start does not flash the row away.
+        assertTrue(birdoShieldRowState(dnsFilteringEnabled = false, dnsFilteringAvailable = null).visible)
+        // Custom DNS overrides the row but does not hide it.
+        assertTrue(birdoShieldRowState(true, true, customDnsEnabled = true).visible)
     }
 
     @Test
@@ -236,9 +247,12 @@ class BirdoShieldAvailabilityTest {
         assertTrue("checked must come from the derived state", "checked = shield.checked" in block)
         assertTrue("enabled must come from the derived state", "enabled = shield.enabled" in block)
         assertTrue(
-            "the unavailable reason string must be selected from the derived state",
-            "shield.unavailable" in block &&
-                "R.string.vpn_settings_birdoshield_unavailable" in block,
+            "the row must be composed only while the derived state says it is visible",
+            "if (shield.visible)" in block,
+        )
+        assertFalse(
+            "the removed 'not available' string must not come back",
+            "R.string.vpn_settings_birdoshield_unavailable" in block,
         )
         assertFalse(
             "the switch must not read the raw preference, which ignores the gate",
