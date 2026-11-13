@@ -404,6 +404,8 @@ targets:
       # (inbound bytes), as on Android. Foundation-only by design, pinned by
       # TunnelProofTests; VpnViewModel and the views cannot be compiled here.
       - path: iosApp/Services/TunnelProof.swift
+      # MR-1618: the Forgot-password destination (Foundation-only).
+      - path: iosApp/Services/AuthLinks.swift
       # MR-1728: the kill switch's protocol flags, APNs and device-communication
       # exemptions included. Foundation-only by design, pinned by
       # KillSwitchProfileTests; VPNManager (NetworkExtension) cannot be compiled
