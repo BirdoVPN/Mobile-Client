@@ -50,14 +50,26 @@ class BirdoShieldAvailabilityTest {
     // ── 1. The row ───────────────────────────────────────────────
 
     @Test
-    fun `gate off disables the row, shows the reason and reads OFF`() {
+    fun `gate off hides the row, and it reads OFF and cannot be switched`() {
         // Persisted preference is ON — the user turned BirdoShield on while the
         // gate was up. It must still read OFF now.
         val row = birdoShieldRowState(dnsFilteringEnabled = true, dnsFilteringAvailable = false)
 
         assertFalse("row must not read ON while the server ignores the flag", row.checked)
         assertFalse("row must not be switchable", row.enabled)
-        assertTrue("row must explain why", row.unavailable)
+        assertTrue("the fleet gate is off", row.unavailable)
+        // Owner 2026-11-13: hidden outright, not shown with a reason.
+        assertFalse("row must not be shown while the fleet gate is off", row.visible)
+    }
+
+    @Test
+    fun `the row is visible only when the gate is known to be on`() {
+        assertTrue(birdoShieldRowState(dnsFilteringEnabled = false, dnsFilteringAvailable = true).visible)
+        // Owner 2026-11-13: unknown (cold start, offline, an older deploy) hides it too.
+        assertFalse(birdoShieldRowState(dnsFilteringEnabled = false, dnsFilteringAvailable = null).visible)
+        assertFalse(birdoShieldRowState(dnsFilteringEnabled = true, dnsFilteringAvailable = null).enabled)
+        // Custom DNS overrides the row but does not hide it.
+        assertTrue(birdoShieldRowState(true, true, customDnsEnabled = true).visible)
     }
 
     @Test
@@ -88,24 +100,23 @@ class BirdoShieldAvailabilityTest {
     }
 
     /**
-     * The default that matters. `null` is a cold start before the fetch lands,
-     * a failed fetch, or a web deploy older than #465. Unknown is AVAILABLE:
-     * hiding a feature that works because the client could not reach the web
-     * app is the failure this flag exists to avoid, and it is the asymmetric
-     * one — the backend refuses the flag anyway while the gate is off.
+     * `null` is a cold start before the fetch lands, a failed fetch, or a web
+     * deploy older than #465. Owner 2026-11-13: unknown HIDES the row (and it
+     * reads OFF, unswitchable), the same as an explicit off. The gate is not
+     * persisted for the UI, so the row appears when the config fetch lands.
      */
     @Test
-    fun `unknown gate leaves the row enabled`() {
+    fun `unknown gate hides the row and reads off`() {
         val row = birdoShieldRowState(dnsFilteringEnabled = true, dnsFilteringAvailable = null)
-        assertTrue("unknown must not read as off", row.checked)
-        assertTrue(row.enabled)
-        assertFalse("and must not show the unavailable reason", row.unavailable)
+        assertFalse("unknown must not read as on", row.checked)
+        assertFalse(row.enabled)
+        assertFalse("and the row is not shown", row.visible)
     }
 
     @Test
-    fun `the ui state starts unknown, not unavailable`() {
+    fun `the ui state starts unknown, so the row starts hidden`() {
         assertNull(VpnUiState().dnsFilteringAvailable)
-        assertTrue(birdoShieldRowState(true, VpnUiState().dnsFilteringAvailable).enabled)
+        assertFalse(birdoShieldRowState(true, VpnUiState().dnsFilteringAvailable).visible)
     }
 
     // ── 2. The ViewModel's defaulting rule ───────────────────────
@@ -236,9 +247,12 @@ class BirdoShieldAvailabilityTest {
         assertTrue("checked must come from the derived state", "checked = shield.checked" in block)
         assertTrue("enabled must come from the derived state", "enabled = shield.enabled" in block)
         assertTrue(
-            "the unavailable reason string must be selected from the derived state",
-            "shield.unavailable" in block &&
-                "R.string.vpn_settings_birdoshield_unavailable" in block,
+            "the row must be composed only while the derived state says it is visible",
+            "if (shield.visible)" in block,
+        )
+        assertFalse(
+            "the removed 'not available' string must not come back",
+            "R.string.vpn_settings_birdoshield_unavailable" in block,
         )
         assertFalse(
             "the switch must not read the raw preference, which ignores the gate",
@@ -298,6 +312,25 @@ class BirdoShieldAvailabilityTest {
                 "and the row is never gated",
             "fetchClientConfig()" in body,
         )
+    }
+
+    /**
+     * Owner 2026-11-13: the apps must not SEND `dnsFiltering` while the fleet
+     * gate is off or unknown, even with the preference on. Android carries the
+     * last-known gate in preferences into `shieldInEffect`; iOS ANDs the
+     * UserDefaults gate flag in APIClient. Both are written only by a fetch
+     * that said so.
+     */
+    @Test
+    fun `the connect flag is sent only while the fleet gate is known to be on`() {
+        val vpnManager = source("app/src/main/java/app/birdo/vpn/service/VpnManager.kt")
+        assertTrue("prefs.dnsFilteringGateOn" in vpnManager)
+        val vm = source("app/src/main/java/app/birdo/vpn/ui/viewmodel/VpnViewModel.kt")
+        assertTrue("prefs.dnsFilteringGateOn = next" in vm)
+        val api = source("iosApp/iosApp/Services/APIClient.swift")
+        assertTrue("ConnectWire.dnsFilteringGateDefaultsKey" in api)
+        val settings = source("iosApp/iosApp/ViewModels/SettingsViewModel.swift")
+        assertTrue("forKey: ConnectWire.dnsFilteringGateDefaultsKey" in settings)
     }
 
     private fun source(path: String): String {

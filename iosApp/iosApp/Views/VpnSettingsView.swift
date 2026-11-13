@@ -49,25 +49,26 @@ struct VpnSettingsView: View {
                         // connected takes the same 1200 ms debounced reapply
                         // blip as Local Network Sharing. No description of what
                         // it does (owner 2026-11-07); only why it cannot act.
-                        // Disabled, not hidden, when the FLEET gate is off:
-                        // there is nothing for the user to buy or change, so
-                        // the row simply states why. Their stored preference is
-                        // untouched and returns on its own when the gate does.
+                        // HIDDEN when the FLEET gate is off (owner 2026-11-13):
+                        // there is nothing for the user to buy or change, and a
+                        // "not available" row advertises a feature the account
+                        // cannot use. Their stored preference is untouched and
+                        // the row returns on its own when the gate does.
                         // Twin of Android's `birdoShieldRowState`.
                         let shield = BirdoShieldGate.row(
                             preference: settingsVM.dnsFilteringEnabled,
                             available: settingsVM.dnsFilteringAvailable
                         )
-                        VpnToggleRow(icon: "shield.fill",
-                                     iconColor: shield.isEnabled
-                                         ? BirdoTheme.green : BirdoTheme.onSurfaceFaint,
-                                     title: "BirdoShield",
-                                     description: shield.unavailable
-                                         ? BirdoShieldGate.unavailableReason
-                                         : nil,
-                                     isOn: $settingsVM.dnsFilteringEnabled,
-                                     isEnabled: shield.isEnabled,
-                                     displayOn: shield.isOn)
+                        if shield.isVisible {
+                            VpnToggleRow(icon: "shield.fill",
+                                         iconColor: shield.isEnabled
+                                             ? BirdoTheme.green : BirdoTheme.onSurfaceFaint,
+                                         title: "BirdoShield",
+                                         description: nil,
+                                         isOn: $settingsVM.dnsFilteringEnabled,
+                                         isEnabled: shield.isEnabled,
+                                         displayOn: shield.isOn)
+                        }
                         VpnToggleRow(icon: "network", iconColor: BirdoTheme.blue,
                                      title: "Local Network Sharing",
                                      // A warning, so it stays (owner 2026-11-07).

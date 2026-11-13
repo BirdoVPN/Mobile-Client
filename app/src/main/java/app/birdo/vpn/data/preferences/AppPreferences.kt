@@ -181,6 +181,18 @@ class AppPreferences @Inject constructor(
         get() = prefs.getBoolean(KEY_DNS_FILTERING_ENABLED, false)
         set(value) = prefs.edit(commit = true) { putBoolean(KEY_DNS_FILTERING_ENABLED, value) }
 
+    /**
+     * The BirdoShield FLEET gate as the last config fetch reported it
+     * (`dnsFilteringAvailable == true`); false until a fetch said so. The
+     * connect body carries `dnsFiltering` only while this is true, so a
+     * preference set while the gate was on is not sent while it is off or not
+     * known (owner 2026-11-13). Not an HMAC-protected key, like
+     * [dnsFilteringEnabled]: it can only withhold the flag.
+     */
+    var dnsFilteringGateOn: Boolean
+        get() = prefs.getBoolean(KEY_DNS_FILTERING_GATE_ON, false)
+        set(value) = prefs.edit(commit = true) { putBoolean(KEY_DNS_FILTERING_GATE_ON, value) }
+
     // ── Adaptive Transport (automatic stealth fallback) ──────────
     /**
      * When the last automatic fallback succeeded, the epoch-millis at which it
@@ -480,6 +492,7 @@ class AppPreferences @Inject constructor(
         private const val KEY_LOCAL_NETWORK_SHARING = "local_network_sharing"
         private const val KEY_STEALTH_MODE = "stealth_mode_enabled"
         private const val KEY_DNS_FILTERING_ENABLED = "dns_filtering_enabled"
+        private const val KEY_DNS_FILTERING_GATE_ON = "dns_filtering_gate_on"
         private const val KEY_STEALTH_PREFERRED_SINCE = "stealth_preferred_since"
 
         /**

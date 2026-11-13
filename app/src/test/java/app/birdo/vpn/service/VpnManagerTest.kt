@@ -358,11 +358,14 @@ class VpnManagerTest {
     // The review of #403 removed both `dnsFiltering = prefs.dnsFilteringEnabled`
     // lines and the suite stayed green: the repository and serializer tests see
     // the flag once it is a parameter, but nothing proved the PREF reaches the
-    // parameter. These four are that proof, one per dial path per state.
+    // parameter. These are that proof, per dial path, per pref state and per
+    // fleet-gate state.
 
     @Test
     fun `connect sends dnsFiltering when the BirdoShield pref is on`() = runTest {
         every { prefs.dnsFilteringEnabled } returns true
+        // The last config fetch reported the fleet gate on.
+        every { prefs.dnsFilteringGateOn } returns true
         coEvery {
             repository.connectVpn(
                 serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
@@ -386,6 +389,36 @@ class VpnManagerTest {
     @Test
     fun `connect leaves dnsFiltering off when the BirdoShield pref is off`() = runTest {
         every { prefs.dnsFilteringEnabled } returns false
+        coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
+
+        val result = vpnManager.connect("srv-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectVpn(
+                serverNodeId = "srv-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = false,
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectVpn(
+                serverNodeId = any(), deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
+    /**
+     * The fleet gate (owner 2026-11-13): a pref set while BirdoShield was on is
+     * not sent while the last-known gate is off, or not known yet (a fresh
+     * install, a fetch that never answered: the stored default is false).
+     */
+    @Test
+    fun `connect does not send dnsFiltering while the fleet gate is off`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.dnsFilteringGateOn } returns false
         coEvery { repository.connectVpn(any(), any()) } returns ApiResult.Success(makeConnectResponse())
 
         val result = vpnManager.connect("srv-1")
@@ -515,6 +548,7 @@ class VpnManagerTest {
     @Test
     fun `connectMultiHop sends dnsFiltering when the BirdoShield pref is on`() = runTest {
         every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.dnsFilteringGateOn } returns true
         coEvery {
             repository.connectMultiHop(
                 entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
@@ -538,6 +572,33 @@ class VpnManagerTest {
     @Test
     fun `connectMultiHop leaves dnsFiltering off when the BirdoShield pref is off`() = runTest {
         every { prefs.dnsFilteringEnabled } returns false
+        coEvery {
+            repository.connectMultiHop(any(), any(), any(), any(), any(), any())
+        } returns ApiResult.Success(makeMultiHopResponse())
+
+        val result = vpnManager.connectMultiHop("de-1", "nl-1")
+
+        assertTrue(result is ApiResult.Success)
+        coVerify(exactly = 1) {
+            repository.connectMultiHop(
+                entryNodeId = "de-1", exitNodeId = "nl-1", deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = false,
+            )
+        }
+        coVerify(exactly = 0) {
+            repository.connectMultiHop(
+                entryNodeId = any(), exitNodeId = any(), deviceName = any(), stealthMode = any(),
+                fallbackReason = any(), quantumProtection = any(), pqClientPublicKey = any(),
+                integrityToken = any(), dnsFiltering = true,
+            )
+        }
+    }
+
+    @Test
+    fun `connectMultiHop does not send dnsFiltering while the fleet gate is off`() = runTest {
+        every { prefs.dnsFilteringEnabled } returns true
+        every { prefs.dnsFilteringGateOn } returns false
         coEvery {
             repository.connectMultiHop(any(), any(), any(), any(), any(), any())
         } returns ApiResult.Success(makeMultiHopResponse())
@@ -2902,6 +2963,8 @@ class VpnManagerTest {
     @Test
     fun `with Custom DNS on, the server is not told BirdoShield is on`() = runTest {
         every { prefs.dnsFilteringEnabled } returns true
+        // The gate is on, so Custom DNS alone is what withholds the flag.
+        every { prefs.dnsFilteringGateOn } returns true
         every { prefs.customDnsEnabled } returns true
         coEvery { repository.connectVpn(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns
             ApiResult.Success(makeConnectResponse())
