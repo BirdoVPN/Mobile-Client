@@ -61,19 +61,43 @@ object RootDetector {
 
     /** True when a release build has an expected signing certificate baked in. */
     fun hasSigningFingerprintConfigured(context: Context): Boolean =
-        expectedSigningFingerprints().isNotEmpty()
+        bakedSigningFingerprints().isNotEmpty()
 
     /** Verify this APK was signed by the expected release certificate. */
     fun isPackageSignatureTrusted(context: Context): Boolean {
-        val current = currentSigningFingerprint(context)?.let { normalizeFingerprint(it) }
-            ?: return false
-        if (current in expectedSigningFingerprints()) return true
-        // Google Play App Signing re-signs the app with the app-signing key
-        // (different from our baked upload-key fingerprint), so on a genuine Play
-        // install the cert legitimately won't match the allow-list. Trust it —
-        // Google's signature is the guarantee; only a sideloaded repackage lacks it.
-        return isInstalledFromPlayStore(context)
+        return isSignatureTrusted(
+            currentFingerprint = currentSigningFingerprint(context),
+            baked = bakedSigningFingerprints(),
+            installedFromPlay = isInstalledFromPlayStore(context),
+        )
     }
+
+    /**
+     * Gate for native-library loading (see NativeLibraryVerifier). Deliberately
+     * stays on the installer-of-record rule: a Play user whose install has a
+     * null or foreign initiator (Smart Switch, Play Store removed, pre-Android-11
+     * install later upgraded) must not lose the VPN (F-968-03 review).
+     */
+    internal fun isSignatureTrusted(
+        currentFingerprint: String?,
+        baked: Set<String>,
+        installedFromPlay: Boolean,
+    ): Boolean {
+        val current = currentFingerprint?.let { normalizeFingerprint(it) } ?: return false
+        if (current in baked || current == PLAY_APP_SIGNING_SHA256) return true
+        // Google Play App Signing re-signs the app with the app-signing key.
+        // The public cert is allow-listed above; the installer rule remains for
+        // older installs, as before.
+        return installedFromPlay
+    }
+
+    /**
+     * Public SHA-256 of the Play App Signing (app signing) certificate, from
+     * docs/PLAY-APP-SIGNING.md line 30 ("App signing key certificate"), NOT the
+     * upload key on line 38.
+     */
+    internal const val PLAY_APP_SIGNING_SHA256 =
+        "05:9F:CD:5A:87:15:7F:29:3A:93:CD:00:B8:8D:8B:AD:30:97:8A:0A:46:41:AA:70:FF:04:88:83:41:E4:59:A0"
 
     // ── Individual Checks ────────────────────────────────────────
 
@@ -220,14 +244,27 @@ object RootDetector {
      * If the app was signed with a different key (repackaged), this returns true.
      */
     private fun checkTampering(context: Context): Boolean {
-        val expected = expectedSigningFingerprints()
-        if (expected.isEmpty()) return false
-        val current = currentSigningFingerprint(context) ?: return false
-        if (normalizeFingerprint(current) in expected) return false
-        // A genuine Google Play install is re-signed by Play App Signing with a
-        // cert we didn't bake — that is NOT tampering. Only flag an unrecognised
-        // cert as a repackage when it did not come from the Play Store.
-        return !isInstalledFromPlayStore(context)
+        return isTampered(
+            baked = bakedSigningFingerprints(),
+            currentFingerprint = currentSigningFingerprint(context),
+            installedFromPlayStrict = isInstalledFromPlayStoreStrict(context),
+        )
+    }
+
+    /**
+     * Advisory tamper signal only. A cert we do not recognise is flagged unless
+     * the install provably came from Play (installer AND initiator). A wrong
+     * answer here only shows a warning; it never gates the VPN.
+     */
+    internal fun isTampered(
+        baked: Set<String>,
+        currentFingerprint: String?,
+        installedFromPlayStrict: Boolean,
+    ): Boolean {
+        if (baked.isEmpty()) return false
+        val current = currentFingerprint?.let { normalizeFingerprint(it) } ?: return false
+        if (current in baked || current == PLAY_APP_SIGNING_SHA256) return false
+        return !installedFromPlayStrict
     }
 
     /**
@@ -253,7 +290,23 @@ object RootDetector {
         }
     }
 
-    private fun expectedSigningFingerprints(): Set<String> {
+    /** Installer AND initiator are Play (see [isPlayInstall]); advisory warning only. */
+    private fun isInstalledFromPlayStoreStrict(context: Context): Boolean {
+        return try {
+            val pm = context.packageManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val source = pm.getInstallSourceInfo(context.packageName)
+                isPlayInstall(source.installingPackageName, source.initiatingPackageName, Build.VERSION.SDK_INT)
+            } else {
+                @Suppress("DEPRECATION")
+                isPlayInstall(pm.getInstallerPackageName(context.packageName), null, Build.VERSION.SDK_INT)
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun bakedSigningFingerprints(): Set<String> {
         return BuildConfig.SIGNING_CERT_FINGERPRINT
             .split(',', ';', '\n', '\r', '\t', ' ')
             .map { normalizeFingerprint(it) }
@@ -269,23 +322,46 @@ object RootDetector {
             .chunked(2)
             .joinToString(":")
 
+    /**
+     * F-968-04: which certificate stands for the signer NOW. The history is
+     * ordered oldest first, so after a key rotation element 0 is the retired
+     * key and the current signer is the LAST entry. With several signers the
+     * existing behaviour (first of apkContentsSigners) is unchanged.
+     */
+    internal fun selectCurrentSignerCert(
+        multipleSigners: Boolean,
+        contentsSigners: List<ByteArray>?,
+        history: List<ByteArray>?,
+    ): ByteArray? =
+        if (multipleSigners) contentsSigners?.firstOrNull() else history?.lastOrNull()
+
+    /**
+     * F-968-03: installer-of-record alone is spoofable
+     * (`adb install -i com.android.vending`). From API 30 the OS also records
+     * WHO ran the install (initiatingPackageName); for an adb/shell
+     * install AOSP leaves it null, never Play. Both must name Play. Below API 30 only the
+     * installer is available.
+     */
+    internal fun isPlayInstall(installer: String?, initiator: String?, sdkInt: Int): Boolean {
+        val play = setOf("com.android.vending", "com.google.android.feedback")
+        if (installer !in play) return false
+        return sdkInt < Build.VERSION_CODES.R || initiator in play
+    }
+
     private fun currentSigningFingerprint(context: Context): String? {
         return try {
             val signingInfo = context.packageManager
                 .getPackageInfo(context.packageName, GET_SIGNING_CERTIFICATES)
                 .signingInfo ?: return null
 
-            val signatures = if (signingInfo.hasMultipleSigners()) {
-                signingInfo.apkContentsSigners
-            } else {
-                signingInfo.signingCertificateHistory
-            }
+            val certBytes = selectCurrentSignerCert(
+                multipleSigners = signingInfo.hasMultipleSigners(),
+                contentsSigners = signingInfo.apkContentsSigners?.map { it.toByteArray() },
+                history = signingInfo.signingCertificateHistory?.map { it.toByteArray() },
+            ) ?: return null
 
-            if (signatures.isNullOrEmpty()) return null
-
-            val md = MessageDigest.getInstance("SHA-256")
-            signatures[0].toByteArray()
-                .let { md.digest(it) }
+            MessageDigest.getInstance("SHA-256")
+                .digest(certBytes)
                 .joinToString(":") { "%02X".format(it) }
         } catch (_: Exception) {
             null
