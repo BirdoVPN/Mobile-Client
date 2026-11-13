@@ -50,16 +50,15 @@ final class BirdoShieldGateTests: XCTestCase {
         )
     }
 
-    /// The default that matters. `nil` is a cold start before the fetch lands,
-    /// a failed fetch, or a web deploy older than #465. Unknown is AVAILABLE:
-    /// hiding a feature that works because the device could not reach the web
-    /// app is the asymmetric failure — the backend refuses the flag anyway
-    /// while the gate is down.
-    func testUnknownGateLeavesTheRowEnabled() {
+    /// `nil` is a cold start before the fetch lands, a failed fetch, or a web
+    /// deploy older than #465. Owner 2026-11-13: unknown HIDES the row and it
+    /// reads off, like an explicit off; it appears when the fetch confirms the
+    /// gate.
+    func testUnknownGateHidesTheRowAndReadsOff() {
         let row = BirdoShieldGate.row(preference: true, available: nil)
-        XCTAssertTrue(row.isOn, "unknown must not read as off")
-        XCTAssertTrue(row.isEnabled)
-        XCTAssertTrue(row.isVisible, "and must not hide the row")
+        XCTAssertFalse(row.isOn, "unknown must not read as on")
+        XCTAssertFalse(row.isEnabled)
+        XCTAssertFalse(row.isVisible, "the row is not shown until the gate is known to be on")
     }
 
     // MARK: - The wire shape

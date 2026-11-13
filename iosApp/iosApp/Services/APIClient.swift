@@ -512,8 +512,12 @@ final class APIClient: @unchecked Sendable {
     /// SettingsViewModel; an absent key is OFF (the opt-in default), so a
     /// fresh install and a user who never touched the toggle both send the
     /// pre-D18 connect body.
+    ///
+    /// Owner 2026-11-13: ANDed with the last-known fleet gate, so a preference
+    /// set while the gate was on is not sent while it is off or not known.
     private static var dnsFilteringEnabled: Bool {
         UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringDefaultsKey)
+            && UserDefaults.standard.bool(forKey: ConnectWire.dnsFilteringGateDefaultsKey)
     }
 
     /// `rebuildOf`: the server-side key the LIVE tunnel is riding (Mobile-Client

@@ -62,10 +62,11 @@ internal data class BirdoShieldRowState(
  *   `null` NOT KNOWN YET (cold start, failed fetch, or a web deploy older than
  *   birdo-web#465).
  *
- * `== false` rather than `!available` is the whole point: unknown counts as
- * AVAILABLE. Hiding a working feature because the client could not reach the
- * web app is worse than showing it a moment before the gate is confirmed, and
- * the backend refuses the flag anyway while the gate is off.
+ * Owner 2026-11-13: the row exists ONLY while the gate is known to be on
+ * (`== true`). Unknown (a cold start before the fetch lands, an offline
+ * device, an older web deploy) HIDES it, like off: a row that may be switched
+ * on for a feature the account's fleet does not offer is the lie this hides.
+ * It appears when the config fetch confirms the gate.
  *
  * Note what this does NOT do: it never writes. An unavailable gate makes the
  * row read OFF, but [dnsFilteringEnabled] is left untouched in preferences, so
@@ -76,7 +77,7 @@ internal fun birdoShieldRowState(
     dnsFilteringAvailable: Boolean?,
     customDnsEnabled: Boolean = false,
 ): BirdoShieldRowState {
-    val unavailable = dnsFilteringAvailable == false
+    val unavailable = dnsFilteringAvailable != true
     // A1-024, as Windows does it: with Custom DNS on, the tunnel never asks
     // the filtering resolver, so the row reads OFF, cannot be switched, and
     // says why. The stored preference is kept for when Custom DNS goes off.

@@ -756,6 +756,9 @@ class VpnViewModel @Inject constructor(
             val result = repository.getClientConfig()
             val state = _uiState.value
             val next = nextDnsFilteringAvailable(state.dnsFilteringAvailable, result)
+            // The dial reads the gate from preferences (VpnManager cannot see this
+            // state): only a fetch that SAID so turns the flag on.
+            if (next != null && prefs.dnsFilteringGateOn != next) prefs.dnsFilteringGateOn = next
             val freeCap = nextFreePlanCapGb(state.configFreePlanCapGb, result)
             val gates = repository.cachedPlanGates()
             if (next != state.dnsFilteringAvailable || freeCap != state.configFreePlanCapGb || gates != state.planGates) {
