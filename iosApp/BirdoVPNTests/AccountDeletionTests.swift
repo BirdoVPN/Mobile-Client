@@ -86,6 +86,54 @@ final class AccountDeletionTests: XCTestCase {
                        ["password": "hunter2", "twoFactorCode": "123456"])
     }
 
+    // MARK: - MR-179: the step-up (owner 2026-11-13)
+
+    /// The step-up refusals are told apart by `error`, never by the sentence.
+    func testStepUpRefusalsClassifyByCode() {
+        XCTAssertEqual(classify(403, #"{"statusCode":403,"error":"account_number_required","message":"x"}"#), .accountNumberRequired)
+        XCTAssertEqual(classify(403, #"{"error":"account_number_invalid"}"#), .accountNumberInvalid)
+        XCTAssertEqual(classify(403, #"{"error":"email_code_required"}"#), .emailCodeRequired)
+        XCTAssertEqual(classify(403, #"{"error":"email_code_invalid"}"#), .emailCodeInvalid)
+        XCTAssertEqual(classify(403, #"{"error":"apple_reauth_required"}"#), .appleReauthRequired)
+        XCTAssertEqual(classify(403, #"{"error":"apple_reauth_invalid"}"#), .appleReauthInvalid)
+        // A 429 stays the generic rate limit; prose alone is never a refusal.
+        XCTAssertNil(classify(429, #"{"error":"too_many_attempts","message":"Too many attempts."}"#))
+        XCTAssertNil(classify(403, #"{"note":"account_number_required"}"#))
+    }
+
+    func testStepUpProofUsesTheContractKeysAndIsOmittedWhenAbsent() throws {
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, accountNumber: "1234 5678 9012 3456 7890 1234")),
+                       ["accountNumber": "123456789012345678901234"])
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, emailCode: " 654 321 ")),
+                       ["emailCode": "654321"])
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, appleIdentityToken: "id.tok", appleNonce: "n0nce")),
+                       ["appleIdentityToken": "id.tok", "appleNonce": "n0nce"])
+        // Nothing sent: still `{}`, as before.
+        XCTAssertEqual(try encoded(DeleteAccountBody(password: nil, accountNumber: " ", emailCode: "")), [:])
+    }
+
+    func testAccountNumberAndEmailCodeCompleteness() {
+        XCTAssertTrue(AccountDeletion.isCompleteAccountNumber("123456789012345678901234"))
+        XCTAssertTrue(AccountDeletion.isCompleteAccountNumber("1234 5678 9012 3456 7890 1234"))
+        XCTAssertFalse(AccountDeletion.isCompleteAccountNumber("12345678901234567890123"))
+        XCTAssertFalse(AccountDeletion.isCompleteAccountNumber(""))
+        XCTAssertTrue(AccountDeletion.isCompleteEmailCode("654321"))
+        XCTAssertFalse(AccountDeletion.isCompleteEmailCode("65432"))
+        XCTAssertFalse(AccountDeletion.isCompleteEmailCode("65432a"))
+    }
+
+    func testPreflightStepUpDecodesAndAnOlderBackendHasNone() throws {
+        let with = try JSONDecoder().decode(
+            DeletionStepUp.self,
+            from: Data(#"{"factors":["account_number","two_factor"],"enforced":true}"#.utf8))
+        XCTAssertTrue(with.needsAccountNumber)
+        XCTAssertFalse(with.needsEmailCode)
+        XCTAssertEqual(with.enforced, true)
+        let sent = try JSONDecoder().decode(DeletionCodeSent.self,
+                                            from: Data(#"{"success":true,"sentTo":"o***@example.com"}"#.utf8))
+        XCTAssertEqual(sent.sentTo, "o***@example.com")
+    }
+
     // MARK: - Item 97: Sign in with Apple
 
     func testAppleCodeUsesTheContractKeyAndIsOmittedWhenAbsent() throws {

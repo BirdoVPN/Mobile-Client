@@ -153,6 +153,29 @@ final class AuthViewModel: ObservableObject {
             if oldValue != deleteTwoFactorCode && deleteError != nil { deleteError = nil }
         }
     }
+    /// MR-179 (owner 2026-11-13): the server asks an anonymous account for its
+    /// 24-digit number (the preflight's `account_number`, or a refusal).
+    @Published private(set) var deleteRequiresAccountNumber = false
+    @Published var deleteAccountNumber = "" {
+        didSet {
+            if oldValue != deleteAccountNumber && deleteError != nil { deleteError = nil }
+        }
+    }
+    /// MR-179: the server asks an SSO account for the code it e-mails. The
+    /// user taps "Email me a code" (`sendDeletionCode`) and types it.
+    @Published private(set) var deleteRequiresEmailCode = false
+    /// MR-179: the server refuses a deletion without the step-up (preflight
+    /// `enforced`, or a `*_required` refusal). Until then the factor is OPTIONAL:
+    /// a user whose code e-mail fails can still delete, as before.
+    private var deleteStepUpEnforced = false
+    @Published var deleteEmailCode = "" {
+        didSet {
+            if oldValue != deleteEmailCode && deleteError != nil { deleteError = nil }
+        }
+    }
+    /// The masked address the code went to, once sent (empty string: sent, address unknown).
+    @Published private(set) var deleteEmailCodeSentTo: String?
+    @Published private(set) var isSendingDeleteCode = false
     /// Owner item 97: a non-error note for the deletion dialog — set when the
     /// Sign in with Apple re-authentication was cancelled or failed, and the
     /// next tap deletes without it.
@@ -160,6 +183,9 @@ final class AuthViewModel: ObservableObject {
     /// The fresh Apple `authorizationCode` for this deletion attempt, kept
     /// for a resend after a password or two-factor refusal.
     private var deletionAppleCode: String?
+    /// MR-179: the identity token and raw nonce of the same Apple re-sign-in.
+    private var deletionAppleIdentityToken: String?
+    private var deletionAppleNonce: String?
     /// The Apple step has run for this attempt (a code, a cancel or a
     /// failure) — it is offered once, never in a loop.
     private var deletionAppleStepDone = false
@@ -226,6 +252,29 @@ final class AuthViewModel: ObservableObject {
             let result = try? await self.api.deletionPreflight()
             guard !Task.isCancelled else { return }
             self.deletionPreflight = result
+            // MR-179: ask for what the account will be asked for BEFORE the
+            // first attempt. An older backend sends no `stepUp`: nothing new.
+            if result?.stepUp?.enforced == true { self.deleteStepUpEnforced = true }
+            if result?.stepUp?.needsAccountNumber == true { self.deleteRequiresAccountNumber = true }
+            if result?.stepUp?.needsEmailCode == true { self.deleteRequiresEmailCode = true }
+        }
+    }
+
+    /// MR-179: e-mail the deletion code to an SSO account. Shows where it
+    /// went; a 429 (3 an hour) or 503 shows the mapped copy.
+    func sendDeletionCode() {
+        guard !isSendingDeleteCode, !isDeleting else { return }
+        isSendingDeleteCode = true
+        deleteError = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let sent = try await api.sendDeletionCode()
+                deleteEmailCodeSentTo = sent.sentTo ?? ""
+            } catch {
+                deleteError = Self.mapDeleteError(error)
+            }
+            isSendingDeleteCode = false
         }
     }
 
@@ -1110,8 +1159,15 @@ final class AuthViewModel: ObservableObject {
         deleteError = nil
         deleteRequiresTwoFactor = false
         deleteTwoFactorCode = ""
+        deleteRequiresAccountNumber = false
+        deleteAccountNumber = ""
+        deleteRequiresEmailCode = false
+        deleteEmailCode = ""
+        deleteEmailCodeSentTo = nil
         deleteNotice = nil
         deletionAppleCode = nil
+        deletionAppleIdentityToken = nil
+        deletionAppleNonce = nil
         deletionAppleStepDone = false
         isLoading = false
         isDeleting = false
@@ -1159,9 +1215,33 @@ final class AuthViewModel: ObservableObject {
             }
             twoFactorCode = deleteTwoFactorCode.trimmingCharacters(in: .whitespaces)
         }
+        // MR-179: a whole number / code, or nothing is sent.
+        var accountNumber: String?
+        if deleteRequiresAccountNumber {
+            let typed = AccountDeletion.digitsOnly(deleteAccountNumber)
+            // Optional until the server enforces it, but never half a number.
+            if deleteStepUpEnforced || !typed.isEmpty {
+                guard AccountDeletion.isCompleteAccountNumber(deleteAccountNumber) else {
+                    deleteError = "The account number is 24 digits."
+                    return
+                }
+                accountNumber = typed
+            }
+        }
+        var emailCode: String?
+        if deleteRequiresEmailCode {
+            let typed = AccountDeletion.digitsOnly(deleteEmailCode)
+            if deleteStepUpEnforced || !typed.isEmpty {
+                guard AccountDeletion.isCompleteEmailCode(deleteEmailCode) else {
+                    deleteError = "The code is 6 digits."
+                    return
+                }
+                emailCode = typed
+            }
+        }
         isDeleting = true
         deleteError = nil
-        Task { [weak self, twoFactorCode] in
+        Task { [weak self, twoFactorCode, accountNumber, emailCode] in
             guard let self else { return }
             // Owner item 97: Apple first, so the code is fresh when it is sent.
             guard await runAppleReauthStepIfNeeded() else {
@@ -1171,20 +1251,52 @@ final class AuthViewModel: ObservableObject {
             do {
                 let stillBilling = try await api.deleteAccount(password: password,
                                                                twoFactorCode: twoFactorCode,
-                                                               appleAuthorizationCode: deletionAppleCode)
+                                                               appleAuthorizationCode: deletionAppleCode,
+                                                               accountNumber: accountNumber,
+                                                               emailCode: emailCode,
+                                                               appleIdentityToken: deletionAppleIdentityToken,
+                                                               appleNonce: deletionAppleNonce)
                 finishConfirmedDeletion(stillBilling: stillBilling, tearDownTunnel: tearDownTunnel)
             } catch let refusal as DeletionRefusal {
                 // Owner item 85. Nothing was deleted; the user stays as they were.
-                deleteRequiresTwoFactor = true
                 switch refusal {
                 case .twoFactorRequired:
+                    deleteRequiresTwoFactor = true
                     // The first ask is not an error — the dialog explains it
                     // beside the new field. Asked again WITH a code, say so.
                     deleteError = twoFactorCode == nil
                         ? nil
                         : "Enter the 6-digit code from your authenticator app, or a backup code."
                 case .twoFactorInvalid:
+                    deleteRequiresTwoFactor = true
                     deleteError = "That code is not valid. Check it and try again."
+                // MR-179: the step-up. The first ask for a factor is not an
+                // error (its field appears); a wrong one says so.
+                case .accountNumberRequired:
+                    deleteStepUpEnforced = true
+                    deleteRequiresAccountNumber = true
+                    deleteError = accountNumber == nil
+                        ? nil
+                        : "The account number is 24 digits."
+                case .accountNumberInvalid:
+                    deleteRequiresAccountNumber = true
+                    deleteError = "That account number is not the number of this account."
+                case .emailCodeRequired:
+                    deleteStepUpEnforced = true
+                    deleteRequiresEmailCode = true
+                    deleteError = emailCode == nil
+                        ? nil
+                        : "Enter the code we emailed you to delete your account."
+                case .emailCodeInvalid:
+                    deleteRequiresEmailCode = true
+                    deleteError = "That code is not valid or has expired. Request a new code."
+                case .appleReauthRequired, .appleReauthInvalid:
+                    // Run Sign in with Apple again on the next tap.
+                    deletionAppleStepDone = false
+                    deletionAppleCode = nil
+                    deletionAppleIdentityToken = nil
+                    deletionAppleNonce = nil
+                    deleteError = "Sign in with Apple again to delete your account. Tap Delete My Account to continue."
                 }
             } catch let error where AccountDeletion.outcomeIsUnknown(error) {
                 await resolveUnknownDeletionOutcome(tearDownTunnel: tearDownTunnel)
@@ -1201,9 +1313,17 @@ final class AuthViewModel: ObservableObject {
         guard !isDeleting else { return }
         deleteRequiresTwoFactor = false
         deleteTwoFactorCode = ""
+        deleteRequiresAccountNumber = false
+        deleteAccountNumber = ""
+        deleteRequiresEmailCode = false
+        deleteStepUpEnforced = false
+        deleteEmailCode = ""
+        deleteEmailCodeSentTo = nil
         deleteError = nil
         deleteNotice = nil
         deletionAppleCode = nil
+        deletionAppleIdentityToken = nil
+        deletionAppleNonce = nil
         deletionAppleStepDone = false
     }
 
@@ -1215,11 +1335,18 @@ final class AuthViewModel: ObservableObject {
     ///   note, and the NEXT tap deletes without the code. Proceeding straight
     ///   after a cancel would turn "cancel" into "delete".
     private func runAppleReauthStepIfNeeded() async -> Bool {
-        guard offersAppleReauthForDeletion, !deletionAppleStepDone else { return true }
+        // MR-179: also when the preflight says `apple_reauth`, so a refusal
+        // cannot loop on an account the device-side heuristic does not know.
+        let needsApple = offersAppleReauthForDeletion || deletionPreflight?.stepUp?.needsAppleReauth == true
+        guard needsApple, !deletionAppleStepDone else { return true }
         deletionAppleStepDone = true
         do {
-            if let code = try await AppleSignInService.shared.authorizationCodeForAccountDeletion() {
-                deletionAppleCode = code
+            if let proof = try await AppleSignInService.shared.proofForAccountDeletion() {
+                deletionAppleCode = proof.authorizationCode
+                // MR-179: the same sign-in also proves a fresh Apple identity
+                // for an account the backend asks `apple_reauth` of.
+                deletionAppleIdentityToken = proof.identityToken
+                deletionAppleNonce = proof.nonce
                 deleteNotice = nil
                 return true
             }
