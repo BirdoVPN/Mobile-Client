@@ -161,10 +161,14 @@ class MobileMiscRowsGuardTest {
         val onError = start.substringAfter("if let adapterError {").substringBefore("\n            }")
         assertTrue("completionHandler(TunnelError.adapterFailed(" in onError && "return" in onError)
         val adapter = source("iosApp/Vendor/wireguard-apple/Sources/WireGuardKit/WireGuardAdapter.swift")
-        assertTrue("throw WireGuardAdapterError.setNetworkSettings(systemError)" in adapter)
+        assertTrue("throw WireGuardAdapterError.setNetworkSettings(failure)" in adapter)
+        // MR-953 F4 (local patch 5): no answer at all fails too, after one re-ask.
+        assertTrue("TunnelSettingsApply.run(" in adapter)
+        assertFalse("the settings timeout proceeds again (MR-953 F4)", "proceeding anyway" in adapter)
 
         val review = source("docs/ROUTE-CONTRACT-REVIEW.md")
-        listOf("## Android", "## iOS and macOS", "### Residual risk").forEach { assertTrue("the review lost $it", it in review) }
+        listOf("## Android", "## iOS and macOS", "### The MR-953 follow-ups (F1-F4), fixed")
+            .forEach { assertTrue("the review lost $it", it in review) }
     }
 
     // ── MR-1517: both apps follow the server's plan-gating table ─────────────

@@ -42,28 +42,37 @@ reported. Nothing changed here.
 | Validate the server's list | `VPNConnectionConfig.validate` (`ConnectWire.swift:243-251`) | An unparseable CIDR or more than 32 entries refuses the connect before any profile is written. | `TunnelRoutesTests.testValidationRefusesAnInvalidAllowedIP` |
 | Build AllowedIPs | `TunnelRoutes.allowedIPs` (new in this PR), called from `VPNManager.buildRedactedWireGuardConfig` (`VPNManager.swift:1005`) | No entries become the full tunnel; `::/0` and `0.0.0.0/0` are always present, as on Android; every entry is written as its network address. | `TunnelRoutesTests` |
 | AllowedIPs to `includedRoutes` | WireGuardKit `PacketTunnelSettingsGenerator.includedRoutes` (`PacketTunnelSettingsGenerator.swift:148-170`, vendored) | The interface addresses are masked (`maskedAddress()`, `:154`, `:158`), but each peer AllowedIP becomes a route exactly as written (`:164-170`). Until this PR, `10.0.0.1/8` reached `NEIPv4Route` with its host bits. Now `TunnelRoutes` clears them first. WireGuard masks AllowedIPs itself, so the tunnel carries the same prefix. | `TunnelRoutesTests.testHostBitsAreCleared`, `testEveryRouteIsANetworkAddress` |
-| Apply the settings | `WireGuardAdapter.setNetworkSettings` (`WireGuardAdapter.swift:314-338`), on start (`:192`), update (`:258`) and resume (`:446`) | An error from `setTunnelNetworkSettings` throws `.setNetworkSettings`. `adapter.start` then completes with that error and `PacketTunnelProvider` fails `startTunnel` with `TunnelError.adapterFailed` (`PacketTunnelProvider.swift:257-274`), so the system reports the start failed, not Connected. | Guard: `MobileMiscRowsGuardTest` pins the provider's error completion |
+| Apply the settings | `WireGuardAdapter.setNetworkSettings` (vendored, local patch 5), on start, update and resume | An error from `setTunnelNetworkSettings` throws `.setNetworkSettings`. `adapter.start` then completes with that error and `PacketTunnelProvider` fails `startTunnel` with `TunnelError.adapterFailed`, so the system reports the start failed, not Connected. No answer at all is asked once more, then fails the same way (MR-953 F4, `TunnelSettingsApply`). | `TunnelSettingsApplyTests`; guard: `MobileMiscRowsGuardTest` pins the provider's error completion |
 | "Protected" | MR-974: only after a handshake is proven on the session (`TunnelProof`) | — | `TunnelProofTests` |
-| Kill switch | `includeAllNetworks` + `enforceRoutes` (`KillSwitchProfile.swift`) | With the kill switch on, the system routes everything into the tunnel whatever `includedRoutes` says, and drops what cannot go through it. | `KillSwitchProfileTests` |
+| Kill switch | `includeAllNetworks` (`KillSwitchProfile.swift`) | With the kill switch on, the system routes everything into the tunnel whatever `includedRoutes` says, and drops what cannot go through it. | `KillSwitchProfileTests` |
+| Route precedence | `enforceRoutes` always on, kill switch or not (`KillSwitchProfile.swift`, MR-953 F2) | The tunnel's routes beat a more specific local or DHCP option 121 route (TunnelVision, CVE-2024-3661). It routes, it does not block. | `KillSwitchProfileTests` (every kill switch x Local Network Sharing combination) |
+| IPv6 on a v4-only node | WireGuardKit `PacketTunnelSettingsGenerator.generateNetworkSettings` (vendored, local patch 6) | With no IPv6 address from the node, the tunnel gets a placeholder ULA (`TunnelIPv6Blackhole`) so `::/0` goes into an addressed interface and IPv6 dies inside the tunnel (MR-953 F3). | `TunnelIPv6BlackholeTests` |
+| Extension heartbeat | `TunnelHeartbeatTransport` (MR-953 F1) | Sent THROUGH the tunnel: Network.framework on `virtualInterface` (iOS 18 / macOS 15), `createTCPConnectionThroughTunnel` before that, TLS pinned. No route into the tunnel skips the beat; it is never sent around it. | `HeartbeatHTTPTests`, `TunnelRouteContractGuardTests` |
 
-### Residual risk (recorded, not changed here)
+### The MR-953 follow-ups (F1-F4), fixed
 
-`WireGuardAdapter.setNetworkSettings` waits 5 s for the system's callback. If
-none arrives, it logs "setTunnelNetworkSettings timed out after 5 seconds;
-proceeding anyway" (`WireGuardAdapter.swift:336`) and the start continues as if
-the settings had applied. Upstream WireGuardKit does this on purpose: on some
-networks the callback never fires, and failing there would break the connect.
+The 2026-10-23 audit of this contract found four iOS/macOS gaps; the owner
+made them required on 2026-11-13.
 
-The exposure is narrow but real. With the kill switch OFF, if the system has
-not applied the routes, traffic can leave outside the tunnel. The MR-974
-handshake proof does not catch it, because the handshake travels to the
-endpoint over the physical interface either way. With the kill switch ON,
-`includeAllNetworks` covers it.
-
-Changing this means patching vendored WireGuardKit. The options are to fail the
-start on a timeout, or to re-read the applied settings before reporting up.
-That is a behaviour decision, so it is left to the lead as a follow-up rather
-than made here.
+- **F1, extension heartbeat outside the tunnel.** NetworkExtension routes the
+  provider's own connections outside its own tunnel, so the URLSession
+  heartbeat sent the bearer token and key id from the real IP every 30 s. It
+  now uses `TunnelHeartbeatTransport` (see the table). Device check still
+  required: a capture on the physical interface shows no TLS to
+  api.birdo.app during a session, and the server's lastSeen keeps moving with
+  the app in the background.
+- **F2, routes not enforced with the kill switch off.** `enforceRoutes` was
+  tied to the kill switch, so a DHCP option 121 route won over the tunnel, and
+  Local Network Sharing OFF was never delivered (`excludeLocalNetworks` only
+  works next to `enforceRoutes` or `includeAllNetworks`). Now always on.
+- **F3, IPv6 on a v4-only node.** The tunnel had no IPv6 address while `::/0`
+  was routed into it, and nothing showed iOS installs that route. Now a
+  placeholder ULA makes the blackhole explicit. Device check still required.
+- **F4, "proceeding anyway".** The 5 s settings timeout used to carry on as if
+  the routes were applied. Now it asks once more and then fails the start (or
+  update; a resume after a path change stays paused until the next path change
+  retries). Upstream signalled its condition without the lock, which could
+  turn an early answer into a timeout; that is fixed with it.
 
 ### Excluded routes
 
@@ -73,7 +82,8 @@ setting, `VPNManager.connect`), and the kill-switch exemptions are decided in
 `KillSwitchProfile` (MR-1728).
 
 **Verdict:** one silent shape was found and fixed: a host-bits AllowedIP went
-into `includedRoutes` unmasked. One residual path is recorded above. The floors
+into `includedRoutes` unmasked. The residual path once recorded here (the
+settings timeout) is F4 above, fixed with F1-F3. The floors
 that already existed (full tunnel, IPv6 blackhole, no split tunnel) now have
 tests; before this PR they were inside `VPNManager`, which the unit-test bundle
 cannot compile.

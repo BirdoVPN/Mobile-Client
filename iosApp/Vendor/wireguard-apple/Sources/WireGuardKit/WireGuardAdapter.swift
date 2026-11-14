@@ -307,33 +307,26 @@ public class WireGuardAdapter {
     /// This method ensures that the call to `setTunnelNetworkSettings` does not time out, as in
     /// certain scenarios the completion handler given to it may not be invoked by the system.
     ///
+    /// BIRDO LOCAL PATCH 5 (MR-953 F4): FAILS CLOSED. Upstream logged the timeout and carried
+    /// on after 5 s, starting WireGuard on settings the system may never have
+    /// applied, so the tunnel reported itself up without its routes. Now an unanswered
+    /// request is asked again once, and a second silence throws
+    /// `.setNetworkSettings(TunnelSettingsApplyTimedOut)`: start fails, update fails (the
+    /// running config stays), and a resume after a path change stays paused (traffic held)
+    /// until the next path change retries. See TunnelSettingsApply.swift.
+    ///
     /// - Parameters:
     ///   - networkSettings: an instance of type `NEPacketTunnelNetworkSettings`.
     /// - Throws: an error of type `WireGuardAdapterError`.
     /// - Returns: `PacketTunnelSettingsGenerator`.
     private func setNetworkSettings(_ networkSettings: NEPacketTunnelNetworkSettings) throws {
-        var systemError: Error?
-        let condition = NSCondition()
-
-        // Activate the condition
-        condition.lock()
-        defer { condition.unlock() }
-
-        self.packetTunnelProvider?.setTunnelNetworkSettings(networkSettings) { error in
-            systemError = error
-            condition.signal()
-        }
-
-        // Packet tunnel's `setTunnelNetworkSettings` times out in certain
-        // scenarios & never calls the given callback.
-        let setTunnelNetworkSettingsTimeout: TimeInterval = 5 // seconds
-
-        if condition.wait(until: Date().addingTimeInterval(setTunnelNetworkSettingsTimeout)) {
-            if let systemError = systemError {
-                throw WireGuardAdapterError.setNetworkSettings(systemError)
+        let failure = TunnelSettingsApply.run(log: { self.logHandler(.error, $0) }) { completion in
+            self.packetTunnelProvider?.setTunnelNetworkSettings(networkSettings) { error in
+                completion(error)
             }
-        } else {
-            self.logHandler(.error, "setTunnelNetworkSettings timed out after 5 seconds; proceeding anyway")
+        }
+        if let failure = failure {
+            throw WireGuardAdapterError.setNetworkSettings(failure)
         }
     }
 

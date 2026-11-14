@@ -20,7 +20,7 @@ import os.log
 /// `Task`, whose closure is `@Sendable` and therefore requires a Sendable
 /// `self`. The cross-context mutable state is `heartbeatTask` and
 /// `tunnelStartedAt` (via its locked accessor), both guarded by
-/// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatSession` are set
+/// `heartbeatLock`; the lazily-initialised `adapter`/`heartbeatTransport` are set
 /// once and treated as effectively immutable thereafter (the existing stats /
 /// wake callbacks already read them off-thread). Mirrors the codebase's
 /// `VPNManager: @unchecked Sendable` posture on the host side.
@@ -43,9 +43,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     /// in the host app: iOS suspends the host seconds after the device locks,
     /// so a host-app timer stops and the backend reaps the peer after 5 min —
     /// with the kill switch ON (includeAllNetworks) that blackholes ALL device
-    /// traffic. The extension lives exactly as long as the tunnel and its
-    /// URLSession rides the live tunnel, so it can keep the peer alive as long
-    /// as the tunnel is up.
+    /// traffic. The extension lives exactly as long as the tunnel, so it can
+    /// keep the peer alive as long as the tunnel is up. Its request goes
+    /// THROUGH the tunnel (`heartbeatTransport`, MR-953 F1): a URLSession here
+    /// does not, because NetworkExtension routes the provider's own
+    /// connections outside its own tunnel.
     private static let heartbeatInterval: TimeInterval = 30
     /// Base URL of the API — same host the host app's APIClient targets.
     private static let apiBaseURL = URL(string: "https://api.birdo.app")!
@@ -78,23 +80,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         set { heartbeatLock.lock(); defer { heartbeatLock.unlock() }; _breakerNodeId = newValue }
     }
 
-    /// Dedicated URLSession for the heartbeat. Ephemeral + no cache so no auth
-    /// header or body is ever written to disk, matching the host APIClient —
-    /// and SPKI-PINNED like the host APIClient. This session carries the
-    /// account's bearer token every 30 s for the tunnel's whole life, a
-    /// strictly higher-volume exposure than the host app's occasional calls,
-    /// so an unpinned session here was a hole in the app's pinning guarantee.
-    private lazy var heartbeatSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 20
-        config.timeoutIntervalForResource = 30
-        config.httpCookieStorage = nil
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config,
-                          delegate: HeartbeatPinningDelegate(),
-                          delegateQueue: nil)
-    }()
+    /// The heartbeat's connection, THROUGH this tunnel or not at all (MR-953
+    /// F1, TunnelHeartbeatTransport). It was a URLSession, which
+    /// NetworkExtension routes outside the provider's own tunnel: the bearer
+    /// token, the key id and a lookup of api.birdo.app left from the user's
+    /// real IP every 30 s. Still no cookie, cache or disk (a raw TLS
+    /// connection keeps nothing), and still SPKI-PINNED like the host
+    /// APIClient (`HeartbeatPins`): this connection carries the account's
+    /// bearer token every 30 s for the tunnel's whole life.
+    private lazy var heartbeatTransport = TunnelHeartbeatTransport(provider: self)
 
     private lazy var adapter: WireGuardAdapter = {
         WireGuardAdapter(with: self) { [weak self] level, message in
@@ -534,7 +528,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await heartbeatSession.data(for: request)
+            (data, response) = try await heartbeatTransport.send(request)
+        } catch TunnelHeartbeatTransport.TransportError.tunnelUnavailable {
+            // MR-953 F1: no way into the tunnel, so the beat is skipped. It is
+            // never sent around the tunnel instead.
+            os_log("Heartbeat skipped: no route into the tunnel", log: log, type: .info)
+            return
         } catch {
             // Transient transport failure — NEVER tear down over a missed beat.
             os_log("Heartbeat transport failure (ignored)", log: log, type: .info)
@@ -903,7 +902,9 @@ enum TunnelError: Error, LocalizedError {
 
 // MARK: - Certificate Pinning (extension copy)
 
-/// SPKI-pinning URLSession delegate for the heartbeat session.
+/// SPKI pinning for the heartbeat's TLS connection (TunnelHeartbeatTransport).
+/// It was the heartbeat URLSession's delegate until the heartbeat moved into
+/// the tunnel (MR-953 F1); the pin set and the check are unchanged.
 ///
 /// The appex and the host app do not share source files, so — exactly like
 /// `sharedAccessGroup` above — this is a deliberate per-target copy of the
@@ -911,10 +912,10 @@ enum TunnelError: Error, LocalizedError {
 /// lockstep with it (and with Android's `NetworkModule.kt` /
 /// `network_security_config.xml`). Pin-set expiration: 2027-06-01.
 ///
-/// Fails CLOSED on every uncertain path: standard CA validation first, then at
-/// least one certificate in the chain must match a pinned SPKI hash; an
-/// unreadable chain or key cancels the challenge rather than falling through.
-private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
+/// Fails CLOSED on every uncertain path: standard CA validation for the host
+/// first, then at least one certificate in the chain must match a pinned SPKI
+/// hash; an unreadable chain or key refuses rather than falling through.
+enum HeartbeatPins {
     /// Base64-encoded SHA-256 hashes of the SubjectPublicKeyInfo (SPKI) of
     /// every certificate we accept, anywhere in the chain.
     ///
@@ -953,27 +954,20 @@ private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
         "0Bbh/jEZSKymTy3kTOhsmlHKBB32EDu1KojrP3YfV9c=",
     ]
 
-    func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.performDefaultHandling, nil)
-            return
+    /// True only when `trust` passes standard validation as `host` AND at least
+    /// one certificate in its chain matches a pinned SPKI.
+    ///
+    /// The SSL policy is set here, not assumed: a TLS verify block (or a trust
+    /// built from a raw chain) carries whatever policy its maker chose, and
+    /// the URLSession challenge this replaced always carried the hostname.
+    static func isTrusted(_ trust: SecTrust, host: String) -> Bool {
+        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString)) == errSecSuccess else {
+            return false
         }
-
         var trustError: CFError?
-        guard SecTrustEvaluateWithError(trust, &trustError) else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
+        guard SecTrustEvaluateWithError(trust, &trustError) else { return false }
 
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else { return false }
         for cert in chain {
             guard let pubKey = SecCertificateCopyKey(cert),
                   let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
@@ -984,11 +978,10 @@ private final class HeartbeatPinningDelegate: NSObject, URLSessionDelegate {
             hashable.append(pubKeyData)
             let hash = Self.sha256(hashable).base64EncodedString()
             if Self.pins.contains(hash) {
-                completionHandler(.useCredential, URLCredential(trust: trust))
-                return
+                return true
             }
         }
-        completionHandler(.cancelAuthenticationChallenge, nil)
+        return false
     }
 
     /// ASN.1 SubjectPublicKeyInfo header bytes that prefix the raw key data

@@ -11,9 +11,10 @@ import Foundation
 /// leave traffic outside the tunnel while the app says Protected:
 ///   * no entries at all -> the full tunnel, `0.0.0.0/0` and `::/0`
 ///     (a peer with no AllowedIPs routes nothing);
-///   * `::/0` always: on a node without IPv6 the tunnel has no IPv6 address,
-///     so IPv6 routed into it is dropped (leak-safe) instead of leaving on the
-///     physical interface;
+///   * `::/0` always: on a node without IPv6 the tunnel gets only a
+///     placeholder IPv6 address (WireGuardKit local patch 6,
+///     TunnelIPv6Blackhole, MR-953 F3), so IPv6 routed into it is dropped
+///     (leak-safe) instead of leaving on the physical interface;
 ///   * `0.0.0.0/0` always: iOS has no split tunnelling, so a list of specific
 ///     prefixes would only ever be a silent split tunnel;
 ///   * every entry as its NETWORK address: WireGuardKit hands a peer's
