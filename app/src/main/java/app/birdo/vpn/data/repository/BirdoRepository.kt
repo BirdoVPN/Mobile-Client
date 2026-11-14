@@ -3,8 +3,10 @@ package app.birdo.vpn.data.repository
 import androidx.annotation.StringRes
 import app.birdo.vpn.R
 import app.birdo.vpn.billing.GooglePlayLinkRequest
+import app.birdo.vpn.billing.GooglePlayLinkResponse
 import app.birdo.vpn.billing.GooglePurchaseIntentResponse
 import app.birdo.vpn.billing.StoreErrorEnvelope
+import app.birdo.vpn.billing.StoreLinkOrigin
 import app.birdo.vpn.billing.StoreLinkOutcome
 import app.birdo.vpn.billing.StoreLinkRefusal
 import app.birdo.vpn.data.api.AnonymousRegisterRequest
@@ -1327,28 +1329,29 @@ class BirdoRepository @Inject constructor(
      * replayed token as THEFT and revokes the family, so that mistake does not
      * end in a harmless extra request — it ends in the user being signed out.
      * The coded 401 is therefore never allowed to reach the refresh path.
+     *
+     * [origin] goes on the wire as `origin` (F-967-02); see [postGoogleLink]
+     * for a server that predates the field.
      */
-    suspend fun linkGooglePurchase(purchaseToken: String): StoreLinkOutcome {
-        val body = GooglePlayLinkRequest(purchaseToken = purchaseToken)
+    suspend fun linkGooglePurchase(purchaseToken: String, origin: StoreLinkOrigin): StoreLinkOutcome {
+        val body = GooglePlayLinkRequest(purchaseToken = purchaseToken, origin = origin.wire)
         return try {
             val presented = tokenManager.getAccessToken()
-            val first = api.linkGooglePurchase(body)
+            val (first, parsed) = postGoogleLink(body)
             if (first.isSuccessful) {
                 first.body()?.let { return StoreLinkOutcome.Accepted(it) }
                     ?: return refusal(StoreLinkRefusal.TRANSIENT, null)
             }
 
-            val parsed = parseStoreError(first)
             // ONLY an UNCODED 401 is a session problem. See the doc comment.
             if (first.code() == 401 && parsed.code == null) {
                 return when (refreshToken(presented)) {
                     RefreshOutcome.SUCCESS -> {
-                        val retry = api.linkGooglePurchase(body)
+                        val (retry, retryParsed) = postGoogleLink(body)
                         if (retry.isSuccessful) {
                             retry.body()?.let { StoreLinkOutcome.Accepted(it) }
                                 ?: refusal(StoreLinkRefusal.TRANSIENT, null)
                         } else {
-                            val retryParsed = parseStoreError(retry)
                             refusal(
                                 StoreLinkRefusal.classify(retry.code(), retryParsed.code),
                                 retryParsed.message,
@@ -1365,6 +1368,30 @@ class BirdoRepository @Inject constructor(
             // Transport failure: no status, no code. The purchase is still real.
             refusal(StoreLinkRefusal.TRANSIENT, null)
         }
+    }
+
+    /**
+     * One POST of [body], with its error envelope parsed here because
+     * `errorBody()` can be read only once.
+     *
+     * A server that predates `origin` refuses the field with an UNCODED 400:
+     * its ValidationPipe runs forbidNonWhitelisted. That answer is re-sent once
+     * without the field, which is byte for byte the old request, so this build
+     * does not depend on the web deploy landing first. Bounded: the re-sent
+     * body has no origin. A CODED 400 is the server's decision and is returned.
+     * Guards run before pipes there, so an expired session still shows up as
+     * the uncoded 401 first, and the refreshed retry comes back through here.
+     */
+    private suspend fun postGoogleLink(
+        body: GooglePlayLinkRequest,
+    ): Pair<Response<GooglePlayLinkResponse>, ParsedStoreError> {
+        val response = api.linkGooglePurchase(body)
+        if (response.isSuccessful) return response to ParsedStoreError(null, null)
+        val parsed = parseStoreError(response)
+        if (response.code() == 400 && parsed.code == null && body.origin != null) {
+            return postGoogleLink(body.copy(origin = null))
+        }
+        return response to parsed
     }
 
     /**
