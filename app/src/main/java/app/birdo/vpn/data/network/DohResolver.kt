@@ -216,20 +216,27 @@ object DohResolver {
         } catch (e: Exception) {
             e
         }
+        val stealth = stealthActive()
         // A PINNER failure means the pin set no longer matches the live chain:
         // leak protection is off for every user on this build and only a
-        // release can restore it. Reported loudly on both paths below.
+        // release can restore it. That is worth waking up for, in either mode
+        // (one call site: a fault code has one throttle bucket).
         val pinRejected = dohFailure is javax.net.ssl.SSLPeerUnverifiedException
-        if (stealthActive()) {
-            if (pinRejected) {
-                FaultReporter.report(
-                    FaultReporter.PATH_DNS,
-                    "doh_pin_rejected",
+        if (pinRejected) {
+            FaultReporter.report(
+                FaultReporter.PATH_DNS,
+                "doh_pin_rejected",
+                if (stealth) {
                     "DoH certificate pinning rejected cloudflare-dns.com — Stealth lookups " +
-                        "fail closed instead of using the system resolver",
-                    dohFailure,
-                )
-            }
+                        "fail closed instead of using the system resolver"
+                } else {
+                    "DoH certificate pinning rejected cloudflare-dns.com — DNS-leak " +
+                        "protection has fallen back to the system resolver for every lookup"
+                },
+                dohFailure,
+            )
+        }
+        if (stealth) {
             lastDohAnswers[key]?.let { earlier ->
                 FaultReporter.trail(
                     FaultReporter.PATH_DNS,
@@ -261,20 +268,12 @@ object DohResolver {
         // The two causes are NOT equally interesting and must not be reported
         // at the same weight:
         //
-        //  * A PINNER failure (above). That is worth waking up for.
+        //  * A PINNER failure (reported above). That is worth waking up for.
         //  * Anything else is usually DoH blocked or unreachable on this
         //    network — expected, exactly what the system fallback is for, and
         //    it would fire on every lookup behind a captive portal. Reporting
         //    that as loudly would train everyone to ignore the one that counts.
-        if (pinRejected) {
-            FaultReporter.report(
-                FaultReporter.PATH_DNS,
-                "doh_pin_rejected",
-                "DoH certificate pinning rejected cloudflare-dns.com — DNS-leak " +
-                    "protection has fallen back to the system resolver for every lookup",
-                dohFailure,
-            )
-        } else {
+        if (!pinRejected) {
             FaultReporter.trail(
                 FaultReporter.PATH_DNS,
                 "DoH lookup failed (${dohFailure.javaClass.simpleName}) — using the system resolver",
