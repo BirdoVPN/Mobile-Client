@@ -210,7 +210,7 @@ All workflows use pinned action SHAs, minimal permissions, and Sigstore cosign f
 | Encryption | ChaCha20-Poly1305 |
 | Key Exchange | Curve25519 + Post-Quantum (BirdoPQ v1, ML-KEM-1024) |
 | DI (Android) | Dagger Hilt 2.60.1 |
-| Build (Android) | Gradle 9.7.1 + AGP 9.4.0 |
+| Build (Android) | Gradle 9.8.2 + AGP 9.4.1 |
 | Build (iOS) | XcodeGen + Xcode 26+ |
 | Serialization | kotlinx.serialization |
 | Code Signing | Sigstore (keyless) + Android Keystore |
@@ -243,7 +243,7 @@ docs/
   VERIFICATION.md      How to verify downloads
 build.gradle.kts       Root Gradle config
 settings.gradle.kts    Module declarations
-version.properties     Centralized version (1.4.29)
+version.properties     Centralized version (single source of truth)
 ```
 
 ---
