@@ -582,19 +582,8 @@ jobs:
           python3 scripts/verify_android_release_apk.py --native-libs-only \
             app/build/outputs/apk/debug/app-debug.apk
 
-      # The native libraries in the debug APK are byte-identical to the ones the
-      # release build packages (native/build.sh builds the release profile, and
-      # the Xray engines come from the same provisioning step), so this is the
-      # same binary being checked, one merge earlier. The APK's lib/ is what AGP
-      # actually packaged (stripped, every ABI, every AAR-provided .so), which
-      # the jniLibs pass inside buildRustLibs cannot see. Same gate, same rule
-      # table, one library per invocation in parallel (.github/scripts/isa-gate.sh).
-      - name: Verify no ungated extended-ISA instructions in shipped libraries
-        run: |
-          rm -rf "$RUNNER_TEMP/debug-apk-libs"
-          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*' -d "$RUNNER_TEMP/debug-apk-libs"
-          bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/debug-apk-libs/lib"
-
+      # The ISA-baseline gate over this APK's lib/ is the `isa-gate` job below,
+      # which runs on the uploaded APK beside the emulator job.
       - name: Upload Debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -613,6 +602,48 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+  # The native libraries in the debug APK are byte-identical to the ones the
+  # release build packages (native/build.sh builds the release profile, and
+  # the Xray engines come from the same provisioning step), so this is the
+  # same binary being checked, one merge earlier. The APK's lib/ is what AGP
+  # actually packaged (stripped, every ABI, every AAR-provided .so), which
+  # the jniLibs pass inside buildRustLibs cannot see. Same gate, same rule
+  # table, one library per invocation in parallel (.github/scripts/isa-gate.sh).
+  #
+  # Its own job, on the APK "Build APK" uploaded, rather than that job's last
+  # step: the gate takes as long as its slowest library (~140 s, the x86
+  # libxray.so), and `instrumented` cannot start before `build` ENDS, so as a
+  # step it held the emulator job back by that much on every run. Here the
+  # two run side by side. The disassembler is the same one: isa-gate.sh takes
+  # llvm-objdump/llvm-readobj from the runner image's NDK (ANDROID_NDK_HOME,
+  # else ANDROID_NDK_LATEST_HOME), the NDK `build` compiled with on the same
+  # image. If the NDK is ever pinned by a setup step in android-native-libs
+  # (MR-1793), add that step here too, so both jobs keep one NDK.
+  isa-gate:
+    name: ISA gate (debug APK)
+    needs: [changes, build]
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the debug APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: debug-apk
+          path: ${{ runner.temp }}/apk
+
+      - name: Verify no ungated extended-ISA instructions in shipped libraries
+        run: |
+          rm -rf "$RUNNER_TEMP/debug-apk-libs"
+          unzip -q -o "$RUNNER_TEMP/apk/app-debug.apk" 'lib/*' -d "$RUNNER_TEMP/debug-apk-libs"
+          bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/debug-apk-libs/lib"
+
   # -- Instrumented tests (androidTest) on an emulator --------------------
   #
   # MR-1410: app/src/androidTest ran in NO workflow, so
@@ -620,8 +651,9 @@ jobs:
   # labels the globe's frames, which no JVM test can reach -- was an on-device
   # proof that no device ran. It runs here on every pull request that can
   # affect the app, on an x86_64 emulator, against the debug APK "Build APK"
-  # just built and verified (every ABI's native stack included, so the app
-  # process is the real one). Not a required check.
+  # just built and checked for every ABI's engine set (every ABI's native
+  # stack included, so the app process is the real one; `isa-gate` checks the
+  # same APK alongside). Not a required check.
   #
   # The image is the one baseline-profile.yml records on (API 34, google_apis,
   # x86_64; docs/BASELINE-PROFILE.md says why not aosp_atd). The tests assert
