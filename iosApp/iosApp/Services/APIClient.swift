@@ -513,10 +513,10 @@ final class APIClient: @unchecked Sendable {
                 authenticated: true,
                 refreshOn401: true,
                 refusal: { status, data -> Error? in
-                    // The proof refusals first (their `stepUp` is an array),
-                    // then the hold's own 409s (an object, or nothing on the wire).
+                    // The proof refusals first, then the hold's own 409 / 429
+                    // / 503 (#883 final), each told apart by status and code.
                     if let refusal = DeletionRefusal.classify(status: status, body: data) { return refusal }
-                    return DeletionHold.classifyConflict(status: status, body: data)
+                    return DeletionHold.classifyRefusal(status: status, body: data)
                 }
             )
         } catch DeletionHoldRefusal.alreadyPending(let pending?) {

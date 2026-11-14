@@ -789,7 +789,16 @@ class BirdoRepository @Inject constructor(
                 }
             if (held != null) return ApiResult.Success(DeletionHoldResult.Held(held, alreadyPending = true))
         }
-        return errorFromBody(response, raw, ErrorContext.DELETE_ACCOUNT, R.string.error_delete_failed)
+        val mapped = errorFromBody(response, raw, ErrorContext.DELETE_ACCOUNT, R.string.error_delete_failed)
+        // MR-179 (#883 final): a hold's 409 hold_unavailable, 429 (3 holds a
+        // day) and 503 step_up_unavailable say more than the deletion mapping;
+        // their `stepUp` is the factor ARRAY, never a hold.
+        if (request.stepUpMethod == DeletionHoldWire.METHOD_HOLD) {
+            errors.deletionHold(response.code(), raw)?.let {
+                return it.copy(retryAfterMs = mapped.retryAfterMs, serverCode = mapped.serverCode)
+            }
+        }
+        return mapped
     }
 
     /**

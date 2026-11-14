@@ -238,17 +238,25 @@ enum DeletionHoldRefusal: Error, Equatable, Sendable {
     /// the body does not name it (the API's exception filter passes only
     /// `details` through): the caller reads `GET /auth/pending-changes`.
     case alreadyPending(PendingDeletion?)
-    /// 409 `hold_unavailable` (#883's fix): the server's own sentence, if any.
+    /// 409 `hold_unavailable`: the hold is switched off, or the request could
+    /// not be tied to a signed-in session ("sign in to the app again"). The
+    /// server's own sentence says which, if it sent one.
     case unavailable(message: String?)
+    /// 429 `too_many_attempts`: past 3 holds a day ("try again tomorrow"), or
+    /// the step-up's own limiter. The server's sentence says how long.
+    case limited(message: String?)
+    /// 503 `step_up_unavailable`: the server could not check. Nothing was filed.
+    case notFiled
 }
 
 /// The wire rules of the hold, Foundation-only so AccountDeletionTests pins them.
 ///
-/// `stepUp` is polymorphic on `DELETE /api/v1/gdpr/delete`: an OBJECT
-/// `{ methods, pendingChangeId, applyAfter }` on 202 / 409, an ARRAY of factor
-/// names on the 401 / 403 / 429 refusals. Everything here reads with
-/// `JSONSerialization`, so no shape can throw, and nothing reads a hold out
-/// of a refusal.
+/// `stepUp` is polymorphic on `DELETE /api/v1/gdpr/delete` (#883 final): an
+/// OBJECT `{ methods, pendingChangeId, applyAfter }` on 202 and on 409
+/// `change_already_pending`, an ARRAY of factor names on 401 / 403 / 429 /
+/// 503 and on 409 `hold_unavailable`. It is read by status and `error`, never
+/// by its shape: only those two answers are ever read for a hold. Everything
+/// here reads with `JSONSerialization`, so no shape can throw.
 enum DeletionHold {
     static let method = "hold"
     static let accountDeleteAction = "account_delete"
@@ -272,23 +280,29 @@ enum DeletionHold {
         return pending(fromStepUp: json?["stepUp"]).map(SuccessKind.held) ?? .unreadableHold
     }
 
-    /// A 409 of the hold request, classified by its code; nil for anything else.
-    static func classifyConflict(status: Int, body: Data) -> DeletionHoldRefusal? {
-        guard status == 409,
-              let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else { return nil }
+    /// The hold request's own refusals, by status AND code; nil for anything
+    /// else (the proof refusals and the generic mapping keep those).
+    static func classifyRefusal(status: Int, body: Data) -> DeletionHoldRefusal? {
+        guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else { return nil }
         let details = json["details"] as? [String: Any]
         let codes = [json["error"], json["code"], details?["code"]]
             .compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        if codes.contains("change_already_pending") {
+        let message = (json["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sentence = (message?.isEmpty == false) ? message : nil
+        switch status {
+        case 409 where codes.contains("change_already_pending"):
             return .alreadyPending(pending(fromStepUp: json["stepUp"])
                 ?? pending(fromStepUp: details?["stepUp"])
                 ?? pending(fromStepUp: details))
+        case 409 where codes.contains("hold_unavailable"):
+            return .unavailable(message: sentence)
+        case 429 where codes.contains("too_many_attempts"):
+            return .limited(message: sentence)
+        case 503 where codes.contains("step_up_unavailable"):
+            return .notFiled
+        default:
+            return nil
         }
-        if codes.contains("hold_unavailable") {
-            let message = (json["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return .unavailable(message: (message?.isEmpty == false) ? message : nil)
-        }
-        return nil
     }
 
     /// The hold in a `stepUp` value: an object with a non-blank id and an

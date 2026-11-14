@@ -221,17 +221,90 @@ class DeletionHoldRepositoryTest {
         assertTrue(held.alreadyPending)
     }
 
+    // ── The hold's own refusals (#883 final): stepUp is the ARRAY ─
+
+    /** Both causes share the code: the switch is off, or no session row to tie the hold to. */
     @Test
-    fun `409 hold_unavailable shows the server's sentence and deletes nothing`() = runTest {
+    fun `409 hold_unavailable shows the server's sentence for either cause and deletes nothing`() = runTest {
+        for (message in listOf(
+            "A delayed deletion is not available. Nothing was deleted.",
+            "We could not tie this request to your signed-in session. Sign in to the app again, then try again. Nothing was deleted.",
+        )) {
+            coEvery { api.deleteAccount(any(), any()) } returns refused(
+                409,
+                """{"statusCode":409,"error":"hold_unavailable","message":"$message","stepUp":["account_number"],"timestamp":"t","path":"/api/v1/gdpr/delete"}""",
+            )
+
+            val result = repository.requestDeletionHold(null)
+
+            assertTrue("a hold_unavailable is never a hold", result is ApiResult.Error)
+            assertEquals(409, (result as ApiResult.Error).code)
+            assertEquals(FailureReason.REFUSED, result.reason)
+            assertEquals(message, result.message)
+        }
+        coVerify(exactly = 0) { api.pendingChanges() }
+        assertNothingCleared()
+    }
+
+    @Test
+    fun `409 hold_unavailable with no sentence says so in the app's words`() = runTest {
+        coEvery { api.deleteAccount(any(), any()) } returns
+            refused(409, """{"statusCode":409,"error":"hold_unavailable","message":"Conflict","stepUp":[]}""")
+
+        val result = repository.requestDeletionHold(null) as ApiResult.Error
+
+        assertEquals(StringsXml.text("delete_hold_unavailable"), result.message)
+    }
+
+    /** Past 3 holds an account a day: the server's "try again tomorrow", not "wait a moment". */
+    @Test
+    fun `429 too_many_attempts on a hold shows the server's sentence`() = runTest {
+        val tomorrow = "You have asked for a delayed deletion too many times today. Please try again tomorrow."
         coEvery { api.deleteAccount(any(), any()) } returns refused(
-            409,
-            """{"statusCode":409,"error":"hold_unavailable","message":"Deleting in 24 hours is not available right now."}""",
+            429,
+            """{"statusCode":429,"error":"too_many_attempts","message":"$tomorrow","stepUp":["account_number","password"]}""",
+        )
+
+        val result = repository.requestDeletionHold("pass123") as ApiResult.Error
+
+        assertEquals(429, result.code)
+        assertEquals(FailureReason.RATE_LIMITED, result.reason)
+        assertEquals(tomorrow, result.message)
+        assertNothingCleared()
+
+        // A plain deletion's 429 keeps its canonical copy (MR-179 #609).
+        val plain = repository.deleteAccount("pass123") as ApiResult.Error
+        assertEquals(StringsXml.text("error_rate_limited"), plain.message)
+    }
+
+    @Test
+    fun `503 step_up_unavailable on a hold says nothing was deleted, try again`() = runTest {
+        coEvery { api.deleteAccount(any(), any()) } returns refused(
+            503,
+            """{"statusCode":503,"error":"step_up_unavailable","message":"We could not check that just now.","stepUp":["account_number"]}""",
         )
 
         val result = repository.requestDeletionHold(null) as ApiResult.Error
 
-        assertEquals(409, result.code)
-        assertEquals("Deleting in 24 hours is not available right now.", result.message)
+        assertEquals(503, result.code)
+        assertEquals(FailureReason.SERVER_UNAVAILABLE, result.reason)
+        assertEquals(StringsXml.text("delete_hold_failed"), result.message)
+        assertNothingCleared()
+    }
+
+    /** Decoded by status and `error`: an object under a refusal's code, or an array under a hold's, is never a hold. */
+    @Test
+    fun `stepUp is read as a hold only under 202 or change_already_pending`() = runTest {
+        val objectStepUp = """{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"$applyAfter"}"""
+        for ((status, error) in listOf(409 to "hold_unavailable", 429 to "too_many_attempts", 503 to "step_up_unavailable", 403 to "two_factor_required")) {
+            coEvery { api.deleteAccount(any(), any()) } returns
+                refused(status, """{"statusCode":$status,"error":"$error","message":"x","stepUp":$objectStepUp}""")
+            assertTrue("$status $error", repository.requestDeletionHold(null) is ApiResult.Error)
+        }
+        coEvery { api.deleteAccount(any(), any()) } returns
+            refused(409, """{"statusCode":409,"error":"change_already_pending","message":"x","stepUp":["account_number"]}""")
+        coEvery { api.pendingChanges() } returns Response.success(PendingChangesResponse(emptyList()))
+        assertTrue("an array under change_already_pending is no hold", repository.requestDeletionHold(null) is ApiResult.Error)
         assertNothingCleared()
     }
 

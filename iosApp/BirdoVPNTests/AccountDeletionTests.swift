@@ -180,7 +180,7 @@ final class AccountDeletionTests: XCTestCase {
     }
 
     private func conflict(_ status: Int, _ json: String) -> DeletionHoldRefusal? {
-        DeletionHold.classifyConflict(status: status, body: Data(json.utf8))
+        DeletionHold.classifyRefusal(status: status, body: Data(json.utf8))
     }
 
     func testHoldRequestSendsTheMethodWithThePasswordAndCode() throws {
@@ -231,12 +231,50 @@ final class AccountDeletionTests: XCTestCase {
         // The exception filter passes only `details`: no stepUp on the wire.
         XCTAssertEqual(conflict(409, #"{"statusCode":409,"message":"A deletion is already on hold.","error":"change_already_pending","timestamp":"t","path":"/api/v1/gdpr/delete"}"#),
                        .alreadyPending(nil))
-        XCTAssertEqual(conflict(409, #"{"error":"hold_unavailable","message":"Deleting in 24 hours is not available right now."}"#),
-                       .unavailable(message: "Deleting in 24 hours is not available right now."))
         XCTAssertEqual(conflict(409, #"{"error":"hold_unavailable"}"#), .unavailable(message: nil))
         XCTAssertNil(conflict(409, #"{"error":"Conflict","message":"x"}"#))
         XCTAssertNil(conflict(403, #"{"error":"change_already_pending"}"#))
         XCTAssertNil(conflict(409, "not json"))
+    }
+
+    /// #883 final: both causes of 409 `hold_unavailable` (switch off, no
+    /// session row) carry the factor ARRAY; the server's sentence is shown.
+    func testHoldUnavailableShowsTheServersSentenceForEitherCause() {
+        XCTAssertEqual(conflict(409, #"{"statusCode":409,"error":"hold_unavailable","message":"A delayed deletion is not available. Nothing was deleted.","stepUp":["account_number"]}"#),
+                       .unavailable(message: "A delayed deletion is not available. Nothing was deleted."))
+        XCTAssertEqual(conflict(409, #"{"statusCode":409,"error":"hold_unavailable","message":"We could not tie this request to your signed-in session. Sign in to the app again, then try again. Nothing was deleted.","stepUp":["account_number"]}"#),
+                       .unavailable(message: "We could not tie this request to your signed-in session. Sign in to the app again, then try again. Nothing was deleted."))
+    }
+
+    /// #883 final: past 3 holds a day, 429 `too_many_attempts` with the factor array.
+    func testTooManyHoldsIsLimitedWithTheServersSentence() {
+        XCTAssertEqual(conflict(429, #"{"statusCode":429,"error":"too_many_attempts","message":"You have asked for a delayed deletion too many times today. Please try again tomorrow.","stepUp":["account_number"]}"#),
+                       .limited(message: "You have asked for a delayed deletion too many times today. Please try again tomorrow."))
+        XCTAssertEqual(conflict(429, #"{"error":"too_many_attempts","stepUp":[]}"#), .limited(message: nil))
+        // Another 429 is the generic rate limit, as before.
+        XCTAssertNil(conflict(429, #"{"error":"Too Many Requests"}"#))
+    }
+
+    /// #883 final: the server's Redis could not answer; nothing was filed.
+    func testStepUpUnavailableIsNotFiled() {
+        XCTAssertEqual(conflict(503, #"{"statusCode":503,"error":"step_up_unavailable","message":"x","stepUp":["account_number"]}"#),
+                       .notFiled)
+        XCTAssertNil(conflict(503, #"{"error":"Service Unavailable"}"#))
+        XCTAssertNil(conflict(500, #"{"error":"step_up_unavailable"}"#))
+    }
+
+    /// Read by status and `error`, never by shape: an object under a refusal's
+    /// code is no hold, and an array under `change_already_pending` names none.
+    func testStepUpIsDecodedByStatusAndCodeNeverByShape() {
+        XCTAssertEqual(conflict(409, #"{"error":"hold_unavailable","message":"m","stepUp":{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"2026-11-14T12:00:00Z"}}"#), .unavailable(message: "m"))
+        XCTAssertEqual(conflict(429, #"{"error":"too_many_attempts","message":"m","stepUp":{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"2026-11-14T12:00:00Z"}}"#), .limited(message: "m"))
+        XCTAssertEqual(conflict(503, #"{"error":"step_up_unavailable","stepUp":{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"2026-11-14T12:00:00Z"}}"#), .notFiled)
+        XCTAssertNil(conflict(403, #"{"error":"two_factor_required","stepUp":{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"2026-11-14T12:00:00Z"}}"#))
+        XCTAssertEqual(classify(403, #"{"error":"two_factor_required","stepUp":{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"2026-11-14T12:00:00Z"}}"#), .twoFactorRequired)
+        XCTAssertEqual(conflict(409, #"{"error":"change_already_pending","stepUp":["account_number"]}"#), .alreadyPending(nil))
+        // The 202 is the other answer read for a hold.
+        XCTAssertEqual(success(202, #"{"pending":true,"stepUp":{"methods":["hold"],"pendingChangeId":"p9","applyAfter":"2026-11-14T12:00:00Z"}}"#),
+                       .held(PendingDeletion(id: "p9", applyAfter: applyAfterDate)))
     }
 
     /// On 401 / 403 / 429 `stepUp` is an ARRAY of factors: the refusal is

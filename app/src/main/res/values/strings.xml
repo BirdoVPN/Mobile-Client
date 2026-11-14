@@ -761,6 +761,8 @@
     <string name="delete_dialog_hold_button_other">Delete in 24 hours instead</string>
     <string name="delete_dialog_hold_note">The deletion then waits 24 hours, and you can cancel it until then.</string>
     <string name="delete_hold_failed">Nothing was deleted. Please try again.</string>
+    <!-- 409 hold_unavailable when the server sends no sentence of its own. -->
+    <string name="delete_hold_unavailable">A delayed deletion is not available. Nothing was deleted.</string>
     <string name="profile_pending_deletion_body">Your account will be deleted on %1$s.</string>
     <string name="profile_pending_deletion_cancel">Cancel deletion</string>
     <string name="profile_pending_deletion_cancelling">Cancelling…</string>

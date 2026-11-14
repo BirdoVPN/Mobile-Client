@@ -87,6 +87,8 @@ class DeleteHoldViewModelTest {
     fun `the hold is offered only when the preflight says holdAvailable true`() {
         fun preflight(stepUp: DeletionStepUp?) = DeletionPreflightResponse(success = true, stepUp = stepUp)
         assertTrue(offersDeletionHold(preflight(DeletionStepUp(listOf("account_number"), enforced = true, holdAvailable = true))))
+        // #883 final: the hold has its own switch, independent of `enforced`.
+        assertTrue(offersDeletionHold(preflight(DeletionStepUp(listOf("account_number"), enforced = false, holdAvailable = true))))
         assertFalse(offersDeletionHold(preflight(DeletionStepUp(listOf("account_number"), enforced = true))))
         assertFalse(offersDeletionHold(preflight(null)))
         assertFalse(offersDeletionHold(null))
@@ -223,14 +225,58 @@ class DeleteHoldViewModelTest {
     @Test
     fun `409 hold_unavailable shows the server's own sentence`() = runTest {
         val vm = viewModelFor(anon)
-        coEvery { repository.requestDeletionHold(null, null) } returns
-            ApiResult.Error("Deleting in 24 hours is not available right now.", 409, FailureReason.REFUSED)
+        val sentence = "We could not tie this request to your signed-in session. Sign in to the app again, then try again. Nothing was deleted."
+        coEvery { repository.requestDeletionHold(null, null) } returns ApiResult.Error(sentence, 409, FailureReason.REFUSED)
 
         vm.requestDeletionHold("")
 
-        assertEquals("Deleting in 24 hours is not available right now.", vm.uiState.value.deleteAccountError)
+        assertEquals(sentence, vm.uiState.value.deleteAccountError)
         assertNull(vm.uiState.value.pendingDeletion)
         assertTrue(vm.uiState.value.isLoggedIn)
+        assertFalse(vm.uiState.value.accountDeleted)
+    }
+
+    @Test
+    fun `429 past three holds a day shows the server's try-again-tomorrow`() = runTest {
+        val vm = viewModelFor(anon)
+        val tomorrow = "You have asked for a delayed deletion too many times today. Please try again tomorrow."
+        coEvery { repository.requestDeletionHold(null, null) } returns ApiResult.Error(tomorrow, 429, FailureReason.RATE_LIMITED)
+
+        vm.requestDeletionHold("")
+
+        assertEquals(tomorrow, vm.uiState.value.deleteAccountError)
+        assertTrue(vm.uiState.value.isLoggedIn)
+        assertFalse(vm.uiState.value.accountDeleted)
+    }
+
+    @Test
+    fun `503 step_up_unavailable says nothing was deleted, try again`() = runTest {
+        val vm = viewModelFor(anon)
+        coEvery { repository.requestDeletionHold(null, null) } returns
+            ApiResult.Error(StringsXml.text("delete_hold_failed"), 503, FailureReason.SERVER_UNAVAILABLE)
+
+        vm.requestDeletionHold("")
+
+        assertEquals(StringsXml.text("delete_hold_failed"), vm.uiState.value.deleteAccountError)
+        assertTrue(vm.uiState.value.isLoggedIn)
+        assertNull(vm.uiState.value.pendingDeletion)
+    }
+
+    /** #883 final: the server auto-cancels a hold (sign-out, number rotation, password or 2FA change) or sweeps it. */
+    @Test
+    fun `a hold that left the list is simply gone, not an error`() = runTest {
+        val vm = viewModelFor(anon)
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        vm.refreshPendingDeletion()
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(null)
+
+        vm.refreshPendingDeletion()
+
+        assertNull(vm.uiState.value.pendingDeletion)
+        assertNull(vm.uiState.value.pendingDeletionError)
+        assertNull(vm.uiState.value.deleteAccountError)
+        assertTrue(vm.uiState.value.isLoggedIn)
+        assertFalse(vm.uiState.value.accountDeleted)
     }
 
     @Test

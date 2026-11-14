@@ -356,7 +356,13 @@ final class AuthViewModel: ObservableObject {
                     deleteHoldError = Self.holdFailedMessage
                 }
             } catch DeletionHoldRefusal.unavailable(let message) {
-                deleteHoldError = message ?? Self.holdFailedMessage
+                // Switched off, or no session to tie it to: the server says which.
+                deleteHoldError = message ?? "A delayed deletion is not available. Nothing was deleted."
+            } catch DeletionHoldRefusal.limited(let message) {
+                // Past 3 holds a day: "try again tomorrow", in the server's words.
+                deleteHoldError = message ?? "Too many attempts. Please try again later."
+            } catch DeletionHoldRefusal.notFiled {
+                deleteHoldError = Self.holdFailedMessage
             } catch {
                 // Not `logoutIfUnauthorized`: a 401 here is the password check
                 // answering (as for `deleteAccount`), not the session dying.
