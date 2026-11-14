@@ -349,6 +349,8 @@ fun ProfileScreen(
             isAnonymousAccount = isAnonymousAccount,
             onConfirm = onLogout,
             onDismiss = { showSignOutConfirm = false },
+            // MR-179: signing out of this app cancels the deletion on hold.
+            pendingDeletionAt = pendingDeletion?.let { pendingDeletionWhen(it.applyAfter) },
         )
     }
 }
@@ -943,6 +945,13 @@ private fun PendingDeletionBanner(
                         .semantics { liveRegion = LiveRegionMode.Assertive },
                 )
             }
+            // Review of #616: the server cancels the hold when this app signs
+            // out, so a user who signs out to "leave" would keep the account.
+            Text(
+                stringResource(R.string.delete_hold_signout_cancels),
+                style = MaterialTheme.typography.bodySmall,
+                color = palette.onSurfaceMuted,
+            )
             if (error != null) {
                 Text(
                     error,
@@ -1223,6 +1232,12 @@ private fun DeleteAccountDialog(
                         stringResource(R.string.delete_dialog_hold_note),
                         style = MaterialTheme.typography.bodySmall,
                         color = BirdoWhite60,
+                    )
+                    Text(
+                        stringResource(R.string.delete_hold_signout_cancels),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BirdoWhite80,
+                        fontWeight = FontWeight.SemiBold,
                     )
                     TextButton(
                         onClick = { onRequestHold(password, twoFactorCode.takeIf { requiresTwoFactor }) },

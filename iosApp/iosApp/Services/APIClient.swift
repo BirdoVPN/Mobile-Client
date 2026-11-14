@@ -491,16 +491,15 @@ final class APIClient: @unchecked Sendable {
     /// `stepUpMethod: "hold"`; the password and 2FA code still go where the
     /// account has them.
     ///
-    /// - Returns: `.held` for 202 `change_pending` and for 409
-    ///   `change_already_pending` (the hold that already waits): NOT a
-    ///   deletion, nothing local changes. `.deletedNow` only when the server
-    ///   deleted at once (the step-up off), after the same identity reset as
-    ///   `deleteAccount`.
+    /// - Returns: the hold, for 202 `change_pending` and for 409
+    ///   `change_already_pending`. NOT a deletion: nothing local changes.
+    ///   No answer to a hold request is ever taken as a deletion (review of
+    ///   #616): any other 2xx throws `DeletionHoldRefusal.unexpectedAnswer`.
     /// - Throws: `DeletionRefusal` (2FA), `DeletionHoldRefusal` (409
-    ///   `hold_unavailable`, or an already-pending hold the body does not
-    ///   name), or the generic errors. A 202 whose hold cannot be read throws
-    ///   `DeletionHoldRefusal.alreadyPending(nil)`: never a success.
-    func requestDeletionHold(password: String?, twoFactorCode: String?) async throws -> DeletionHoldOutcome {
+    ///   `hold_unavailable`, 429 `too_many_attempts`, 503
+    ///   `step_up_unavailable`, an already-pending hold the body does not
+    ///   name, an unexpected 2xx), or the generic errors.
+    func requestDeletionHold(password: String?, twoFactorCode: String?) async throws -> PendingDeletion {
         let body = try encoder.encode(
             DeleteAccountBody(password: password, twoFactorCode: twoFactorCode, stepUpMethod: DeletionHold.method)
         )
@@ -520,19 +519,12 @@ final class APIClient: @unchecked Sendable {
                 }
             )
         } catch DeletionHoldRefusal.alreadyPending(let pending?) {
-            return .held(pending, alreadyPending: true)
+            return pending
         }
-        switch DeletionHold.classifySuccess(status: answer.status, body: answer.data) {
-        case .held(let pending):
-            return .held(pending, alreadyPending: false)
-        case .unreadableHold:
-            throw DeletionHoldRefusal.alreadyPending(nil)
-        case .deletion:
-            resetDeviceIdentity()
-            let stillBilling = (try? decoder.decode(DeleteAccountResult.self, from: answer.data))?
-                .storeSubscriptionsStillBilling ?? []
-            return .deletedNow(stillBilling: stillBilling)
+        guard let pending = DeletionHold.holdAnswer(status: answer.status, body: answer.data) else {
+            throw DeletionHoldRefusal.unexpectedAnswer
         }
+        return pending
     }
 
     /// MR-179: the account's deletion on hold (`GET /auth/pending-changes`,
@@ -1805,16 +1797,6 @@ private struct DeviceIdentity: Sendable {
 /// The part of the `DELETE /api/v1/gdpr/delete` response the app acts on.
 private struct DeleteAccountResult: Decodable {
     let storeSubscriptionsStillBilling: [StoreSubscriptionStillBilling]?
-}
-
-/// MR-179: what `requestDeletionHold` answered, when it was not a refusal.
-enum DeletionHoldOutcome: Equatable, Sendable {
-    /// 202 `change_pending`, or 409 `change_already_pending` (`alreadyPending`).
-    /// NOT a deletion: no sign-out, no tunnel teardown, no keychain wipe.
-    case held(PendingDeletion, alreadyPending: Bool)
-    /// The server deleted the account at once (the step-up off): finish the
-    /// deletion as `deleteAccount` does.
-    case deletedNow(stillBilling: [StoreSubscriptionStillBilling])
 }
 
 /// 404 `pending_change_not_found` on a cancel: the hold is already gone.

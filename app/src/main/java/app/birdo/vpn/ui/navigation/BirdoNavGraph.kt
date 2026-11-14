@@ -570,6 +570,7 @@ fun BirdoNavGraph(
                         trafficStats = vpnViewModel.trafficStats.collectAsState().value,
                         accountLabel = accountLabel(authState.user),
                         isAnonymousAccount = isAnonymousUser(authState.user),
+                        pendingDeletion = authState.pendingDeletion,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,

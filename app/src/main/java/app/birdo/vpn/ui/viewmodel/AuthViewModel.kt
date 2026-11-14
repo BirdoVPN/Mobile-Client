@@ -20,7 +20,6 @@ import app.birdo.vpn.utils.PkceGenerator
 import app.birdo.vpn.utils.is2faCodeComplete
 import app.birdo.vpn.data.repository.ApiResult
 import app.birdo.vpn.data.repository.BirdoRepository
-import app.birdo.vpn.data.repository.DeletionHoldResult
 import app.birdo.vpn.data.repository.PendingDeletion
 import app.birdo.vpn.data.repository.StringLookup
 import app.birdo.vpn.utils.InputValidator
@@ -531,21 +530,22 @@ class AuthViewModel @Inject constructor(
      */
     fun onSessionExpired() {
         if (!_uiState.value.isLoggedIn) return
-        // MR-179: a deletion this app saw on hold has passed its time. The
-        // 24-hour sweep erased the account, which is why the session died:
-        // say so (the "account deleted" notice), not "session expired", and
-        // clear what a confirmed deletion clears.
+        // MR-179 (review of #616): a dead session after a hold's applyAfter
+        // is NOT proof of a deletion. The hold may have been cancelled where
+        // this app never hears of it (the e-mail link, the website, another
+        // sign-out, a password or 2FA change), and the server drops a hold
+        // whose session died. So this is always the plain expiry: the block
+        // stays, nothing is wiped, no identity is rotated. Only the wording
+        // admits the possibility.
         val held = _uiState.value.pendingDeletion
-        if (held != null && !Instant.now().isBefore(held.applyAfter)) {
-            repository.forgetErasedAccount()
-            _uiState.value = AuthUiState(isLoggedIn = false, accountDeleted = true)
-            return
-        }
+        val holdRanOut = held != null && !Instant.now().isBefore(held.applyAfter)
         _uiState.value = _uiState.value.copy(
             isLoggedIn = false,
             user = null,
             sessionExpired = true,
-            error = strings.get(R.string.error_session_expired),
+            error = strings.get(
+                if (holdRanOut) R.string.error_session_expired_after_hold else R.string.error_session_expired,
+            ),
         )
     }
 
@@ -831,17 +831,14 @@ class AuthViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isDeletingAccount = true, deleteAccountError = null, deleteErrorField = null)
             when (val result = repository.requestDeletionHold(submitted, code)) {
-                is ApiResult.Success -> when (val answer = result.data) {
-                    is DeletionHoldResult.Held -> _uiState.value = _uiState.value.copy(
+                is ApiResult.Success -> {
+                    // A newer list read must not put back an older state.
+                    pendingDeletionEpoch++
+                    _uiState.value = _uiState.value.copy(
                         isDeletingAccount = false,
-                        pendingDeletion = answer.pending,
+                        pendingDeletion = result.data.pending,
                         pendingDeletionError = null,
                         deletionHoldFiled = true,
-                    )
-                    is DeletionHoldResult.DeletedNow -> _uiState.value = AuthUiState(
-                        isLoggedIn = false,
-                        accountDeleted = true,
-                        storeSubscriptionsStillBilling = answer.response.storeSubscriptionsStillBilling,
                     )
                 }
                 is ApiResult.Error -> {
@@ -887,18 +884,33 @@ class AuthViewModel @Inject constructor(
     private var pendingDeletionJob: Job? = null
 
     /**
+     * Bumped whenever this app itself changes the hold (filed, cancelled):
+     * a list read that started before then is stale and must not put an old
+     * hold back on screen (review of #616).
+     */
+    private var pendingDeletionEpoch = 0
+
+    /**
      * MR-179: re-read the account's deletion on hold (`GET auth/pending-changes`).
-     * Called when Profile opens and when the app comes back to it. A failure
-     * keeps what is shown; a definitive 401 is the session dying, which
-     * [onSessionExpired] answers (after `applyAfter`, as the account deleted).
+     * Called when Profile opens and when the app comes back to it. A hold the
+     * server cancelled by itself (sign-out elsewhere, number rotation, a
+     * password or 2FA change) or swept simply leaves the list: no error. A
+     * failure keeps what is shown; a definitive 401 is the session dying, the
+     * plain expiry ([onSessionExpired]), never a deletion. Skipped while a
+     * cancel is in flight, whose own answer decides.
      */
     fun refreshPendingDeletion() {
-        if (!_uiState.value.isLoggedIn) return
+        if (!_uiState.value.isLoggedIn || _uiState.value.isCancellingPendingDeletion) return
         pendingDeletionJob?.cancel()
+        val epoch = pendingDeletionEpoch
         pendingDeletionJob = viewModelScope.launch {
             when (val result = repository.pendingDeletion()) {
                 is ApiResult.Success -> {
-                    if (_uiState.value.isLoggedIn) _uiState.value = _uiState.value.copy(pendingDeletion = result.data)
+                    if (_uiState.value.isLoggedIn && epoch == pendingDeletionEpoch &&
+                        !_uiState.value.isCancellingPendingDeletion
+                    ) {
+                        _uiState.value = _uiState.value.copy(pendingDeletion = result.data)
+                    }
                 }
                 is ApiResult.Error -> {
                     if (result.code == 401) onSessionExpired()
@@ -910,15 +922,19 @@ class AuthViewModel @Inject constructor(
     /**
      * MR-179: cancel the deletion on hold. A 404 means it is already gone
      * (cancelled elsewhere, or applied): the list is read again. A failure
-     * keeps the banner, with the reason.
+     * keeps the banner, with the reason. A list read already in flight is
+     * dropped first, so it cannot bring the cancelled hold back.
      */
     fun cancelPendingDeletion() {
         val held = _uiState.value.pendingDeletion ?: return
         if (_uiState.value.isCancellingPendingDeletion) return
+        pendingDeletionJob?.cancel()
+        pendingDeletionEpoch++
+        _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = true, pendingDeletionError = null)
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = true, pendingDeletionError = null)
             when (val result = repository.cancelPendingChange(held.id)) {
                 is ApiResult.Success -> {
+                    pendingDeletionEpoch++
                     _uiState.value = _uiState.value.copy(isCancellingPendingDeletion = false, pendingDeletion = null)
                     if (!result.data) refreshPendingDeletion()
                 }

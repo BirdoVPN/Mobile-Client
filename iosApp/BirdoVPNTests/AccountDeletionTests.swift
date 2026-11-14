@@ -310,6 +310,50 @@ final class AccountDeletionTests: XCTestCase {
         XCTAssertNil(DeletionHold.parseInstant(""))
     }
 
+    // MARK: - Review of #616
+
+    /// A hold request never confirms a deletion: only a readable hold is an
+    /// answer; `{}`, an empty, a non-JSON or an erasure-shaped 2xx is none.
+    func testAHoldRequestsOtherTwoXXIsNeverADeletion() {
+        func hold(_ status: Int, _ json: String) -> PendingDeletion? {
+            DeletionHold.holdAnswer(status: status, body: Data(json.utf8))
+        }
+        XCTAssertNil(hold(200, "{}"))
+        XCTAssertNil(hold(200, ""))
+        XCTAssertNil(hold(200, "<html>ok</html>"))
+        XCTAssertNil(hold(200, #"{"success":true,"deletedItems":3,"storeSubscriptionsStillBilling":[]}"#))
+        XCTAssertNil(hold(202, #"{"pending":true,"stepUp":["hold"]}"#))
+        XCTAssertEqual(hold(202, #"{"success":true,"pending":true,"code":"change_pending","stepUp":{"methods":["hold"],"pendingChangeId":"p1","applyAfter":"2026-11-14T12:00:00.000Z"}}"#),
+                       PendingDeletion(id: "p1", applyAfter: applyAfterDate))
+    }
+
+    /// The plain deletion's failure routing, in its pinned order: a hold is
+    /// matched before the lost-answer check, so it never tears the tunnel down.
+    func testFailedDeletionRoutesAHoldBeforeAnUnknownOutcome() {
+        let p1 = PendingDeletion(id: "p1", applyAfter: applyAfterDate)
+        XCTAssertEqual(AccountDeletion.route(DeletionRefusal.twoFactorRequired), .refusal(.twoFactorRequired))
+        XCTAssertEqual(AccountDeletion.route(DeletionRefusal.accountNumberInvalid), .refusal(.accountNumberInvalid))
+        XCTAssertEqual(AccountDeletion.route(DeletionHoldRefusal.alreadyPending(p1)), .held(p1))
+        XCTAssertEqual(AccountDeletion.route(DeletionHoldRefusal.alreadyPending(nil)), .held(nil))
+        XCTAssertEqual(AccountDeletion.route(DeletionHoldRefusal.unexpectedAnswer), .held(nil))
+        XCTAssertEqual(AccountDeletion.route(URLError(.timedOut)), .outcomeUnknown)
+        XCTAssertEqual(AccountDeletion.route(URLError(.networkConnectionLost)), .outcomeUnknown)
+        XCTAssertEqual(AccountDeletion.route(URLError(.notConnectedToInternet)), .failed)
+        struct Other: Error {}
+        XCTAssertEqual(AccountDeletion.route(Other()), .failed)
+    }
+
+    /// Signing out of the app that filed a hold cancels it: said before it happens.
+    func testSigningOutIsSaidToCancelTheHold() throws {
+        XCTAssertEqual(DeletionHold.signOutCancels,
+                       "Stay signed in on this device until then; signing out cancels the deletion.")
+        let warning = DeletionHold.signOutWarning(applyAfter: applyAfterDate,
+                                                  timeZone: try XCTUnwrap(TimeZone(identifier: "UTC")),
+                                                  locale: Locale(identifier: "en_GB"))
+        XCTAssertTrue(warning.hasPrefix("Signing out cancels the deletion of your account that is scheduled for "), warning)
+        XCTAssertTrue(warning.contains("12:00"), warning)
+    }
+
     /// The banner says when, in the device's zone.
     func testTheBannerShowsApplyAfterInTheDevicesZone() throws {
         let berlin = DeletionHold.bannerText(applyAfter: applyAfterDate,

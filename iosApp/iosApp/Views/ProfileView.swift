@@ -24,6 +24,9 @@ struct ProfileView: View {
 
     @State private var showSubscription = false
     @State private var showDeleteDialog = false
+    /// MR-179 (review of #616): sign-out is one tap, except while a deletion
+    /// is on hold, which signing out cancels: then it asks first.
+    @State private var showSignOutHoldConfirm = false
     @State private var deletePassword = ""
     /// Local empty-password guard message ("Please enter your password") —
     /// applied ONLY when the account has a password. Server-side results
@@ -165,6 +168,14 @@ struct ProfileView: View {
                 authVM.refreshPendingDeletion()
             }
         }
+        .birdoConfirmDialog(
+            isPresented: $showSignOutHoldConfirm,
+            title: "Sign out?",
+            message: authVM.pendingDeletion.map { DeletionHold.signOutWarning(applyAfter: $0.applyAfter) }
+                ?? "Are you sure you want to sign out?",
+            confirmLabel: "Sign out",
+            onConfirm: { performSignOut() }
+        )
         .onChange(of: authVM.deletionHoldFiled) { _, filed in
             // MR-179: a filed hold is not a deletion. The dialog closes, the
             // user stays signed in and connected, and the banner says when.
@@ -596,6 +607,10 @@ struct ProfileView: View {
                 .font(BirdoTheme.Fonts.bodySmall)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
                 .fixedSize(horizontal: false, vertical: true)
+            Text(DeletionHold.signOutCancels)
+                .font(BirdoTheme.Fonts.bodySmall)
+                .foregroundStyle(BirdoTheme.onSurface)
+                .fixedSize(horizontal: false, vertical: true)
             Button(authVM.deletionHoldIsForLostNumber
                    ? "Delete in 24 hours (I lost my account number)"
                    : "Delete in 24 hours instead") {
@@ -632,6 +647,11 @@ struct ProfileView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                // Review of #616: signing out of this app cancels the hold.
+                Text(DeletionHold.signOutCancels)
+                    .font(BirdoTheme.Fonts.bodySmall)
+                    .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let err = authVM.pendingDeletionError {
                     Text(err)
                         .font(BirdoTheme.Fonts.bodySmall)
@@ -797,17 +817,14 @@ struct ProfileView: View {
     }
 
     /// MR-179: "Delete in 24 hours". The same local password guard as
-    /// `confirmDelete`; the tunnel is torn down only if the server deleted
-    /// the account at once, never for a hold.
+    /// `confirmDelete`. Nothing is torn down: a hold is not a deletion.
     private func confirmHold() {
         if requiresPassword && deletePassword.isEmpty {
             localDeleteError = "Please enter your password"
             return
         }
         localDeleteError = nil
-        let vpn = vpnVM
-        authVM.requestDeletionHold(password: requiresPassword ? deletePassword : nil,
-                                   tearDownTunnel: { vpn.tearDownForAccountDeletion() })
+        authVM.requestDeletionHold(password: requiresPassword ? deletePassword : nil)
     }
 
     private func dismissDeleteDialog() {
@@ -821,6 +838,16 @@ struct ProfileView: View {
     // MARK: - Actions
 
     private func signOut() {
+        // MR-179 (review of #616): a deletion on hold is cancelled by signing
+        // out, so that one case asks first.
+        if authVM.pendingDeletion != nil {
+            showSignOutHoldConfirm = true
+            return
+        }
+        performSignOut()
+    }
+
+    private func performSignOut() {
         // No confirmation dialog (Android parity). Slot release is awaited so
         // the server frees this device's connection before the tokens die.
         Task {

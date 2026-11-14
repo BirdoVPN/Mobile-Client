@@ -9,6 +9,7 @@ import app.birdo.vpn.data.model.DeleteAccountRequest
 import app.birdo.vpn.data.model.DeleteAccountResponse
 import app.birdo.vpn.data.model.PendingChange
 import app.birdo.vpn.data.model.PendingChangesResponse
+import app.birdo.vpn.data.model.RefreshResponse
 import app.birdo.vpn.data.network.AroundTunnel
 import app.birdo.vpn.di.NetworkModule
 import app.birdo.vpn.testing.StringsXml
@@ -171,18 +172,48 @@ class DeletionHoldRepositoryTest {
         assertNothingCleared()
     }
 
-    // ── 200: a server with the step-up off deleted at once ──────
+    // ── Review of #616: a hold request never confirms a deletion ─
 
+    /** The server never deletes at once for a hold; `{}` or an erasure-shaped 2xx assumes nothing. */
     @Test
-    fun `a plain 200 deletion answering a hold request finishes the deletion`() = runTest {
-        coEvery { api.deleteAccount(any(), any()) } returns
-            answered(200, """{"success":true,"message":"deleted","deletedItems":3,"storeSubscriptionsStillBilling":[]}""")
+    fun `a 2xx that is not the hold, answering a hold request, wipes nothing`() = runTest {
+        for ((status, body) in listOf(
+            200 to "{}",
+            200 to """{"success":true,"message":"deleted","deletedItems":3,"storeSubscriptionsStillBilling":[]}""",
+            201 to """{"success":true}""",
+        )) {
+            coEvery { api.deleteAccount(any(), any()) } returns answered(status, body)
 
-        val result = repository.requestDeletionHold(null)
+            val result = repository.requestDeletionHold(null)
 
-        assertTrue((result as ApiResult.Success).data is DeletionHoldResult.DeletedNow)
-        verify(exactly = 1) { tokenManager.clearAll() }
+            assertTrue("$status $body", result is ApiResult.Error)
+            assertEquals(FailureReason.UNEXPECTED, (result as ApiResult.Error).reason)
+        }
+        assertNothingCleared()
+        // A PLAIN deletion's 200 still is the confirmed erasure.
+        coEvery { api.deleteAccount(any(), any()) } returns answered(200, """{"success":true}""")
+        assertTrue(repository.deleteAccount("pass123") is ApiResult.Success)
         verify(exactly = 1) { deviceInfoProvider.resetDeviceIdentity() }
+    }
+
+    /** An expired access token: the refresh runs, and the RETRY is still the hold, with its proof. */
+    @Test
+    fun `a 401 refreshes and the retry resends stepUpMethod hold with the password and code`() = runTest {
+        val sent = mutableListOf<DeleteAccountRequest>()
+        coEvery { api.deleteAccount(capture(sent), any()) } returnsMany listOf(
+            Response.error(401, "Unauthorized".toResponseBody("text/plain".toMediaType())),
+            answered(202, held202),
+        )
+        coEvery { tokenManager.getRefreshToken() } returns "refresh"
+        coEvery { api.refreshToken(any()) } returns Response.success(RefreshResponse(accessToken = "new_access", expiresIn = 3600))
+
+        val result = repository.requestDeletionHold("pass123", "123456")
+
+        assertEquals(PendingDeletion("p1", Instant.parse(applyAfter)), (result as ApiResult.Success).data.pending)
+        coVerify(exactly = 1) { api.refreshToken(any()) }
+        assertEquals(2, sent.size)
+        sent.forEach { assertEquals(DeleteAccountRequest("pass123", "123456", stepUpMethod = "hold"), it) }
+        assertNothingCleared()
     }
 
     // ── 409 ─────────────────────────────────────────────────────

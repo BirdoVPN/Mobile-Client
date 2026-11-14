@@ -247,6 +247,37 @@ enum DeletionHoldRefusal: Error, Equatable, Sendable {
     case limited(message: String?)
     /// 503 `step_up_unavailable`: the server could not check. Nothing was filed.
     case notFiled
+    /// A 2xx to a hold request that is not a readable hold (review of #616):
+    /// the server never deletes at once for a hold, so nothing is assumed,
+    /// least of all a deletion. The caller reads the list.
+    case unexpectedAnswer
+}
+
+/// Review of #616: how a failed `deleteAccount` is handled, decided in ONE
+/// place and in a pinned order, so AccountDeletionTests can check it. A hold
+/// is matched before the lost-answer check, so a held deletion can never be
+/// mistaken for an unknown outcome (which tears the tunnel down).
+enum DeletionFailureRoute: Equatable, Sendable {
+    /// The proof was asked for or wrong (2FA, the step-up): the dialog asks.
+    case refusal(DeletionRefusal)
+    /// The server held the deletion instead: show the hold (nil: read the list).
+    case held(PendingDeletion?)
+    /// The answer was lost: check whether the account still exists.
+    case outcomeUnknown
+    /// Anything else: the mapped message. Nothing was deleted.
+    case failed
+}
+
+extension AccountDeletion {
+    static func route(_ error: Error) -> DeletionFailureRoute {
+        if let refusal = error as? DeletionRefusal { return .refusal(refusal) }
+        if let hold = error as? DeletionHoldRefusal {
+            if case .alreadyPending(let pending) = hold { return .held(pending) }
+            return .held(nil)
+        }
+        if outcomeIsUnknown(error) { return .outcomeUnknown }
+        return .failed
+    }
 }
 
 /// The wire rules of the hold, Foundation-only so AccountDeletionTests pins them.
@@ -269,6 +300,14 @@ enum DeletionHold {
         case unreadableHold
         /// A completed deletion (any other 2xx, as before).
         case deletion
+    }
+
+    /// A 2xx answering a HOLD request: the hold, or nil for anything else.
+    /// Never a deletion (review of #616): `{}`, an empty or a non-JSON 200
+    /// assumes nothing.
+    static func holdAnswer(status: Int, body: Data) -> PendingDeletion? {
+        if case .held(let pending) = classifySuccess(status: status, body: body) { return pending }
+        return nil
     }
 
     static func classifySuccess(status: Int, body: Data) -> SuccessKind {
@@ -345,13 +384,27 @@ enum DeletionHold {
         return plain.date(from: text)
     }
 
-    /// The Profile banner's sentence: `applyAfter` in the device's zone and locale.
-    static func bannerText(applyAfter: Date, timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+    /// Review of #616: the server cancels a hold when the app that filed it
+    /// signs out, so the user is told before, wherever a sign-out is offered.
+    static let signOutCancels = "Stay signed in on this device until then; signing out cancels the deletion."
+
+    /// The sign-out confirmation's line while a deletion is on hold.
+    static func signOutWarning(applyAfter: Date, timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+        "Signing out cancels the deletion of your account that is scheduled for "
+            + formatted(applyAfter, timeZone: timeZone, locale: locale) + "."
+    }
+
+    private static func formatted(_ date: Date, timeZone: TimeZone, locale: Locale) -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         formatter.timeZone = timeZone
         formatter.locale = locale
-        return "Your account will be deleted on \(formatter.string(from: applyAfter))."
+        return formatter.string(from: date)
+    }
+
+    /// The Profile banner's sentence: `applyAfter` in the device's zone and locale.
+    static func bannerText(applyAfter: Date, timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+        "Your account will be deleted on " + formatted(applyAfter, timeZone: timeZone, locale: locale) + "."
     }
 }

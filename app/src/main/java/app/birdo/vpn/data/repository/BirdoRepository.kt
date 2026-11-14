@@ -201,6 +201,7 @@ class BirdoRepository @Inject constructor(
 
         /** The status [deleteAccount] reports when the server held the deletion instead (MR-179). */
         internal const val HTTP_ACCEPTED = 202
+        private const val HTTP_OK = 200
 
         /** `algorithm` of the only proof-of-work the server issues. */
         private const val POW_ALGORITHM = "sha256-leading-zero-bits"
@@ -727,14 +728,12 @@ class BirdoRepository @Inject constructor(
         accountNumber: String? = null,
         emailCode: String? = null,
     ): ApiResult<DeleteAccountResponse> =
-        when (val result = sendDeletion(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode))) {
-            is ApiResult.Error -> result
-            is ApiResult.Success -> when (val answer = result.data) {
-                is DeletionHoldResult.DeletedNow -> ApiResult.Success(answer.response)
-                // MR-179: a 202 hold is never a deletion, whatever asked for
-                // it. Nothing local was cleared; the caller re-reads the holds.
-                is DeletionHoldResult.Held -> errors.unexpected().copy(code = HTTP_ACCEPTED)
-            }
+        when (val answer = sendDeletion(DeleteAccountRequest(password, twoFactorCode, accountNumber, emailCode))) {
+            is DeletionAnswer.Refused -> answer.error
+            is DeletionAnswer.Deleted -> ApiResult.Success(answer.response)
+            // MR-179: a 202 hold is never a deletion, whatever asked for it.
+            // Nothing local was cleared; the caller re-reads the holds.
+            is DeletionAnswer.Held -> errors.unexpected().copy(code = HTTP_ACCEPTED)
         }
 
     /**
@@ -744,72 +743,91 @@ class BirdoRepository @Inject constructor(
      * with `stepUpMethod: "hold"`; the password and 2FA code still go where
      * the account has them.
      *
-     * A [DeletionHoldResult.Held] (202 `change_pending`, or 409
-     * `change_already_pending`) clears NOTHING: the account, the session, the
-     * tokens and the tunnel stay as they are. Only [DeletionHoldResult.DeletedNow]
-     * (a server with the step-up off deletes at once) clears what a deletion
-     * clears. Every refusal comes back as the mapped error, as for [deleteAccount].
+     * Nothing a hold request answers clears anything (review of #616): a
+     * [DeletionHoldResult.Held] (202 `change_pending`, or 409
+     * `change_already_pending`) leaves the account, the session, the tokens
+     * and the tunnel as they are, and so does every other answer. A 2xx that
+     * is not the hold (the server never deletes at once for a hold) is an
+     * unexpected answer, never a deletion. Every refusal comes back as the
+     * mapped error.
      */
-    suspend fun requestDeletionHold(password: String?, twoFactorCode: String? = null): ApiResult<DeletionHoldResult> =
-        sendDeletion(
-            DeleteAccountRequest(password = password, twoFactorCode = twoFactorCode, stepUpMethod = DeletionHoldWire.METHOD_HOLD),
-        )
+    suspend fun requestDeletionHold(password: String?, twoFactorCode: String? = null): ApiResult<DeletionHoldResult.Held> =
+        when (
+            val answer = sendDeletion(
+                DeleteAccountRequest(password = password, twoFactorCode = twoFactorCode, stepUpMethod = DeletionHoldWire.METHOD_HOLD),
+            )
+        ) {
+            is DeletionAnswer.Refused -> answer.error
+            is DeletionAnswer.Held -> ApiResult.Success(answer.held)
+            // Unreachable: sendDeletion never confirms a deletion for a hold.
+            is DeletionAnswer.Deleted -> errors.unexpected().copy(code = HTTP_OK)
+        }
+
+    /** What one deletion request answered, before the caller's mapping. */
+    private sealed interface DeletionAnswer {
+        data class Deleted(val response: DeleteAccountResponse) : DeletionAnswer
+        data class Held(val held: DeletionHoldResult.Held) : DeletionAnswer
+        data class Refused(val error: ApiResult.Error) : DeletionAnswer
+    }
 
     /**
      * One `DELETE api/v1/gdpr/delete`, classified by STATUS as well as body:
-     * a 2xx is a deletion only when it is not the hold's 202. A hold whose
-     * `stepUp` cannot be read is an error (never a success, never a deletion).
-     * The local clean-up of a confirmed deletion runs here, once.
+     * a 2xx is a deletion only for a PLAIN request and only when it is not
+     * the hold's 202. A hold whose `stepUp` cannot be read, and any other 2xx
+     * to a hold request, is an error: never a success, never a deletion. The
+     * local clean-up of a confirmed deletion runs here, once.
      */
-    private suspend fun sendDeletion(request: DeleteAccountRequest): ApiResult<DeletionHoldResult> {
+    private suspend fun sendDeletion(request: DeleteAccountRequest): DeletionAnswer {
+        val isHold = request.stepUpMethod == DeletionHoldWire.METHOD_HOLD
         val response = when (val sent = send { api.deleteAccount(request, AroundTunnel) }) {
-            is Sent.Failed -> return sent.error
+            is Sent.Failed -> return DeletionAnswer.Refused(sent.error)
             is Sent.Answered -> sent.response
         }
         if (response.isSuccessful) {
             val body = response.body()
             if (DeletionHoldWire.isHoldAnswer(response.code(), body)) {
                 val held = DeletionHoldWire.holdOf(body?.stepUp)
-                    ?: return errors.unexpected().copy(code = response.code())
-                return ApiResult.Success(DeletionHoldResult.Held(held, alreadyPending = false))
+                    ?: return DeletionAnswer.Refused(errors.unexpected().copy(code = response.code()))
+                return DeletionAnswer.Held(DeletionHoldResult.Held(held, alreadyPending = false))
             }
-            body ?: return errors.unexpected()
+            // Review of #616: a hold request is never answered with an
+            // erasure, so `{}`, an empty or an odd 2xx assumes nothing.
+            if (isHold) return DeletionAnswer.Refused(errors.unexpected().copy(code = response.code()))
+            body ?: return DeletionAnswer.Refused(errors.unexpected())
             clearAfterErasure()
-            return ApiResult.Success(DeletionHoldResult.DeletedNow(body))
+            return DeletionAnswer.Deleted(body)
         }
         val raw = runCatching { response.errorBody()?.string() }.getOrNull()
         if (response.code() == 409 &&
             DeletionHoldWire.errorCodeOf(raw) == DeletionHoldWire.ERROR_CHANGE_ALREADY_PENDING
         ) {
-            // The hold that already waits: from the body when it names it,
-            // else from the list (the API's exception filter passes only
-            // `details` through, so the contract's `stepUp` may not arrive).
+            // The hold that already waits: from `stepUp`, else `details`
+            // (the API's exception filter passes only `details` through),
+            // else from the list.
             val held = DeletionHoldWire.holdOfErrorBody(raw)
                 ?: when (val listed = pendingDeletion()) {
                     is ApiResult.Success -> listed.data
                     is ApiResult.Error -> null
                 }
-            if (held != null) return ApiResult.Success(DeletionHoldResult.Held(held, alreadyPending = true))
+            if (held != null) return DeletionAnswer.Held(DeletionHoldResult.Held(held, alreadyPending = true))
         }
         val mapped = errorFromBody(response, raw, ErrorContext.DELETE_ACCOUNT, R.string.error_delete_failed)
         // MR-179 (#883 final): a hold's 409 hold_unavailable, 429 (3 holds a
         // day) and 503 step_up_unavailable say more than the deletion mapping;
         // their `stepUp` is the factor ARRAY, never a hold.
-        if (request.stepUpMethod == DeletionHoldWire.METHOD_HOLD) {
+        if (isHold) {
             errors.deletionHold(response.code(), raw)?.let {
-                return it.copy(retryAfterMs = mapped.retryAfterMs, serverCode = mapped.serverCode)
+                return DeletionAnswer.Refused(it.copy(retryAfterMs = mapped.retryAfterMs, serverCode = mapped.serverCode))
             }
         }
-        return mapped
+        return DeletionAnswer.Refused(mapped)
     }
 
     /**
-     * MR-179: the account was erased by a deletion hold that ran out (the
-     * 24-hour sweep), found out from the session dying after `applyAfter`.
-     * Clears what a confirmed deletion clears.
+     * What a CONFIRMED deletion (a 2xx erasure answer) clears. Never run from
+     * an inference such as a session dying after a hold's applyAfter (review
+     * of #616): that hold may have been cancelled elsewhere.
      */
-    fun forgetErasedAccount() = clearAfterErasure()
-
     private fun clearAfterErasure() {
         // Clear local state — account no longer exists on the server.
         // Bump the generation to fence any in-flight refresh (finding #6),

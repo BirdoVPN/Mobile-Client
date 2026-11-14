@@ -18,7 +18,12 @@ import java.time.format.DateTimeParseException
  */
 data class PendingDeletion(val id: String, val applyAfter: Instant)
 
-/** What a hold request (`stepUpMethod: "hold"`) answered, when it was not an error. */
+/**
+ * What a hold request (`stepUpMethod: "hold"`) answered, when it was not an
+ * error. The server never deletes at once for a hold (#883 final: switch off
+ * is 409 `hold_unavailable`), so there is no "deleted" outcome here, and any
+ * other 2xx is an unexpected answer (review of #616).
+ */
 sealed interface DeletionHoldResult {
     /**
      * 202 `change_pending` (a new hold), or 409 `change_already_pending`
@@ -26,13 +31,6 @@ sealed interface DeletionHoldResult {
      * deleted: no sign-out, no tunnel teardown, no token wipe.
      */
     data class Held(val pending: PendingDeletion, val alreadyPending: Boolean) : DeletionHoldResult
-
-    /**
-     * A 2xx that is NOT a hold: a server with the step-up off takes the plain
-     * path and deletes the account at once (#883 as drafted). The account is
-     * gone, so the app finishes the deletion as for any other.
-     */
-    data class DeletedNow(val response: DeleteAccountResponse) : DeletionHoldResult
 }
 
 /**

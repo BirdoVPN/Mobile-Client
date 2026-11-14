@@ -763,6 +763,12 @@
     <string name="delete_hold_failed">Nothing was deleted. Please try again.</string>
     <!-- 409 hold_unavailable when the server sends no sentence of its own. -->
     <string name="delete_hold_unavailable">A delayed deletion is not available. Nothing was deleted.</string>
+    <!-- The session ended after a scheduled deletion's time. Never claims the
+         account was deleted: the hold may have been cancelled elsewhere. -->
+    <string name="error_session_expired_after_hold">Your session has expired. Sign in again. If the deletion you scheduled has taken effect, the account no longer exists.</string>
+    <!-- Server: signing out of the app that filed the hold cancels it. -->
+    <string name="delete_hold_signout_cancels">Stay signed in on this device until then; signing out cancels the deletion.</string>
+    <string name="sign_out_cancels_pending_deletion">Signing out cancels the deletion of your account that is scheduled for %1$s.</string>
     <string name="profile_pending_deletion_body">Your account will be deleted on %1$s.</string>
     <string name="profile_pending_deletion_cancel">Cancel deletion</string>
     <string name="profile_pending_deletion_cancelling">Cancelling…</string>

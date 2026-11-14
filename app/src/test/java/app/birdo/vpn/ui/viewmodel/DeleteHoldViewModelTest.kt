@@ -1,10 +1,8 @@
 package app.birdo.vpn.ui.viewmodel
 
 import app.birdo.vpn.data.auth.TokenManager
-import app.birdo.vpn.data.model.DeleteAccountResponse
 import app.birdo.vpn.data.model.DeletionPreflightResponse
 import app.birdo.vpn.data.model.DeletionStepUp
-import app.birdo.vpn.data.model.StoreSubscriptionStillBilling
 import app.birdo.vpn.data.model.UserProfile
 import app.birdo.vpn.data.preferences.AppPreferences
 import app.birdo.vpn.data.repository.ApiResult
@@ -19,7 +17,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -111,7 +109,6 @@ class DeleteHoldViewModelTest {
         assertTrue(state.deletionHoldFiled)
         assertFalse(state.isDeletingAccount)
         assertNull(state.deleteAccountError)
-        verify(exactly = 0) { repository.forgetErasedAccount() }
         coVerify(exactly = 0) { repository.logout() }
         coVerify(exactly = 0) { repository.deleteAccount(any(), any(), any(), any()) }
 
@@ -131,21 +128,6 @@ class DeleteHoldViewModelTest {
         assertEquals(held, vm.uiState.value.pendingDeletion)
         assertTrue(vm.uiState.value.isLoggedIn)
         assertFalse(vm.uiState.value.accountDeleted)
-    }
-
-    @Test
-    fun `a server that deleted at once ends in the account-deleted path`() = runTest {
-        val vm = viewModelFor(anon)
-        val billing = listOf(StoreSubscriptionStillBilling(store = "GOOGLE_PLAY"))
-        coEvery { repository.requestDeletionHold(null, null) } returns ApiResult.Success(
-            DeletionHoldResult.DeletedNow(DeleteAccountResponse(success = true, storeSubscriptionsStillBilling = billing)),
-        )
-
-        vm.requestDeletionHold("")
-
-        assertFalse(vm.uiState.value.isLoggedIn)
-        assertTrue(vm.uiState.value.accountDeleted)
-        assertEquals(billing, vm.uiState.value.storeSubscriptionsStillBilling)
     }
 
     // ── Password and 2FA still required ─────────────────────────
@@ -362,18 +344,28 @@ class DeleteHoldViewModelTest {
 
     // ── After applyAfter ────────────────────────────────────────
 
+    /**
+     * Review of #616 (the false positive): the user cancelled the hold from
+     * the e-mail, and a day later the session died for another reason. That
+     * is a plain expiry: no "account deleted", so the graph never runs the
+     * deletion teardown (the kill-switch block stays, the device id and the
+     * PQ key are kept). Only the wording admits a deletion may have happened.
+     */
     @Test
-    fun `the session dying after the hold ran out is the account deleted, not an expiry`() = runTest {
+    fun `the session dying after a remembered hold ran out is a plain expiry, never a deletion`() = runTest {
         val vm = viewModelFor(anon)
         coEvery { repository.pendingDeletion() } returns ApiResult.Success(PendingDeletion("p1", Instant.now().minusSeconds(60)))
         vm.refreshPendingDeletion()
 
         vm.onSessionExpired()
 
-        assertTrue(vm.uiState.value.accountDeleted)
-        assertFalse(vm.uiState.value.sessionExpired)
-        assertFalse(vm.uiState.value.isLoggedIn)
-        verify(exactly = 1) { repository.forgetErasedAccount() }
+        val state = vm.uiState.value
+        assertTrue(state.sessionExpired)
+        assertFalse("a dead session is no proof of a deletion", state.accountDeleted)
+        assertFalse(state.isLoggedIn)
+        assertEquals(StringsXml.text("error_session_expired_after_hold"), state.error)
+        coVerify(exactly = 0) { repository.logout() }
+        coVerify(exactly = 0) { repository.deleteAccount(any(), any(), any(), any()) }
     }
 
     @Test
@@ -386,11 +378,11 @@ class DeleteHoldViewModelTest {
 
         assertTrue(vm.uiState.value.sessionExpired)
         assertFalse(vm.uiState.value.accountDeleted)
-        verify(exactly = 0) { repository.forgetErasedAccount() }
+        assertEquals(StringsXml.text("error_session_expired"), vm.uiState.value.error)
     }
 
     @Test
-    fun `a 401 on the list after the hold ran out routes to the account-deleted path`() = runTest {
+    fun `a 401 on the list after the hold ran out is the plain expiry too`() = runTest {
         val vm = viewModelFor(anon)
         coEvery { repository.pendingDeletion() } returns ApiResult.Success(PendingDeletion("p1", Instant.now().minusSeconds(60)))
         vm.refreshPendingDeletion()
@@ -399,7 +391,45 @@ class DeleteHoldViewModelTest {
 
         vm.refreshPendingDeletion()
 
-        assertTrue(vm.uiState.value.accountDeleted)
+        assertTrue(vm.uiState.value.sessionExpired)
+        assertFalse(vm.uiState.value.accountDeleted)
+    }
+
+    /** Review of #616: a list read already in flight when the user cancels must not bring the hold back. */
+    @Test
+    fun `a list read in flight during a cancel cannot put the cancelled hold back`() = runTest {
+        val vm = viewModelFor(anon)
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        vm.refreshPendingDeletion()
+        val gate = CompletableDeferred<Unit>()
+        coEvery { repository.pendingDeletion() } coAnswers {
+            gate.await()
+            ApiResult.Success(held)
+        }
+        vm.refreshPendingDeletion() // suspended on the gate, still holding the old answer
+        coEvery { repository.cancelPendingChange("p1") } returns ApiResult.Success(true)
+
+        vm.cancelPendingDeletion()
+        gate.complete(Unit)
+
+        assertNull(vm.uiState.value.pendingDeletion)
+        assertFalse(vm.uiState.value.isCancellingPendingDeletion)
+    }
+
+    @Test
+    fun `no list read starts while a cancel is in flight`() = runTest {
+        val vm = viewModelFor(anon)
+        coEvery { repository.pendingDeletion() } returns ApiResult.Success(held)
+        vm.refreshPendingDeletion()
+        val gate = CompletableDeferred<ApiResult<Boolean>>()
+        coEvery { repository.cancelPendingChange("p1") } coAnswers { gate.await() }
+
+        vm.cancelPendingDeletion()
+        vm.refreshPendingDeletion() // e.g. ON_RESUME while the cancel is out
+        gate.complete(ApiResult.Success(true))
+
+        coVerify(exactly = 1) { repository.pendingDeletion() }
+        assertNull(vm.uiState.value.pendingDeletion)
     }
 
     @Test
