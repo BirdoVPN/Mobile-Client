@@ -37,7 +37,11 @@ internal object TunnelAppRules {
      * carved one would otherwise loop into the tunnel it is carrying. KNOWN
      * DEGRADATION, documented in README.md: during a Stealth session the app's
      * own API traffic still leaves outside the tunnel (it uses the bypass path,
-     * with DoH, as before the overhaul).
+     * with DoH, as before the overhaul). MR-953 F5 bounds it: that DoH never
+     * falls back to the network's resolver while Stealth runs
+     * (DohResolver.resolveWith), and opted-in crash reports are held on the
+     * device until Stealth ends (CrashReporting.StealthHoldTransportGate).
+     * Running Xray in-process with a protect callback remains the full fix.
      *
      * A persisted split-tunnel list can still name this app (the picker hides
      * it now, an older build did not); it is dropped here, so that list can

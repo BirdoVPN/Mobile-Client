@@ -105,7 +105,10 @@ Compiled to:
   whose answer would otherwise be lost with the tunnel the server ends.
   Exception: during a Stealth Mode session the app's own traffic stays outside
   the tunnel, as it did before, because Xray runs as a child process of the
-  app and cannot be routed into the tunnel it carries.
+  app and cannot be routed into the tunnel it carries. During Stealth the app
+  never falls back to the network's own DNS resolver: if DNS-over-HTTPS fails,
+  the lookup fails (an earlier DNS-over-HTTPS answer is reused if there is
+  one). Opted-in crash reports wait on the device until Stealth ends.
 - **Biometric Lock** -- Fingerprint / Face ID app lock
 - **Quick Settings Tile** -- Toggle VPN from the notification shade (Android)
 - **Home Screen Widget** -- Glanceable status with one-tap connect (Android,

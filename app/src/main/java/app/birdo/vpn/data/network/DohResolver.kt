@@ -8,7 +8,10 @@ import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
 import java.net.UnknownHostException
+import app.birdo.vpn.service.BirdoVpnService
 import app.birdo.vpn.utils.FaultReporter
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -149,7 +152,17 @@ object DohResolver {
         .build()
 
     /**
-     * Resolves using Cloudflare DoH, then system DNS as a fail-open fallback.
+     * The last answer DoH gave for each hostname, in this process. Read only
+     * while Stealth is active and DoH has just failed ([resolveWith]): it came
+     * over DoH, so using it discloses nothing, where the network's resolver
+     * would. A stale address fails the API's own certificate pinning; it
+     * cannot reach anything else.
+     */
+    private val lastDohAnswers = ConcurrentHashMap<String, List<InetAddress>>()
+
+    /**
+     * Resolves using Cloudflare DoH, then system DNS as a fail-open fallback —
+     * except while Stealth is active (MR-953 F5, see [resolveWith]).
      *
      * Catches ALL exceptions (not just UnknownHostException) so transient DoH
      * failures — TLS handshake errors, timeouts, ISP-level blocking of DoH
@@ -161,50 +174,113 @@ object DohResolver {
      * rather than show an unhelpful "Login failed: api.birdo.app" message.
      * Blank hostnames are caller bugs and must not fall through to system DNS.
      */
-    fun resolve(hostname: String): List<InetAddress> {
+    fun resolve(hostname: String): List<InetAddress> = resolveWith(
+        hostname = hostname,
+        doh = cloudflare::lookup,
+        system = okhttp3.Dns.SYSTEM::lookup,
+        stealthActive = { BirdoVpnService.stealthActive },
+        lastDohAnswers = lastDohAnswers,
+    )
+
+    /**
+     * [resolve] with its four collaborators passed in, so the rules are unit
+     * tests rather than a device session (DohResolverStealthTest).
+     *
+     * MR-953 F5 — STEALTH NEVER FALLS BACK TO THE NETWORK'S RESOLVER. While a
+     * Stealth session runs, the app's own UID is outside its tunnel (Xray is a
+     * child process whose socket cannot be protect()ed, TunnelAppRules), so a
+     * system-resolver lookup goes to the network operator in cleartext — on
+     * exactly the networks Stealth exists to hide from, and it names
+     * api.birdo.app, i.e. "this device runs Birdo". With Stealth active and
+     * DoH failing, the lookup FAILS instead, unless DoH answered for this host
+     * earlier in the process (that answer came over DoH). The caller sees an
+     * [UnknownHostException], as for any unresolvable name: an API call fails
+     * as a transport error, and a heartbeat transport error never tears a
+     * tunnel down.
+     *
+     * [stealthActive] is read only after DoH has failed.
+     */
+    internal fun resolveWith(
+        hostname: String,
+        doh: (String) -> List<InetAddress>,
+        system: (String) -> List<InetAddress>,
+        stealthActive: () -> Boolean,
+        lastDohAnswers: MutableMap<String, List<InetAddress>>,
+    ): List<InetAddress> {
         if (hostname.isBlank()) {
             throw UnknownHostException("hostname is blank")
         }
-        return try {
-            cloudflare.lookup(hostname)
+        val key = hostname.lowercase(Locale.ROOT)
+        val dohFailure = try {
+            return doh(hostname).also { if (it.isNotEmpty()) lastDohAnswers[key] = it }
         } catch (e: Exception) {
-            // Fail open: system resolver. Cert pinning on the actual API
-            // connection still protects against DNS-spoofing MITM.
-            //
-            // But failing open SILENTLY is the defect. When this path is taken the
-            // lookup leaves the device in cleartext to whatever resolver the
-            // network hands us — precisely the leak this class exists to prevent —
-            // and nothing visible changes, so nobody notices. That shape has
-            // already bitten once: a dead pin set meant every release-build
-            // handshake failed the pinner, resolve() caught it, and DNS fell
-            // through for everyone, quietly.
-            //
-            // The two causes are NOT equally interesting and must not be reported
-            // at the same weight:
-            //
-            //  * A PINNER failure means the pin set no longer matches the live
-            //    chain. Leak protection is off for every user on this build and
-            //    only a release can restore it. That is worth waking up for.
-            //  * Anything else is usually DoH blocked or unreachable on this
-            //    network — expected, exactly what the system fallback is for, and
-            //    it would fire on every lookup behind a captive portal. Reporting
-            //    that as loudly would train everyone to ignore the one that counts.
-            if (e is javax.net.ssl.SSLPeerUnverifiedException) {
+            e
+        }
+        // A PINNER failure means the pin set no longer matches the live chain:
+        // leak protection is off for every user on this build and only a
+        // release can restore it. Reported loudly on both paths below.
+        val pinRejected = dohFailure is javax.net.ssl.SSLPeerUnverifiedException
+        if (stealthActive()) {
+            if (pinRejected) {
                 FaultReporter.report(
                     FaultReporter.PATH_DNS,
                     "doh_pin_rejected",
-                    "DoH certificate pinning rejected cloudflare-dns.com — DNS-leak " +
-                        "protection has fallen back to the system resolver for every lookup",
-                    e,
-                )
-            } else {
-                FaultReporter.trail(
-                    FaultReporter.PATH_DNS,
-                    "DoH lookup failed (${e.javaClass.simpleName}) — using the system resolver",
+                    "DoH certificate pinning rejected cloudflare-dns.com — Stealth lookups " +
+                        "fail closed instead of using the system resolver",
+                    dohFailure,
                 )
             }
-            okhttp3.Dns.SYSTEM.lookup(hostname)
+            lastDohAnswers[key]?.let { earlier ->
+                FaultReporter.trail(
+                    FaultReporter.PATH_DNS,
+                    "DoH lookup failed during Stealth (${dohFailure.javaClass.simpleName}) — " +
+                        "using the last DoH answer, never the system resolver",
+                )
+                return earlier
+            }
+            FaultReporter.trail(
+                FaultReporter.PATH_DNS,
+                "DoH lookup failed during Stealth (${dohFailure.javaClass.simpleName}) — " +
+                    "lookup refused rather than sent to the network's resolver",
+            )
+            throw UnknownHostException(
+                "DoH lookup failed while Stealth is active; the network's resolver is not used",
+            ).apply { initCause(dohFailure) }
         }
+        // Fail open: system resolver. Cert pinning on the actual API
+        // connection still protects against DNS-spoofing MITM.
+        //
+        // But failing open SILENTLY is the defect. When this path is taken the
+        // lookup leaves the device in cleartext to whatever resolver the
+        // network hands us — precisely the leak this class exists to prevent —
+        // and nothing visible changes, so nobody notices. That shape has
+        // already bitten once: a dead pin set meant every release-build
+        // handshake failed the pinner, resolve() caught it, and DNS fell
+        // through for everyone, quietly.
+        //
+        // The two causes are NOT equally interesting and must not be reported
+        // at the same weight:
+        //
+        //  * A PINNER failure (above). That is worth waking up for.
+        //  * Anything else is usually DoH blocked or unreachable on this
+        //    network — expected, exactly what the system fallback is for, and
+        //    it would fire on every lookup behind a captive portal. Reporting
+        //    that as loudly would train everyone to ignore the one that counts.
+        if (pinRejected) {
+            FaultReporter.report(
+                FaultReporter.PATH_DNS,
+                "doh_pin_rejected",
+                "DoH certificate pinning rejected cloudflare-dns.com — DNS-leak " +
+                    "protection has fallen back to the system resolver for every lookup",
+                dohFailure,
+            )
+        } else {
+            FaultReporter.trail(
+                FaultReporter.PATH_DNS,
+                "DoH lookup failed (${dohFailure.javaClass.simpleName}) — using the system resolver",
+            )
+        }
+        return system(hostname)
     }
 
     /**

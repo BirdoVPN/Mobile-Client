@@ -2,11 +2,13 @@ package app.birdo.vpn.utils
 
 import android.util.Log
 import io.sentry.DataCollection
+import io.sentry.IConnectionStatusProvider
 import io.sentry.KeyValueCollectionBehavior
 import io.sentry.protocol.App
 import io.sentry.protocol.Contexts
 import io.sentry.protocol.Device
 import io.sentry.protocol.OperatingSystem
+import io.sentry.transport.ITransportGate
 import java.io.File
 import java.util.Date
 
@@ -187,6 +189,42 @@ object CrashReporting {
                 "\\.[a-zA-Z]{2,}\\b",
         ) to "[HOST]",
     )
+
+    /**
+     * MR-953 F5 — nothing is SENT while Stealth runs; reports wait on the device.
+     *
+     * During a Stealth session the app's own UID is outside its tunnel (Xray
+     * is a child process whose socket cannot be protect()ed, TunnelAppRules),
+     * and the SDK's transport resolves the DSN's host with the network's own
+     * resolver (cleartext) and connects from the user's real IP, on exactly
+     * the network Stealth hides from. The SDK cannot use the app's DoH, so the
+     * report is held instead.
+     *
+     * The SDK asks this gate before every send. False keeps the envelope in its
+     * on-disk cache (it was stored before the check, and only a successful or
+     * refused send discards it); the cached reports go out on a later start or
+     * connectivity change, once Stealth is off. With Stealth off this answers
+     * exactly as the SDK's own (package-private) AndroidTransportGate, which
+     * setting a gate replaces: CONNECTED, UNKNOWN and NO_PERMISSION send,
+     * anything else (DISCONNECTED) holds.
+     *
+     * Installed by BirdoApp.initSentry; [stealthActive] and [connectionStatus]
+     * are read on every check.
+     */
+    class StealthHoldTransportGate(
+        private val stealthActive: () -> Boolean,
+        private val connectionStatus: () -> IConnectionStatusProvider.ConnectionStatus,
+    ) : ITransportGate {
+        override fun isConnected(): Boolean {
+            if (stealthActive()) return false
+            return when (connectionStatus()) {
+                IConnectionStatusProvider.ConnectionStatus.CONNECTED,
+                IConnectionStatusProvider.ConnectionStatus.UNKNOWN,
+                IConnectionStatusProvider.ConnectionStatus.NO_PERMISSION -> true
+                else -> false
+            }
+        }
+    }
 
     /**
      * Delete every report the SDK has queued on disk but not yet sent.
