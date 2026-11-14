@@ -125,6 +125,8 @@ Compiled to:
 
 ## Building
 
+To rebuild the release artefacts from a tag and compare them, see [BUILD-INSTRUCTIONS.md](BUILD-INSTRUCTIONS.md).
+
 ### Prerequisites
 
 - JDK 17 (Temurin recommended)
