@@ -60,13 +60,15 @@ class CrashReportingStealthGateTest {
         val app = File(dir, "app/src/main/java/app/birdo/vpn/BirdoApp.kt").readText()
         val init = app.substringAfter("SentryAndroid.init(this) { options ->")
         assertTrue("initSentry no longer configures Sentry", init.length < app.length)
-        assertTrue(init.contains("options.transportGate = CrashReporting.StealthHoldTransportGate("))
-        assertTrue(init.contains("stealthActive = { app.birdo.vpn.service.BirdoVpnService.stealthActive }"))
-        assertTrue(init.contains("connectionStatus = { options.connectionStatusProvider.connectionStatus }"))
+        val install = init.substringAfter("options.setTransportGate(").substringBefore("\n            )")
+        assertTrue("initSentry does not set a transport gate", install.length < init.length)
+        assertTrue(install.contains("CrashReporting.StealthHoldTransportGate("))
+        assertTrue(install.contains("stealthActive = { app.birdo.vpn.service.BirdoVpnService.stealthActive }"))
+        assertTrue(install.contains("connectionStatus = { options.connectionStatusProvider.connectionStatus }"))
         assertEquals(
-            "a second transportGate assignment would replace the stealth gate",
+            "a second transport gate would replace the stealth gate",
             1,
-            Regex("""options\.transportGate\s*=""").findAll(app).count(),
+            Regex("""options\.(setTransportGate\(|transportGate\s*=)""").findAll(app).count(),
         )
     }
 }
