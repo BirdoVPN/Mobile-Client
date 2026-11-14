@@ -491,8 +491,11 @@ jobs:
   # with the real native payload, checked the way the release job checks its
   # artifacts. R8 runs in its own job (`r8`) in parallel: it compiles the
   # release variant, which shares nothing with this one but the native libs.
+  #
+  # NOT the required "Build APK" check: that name is the `apk-gate` job below,
+  # which fails unless this job succeeded and then ISA-gates what it uploaded.
   build:
-    name: Build APK
+    name: Build debug APK
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
@@ -582,8 +585,9 @@ jobs:
           python3 scripts/verify_android_release_apk.py --native-libs-only \
             app/build/outputs/apk/debug/app-debug.apk
 
-      # The ISA-baseline gate over this APK's lib/ is the `isa-gate` job below,
-      # which runs on the uploaded APK beside the emulator job.
+      # The ISA-baseline gate over this APK's lib/ is the `apk-gate` job below
+      # (the required "Build APK" check), on the uploaded APK, beside the
+      # emulator job.
       - name: Upload Debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -610,7 +614,7 @@ jobs:
   # the jniLibs pass inside buildRustLibs cannot see. Same gate, same rule
   # table, one library per invocation in parallel (.github/scripts/isa-gate.sh).
   #
-  # Its own job, on the APK "Build APK" uploaded, rather than that job's last
+  # Its own job, on the APK `build` uploaded, rather than that job's last
   # step: the gate takes as long as its slowest library (~140 s, the x86
   # libxray.so), and `instrumented` cannot start before `build` ENDS, so as a
   # step it held the emulator job back by that much on every run. Here the
@@ -619,15 +623,32 @@ jobs:
   # else ANDROID_NDK_LATEST_HOME), the NDK `build` compiled with on the same
   # image. If the NDK is ever pinned by a setup step in android-native-libs
   # (MR-1793), add that step here too, so both jobs keep one NDK.
-  isa-gate:
-    name: ISA gate (debug APK)
+  #
+  # REQUIRED CHECK: this job carries the name "Build APK", which branch
+  # protection requires, so the required check still means what it did: the
+  # debug APK built, carries every ABI's engine set, AND passed this gate. It
+  # never skips when `build` did not succeed (a skipped required check counts
+  # as passing): its `if:` does not look at `build`, and its first step fails
+  # unless `build` succeeded. When `changes` says Android is untouched, both
+  # skip, as the single job did.
+  apk-gate:
+    name: Build APK
     needs: [changes, build]
-    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
+      - name: The debug APK was built and verified
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          if [ "$BUILD_RESULT" != success ]; then
+            echo "::error::Build debug APK finished '$BUILD_RESULT', not success: no APK to gate, so Build APK fails."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -650,10 +671,10 @@ jobs:
   # GlobeFrameMonitorInstrumentedTest -- the only check that JankStats really
   # labels the globe's frames, which no JVM test can reach -- was an on-device
   # proof that no device ran. It runs here on every pull request that can
-  # affect the app, on an x86_64 emulator, against the debug APK "Build APK"
+  # affect the app, on an x86_64 emulator, against the debug APK `build`
   # just built and checked for every ABI's engine set (every ABI's native
-  # stack included, so the app process is the real one; `isa-gate` checks the
-  # same APK alongside). Not a required check.
+  # stack included, so the app process is the real one; `apk-gate` ISA-gates
+  # the same APK alongside). Not a required check.
   #
   # The image is the one baseline-profile.yml records on (API 34, google_apis,
   # x86_64; docs/BASELINE-PROFILE.md says why not aosp_atd). The tests assert
