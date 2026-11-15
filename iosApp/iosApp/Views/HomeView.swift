@@ -166,9 +166,11 @@ struct HomeView: View {
         let base = vpnVM.isConnected
             ? "You are still connected. Signing out will disconnect."
             : "Are you sure you want to sign out?"
-        guard authVM.isAnonymousAccount else { return base }
+        // MR-179 (review of #616): signing out cancels a deletion on hold.
+        let hold = authVM.pendingDeletion.map { " " + DeletionHold.signOutWarning(applyAfter: $0.applyAfter) } ?? ""
+        guard authVM.isAnonymousAccount else { return base + hold }
         return base + " Make sure you have saved your account number. "
-            + "It is the only way to sign in to this account again."
+            + "It is the only way to sign in to this account again." + hold
     }
 
     /// Reduce Motion: return nil so state changes land instantly.

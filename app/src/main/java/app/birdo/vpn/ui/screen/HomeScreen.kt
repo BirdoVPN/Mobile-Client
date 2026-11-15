@@ -103,6 +103,8 @@ fun HomeScreen(
     onDismissDeviceNotice: () -> Unit = {},
     /** Anonymous accounts are reminded, before signing out, that the account number is the only way back in. */
     isAnonymousAccount: Boolean = false,
+    /** MR-179: the deletion on hold, if any; signing out cancels it, so the confirmation says so. */
+    pendingDeletion: app.birdo.vpn.data.repository.PendingDeletion? = null,
 ) {
     val palette = BirdoColors.current
     // What the screen says and offers is decided by the pure functions in
@@ -587,6 +589,7 @@ fun HomeScreen(
             isAnonymousAccount = isAnonymousAccount,
             onConfirm = onLogout,
             onDismiss = { showSignOutConfirm = false },
+            pendingDeletionAt = pendingDeletion?.let { pendingDeletionWhen(it.applyAfter) },
         )
     }
 

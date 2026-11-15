@@ -76,9 +76,10 @@ private enum class AuthTab { Email, Anonymous, Sso }
  * - 2FA verification form when backend requires it
  *
  * Password managers can fill and save the fields (autofill content types,
- * A2-017). The text a user typed survives a fold, a rotation or a theme
- * change (rememberSaveable, A2-046); passwords deliberately do not, because
- * saved state can be written to disk.
+ * A2-017). The e-mail survives a fold, a rotation or a theme change
+ * (rememberSaveable, A2-046); passwords and the 24-digit account number (the
+ * account's only credential, F-968-02) deliberately do not, because saved
+ * state can be written to disk.
  */
 @Composable
 fun LoginScreen(
@@ -107,7 +108,10 @@ fun LoginScreen(
     var twoFactorCode by remember { mutableStateOf("") }
     // Which auth method the standard (non-2FA) form shows: Email or Anonymous.
     var activeTab by rememberSaveable { mutableStateOf(AuthTab.Email) }
-    var anonId by rememberSaveable { mutableStateOf("") }
+    // F-968-02: the 24-digit account number is the account's only credential,
+    // so it is plain `remember` (never written to the saved-instance Bundle),
+    // like the passwords above.
+    var anonId by remember { mutableStateOf("") }
     var anonPassword by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     // Offer to save what was just submitted, the way a browser does on a form

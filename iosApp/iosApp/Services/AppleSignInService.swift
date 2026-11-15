@@ -145,6 +145,38 @@ final class AppleSignInService: NSObject {
         return code
     }
 
+    /// Like `authorizationCodeForAccountDeletion`, with a nonce (HASHED to
+    /// Apple, RAW to the backend, as at sign-in) and the identity token too.
+    /// Nothing is sent to Birdo from here.
+    ///
+    /// - Returns: nil when the user cancelled Apple's sheet.
+    func proofForAccountDeletion() async throws -> DeletionAppleProof? {
+        let rawNonce = Self.randomNonce()
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.nonce = Self.sha256(rawNonce)
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+
+        let authorization: ASAuthorization? = try await withCheckedThrowingContinuation { cont in
+            self.continuation = cont
+            controller.performRequests()
+        }
+        guard let authorization else { return nil }
+
+        guard
+            let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+            let codeData = credential.authorizationCode,
+            let code = String(data: codeData, encoding: .utf8),
+            !code.isEmpty
+        else {
+            throw AppleSignInError.noAuthorizationCode
+        }
+        let token = credential.identityToken.flatMap { String(data: $0, encoding: .utf8) }
+        return DeletionAppleProof(authorizationCode: code, identityToken: token, nonce: rawNonce)
+    }
+
     // MARK: - Nonce
 
     /// 32 bytes from the system CSPRNG, hex-encoded.

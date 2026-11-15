@@ -9,7 +9,8 @@ name: Android CI
 #
 # REQUIRED CHECKS (branch protection on main, strict). The job NAMES below are
 # the contract; do not rename them:
-#   "Lint Check", "Unit Tests", "Analyze (java-kotlin)"   (here)
+#   "Lint Check", "Unit Tests", "Analyze (java-kotlin)", "Build APK",
+#   "R8 (minified release)", "Native crates (fmt, clippy, tests, audit, ISA gate)"   (here)
 #   "Gitleaks"                                             (secret-scan.yml)
 # There is deliberately no workflow-level `paths:` filter: a required check
 # that never starts blocks the merge. Work a change cannot affect is skipped

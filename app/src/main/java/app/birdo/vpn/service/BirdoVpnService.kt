@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import androidx.glance.appwidget.updateAll
 import java.net.InetAddress
 import java.net.Socket
@@ -379,6 +380,17 @@ class BirdoVpnService : VpnService() {
         // VpnManager collects this flow to receive state changes immediately.
         private val _stateFlow = MutableStateFlow<VpnState>(VpnState.Disconnected)
         val stateFlow: StateFlow<VpnState> = _stateFlow.asStateFlow()
+
+        /**
+         * How many stops [stopTunnel] has finished, bumped after its final
+         * state. [stateFlow] alone cannot tell VpnManager that a stop is done:
+         * a stop of a service with nothing up publishes Disconnected →
+         * Disconnecting → Disconnected on the tunnel executor, and a collector
+         * that resumes after that round trip finds the value unchanged and
+         * sees nothing at all. A count never repeats, so no stop is missed.
+         */
+        private val _stopsCompleted = MutableStateFlow(0L)
+        val stopsCompleted: StateFlow<Long> = _stopsCompleted.asStateFlow()
 
         /**
          * Application context, captured in [onCreate], so [updateState] can ask
@@ -3035,6 +3047,9 @@ class BirdoVpnService : VpnService() {
         }
         leaveForeground()
         stopSelfUnlessNewerStart()
+        // Last, once the status notification is gone too (A-L51): VpnManager
+        // settles the Disconnecting it published for this stop on it.
+        _stopsCompleted.update { it + 1 }
     }
 
     /**
