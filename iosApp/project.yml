@@ -435,6 +435,12 @@ targets:
       # THROUGH the tunnel (TunnelHeartbeatTransport). Foundation-only, pinned
       # by HeartbeatHTTPTests; the transport itself needs NetworkExtension.
       - path: PacketTunnel/HeartbeatHTTP.swift
+      # ...and the trust decision of that connection (standard validation, then
+      # an SPKI pin) with the iOS 17 path's write gate. Foundation + Security +
+      # CommonCrypto, all system frameworks, so HeartbeatTrustTests runs the
+      # real decision against certificate fixtures. The pin SET stays in
+      # PacketTunnelProvider.swift, which this bundle cannot compile.
+      - path: PacketTunnel/HeartbeatTrust.swift
       # Guideline 4:the arithmetic that keeps a Mac window below the menu bar.
       # Compiled on every platform, though only the macOS app calls it, because
       # this bundle's CI run is on the iOS Simulator. CoreGraphics geometry

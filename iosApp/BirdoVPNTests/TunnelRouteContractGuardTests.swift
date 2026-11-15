@@ -117,11 +117,23 @@ final class TunnelRouteContractGuardTests: XCTestCase {
         let transport = try code("PacketTunnel/TunnelHeartbeatTransport.swift")
         XCTAssertEqual(transport.components(separatedBy: "HeartbeatPins.isTrusted(").count - 1, 2)
         XCTAssertTrue(transport.contains("sec_protocol_options_set_verify_block"))
-        XCTAssertTrue(transport.contains("guard approved else"))
+        // iOS 17 path: the write waits for the gate, and only this pin check opens it.
+        XCTAssertTrue(transport.contains("switch writeGate.connected() {"))
+        XCTAssertEqual(transport.components(separatedBy: "writeGate.approve()").count - 1, 1)
+        let approval = try XCTUnwrap(transport.range(of: "writeGate.approve()"))
+        let check = try XCTUnwrap(transport.range(of: "if HeartbeatPins.isTrusted(trust, host: host) {"))
+        XCTAssertLessThan(check.lowerBound, approval.lowerBound, "approval must follow the pin check")
+        XCTAssertEqual(transport.components(separatedBy: "connection.write(").count - 1, 1,
+                       "the one write is the one behind the gate")
+        // The decision both paths end in is PinnedTrust's, run by HeartbeatTrustTests;
+        // the provider only supplies the production pin set.
         let provider = try code("PacketTunnel/PacketTunnelProvider.swift")
         XCTAssertTrue(provider.contains("static func isTrusted(_ trust: SecTrust, host: String) -> Bool"))
-        XCTAssertTrue(provider.contains("SecTrustEvaluateWithError(trust, &trustError)"),
-                      "standard validation must run before the pin match")
+        XCTAssertTrue(provider.contains("PinnedTrust.isTrusted(trust, host: host, pins: pins)"))
+        let trust = try code("PacketTunnel/HeartbeatTrust.swift")
+        let evaluate = try XCTUnwrap(trust.range(of: "SecTrustEvaluateWithError(trust, &trustError)"))
+        let match = try XCTUnwrap(trust.range(of: "pins.contains(hash)"))
+        XCTAssertLessThan(evaluate.lowerBound, match.lowerBound, "standard validation must run before the pin match")
     }
 
     /// TLS 1.2 is the floor on BOTH ways in. The iOS 17 / macOS 14 path used

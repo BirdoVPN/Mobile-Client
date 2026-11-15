@@ -956,7 +956,8 @@ enum TunnelError: Error, LocalizedError {
 ///
 /// Fails CLOSED on every uncertain path: standard CA validation for the host
 /// first, then at least one certificate in the chain must match a pinned SPKI
-/// hash; an unreadable chain or key refuses rather than falling through.
+/// hash; an unreadable chain or key refuses rather than falling through
+/// (`PinnedTrust`, HeartbeatTrust.swift).
 enum HeartbeatPins {
     /// Base64-encoded SHA-256 hashes of the SubjectPublicKeyInfo (SPKI) of
     /// every certificate we accept, anywhere in the chain.
@@ -997,80 +998,10 @@ enum HeartbeatPins {
     ]
 
     /// True only when `trust` passes standard validation as `host` AND at least
-    /// one certificate in its chain matches a pinned SPKI.
-    ///
-    /// The SSL policy is set here, not assumed: a TLS verify block (or a trust
-    /// built from a raw chain) carries whatever policy its maker chose, and
-    /// the URLSession challenge this replaced always carried the hostname.
+    /// one certificate in its chain matches a pinned SPKI. The decision itself
+    /// is `PinnedTrust.isTrusted` (HeartbeatTrust.swift), which the unit tests
+    /// run against certificate fixtures; this supplies the pin set.
     static func isTrusted(_ trust: SecTrust, host: String) -> Bool {
-        guard SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString)) == errSecSuccess else {
-            return false
-        }
-        var trustError: CFError?
-        guard SecTrustEvaluateWithError(trust, &trustError) else { return false }
-
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate] else { return false }
-        for cert in chain {
-            guard let pubKey = SecCertificateCopyKey(cert),
-                  let pubKeyData = SecKeyCopyExternalRepresentation(pubKey, nil) as Data? else {
-                continue
-            }
-            let spkiHeader = Self.spkiHeader(for: pubKey)
-            var hashable = spkiHeader
-            hashable.append(pubKeyData)
-            let hash = Self.sha256(hashable).base64EncodedString()
-            if Self.pins.contains(hash) {
-                return true
-            }
-        }
-        return false
-    }
-
-    /// ASN.1 SubjectPublicKeyInfo header bytes that prefix the raw key data
-    /// produced by `SecKeyCopyExternalRepresentation`. RSA 2048/4096 +
-    /// EC P-256 / P-384 cover every CA in the pin set.
-    private static func spkiHeader(for key: SecKey) -> Data {
-        let attrs = SecKeyCopyAttributes(key) as? [CFString: Any] ?? [:]
-        let type = (attrs[kSecAttrKeyType] as? String) ?? ""
-        let size = (attrs[kSecAttrKeySizeInBits] as? Int) ?? 0
-        let rsaType = kSecAttrKeyTypeRSA as String
-        let ecType = kSecAttrKeyTypeECSECPrimeRandom as String
-        switch (type, size) {
-        case (rsaType, 2048):
-            return Data([
-                0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
-                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
-                0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
-            ])
-        case (rsaType, 4096):
-            return Data([
-                0x30, 0x82, 0x02, 0x22, 0x30, 0x0d, 0x06, 0x09,
-                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01,
-                0x01, 0x05, 0x00, 0x03, 0x82, 0x02, 0x0f, 0x00,
-            ])
-        case (ecType, 256):
-            return Data([
-                0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
-                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
-                0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
-                0x42, 0x00,
-            ])
-        case (ecType, 384):
-            return Data([
-                0x30, 0x76, 0x30, 0x10, 0x06, 0x07, 0x2a, 0x86,
-                0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b,
-                0x81, 0x04, 0x00, 0x22, 0x03, 0x62, 0x00,
-            ])
-        default:
-            return Data() // Unknown key type — hash will not match any pin.
-        }
-    }
-
-    private static func sha256(_ data: Data) -> Data {
-        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        data.withUnsafeBytes {
-            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
-        }
-        return Data(hash)
+        PinnedTrust.isTrusted(trust, host: host, pins: pins)
     }
 }

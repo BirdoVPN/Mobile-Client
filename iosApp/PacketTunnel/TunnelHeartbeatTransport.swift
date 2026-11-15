@@ -270,11 +270,10 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     private let lock = NSLock()
     private var connection: __NWTCPConnection?
     private var observation: NSKeyValueObservation?
-    /// Set by `evaluateTrust` and required before a byte is written: the
+    /// Approved by `evaluateTrust` and required before a byte is written: the
     /// connection must have been through THIS pin check, whatever the
     /// system's own evaluation of the trust handed back says.
-    private var pinnedTrustApproved = false
-    private var sent = false
+    private let writeGate = PinnedWriteGate()
     private var buffer = Data()   // touched only on `queue`
 
     init(provider: NEPacketTunnelProvider, host: String, port: UInt16, request: Data,
@@ -323,17 +322,19 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
     private func stateChanged(_ state: __NWTCPConnectionState) {
         switch state {
         case .connected:
-            lock.lock()
-            let approved = pinnedTrustApproved
-            let first = !sent
-            sent = true
-            let connection = self.connection
-            lock.unlock()
-            guard first, let connection else { return }
-            guard approved else {
+            switch writeGate.connected() {
+            case .ignore:
+                return
+            case .refuse:
                 completion.finish(.failure(TunnelHeartbeatTransport.TransportError.untrusted))
                 return
+            case .write:
+                break
             }
+            lock.lock()
+            let connection = self.connection
+            lock.unlock()
+            guard let connection else { return }
             connection.write(request) { [weak self] error in
                 guard let self else { return }
                 if error != nil {
@@ -383,34 +384,19 @@ private final class LegacyTunnelExchange: NSObject, __NWTCPConnectionAuthenticat
 
     func evaluateTrust(for connection: __NWTCPConnection, peerCertificateChain: [Any],
                        completionHandler handBack: @escaping (SecTrust) -> Void) {
-        let certificates: [SecCertificate] = peerCertificateChain.compactMap { item in
-            let ref = item as CFTypeRef
-            guard CFGetTypeID(ref) == SecCertificateGetTypeID() else { return nil }
-            return (ref as! SecCertificate)
-        }
-        let policy = SecPolicyCreateSSL(true, host as CFString)
-        var trust: SecTrust?
-        guard !certificates.isEmpty,
-              SecTrustCreateWithCertificates(certificates as CFArray, policy, &trust) == errSecSuccess,
-              let trust else {
+        guard let trust = PinnedTrust.trust(forPeerChain: peerCertificateChain, host: host) else {
             // Nothing to hand back that could pass: end the exchange instead.
             self.completion.finish(.failure(TunnelHeartbeatTransport.TransportError.untrusted))
             return
         }
         if HeartbeatPins.isTrusted(trust, host: host) {
-            lock.lock()
-            pinnedTrustApproved = true
-            lock.unlock()
+            writeGate.approve()
             handBack(trust)
             return
         }
-        // A trust that cannot pass the system's own evaluation: no anchors at
-        // all, and only those. The write above is refused regardless.
-        var refused: SecTrust?
-        if SecTrustCreateWithCertificates(certificates as CFArray, policy, &refused) == errSecSuccess,
-           let refused {
-            SecTrustSetAnchorCertificates(refused, [] as CFArray)
-            SecTrustSetAnchorCertificatesOnly(refused, true)
+        // Refused: hand back a trust that cannot pass the system's own
+        // evaluation either. The write is refused regardless (writeGate).
+        if let refused = PinnedTrust.unpassableTrust(forPeerChain: peerCertificateChain, host: host) {
             handBack(refused)
         }
         self.completion.finish(.failure(TunnelHeartbeatTransport.TransportError.untrusted))
