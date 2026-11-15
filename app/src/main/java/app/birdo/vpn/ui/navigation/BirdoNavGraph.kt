@@ -570,6 +570,7 @@ fun BirdoNavGraph(
                         trafficStats = vpnViewModel.trafficStats.collectAsState().value,
                         accountLabel = accountLabel(authState.user),
                         isAnonymousAccount = isAnonymousUser(authState.user),
+                        pendingDeletion = authState.pendingDeletion,
                         killSwitchEnabled = settingsState.killSwitchEnabled,
                         favoriteServers = vpnViewModel.favoriteServers.collectAsState().value,
                         multiHop = vpnViewModel.multiHop.collectAsState().value,
@@ -685,6 +686,15 @@ fun BirdoNavGraph(
                         onClearDeleteError = { authViewModel.clearDeleteAccountError() },
                         deletionPreflight = authState.deletionPreflight,
                         onDeleteDialogOpened = { authViewModel.loadDeletionPreflight() },
+                        // MR-179 hold fallback: no sign-out, no teardown.
+                        onRequestDeletionHold = { password, code -> authViewModel.requestDeletionHold(password, code) },
+                        deletionHoldFiled = authState.deletionHoldFiled,
+                        onDeletionHoldShown = { authViewModel.onDeletionHoldShown() },
+                        pendingDeletion = authState.pendingDeletion,
+                        isCancellingPendingDeletion = authState.isCancellingPendingDeletion,
+                        pendingDeletionError = authState.pendingDeletionError,
+                        onCancelPendingDeletion = { authViewModel.cancelPendingDeletion() },
+                        onRefreshPendingDeletion = { authViewModel.refreshPendingDeletion() },
                     )
                 }
             }

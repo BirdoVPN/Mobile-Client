@@ -1,0 +1,37 @@
+name: Pinned Android NDK
+description: >-
+  Installs the exact NDK revision named in native/ndk-version.txt (MR-1793) and points
+  ANDROID_NDK_HOME / ANDROID_NDK_ROOT / ANDROID_NDK_LATEST_HOME at it, so every native
+  build (cargo-ndk, the 32-bit Xray engines, AGP's strip step) uses the same compiler
+  whatever the runner image ships. The same file is read by app/build.gradle.kts
+  (ndkVersion), so Gradle and CI cannot drift apart.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned NDK
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver="$(tr -d '[:space:]' < native/ndk-version.txt)"
+        [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::native/ndk-version.txt is not an exact NDK version: '$ver'"; exit 1; }
+        sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+        [ -d "$sdk" ] || { echo "::error::no Android SDK on this runner"; exit 1; }
+        sm="$sdk/cmdline-tools/latest/bin/sdkmanager"
+        [ -x "$sm" ] || { echo "::error::sdkmanager not found at $sm"; exit 1; }
+        if [ ! -f "$sdk/ndk/$ver/source.properties" ]; then
+          yes | "$sm" --licenses > /dev/null || true
+          "$sm" --install "ndk;$ver"
+        fi
+        ndk="$sdk/ndk/$ver"
+        rev="$(sed -n 's/^Pkg\.Revision *= *//p' "$ndk/source.properties" | tr -d '\r' | head -n1)"
+        if [ "$rev" != "$ver" ]; then
+          echo "::error::NDK at $ndk reports revision '$rev', expected '$ver'"
+          exit 1
+        fi
+        {
+          echo "ANDROID_NDK_HOME=$ndk"
+          echo "ANDROID_NDK_ROOT=$ndk"
+          echo "ANDROID_NDK_LATEST_HOME=$ndk"
+        } >> "$GITHUB_ENV"
+        echo "NDK pinned: $ndk (revision $rev)"

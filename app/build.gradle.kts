@@ -161,6 +161,10 @@ val profilingBuildTypes = setOf("nonMinifiedRelease", "benchmarkRelease")
 // block, configured by name.
 configure<com.android.build.api.dsl.ApplicationExtension> {
     namespace = "app.birdo.vpn"
+    // MR-1793: the NDK that compiles librosenpass_jni.so, libxray.so and strips every
+    // shipped library is pinned, not "whatever the machine has". One source of truth
+    // shared with CI (.github/actions/setup-android-ndk) and BUILD-INSTRUCTIONS.md.
+    ndkVersion = rootProject.file("native/ndk-version.txt").readText().trim()
     // compileSdk 37 + compileSdkMinor 0 -> platforms;android-37.0.
     //
     // The SDK repository publishes NO bare `platforms;android-37`; the only
@@ -1080,7 +1084,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     // ── Hilt DI ──────────────────────────────────────────────────
-    // Must match the Hilt Gradle plugin version (2.57.2) or the aggregating task
+    // Must match the Hilt Gradle plugin version (root build.gradle.kts, 2.60.1) or the aggregating task
     // fails with "rootComponentPackage has not been initialized".
     implementation("com.google.dagger:hilt-android:2.60.1")
     ksp("com.google.dagger:hilt-compiler:2.60.1")
@@ -1104,10 +1108,10 @@ dependencies {
     // ── WireGuard Tunnel ─────────────────────────────────────────
     implementation("com.wireguard.android:tunnel:1.0.20260102")
 
-    // NOTE: Xray core (libXray) is loaded at runtime via reflection.
-    // Place libXray.aar in app/libs/ or include the native .so files
-    // in src/main/jniLibs/<abi>/ when available.
-    // XrayManager falls back to bundled xray binary if library is absent.
+    // NOTE: Xray core is NOT a Gradle dependency and is not loaded by reflection.
+    // It ships as the packaged xray-core executable (libxray.so in the native lib
+    // dir, provisioned into src/main/jniLibs/<abi>/ by scripts/provision_xray_engines.sh)
+    // and XrayManager runs it as a child process (see XrayManager.startWithBinary).
 
     // ── Security ─────────────────────────────────────────────────
     // No androidx.security:security-crypto (MR-958, owner decision 2026-10-28):
