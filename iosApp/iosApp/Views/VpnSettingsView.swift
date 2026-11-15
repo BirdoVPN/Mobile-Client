@@ -116,7 +116,7 @@ struct VpnSettingsView: View {
                             .fill(BirdoTheme.white05)
                             .frame(width: 40, height: 40)
                         Image(systemName: "chevron.left")
-                            .birdoFont(17, weight: .semibold)
+                            .birdoFont(17, weight: .semibold, max: 24)
                             .foregroundStyle(BirdoTheme.onSurface)
                     }
                     .frame(width: 48, height: 48)
@@ -154,7 +154,7 @@ struct VpnSettingsView: View {
         BirdoCard(cornerRadius: 14) {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "wifi.router")
-                    .birdoFont(20)
+                    .birdoFont(20, max: 24)
                     .foregroundStyle(BirdoTheme.green)
                     .frame(width: 24)
                     .accessibilityHidden(true)
@@ -183,7 +183,7 @@ struct VpnSettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: "slider.horizontal.3")
-                        .birdoFont(20)
+                        .birdoFont(20, max: 24)
                         .foregroundStyle(BirdoTheme.yellow)
                         .frame(width: 24)
                         .accessibilityHidden(true)
@@ -239,7 +239,7 @@ struct VpnSettingsView: View {
                     .overlay {
                         if isAuto {
                             Image(systemName: "checkmark")
-                                .birdoFont(12, weight: .bold)
+                                .birdoFont(12, weight: .bold, max: 14)
                                 .foregroundStyle(.white)
                         }
                     }
@@ -384,7 +384,7 @@ private struct VpnToggleRow: View {
             BirdoCard(cornerRadius: 14, horizontalPadding: 16, verticalPadding: 14) {
                 HStack(spacing: 14) {
                     Image(systemName: icon)
-                        .birdoFont(20)
+                        .birdoFont(20, max: 24)
                         .foregroundStyle(iconColor)
                         .frame(width: 24)
                     VpnRowText(title: title, description: description)

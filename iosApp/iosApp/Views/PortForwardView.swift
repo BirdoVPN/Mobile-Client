@@ -286,7 +286,7 @@ struct PortForwardView: View {
                     showDeleteConfirm = true
                 } label: {
                     Image(systemName: "trash")
-                        .birdoFont(18)
+                        .birdoFont(18, max: 28)
                         .foregroundStyle(BirdoTheme.red)
                         .frame(width: 44, height: 44)
                 }

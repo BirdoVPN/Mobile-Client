@@ -167,7 +167,7 @@ struct SubscriptionView: View {
                             .fill(accent.opacity(0.15))
                             .frame(width: 44, height: 44)
                         Image(systemName: "crown.fill")
-                            .birdoFont(22)
+                            .birdoFont(22, max: 28)
                             .foregroundStyle(accent)
                     }
                     .accessibilityHidden(true)
@@ -177,6 +177,7 @@ struct SubscriptionView: View {
                             .birdoFont(16, weight: .bold)
                             .foregroundStyle(BirdoTheme.onSurface)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                         Text(isActive ? "Active subscription" : "Inactive")
                             .font(BirdoTheme.Fonts.bodySmall)
                             .foregroundStyle(isActive ? BirdoTheme.green : BirdoTheme.white60)
@@ -506,7 +507,7 @@ struct SubscriptionView: View {
                     ForEach(plan.features, id: \.self) { feature in
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark")
-                                .birdoFont(12, weight: .semibold)
+                                .birdoFont(12, weight: .semibold, max: 16)
                                 .foregroundStyle(accent)
                                 .frame(width: 16)
                                 .accessibilityHidden(true)

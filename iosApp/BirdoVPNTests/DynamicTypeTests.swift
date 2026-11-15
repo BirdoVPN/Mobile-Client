@@ -78,14 +78,67 @@ final class DynamicTypeTests: XCTestCase {
     }
 
     /// MR-1796: the tab bar's UIKit labels are 11pt at `.large`, as before,
-    /// and grow with the text size like the SwiftUI tokens.
-    func testUIKitTabBarFontIsTheOldSizeAtLargeAndGrows() {
-        func font(_ category: UIContentSizeCategory) -> UIFont {
-            BirdoTheme.scaledUIFont(11, weight: .semibold, relativeTo: .caption2,
-                                    compatibleWith: UITraitCollection(preferredContentSizeCategory: category))
+    /// grow with the text size, and stop at 14pt so they stay inside the bar
+    /// (UITabBar's Large Content Viewer covers the accessibility sizes).
+    func testTabBarLabelIsElevenAtLargeGrowsAndIsCapped() {
+        func size(_ category: UIContentSizeCategory, selected: Bool = true) -> CGFloat {
+            BirdoTheme.tabBarLabelFont(selected: selected,
+                                       compatibleWith: UITraitCollection(preferredContentSizeCategory: category))
+                .pointSize
         }
-        XCTAssertEqual(font(.large).pointSize, 11, accuracy: 0.01)
-        XCTAssertGreaterThan(font(.accessibilityLarge).pointSize, 11 * 1.3)
+        XCTAssertEqual(BirdoTheme.tabBarLabelMaxPointSize, 14)
+        XCTAssertEqual(size(.large), 11, accuracy: 0.01)
+        XCTAssertEqual(size(.large, selected: false), 11, accuracy: 0.01)
+        XCTAssertGreaterThan(size(.extraExtraLarge), 11)
+        XCTAssertEqual(size(.accessibilityExtraExtraExtraLarge), 14, accuracy: 0.01)
+        XCTAssertEqual(size(.accessibilityExtraExtraExtraLarge, selected: false), 14, accuracy: 0.01)
+        for category: UIContentSizeCategory in [.extraExtraExtraLarge, .accessibilityMedium,
+                                                .accessibilityLarge, .accessibilityExtraLarge] {
+            XCTAssertLessThanOrEqual(size(category), 14.01, category.rawValue)
+        }
+    }
+
+    /// MR-1796: a glyph in a fixed box (`birdoFont(_:max:)`) renders as
+    /// before at `.large` and stops at its cap at the largest size.
+    func testCappedModifierIsUnchangedAtLargeAndStopsAtItsCap() {
+        let cappedLarge = height(Text("Hg").birdoFont(17, weight: .semibold, max: 24), .large)
+        let plainLarge = height(Text("Hg").birdoFont(17, weight: .semibold), .large)
+        XCTAssertEqual(cappedLarge, plainLarge, accuracy: 0.5)
+
+        let cappedHuge = height(Text("Hg").birdoFont(17, weight: .semibold, max: 24), .accessibility5)
+        let atTheCap = height(Text("Hg").birdoFont(24, weight: .semibold), .large)
+        XCTAssertEqual(cappedHuge, atTheCap, accuracy: 0.5)
+
+        let plainHuge = height(Text("Hg").birdoFont(17, weight: .semibold), .accessibility5)
+        XCTAssertGreaterThan(plainHuge, cappedHuge * 1.3, "the uncapped one keeps growing")
+    }
+
+    /// MR-1796: a TextField prompt's font VALUE is 14pt at `.large` and
+    /// scales exactly like `birdoFont(14)`.
+    func testScaledFontValueMatchesTheModifier() {
+        for size: DynamicTypeSize in [.large, .accessibility3] {
+            XCTAssertEqual(height(FontValueProbe(), size), height(Text("Hg").birdoFont(14), size),
+                           accuracy: 0.5, "\(size)")
+        }
+        XCTAssertGreaterThan(height(FontValueProbe(), .accessibility3), height(FontValueProbe(), .large) * 1.3)
     }
     #endif
+
+    /// MR-1796: the cap never changes the default size and holds above it.
+    func testCappedTokenClampsOnlyAboveItsCap() {
+        let token = BirdoFontToken(size: 17, weight: .semibold, maxSize: 24)
+        XCTAssertEqual(token.clamped(17), 17)
+        XCTAssertEqual(token.clamped(21), 21)
+        XCTAssertEqual(token.clamped(53), 24)
+        // A cap below the size would shrink the default, so it is raised to it.
+        XCTAssertEqual(BirdoFontToken(size: 17, maxSize: 12).maxSize, 17)
+        XCTAssertNil(BirdoFontToken(size: 17).maxSize)
+        XCTAssertEqual(BirdoFontToken(size: 17).clamped(53), 53)
+    }
+}
+
+/// One `Text` styled through `@BirdoScaledFontValue`, as a prompt is.
+private struct FontValueProbe: View {
+    @BirdoScaledFontValue(14) private var font: Font
+    var body: some View { Text("Hg").font(font) }
 }

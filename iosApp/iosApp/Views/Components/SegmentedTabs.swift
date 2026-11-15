@@ -52,6 +52,8 @@ struct SegmentedTabs: View {
                 .birdoFont(13, weight: selected && style == .accent ? .semibold : .medium)
                 .foregroundStyle(segmentText(selected))
                 .lineLimit(1)
+                // Shrink a little before truncating at the large text sizes.
+                .minimumScaleFactor(0.8)
                 .frame(maxWidth: .infinity, minHeight: 40)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)

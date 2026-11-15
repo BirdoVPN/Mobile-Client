@@ -76,7 +76,7 @@ struct AcknowledgementsView: View {
                             .fill(BirdoTheme.white05)
                             .frame(width: 40, height: 40)
                         Image(systemName: "chevron.left")
-                            .birdoFont(17, weight: .semibold)
+                            .birdoFont(17, weight: .semibold, max: 24)
                             .foregroundStyle(BirdoTheme.onSurface)
                     }
                     .frame(width: 48, height: 48)

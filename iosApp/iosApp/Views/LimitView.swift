@@ -92,7 +92,7 @@ struct LimitView: View {
                         .frame(width: 34, height: 34)
                         .overlay(
                             Image(systemName: "person.crop.circle.badge.questionmark")
-                                .birdoFont(17)
+                                .birdoFont(17, max: 22)
                                 .foregroundStyle(BirdoTheme.accent)
                         )
                     Text("Sign in to see your usage")
@@ -184,7 +184,7 @@ struct LimitView: View {
                 .frame(width: 56, height: 56)
                 .overlay(
                     Image(systemName: "speedometer")
-                        .birdoFont(30)
+                        .birdoFont(30, max: 36)
                         .foregroundStyle(BirdoTheme.accent)
                 )
             Text("Unlimited data")
@@ -362,7 +362,7 @@ struct LimitView: View {
                         .frame(width: 34, height: 34)
                         .overlay(
                             Image(systemName: "bolt.fill")
-                                .birdoFont(19)
+                                .birdoFont(19, max: 22)
                                 .foregroundStyle(BirdoTheme.accent)
                         )
                     Text(fraction >= 0.9 ? "You're almost out of data" : "Need more data?")
@@ -483,6 +483,9 @@ private struct SpeedDialGauge: View {
     /// Arc diameter — the stroke is centered on this circle, so the outer
     /// edge lands exactly on the 232pt square.
     private var dial: CGFloat { Self.size - Self.stroke }
+    /// Widest the centre readout may be: well inside the ring's 196pt hole
+    /// (a 150 x ~100pt block clears it at the corners).
+    private static let readoutWidth: CGFloat = 150
 
     var body: some View {
         ZStack {
@@ -520,21 +523,32 @@ private struct SpeedDialGauge: View {
             .rotationEffect(.degrees(Self.startDeg + Self.sweepDeg * animated))
 
             // Centre readout: the number is the hero, the unit line supports it.
+            // The dial is a fixed 232pt, so at the large text sizes the readout
+            // is capped and then shrinks to fit inside the arc (one line each,
+            // within `readoutWidth`) rather than spilling over the ring.
             VStack(spacing: 2) {
                 Text(usedLabel)
-                    .birdoFont(40, weight: .bold, design: .monospaced)
+                    .birdoFont(40, weight: .bold, design: .monospaced, max: 52)
                     .foregroundStyle(BirdoTheme.onSurface)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.4)
                 Text(limitLabel)
-                    .birdoFont(13)
+                    .birdoFont(13, max: 20)
                     .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
             }
+            .frame(maxWidth: Self.readoutWidth)
         }
         .frame(width: Self.size, height: Self.size)
         .overlay(alignment: .bottom) {
             // Percentage sits in the bottom gap of the arc.
             Text(percentLabel)
-                .birdoFont(13, weight: .semibold, design: .monospaced)
+                .birdoFont(13, weight: .semibold, design: .monospaced, max: 18)
                 .foregroundStyle(BirdoTheme.onSurfaceMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(maxWidth: Self.readoutWidth)
                 .padding(.bottom, 2)
         }
         .accessibilityElement(children: .ignore)

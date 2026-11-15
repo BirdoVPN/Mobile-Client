@@ -33,6 +33,13 @@ struct BirdoVPNApp: App {
                     .environmentObject(settingsVM)
                     .environmentObject(storeVM)
                     .preferredColorScheme(.dark)
+                    #if os(iOS)
+                    // MR-1796: the tab bar's labels follow a text-size change
+                    // made while the app is running, not only at launch.
+                    .onReceive(NotificationCenter.default.publisher(for: UIContentSizeCategory.didChangeNotification)) { _ in
+                        Self.styleTabBar(includingLiveBars: true)
+                    }
+                    #endif
                     // macOS 1.4.23 was rejected under guideline 4 for "windows
                     // laid out and partially hidden under menu bar".
                     //
@@ -129,11 +136,15 @@ struct BirdoVPNApp: App {
     /// Android bottom-bar chrome (spec-home-servers-consent §2): surface fill,
     /// hairlineSoft top divider, selected = accent, unselected =
     /// onSurfaceMuted, 11pt labels (SemiBold selected / Medium unselected)
-    /// at the default text size, scaled with Dynamic Type (MR-1796).
+    /// at the default text size, growing with Dynamic Type to at most 14pt so
+    /// they stay inside the bar (MR-1796; `BirdoTheme.tabBarLabelFont`).
     /// SwiftUI's TabView takes its chrome from UITabBarAppearance, so this is
-    /// configured once at launch.
+    /// configured at launch, and again when the text size changes while the
+    /// app runs (`includingLiveBars`): the appearance proxy only styles tab
+    /// bars created after it is set, so a bar already on screen is given the
+    /// new appearance directly.
     @MainActor
-    private static func styleTabBar() {
+    private static func styleTabBar(includingLiveBars: Bool = false) {
         // iOS only: UITabBarAppearance does not exist on macOS, where
         // SwiftUI renders TabView as a native segmented/sidebar control
         // that takes its chrome from the system rather than from an
@@ -157,17 +168,36 @@ struct BirdoVPNApp: App {
             item.selected.iconColor = accent
             item.selected.titleTextAttributes = [
                 .foregroundColor: accent,
-                .font: BirdoTheme.scaledUIFont(11, weight: .semibold, relativeTo: .caption2),
+                .font: BirdoTheme.tabBarLabelFont(selected: true),
             ]
             item.normal.iconColor = muted
             item.normal.titleTextAttributes = [
                 .foregroundColor: muted,
-                .font: BirdoTheme.scaledUIFont(11, weight: .medium, relativeTo: .caption2),
+                .font: BirdoTheme.tabBarLabelFont(selected: false),
             ]
         }
 
         UITabBar.appearance().standardAppearance = appearance
         UITabBar.appearance().scrollEdgeAppearance = appearance
+
+        guard includingLiveBars else { return }
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows {
+                for bar in tabBars(in: window) {
+                    bar.standardAppearance = appearance
+                    bar.scrollEdgeAppearance = appearance
+                }
+            }
+        }
         #endif
     }
+
+    #if os(iOS)
+    /// Every UITabBar under `view` (SwiftUI's TabView hosts one).
+    @MainActor
+    private static func tabBars(in view: UIView) -> [UITabBar] {
+        if let bar = view as? UITabBar { return [bar] }
+        return view.subviews.flatMap { tabBars(in: $0) }
+    }
+    #endif
 }

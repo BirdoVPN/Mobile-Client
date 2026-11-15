@@ -46,6 +46,9 @@ struct LoginView: View {
 
     @FocusState private var focusedField: Field?
     @Environment(\.openURL) private var openURL
+    /// The 2FA field's prompt: 14pt at the default size, scaled (a prompt
+    /// must stay a `Text`, so it takes a font value, not `birdoFont`).
+    @BirdoScaledFontValue(14) private var promptFont: Font
 
     private enum Field: Hashable {
         case email, password, anonymousId, anonymousPassword, twoFactorCode
@@ -505,7 +508,12 @@ struct LoginView: View {
             Text("or use an existing account number")
                 .birdoFont(12)
                 .foregroundStyle(BirdoTheme.white40)
-                .fixedSize()
+                // One line while it fits; wraps (centred) at the large text
+                // sizes instead of running off both edges. The priority gives
+                // it the width first, so the rules shrink before it wraps.
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             Rectangle().fill(BirdoTheme.hairlineSoft).frame(height: 1)
         }
         .accessibilityHidden(true)
@@ -617,7 +625,7 @@ struct LoginView: View {
                     .fill(BirdoTheme.white05)
                     .frame(width: 48, height: 48)
                 Image(systemName: "shield.fill")
-                    .birdoFont(24)
+                    .birdoFont(24, max: 30)
                     .foregroundStyle(BirdoTheme.white60)
             }
             .accessibilityHidden(true)
@@ -669,7 +677,7 @@ struct LoginView: View {
     private var twoFactorCodeField: some View {
         TextField("", text: $authVM.twoFactorCode,
                   prompt: Text("000000 or backup code")
-                      .font(.subheadline)
+                      .font(promptFont)
                       .foregroundStyle(BirdoTheme.white40))
             .birdoFont(24, weight: .medium, design: .monospaced)
             .multilineTextAlignment(.center)
@@ -719,7 +727,7 @@ struct LoginView: View {
                         .fill(BirdoTheme.white05)
                         .frame(width: 48, height: 48)
                     Image(systemName: "key.fill")
-                        .birdoFont(22)
+                        .birdoFont(22, max: 30)
                         .foregroundStyle(BirdoTheme.green)
                 }
                 .accessibilityHidden(true)

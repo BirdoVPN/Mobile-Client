@@ -192,7 +192,7 @@ struct MultiHopView: View {
                         .fill(BirdoTheme.white05)
                         .frame(width: 64, height: 64)
                     Image(systemName: "lock.fill")
-                        .birdoFont(24)
+                        .birdoFont(24, max: 36)
                         .foregroundColor(BirdoTheme.onSurfaceMuted)
                 }
                 .accessibilityHidden(true)

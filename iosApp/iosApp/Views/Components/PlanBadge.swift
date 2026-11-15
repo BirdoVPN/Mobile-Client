@@ -24,6 +24,7 @@ struct PlanBadge: View {
             Text(plan.uppercased())
                 .birdoFont(12, weight: .bold)
                 .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
