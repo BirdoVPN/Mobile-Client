@@ -987,7 +987,7 @@ class VpnManager @Inject constructor(
      * told dnsFiltering = true for a tunnel that never asked its resolver.
      */
     private fun shieldInEffect(): Boolean =
-        WireGuardConfigBuilder.shieldInEffect(prefs.dnsFilteringEnabled, prefs.customDnsEnabled)
+        WireGuardConfigBuilder.shieldInEffect(prefs.dnsFilteringEnabled, prefs.customDnsEnabled, prefs.dnsFilteringGateOn)
 
     /**
      * A1-033: attest only on a user-initiated fresh dial with nothing blocked.

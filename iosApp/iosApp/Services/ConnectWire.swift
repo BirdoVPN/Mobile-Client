@@ -37,6 +37,13 @@ enum ConnectWire {
     /// lives here (not in either of them) because this file is the only one
     /// of the three the test bundle can compile.
     static let dnsFilteringDefaultsKey = "dns_filtering"
+
+    /// UserDefaults key for the last-known BirdoShield FLEET gate
+    /// (`dnsFilteringAvailable == true`); absent is false. The connect bodies
+    /// carry `dnsFiltering: true` only while this is true, so a preference set
+    /// while the gate was on is not sent while it is off or not known (owner
+    /// 2026-11-13). Written by `SettingsViewModel.refreshClientConfig`.
+    static let dnsFilteringGateDefaultsKey = "dns_filtering_gate_on"
 }
 
 /// POST /vpn/connect — twin of birdo-web `ConnectDto`.

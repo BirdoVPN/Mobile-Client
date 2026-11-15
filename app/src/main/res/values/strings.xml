@@ -244,7 +244,6 @@
     <!-- Shown under the row when GET /api/client-config reports
          dnsFilteringAvailable:false. The user cannot act on this, so the copy does
          not ask them to; it says the preference survives. -->
-    <string name="vpn_settings_birdoshield_unavailable">Not available on your account\'s server fleet yet. Your preference is kept and applies as soon as it is.</string>
     <string name="vpn_settings_quantum_title">Quantum Protection</string>
     <string name="cd_locked_feature">Premium feature — upgrade to unlock</string>
     <!-- Home / Connect -->
