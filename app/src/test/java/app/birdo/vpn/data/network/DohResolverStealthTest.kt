@@ -161,6 +161,33 @@ class DohResolverStealthTest {
         }
     }
 
+    // ── Review of #622, item 6: the API and web hosts only ───────────────
+
+    @Test
+    fun `only the API host and the web host from BuildConfig are remembered`() {
+        assertEquals(setOf("api.birdo.app", "birdo.app"), DohResolver.REMEMBERED_HOSTS)
+        assertEquals(
+            setOf(
+                java.net.URI(app.birdo.vpn.BuildConfig.API_BASE_URL).host,
+                java.net.URI(app.birdo.vpn.BuildConfig.WEB_BASE_URL).host,
+            ),
+            DohResolver.REMEMBERED_HOSTS,
+        )
+    }
+
+    @Test
+    fun `another host is never remembered and never reused`() {
+        val cache = mutableMapOf<String, DohResolver.Remembered>()
+        assertEquals(dohAnswer, resolve(dohWorks, stealth = false, cache = cache, host = "example.com"))
+        assertSame(systemAnswer, resolve(dohFails, stealth = false, cache = cache, host = "example.com"))
+        assertEquals(dohAnswer, resolve(dohWorks, stealth = true, cache = cache, host = "cdn.example.net"))
+        assertTrue("an answer for another host was remembered: ${cache.keys}", cache.isEmpty())
+        // Not even one already in the map is reused.
+        cache["example.com"] = DohResolver.Remembered(systemAnswer, now, fromSystem = true)
+        assertLookupFails { resolve(dohFails, stealth = true, cache = cache, host = "example.com") }
+        assertEquals(1, systemCalls)
+    }
+
     @Test
     fun `a system answer is remembered as one and a DoH answer is not`() {
         val cache = mutableMapOf<String, DohResolver.Remembered>()

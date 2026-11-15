@@ -5,6 +5,7 @@ import app.birdo.vpn.BuildConfig
 import okhttp3.CertificatePinner
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.dnsoverhttps.DnsOverHttps
 import java.net.InetAddress
@@ -168,6 +169,17 @@ object DohResolver {
     internal const val REMEMBER_TTL_MS = 24 * 60 * 60 * 1000L
 
     /**
+     * The only hosts whose answers are remembered, and reused during Stealth:
+     * the API's and the web app's, from BuildConfig (review of #622, item 6).
+     * Any other name the bypass client resolves is answered exactly as before
+     * and never kept.
+     */
+    internal val REMEMBERED_HOSTS: Set<String> = listOfNotNull(
+        BuildConfig.API_BASE_URL.toHttpUrlOrNull()?.host,
+        BuildConfig.WEB_BASE_URL.toHttpUrlOrNull()?.host,
+    ).map { it.lowercase(Locale.ROOT) }.toSet()
+
+    /**
      * The last answer for each hostname, in this process: from DoH, or from the
      * system resolver while Stealth was NOT active (the connect-time lookup).
      * Read only while Stealth is active and DoH has just failed
@@ -219,6 +231,7 @@ object DohResolver {
         stealthActive = { BirdoVpnService.stealthActive },
         remembered = remembered,
         nowMs = { SystemClock.elapsedRealtime() },
+        rememberedHosts = REMEMBERED_HOSTS,
     )
 
     /**
@@ -245,7 +258,8 @@ object DohResolver {
      * session does not cycle. A poisoned answer is covered by the API's
      * certificate pinning. A system answer lasts until the user ends a
      * session ([forgetSystemAnswers]; a switch or a re-dial keeps it), the
-     * user signs out, or [ttlMs] passes.
+     * user signs out, or [ttlMs] passes. Only the hosts in [rememberedHosts]
+     * (the API's and the web app's) are remembered or reused at all.
      *
      * WHAT THIS DOES NOT COVER: Stealth is only "active" once Xray is up
      * (BirdoVpnService), and stops being so the moment a session is torn
@@ -267,13 +281,15 @@ object DohResolver {
         remembered: MutableMap<String, Remembered>,
         nowMs: () -> Long,
         ttlMs: Long = REMEMBER_TTL_MS,
+        rememberedHosts: Set<String> = REMEMBERED_HOSTS,
     ): List<InetAddress> {
         if (hostname.isBlank()) {
             throw UnknownHostException("hostname is blank")
         }
         val key = hostname.lowercase(Locale.ROOT)
+        val keep = key in rememberedHosts
         val dohFailure = try {
-            return doh(hostname).also { if (it.isNotEmpty()) remembered[key] = Remembered(it, nowMs()) }
+            return doh(hostname).also { if (keep && it.isNotEmpty()) remembered[key] = Remembered(it, nowMs()) }
         } catch (e: Exception) {
             e
         }
@@ -298,7 +314,7 @@ object DohResolver {
             )
         }
         if (stealth) {
-            val earlier = remembered[key]
+            val earlier = if (keep) remembered[key] else null
             // `in 0..ttlMs`: an answer from a clock that has since gone
             // backwards is as unusable as one that is too old.
             if (earlier != null && nowMs() - earlier.atMs in 0..ttlMs) {
@@ -347,7 +363,7 @@ object DohResolver {
         // Reached only with Stealth NOT active, so this answer may be reused
         // by the Stealth session that starts next (see [remembered]).
         return system(hostname).also {
-            if (it.isNotEmpty()) remembered[key] = Remembered(it, nowMs(), fromSystem = true)
+            if (keep && it.isNotEmpty()) remembered[key] = Remembered(it, nowMs(), fromSystem = true)
         }
     }
 
