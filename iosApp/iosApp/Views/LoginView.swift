@@ -45,6 +45,7 @@ struct LoginView: View {
     @State private var copyResetTask: Task<Void, Never>?
 
     @FocusState private var focusedField: Field?
+    @Environment(\.openURL) private var openURL
 
     private enum Field: Hashable {
         case email, password, anonymousId, anonymousPassword, twoFactorCode
@@ -341,6 +342,23 @@ struct LoginView: View {
                 .padding(.top, 14)
                 .accessibilityIdentifier("login_password_field")
                 .loginEntrance(entered, delay: 0.28)
+
+            // MR-1618: the reset itself lives on the website (its request step
+            // needs a Turnstile token a native client cannot mint).
+            Button {
+                openURL(AuthLinks.resetPassword)
+            } label: {
+                Text("Forgot password?")
+                    .birdoFont(14, weight: .medium)
+                    .foregroundStyle(BirdoTheme.accentSoft)
+                    .frame(minHeight: 44, alignment: .trailing)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .accessibilityIdentifier("login_forgot_password")
+            .accessibilityHint("Opens the password reset page in your browser")
+            .loginEntrance(entered, delay: 0.29)
 
             PrimaryButton("Sign in",
                           loadingTitle: "Signing in…",
