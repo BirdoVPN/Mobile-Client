@@ -493,10 +493,15 @@ jobs:
   # artifacts. R8 runs in its own job (`r8`) in parallel: it compiles the
   # release variant, which shares nothing with this one but the native libs.
   #
-  # NOT the required "Build APK" check: that name is the `apk-gate` job below,
-  # which fails unless this job succeeded and then ISA-gates what it uploaded.
+  # REQUIRED CHECK ("Build APK"): green only when the APK built, carries every
+  # ABI's engine set and passed the ISA gate, all in this one job. Both APKs
+  # are uploaded BEFORE the gate (~2-4 min): the emulator job below boots
+  # while this job builds and starts testing as soon as they are uploaded, so
+  # the gate runs beside the tests instead of in front of them. A gate failure
+  # still fails this job; the uploads then hold an APK that failed it, for the
+  # emulator only (retention 7 days, never a release input).
   build:
-    name: Build debug APK
+    name: Build APK
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
@@ -586,9 +591,9 @@ jobs:
           python3 scripts/verify_android_release_apk.py --native-libs-only \
             app/build/outputs/apk/debug/app-debug.apk
 
-      # The ISA-baseline gate over this APK's lib/ is the `apk-gate` job below
-      # (the required "Build APK" check), on the uploaded APK, beside the
-      # emulator job.
+      # Uploaded before the ISA gate, so the emulator job (already booted) can
+      # start; see the job comment. overwrite: a re-run of this job after a
+      # gate failure replaces the APKs its first attempt uploaded.
       - name: Upload Debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -597,6 +602,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+          overwrite: true
 
       - name: Upload androidTest APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -606,64 +612,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+          overwrite: true
 
-  # The native libraries in the debug APK are byte-identical to the ones the
-  # release build packages (native/build.sh builds the release profile, and
-  # the Xray engines come from the same provisioning step), so this is the
-  # same binary being checked, one merge earlier. The APK's lib/ is what AGP
-  # actually packaged (stripped, every ABI, every AAR-provided .so), which
-  # the jniLibs pass inside buildRustLibs cannot see. Same gate, same rule
-  # table, one library per invocation in parallel (.github/scripts/isa-gate.sh).
-  #
-  # Its own job, on the APK `build` uploaded, rather than that job's last
-  # step: the gate takes as long as its slowest library (~140 s, the x86
-  # libxray.so), and `instrumented` cannot start before `build` ENDS, so as a
-  # step it held the emulator job back by that much on every run. Here the
-  # two run side by side. The disassembler is the same one: isa-gate.sh takes
-  # llvm-objdump/llvm-readobj from the runner image's NDK (ANDROID_NDK_HOME,
-  # else ANDROID_NDK_LATEST_HOME), the NDK `build` compiled with on the same
-  # image. If the NDK is ever pinned by a setup step in android-native-libs
-  # (MR-1793), add that step here too, so both jobs keep one NDK.
-  #
-  # REQUIRED CHECK: this job carries the name "Build APK", which branch
-  # protection requires, so the required check still means what it did: the
-  # debug APK built, carries every ABI's engine set, AND passed this gate. It
-  # never skips when `build` did not succeed (a skipped required check counts
-  # as passing): its `if:` does not look at `build`, and its first step fails
-  # unless `build` succeeded. When `changes` says Android is untouched, both
-  # skip, as the single job did.
-  apk-gate:
-    name: Build APK
-    needs: [changes, build]
-    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    steps:
-      - name: The debug APK was built and verified
-        env:
-          BUILD_RESULT: ${{ needs.build.result }}
-        run: |
-          if [ "$BUILD_RESULT" != success ]; then
-            echo "::error::Build debug APK finished '$BUILD_RESULT', not success: no APK to gate, so Build APK fails."
-            exit 1
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Download the debug APK
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: debug-apk
-          path: ${{ runner.temp }}/apk
-
+      # The native libraries in the debug APK are byte-identical to the ones the
+      # release build packages (native/build.sh builds the release profile, and
+      # the Xray engines come from the same provisioning step), so this is the
+      # same binary being checked, one merge earlier. The APK's lib/ is what AGP
+      # actually packaged (stripped, every ABI, every AAR-provided .so), which
+      # the jniLibs pass inside buildRustLibs cannot see. Same gate, same rule
+      # table, one library per invocation in parallel (.github/scripts/isa-gate.sh).
       - name: Verify no ungated extended-ISA instructions in shipped libraries
         run: |
           rm -rf "$RUNNER_TEMP/debug-apk-libs"
-          unzip -q -o "$RUNNER_TEMP/apk/app-debug.apk" 'lib/*' -d "$RUNNER_TEMP/debug-apk-libs"
+          unzip -q -o app/build/outputs/apk/debug/app-debug.apk 'lib/*' -d "$RUNNER_TEMP/debug-apk-libs"
           bash .github/scripts/isa-gate.sh "$RUNNER_TEMP/debug-apk-libs/lib"
 
   # -- Instrumented tests (androidTest) on an emulator --------------------
@@ -672,40 +633,39 @@ jobs:
   # GlobeFrameMonitorInstrumentedTest -- the only check that JankStats really
   # labels the globe's frames, which no JVM test can reach -- was an on-device
   # proof that no device ran. It runs here on every pull request that can
-  # affect the app, on an x86_64 emulator, against the debug APK `build`
+  # affect the app, on an x86_64 emulator, against the debug APK "Build APK"
   # just built and checked for every ABI's engine set (every ABI's native
-  # stack included, so the app process is the real one; `apk-gate` ISA-gates
-  # the same APK alongside). Not a required check.
+  # stack included, so the app process is the real one). Not a required check.
+  #
+  # It does not `needs: build`: a job cannot start before every job it needs
+  # has ENDED, and "Build APK" ends with the ISA gate (~2-4 min), after the
+  # emulator install and boot (~2 min) that need no APK at all. So it starts
+  # with the other jobs, installs and boots the emulator while "Build APK"
+  # builds, then waits for the two APKs that job uploads before its gate, and
+  # fails if that job ends without them (a build failure is never a pass
+  # here). The required check is unchanged: the same single job, the same
+  # steps, nothing queued after it.
   #
   # The image is the one baseline-profile.yml records on (API 34, google_apis,
   # x86_64; docs/BASELINE-PROFILE.md says why not aosp_atd). The tests assert
   # labelling and delivery, never frame times: an emulator's are not a phone's.
   instrumented:
     name: Instrumented tests (emulator)
-    needs: [changes, build]
-    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' && needs.build.result == 'success' }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 30 as before, plus the wait for "Build APK" (bounded at 30 below).
+    timeout-minutes: 60
     permissions:
       contents: read
+      # Read this run's artifact list and "Build APK"'s state while waiting.
+      actions: read
     env:
       SYSTEM_IMAGE: 'system-images;android-34;google_apis;x86_64'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Download the debug APK
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: debug-apk
-          path: ${{ runner.temp }}/apk/app
-
-      - name: Download the androidTest APK
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: debug-android-test-apk
-          path: ${{ runner.temp }}/apk/test
 
       # Same as baseline-profile.yml: /dev/kvm is there but only for the kvm
       # group, and without it the emulator boots in software and times out.
@@ -800,6 +760,70 @@ jobs:
           fi
           "$adb" shell input keyevent 82 || true
           echo "booted: $("$adb" shell getprop ro.build.fingerprint | tr -d '\r')"
+
+      # "Build APK" uploads both APKs before its ISA gate. Wait for them, or for
+      # that job to end without them (then this job fails: a build that failed
+      # is nothing tested, never a pass). The gate's verdict is not awaited
+      # here: it is the required check's to give.
+      - name: Wait for the APKs "Build APK" uploads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # 0: both uploaded; 1: not (yet); 2: the API could not be read.
+          have_both() {
+            local names
+            names=$(gh api "$run/artifacts?per_page=100" --jq '.artifacts[] | select(.expired | not) | .name') || return 2
+            grep -qx 'debug-apk' <<< "$names" && grep -qx 'debug-android-test-apk' <<< "$names"
+          }
+          deadline=$((SECONDS + 1800))
+          errors=0
+          while :; do
+            rc=0; have_both || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "Both APKs are uploaded (waited ${SECONDS}s)"
+              break
+            fi
+            if [ "$rc" -eq 1 ]; then
+              errors=0
+              state=$(gh api "$run/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+                --jq '.jobs[] | select(.name == "Build APK") | .status + " " + (.conclusion // "")') || state=""
+              if [ "${state%% *}" = completed ]; then
+                # An upload may have landed between the two reads.
+                rc=0; have_both || rc=$?
+                if [ "$rc" -eq 0 ]; then
+                  echo "Both APKs are uploaded"
+                  break
+                fi
+                echo "::error::Build APK ended ($state) without uploading both APKs, so there is nothing to test."
+                exit 1
+              fi
+            else
+              errors=$((errors + 1))
+              if [ "$errors" -ge 6 ]; then
+                echo "::error::the GitHub API failed 6 times in a row: this run's artifacts cannot be read"
+                exit 1
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Build APK uploaded no APKs within 30 minutes"
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Download the debug APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: debug-apk
+          path: ${{ runner.temp }}/apk/app
+
+      - name: Download the androidTest APK
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: debug-android-test-apk
+          path: ${{ runner.temp }}/apk/test
 
       # `am instrument` exits 0 whatever happened, so the verdict comes from
       # scripts/check_instrumentation_result.sh: "OK (N tests)" with N equal to
