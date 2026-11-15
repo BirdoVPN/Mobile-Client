@@ -29,11 +29,13 @@ class PurchaseIngestorTest {
     private fun purchased(
         token: String = "tok-1",
         isAcknowledged: Boolean = false,
+        isBound: Boolean = true,
     ) = IngestablePurchase(
         purchaseToken = token,
         state = IngestablePurchase.State.PURCHASED,
         isAcknowledged = isAcknowledged,
         productIds = listOf(BirdoPlayProduct.OPERATIVE.productId),
+        isBound = isBound,
     )
 
     // ── The ordering invariant ──────────────────────────────────────────────
@@ -42,14 +44,14 @@ class PurchaseIngestorTest {
     fun `acknowledge happens only AFTER the server accepts`() = runTest {
         val calls = mutableListOf<String>()
         val ingestor = PurchaseIngestor(
-            link = { calls += "link"; accepted },
+            link = { _, _ -> calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { true },
             strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
-        val outcome = ingestor.ingest(purchased())
+        val outcome = ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
 
         assertTrue(outcome is IngestOutcome.Accepted)
         assertEquals(
@@ -71,7 +73,7 @@ class PurchaseIngestorTest {
         StoreLinkRefusal.entries.forEach { refusal ->
             val calls = mutableListOf<String>()
             val ingestor = PurchaseIngestor(
-                link = {
+                link = { _, _ ->
                     calls += "link"
                     StoreLinkOutcome.Refused(refusal, StringsXml.get(refusal.fallbackMessageRes))
                 },
@@ -81,7 +83,7 @@ class PurchaseIngestorTest {
                 refusals = PurchaseRefusalMemory { 0L },
             )
 
-            val outcome = ingestor.ingest(purchased())
+            val outcome = ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
 
             assertTrue("$refusal", outcome is IngestOutcome.Rejected)
             assertEquals(
@@ -101,7 +103,7 @@ class PurchaseIngestorTest {
     fun `a pending purchase is neither linked nor acknowledged`() = runTest {
         val calls = mutableListOf<String>()
         val ingestor = PurchaseIngestor(
-            link = { calls += "link"; accepted },
+            link = { _, _ -> calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { true },
             strings = StringsXml,
@@ -110,6 +112,7 @@ class PurchaseIngestorTest {
 
         val outcome = ingestor.ingest(
             purchased().copy(state = IngestablePurchase.State.PENDING),
+            StoreLinkOrigin.AUTO,
         )
 
         assertTrue(outcome is IngestOutcome.Pending)
@@ -126,14 +129,14 @@ class PurchaseIngestorTest {
     fun `a purchase made while signed out is kept, not acknowledged`() = runTest {
         val calls = mutableListOf<String>()
         val ingestor = PurchaseIngestor(
-            link = { calls += "link"; accepted },
+            link = { _, _ -> calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { false },
             strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
-        val outcome = ingestor.ingest(purchased())
+        val outcome = ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
 
         assertEquals(StoreLinkRefusal.NEEDS_SIGN_IN, (outcome as IngestOutcome.Rejected).refusal)
         assertTrue("no session means no request at all", calls.isEmpty())
@@ -144,14 +147,14 @@ class PurchaseIngestorTest {
     fun `an already-acknowledged purchase is linked but not re-acknowledged`() = runTest {
         val calls = mutableListOf<String>()
         val ingestor = PurchaseIngestor(
-            link = { calls += "link"; accepted },
+            link = { _, _ -> calls += "link"; accepted },
             acknowledge = { calls += "acknowledge"; true },
             isSignedIn = { true },
             strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
-        val outcome = ingestor.ingest(purchased(isAcknowledged = true))
+        val outcome = ingestor.ingest(purchased(isAcknowledged = true), StoreLinkOrigin.AUTO)
 
         assertTrue((outcome as IngestOutcome.Accepted).acknowledged)
         assertEquals(listOf("link"), calls)
@@ -165,14 +168,14 @@ class PurchaseIngestorTest {
     @Test
     fun `a failed acknowledgement still counts as accepted`() = runTest {
         val ingestor = PurchaseIngestor(
-            link = { accepted },
+            link = { _, _ -> accepted },
             acknowledge = { false },
             isSignedIn = { true },
             strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
 
-        val outcome = ingestor.ingest(purchased()) as IngestOutcome.Accepted
+        val outcome = ingestor.ingest(purchased(), StoreLinkOrigin.AUTO) as IngestOutcome.Accepted
 
         assertEquals("OPERATIVE", outcome.plan)
         assertFalse(outcome.acknowledged)
@@ -184,7 +187,7 @@ class PurchaseIngestorTest {
     fun `a 409 is asked once and then suppressed for the session`() = runTest {
         var linkCalls = 0
         val ingestor = PurchaseIngestor(
-            link = {
+            link = { _, _ ->
                 linkCalls++
                 StoreLinkOutcome.Refused(
                     StoreLinkRefusal.ALREADY_LINKED_TO_ANOTHER_ACCOUNT,
@@ -198,19 +201,19 @@ class PurchaseIngestorTest {
         )
 
         // Three sweeps — a launch and two resumes.
-        repeat(3) { ingestor.ingest(purchased()) }
+        repeat(3) { ingestor.ingest(purchased(), StoreLinkOrigin.AUTO) }
         assertEquals("the endpoint allows 20/60s; do not walk into it", 1, linkCalls)
 
         // Restore Purchases is an explicit ask and clears the suppression.
         ingestor.forgetRefusals()
-        ingestor.ingest(purchased())
+        ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
         assertEquals(2, linkCalls)
     }
 
     @Test
     fun `a suppressed purchase reports Skipped rather than a fake refusal`() = runTest {
         val ingestor = PurchaseIngestor(
-            link = {
+            link = { _, _ ->
                 StoreLinkOutcome.Refused(StoreLinkRefusal.PRODUCT_UNMAPPED, "unmapped")
             },
             acknowledge = { true },
@@ -218,8 +221,119 @@ class PurchaseIngestorTest {
             strings = StringsXml,
             refusals = PurchaseRefusalMemory { 0L },
         )
-        ingestor.ingest(purchased())
-        assertEquals(IngestOutcome.Skipped, ingestor.ingest(purchased()))
+        ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
+        assertEquals(IngestOutcome.Skipped, ingestor.ingest(purchased(), StoreLinkOrigin.AUTO))
+    }
+
+    // ── F-967-02: an unbound purchase is presented only from Restore ────────
+
+    @Test
+    fun `an unbound purchase on an automatic path reaches neither the server nor Google`() = runTest {
+        val calls = mutableListOf<String>()
+        val ingestor = PurchaseIngestor(
+            link = { _, _ -> calls += "link"; accepted },
+            acknowledge = { calls += "acknowledge"; true },
+            isSignedIn = { true },
+            strings = StringsXml,
+            refusals = PurchaseRefusalMemory { 0L },
+        )
+
+        val outcome = ingestor.ingest(purchased(isBound = false), StoreLinkOrigin.AUTO)
+
+        assertEquals(IngestOutcome.NeedsRestore, outcome)
+        assertTrue("an unbound purchase must not be presented automatically", calls.isEmpty())
+    }
+
+    @Test
+    fun `Restore presents an unbound purchase and says so, a bound one goes out as auto`() = runTest {
+        val origins = mutableListOf<StoreLinkOrigin>()
+        val ingestor = PurchaseIngestor(
+            link = { _, origin -> origins += origin; accepted },
+            acknowledge = { true },
+            isSignedIn = { true },
+            strings = StringsXml,
+            refusals = PurchaseRefusalMemory { 0L },
+        )
+
+        val restored = ingestor.ingest(purchased(token = "tok-u", isBound = false), StoreLinkOrigin.RESTORE)
+        val auto = ingestor.ingest(purchased(token = "tok-b"), StoreLinkOrigin.AUTO)
+
+        assertTrue(restored is IngestOutcome.Accepted)
+        assertTrue(auto is IngestOutcome.Accepted)
+        assertEquals(listOf(StoreLinkOrigin.RESTORE, StoreLinkOrigin.AUTO), origins)
+    }
+
+    @Test
+    fun `a needsRestore answer is neither accepted nor acknowledged`() = runTest {
+        val calls = mutableListOf<String>()
+        val ingestor = PurchaseIngestor(
+            link = { _, _ ->
+                calls += "link"
+                StoreLinkOutcome.Accepted(GooglePlayLinkResponse(linked = false, needsRestore = true))
+            },
+            acknowledge = { calls += "acknowledge"; true },
+            isSignedIn = { true },
+            strings = StringsXml,
+            refusals = PurchaseRefusalMemory { 0L },
+        )
+
+        assertEquals(IngestOutcome.NeedsRestore, ingestor.ingest(purchased(), StoreLinkOrigin.AUTO))
+        assertEquals(listOf("link"), calls)
+    }
+
+    // ── F-967-05: a 200 that grants nothing is not a purchase ───────────────
+
+    private fun answering(entitled: Boolean?) = StoreLinkOutcome.Accepted(
+        GooglePlayLinkResponse(linked = true, plan = "OPERATIVE", state = "ACTIVE", entitled = entitled),
+    )
+
+    @Test
+    fun `entitled false is not accepted and never acknowledged`() = runTest {
+        val calls = mutableListOf<String>()
+        val ingestor = PurchaseIngestor(
+            link = { _, _ -> calls += "link"; answering(entitled = false) },
+            acknowledge = { calls += "acknowledge"; true },
+            isSignedIn = { true },
+            strings = StringsXml,
+            refusals = PurchaseRefusalMemory { 0L },
+        )
+
+        assertEquals(IngestOutcome.NotEntitled, ingestor.ingest(purchased(), StoreLinkOrigin.AUTO))
+        assertEquals("Google must not be told we delivered nothing", listOf("link"), calls)
+    }
+
+    @Test
+    fun `entitled true is accepted and acknowledged after the link`() = runTest {
+        val calls = mutableListOf<String>()
+        val ingestor = PurchaseIngestor(
+            link = { _, _ -> calls += "link"; answering(entitled = true) },
+            acknowledge = { calls += "acknowledge"; true },
+            isSignedIn = { true },
+            strings = StringsXml,
+            refusals = PurchaseRefusalMemory { 0L },
+        )
+
+        val outcome = ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
+
+        assertTrue((outcome as IngestOutcome.Accepted).acknowledged)
+        assertEquals(listOf("link", "acknowledge"), calls)
+    }
+
+    @Test
+    fun `a server that sends no entitled field keeps the old reading, 200 means granted`() = runTest {
+        val calls = mutableListOf<String>()
+        val ingestor = PurchaseIngestor(
+            link = { _, _ -> calls += "link"; answering(entitled = null) },
+            acknowledge = { calls += "acknowledge"; true },
+            isSignedIn = { true },
+            strings = StringsXml,
+            refusals = PurchaseRefusalMemory { 0L },
+        )
+
+        val outcome = ingestor.ingest(purchased(), StoreLinkOrigin.AUTO)
+
+        assertEquals("OPERATIVE", (outcome as IngestOutcome.Accepted).plan)
+        assertEquals(listOf("link", "acknowledge"), calls)
     }
 
     // ── Copy ────────────────────────────────────────────────────────────────
@@ -232,7 +346,7 @@ class PurchaseIngestorTest {
     @Test
     fun `the success message names the plan, never its slug or a shouted placeholder`() {
         val ingestor = PurchaseIngestor(
-            link = { accepted },
+            link = { _, _ -> accepted },
             acknowledge = { true },
             isSignedIn = { true },
             strings = StringsXml,
